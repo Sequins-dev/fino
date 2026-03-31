@@ -1,0 +1,12 @@
+{
+  "name": "boats",
+  "version": "1.0.0",
+  "nested": {
+    "key": "value",
+    "count": 42
+  },
+  "tags": ["fast", "async", "rust"],
+  "enabled": true,
+  "ratio": 3.14,
+  "nothing": null
+}

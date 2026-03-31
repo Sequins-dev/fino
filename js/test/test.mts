@@ -1,0 +1,445 @@
+/**
+ * boats:test — TAP-13 test framework with nesting and BDD-style describe/it.
+ *
+ * Two equivalent but non-mixable patterns:
+ *
+ *   **Pattern 1: suite + test**
+ *   ```js
+ *   import { test, suite } from 'boats:test/test';
+ *
+ *   test('standalone', (t) => { t.ok(true); });
+ *
+ *   suite('math', () => {
+ *     test('adds', (t) => { t.equal(1 + 1, 2); });
+ *     test('subs', (t) => { t.equal(2 - 1, 1); });
+ *   });
+ *   ```
+ *
+ *   **Pattern 2: describe + it + lifecycle hooks**
+ *   ```js
+ *   import { describe, it } from 'boats:test/test';
+ *
+ *   describe('math', () => {
+ *     before(async () => { ... });       // once, before first it
+ *     beforeEach(async () => { ... });   // before each it
+ *     afterEach(async () => { ... });    // after each it (always runs)
+ *     after(async () => { ... });        // once, after last it (always runs)
+ *
+ *     it('adds', (t) => { t.equal(1 + 1, 2); });
+ *     it('subs', (t) => { t.equal(2 - 1, 1); });
+ *   });
+ *   ```
+ *
+ * Mixing is forbidden: `it()` inside `suite()`, `test()` inside `describe()`,
+ * `suite()` inside `describe()`, or `describe()` inside `suite()` all throw.
+ * `it()` and hook functions throw if used at the top level.
+ *
+ *
+ * ## TAP-13 output
+ *
+ * Nested groups produce standard TAP subtests (indented 4 spaces per level):
+ *
+ *   TAP version 13
+ *   1..2
+ *   ok 1 - standalone
+ *   # Subtest: math
+ *       1..2
+ *       ok 1 - adds
+ *       ok 2 - subs
+ *   ok 2 - math
+ *   # tests 2
+ *   # pass  2
+ *
+ *
+ * ## Internal representation
+ *
+ * Both APIs share a tree of nodes:
+ *
+ *   Leaf:  { name, fn, children: null, skip: string|null }
+ *   Group: { name, kind: 'suite'|'describe', children: [],
+ *            before, beforeEach, after, afterEach,
+ *            skip: string|null }
+ *
+ * `_current` points at the group being registered into (`null` = top level).
+ * The unified runner `_runEntries(entries, depth, parentNode)` recurses the tree,
+ * applying hooks from `parentNode` to each leaf inside a `describe` group.
+ */
+
+import console from 'internal:globals/console';
+import { Assert, AssertionError } from 'boats:test/assert';
+import * as loop from 'boats:runtime/loop';
+
+// ---------------------------------------------------------------------------
+// Internal state
+// ---------------------------------------------------------------------------
+
+interface LeafNode {
+  name: string;
+  fn: (t: Assert) => void | Promise<void>;
+  children: null;
+  skip: string | null;
+}
+
+interface GroupNode {
+  name: string;
+  kind: 'suite' | 'describe';
+  children: TestNode[];
+  before:     (() => void | Promise<void>) | null;
+  beforeEach: (() => void | Promise<void>) | null;
+  after:      (() => void | Promise<void>) | null;
+  afterEach:  (() => void | Promise<void>) | null;
+  skip: string | null;
+}
+
+type TestNode = LeafNode | GroupNode;
+
+interface RunResult { passed: number; failed: number; skipped: number; }
+
+/** Top-level test/suite/describe entries. */
+const _tests: TestNode[] = [];
+
+/** The group node currently being registered into, or null for top-level. */
+let _current: GroupNode | null = null;
+
+// ---------------------------------------------------------------------------
+// Registration helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the optional middle `opts` argument from `name, [opts], fn` signatures.
+ */
+function _parseArgs(optsOrFn: ((...args: any[]) => any) | { skip?: boolean | string } | null | undefined, maybeFn?: (...args: any[]) => any): { opts: { skip?: boolean | string } | null; fn: (...args: any[]) => any } {
+  if (typeof optsOrFn === 'function') return { opts: null, fn: optsOrFn };
+  return { opts: optsOrFn, fn: maybeFn };
+}
+
+/**
+ * Normalise a `skip` option value to a string reason ('' if no reason given)
+ * or `null` if the test should not be skipped.
+ */
+function _skipReason(opts: { skip?: boolean | string } | null): string | null {
+  if (!opts || !opts.skip) return null;
+  return typeof opts.skip === 'string' ? opts.skip : '';
+}
+
+function _requireOutside(kind: 'suite' | 'describe', callerName: string): void {
+  if (_current !== null && _current.kind !== kind) {
+    const other = kind === 'suite' ? 'describe' : 'suite';
+    throw new Error(`${callerName}() cannot be used inside ${other}()`);
+  }
+}
+
+function _requireInside(kind: 'suite' | 'describe', callerName: string): void {
+  if (_current === null || _current.kind !== kind) {
+    const where = _current === null ? 'top level' : `${_current.kind}()`;
+    throw new Error(`${callerName}() must be called inside ${kind === 'describe' ? 'describe()' : 'suite()'}, not at ${where}`);
+  }
+}
+
+function _push(node: TestNode): void {
+  if (_current === null) {
+    _tests.push(node);
+  } else {
+    _current.children.push(node);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public API — suite + test
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a test case. Can be top-level or inside `suite()`.
+ * Throws inside `describe()`.
+ */
+export function test(name, optsOrFn, maybeFn) {
+  const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
+  _requireOutside('suite', 'test');
+  _push({ name, fn, children: null, skip: _skipReason(opts) });
+}
+
+/**
+ * Register a group of tests. Can be nested inside other `suite()` calls.
+ * Throws inside `describe()`.
+ */
+export function suite(name, optsOrFn, maybeFn) {
+  const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
+  _requireOutside('suite', 'suite');
+  const node = { name, kind: 'suite', children: [], before: null, beforeEach: null, after: null, afterEach: null, skip: _skipReason(opts) };
+  const prev = _current;
+  _current = node;
+  fn();
+  _current = prev;
+  _push(node);
+}
+
+// ---------------------------------------------------------------------------
+// Public API — describe + it + lifecycle hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * Register a BDD-style test group with optional lifecycle hooks.
+ * Can be nested inside other `describe()` calls.
+ * Throws inside `suite()`.
+ */
+export function describe(name, optsOrFn, maybeFn) {
+  const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
+  _requireOutside('describe', 'describe');
+  const node = { name, kind: 'describe', children: [], before: null, beforeEach: null, after: null, afterEach: null, skip: _skipReason(opts) };
+  const prev = _current;
+  _current = node;
+  fn();
+  _current = prev;
+  _push(node);
+}
+
+/**
+ * Register a test case inside `describe()`. Throws outside `describe()`.
+ */
+export function it(name, optsOrFn, maybeFn) {
+  const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
+  _requireInside('describe', 'it');
+  _push({ name, fn, children: null, skip: _skipReason(opts) });
+}
+
+/**
+ * Run `fn` once before the first `it` in this `describe` block.
+ * Throws outside `describe()`.
+ */
+export function before(fn) {
+  _requireInside('describe', 'before');
+  _current.before = fn;
+}
+
+/**
+ * Run `fn` once after the last `it` in this `describe` block.
+ * Always runs even if tests fail. Throws outside `describe()`.
+ */
+export function after(fn) {
+  _requireInside('describe', 'after');
+  _current.after = fn;
+}
+
+/**
+ * Run `fn` before each `it` in this `describe` block.
+ * Throws outside `describe()`.
+ */
+export function beforeEach(fn) {
+  _requireInside('describe', 'beforeEach');
+  _current.beforeEach = fn;
+}
+
+/**
+ * Run `fn` after each `it` in this `describe` block.
+ * Always runs even if the test fails. Throws outside `describe()`.
+ */
+export function afterEach(fn) {
+  _requireInside('describe', 'afterEach');
+  _current.afterEach = fn;
+}
+
+// ---------------------------------------------------------------------------
+// Runner
+// ---------------------------------------------------------------------------
+
+function _indent(depth: number): string {
+  return '    '.repeat(depth);
+}
+
+function _log(depth: number, msg: string): void {
+  console.log(_indent(depth) + msg);
+}
+
+function _printError(err: unknown, depth: number): void {
+  if (err instanceof AggregateError) {
+    for (const e of err.errors) {
+      _log(depth, '  ---');
+      _log(depth, '  message: ' + e.message);
+      _log(depth, '  ...');
+    }
+  } else {
+    _log(depth, '  ---');
+    _log(depth, '  message: threw ' + err);
+    if (err && err.stack) {
+      for (const line of err.stack.split('\n')) {
+        _log(depth, '  ' + line);
+      }
+    }
+    _log(depth, '  ...');
+  }
+}
+
+/**
+ * Run a single leaf node (test or it) with optional surrounding hooks.
+ *
+ * @param {object}  entry      Leaf node { name, fn, skip }.
+ * @param {number}  num        1-based index for TAP output.
+ * @param {number}  depth      Indentation level.
+ * @param {object|null} hooks  Parent describe node (for beforeEach/afterEach), or null.
+ * @param {string|null} inheritedSkip  Skip reason inherited from a parent group, or null.
+ * @returns {'pass'|'fail'|'skip'}
+ */
+async function _runLeaf(entry: LeafNode, num: number, depth: number, hooks: GroupNode | null, inheritedSkip: string | null = null): Promise<'pass' | 'fail' | 'skip'> {
+  const skipReason = inheritedSkip ?? entry.skip;
+  if (skipReason !== null) {
+    const suffix = skipReason !== '' ? ' # SKIP ' + skipReason : ' # SKIP';
+    _log(depth, 'ok ' + num + ' - ' + entry.name + suffix);
+    return 'skip';
+  }
+  const failures = [];
+  const t = new Assert({ onFail(err) { failures.push(err); } });
+  const testLp = loop.create();
+
+  try {
+    // Run beforeEach (hook failure skips the body but still runs afterEach).
+    let beforeError = null;
+    if (hooks?.beforeEach) {
+      try { await hooks.beforeEach(); }
+      catch (e) { beforeError = e; }
+    }
+
+    // Run the test body (skipped if beforeEach threw).
+    let bodyError = null;
+    if (beforeError === null) {
+      try {
+        const result = loop.runWith(testLp, () => entry.fn(t));
+        if (result && typeof result.then === 'function') await result;
+      } catch (e) {
+        bodyError = e;
+      }
+    }
+
+    // Run afterEach — always, as long as beforeEach didn't throw.
+    if (hooks?.afterEach && beforeError === null) {
+      try { await hooks.afterEach(); }
+      catch (e) { failures.push(e); }
+    }
+
+    // Determine pass/fail.
+    const firstError = beforeError ?? bodyError;
+    if (firstError) throw firstError;
+    if (failures.length > 0) throw new AggregateError(failures, failures.length + ' assertion(s) failed');
+
+    _log(depth, 'ok ' + num + ' - ' + entry.name);
+    return 'pass';
+  } catch (err) {
+    _log(depth, 'not ok ' + num + ' - ' + entry.name);
+    _printError(err, depth);
+    return 'fail';
+  } finally {
+    loop.destroy(testLp);
+  }
+}
+
+/**
+ * Recursively run a list of entries, printing TAP output at the given depth.
+ *
+ * Prints the `1..N` plan line first, then runs each entry. For group nodes,
+ * recurses with `depth + 1`. For leaf nodes inside a `describe` group,
+ * applies `beforeEach`/`afterEach` hooks.
+ *
+ * @param {Array}       entries    Nodes to run.
+ * @param {number}      depth      Current indentation level (0 = top level).
+ * @param {object|null} parentNode The group node containing these entries, or null.
+ * @param {string|null} inheritedSkip  Skip reason inherited from a parent group, or null.
+ * @returns {{ passed: number, failed: number, skipped: number }}
+ */
+async function _runEntries(entries: TestNode[], depth: number, parentNode: GroupNode | null, inheritedSkip: string | null = null): Promise<RunResult> {
+  _log(depth, '1..' + entries.length);
+
+  // A skip on the parent group propagates to all children.
+  const groupSkip = inheritedSkip ?? parentNode?.skip ?? null;
+
+  // Extract hooks from the parent describe (not suite — suite has no hooks).
+  const hooks = (parentNode?.kind === 'describe') ? parentNode : null;
+
+  let passed = 0;
+  let failed = 0;
+  let skipped = 0;
+
+  // Run 'before' once before the first leaf/group (skip if group is skipped).
+  let beforeFailed = false;
+  if (!groupSkip && hooks?.before) {
+    try { await hooks.before(); }
+    catch (err) {
+      // before() failure — mark all entries as failed immediately.
+      for (let i = 0; i < entries.length; i++) {
+        _log(depth, 'not ok ' + (i + 1) + ' - ' + entries[i].name);
+        _printError(err, depth);
+        failed++;
+      }
+      beforeFailed = true;
+    }
+  }
+
+  if (!beforeFailed) {
+    try {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const num = i + 1;
+
+        if (entry.children === null) {
+          // Leaf node.
+          const result = await _runLeaf(entry, num, depth, hooks, groupSkip);
+          if (result === 'pass') passed++;
+          else if (result === 'fail') failed++;
+          else skipped++;
+        } else {
+          // Group node — recurse.
+          _log(depth, '# Subtest: ' + entry.name);
+          const childSkip = groupSkip ?? entry.skip ?? null;
+          const { passed: gp, failed: gf, skipped: gs } = await _runEntries(entry.children, depth + 1, entry, childSkip !== entry.skip ? childSkip : null);
+          _log(depth, '');
+          if (gf === 0 && gp === 0 && gs > 0) {
+            // All children skipped — mark the group as skipped too.
+            const suffix = childSkip !== null && childSkip !== '' ? ' # SKIP ' + childSkip : ' # SKIP';
+            _log(depth, 'ok ' + num + ' - ' + entry.name + suffix);
+            skipped++;
+          } else if (gf === 0) {
+            _log(depth, 'ok ' + num + ' - ' + entry.name);
+            passed++;
+          } else {
+            _log(depth, 'not ok ' + num + ' - ' + entry.name);
+            failed++;
+          }
+        }
+      }
+    } finally {
+      // Run 'after' once after all entries, even if some failed (skip if group is skipped).
+      if (!groupSkip && hooks?.after) {
+        try { await hooks.after(); }
+        catch (_) { /* after() errors are silently swallowed to not mask test failures */ }
+      }
+    }
+  }
+
+  return { passed, failed, skipped };
+}
+
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Run all registered tests and print TAP-13 output.
+ *
+ * Called automatically by the boats CLI in `--test` mode. User test files
+ * only need to call `test()` / `suite()` / `describe()` — never `run()`.
+ *
+ * @throws {Error} If any test fails (causes the process to exit with code 1).
+ */
+export async function run() {
+  console.log('TAP version 13');
+
+  const { passed, failed, skipped } = await _runEntries(_tests, 0, null);
+  const total = passed + failed + skipped;
+
+  console.log('');
+  console.log('# tests ' + total);
+  console.log('# pass  ' + passed);
+  if (skipped > 0) console.log('# skip  ' + skipped);
+  if (failed > 0) {
+    console.log('# fail  ' + failed);
+    throw new Error(failed + ' test(s) failed');
+  }
+}

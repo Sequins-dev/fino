@@ -1,0 +1,567 @@
+/**
+ * Tests for boats:eventsource — EventSourceReader, EventSourceWriter, and EventSource.
+ */
+
+import { describe, it } from 'boats:test/test';
+import { EventSourceReader, EventSourceWriter, EventSource } from 'boats:net/eventsource';
+import { serve } from 'boats:net/serve';
+import { Response } from 'boats:net/http';
+import * as loop from 'boats:runtime/loop';
+const encodeUtf8 = s => new TextEncoder().encode(s);
+const decodeUtf8 = b => new TextDecoder().decode(b);
+
+function source(str) {
+  return {
+    [Symbol.asyncIterator]() {
+      let sent = false;
+      return {
+        next() {
+          if (!sent) {
+            sent = true;
+            return Promise.resolve({ done: false, value: encodeUtf8(str) });
+          }
+          return Promise.resolve({ done: true, value: undefined });
+        },
+      };
+    },
+  };
+}
+
+function chunkedSource(str, size) {
+  const bytes = encodeUtf8(str);
+  return {
+    [Symbol.asyncIterator]() {
+      let pos = 0;
+      return {
+        next() {
+          if (pos >= bytes.byteLength) return Promise.resolve({ done: true, value: undefined });
+          const end   = Math.min(pos + size, bytes.byteLength);
+          const chunk = bytes.subarray(pos, end);
+          pos = end;
+          return Promise.resolve({ done: false, value: chunk });
+        },
+      };
+    },
+  };
+}
+
+async function collect(reader) {
+  const events = [];
+  for await (const event of reader) events.push(event);
+  return events;
+}
+
+function mockWriter() {
+  const parts = [];
+  return {
+    write(bytes) {
+      parts.push(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+      return Promise.resolve(bytes.byteLength);
+    },
+    output() {
+      let total = 0;
+      for (const p of parts) total += p.byteLength;
+      const out = new Uint8Array(total);
+      let pos = 0;
+      for (const p of parts) { out.set(p, pos); pos += p.byteLength; }
+      return decodeUtf8(out);
+    },
+  };
+}
+
+function sseBody(...items) {
+  let body = '';
+  for (const item of items) {
+    if (typeof item === 'string') {
+      body += item;
+    } else {
+      if (item.retry !== undefined) body += `retry: ${item.retry}\n`;
+      if (item.event !== undefined) body += `event: ${item.event}\n`;
+      if (item.id    !== undefined) body += `id: ${item.id}\n`;
+      body += `data: ${item.data}\n`;
+      body += '\n';
+    }
+  }
+  return body;
+}
+
+function sseResponse(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' },
+  });
+}
+
+describe('EventSourceReader', () => {
+  it('basic single event', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: hello\n\n')));
+    t.equal(events.length, 1);
+    t.equal(events[0].type, 'message');
+    t.equal(events[0].data, 'hello');
+    t.equal(events[0].id, null);
+    t.equal(events[0].retry, null);
+  });
+
+  it('multi-line data joined with newline', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: line1\ndata: line2\ndata: line3\n\n')));
+    t.equal(events.length, 1);
+    t.equal(events[0].data, 'line1\nline2\nline3');
+  });
+
+  it('named event type', async (t) => {
+    const events = await collect(new EventSourceReader(source('event: update\ndata: payload\n\n')));
+    t.equal(events[0].type, 'update');
+    t.equal(events[0].data, 'payload');
+  });
+
+  it('event id field', async (t) => {
+    const events = await collect(new EventSourceReader(source('id: 42\ndata: hello\n\n')));
+    t.equal(events[0].id, '42');
+  });
+
+  it('lastEventId persists across events', async (t) => {
+    const str = 'id: 1\ndata: first\n\ndata: second\n\nid: 3\ndata: third\n\n';
+    const reader = new EventSourceReader(source(str));
+    const events = await collect(reader);
+    t.equal(events[0].id, '1');
+    t.equal(events[1].id, null);
+    t.equal(events[2].id, '3');
+    t.equal(reader.lastEventId, '3');
+  });
+
+  it('empty id field resets lastEventId to empty string', async (t) => {
+    const str = 'id: 42\ndata: first\n\nid:\ndata: second\n\n';
+    const reader = new EventSourceReader(source(str));
+    const events = await collect(reader);
+    t.equal(events[0].id, '42');
+    t.equal(events[1].id, '');
+    t.equal(reader.lastEventId, '');
+  });
+
+  it('id with null character is ignored', async (t) => {
+    const str = 'id: bad\0id\ndata: hello\n\n';
+    const reader = new EventSourceReader(source(str));
+    const events = await collect(reader);
+    t.equal(events[0].id, null, 'id with null char should be ignored');
+    t.equal(reader.lastEventId, '', 'lastEventId unchanged');
+  });
+
+  it('retry field parsed as integer', async (t) => {
+    const events = await collect(new EventSourceReader(source('retry: 5000\ndata: hello\n\n')));
+    t.equal(events[0].retry, 5000);
+  });
+
+  it('invalid retry (non-digits) is ignored', async (t) => {
+    const events = await collect(new EventSourceReader(source('retry: 1.5\ndata: hello\n\n')));
+    t.equal(events[0].retry, null, 'non-integer retry ignored');
+  });
+
+  it('invalid retry (with text) is ignored', async (t) => {
+    const events = await collect(new EventSourceReader(source('retry: 100ms\ndata: hello\n\n')));
+    t.equal(events[0].retry, null, 'retry with letters ignored');
+  });
+
+  it('comment lines are ignored', async (t) => {
+    const str = ': this is a comment\ndata: real data\n: another comment\n\n';
+    const events = await collect(new EventSourceReader(source(str)));
+    t.equal(events.length, 1);
+    t.equal(events[0].data, 'real data');
+  });
+
+  it('unknown fields are ignored', async (t) => {
+    const str = 'foo: bar\ndata: hello\nbaz: qux\n\n';
+    const events = await collect(new EventSourceReader(source(str)));
+    t.equal(events.length, 1);
+    t.equal(events[0].data, 'hello');
+  });
+
+  it('field name only (no colon) has empty value', async (t) => {
+    const events = await collect(new EventSourceReader(source('data\n\n')));
+    t.equal(events.length, 1);
+    t.equal(events[0].data, '');
+  });
+
+  it('events without data are not dispatched', async (t) => {
+    const str = 'event: update\nid: 99\n\ndata: real\n\n';
+    const events = await collect(new EventSourceReader(source(str)));
+    t.equal(events.length, 1, 'only one event — the one with data');
+    t.equal(events[0].data, 'real');
+  });
+
+  it('multiple events from one stream', async (t) => {
+    const str = 'data: one\n\ndata: two\n\ndata: three\n\n';
+    const events = await collect(new EventSourceReader(source(str)));
+    t.equal(events.length, 3);
+    t.equal(events[0].data, 'one');
+    t.equal(events[1].data, 'two');
+    t.equal(events[2].data, 'three');
+  });
+
+  it('LF line terminator', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: lf\n\n')));
+    t.equal(events[0].data, 'lf');
+  });
+
+  it('CRLF line terminator', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: crlf\r\n\r\n')));
+    t.equal(events[0].data, 'crlf');
+  });
+
+  it('bare CR line terminator', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: cr\r\r')));
+    t.equal(events[0].data, 'cr');
+  });
+
+  it('mixed line terminators', async (t) => {
+    const str = 'data: line1\r\ndata: line2\ndata: line3\r\r';
+    const events = await collect(new EventSourceReader(source(str)));
+    t.equal(events[0].data, 'line1\nline2\nline3');
+  });
+
+  it('stream ends without trailing blank line still dispatches', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: no-trailing-newline')));
+    t.equal(events.length, 1);
+    t.equal(events[0].data, 'no-trailing-newline');
+  });
+
+  it('leading space stripped from field value', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: hello\n\n')));
+    t.equal(events[0].data, 'hello');
+  });
+
+  it('no space after colon — value starts immediately', async (t) => {
+    const events = await collect(new EventSourceReader(source('data:hello\n\n')));
+    t.equal(events[0].data, 'hello');
+  });
+
+  it('data split across many small chunks', async (t) => {
+    const str = 'event: update\ndata: hello world\nid: 7\n\n';
+    const events = await collect(new EventSourceReader(chunkedSource(str, 3)));
+    t.equal(events.length, 1);
+    t.equal(events[0].type, 'update');
+    t.equal(events[0].data, 'hello world');
+    t.equal(events[0].id, '7');
+  });
+
+  it('CRLF split across chunk boundary', async (t) => {
+    const str = 'data: split-crlf\r\n\r\n';
+    const events = await collect(new EventSourceReader(chunkedSource(str, 1)));
+    t.equal(events.length, 1);
+    t.equal(events[0].data, 'split-crlf');
+  });
+
+  it('empty data line preserved in multi-line', async (t) => {
+    const events = await collect(new EventSourceReader(source('data: a\ndata:\ndata: b\n\n')));
+    t.equal(events[0].data, 'a\n\nb');
+  });
+});
+
+describe('EventSourceWriter', () => {
+  it('basic event with data only', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).event({ data: 'hello' });
+    t.equal(w.output(), 'data: hello\n\n');
+  });
+
+  it('event with all fields', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).event({ event: 'update', data: 'payload', id: '42', retry: 5000 });
+    const out = w.output();
+    t.ok(out.includes('event: update\n'), 'event field present');
+    t.ok(out.includes('data: payload\n'), 'data field present');
+    t.ok(out.includes('id: 42\n'), 'id field present');
+    t.ok(out.includes('retry: 5000\n'), 'retry field present');
+    t.ok(out.endsWith('\n\n'), 'blank line terminates event');
+  });
+
+  it('multi-line data split into separate lines', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).event({ data: 'line1\nline2\nline3' });
+    t.equal(w.output(), 'data: line1\ndata: line2\ndata: line3\n\n');
+  });
+
+  it('omits optional fields when not provided', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).event({ data: 'x' });
+    const out = w.output();
+    t.ok(!out.includes('event:'), 'no event field');
+    t.ok(!out.includes('id:'), 'no id field');
+    t.ok(!out.includes('retry:'), 'no retry field');
+  });
+
+  it('comment writes colon-prefixed line with blank line', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).comment('keep-alive');
+    t.equal(w.output(), ': keep-alive\n\n');
+  });
+
+  it('empty comment', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).comment();
+    t.equal(w.output(), ': \n\n');
+  });
+
+  it('multi-line comment', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).comment('line1\nline2');
+    t.equal(w.output(), ': line1\n: line2\n\n');
+  });
+
+  it('retry writes standalone retry field', async (t) => {
+    const w = mockWriter();
+    await new EventSourceWriter(w).retry(3000);
+    t.equal(w.output(), 'retry: 3000\n\n');
+  });
+
+  it('round-trip — write then parse', async (t) => {
+    const w = mockWriter();
+    const esw = new EventSourceWriter(w);
+    await esw.event({ event: 'ping', data: 'hello\nworld', id: '5', retry: 1000 });
+    await esw.event({ data: 'second' });
+
+    const events = await collect(new EventSourceReader(source(w.output())));
+    t.equal(events.length, 2);
+    t.equal(events[0].type, 'ping');
+    t.equal(events[0].data, 'hello\nworld');
+    t.equal(events[0].id, '5');
+    t.equal(events[0].retry, 1000);
+    t.equal(events[1].type, 'message');
+    t.equal(events[1].data, 'second');
+  });
+});
+
+describe('EventSource integration', () => {
+  it('readyState constants', (t) => {
+    t.equal(EventSource.CONNECTING, 0);
+    t.equal(EventSource.OPEN, 1);
+    t.equal(EventSource.CLOSED, 2);
+  });
+
+  it('receives message events via onmessage', async (t) => {
+    const lp = loop.create();
+    const received = [];
+
+    const server = serve(lp, { port: 19960 }, async (_req) =>
+      sseResponse(sseBody({ data: 'hello' }, { data: 'world' })),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19960/events');
+      es.onmessage = (e) => {
+        received.push(e.data);
+        if (received.length >= 2) { es.close(); resolve(); }
+      };
+    });
+
+    t.equal(received.length, 2);
+    t.equal(received[0], 'hello');
+    t.equal(received[1], 'world');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('onopen fires when connection established', async (t) => {
+    const lp = loop.create();
+    let opened = false;
+
+    const server = serve(lp, { port: 19961 }, async (_req) =>
+      sseResponse(sseBody({ data: 'trigger' })),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19961/events');
+      es.onopen = () => { opened = true; };
+      es.onmessage = () => { es.close(); resolve(); };
+    });
+
+    t.equal(opened, true, 'onopen fired before first message');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('readyState is OPEN while receiving events', async (t) => {
+    const lp = loop.create();
+    let stateWhenOpen = -1;
+
+    const server = serve(lp, { port: 19962 }, async (_req) =>
+      sseResponse(sseBody({ data: 'check' })),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19962/events');
+      es.onmessage = () => {
+        stateWhenOpen = es.readyState;
+        es.close();
+        resolve();
+      };
+    });
+
+    t.equal(stateWhenOpen, EventSource.OPEN, 'readyState is OPEN during event dispatch');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('readyState is CLOSED after close()', async (t) => {
+    const lp = loop.create();
+
+    const server = serve(lp, { port: 19963 }, async (_req) =>
+      sseResponse(sseBody({ data: 'x' })),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19963/events');
+      es.onmessage = () => {
+        es.close();
+        t.equal(es.readyState, EventSource.CLOSED, 'readyState is CLOSED immediately after close()');
+        resolve();
+      };
+    });
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('addEventListener for named event type', async (t) => {
+    const lp = loop.create();
+    const updateEvents = [];
+    let messageCount = 0;
+
+    const server = serve(lp, { port: 19964 }, async (_req) =>
+      sseResponse(sseBody(
+        { event: 'update', data: 'payload' },
+        { data: 'default-message' },
+      )),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19964/events');
+      es.addEventListener('update', (e) => { updateEvents.push(e.data); });
+      es.onmessage = () => { messageCount++; es.close(); resolve(); };
+    });
+
+    t.equal(updateEvents.length, 1, 'update listener fired once');
+    t.equal(updateEvents[0], 'payload');
+    t.equal(messageCount, 1, 'onmessage fired for default-type event');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('HTTP 204 closes without reconnecting', async (t) => {
+    const lp = loop.create();
+    let errorFired = false;
+
+    const server = serve(lp, { port: 19965 }, async (_req) =>
+      new Response(null, { status: 204 }),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19965/events');
+      es.onerror = () => { errorFired = true; };
+      loop.timeout(lp, 200).then(() => {
+        t.equal(es.readyState, EventSource.CLOSED, 'CLOSED after 204');
+        t.equal(errorFired, false, 'no error event on graceful 204 close');
+        resolve();
+      });
+    });
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('wrong content-type causes fatal error (no reconnect)', async (t) => {
+    const lp = loop.create();
+    let errorCount = 0;
+
+    const server = serve(lp, { port: 19966 }, async (_req) =>
+      new Response('not sse', { headers: { 'content-type': 'text/html' } }),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19966/events');
+      es.onerror = () => {
+        errorCount++;
+        loop.timeout(lp, 150).then(resolve);
+      };
+    });
+
+    t.equal(errorCount, 1, 'exactly one error event — no reconnect loop');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('Last-Event-ID sent on reconnect', async (t) => {
+    const lp = loop.create();
+    const seenIds = [];
+    let connectionCount = 0;
+
+    await new Promise((resolve) => {
+      const server = serve(lp, { port: 19967 }, async (req) => {
+        connectionCount++;
+        const lastId = req.headers.get('last-event-id');
+        seenIds.push(lastId);
+
+        if (connectionCount === 1) {
+          return sseResponse(sseBody({ retry: 50, id: '99', data: 'first' }));
+        }
+        resolve();
+        return new Response(null, { status: 204 });
+      });
+
+      new EventSource('http://127.0.0.1:19967/events');
+    });
+
+    await loop.timeout(lp, 50);
+
+    t.equal(connectionCount, 2, 'exactly 2 connections (one reconnect)');
+    t.equal(seenIds[0], null, 'no Last-Event-ID on first connection');
+    t.equal(seenIds[1], '99', 'Last-Event-ID: 99 sent on reconnect');
+
+    loop.destroy(lp);
+  });
+
+  it('retry field from server updates reconnect interval', async (t) => {
+    const lp = loop.create();
+    let received = null;
+
+    const server = serve(lp, { port: 19968 }, async (_req) =>
+      sseResponse(sseBody('retry: 100\n', { data: 'after-retry' })),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19968/events');
+      es.onmessage = (e) => { received = e.data; es.close(); resolve(); };
+    });
+
+    t.equal(received, 'after-retry', 'message received after retry field');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+
+  it('MessageEvent has correct properties', async (t) => {
+    const lp = loop.create();
+    let receivedEvent = null;
+
+    const server = serve(lp, { port: 19969 }, async (_req) =>
+      sseResponse(sseBody({ event: 'update', data: 'payload', id: '7' })),
+    );
+
+    await new Promise((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19969/events');
+      es.addEventListener('update', (e) => { receivedEvent = e; es.close(); resolve(); });
+    });
+
+    t.ok(receivedEvent !== null, 'event received');
+    t.equal(receivedEvent.type, 'update');
+    t.equal(receivedEvent.data, 'payload');
+    t.equal(receivedEvent.lastEventId, '7', 'lastEventId on MessageEvent');
+
+    await server.close();
+    loop.destroy(lp);
+  });
+});

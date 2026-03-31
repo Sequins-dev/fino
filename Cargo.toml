@@ -1,0 +1,28 @@
+[package]
+name = "boats"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+boa_engine = "0.21.1"
+boa_parser = "0.21.1"
+boa_runtime = "0.21.1"
+boa_gc = "0.21.1"
+libffi = "5.1.0"
+libloading = "0.8"
+futures-concurrency = "7.7.1"
+futures-lite = "2.6.1"
+oxc_allocator = "0.123"
+oxc_codegen = "0.123"
+oxc_parser = "0.123"
+oxc_semantic = "0.123"
+oxc_span = "0.123"
+oxc_transformer = "0.123"
+
+[build-dependencies]
+oxc_allocator = "0.123"
+oxc_codegen = "0.123"
+oxc_parser = "0.123"
+oxc_semantic = "0.123"
+oxc_span = "0.123"
+oxc_transformer = "0.123"

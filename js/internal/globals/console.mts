@@ -1,0 +1,330 @@
+/**
+ * boats:console — standard Console API implemented in JS via boats:libc.
+ *
+ * Provides `console.log`, `warn`, `error`, `info`, `debug`, `assert`,
+ * `dir`, `table`, `group`, `groupCollapsed`, `groupEnd`, `time`, `timeEnd`,
+ * and `timeLog`. Output goes to stdout (fd 1) or stderr (fd 2) through
+ * `writeLine()` from `boats:libc`, which calls `write(2)` directly.
+ *
+ * **Why JS instead of Rust?**
+ * Boa ships a built-in `boa_runtime::Console` but it uses Rust-side println!
+ * macros that bypass the fd model we need (e.g. stderr vs stdout, and the
+ * raw write(2) approach used everywhere else in boats). Replacing it with
+ * this JS module keeps all output on a single path and means contributors
+ * can modify console formatting without touching Rust.
+ *
+ *
+ * ## Value formatting: inspect()
+ *
+ * `inspect(value, depth)` is a simplified version of Node.js's `util.inspect`.
+ * It recurses into arrays and plain objects up to `depth` levels deep,
+ * then collapses deeper structures to `[Array]` or `[Object]`. At the top
+ * level (depth=2, the default for `console.log`), strings are printed bare
+ * (without quotes). Nested strings are quoted with JSON.stringify so the
+ * difference between a string and a number is visible.
+ *
+ * Key choices:
+ * - `-0` is rendered as `"-0"` (not `"0"`), matching Node.js.
+ * - BigInt values are suffixed with `n` (e.g. `42n`).
+ * - Functions show as `[Function: name]` (or `[Function: (anonymous)]`).
+ * - Single-line layout is used when the result fits in 72 characters;
+ *   otherwise a multi-line indented layout is used.
+ *
+ *
+ * ## printf-style substitution: format()
+ *
+ * `format(args)` handles `%s`, `%d`, `%i`, `%f`, `%o`, `%O`, and `%%` in
+ * the first argument when additional arguments are present. Remaining args
+ * after all substitutions are exhausted are appended with `inspect()`.
+ *
+ *
+ * ## group / timer state
+ *
+ * `_groupDepth` is a module-level counter incremented by `group()` and
+ * decremented by `groupEnd()`. All output is prefixed with `INDENT` repeated
+ * `_groupDepth` times. `groupCollapsed()` is identical to `group()` — the
+ * "collapsed" hint is only meaningful for browser DevTools GUIs that boats
+ * doesn't have.
+ *
+ * Timer state is stored in a module-level `Map<label, startMs>`. `time()`
+ * sets the start, `timeEnd()` removes it and prints the elapsed time.
+ *
+ *
+ * ## Contributing
+ *
+ * - `console.table()` currently falls back to JSON.stringify. A proper
+ *   column-aligned table renderer would be a good first contribution.
+ * - `console.count()` / `console.countReset()` are stubs. Add a counter
+ *   Map if you need them.
+ * - Do not switch output to process.stdout streams — the direct `writeLine`
+ *   call is intentional (no buffering, works before the event loop starts).
+ */
+
+import { writeLine } from 'internal:runtime/libc';
+
+// ---------------------------------------------------------------------------
+// Value formatting
+// ---------------------------------------------------------------------------
+
+const INDENT = '  ';
+
+/**
+ * Convert a single value to a human-readable string, similar to Node's
+ * util.inspect (simplified).
+ *
+ * @param {unknown} value
+ * @param {number} depth  - remaining nesting depth before collapsing to [Object]
+ * @returns {string}
+ */
+function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new WeakSet()): string {
+  switch (typeof value) {
+    case 'string':
+      // When inspect is called as the top-level formatter for console.log,
+      // strings are printed bare (no quotes). Nested strings get quotes.
+      return depth === 2 ? value : JSON.stringify(value);
+
+    case 'number':
+      return Object.is(value, -0) ? '-0' : String(value);
+
+    case 'bigint':
+      return `${value}n`;
+
+    case 'boolean':
+    case 'undefined':
+      return String(value);
+
+    case 'symbol':
+      return value.toString();
+
+    case 'function':
+      return `[Function: ${value.name || '(anonymous)'}]`;
+
+    case 'object': {
+      if (value === null) return 'null';
+      if (depth <= 0) return Array.isArray(value) ? '[Array]' : '[Object]';
+
+      if (seen.has(value)) return '[Circular *]';
+
+      if (value instanceof Error) {
+        return value.stack ?? value.toString();
+      }
+
+      if (value instanceof Date) return value.toISOString();
+      if (value instanceof RegExp) return String(value);
+
+      seen.add(value);
+      try {
+        if (value instanceof Map) {
+          const entries = [...value.entries()].map(
+            ([k, v]) => `${inspect(k, depth - 1, seen)} => ${inspect(v, depth - 1, seen)}`
+          );
+          return `Map(${value.size}) { ${entries.join(', ')} }`;
+        }
+        if (value instanceof Set) {
+          const items = [...value].map(v => inspect(v, depth - 1, seen));
+          return `Set(${value.size}) { ${items.join(', ')} }`;
+        }
+        if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+          const ta = value as unknown as { constructor: { name: string }; length: number };
+          const items = Array.from(value as Uint8Array).slice(0, 100).map(String);
+          const tail = ta.length > 100 ? ', ...' : '';
+          return `${ta.constructor.name}(${ta.length}) [ ${items.join(', ')}${tail} ]`;
+        }
+        if (Array.isArray(value)) {
+          if (value.length === 0) return '[]';
+          const items = value.map(v => inspect(v, depth - 1, seen));
+          const oneLine = `[ ${items.join(', ')} ]`;
+          if (oneLine.length <= 72) return oneLine;
+          return `[\n${items.map(s => INDENT + s).join(',\n')}\n]`;
+        }
+
+        // Plain object
+        const keys = Object.keys(value);
+        if (keys.length === 0) return '{}';
+        const pairs = keys.map(k => `${k}: ${inspect(value[k], depth - 1, seen)}`);
+        const oneLine = `{ ${pairs.join(', ')} }`;
+        if (oneLine.length <= 72) return oneLine;
+        return `{\n${pairs.map(s => INDENT + s).join(',\n')}\n}`;
+      } finally {
+        seen.delete(value);
+      }
+    }
+
+    default:
+      return String(value);
+  }
+}
+
+/**
+ * Format a list of arguments the way console.log does:
+ * - If the first arg is a string containing %s/%d/%i/%f/%o/%O, substitute.
+ * - Otherwise join with spaces.
+ *
+ * @param {unknown[]} args
+ * @returns {string}
+ */
+function format(args: unknown[]): string {
+  if (args.length === 0) return '';
+
+  const first = args[0];
+  if (typeof first === 'string' && args.length > 1) {
+    // Basic printf-style substitution
+    let idx = 1;
+    const result = first.replace(/%[sdifnoOc%]/g, spec => {
+      if (spec === '%%') return '%';
+      if (idx >= args.length) return spec;
+      const arg = args[idx++];
+      switch (spec) {
+        case '%s': return String(arg);
+        case '%d':
+        case '%i': return String(Math.trunc(Number(arg)));
+        case '%f': return String(Number(arg));
+        case '%o':
+        case '%O': return inspect(arg, 2);
+        case '%c': return ''; // CSS styling not applicable; consume arg and produce no output
+        default:   return spec;
+      }
+    });
+    // Append any remaining args
+    const tail = args.slice(idx).map(a => inspect(a, 2));
+    return tail.length ? `${result} ${tail.join(' ')}` : result;
+  }
+
+  return args.map(a => inspect(a, 2)).join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Group / timer state
+// ---------------------------------------------------------------------------
+
+let _groupDepth = 0;
+const _timers = new Map<string, number>();
+const _counts = new Map<string, number>();
+
+// Use a monotonic clock when available (performance.now()), fall back to Date.now().
+function _now(): number {
+  return typeof (globalThis as any).performance?.now === 'function'
+    ? (globalThis as any).performance.now()
+    : Date.now();
+}
+
+function prefix(): string {
+  return INDENT.repeat(_groupDepth);
+}
+
+// ---------------------------------------------------------------------------
+// Core output helpers
+// ---------------------------------------------------------------------------
+
+function out(fd: number, label: string, args: unknown[]): void {
+  const text = prefix() + (label ? `${label} ` : '') + format(args);
+  writeLine(fd, text);
+}
+
+// ---------------------------------------------------------------------------
+// Exported console object
+// ---------------------------------------------------------------------------
+
+const console = {
+  [Symbol.toStringTag]: 'console',
+  log(...args)   { out(1, '',        args); },
+  info(...args)  { out(1, '',        args); },
+  debug(...args) { out(1, '',        args); },
+  warn(...args)  { out(2, '[warn]',  args); },
+  error(...args) { out(2, '[error]', args); },
+
+  assert(condition, ...args) {
+    if (!condition) {
+      const msg = args.length ? format(args) : 'Assertion failed';
+      out(2, '[assert]', [msg]);
+    }
+  },
+
+  dir(obj, opts?: { depth?: number; colors?: boolean }) {
+    const depth = (opts != null && typeof opts.depth === 'number') ? opts.depth : 4;
+    out(1, '', [inspect(obj, depth)]);
+  },
+
+  table(data) {
+    // Minimal table: JSON for now, full column layout can come later.
+    try {
+      out(1, '', [JSON.stringify(data, null, 2)]);
+    } catch {
+      out(1, '', [inspect(data, 2)]);
+    }
+  },
+
+  group(...args) {
+    if (args.length) out(1, '', args);
+    _groupDepth++;
+  },
+
+  groupCollapsed(...args) {
+    // Same as group — collapse is a hint for GUIs we don't have.
+    console.group(...args);
+  },
+
+  groupEnd() {
+    if (_groupDepth > 0) _groupDepth--;
+  },
+
+  time(label = 'default') {
+    _timers.set(label, _now());
+  },
+
+  timeEnd(label = 'default') {
+    const start = _timers.get(label);
+    if (start === undefined) {
+      out(2, '[warn]', [`Timer '${label}' does not exist`]);
+      return;
+    }
+    _timers.delete(label);
+    out(1, '', [`${label}: ${_now() - start}ms`]);
+  },
+
+  timeLog(label = 'default', ...args) {
+    const start = _timers.get(label);
+    if (start === undefined) {
+      out(2, '[warn]', [`Timer '${label}' does not exist`]);
+      return;
+    }
+    out(1, '', [`${label}: ${_now() - start}ms`, ...args]);
+  },
+
+  count(label = 'default') {
+    const n = (_counts.get(label) ?? 0) + 1;
+    _counts.set(label, n);
+    out(1, '', [`${label}: ${n}`]);
+  },
+
+  countReset(label = 'default') {
+    if (!_counts.has(label)) {
+      out(2, '[warn]', [`Count for '${label}' does not exist`]);
+      return;
+    }
+    _counts.delete(label);
+  },
+
+  clear() {
+    // No-op in a non-interactive terminal context.
+  },
+
+  trace(...args) {
+    const err = new Error();
+    const stack = err.stack?.split('\n').slice(1).join('\n') ?? '';
+    const msg = (args.length ? format(args) + '\n' : '') + 'Trace' + (stack ? ':\n' + stack : '');
+    writeLine(1, prefix() + msg);
+  },
+
+  dirxml(...args) {
+    // No DOM — delegate to log.
+    out(1, '', args);
+  },
+
+  timeStamp(_label?: string) {
+    // Performance marker — no-op in non-DevTools environment.
+  },
+};
+
+export default console;
+export { console };

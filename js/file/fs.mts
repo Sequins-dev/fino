@@ -1,0 +1,308 @@
+/**
+ * boats:file — POSIX filesystem with async I/O and a virtualizable handle model.
+ *
+ * This module provides file and directory access via `libc` FFI. It exposes a
+ * `DiskFileSystem` class that wraps every relevant POSIX syscall: `open(2)`,
+ * `read(2)`, `write(2)`, `stat(2)`, `readdir(3)`, `rename(2)`, `symlink(2)`,
+ * etc. The I/O is wired to the event loop so that reads and writes yield
+ * control to other async tasks while waiting for the kernel.
+ *
+ *
+ * ## Design: explicit filesystem instance
+ *
+ * Unlike Node.js's implicit global `fs` module, here callers construct a
+ * `DiskFileSystem` explicitly and pass their loop handle:
+ *
+ *   const fs = new DiskFileSystem(lp);
+ *
+ * This is intentional. It makes the event-loop dependency visible, enables
+ * future alternative backends (in-memory, zip archive, overlay), and avoids
+ * shared global state that makes testing harder.
+ *
+ *
+ * ## Object hierarchy
+ *
+ *   DiskFileSystem          — the factory; owns no fds itself
+ *     .open()   → File      — an open fd; owns the fd lifecycle
+ *       .reader()  → async iterable of Uint8Array chunks
+ *       .writer()  → Writer (from boats:stream)
+ *       .bytes()   → Promise<Uint8Array>  (reads entire file)
+ *       .text()    → Promise<string>
+ *     .dir()    → DirEntry  — directory handle (uses opendir/readdir/closedir)
+ *       .entries() → Promise<Entry[]>
+ *       [Symbol.asyncIterator]  — iterates entries
+ *     .entry()  → Entry / FileEntry / DirEntry
+ *
+ * `File` owns its fd and closes it on `file.close()`. The Reader/Writer
+ * produced by `file.reader()` / `file.writer()` borrow the fd with a no-op
+ * `onClose` callback — do not close the Reader/Writer to release the fd; call
+ * `file.close()` instead.
+ */
+
+import {
+  lib, Pointer, isDarwin, loopModule, asyncOps,
+  cstr, throwErrno, readCStr, _toStr, _toPath, joinPath,
+  O_CREAT, O_RDONLY, O_WRONLY, O_RDWR, O_TRUNC, O_APPEND, O_EXCL,
+  S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
+  SEEK_SET, SEEK_CUR, SEEK_END,
+  DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
+  modeToFlags, encodeUtf8, decodeUtf8,
+} from 'internal:file/bindings';
+import { Stat } from 'internal:file/stat';
+import { File } from 'internal:file/handle';
+import { Entry, FileEntry, DirEntry } from 'internal:file/entry';
+import { Glob, glob as globWalk, type GlobOptions } from 'internal:file/glob';
+import type { LoopHandle } from 'boats:runtime/loop';
+import type { Path } from 'boats:file/path';
+
+// Re-export the public API surface
+export {
+  Stat, File, Entry, FileEntry, DirEntry,
+  O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_EXCL,
+  S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
+  SEEK_SET, SEEK_CUR, SEEK_END,
+  DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
+  Glob,
+};
+
+/**
+ * A POSIX filesystem backend backed by libc syscalls via FFI.
+ *
+ * @example
+ * const fs = new DiskFileSystem(lp);
+ * const text = await fs.readFile('/etc/hosts');
+ */
+export class DiskFileSystem {
+  #lp: LoopHandle;
+
+  constructor(lp: LoopHandle) {
+    this.#lp = lp;
+  }
+
+  /**
+   * Stat a path, following symlinks.
+   * @param {string|Path} path
+   * @returns {Promise<Stat>}
+   */
+  async stat(path: Path | string): Promise<Stat> {
+    const s = _toStr(path);
+    const buf = new ArrayBuffer(256);
+    const rc = lib.symbols.stat(cstr(s), buf);
+    if (rc !== 0) throwErrno('stat', s);
+    return Stat.parse(buf);
+  }
+
+  /**
+   * Stat a path without following symlinks.
+   * @param {string|Path} path
+   * @returns {Promise<Stat>}
+   */
+  async lstat(path: Path | string): Promise<Stat> {
+    const s = _toStr(path);
+    const buf = new ArrayBuffer(256);
+    const rc = lib.symbols.lstat(cstr(s), buf);
+    if (rc !== 0) throwErrno('lstat', s);
+    return Stat.parse(buf);
+  }
+
+  /**
+   * Open a file and return a File handle.
+   * @param {string|Path} path
+   * @param {string} [mode='r']
+   * @returns {Promise<File>}
+   */
+  async open(path: Path | string, mode: string = 'r'): Promise<File> {
+    const p = _toPath(path);
+    const s = p.toString();
+    const flags = modeToFlags(mode);
+    let fd;
+    if (asyncOps) {
+      // Linux: use io_uring IORING_OP_OPENAT for async open.
+      const pathBuf = cstr(s);
+      const lp = this.#lp;
+      const result = await loopModule.submit(lp, (raw, id) => {
+        asyncOps.asyncOpen(raw, pathBuf, flags, 0o666, id);
+      });
+      fd = result.res;
+      if (fd < 0) throwErrno('open', s);
+    } else {
+      // macOS: synchronous open(2).
+      // Note: libffi on macOS ARM64 may not correctly pass the mode argument
+      // to the variadic open(2) syscall. Use fchmod to ensure newly-created
+      // files get standard permissions (rw-r--r--) regardless.
+      fd = lib.symbols.open(cstr(s), flags, 0o666);
+      if (fd < 0) throwErrno('open', s);
+    }
+    if (flags & O_CREAT) lib.symbols.fchmod(fd, 0o644);
+    return new File(fd, this.#lp, this, p, mode);
+  }
+
+  /**
+   * Open a directory and return a DirEntry handle.
+   * Throws if the path does not refer to a directory.
+   * @param {string|Path} path
+   * @returns {Promise<DirEntry>}
+   */
+  async dir(path: Path | string): Promise<DirEntry> {
+    const p = _toPath(path);
+    const s = p.toString();
+    const st = await this.lstat(s);
+    if (!st.isDirectory()) throw new Error(`'${s}' is not a directory`);
+    return new DirEntry(p.basename(), p, this, DT_DIR);
+  }
+
+  /**
+   * Construct an Entry (FileEntry / DirEntry / Entry) for any path using lstat.
+   * @param {string|Path} path
+   * @returns {Promise<Entry>}
+   */
+  async entry(path: Path | string): Promise<Entry> {
+    const p  = _toPath(path);
+    const st = await this.lstat(p.toString());
+    if (st.isDirectory()) return new DirEntry(p.basename(),  p, this, DT_DIR);
+    if (st.isFile())      return new FileEntry(p.basename(), p, this, DT_REG);
+    if (st.isSymlink())   return new Entry(p.basename(),     p, this, DT_LNK);
+    return new Entry(p.basename(), p, this, DT_UNKNOWN);
+  }
+
+  /**
+   * Create a directory.
+   * @param {string|Path} path
+   * @param {number} [mode=0o755]
+   */
+  async mkdir(path: Path | string, mode: number = 0o755): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.mkdir(cstr(s), mode);
+    if (rc !== 0) throwErrno('mkdir', s);
+  }
+
+  /**
+   * Remove an empty directory.
+   * @param {string|Path} path
+   */
+  async rmdir(path: Path | string): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.rmdir(cstr(s));
+    if (rc !== 0) throwErrno('rmdir', s);
+  }
+
+  /**
+   * Delete a file.
+   * @param {string|Path} path
+   */
+  async unlink(path: Path | string): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.unlink(cstr(s));
+    if (rc !== 0) throwErrno('unlink', s);
+  }
+
+  /**
+   * Rename or move a file or directory.
+   * @param {string|Path} oldPath
+   * @param {string|Path} newPath
+   */
+  async rename(oldPath: Path | string, newPath: Path | string): Promise<void> {
+    const oldS = _toStr(oldPath);
+    const newS = _toStr(newPath);
+    const rc = lib.symbols.rename(cstr(oldS), cstr(newS));
+    if (rc !== 0) throwErrno('rename', oldS);
+  }
+
+  /**
+   * Read the target of a symbolic link.
+   * @param {string|Path} path
+   * @returns {Promise<string>}
+   */
+  async readlink(path: Path | string): Promise<string> {
+    const s = _toStr(path);
+    const buf = new ArrayBuffer(4096);
+    const n = Number(lib.symbols.readlink(cstr(s), buf, 4096));
+    if (n < 0) throwErrno('readlink', s);
+    return decodeUtf8(new Uint8Array(buf, 0, n));
+  }
+
+  /**
+   * Create a symbolic link.
+   * @param {string|Path} target   Link target (what the symlink points to).
+   * @param {string|Path} linkpath Path of the symlink to create.
+   */
+  async symlink(target: Path | string, linkpath: Path | string): Promise<void> {
+    const tS = _toStr(target);
+    const lS = _toStr(linkpath);
+    const rc = lib.symbols.symlink(cstr(tS), cstr(lS));
+    if (rc !== 0) throwErrno('symlink', lS);
+  }
+
+  /**
+   * Resolve the canonical absolute path, expanding symlinks.
+   * @param {string|Path} path
+   * @returns {Promise<Path>}
+   */
+  async realpath(path: Path | string): Promise<string> {
+    const s = _toStr(path);
+    const buf = new ArrayBuffer(4096);
+    const ptr = lib.symbols.realpath(cstr(s), buf);
+    if (ptr === null) throwErrno('realpath', s);
+    // Read the result from the buffer (realpath fills buf in place).
+    const bytes = new Uint8Array(buf);
+    let len = 0;
+    while (len < bytes.length && bytes[len] !== 0) len++;
+    return decodeUtf8(bytes.subarray(0, len));
+  }
+
+  /**
+   * Read an entire file and return its UTF-8 contents as a string.
+   * @param {string|Path} path
+   * @returns {Promise<string>}
+   */
+  async readFile(path: Path | string): Promise<string> {
+    const file = await this.open(path, 'r');
+    try {
+      return await file.text();
+    } finally {
+      await file.close();
+    }
+  }
+
+  /**
+   * Write data to a file, creating or truncating it.
+   * @param {string|Path} path
+   * @param {string|Uint8Array|ArrayBuffer} data
+   */
+  async writeFile(path: Path | string, data: string | Uint8Array | ArrayBuffer): Promise<void> {
+    const file = await this.open(path, 'w');
+    try {
+      const buf = typeof data === 'string'      ? encodeUtf8(data) :
+                  data instanceof Uint8Array     ? data :
+                  new Uint8Array(data);
+      const w = file.writer();
+      await w.write(buf);
+      w.close();
+    } finally {
+      await file.close();
+    }
+  }
+
+  /**
+   * Walk the filesystem matching entries against a glob pattern.
+   * Yields `Entry` / `FileEntry` / `DirEntry` objects for each match.
+   *
+   * @param {string} pattern  Glob pattern, e.g. `**\/*.mts`, `src/lib/*.ts`.
+   * @param {GlobOptions} [options]
+   * @returns {AsyncGenerator<Entry>}
+   *
+   * @example
+   * for await (const entry of fs.glob('**\/*.mts')) {
+   *   console.log(entry.path.toString());
+   * }
+   */
+  glob(pattern: string, options?: GlobOptions): AsyncGenerator<Entry> {
+    // Provide a listDir function that uses DirEntry.entries() — injected here to
+    // avoid creating an async dependency path in glob.mts (Boa 0.21.1 bug).
+    const listDir = async (path: string) => {
+      const dirEntry = new DirEntry('', path, this, DT_DIR);
+      return dirEntry.entries();
+    };
+    return globWalk(listDir, pattern, options);
+  }
+}
