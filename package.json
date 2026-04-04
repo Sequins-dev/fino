@@ -1,0 +1,16 @@
+{
+  "name": "fino",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Lightweight JavaScript runtime built directly on FFI",
+  "license": "MIT",
+  "author": "",
+  "repository": "",
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "fino test tests/**/*.test.mts"
+  },
+  "dependencies": {
+    "typescript": "6.0.2"
+  }
+}

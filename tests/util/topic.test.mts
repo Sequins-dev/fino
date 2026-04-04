@@ -1,8 +1,8 @@
 /**
- * Tests for boats:util/topic — Topic pub/sub and async iterator.
+ * Tests for fino:util/topic — Topic pub/sub and async iterator.
  */
-import { describe, it } from 'boats:test/test';
-import { topic } from 'boats:util/topic';
+import { describe, it } from 'fino:test/test';
+import { subscribeMatching, topic } from 'fino:util/topic';
 
 describe('Topic async iterator', () => {
   it('yields published messages in order', async (t) => {
@@ -114,5 +114,29 @@ describe('Topic async iterator', () => {
     await done;
     t.deepEqual(collected, [1, 2], 'only first two messages collected');
     t.ok(!ch.hasSubscribers, 'subscription disposed after break');
+  });
+
+  it('subscribeMatching attaches to existing and future topics by name', async (t) => {
+    const seen: string[] = [];
+    const existing = topic('test:match:existing:' + Math.random());
+    const futureName = 'test:match:future:' + Math.random();
+
+    const handle = subscribeMatching(
+      (name) => name.startsWith('test:match:'),
+      (message, topicName) => {
+        seen.push(`${topicName}=${message}`);
+      },
+    );
+
+    existing.publish('alpha');
+    topic(futureName).publish('beta');
+    topic('test:other:' + Math.random()).publish('ignored');
+
+    handle.dispose();
+    existing.publish('after');
+
+    t.equal(seen.length, 2, 'matching subscriber sees existing and future topics');
+    t.ok(seen[0]!.includes('alpha'), 'existing topic delivered');
+    t.ok(seen[1]!.includes('beta'), 'future topic delivered');
   });
 });

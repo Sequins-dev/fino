@@ -1,17 +1,21 @@
 /**
- * Tests for boats:crypto — Web Crypto API backed by OpenSSL FFI.
+ * Tests for fino:crypto — Web Crypto API backed by OpenSSL FFI.
  *
  * All tests skip gracefully when OpenSSL is not available, so the test suite
  * passes on systems without OpenSSL installed.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 
-const { crypto, cryptoAvailable } = globalThis;
+type AesKeyAlgorithm = KeyAlgorithm & { length: number };
+type SymbolRecord = Record<symbol, unknown>;
+
+const { crypto } = globalThis;
+const cryptoAvailable = (globalThis as typeof globalThis & { cryptoAvailable?: boolean }).cryptoAvailable;
 const skip = !cryptoAvailable && 'OpenSSL not available';
 
 // Helper: convert Uint8Array / ArrayBuffer to lowercase hex string
-function toHex(data) {
+function toHex(data: ArrayBuffer | ArrayBufferView) {
   const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer ?? data);
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -171,7 +175,7 @@ describe('AES-GCM', { skip }, () => {
 
     const ct    = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, pt);
     const ctArr = new Uint8Array(ct);
-    ctArr[0] ^= 0xff;
+    if (ctArr[0] !== undefined) ctArr[0] ^= 0xff;
 
     let threw = false;
     try { await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ctArr.buffer); } catch (_) { threw = true; }
@@ -206,7 +210,7 @@ describe('Key management', { skip }, () => {
     t.ok(key.extractable, 'key is extractable');
     t.equal(key.type, 'secret', 'type is secret');
     t.equal(key.algorithm.name, 'AES-GCM', 'algorithm name');
-    t.equal(key.algorithm.length, 256, 'key length');
+    t.equal((key.algorithm as AesKeyAlgorithm).length, 256, 'key length');
 
     const exported = await crypto.subtle.exportKey('raw', key);
     t.ok(exported instanceof ArrayBuffer, 'exported is ArrayBuffer');
@@ -223,10 +227,10 @@ describe('Key management', { skip }, () => {
 
   it('generateKey AES-GCM produces correct length', async (t) => {
     const key256 = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
-    t.equal(key256.algorithm.length, 256, '256-bit key');
+    t.equal((key256.algorithm as AesKeyAlgorithm).length, 256, '256-bit key');
 
     const key128 = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt', 'decrypt']);
-    t.equal(key128.algorithm.length, 128, '128-bit key');
+    t.equal((key128.algorithm as AesKeyAlgorithm).length, 128, '128-bit key');
   });
 
   it('generateKey HMAC produces usable key', async (t) => {
@@ -288,7 +292,7 @@ describe('PBKDF2', { skip }, () => {
       baseKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'],
     );
     t.equal(aesKey.algorithm.name, 'AES-GCM', 'derived key is AES-GCM');
-    t.equal(aesKey.algorithm.length, 256, 'key length is 256');
+    t.equal((aesKey.algorithm as AesKeyAlgorithm).length, 256, 'key length is 256');
     const iv = new Uint8Array(12);
     crypto.getRandomValues(iv);
     const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, enc.encode('hello pbkdf2'));
@@ -424,7 +428,7 @@ describe('AES-GCM — additional', { skip }, () => {
 describe('AES-CBC — additional', { skip }, () => {
   it('128-bit generate + encrypt + decrypt', async (t) => {
     const key = await crypto.subtle.generateKey({ name: 'AES-CBC', length: 128 }, true, ['encrypt', 'decrypt']);
-    t.equal(key.algorithm.length, 128, '128-bit key');
+    t.equal((key.algorithm as AesKeyAlgorithm).length, 128, '128-bit key');
     const iv = new Uint8Array(16);
     crypto.getRandomValues(iv);
     const pt = new TextEncoder().encode('AES-CBC 128-bit test');
@@ -574,7 +578,7 @@ describe('Key management — additional', { skip }, () => {
 
   it('CryptoKey [Symbol.toStringTag] is "CryptoKey"', async (t) => {
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt']);
-    t.equal(key[Symbol.toStringTag], 'CryptoKey');
+    t.equal((key as unknown as SymbolRecord)[Symbol.toStringTag], 'CryptoKey');
   });
 
   it('CryptoKey.usages returns a frozen array', async (t) => {
@@ -594,11 +598,11 @@ describe('Key management — additional', { skip }, () => {
 
 describe('crypto and subtle [Symbol.toStringTag]', { skip }, () => {
   it('crypto[Symbol.toStringTag] is "Crypto"', (t) => {
-    t.equal(crypto[Symbol.toStringTag], 'Crypto', 'crypto toStringTag');
+    t.equal((crypto as unknown as SymbolRecord)[Symbol.toStringTag], 'Crypto', 'crypto toStringTag');
   });
 
   it('crypto.subtle[Symbol.toStringTag] is "SubtleCrypto"', (t) => {
-    t.equal(crypto.subtle[Symbol.toStringTag], 'SubtleCrypto', 'subtle toStringTag');
+    t.equal((crypto.subtle as unknown as SymbolRecord)[Symbol.toStringTag], 'SubtleCrypto', 'subtle toStringTag');
   });
 });
 

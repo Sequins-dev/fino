@@ -1,13 +1,14 @@
 /**
- * Tests for boats:dns — Resolver, lookup, wire protocol helpers.
+ * Tests for fino:dns — Resolver, lookup, wire protocol helpers.
  */
 
-import { describe, it, before, after } from 'boats:test/test';
+import { describe, it, before, after } from 'fino:test/test';
 import {
   Resolver, lookup, RECORD_TYPES,
   _encodeName, _buildQuery, _decodeName, _parseResponse, _reverseIP,
-} from 'boats:net/dns';
-import * as loop from 'boats:runtime/loop';
+} from 'fino:net/dns';
+
+type DnsErrorLike = { message?: string; code?: string };
 
 describe('Wire protocol', () => {
   it('_encodeName — multi-label', (t) => {
@@ -95,8 +96,8 @@ describe('Wire protocol', () => {
     t.equal(parsed.id, 0xABCD, 'ID matches');
     t.equal(parsed.rcode, 0, 'RCODE = 0');
     t.equal(parsed.answers.length, 1, 'one answer');
-    t.equal(parsed.answers[0].data, '93.184.216.34', 'A record data');
-    t.equal(parsed.answers[0].ttl,  300, 'TTL');
+    t.equal(parsed.answers[0]!.data, '93.184.216.34', 'A record data');
+    t.equal(parsed.answers[0]!.ttl,  300, 'TTL');
   });
 
   it('_reverseIP — IPv4', (t) => {
@@ -112,37 +113,34 @@ describe('Wire protocol', () => {
 });
 
 describe('Integration', () => {
-  let lp;
-  before(() => { lp = loop.create(); });
-  after(() => { loop.destroy(lp); });
-
   it('resolver.resolve4 — example.com', async (t) => {
-    const addrs = await new Resolver(lp).resolve4('example.com');
+    const addrs = await new Resolver().resolve4('example.com');
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one A record');
-    t.ok(addrs.every(a => /^\d+\.\d+\.\d+\.\d+$/.test(a)), 'all are IPv4 strings');
+    t.ok(addrs.every(a => typeof a === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(a)), 'all are IPv4 strings');
   });
 
   it('resolver.resolve6 — example.com', async (t) => {
-    const addrs = await new Resolver(lp).resolve6('example.com');
+    const addrs = await new Resolver().resolve6('example.com');
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one AAAA record');
-    t.ok(addrs.every(a => a.includes(':')), 'all contain colons (IPv6)');
+    t.ok(addrs.every(a => typeof a === 'string' && a.includes(':')), 'all contain colons (IPv6)');
   });
 
   it('resolver.resolveMx — example.com', async (t) => {
-    const records = await new Resolver(lp).resolveMx('example.com');
+    const records = await new Resolver().resolveMx('example.com');
+    const first = records[0] as { exchange?: string; priority?: number } | undefined;
     t.ok(Array.isArray(records) && records.length > 0, 'got MX records');
-    t.ok(typeof records[0].exchange === 'string', 'has exchange field');
-    t.ok(typeof records[0].priority === 'number', 'has priority field');
+    t.ok(typeof first?.exchange === 'string', 'has exchange field');
+    t.ok(typeof first?.priority === 'number', 'has priority field');
   });
 
   it('resolver.resolveNs — example.com', async (t) => {
-    const ns = await new Resolver(lp).resolveNs('example.com');
+    const ns = await new Resolver().resolveNs('example.com');
     t.ok(Array.isArray(ns) && ns.length > 0, 'got NS records');
     t.ok(ns.every(n => typeof n === 'string' && n.includes('.')), 'all are domain strings');
   });
 
   it('resolver.resolveTxt — example.com', async (t) => {
-    const txt = await new Resolver(lp).resolveTxt('example.com');
+    const txt = await new Resolver().resolveTxt('example.com');
     t.ok(Array.isArray(txt), 'TXT result is an array');
     for (const entry of txt) {
       t.ok(Array.isArray(entry), 'each TXT entry is an array of strings');
@@ -151,14 +149,17 @@ describe('Integration', () => {
 
   it('resolver — NXDOMAIN throws', async (t) => {
     await t.rejects(
-      () => new Resolver(lp).resolve4('this-domain-definitely-does-not-exist-xyzzy123456.com'),
-      (err) => /NXDOMAIN|not found|ENOTFOUND/i.test(err.message + ' ' + (err.code ?? '')),
+      () => new Resolver().resolve4('this-domain-definitely-does-not-exist-xyzzy123456.com'),
+      (err) => {
+        const e = err as DnsErrorLike;
+        return /NXDOMAIN|not found|ENOTFOUND/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
+      },
       'NXDOMAIN throws with expected message/code',
     );
   });
 
   it('resolver.setServers — overrides servers and resolves', async (t) => {
-    const resolver = new Resolver(lp);
+    const resolver = new Resolver();
     resolver.setServers(['1.1.1.1']);
     t.deepEqual(resolver.getServers(), ['1.1.1.1'], 'getServers returns overridden servers');
     const addrs = await resolver.resolve4('example.com');
@@ -166,34 +167,37 @@ describe('Integration', () => {
   });
 
   it('resolver.reverse — 8.8.8.8', async (t) => {
-    const resolver = new Resolver(lp);
+    const resolver = new Resolver();
     resolver.setServers(['8.8.8.8']);
     const names = await resolver.reverse('8.8.8.8');
     t.ok(Array.isArray(names) && names.length > 0, 'got PTR records');
-    t.ok(names.some(n => /google|dns/i.test(n)),
+    t.ok(names.some(n => typeof n === 'string' && /google|dns/i.test(n)),
       'PTR for 8.8.8.8 includes "google" or "dns": ' + JSON.stringify(names));
   });
 
   it('lookup — example.com family 4', async (t) => {
-    const result = await lookup(lp, 'example.com');
+    const result = await lookup('example.com');
     t.ok(typeof result.address === 'string', 'has address');
     t.equal(result.family, 4, 'family = 4');
     t.ok(/^\d+\.\d+\.\d+\.\d+$/.test(result.address), 'address is IPv4');
   });
 
   it('lookup — example.com family 6', async (t) => {
-    const result = await lookup(lp, 'example.com', { family: 6 });
+    const result = await lookup('example.com', { family: 6 });
     t.ok(typeof result.address === 'string', 'has address');
     t.equal(result.family, 6, 'family = 6');
     t.ok(result.address.includes(':'), 'address is IPv6');
   });
 
   it('resolver — timeout with unreachable server', async (t) => {
-    const resolver = new Resolver(lp, { timeout: 500, retries: 1 });
+    const resolver = new Resolver({ timeout: 500, retries: 1 });
     resolver.setServers(['192.0.2.1']);
     await t.rejects(
       () => resolver.resolve4('example.com'),
-      (err) => /timeout|ETIMEOUT/i.test(err.message + ' ' + (err.code ?? '')),
+      (err) => {
+        const e = err as DnsErrorLike;
+        return /timeout|ETIMEOUT/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
+      },
       'throws timeout error for unreachable server',
     );
   });

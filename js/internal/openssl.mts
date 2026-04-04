@@ -2,25 +2,33 @@
  * internal:openssl — OpenSSL FFI bindings for libcrypto and libssl.
  *
  * Tries to dlopen OpenSSL at module load time. Sets `cryptoAvailable` and
- * `tlsAvailable` flags on success/failure. Callers (boats:crypto, boats:tls)
+ * `tlsAvailable` flags on success/failure. Callers (fino:crypto, fino:tls)
  * check these flags and throw descriptive errors if unavailable.
  *
- * This is an internal module — only boats:* built-ins may import it.
+ * This is an internal module — only fino:* built-ins may import it.
  *
  * ## Swappability
  * This module exports a well-defined interface. To add BoringSSL support,
  * create internal:boringssl with the same exports and change the import in
- * boats:crypto and boats:tls.
+ * fino:crypto and fino:tls.
  */
 
-import { dlopen, Pointer } from 'boats:ffi';
+import {
+  dlopen,
+  Pointer,
+  type DynamicLibrary,
+  type NativeSymbolMap,
+} from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8 } from 'internal:globals/encoding';
+import { encodeUtf8 } from './globals/encoding.mts';
 
 export interface CipherResult {
   ciphertext: Uint8Array;
   tag:        Uint8Array | null;
 }
+
+type DigestAlgorithm = 'sha-1' | 'sha-256' | 'sha-384' | 'sha-512';
+type CipherAlgorithm = 'aes-128-gcm' | 'aes-256-gcm' | 'aes-128-cbc' | 'aes-256-cbc';
 
 const isDarwin = os === 'darwin';
 
@@ -89,8 +97,7 @@ const _cryptoSymbols = {
     parameters: ['buffer', 'i32', 'buffer', 'i32', 'i32', 'pointer', 'i32', 'buffer'],
     result: 'i32',
   },
-
-};
+} satisfies NativeSymbolMap;
 
 const _sslSymbols = {
   TLS_client_method: { parameters: [], result: 'pointer' },
@@ -114,13 +121,16 @@ const _sslSymbols = {
   // larg is C `long` (64-bit on LP64); parg is a buffer (hostname string for SNI)
   SSL_ctrl:      { parameters: ['pointer', 'i32', 'i64', 'buffer'], result: 'i64' },
   SSL_set1_host: { parameters: ['pointer', 'buffer'], result: 'i32' },
-};
+} satisfies NativeSymbolMap;
 
 // ---------------------------------------------------------------------------
 // Library loading
 // ---------------------------------------------------------------------------
 
-function _tryOpen(paths: string[], symbols: object): object | null {
+type CryptoLibrary = DynamicLibrary<typeof _cryptoSymbols>;
+type SslLibrary = DynamicLibrary<typeof _sslSymbols>;
+
+function _tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TSymbols): DynamicLibrary<TSymbols> | null {
   for (const p of paths) {
     try { return dlopen(p, symbols); } catch (_) {}
   }
@@ -133,6 +143,16 @@ const _libssl    = _tryOpen(_sslPaths, _sslSymbols);
 export const cryptoAvailable = _libcrypto !== null;
 export const tlsAvailable    = _libssl !== null;
 
+function _requireCrypto(): CryptoLibrary {
+  if (_libcrypto === null) throw new Error('OpenSSL not available');
+  return _libcrypto;
+}
+
+function _requireSsl(): SslLibrary {
+  if (_libssl === null) throw new Error('OpenSSL SSL not available');
+  return _libssl;
+}
+
 // ---------------------------------------------------------------------------
 // Error helper
 // ---------------------------------------------------------------------------
@@ -142,7 +162,7 @@ export const tlsAvailable    = _libssl !== null;
  * @returns {string}
  */
 export function getErrorString(): string {
-  if (!_libcrypto) return 'OpenSSL not available';
+  if (_libcrypto === null) return 'OpenSSL not available';
   const code = _libcrypto.symbols.ERR_get_error(); // BigInt (u64)
   if (code === 0n) return 'no error';
   const buf = new ArrayBuffer(256);
@@ -156,20 +176,45 @@ export function getErrorString(): string {
 // Digest size table — avoids EVP_MD_size / EVP_MD_get_size API differences
 // ---------------------------------------------------------------------------
 
-const _digestSize = {
+const _digestSize: Record<DigestAlgorithm, number> = {
   'sha-1':   20,
   'sha-256': 32,
   'sha-384': 48,
   'sha-512': 64,
 };
 
-function _getMd(algorithm: string): object {
+function _normalizeDigestAlgorithm(algorithm: string): DigestAlgorithm {
   switch (algorithm.toLowerCase()) {
-    case 'sha-1':   return _libcrypto.symbols.EVP_sha1();
-    case 'sha-256': return _libcrypto.symbols.EVP_sha256();
-    case 'sha-384': return _libcrypto.symbols.EVP_sha384();
-    case 'sha-512': return _libcrypto.symbols.EVP_sha512();
+    case 'sha-1':
+    case 'sha-256':
+    case 'sha-384':
+    case 'sha-512':
+      return algorithm.toLowerCase() as DigestAlgorithm;
+    default:
+      throw new Error(`Unsupported digest algorithm: ${algorithm}`);
+  }
+}
+
+function _getMd(algorithm: DigestAlgorithm): object {
+  const lib = _requireCrypto();
+  switch (algorithm) {
+    case 'sha-1':   return lib.symbols.EVP_sha1();
+    case 'sha-256': return lib.symbols.EVP_sha256();
+    case 'sha-384': return lib.symbols.EVP_sha384();
+    case 'sha-512': return lib.symbols.EVP_sha512();
     default: throw new Error(`Unsupported digest algorithm: ${algorithm}`);
+  }
+}
+
+function _normalizeCipherAlgorithm(algorithm: string): CipherAlgorithm {
+  switch (algorithm) {
+    case 'aes-128-gcm':
+    case 'aes-256-gcm':
+    case 'aes-128-cbc':
+    case 'aes-256-cbc':
+      return algorithm;
+    default:
+      throw new Error('Unsupported cipher: ' + algorithm);
   }
 }
 
@@ -183,7 +228,7 @@ function _getMd(algorithm: string): object {
  * @param {number} len
  */
 export function randBytes(buf: ArrayBuffer, len: number): void {
-  const rc = _libcrypto.symbols.RAND_bytes(buf, len);
+  const rc = _requireCrypto().symbols.RAND_bytes(buf, len);
   if (rc !== 1) throw new Error('RAND_bytes failed: ' + getErrorString());
 }
 
@@ -198,28 +243,29 @@ export function randBytes(buf: ArrayBuffer, len: number): void {
  * @returns {Uint8Array}
  */
 export function digest(algorithm: string, data: Uint8Array): Uint8Array {
-  const md   = _getMd(algorithm);
-  const size = _digestSize[algorithm.toLowerCase()];
-  if (size === undefined) throw new Error('Unsupported digest: ' + algorithm);
+  const lib = _requireCrypto();
+  const normalized = _normalizeDigestAlgorithm(algorithm);
+  const md   = _getMd(normalized);
+  const size = _digestSize[normalized];
 
-  const ctx = _libcrypto.symbols.EVP_MD_CTX_new();
+  const ctx = lib.symbols.EVP_MD_CTX_new();
   if (ctx === null) throw new Error('EVP_MD_CTX_new failed');
 
   try {
-    let rc = _libcrypto.symbols.EVP_DigestInit_ex(ctx, md, null);
+    let rc = lib.symbols.EVP_DigestInit_ex(ctx, md, null);
     if (rc !== 1) throw new Error('EVP_DigestInit_ex failed: ' + getErrorString());
 
-    rc = _libcrypto.symbols.EVP_DigestUpdate(ctx, data, data.byteLength);
+    rc = lib.symbols.EVP_DigestUpdate(ctx, data, data.byteLength);
     if (rc !== 1) throw new Error('EVP_DigestUpdate failed');
 
     const outBuf    = new ArrayBuffer(size);
     const outlenBuf = new ArrayBuffer(4);
-    rc = _libcrypto.symbols.EVP_DigestFinal_ex(ctx, outBuf, outlenBuf);
+    rc = lib.symbols.EVP_DigestFinal_ex(ctx, outBuf, outlenBuf);
     if (rc !== 1) throw new Error('EVP_DigestFinal_ex failed');
 
     return new Uint8Array(outBuf);
   } finally {
-    _libcrypto.symbols.EVP_MD_CTX_free(ctx);
+    lib.symbols.EVP_MD_CTX_free(ctx);
   }
 }
 
@@ -235,14 +281,15 @@ export function digest(algorithm: string, data: Uint8Array): Uint8Array {
  * @returns {Uint8Array}
  */
 export function hmac(algorithm: string, key: Uint8Array | ArrayBuffer, data: Uint8Array | ArrayBuffer): Uint8Array {
-  const md  = _getMd(algorithm);
+  const lib = _requireCrypto();
+  const md  = _getMd(_normalizeDigestAlgorithm(algorithm));
   const outBuf    = new ArrayBuffer(64); // large enough for any digest
   const outlenBuf = new ArrayBuffer(4);  // unsigned int*
 
   const keyArr  = key  instanceof Uint8Array ? key  : new Uint8Array(key);
   const dataArr = data instanceof Uint8Array ? data : new Uint8Array(data);
 
-  const result = _libcrypto.symbols.HMAC(
+  const result = lib.symbols.HMAC(
     md,
     keyArr, keyArr.byteLength,
     dataArr, dataArr.byteLength,
@@ -265,12 +312,13 @@ const _GCM_SET_IVLEN = 0x9;
 const _GCM_GET_TAG   = 0x10;
 const _GCM_SET_TAG   = 0x11;
 
-function _cipherForAlgorithm(algorithm: string): object {
+function _cipherForAlgorithm(algorithm: CipherAlgorithm): object {
+  const lib = _requireCrypto();
   switch (algorithm) {
-    case 'aes-128-gcm': return _libcrypto.symbols.EVP_aes_128_gcm();
-    case 'aes-256-gcm': return _libcrypto.symbols.EVP_aes_256_gcm();
-    case 'aes-128-cbc': return _libcrypto.symbols.EVP_aes_128_cbc();
-    case 'aes-256-cbc': return _libcrypto.symbols.EVP_aes_256_cbc();
+    case 'aes-128-gcm': return lib.symbols.EVP_aes_128_gcm();
+    case 'aes-256-gcm': return lib.symbols.EVP_aes_256_gcm();
+    case 'aes-128-cbc': return lib.symbols.EVP_aes_128_cbc();
+    case 'aes-256-cbc': return lib.symbols.EVP_aes_256_cbc();
     default: throw new Error('Unsupported cipher: ' + algorithm);
   }
 }
@@ -280,46 +328,47 @@ function _isGCM(algorithm: string): boolean {
 }
 
 function _encryptGCM(cipher: object, key: Uint8Array, iv: Uint8Array, plaintext: Uint8Array, aad: Uint8Array | null): CipherResult {
-  const ctx = _libcrypto.symbols.EVP_CIPHER_CTX_new();
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_CIPHER_CTX_new();
   if (ctx === null) throw new Error('EVP_CIPHER_CTX_new failed');
 
   try {
     const outlenBuf = new ArrayBuffer(4);
 
     // 1. Init cipher without key/IV
-    let rc = _libcrypto.symbols.EVP_EncryptInit_ex(ctx, cipher, null, null, null);
+    let rc = lib.symbols.EVP_EncryptInit_ex(ctx, cipher, null, null, null);
     if (rc !== 1) throw new Error('EVP_EncryptInit_ex failed: ' + getErrorString());
 
     // 2. Set IV length (GCM standard is 12 bytes, but we accept any)
-    rc = _libcrypto.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_SET_IVLEN, iv.byteLength, null);
+    rc = lib.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_SET_IVLEN, iv.byteLength, null);
     if (rc !== 1) throw new Error('EVP_CIPHER_CTX_ctrl(SET_IVLEN) failed');
 
     // 3. Set key + IV
-    rc = _libcrypto.symbols.EVP_EncryptInit_ex(ctx, null, null, key, iv);
+    rc = lib.symbols.EVP_EncryptInit_ex(ctx, null, null, key, iv);
     if (rc !== 1) throw new Error('EVP_EncryptInit_ex(key+iv) failed');
 
     // 4. Process AAD if provided
     if (aad && aad.byteLength > 0) {
-      rc = _libcrypto.symbols.EVP_EncryptUpdate(ctx, null, outlenBuf, aad, aad.byteLength);
+      rc = lib.symbols.EVP_EncryptUpdate(ctx, null, outlenBuf, aad, aad.byteLength);
       if (rc !== 1) throw new Error('EVP_EncryptUpdate(AAD) failed');
     }
 
     // 5. Encrypt plaintext
     const updateBuf = new ArrayBuffer(plaintext.byteLength + 16);
-    rc = _libcrypto.symbols.EVP_EncryptUpdate(ctx, updateBuf, outlenBuf, plaintext, plaintext.byteLength);
+    rc = lib.symbols.EVP_EncryptUpdate(ctx, updateBuf, outlenBuf, plaintext, plaintext.byteLength);
     if (rc !== 1) throw new Error('EVP_EncryptUpdate failed');
     const updateLen = new DataView(outlenBuf).getInt32(0, true);
 
     // 6. Finalize (GCM produces no additional output bytes)
     const finalBuf    = new ArrayBuffer(32);
     const finalLenBuf = new ArrayBuffer(4);
-    rc = _libcrypto.symbols.EVP_EncryptFinal_ex(ctx, finalBuf, finalLenBuf);
+    rc = lib.symbols.EVP_EncryptFinal_ex(ctx, finalBuf, finalLenBuf);
     if (rc !== 1) throw new Error('EVP_EncryptFinal_ex failed');
     const finalLen = new DataView(finalLenBuf).getInt32(0, true);
 
     // 7. Get 16-byte auth tag
     const tagBuf = new ArrayBuffer(16);
-    rc = _libcrypto.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_GET_TAG, 16, tagBuf);
+    rc = lib.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_GET_TAG, 16, tagBuf);
     if (rc !== 1) throw new Error('EVP_CIPHER_CTX_ctrl(GET_TAG) failed');
 
     // Combine output
@@ -329,30 +378,31 @@ function _encryptGCM(cipher: object, key: Uint8Array, iv: Uint8Array, plaintext:
 
     return { ciphertext, tag: new Uint8Array(tagBuf) };
   } finally {
-    _libcrypto.symbols.EVP_CIPHER_CTX_free(ctx);
+    lib.symbols.EVP_CIPHER_CTX_free(ctx);
   }
 }
 
 function _encryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, plaintext: Uint8Array): CipherResult {
-  const ctx = _libcrypto.symbols.EVP_CIPHER_CTX_new();
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_CIPHER_CTX_new();
   if (ctx === null) throw new Error('EVP_CIPHER_CTX_new failed');
 
   try {
     const outlenBuf = new ArrayBuffer(4);
 
-    let rc = _libcrypto.symbols.EVP_EncryptInit_ex(ctx, cipher, null, key, iv);
+    let rc = lib.symbols.EVP_EncryptInit_ex(ctx, cipher, null, key, iv);
     if (rc !== 1) throw new Error('EVP_EncryptInit_ex failed: ' + getErrorString());
 
     // CBC update — output can be up to plaintext + 1 block
     const updateBuf = new ArrayBuffer(plaintext.byteLength + 16);
-    rc = _libcrypto.symbols.EVP_EncryptUpdate(ctx, updateBuf, outlenBuf, plaintext, plaintext.byteLength);
+    rc = lib.symbols.EVP_EncryptUpdate(ctx, updateBuf, outlenBuf, plaintext, plaintext.byteLength);
     if (rc !== 1) throw new Error('EVP_EncryptUpdate failed');
     const updateLen = new DataView(outlenBuf).getInt32(0, true);
 
     // Final block (PKCS7 padding)
     const finalBuf    = new ArrayBuffer(32);
     const finalLenBuf = new ArrayBuffer(4);
-    rc = _libcrypto.symbols.EVP_EncryptFinal_ex(ctx, finalBuf, finalLenBuf);
+    rc = lib.symbols.EVP_EncryptFinal_ex(ctx, finalBuf, finalLenBuf);
     if (rc !== 1) throw new Error('EVP_EncryptFinal_ex failed');
     const finalLen = new DataView(finalLenBuf).getInt32(0, true);
 
@@ -362,52 +412,53 @@ function _encryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, plaintext:
 
     return { ciphertext, tag: null };
   } finally {
-    _libcrypto.symbols.EVP_CIPHER_CTX_free(ctx);
+    lib.symbols.EVP_CIPHER_CTX_free(ctx);
   }
 }
 
 function _decryptGCM(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext: Uint8Array, tag: Uint8Array, aad: Uint8Array | null): Uint8Array {
-  const ctx = _libcrypto.symbols.EVP_CIPHER_CTX_new();
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_CIPHER_CTX_new();
   if (ctx === null) throw new Error('EVP_CIPHER_CTX_new failed');
 
   try {
     const outlenBuf = new ArrayBuffer(4);
 
     // 1. Init cipher without key/IV
-    let rc = _libcrypto.symbols.EVP_DecryptInit_ex(ctx, cipher, null, null, null);
+    let rc = lib.symbols.EVP_DecryptInit_ex(ctx, cipher, null, null, null);
     if (rc !== 1) throw new Error('EVP_DecryptInit_ex failed: ' + getErrorString());
 
     // 2. Set IV length
-    rc = _libcrypto.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_SET_IVLEN, iv.byteLength, null);
+    rc = lib.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_SET_IVLEN, iv.byteLength, null);
     if (rc !== 1) throw new Error('EVP_CIPHER_CTX_ctrl(SET_IVLEN) failed');
 
     // 3. Set key + IV
-    rc = _libcrypto.symbols.EVP_DecryptInit_ex(ctx, null, null, key, iv);
+    rc = lib.symbols.EVP_DecryptInit_ex(ctx, null, null, key, iv);
     if (rc !== 1) throw new Error('EVP_DecryptInit_ex(key+iv) failed');
 
     // 4. Set expected tag BEFORE decrypting (required by GCM).
     // Use the actual tag length so OpenSSL truncates its computed tag to the same length.
     const tagBuf = new ArrayBuffer(tag.byteLength);
     new Uint8Array(tagBuf).set(tag);
-    rc = _libcrypto.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_SET_TAG, tag.byteLength, tagBuf);
+    rc = lib.symbols.EVP_CIPHER_CTX_ctrl(ctx, _GCM_SET_TAG, tag.byteLength, tagBuf);
     if (rc !== 1) throw new Error('EVP_CIPHER_CTX_ctrl(SET_TAG) failed');
 
     // 5. Process AAD if provided
     if (aad && aad.byteLength > 0) {
-      rc = _libcrypto.symbols.EVP_DecryptUpdate(ctx, null, outlenBuf, aad, aad.byteLength);
+      rc = lib.symbols.EVP_DecryptUpdate(ctx, null, outlenBuf, aad, aad.byteLength);
       if (rc !== 1) throw new Error('EVP_DecryptUpdate(AAD) failed');
     }
 
     // 6. Decrypt ciphertext
     const updateBuf = new ArrayBuffer(ciphertext.byteLength);
-    rc = _libcrypto.symbols.EVP_DecryptUpdate(ctx, updateBuf, outlenBuf, ciphertext, ciphertext.byteLength);
+    rc = lib.symbols.EVP_DecryptUpdate(ctx, updateBuf, outlenBuf, ciphertext, ciphertext.byteLength);
     if (rc !== 1) throw new Error('EVP_DecryptUpdate failed');
     const updateLen = new DataView(outlenBuf).getInt32(0, true);
 
     // 7. Finalize — verifies GCM tag; returns < 0 on tag mismatch
     const finalBuf    = new ArrayBuffer(32);
     const finalLenBuf = new ArrayBuffer(4);
-    rc = _libcrypto.symbols.EVP_DecryptFinal_ex(ctx, finalBuf, finalLenBuf);
+    rc = lib.symbols.EVP_DecryptFinal_ex(ctx, finalBuf, finalLenBuf);
     if (rc !== 1) throw new Error('AES-GCM decryption failed: authentication tag mismatch');
     const finalLen = new DataView(finalLenBuf).getInt32(0, true);
 
@@ -417,28 +468,29 @@ function _decryptGCM(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext
 
     return plaintext;
   } finally {
-    _libcrypto.symbols.EVP_CIPHER_CTX_free(ctx);
+    lib.symbols.EVP_CIPHER_CTX_free(ctx);
   }
 }
 
 function _decryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext: Uint8Array): Uint8Array {
-  const ctx = _libcrypto.symbols.EVP_CIPHER_CTX_new();
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_CIPHER_CTX_new();
   if (ctx === null) throw new Error('EVP_CIPHER_CTX_new failed');
 
   try {
     const outlenBuf = new ArrayBuffer(4);
 
-    let rc = _libcrypto.symbols.EVP_DecryptInit_ex(ctx, cipher, null, key, iv);
+    let rc = lib.symbols.EVP_DecryptInit_ex(ctx, cipher, null, key, iv);
     if (rc !== 1) throw new Error('EVP_DecryptInit_ex failed: ' + getErrorString());
 
     const updateBuf = new ArrayBuffer(ciphertext.byteLength);
-    rc = _libcrypto.symbols.EVP_DecryptUpdate(ctx, updateBuf, outlenBuf, ciphertext, ciphertext.byteLength);
+    rc = lib.symbols.EVP_DecryptUpdate(ctx, updateBuf, outlenBuf, ciphertext, ciphertext.byteLength);
     if (rc !== 1) throw new Error('EVP_DecryptUpdate failed');
     const updateLen = new DataView(outlenBuf).getInt32(0, true);
 
     const finalBuf    = new ArrayBuffer(32);
     const finalLenBuf = new ArrayBuffer(4);
-    rc = _libcrypto.symbols.EVP_DecryptFinal_ex(ctx, finalBuf, finalLenBuf);
+    rc = lib.symbols.EVP_DecryptFinal_ex(ctx, finalBuf, finalLenBuf);
     if (rc !== 1) throw new Error('EVP_DecryptFinal_ex failed (bad padding or wrong key?)');
     const finalLen = new DataView(finalLenBuf).getInt32(0, true);
 
@@ -448,7 +500,7 @@ function _decryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext
 
     return plaintext;
   } finally {
-    _libcrypto.symbols.EVP_CIPHER_CTX_free(ctx);
+    lib.symbols.EVP_CIPHER_CTX_free(ctx);
   }
 }
 
@@ -466,8 +518,9 @@ function _decryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext
  * @returns {{ ciphertext: Uint8Array, tag: Uint8Array|null }}
  */
 export function cipherEncrypt(algorithm: string, key: Uint8Array, iv: Uint8Array, plaintext: Uint8Array, aad?: Uint8Array | null): CipherResult {
-  const cipher = _cipherForAlgorithm(algorithm);
-  if (_isGCM(algorithm)) return _encryptGCM(cipher, key, iv, plaintext, aad);
+  const normalized = _normalizeCipherAlgorithm(algorithm);
+  const cipher = _cipherForAlgorithm(normalized);
+  if (_isGCM(normalized)) return _encryptGCM(cipher, key, iv, plaintext, aad ?? null);
   return _encryptCBC(cipher, key, iv, plaintext);
 }
 
@@ -482,8 +535,12 @@ export function cipherEncrypt(algorithm: string, key: Uint8Array, iv: Uint8Array
  * @returns {Uint8Array}
  */
 export function cipherDecrypt(algorithm: string, key: Uint8Array, iv: Uint8Array, ciphertext: Uint8Array, tag?: Uint8Array | null, aad?: Uint8Array | null): Uint8Array {
-  const cipher = _cipherForAlgorithm(algorithm);
-  if (_isGCM(algorithm)) return _decryptGCM(cipher, key, iv, ciphertext, tag, aad);
+  const normalized = _normalizeCipherAlgorithm(algorithm);
+  const cipher = _cipherForAlgorithm(normalized);
+  if (_isGCM(normalized)) {
+    if (tag == null) throw new Error('AES-GCM decryption requires an authentication tag');
+    return _decryptGCM(cipher, key, iv, ciphertext, tag, aad ?? null);
+  }
   return _decryptCBC(cipher, key, iv, ciphertext);
 }
 
@@ -502,10 +559,10 @@ export function cipherDecrypt(algorithm: string, key: Uint8Array, iv: Uint8Array
  * @returns {Uint8Array}
  */
 export function pbkdf2(password: Uint8Array, salt: Uint8Array, iterations: number, hashAlg: string, keyLength: number): Uint8Array {
-  if (!_libcrypto) throw new Error('OpenSSL not available');
-  const md  = _getMd(hashAlg);
+  const lib = _requireCrypto();
+  const md  = _getMd(_normalizeDigestAlgorithm(hashAlg));
   const out = new ArrayBuffer(keyLength);
-  const rc  = _libcrypto.symbols.PKCS5_PBKDF2_HMAC(
+  const rc  = lib.symbols.PKCS5_PBKDF2_HMAC(
     password, password.byteLength,
     salt, salt.byteLength,
     iterations,
@@ -535,11 +592,9 @@ export function pbkdf2(password: Uint8Array, salt: Uint8Array, iterations: numbe
  * @returns {Uint8Array}
  */
 export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: Uint8Array, keyLength: number): Uint8Array {
-  if (!_libcrypto) throw new Error('OpenSSL not available');
-
   // Use a zero-filled salt of HashLen bytes if salt is empty (RFC 5869 §2.2)
-  const hashLen = (_digestSize as Record<string, number>)[hashAlg.toLowerCase()];
-  if (!hashLen) throw new Error('HKDF: unsupported hash algorithm: ' + hashAlg);
+  const normalized = _normalizeDigestAlgorithm(hashAlg);
+  const hashLen = _digestSize[normalized];
   const effectiveSalt = salt.byteLength > 0 ? salt : new Uint8Array(hashLen);
 
   // Step 1: Extract — PRK = HMAC-Hash(salt, IKM)
@@ -550,7 +605,7 @@ export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: U
   if (n > 255) throw new Error('HKDF: requested key length too large');
 
   const out = new Uint8Array(keyLength);
-  let prev  = new Uint8Array(0);
+  let prev: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
   let offset = 0;
 
   for (let i = 1; i <= n; i++) {
@@ -560,7 +615,7 @@ export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: U
     input.set(info, prev.byteLength);
     input.set(counter, prev.byteLength + info.byteLength);
 
-    prev = hmac(hashAlg, prk, input);
+    prev = hmac(normalized, prk, input);
     const take = Math.min(hashLen, keyLength - offset);
     out.set(prev.subarray(0, take), offset);
     offset += take;
@@ -574,25 +629,27 @@ export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: U
 // ---------------------------------------------------------------------------
 
 export function sslCtxNewClient(): object {
-  const method = _libssl.symbols.TLS_client_method();
-  const ctx = _libssl.symbols.SSL_CTX_new(method);
+  const lib = _requireSsl();
+  const method = lib.symbols.TLS_client_method();
+  const ctx = lib.symbols.SSL_CTX_new(method);
   if (ctx === null) throw new Error('SSL_CTX_new failed: ' + getErrorString());
   return ctx;
 }
 
 export function sslCtxNewServer(): object {
-  const method = _libssl.symbols.TLS_server_method();
-  const ctx = _libssl.symbols.SSL_CTX_new(method);
+  const lib = _requireSsl();
+  const method = lib.symbols.TLS_server_method();
+  const ctx = lib.symbols.SSL_CTX_new(method);
   if (ctx === null) throw new Error('SSL_CTX_new failed: ' + getErrorString());
   return ctx;
 }
 
 export function sslCtxFree(ctx: object): void {
-  _libssl.symbols.SSL_CTX_free(ctx);
+  _requireSsl().symbols.SSL_CTX_free(ctx);
 }
 
 export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
-  const rc = _libssl.symbols.SSL_CTX_set_default_verify_paths(ctx);
+  const rc = _requireSsl().symbols.SSL_CTX_set_default_verify_paths(ctx);
   if (rc !== 1) throw new Error('SSL_CTX_set_default_verify_paths failed: ' + getErrorString());
 }
 
@@ -603,14 +660,15 @@ export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
  * @param {string|null} caPath — path to a directory of PEM files, or null
  */
 export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, caPath: string | null): void {
+  const lib = _requireSsl();
   const fileBuf = caFile ? encodeUtf8(caFile + '\0') : null;
   const pathBuf = caPath ? encodeUtf8(caPath + '\0') : null;
-  const rc = _libssl.symbols.SSL_CTX_load_verify_locations(ctx, fileBuf, pathBuf);
+  const rc = lib.symbols.SSL_CTX_load_verify_locations(ctx, fileBuf, pathBuf);
   if (rc !== 1) throw new Error('SSL_CTX_load_verify_locations failed: ' + getErrorString());
 }
 
 export function sslCtxSetVerify(ctx: object, mode: number): void {
-  _libssl.symbols.SSL_CTX_set_verify(ctx, mode, null);
+  _requireSsl().symbols.SSL_CTX_set_verify(ctx, mode, null);
 }
 
 // ---------------------------------------------------------------------------
@@ -618,17 +676,17 @@ export function sslCtxSetVerify(ctx: object, mode: number): void {
 // ---------------------------------------------------------------------------
 
 export function sslNew(ctx: object): object {
-  const ssl = _libssl.symbols.SSL_new(ctx);
+  const ssl = _requireSsl().symbols.SSL_new(ctx);
   if (ssl === null) throw new Error('SSL_new failed: ' + getErrorString());
   return ssl;
 }
 
 export function sslFree(ssl: object): void {
-  _libssl.symbols.SSL_free(ssl);
+  _requireSsl().symbols.SSL_free(ssl);
 }
 
 export function sslSetFd(ssl: object, fd: number): void {
-  const rc = _libssl.symbols.SSL_set_fd(ssl, fd);
+  const rc = _requireSsl().symbols.SSL_set_fd(ssl, fd);
   if (rc !== 1) throw new Error('SSL_set_fd failed');
 }
 
@@ -638,19 +696,20 @@ export function sslSetFd(ssl: object, fd: number): void {
  * @param {string} hostname
  */
 export function sslSetHostname(ssl: object, hostname: string): void {
+  const lib = _requireSsl();
   // SSL_set_tlsext_host_name macro: SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME=55, 0, hostname)
   const hostBuf = encodeUtf8(hostname + '\0');
-  _libssl.symbols.SSL_ctrl(ssl, 55, 0, hostBuf);
+  lib.symbols.SSL_ctrl(ssl, 55, 0, hostBuf);
 
   // Enable hostname verification (OpenSSL 1.1.0+, LibreSSL 2.9+)
-  _libssl.symbols.SSL_set1_host(ssl, encodeUtf8(hostname + '\0'));
+  lib.symbols.SSL_set1_host(ssl, encodeUtf8(hostname + '\0'));
 }
 
 /** Perform TLS handshake (client). Returns 1 on success. */
-export function sslConnect(ssl: object): number  { return _libssl.symbols.SSL_connect(ssl); }
+export function sslConnect(ssl: object): number  { return _requireSsl().symbols.SSL_connect(ssl); }
 
 /** Perform TLS handshake (server). Returns 1 on success. */
-export function sslAccept(ssl: object): number   { return _libssl.symbols.SSL_accept(ssl); }
+export function sslAccept(ssl: object): number   { return _requireSsl().symbols.SSL_accept(ssl); }
 
 /**
  * Read up to `len` decrypted bytes into `buf`.
@@ -659,7 +718,7 @@ export function sslAccept(ssl: object): number   { return _libssl.symbols.SSL_ac
  * @param {number} len
  * @returns {number} bytes read, 0 on graceful close, negative on error
  */
-export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number  { return _libssl.symbols.SSL_read(ssl, buf, len); }
+export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number  { return _requireSsl().symbols.SSL_read(ssl, buf, len); }
 
 /**
  * Write `len` bytes from `buf` over TLS.
@@ -668,16 +727,16 @@ export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number  { r
  * @param {number} len
  * @returns {number} bytes written, or negative on error
  */
-export function sslWrite(ssl: object, buf: Uint8Array | ArrayBuffer, len: number): number { return _libssl.symbols.SSL_write(ssl, buf, len); }
+export function sslWrite(ssl: object, buf: Uint8Array | ArrayBuffer, len: number): number { return _requireSsl().symbols.SSL_write(ssl, buf, len); }
 
 /** Initiate TLS shutdown sequence. */
-export function sslShutdown(ssl: object): number { return _libssl.symbols.SSL_shutdown(ssl); }
+export function sslShutdown(ssl: object): number { return _requireSsl().symbols.SSL_shutdown(ssl); }
 
 /** Translate an SSL return value to an error code. */
-export function sslGetError(ssl: object, ret: number): number { return _libssl.symbols.SSL_get_error(ssl, ret); }
+export function sslGetError(ssl: object, ret: number): number { return _requireSsl().symbols.SSL_get_error(ssl, ret); }
 
 /** Return number of bytes already decrypted and buffered in OpenSSL. */
-export function sslPending(ssl: object): number { return _libssl.symbols.SSL_pending(ssl); }
+export function sslPending(ssl: object): number { return _requireSsl().symbols.SSL_pending(ssl); }
 
 // ---------------------------------------------------------------------------
 // SSL error code constants

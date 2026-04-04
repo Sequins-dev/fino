@@ -1,5 +1,5 @@
 /**
- * boats:blob — Blob and File (WHATWG File API)
+ * fino:blob — Blob and File (WHATWG File API)
  *
  * `Blob` is an immutable byte sequence with an associated MIME type. It is
  * the standard way to carry binary data in web APIs: fetch Request/Response
@@ -70,8 +70,8 @@
  * file.lastModified;        // number (ms since epoch)
  */
 
-import { encodeUtf8, decodeUtf8, _registerBlobCloneHelper } from 'internal:globals/encoding';
-import { ReadableStream } from 'internal:globals/webstreams';
+import { encodeUtf8, decodeUtf8, _registerBlobCloneHelper } from './encoding.mts';
+import { ReadableStream } from './webstreams.mts';
 
 // ---------------------------------------------------------------------------
 // Internal
@@ -87,7 +87,7 @@ const _blobBytes = new WeakMap<Blob, Uint8Array>();
 
 /** Friend-function: returns the internal byte store of a Blob/File for cloning. */
 export function _getBlobBytes(blob: Blob): Uint8Array {
-  return _blobBytes.get(blob);
+  return _blobBytes.get(blob)!;
 }
 
 type BlobPart = string | ArrayBuffer | ArrayBufferView | Blob;
@@ -96,9 +96,9 @@ function _normalizePart(part: BlobPart): Uint8Array {
   if (typeof part === 'string') {
     return encodeUtf8(part);
   }
-  if (_blobBytes.has(part)) {
+  if (part instanceof Blob && _blobBytes.has(part)) {
     // Blob or File — grab its internal bytes
-    return _blobBytes.get(part);
+    return _blobBytes.get(part)!;
   }
   if (part instanceof ArrayBuffer) {
     return new Uint8Array(part);
@@ -111,12 +111,12 @@ function _normalizePart(part: BlobPart): Uint8Array {
 
 function _concat(chunks: Uint8Array[]): Uint8Array {
   let total = 0;
-  for (let i = 0; i < chunks.length; i++) total += chunks[i].byteLength;
+  for (let i = 0; i < chunks.length; i++) total += chunks[i]!.byteLength;
   const out = new Uint8Array(total);
   let offset = 0;
   for (let i = 0; i < chunks.length; i++) {
-    out.set(chunks[i], offset);
-    offset += chunks[i].byteLength;
+    out.set(chunks[i]!, offset);
+    offset += chunks[i]!.byteLength;
   }
   return out;
 }
@@ -134,8 +134,8 @@ export class Blob {
   constructor(parts?: Iterable<BlobPart> | typeof BYTES_INIT | null, options?: { type?: string; bytes?: Uint8Array } | null) {
     if (parts === BYTES_INIT) {
       // Internal path: options is { bytes: Uint8Array, type: string }
-      this.#bytes = options.bytes;
-      this.#type  = options.type;
+      this.#bytes = options!.bytes!;
+      this.#type  = options!.type ?? '';
       _blobBytes.set(this, this.#bytes);
       return;
     }
@@ -154,7 +154,7 @@ export class Blob {
       throw new TypeError('Failed to construct Blob: The provided value cannot be converted to a sequence.');
     }
 
-    const chunks = [];
+    const chunks: Uint8Array[] = [];
     for (const part of parts) {
       chunks.push(_normalizePart(part));
     }
@@ -179,23 +179,23 @@ export class Blob {
     return new Blob(BYTES_INIT, { bytes: sliced, type });
   }
 
-  async text() {
+  async text(): Promise<string> {
     return decodeUtf8(this.#bytes);
   }
 
-  async arrayBuffer() {
+  async arrayBuffer(): Promise<ArrayBuffer> {
     // Return a copy to prevent mutation of internal state.
     return this.#bytes.buffer.slice(
       this.#bytes.byteOffset,
       this.#bytes.byteOffset + this.#bytes.byteLength
-    );
+    ) as ArrayBuffer;
   }
 
-  async bytes() {
+  async bytes(): Promise<Uint8Array> {
     return new Uint8Array(this.#bytes);
   }
 
-  stream() {
+  stream(): ReadableStream {
     const bytes = this.#bytes;
     return new ReadableStream({
       type: 'bytes',
@@ -203,7 +203,7 @@ export class Blob {
         controller.enqueue(new Uint8Array(bytes));
         controller.close();
       },
-    });
+    }, undefined);
   }
 }
 
@@ -232,9 +232,9 @@ export class File extends Blob {
 // Register the Blob clone helper with encoding.mts so structuredClone can
 // clone Blob/File instances synchronously without a circular import.
 _registerBlobCloneHelper({
-  getBlobBytes: (b) => _blobBytes.get(b as Blob),
-  BlobCtor: Blob,
-  FileCtor: File,
+  getBlobBytes: (b) => _blobBytes.get(b as Blob)!,
+  BlobCtor: Blob as unknown as new (parts: Iterable<unknown>, opts?: { type?: string }) => object,
+  FileCtor: File as unknown as new (parts: Iterable<unknown>, name: string, opts?: { type?: string; lastModified?: number }) => object,
   isBlob: (v) => v instanceof Blob,
   isFile: (v) => v instanceof File,
   getName: (v) => (v as File).name,

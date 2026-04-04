@@ -1,9 +1,9 @@
 /**
- * boats:eventsource — Server-Sent Events (SSE) client and server.
+ * fino:eventsource — Server-Sent Events (SSE) client and server.
  *
  * Implements the SSE wire protocol (W3C EventSource spec) in two composable
- * layers, following the same thin-primitive philosophy as boats:stream and
- * boats:http.
+ * layers, following the same thin-primitive philosophy as fino:stream and
+ * fino:http.
  *
  *
  * ## EventSourceReader (composable parser primitive)
@@ -12,7 +12,7 @@
  * No connection or reconnection logic — purely a wire-format parser, analogous
  * to how `parseResponse()` consumes a byte stream.
  *
- *   import { EventSourceReader } from 'boats:net/eventsource';
+ *   import { EventSourceReader } from './eventsource.mts';
  *
  *   const reader = new EventSourceReader(response.body);
  *   for await (const event of reader) {
@@ -23,10 +23,10 @@
  *
  * ## EventSourceWriter (composable formatter primitive)
  *
- * Formats and writes SSE events to any Writer (from boats:stream).
+ * Formats and writes SSE events to any Writer (from fino:stream).
  * Server-side counterpart to EventSourceReader.
  *
- *   import { EventSourceWriter } from 'boats:net/eventsource';
+ *   import { EventSourceWriter } from './eventsource.mts';
  *
  *   const esw = new EventSourceWriter(writer);
  *   await esw.event({ data: 'hello' });
@@ -41,7 +41,7 @@
  * Last-Event-ID resumption, and EventTarget-based event dispatch. Extends
  * EventTarget so `addEventListener` / `removeEventListener` work as expected.
  *
- *   import { EventSource } from 'boats:net/eventsource';
+ *   import { EventSource } from './eventsource.mts';
  *
  *   const es = new EventSource('http://localhost:3000/events');
  *   es.onopen    = () => { ... };
@@ -95,21 +95,20 @@
  *   `[Symbol.asyncIterator]()` more than once on the same instance.
  * - EventSourceWriter does not own the Writer; callers are responsible
  *   for closing it.
- * - EventSource uses `loop.current()` at construction time; the constructor
- *   must be called inside a `loop.runWith(lp, ...)` scope.
+ * - EventSource connects immediately upon construction.
  * - Keep EventSourceReader and EventSourceWriter free of connection logic.
  *   Network concerns belong in EventSource only.
  */
 
-import { decodeUtf8, encodeUtf8 } from 'internal:globals/encoding';
-import { Headers, parseResponse } from 'boats:net/http';
-import { Socket } from 'boats:net/socket';
-import { TlsSocket } from 'boats:net/tls';
-import { lookup } from 'boats:net/dns';
-import * as loop from 'boats:runtime/loop';
-import { EventTarget, Event } from 'internal:globals/eventtarget';
-import { URL } from 'internal:globals/url';
-import type { LoopHandle } from 'boats:runtime/loop';
+import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
+import { Headers, parseResponse } from './http.mts';
+import { Socket } from './socket.mts';
+import { TlsSocket } from './tls.mts';
+import { lookup } from './dns.mts';
+import * as loop from '../runtime/loop.mts';
+import { EventTarget, Event } from '../internal/globals/eventtarget.mts';
+import { URL } from '../internal/globals/url.mts';
+import type { Address, IPv4Address, IPv6Address } from './socket.mts';
 
 export interface SseEvent {
   type:  string;
@@ -139,6 +138,10 @@ interface WriterLike {
   write(data: Uint8Array): Promise<number>;
 }
 
+interface ClosableAsyncByteReader extends AsyncIterable<Uint8Array | ArrayBuffer> {
+  close(): void;
+}
+
 // ---------------------------------------------------------------------------
 // MessageEvent — local to this module; not exported
 // ---------------------------------------------------------------------------
@@ -154,7 +157,7 @@ class MessageEvent extends Event {
   #origin: string;
 
   constructor(type: string, init?: MessageEventInit) {
-    super(type, init);
+    super(type);
     this.#data        = init?.data        ?? '';
     this.#lastEventId = init?.lastEventId ?? '';
     this.#origin      = init?.origin      ?? '';
@@ -173,7 +176,7 @@ class MessageEvent extends Event {
  * Parses an SSE byte stream into discrete events.
  *
  * Accepts any async iterable of Uint8Array/ArrayBuffer chunks — e.g. a Reader
- * from boats:stream or an HTTP response body from boats:http.
+ * from fino:stream or an HTTP response body from fino:http.
  *
  * Implements `[Symbol.asyncIterator]` for `for await` consumption.
  *
@@ -215,10 +218,10 @@ export class EventSourceReader {
    */
   async *[Symbol.asyncIterator](): AsyncGenerator<SseEvent> {
     let eventType = '';
-    let data      = [];
-    let eventId   = null;   // null = no id: field in this event
+    let data: string[] = [];
+    let eventId: string | null = null;   // null = no id: field in this event
     let hasData   = false;  // true if at least one data: field was seen
-    let retry     = null;
+    let retry: number | null = null;
 
     for await (const line of _lines(this.#source)) {
       // Blank line = dispatch event
@@ -248,7 +251,8 @@ export class EventSourceReader {
 
       // Parse field: value
       const colonIdx = line.indexOf(':');
-      let field, value;
+      let field: string;
+      let value: string;
       if (colonIdx === -1) {
         field = line;
         value = '';
@@ -297,7 +301,7 @@ export class EventSourceReader {
  * Formats and writes SSE events to a Writer.
  *
  * The writer must have an async `write(Uint8Array)` method compatible with
- * the Writer interface from boats:stream.
+ * the Writer interface from fino:stream.
  *
  * @example
  * const esw = new EventSourceWriter(writer);
@@ -397,9 +401,6 @@ const DEFAULT_RETRY_MS = 3000;
  * exponential retry intervals, resumes from the last event ID, and dispatches
  * events through the EventTarget interface.
  *
- * The loop handle is taken from `loop.current()` at construction time, so
- * the constructor must be called inside a `loop.run()` / `loop.runWith()`
- * scope.
  *
  * @example
  * loop.run(async () => {
@@ -415,7 +416,6 @@ export class EventSource extends EventTarget {
   static CLOSED     = CLOSED;
 
   #url: string;
-  #lp: LoopHandle;
   #readyState: number;
   #lastEventId: string;
   #retryInterval: number;
@@ -431,7 +431,6 @@ export class EventSource extends EventTarget {
    */
   constructor(url: string, init?: EventSourceInit) {
     super();
-    this.#lp            = loop.current();
     this.#url           = String(url);
     this.#readyState    = CONNECTING;
     this.#lastEventId   = '';
@@ -443,7 +442,7 @@ export class EventSource extends EventTarget {
     this.#onerror       = null;
 
     // Kick off the connection loop. Errors are handled internally.
-    this.#run().catch(() => {});
+    this.#run().catch(function swallowEvtSrcErr() {});
   }
 
   /** Current ready state: CONNECTING (0), OPEN (1), or CLOSED (2). */
@@ -489,8 +488,8 @@ export class EventSource extends EventTarget {
   async #run() {
     while (this.#readyState !== CLOSED) {
       this.#readyState = CONNECTING;
-      let sock = null;
-      let reader = null;
+      let sock: Socket | TlsSocket | null = null;
+      let reader: ClosableAsyncByteReader | null = null;
 
       try {
         // ---- Parse URL --------------------------------------------------------
@@ -504,16 +503,18 @@ export class EventSource extends EventTarget {
         const origin = parsed.origin;
 
         // ---- DNS lookup -------------------------------------------------------
-        const { address, family } = await lookup(this.#lp, hostname);
+        const { address, family } = await lookup(hostname);
         if (this.#readyState === CLOSED) return;
 
-        const addr = { family: family === 6 ? 'ipv6' : 'ipv4', ip: address, port };
+        const addr: IPv4Address | IPv6Address = family === 6
+          ? { family: 'ipv6', ip: address, port }
+          : { family: 'ipv4', ip: address, port };
 
         // ---- TCP / TLS connect ------------------------------------------------
         if (isHttps) {
-          sock = await TlsSocket.connect(this.#lp, addr, { hostname });
+          sock = await TlsSocket.connect(addr, { hostname });
         } else {
-          sock = await Socket.connect(this.#lp, addr);
+          sock = await Socket.connect(addr);
         }
         if (this.#readyState === CLOSED) { _closeSocket(sock); return; }
 
@@ -559,7 +560,7 @@ export class EventSource extends EventTarget {
         if (RETRIABLE_STATUSES.has(status)) {
           this.#fireError();
           if (this.#readyState === CLOSED) return;
-          await loop.timeout(this.#lp, this.#retryInterval);
+          await loop.timeout(this.#retryInterval);
           continue;
         }
 
@@ -577,6 +578,12 @@ export class EventSource extends EventTarget {
 
         // Feed the response body through the SSE parser. The body is an async
         // iterable of byte chunks from the socket (EOF-delimited per HTTP rules).
+        if (response.body === null) {
+          this.#readyState = CONNECTING;
+          this.#fireError();
+          await loop.timeout(this.#retryInterval);
+          continue;
+        }
         const esReader = new EventSourceReader(response.body);
         for await (const event of esReader) {
           if (this.#readyState === CLOSED) return;
@@ -594,14 +601,14 @@ export class EventSource extends EventTarget {
         if (this.#readyState === CLOSED) return;
         this.#readyState = CONNECTING;
         this.#fireError();
-        await loop.timeout(this.#lp, this.#retryInterval);
+        await loop.timeout(this.#retryInterval);
 
       } catch (_err) {
         // ---- Network / connection error: reconnect ---------------------------
         if (this.#readyState === CLOSED) return;
         this.#readyState = CONNECTING;
         this.#fireError();
-        await loop.timeout(this.#lp, this.#retryInterval);
+        await loop.timeout(this.#retryInterval);
 
       } finally {
         // Clean up the current reader reference; close socket if still open.
@@ -647,32 +654,21 @@ export class EventSource extends EventTarget {
 // ---------------------------------------------------------------------------
 
 /**
- * Write bytes to a socket writer. Handles both FdWriter (has .write()) and
- * WritableStream (from TlsSocket.split() — requires .getWriter()).
+ * Write bytes to a socket writer and flush the coalesce buffer to the wire.
  *
- * @param {FdWriter|WritableStream} writer
+ * @param {{ write(data: Uint8Array): Promise<void>; flush(): Promise<void> }} writer
  * @param {Uint8Array} bytes
  */
-async function _writeToSocket(writer: any, bytes: Uint8Array): Promise<void> {
-  if (typeof writer.write === 'function') {
-    // FdWriter (plain TCP socket)
-    await writer.write(bytes);
-  } else {
-    // WritableStream (TLS socket wrapped via TlsSocket.split())
-    const w = writer.getWriter();
-    try {
-      await w.write(bytes);
-    } finally {
-      w.releaseLock();
-    }
-  }
+async function _writeToSocket(writer: { write(data: Uint8Array): Promise<void>; flush(): Promise<void> }, bytes: Uint8Array): Promise<void> {
+  await writer.write(bytes);
+  await writer.flush();
 }
 
 /**
  * Close a Socket or TlsSocket, suppressing errors.
- * @param {Socket} sock
+ * @param {{ closed: boolean, close(): void }} sock
  */
-function _closeSocket(sock: Socket): void {
+function _closeSocket(sock: { closed: boolean; close(): void }): void {
   if (sock && !sock.closed) sock.close();
 }
 

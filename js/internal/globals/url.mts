@@ -1,5 +1,5 @@
 /**
- * boats:url — WHATWG URL and URLSearchParams implementation.
+ * fino:url — WHATWG URL and URLSearchParams implementation.
  *
  * This is a pure-JS implementation of the WHATWG URL Standard
  * (https://url.spec.whatwg.org/). It handles absolute URL parsing, relative
@@ -174,7 +174,7 @@ function _percentEncode(str: string, encodeSet: string): string {
     }
 
     // Characters in the encode set
-    if (encodeSet.indexOf(c) >= 0) {
+    if (encodeSet.indexOf(c!) >= 0) {
       result += _pctEncodeCP(code);
       continue;
     }
@@ -212,7 +212,7 @@ function _formEncode(str: string): string {
       result += '%' + _toHex2(code);
     } else {
       // Multi-byte UTF-8: encode each byte
-      const encoded = encodeURIComponent(c); // gives %XX or %XX%XX etc.
+      const encoded = encodeURIComponent(c!); // gives %XX or %XX%XX etc.
       result += encoded;
     }
   }
@@ -335,7 +335,7 @@ export class URLSearchParams {
     name  = String(name);
     value = String(value);
     let replaced = false;
-    const next = [];
+    const next: [string, string][] = [];
     for (const entry of this.#list) {
       if (entry[0] === name) {
         if (!replaced) { next.push([name, value]); replaced = true; }
@@ -538,7 +538,7 @@ function _resolveRelative(input: string, base: URLState): URLState {
   }
 
   if (input.startsWith('//')) {
-    return _parseURL(base.scheme + ':' + input, null);
+    return _parseURL(base.scheme + ':' + input, null)!;
   }
 
   // Strip fragment and query from input before resolving path
@@ -654,7 +654,8 @@ export class URL {
     if (!state) throw new TypeError('Invalid URL: ' + input);
 
     this.#state  = state;
-    this.#params = new URLSearchParams(state.search, (search) => { this.#state.search = search; });
+    const url = this;
+    this.#params = new URLSearchParams(state.search, function syncSearch(search) { url.#state.search = search; });
   }
 
   // --- Serialization ---

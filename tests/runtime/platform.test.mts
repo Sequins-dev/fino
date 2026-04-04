@@ -1,9 +1,9 @@
 /**
- * Tests for boats:process — platform info fields (formerly boats:platform).
+ * Tests for fino:process — platform info fields (formerly fino:platform).
  */
 
-import { describe, it } from 'boats:test/test';
-import { os, arch, argv } from 'boats:runtime/process';
+import { describe, it } from 'fino:test/test';
+import { os, arch, argv } from 'fino:runtime/process';
 
 describe('platform info', () => {
   it('os is a non-empty string', (t) => {

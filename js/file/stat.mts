@@ -1,5 +1,5 @@
 /**
- * internal:file-stat — Stat class for boats:file.
+ * internal:file-stat — Stat class for fino:file.
  *
  * Parses a struct stat buffer returned by stat(2) / lstat(2) / fstat(2).
  * Layout differs between macOS arm64 and Linux x86_64.
@@ -8,7 +8,7 @@
 import {
   isDarwin,
   S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
-} from 'internal:file/bindings';
+} from './bindings.mts';
 
 /**
  * File metadata parsed from a struct stat buffer.
@@ -74,7 +74,7 @@ export class Stat {
    */
   static parse(buf: ArrayBuffer | ArrayBufferView): Stat {
     const v = new DataView(buf instanceof ArrayBuffer ? buf : buf.buffer);
-    const toMs = (sec, ns) => Number(sec) * 1000 + Number(ns) / 1_000_000;
+    const toMs = (sec: number | bigint, ns: number | bigint): number => Number(sec) * 1000 + Number(ns) / 1_000_000;
 
     if (isDarwin) {
       // macOS arm64 struct stat (144 bytes):

@@ -1,17 +1,15 @@
 /**
- * boats:console — standard Console API implemented in JS via boats:libc.
+ * fino:console — standard Console API implemented in JS via fino:libc.
  *
  * Provides `console.log`, `warn`, `error`, `info`, `debug`, `assert`,
  * `dir`, `table`, `group`, `groupCollapsed`, `groupEnd`, `time`, `timeEnd`,
  * and `timeLog`. Output goes to stdout (fd 1) or stderr (fd 2) through
- * `writeLine()` from `boats:libc`, which calls `write(2)` directly.
+ * `writeLine()` from `fino:libc`, which calls `write(2)` directly.
  *
  * **Why JS instead of Rust?**
- * Boa ships a built-in `boa_runtime::Console` but it uses Rust-side println!
- * macros that bypass the fd model we need (e.g. stderr vs stdout, and the
- * raw write(2) approach used everywhere else in boats). Replacing it with
- * this JS module keeps all output on a single path and means contributors
- * can modify console formatting without touching Rust.
+ * Implementing console in JS keeps all output on a single path through
+ * `write(2)` via FFI, consistent with the rest of the standard library.
+ * It also lets contributors modify console formatting without touching Rust.
  *
  *
  * ## Value formatting: inspect()
@@ -43,7 +41,7 @@
  * `_groupDepth` is a module-level counter incremented by `group()` and
  * decremented by `groupEnd()`. All output is prefixed with `INDENT` repeated
  * `_groupDepth` times. `groupCollapsed()` is identical to `group()` — the
- * "collapsed" hint is only meaningful for browser DevTools GUIs that boats
+ * "collapsed" hint is only meaningful for browser DevTools GUIs that fino
  * doesn't have.
  *
  * Timer state is stored in a module-level `Map<label, startMs>`. `time()`
@@ -60,13 +58,17 @@
  *   call is intentional (no buffering, works before the event loop starts).
  */
 
-import { writeLine } from 'internal:runtime/libc';
+import { writeLine } from '../runtime/libc.mts';
 
 // ---------------------------------------------------------------------------
 // Value formatting
 // ---------------------------------------------------------------------------
 
 const INDENT = '  ';
+
+interface ConsoleShape {
+  group(...args: unknown[]): void;
+}
 
 /**
  * Convert a single value to a human-readable string, similar to Node's
@@ -139,9 +141,10 @@ function inspect(value: unknown, depth: number = 2, seen: WeakSet<object> = new 
         }
 
         // Plain object
-        const keys = Object.keys(value);
+        const record = value as Record<string, unknown>;
+        const keys = Object.keys(record);
         if (keys.length === 0) return '{}';
-        const pairs = keys.map(k => `${k}: ${inspect(value[k], depth - 1, seen)}`);
+        const pairs = keys.map((k) => `${k}: ${inspect(record[k], depth - 1, seen)}`);
         const oneLine = `{ ${pairs.join(', ')} }`;
         if (oneLine.length <= 72) return oneLine;
         return `{\n${pairs.map(s => INDENT + s).join(',\n')}\n}`;
@@ -170,7 +173,7 @@ function format(args: unknown[]): string {
   if (typeof first === 'string' && args.length > 1) {
     // Basic printf-style substitution
     let idx = 1;
-    const result = first.replace(/%[sdifnoOc%]/g, spec => {
+    const result = first.replace(/%[sdifnoOc%]/g, function formatSpec(spec) {
       if (spec === '%%') return '%';
       if (idx >= args.length) return spec;
       const arg = args[idx++];
@@ -225,7 +228,29 @@ function out(fd: number, label: string, args: unknown[]): void {
 // Exported console object
 // ---------------------------------------------------------------------------
 
-const console = {
+const console: ConsoleShape & {
+  readonly [Symbol.toStringTag]: string;
+  log(...args: unknown[]): void;
+  info(...args: unknown[]): void;
+  debug(...args: unknown[]): void;
+  warn(...args: unknown[]): void;
+  error(...args: unknown[]): void;
+  assert(condition: unknown, ...args: unknown[]): void;
+  dir(obj: unknown, opts?: { depth?: number; colors?: boolean }): void;
+  table(data: unknown): void;
+  group(...args: unknown[]): void;
+  groupCollapsed(...args: unknown[]): void;
+  groupEnd(): void;
+  time(label?: string): void;
+  timeEnd(label?: string): void;
+  timeLog(label?: string, ...args: unknown[]): void;
+  count(label?: string): void;
+  countReset(label?: string): void;
+  clear(): void;
+  trace(...args: unknown[]): void;
+  dirxml(...args: unknown[]): void;
+  timeStamp(_label?: string): void;
+} = {
   [Symbol.toStringTag]: 'console',
   log(...args)   { out(1, '',        args); },
   info(...args)  { out(1, '',        args); },
@@ -233,19 +258,19 @@ const console = {
   warn(...args)  { out(2, '[warn]',  args); },
   error(...args) { out(2, '[error]', args); },
 
-  assert(condition, ...args) {
+  assert(condition: unknown, ...args: unknown[]) {
     if (!condition) {
       const msg = args.length ? format(args) : 'Assertion failed';
       out(2, '[assert]', [msg]);
     }
   },
 
-  dir(obj, opts?: { depth?: number; colors?: boolean }) {
+  dir(obj: unknown, opts?: { depth?: number; colors?: boolean }) {
     const depth = (opts != null && typeof opts.depth === 'number') ? opts.depth : 4;
     out(1, '', [inspect(obj, depth)]);
   },
 
-  table(data) {
+  table(data: unknown) {
     // Minimal table: JSON for now, full column layout can come later.
     try {
       out(1, '', [JSON.stringify(data, null, 2)]);

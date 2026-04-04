@@ -1,5 +1,5 @@
 /**
- * boats:webstreams — ReadableStream, WritableStream, TransformStream
+ * fino:webstreams — ReadableStream, WritableStream, TransformStream
  *
  * WHATWG Streams specification: https://streams.spec.whatwg.org/
  *
@@ -18,7 +18,7 @@
  *     pull algorithm, backpressure, BYOB support.
  *
  * WritableStream (WeakMap `_ws`):
- *   - kind: 'writer' — backed by a Boats Writer (write/close). Writes delegate
+ *   - kind: 'writer' — backed by a Fino Writer (write/close). Writes delegate
  *     directly through; no controller overhead.
  *   - kind: 'sink'   — backed by an UnderlyingSink with start/write/close/abort.
  *     Full serialized write queue, HWM-based backpressure, ready promise.
@@ -39,14 +39,54 @@
  * CountQueuingStrategy, ByteLengthQueuingStrategy
  */
 
-import { Writer } from 'internal:stream';
-import { AbortController } from 'internal:globals/abort';
+import { Writer } from '../stream.mts';
+import { AbortController } from './abort.mts';
 
 // ---------------------------------------------------------------------------
 // Internal state types
 // ---------------------------------------------------------------------------
 
 interface QueueEntry { value: any; size: number; }
+
+interface PendingReadRequest {
+  resolve: (r: { done: boolean; value: any }) => void;
+  reject: (e: unknown) => void;
+}
+
+interface PendingWriteRequest {
+  chunk: any;
+  size: number;
+  drain?: boolean;
+  resolve: () => void;
+  reject: (e: unknown) => void;
+}
+
+interface ReadableReaderState {
+  rsState: ReadableStreamState;
+  iter: AsyncIterator<any> | null;
+  closedResolve: (() => void) | undefined;
+  closedReject: ((e: unknown) => void) | undefined;
+  closedPromise: Promise<void>;
+}
+
+interface ByobReaderState {
+  rsState: ReadableStreamState;
+  closedResolve: (() => void) | undefined;
+  closedReject: ((e: unknown) => void) | undefined;
+  closedPromise: Promise<void>;
+}
+
+interface WritableWriterState {
+  wsState: WritableStreamState;
+  closedResolve: (() => void) | undefined;
+  closedReject: ((e: unknown) => void) | undefined;
+  closedPromise: Promise<void>;
+}
+
+interface QueuingStrategyLike {
+  highWaterMark?: number;
+  size?: (chunk: any) => number;
+}
 
 interface PullIntoDescriptor {
   view: ArrayBufferView;
@@ -73,7 +113,7 @@ interface ReadableStreamState {
   underlyingSource?: any;
   queue?: QueueEntry[];
   queueTotalSize?: number;
-  pendingReads?: Array<{ resolve: (r: { done: boolean; value: any }) => void; reject: (e: unknown) => void }>;
+  pendingReads?: PendingReadRequest[];
   pendingByob?: PullIntoDescriptor[];
   pulling?: boolean;
   pullAgain?: boolean;
@@ -100,7 +140,7 @@ interface WritableStreamState {
   sink?: any;
   // sink-kind fields
   underlyingSink?: any;
-  pendingWrites?: Array<{ chunk: any; size: number; drain?: boolean; resolve: () => void; reject: (e: unknown) => void }>;
+  pendingWrites?: PendingWriteRequest[];
   writing?: boolean;
   highWaterMark?: number;
   sizeAlgorithm?: ((chunk: any) => number) | null;
@@ -121,9 +161,9 @@ interface Channel {
 
 const _rs  = new WeakMap<ReadableStream, ReadableStreamState>();  // ReadableStream                  → state
 const _ws  = new WeakMap<WritableStream, WritableStreamState>();  // WritableStream                  → state
-const _rr  = new WeakMap<ReadableStreamDefaultReader, any>();     // ReadableStreamDefaultReader     → state
-const _br  = new WeakMap<ReadableStreamBYOBReader, any>();        // ReadableStreamBYOBReader        → state
-const _ww  = new WeakMap<WritableStreamDefaultWriter, any>();     // WritableStreamDefaultWriter     → state
+const _rr  = new WeakMap<ReadableStreamDefaultReader, ReadableReaderState>();     // ReadableStreamDefaultReader     → state
+const _br  = new WeakMap<ReadableStreamBYOBReader, ByobReaderState>();            // ReadableStreamBYOBReader        → state
+const _ww  = new WeakMap<WritableStreamDefaultWriter, WritableWriterState>();     // WritableStreamDefaultWriter     → state
 const _rc  = new WeakMap<ReadableStreamDefaultController, ReadableStreamState>();  // ReadableStreamDefaultController → rs-state ref
 const _rbc = new WeakMap<ReadableByteStreamController, ReadableStreamState>();    // ReadableByteStreamController    → rs-state ref
 const _wc  = new WeakMap<WritableStreamDefaultController, WritableStreamState>(); // WritableStreamDefaultController → ws-state ref
@@ -133,14 +173,14 @@ const _tc  = new WeakMap<TransformStreamDefaultController, Channel>();          
 // Channel — promise-based async-iterable queue (used by TransformStream)
 // ---------------------------------------------------------------------------
 
-function createChannel() {
-  const queue = [];
-  let pending = null;
+function createChannel(): Channel {
+  const queue: any[] = [];
+  let pending: { resolve: (r: { done: boolean; value: any }) => void; reject: (e: unknown) => void } | null = null;
   let closed  = false;
-  let errored = null;
+  let errored: unknown = null;
 
   return {
-    enqueue(value) {
+    enqueue(value: any) {
       if (errored != null || closed) return;
       if (pending) { const p = pending; pending = null; p.resolve({ done: false, value }); }
       else queue.push(value);
@@ -150,7 +190,7 @@ function createChannel() {
       closed = true;
       if (pending) { const p = pending; pending = null; p.resolve({ done: true, value: undefined }); }
     },
-    error(reason) {
+    error(reason: unknown) {
       if (errored != null || closed) return;
       errored = reason;
       if (pending) { const p = pending; pending = null; p.reject(reason); }
@@ -158,10 +198,10 @@ function createChannel() {
     [Symbol.asyncIterator]() {
       return {
         next() {
-          if (queue.length > 0) return Promise.resolve({ done: false, value: queue.shift() });
+          if (queue.length > 0) return Promise.resolve({ done: false, value: queue.shift()! });
           if (errored != null) return Promise.reject(errored);
           if (closed) return Promise.resolve({ done: true, value: undefined });
-          return new Promise((resolve, reject) => { pending = { resolve, reject }; });
+          return new Promise(function parkRead(resolve, reject) { pending = { resolve, reject }; });
         },
         return() {
           closed = true;
@@ -198,7 +238,7 @@ export class ByteLengthQueuingStrategy {
   size(chunk: ArrayBufferView): number { return chunk.byteLength; }
 }
 
-function _extractStrategy(strategy, defaultHWM) {
+function _extractStrategy(strategy: QueuingStrategyLike | null | undefined, defaultHWM: number): { highWaterMark: number; sizeAlgorithm: (chunk: any) => number } {
   if (strategy == null) return { highWaterMark: defaultHWM, sizeAlgorithm: () => 1 };
   const hwm = (strategy.highWaterMark != null) ? Number(strategy.highWaterMark) : defaultHWM;
   const size = (typeof strategy.size === 'function') ? strategy.size.bind(strategy) : () => 1;
@@ -209,9 +249,10 @@ function _extractStrategy(strategy, defaultHWM) {
 // ReadableStream internal helpers
 // ---------------------------------------------------------------------------
 
-function _rsMakeState(kind, extra) {
-  let closedResolve, closedReject;
-  const closedPromise = new Promise((res, rej) => { closedResolve = res; closedReject = rej; });
+function _rsMakeState(kind: ReadableStreamState['kind'], extra: Partial<ReadableStreamState>): ReadableStreamState {
+  let closedResolve: (() => void) | undefined;
+  let closedReject: ((e: unknown) => void) | undefined;
+  const closedPromise = new Promise<void>(function captureRsClosed(res, rej) { closedResolve = res; closedReject = rej; });
   return {
     kind,
     state: 'readable',
@@ -223,18 +264,18 @@ function _rsMakeState(kind, extra) {
   };
 }
 
-function _rsMarkClosed(s) {
+function _rsMarkClosed(s: ReadableStreamState): void {
   if (s.state === 'closed') return;
   s.state = 'closed';
   s.closedResolve?.();
   if (s.pendingReads) {
     while (s.pendingReads.length > 0)
-      s.pendingReads.shift().resolve({ done: true, value: undefined });
+      s.pendingReads.shift()!.resolve({ done: true, value: undefined });
   }
   // Resolve pending BYOB reads with done:true and whatever was filled
   if (s.pendingByob) {
     while (s.pendingByob.length > 0) {
-      const desc = s.pendingByob.shift();
+      const desc = s.pendingByob.shift()!;
       desc.request = null;
       desc.resolve({
         done: true,
@@ -246,24 +287,24 @@ function _rsMarkClosed(s) {
   }
 }
 
-function _rsMarkErrored(s, e) {
+function _rsMarkErrored(s: ReadableStreamState, e: unknown): void {
   if (s.state === 'errored' || s.state === 'closed') return;
   s.state = 'errored';
   s.storedError = e;
   s.closedReject?.(e);
   if (s.pendingReads) {
-    while (s.pendingReads.length > 0) s.pendingReads.shift().reject(e);
+    while (s.pendingReads.length > 0) s.pendingReads.shift()!.reject(e);
   }
   if (s.pendingByob) {
     while (s.pendingByob.length > 0) {
-      const desc = s.pendingByob.shift();
+      const desc = s.pendingByob.shift()!;
       desc.request = null;
       desc.reject(e);
     }
   }
 }
 
-function _rsCancel(s, reason) {
+function _rsCancel(s: ReadableStreamState, reason: unknown): Promise<void> {
   if (s.state === 'closed') return Promise.resolve();
   if (s.state === 'errored') return Promise.reject(s.storedError);
   // Clear any queued data
@@ -274,7 +315,7 @@ function _rsCancel(s, reason) {
     // the stream was never read (e.g., cancelled immediately after tee()).
     if (!s._iter) _rsIterableIterator(s);
     if (s._iter?.return) {
-      return Promise.resolve(s._iter.return(reason)).then(() => {});
+      return Promise.resolve(s._iter.return(reason)).then(function voidResult() {});
     }
   }
   if (s.kind === 'source' && s.underlyingSource?.cancel) {
@@ -283,16 +324,16 @@ function _rsCancel(s, reason) {
   return Promise.resolve();
 }
 
-function _rsDesiredSize(s) {
+function _rsDesiredSize(s: ReadableStreamState): number | null {
   if (s.state === 'errored') return null;
   if (s.state === 'closed')  return 0;
-  return s.highWaterMark - s.queueTotalSize;
+  return s.highWaterMark! - s.queueTotalSize!;
 }
 
 // Pull algorithm — calls pull when the stream has capacity or pending reads.
 // Spec: ReadableStreamDefaultControllerCallPullIfNeeded /
 //       ReadableByteStreamControllerCallPullIfNeeded
-function _rsPullIfNeeded(s) {
+function _rsPullIfNeeded(s: ReadableStreamState): void {
   if (!s.started || s.state !== 'readable') return;
   if (s.closeRequested) return;
   if (s.pulling) { s.pullAgain = true; return; }
@@ -300,48 +341,55 @@ function _rsPullIfNeeded(s) {
   // Should pull if desiredSize > 0 (fill queue) OR there are pending consumers
   const hasPendingReads = s.pendingReads && s.pendingReads.length > 0;
   const hasPendingByob  = s.pendingByob  && s.pendingByob.length  > 0;
-  if (_rsDesiredSize(s) <= 0 && !hasPendingReads && !hasPendingByob) return;
+  const desiredSize = _rsDesiredSize(s);
+  if (desiredSize !== null && desiredSize <= 0 && !hasPendingReads && !hasPendingByob) return;
 
   s.pulling    = true;
   s.pullAgain  = false;
   Promise.resolve(s.underlyingSource.pull ? s.underlyingSource.pull(s.controller) : undefined)
-    .then(() => {
+    .then(function rsAfterPull() {
       s.pulling = false;
       if (s.pullAgain) { s.pullAgain = false; _rsPullIfNeeded(s); }
     })
-    .catch(e => s.controller.error(e));
+    .catch(function rsPullError(e) { s.controller!.error(e); });
 }
 
 // Read the next {done, value} from a source-backed stream's queue/pending list.
-function _rsIterableIterator(s) {
+function _rsIterableIterator(s: ReadableStreamState): AsyncIterator<any> {
   if (!s._iter) {
-    if (s.source[Symbol.asyncIterator]) {
-      s._iter = s.source[Symbol.asyncIterator]();
-    } else if (s.source[Symbol.iterator]) {
-      const syncIter = s.source[Symbol.iterator]();
-      s._iter = { next: () => Promise.resolve(syncIter.next()), return: syncIter.return ? (v) => Promise.resolve(syncIter.return(v)) : undefined };
+    const source = s.source as (AsyncIterable<any> & Iterable<any>);
+    const asyncIterator = source[Symbol.asyncIterator] as (() => AsyncIterator<any>) | undefined;
+    const syncIterator = source[Symbol.iterator] as (() => Iterator<any>) | undefined;
+    if (asyncIterator) {
+      s._iter = asyncIterator.call(source);
+    } else if (syncIterator) {
+      const syncIter = syncIterator.call(source);
+      s._iter = {
+        next: () => Promise.resolve(syncIter.next()),
+        ...(syncIter.return ? { return: (v: unknown) => Promise.resolve(syncIter.return!(v)) } : {}),
+      };
     } else {
       throw new TypeError('ReadableStream.from: argument must be iterable');
     }
   }
-  return s._iter;
+  return s._iter!;
 }
 
-function _rsNextChunk(s) {
+function _rsNextChunk(s: ReadableStreamState): Promise<{ done: boolean; value: any }> {
   if (s.kind === 'iterable') {
     const iter = _rsIterableIterator(s);
-    return iter.next().then(r => {
+    return iter.next().then(function rsIterNext(r): { done: boolean; value: any } {
       if (r.done) _rsMarkClosed(s);
-      return r;
-    }, e => { _rsMarkErrored(s, e); return Promise.reject(e); });
+      return { done: Boolean(r.done), value: r.value };
+    }, function rsIterError(e) { _rsMarkErrored(s, e); return Promise.reject(e); });
   }
 
   // Source path: dequeue or park a pending read
-  if (s.queue.length > 0) {
-    const entry = s.queue.shift();
-    s.queueTotalSize -= entry.size;
-    if (s.queueTotalSize < 0) s.queueTotalSize = 0;
-    if (s.closeRequested && s.queue.length === 0) {
+  if (s.queue!.length > 0) {
+    const entry = s.queue!.shift()!;
+    s.queueTotalSize! -= entry.size;
+    if (s.queueTotalSize! < 0) s.queueTotalSize = 0;
+    if (s.closeRequested && s.queue!.length === 0) {
       _rsMarkClosed(s);
     } else {
       _rsPullIfNeeded(s);
@@ -352,37 +400,37 @@ function _rsNextChunk(s) {
   if (s.state === 'closed')   return Promise.resolve({ done: true,  value: undefined });
   if (s.state === 'errored')  return Promise.reject(s.storedError);
 
-  return new Promise((resolve, reject) => {
-    s.pendingReads.push({ resolve, reject });
+  return new Promise(function parkDefaultRead(resolve, reject) {
+    s.pendingReads!.push({ resolve, reject });
     _rsPullIfNeeded(s);
   });
 }
 
 // Fill a BYOB view from queued Uint8Array chunks. Returns filled Uint8Array slice or null.
-function _rsByobFillFromQueue(s, view, min) {
+function _rsByobFillFromQueue(s: ReadableStreamState, view: ArrayBufferView, min: number): Uint8Array | null {
   const dest = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   let bytesFilled = 0;
-  while (bytesFilled < view.byteLength && s.queue.length > 0) {
-    const entry = s.queue[0];
+  while (bytesFilled < view.byteLength && s.queue!.length > 0) {
+    const entry = s.queue![0]!;
     const available = entry.value.byteLength;
     const needed    = view.byteLength - bytesFilled;
     const toCopy    = Math.min(available, needed);
     dest.set(entry.value.subarray(0, toCopy), bytesFilled);
     bytesFilled += toCopy;
     if (toCopy === available) {
-      s.queue.shift();
-      s.queueTotalSize -= entry.size;
-      if (s.queueTotalSize < 0) s.queueTotalSize = 0;
+      s.queue!.shift();
+      s.queueTotalSize! -= entry.size;
+      if (s.queueTotalSize! < 0) s.queueTotalSize = 0;
     } else {
       entry.value = entry.value.subarray(toCopy);
       entry.size  = entry.value.byteLength;
-      s.queueTotalSize -= toCopy;
-      if (s.queueTotalSize < 0) s.queueTotalSize = 0;
+      s.queueTotalSize! -= toCopy;
+      if (s.queueTotalSize! < 0) s.queueTotalSize = 0;
     }
   }
   if (bytesFilled === 0) return null;
   if (bytesFilled < min) return null; // need at least min bytes
-  if (s.closeRequested && s.queue.length === 0) {
+  if (s.closeRequested && s.queue!.length === 0) {
     _rsMarkClosed(s);
   } else {
     _rsPullIfNeeded(s);
@@ -397,39 +445,39 @@ function _rsByobFillFromQueue(s, view, min) {
 export class ReadableStreamDefaultController {
   get [Symbol.toStringTag]() { return 'ReadableStreamDefaultController'; }
 
-  constructor(rsState) {
+  constructor(rsState: ReadableStreamState) {
     _rc.set(this, rsState);
   }
 
   get desiredSize() {
-    return _rsDesiredSize(_rc.get(this));
+    return _rsDesiredSize(_rc.get(this)!);
   }
 
-  enqueue(chunk) {
-    const s = _rc.get(this);
+  enqueue(chunk: any) {
+    const s = _rc.get(this)!;
     if (s.closeRequested)        throw new TypeError('Cannot enqueue after close()');
     if (s.state !== 'readable')  throw new TypeError('Stream is not readable');
     const size = s.sizeAlgorithm ? s.sizeAlgorithm(chunk) : 1;
-    if (s.pendingReads.length > 0) {
+    if (s.pendingReads!.length > 0) {
       // Fulfill the waiting read directly — no queue needed
-      s.pendingReads.shift().resolve({ done: false, value: chunk });
+      s.pendingReads!.shift()!.resolve({ done: false, value: chunk });
       _rsPullIfNeeded(s);
     } else {
-      s.queue.push({ value: chunk, size });
-      s.queueTotalSize += size;
+      s.queue!.push({ value: chunk, size });
+      s.queueTotalSize! += size;
     }
   }
 
   close() {
-    const s = _rc.get(this);
+    const s = _rc.get(this)!;
     if (s.state !== 'readable') return;
     if (s.closeRequested)       throw new TypeError('close() already called');
     s.closeRequested = true;
-    if (s.queue.length === 0) _rsMarkClosed(s);
+    if (s.queue!.length === 0) _rsMarkClosed(s);
   }
 
-  error(reason) {
-    _rsMarkErrored(_rc.get(this), reason);
+  error(reason: unknown) {
+    _rsMarkErrored(_rc.get(this)!, reason);
   }
 }
 
@@ -440,29 +488,29 @@ export class ReadableStreamDefaultController {
 export class ReadableByteStreamController {
   get [Symbol.toStringTag]() { return 'ReadableByteStreamController'; }
 
-  constructor(rsState) {
+  constructor(rsState: ReadableStreamState) {
     _rbc.set(this, rsState);
   }
 
   get desiredSize() {
-    return _rsDesiredSize(_rbc.get(this));
+    return _rsDesiredSize(_rbc.get(this)!);
   }
 
   get byobRequest() {
-    const s = _rbc.get(this);
+    const s = _rbc.get(this)!;
     if (!s.pendingByob || s.pendingByob.length === 0) return null;
-    const desc = s.pendingByob[0];
+    const desc = s.pendingByob[0]!;
     if (!desc.request) desc.request = new ReadableStreamBYOBRequest(this, desc);
     return desc.request;
   }
 
-  enqueue(chunk) {
-    const s = _rbc.get(this);
+  enqueue(chunk: ArrayBuffer | ArrayBufferView) {
+    const s = _rbc.get(this)!;
     if (s.state !== 'readable') throw new TypeError('Stream is not readable');
     if (s.closeRequested)       throw new TypeError('Cannot enqueue after close()');
 
     // Normalise to Uint8Array
-    let bytes;
+    let bytes: Uint8Array;
     if (chunk instanceof Uint8Array) {
       bytes = chunk;
     } else if (ArrayBuffer.isView(chunk)) {
@@ -475,8 +523,8 @@ export class ReadableByteStreamController {
 
     // Fill pending BYOB descriptors first
     let offset = 0;
-    while (offset < bytes.length && s.pendingByob.length > 0) {
-      const desc     = s.pendingByob[0];
+    while (offset < bytes.length && s.pendingByob!.length > 0) {
+      const desc     = s.pendingByob![0]!;
       const available = bytes.length - offset;
       const needed    = desc.view.byteLength - desc.bytesFilled;
       const toCopy    = Math.min(available, needed);
@@ -486,7 +534,7 @@ export class ReadableByteStreamController {
       offset           += toCopy;
 
       if (desc.bytesFilled >= desc.minFill) {
-        s.pendingByob.shift();
+        s.pendingByob!.shift();
         desc.request = null;
         desc.resolve({
           done:  false,
@@ -496,49 +544,49 @@ export class ReadableByteStreamController {
     }
 
     // Fill pending default (non-BYOB) reads
-    if (offset < bytes.length && s.pendingReads.length > 0) {
+    if (offset < bytes.length && s.pendingReads!.length > 0) {
       const remaining = bytes.slice(offset);
       offset = bytes.length;
-      s.pendingReads.shift().resolve({ done: false, value: remaining });
+      s.pendingReads!.shift()!.resolve({ done: false, value: remaining });
     }
 
     // Any leftover bytes go into the queue
     if (offset < bytes.length) {
       const leftover = bytes.slice(offset);
-      s.queue.push({ value: leftover, size: leftover.byteLength });
-      s.queueTotalSize += leftover.byteLength;
+      s.queue!.push({ value: leftover, size: leftover.byteLength });
+      s.queueTotalSize! += leftover.byteLength;
     }
 
-    if (s.closeRequested && s.queue.length === 0 && s.pendingByob.length === 0) {
+    if (s.closeRequested && s.queue!.length === 0 && s.pendingByob!.length === 0) {
       _rsMarkClosed(s);
     }
     _rsPullIfNeeded(s);
   }
 
   close() {
-    const s = _rbc.get(this);
+    const s = _rbc.get(this)!;
     if (s.state !== 'readable') return;
     if (s.closeRequested)       throw new TypeError('close() already called');
     s.closeRequested = true;
-    if (s.queue.length === 0 && s.pendingByob.length === 0) {
+    if (s.queue!.length === 0 && s.pendingByob!.length === 0) {
       _rsMarkClosed(s);
     }
   }
 
-  error(reason) {
-    _rsMarkErrored(_rbc.get(this), reason);
+  error(reason: unknown) {
+    _rsMarkErrored(_rbc.get(this)!, reason);
   }
 
   // Called by ReadableStreamBYOBRequest.respond(bytesWritten)
-  _byobRespond(bytesWritten, view) {
-    const s = _rbc.get(this);
+  _byobRespond(bytesWritten: number, view: ArrayBufferView) {
+    const s = _rbc.get(this)!;
     if (!s.pendingByob || s.pendingByob.length === 0) return;
-    const desc = s.pendingByob[0];
+    const desc = s.pendingByob[0]!;
     desc.bytesFilled += bytesWritten;
     desc.request      = null;
 
     if (s.state === 'closed') {
-      s.pendingByob.shift();
+      s.pendingByob.shift()!;
       desc.resolve({
         done:  true,
         value: new Uint8Array(desc.view.buffer, desc.view.byteOffset, 0),
@@ -547,7 +595,7 @@ export class ReadableByteStreamController {
     }
 
     if (desc.bytesFilled >= desc.minFill) {
-      s.pendingByob.shift();
+      s.pendingByob.shift()!;
       desc.resolve({
         done:  false,
         value: new Uint8Array(desc.view.buffer, desc.view.byteOffset, desc.bytesFilled),
@@ -557,16 +605,19 @@ export class ReadableByteStreamController {
   }
 
   // Called by ReadableStreamBYOBRequest.respondWithNewView(view)
-  _byobRespondWithNewView(view) {
-    const s = _rbc.get(this);
+  _byobRespondWithNewView(view: ArrayBufferView) {
+    const s = _rbc.get(this)!;
     if (!s.pendingByob || s.pendingByob.length === 0) return;
-    const desc = s.pendingByob[0];
+    const desc = s.pendingByob[0]!;
     desc.view        = view;
     desc.bytesFilled = view.byteLength;
     desc.request     = null;
 
-    s.pendingByob.shift();
-    desc.resolve({ done: s.state === 'closed', value: view });
+    s.pendingByob.shift()!;
+    desc.resolve({
+      done: s.state === 'closed',
+      value: new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+    });
     _rsPullIfNeeded(s);
   }
 }
@@ -581,18 +632,18 @@ export class ReadableStreamBYOBRequest {
 
   get [Symbol.toStringTag]() { return 'ReadableStreamBYOBRequest'; }
 
-  constructor(controller, desc) {
+  constructor(controller: ReadableByteStreamController, desc: PullIntoDescriptor) {
     this.#controller = controller;
     this.#desc       = desc;
   }
 
   get view() { return this.#desc.view; }
 
-  respond(bytesWritten) {
+  respond(bytesWritten: number) {
     this.#controller._byobRespond(Number(bytesWritten), this.#desc.view);
   }
 
-  respondWithNewView(view) {
+  respondWithNewView(view: ArrayBufferView) {
     if (!ArrayBuffer.isView(view)) throw new TypeError('view must be an ArrayBufferView');
     this.#controller._byobRespondWithNewView(view);
   }
@@ -605,20 +656,15 @@ export class ReadableStreamBYOBRequest {
 export class ReadableStream {
   get [Symbol.toStringTag]() { return 'ReadableStream'; }
 
-  constructor(underlyingSource, queuingStrategy) {
+  constructor(underlyingSource?: any, queuingStrategy?: QueuingStrategyLike) {
     const src         = underlyingSource ?? {};
     const isByteStream = src.type === 'bytes';
     const defaultHWM   = isByteStream ? 0 : 1;
     const { highWaterMark, sizeAlgorithm } = _extractStrategy(queuingStrategy, defaultHWM);
 
-    // Boa 0.21.1 bug workaround: Boa panics with "index out of bounds: the len is 0
-    // but the index is 0" (PutLexicalValue) when a class constructor has an if/else
-    // where BOTH branches declare block-scoped variables (const/let) that are captured
-    // by arrow function closures. The compiler under-allocates the lexical environment
-    // for the second block. Fix: hoist s/controller/startResult to constructor scope
-    // so closures capture function-level bindings, not block-level ones.
-    // See docs/boa-0.21.1-bug-putlexicalvalue.md for the full reproducer.
-    let s, controller, startResult;
+    let s: ReadableStreamState;
+    let controller: ReadableStreamDefaultController | ReadableByteStreamController;
+    let startResult: Promise<unknown>;
     if (isByteStream) {
       s = _rsMakeState('source', {
         underlyingSource: src,
@@ -664,31 +710,32 @@ export class ReadableStream {
         ? Promise.resolve(src.start(controller))
         : Promise.resolve();
     }
-    startResult.then(() => { s.started = true; _rsPullIfNeeded(s); })
-               .catch(e => controller.error(e));
+    startResult.then(function rsOnStarted() { s.started = true; _rsPullIfNeeded(s); })
+               .catch(function rsStartError(e) { controller.error(e); });
   }
 
-  static from(asyncIterable) {
+  static from(asyncIterable: AsyncIterable<any> | Iterable<any>) {
+    const source = asyncIterable as (AsyncIterable<any> & Iterable<any>);
     if (asyncIterable == null ||
-        (typeof asyncIterable[Symbol.asyncIterator] !== 'function' &&
-         typeof asyncIterable[Symbol.iterator] !== 'function')) {
+        (typeof source[Symbol.asyncIterator] !== 'function' &&
+         typeof source[Symbol.iterator] !== 'function')) {
       throw new TypeError('ReadableStream.from: argument must be an async iterable or iterable');
     }
     const rs = Object.create(ReadableStream.prototype);
-    _rs.set(rs, _rsMakeState('iterable', { source: asyncIterable }));
+    _rs.set(rs, _rsMakeState('iterable', { source }));
     return rs;
   }
 
-  get locked() { return _rs.get(this).locked; }
+  get locked() { return _rs.get(this)!.locked; }
 
-  cancel(reason) {
-    const s = _rs.get(this);
+  cancel(reason: unknown) {
+    const s = _rs.get(this)!;
     if (s.locked) return Promise.reject(new TypeError('ReadableStream is locked to a reader'));
     return _rsCancel(s, reason);
   }
 
-  getReader(options) {
-    const s    = _rs.get(this);
+  getReader(options?: { mode?: 'byob' }) {
+    const s    = _rs.get(this)!;
     const mode = options?.mode;
     if (s.locked) throw new TypeError('ReadableStream is already locked to a reader');
     if (mode === 'byob') {
@@ -706,7 +753,7 @@ export class ReadableStream {
   }
 
   [Symbol.asyncIterator]() {
-    const s = _rs.get(this);
+    const s = _rs.get(this)!;
     if (s.locked) throw new TypeError('ReadableStream is locked');
     s.locked = true;
 
@@ -717,16 +764,16 @@ export class ReadableStream {
     return {
       next() {
         const read = iter ? iter.next() : _rsNextChunk(s);
-        return read.then(r => {
+        return read.then(function rsAsyncIterNext(r) {
           if (r.done) { s.locked = false; _rsMarkClosed(s); }
           return r;
-        }, e => {
+        }, function rsAsyncIterError(e: unknown) {
           s.locked = false;
           _rsMarkErrored(s, e);
           return Promise.reject(e);
         });
       },
-      return(value) {
+      return(value: unknown) {
         s.locked = false;
         if (iter?.return) return iter.return(value);
         return Promise.resolve({ done: true, value });
@@ -735,10 +782,9 @@ export class ReadableStream {
     };
   }
 
-  async pipeTo(destination, options) {
-    const src = _rs.get(this);
+  async pipeTo(destination: WritableStream, options?: { preventClose?: boolean; preventAbort?: boolean; preventCancel?: boolean; signal?: AbortSignal | null }) {
+    const src = _rs.get(this)!;
     const dst = _ws.get(destination);
-    if (!src) return Promise.reject(new TypeError('ReadableStream expected'));
     if (!dst) return Promise.reject(new TypeError('WritableStream expected'));
     if (src.locked) return Promise.reject(new TypeError('ReadableStream is locked'));
     if (dst.locked) return Promise.reject(new TypeError('WritableStream is locked'));
@@ -749,8 +795,8 @@ export class ReadableStream {
     const signal        = options?.signal ?? null;
 
     if (signal?.aborted) {
-      if (!preventCancel) _rsCancel(src, signal.reason).catch(() => {});
-      if (!preventAbort)  _wsAbort(dst, signal.reason).catch(() => {});
+      if (!preventCancel) _rsCancel(src, signal.reason).catch(function swallowCancelErr() {});
+      if (!preventAbort)  _wsAbort(dst, signal.reason).catch(function swallowAbortErr() {});
       throw signal.reason;
     }
 
@@ -760,7 +806,7 @@ export class ReadableStream {
     // Fast path: iterable-readable + writer-writable — zero Web Streams overhead
     if (src.kind === 'iterable' && dst.kind === 'writer') {
       try {
-        const iter = src._iter ??= src.source[Symbol.asyncIterator]();
+        const iter = src._iter ??= src.source![Symbol.asyncIterator]();
         while (true) {
           if (signal?.aborted) throw signal.reason;
           const { done, value } = await iter.next();
@@ -772,8 +818,8 @@ export class ReadableStream {
         _rsMarkClosed(src);
       } catch (e) {
         _rsMarkErrored(src, e);
-        if (!preventAbort)  await _wsAbort(dst, e).catch(() => {});
-        if (!preventCancel) await _rsCancel(src, e).catch(() => {});
+        if (!preventAbort)  await _wsAbort(dst, e).catch(function swallowAbortErr() {});
+        if (!preventCancel) await _rsCancel(src, e).catch(function swallowCancelErr() {});
         src.locked = false;
         dst.locked = false;
         throw e;
@@ -784,12 +830,12 @@ export class ReadableStream {
     }
 
     // General pump
-    let abortListener = null;
-    let abortReject   = null;
-    let abortPromise  = null;
+    let abortListener: ((this: AbortSignal, ev: Event) => any) | null = null;
+    let abortReject: ((reason?: unknown) => void) | null = null;
+    let abortPromise: Promise<never> | null = null;
     if (signal) {
-      abortPromise  = new Promise((_, reject) => { abortReject = reject; });
-      abortListener = () => abortReject(signal.reason);
+      abortPromise  = new Promise<never>(function captureAbortReject(_, reject) { abortReject = reject; });
+      abortListener = function onAbortPipe() { abortReject?.(signal.reason); };
       signal.addEventListener('abort', abortListener, { once: true });
     }
 
@@ -807,32 +853,32 @@ export class ReadableStream {
       _rsMarkClosed(src);
     } catch (e) {
       _rsMarkErrored(src, e);
-      if (!preventAbort)  await _wsAbort(dst, e).catch(() => {});
-      if (!preventCancel) await _rsCancel(src, e).catch(() => {});
+      if (!preventAbort)  await _wsAbort(dst, e).catch(function swallowAbortErr() {});
+      if (!preventCancel) await _rsCancel(src, e).catch(function swallowCancelErr() {});
       throw e;
     } finally {
       src.locked = false;
       dst.locked = false;
-      if (abortListener) signal.removeEventListener('abort', abortListener);
+      if (abortListener && signal) signal.removeEventListener('abort', abortListener);
     }
   }
 
-  pipeThrough(transform, options) {
+  pipeThrough(transform: { readable: ReadableStream; writable: WritableStream }, options?: { preventClose?: boolean; preventAbort?: boolean; preventCancel?: boolean; signal?: AbortSignal | null }) {
     const { readable, writable } = transform ?? {};
     if (!(readable instanceof ReadableStream))
       throw new TypeError('transform.readable must be a ReadableStream');
     const dstState = _ws.get(writable);
     if (!dstState) throw new TypeError('transform.writable must be a WritableStream');
-    const s = _rs.get(this);
+    const s = _rs.get(this)!;
     if (s.locked) throw new TypeError('ReadableStream is locked');
     if (dstState.locked) throw new TypeError('transform.writable is locked');
 
-    this.pipeTo(writable, options).catch(() => {});
+    this.pipeTo(writable, options).catch(function swallowPipeError() {});
     return readable;
   }
 
   tee() {
-    const s = _rs.get(this);
+    const s = _rs.get(this)!;
     if (s.locked) throw new TypeError('ReadableStream is locked');
     s.locked = true;
 
@@ -849,21 +895,21 @@ export class ReadableStream {
       else cancelReason2 = reason;
       cancelledCount++;
       if (cancelledCount >= 2) {
-        _rsCancel(s, [cancelReason1, cancelReason2]).catch(() => {});
+        _rsCancel(s, [cancelReason1, cancelReason2]).catch(function swallowTeeCancelErr() {});
         s.locked = false;
       }
     }
 
     // Wrap a channel in an iterable that intercepts return() to notify tee.
-    function makeTeeIterable(ch, branchIndex: number) {
+    function makeTeeIterable(ch: Channel, branchIndex: number): AsyncIterable<any> {
       return {
         [Symbol.asyncIterator]() {
           const iter = ch[Symbol.asyncIterator]();
           return {
             next() { return iter.next(); },
-            return(value) {
+            return(value: unknown) {
               onBranchCancel(branchIndex, value);
-              return iter.return(value);
+              return iter.return ? iter.return(value) : Promise.resolve({ done: true, value });
             },
             [Symbol.asyncIterator]() { return this; },
           };
@@ -871,7 +917,7 @@ export class ReadableStream {
       };
     }
 
-    const feed = async () => {
+    const feed = async function teeFeed() {
       try {
         // Use _rsNextChunk directly to bypass the public locked check — tee() holds
         // the lock itself and must read through the internal API, not for-await-of.
@@ -904,17 +950,18 @@ export class ReadableStream {
 export class ReadableStreamDefaultReader {
   get [Symbol.toStringTag]() { return 'ReadableStreamDefaultReader'; }
 
-  constructor(stream) {
+  constructor(stream: ReadableStream) {
     const s = _rs.get(stream);
     if (!s) throw new TypeError('Argument must be a ReadableStream');
     if (s.locked) throw new TypeError('ReadableStream is already locked to a reader');
 
-    let closedResolve, closedReject;
-    const closedPromise = new Promise((res, rej) => { closedResolve = res; closedReject = rej; });
+    let closedResolve: (() => void) | undefined;
+    let closedReject: ((e: unknown) => void) | undefined;
+    const closedPromise = new Promise<void>(function captureRrClosed(res, rej) { closedResolve = res; closedReject = rej; });
 
     _rr.set(this, {
       rsState: s,
-      iter: s.kind === 'iterable' ? (s._iter ??= s.source[Symbol.asyncIterator]()) : null,
+      iter: s.kind === 'iterable' ? _rsIterableIterator(s) : null,
       closedResolve, closedReject, closedPromise,
     });
 
@@ -922,27 +969,27 @@ export class ReadableStreamDefaultReader {
     s.reader = this;
   }
 
-  get closed() { return _rr.get(this).closedPromise; }
+  get closed() { return _rr.get(this)!.closedPromise; }
 
   read() {
     const rr = _rr.get(this);
     if (!rr) return Promise.reject(new TypeError('Reader is released'));
     const s    = rr.rsState;
     const read = rr.iter ? rr.iter.next() : _rsNextChunk(s);
-    return read.then(r => {
+    return read.then(function rrReadNext(r) {
       if (r.done) { _rsMarkClosed(s); rr.closedResolve?.(); }
       return r;
-    }, e => {
+        }, function rrReadError(e: unknown) {
       _rsMarkErrored(s, e);
       rr.closedReject?.(e);
       return Promise.reject(e);
     });
   }
 
-  cancel(reason) {
+  cancel(reason: unknown) {
     const rr = _rr.get(this);
     if (!rr) return Promise.reject(new TypeError('Reader is released'));
-    return _rsCancel(rr.rsState, reason).then(() => rr.closedResolve?.());
+    return _rsCancel(rr.rsState, reason).then(function rrCancelled() { rr.closedResolve?.(); });
   }
 
   releaseLock() {
@@ -953,7 +1000,7 @@ export class ReadableStreamDefaultReader {
     const e = new TypeError('Reader was released before the stream closed');
     // Reject any in-flight read requests queued against this reader
     if (s.pendingReads) {
-      while (s.pendingReads.length > 0) s.pendingReads.shift().reject(e);
+      while (s.pendingReads.length > 0) s.pendingReads.shift()!.reject(e);
     }
     s.locked = false;
     s.reader = null;
@@ -969,23 +1016,24 @@ export class ReadableStreamDefaultReader {
 export class ReadableStreamBYOBReader {
   get [Symbol.toStringTag]() { return 'ReadableStreamBYOBReader'; }
 
-  constructor(stream) {
+  constructor(stream: ReadableStream) {
     const s = _rs.get(stream);
     if (!s) throw new TypeError('Argument must be a ReadableStream');
     if (s.locked) throw new TypeError('ReadableStream is already locked to a reader');
     if (!s.isByteStream) throw new TypeError('ReadableStreamBYOBReader requires a byte stream (type:"bytes")');
 
-    let closedResolve, closedReject;
-    const closedPromise = new Promise((res, rej) => { closedResolve = res; closedReject = rej; });
+    let closedResolve: (() => void) | undefined;
+    let closedReject: ((e: unknown) => void) | undefined;
+    const closedPromise = new Promise<void>(function captureBrClosed(res, rej) { closedResolve = res; closedReject = rej; });
 
     _br.set(this, { rsState: s, closedResolve, closedReject, closedPromise });
     s.locked = true;
     s.reader = this;
   }
 
-  get closed() { return _br.get(this).closedPromise; }
+  get closed() { return _br.get(this)!.closedPromise; }
 
-  read(view, options) {
+  read(view: ArrayBufferView, options?: { min?: number }) {
     const br = _br.get(this);
     if (!br) return Promise.reject(new TypeError('Reader is released'));
     if (!ArrayBuffer.isView(view)) return Promise.reject(new TypeError('view must be an ArrayBufferView'));
@@ -1007,22 +1055,22 @@ export class ReadableStreamBYOBReader {
     if (s.state === 'errored') return Promise.reject(s.storedError);
 
     // Try to fill from queued bytes
-    if (s.queue.length > 0) {
+    if (s.queue!.length > 0) {
       const filled = _rsByobFillFromQueue(s, view, min);
       if (filled !== null) return Promise.resolve({ done: false, value: filled });
     }
 
     // Park a pull-into descriptor
-    return new Promise((resolve, reject) => {
-      s.pendingByob.push({ view, bytesFilled: 0, minFill: min, resolve, reject, request: null });
+    return new Promise(function parkByobRead(resolve, reject) {
+      s.pendingByob!.push({ view, bytesFilled: 0, minFill: min, resolve, reject, request: null });
       _rsPullIfNeeded(s);
     });
   }
 
-  cancel(reason) {
+  cancel(reason: unknown) {
     const br = _br.get(this);
     if (!br) return Promise.reject(new TypeError('Reader is released'));
-    return _rsCancel(br.rsState, reason).then(() => br.closedResolve?.());
+    return _rsCancel(br.rsState, reason).then(function brCancelled() { br.closedResolve?.(); });
   }
 
   releaseLock() {
@@ -1032,8 +1080,8 @@ export class ReadableStreamBYOBReader {
     if (s.reader !== this) return;
     // Reject any pending BYOB reads before releasing the lock.
     const releaseErr = new TypeError('Reader was released before the read completed');
-    while (s.pendingByob.length > 0) {
-      const desc = s.pendingByob.shift();
+    while (s.pendingByob!.length > 0) {
+      const desc = s.pendingByob!.shift()!;
       desc.reject(releaseErr);
     }
     s.locked = false;
@@ -1046,9 +1094,10 @@ export class ReadableStreamBYOBReader {
 // WritableStream internal helpers
 // ---------------------------------------------------------------------------
 
-function _wsMakeState(kind, extra) {
-  let closedResolve, closedReject;
-  const closedPromise = new Promise((res, rej) => { closedResolve = res; closedReject = rej; });
+function _wsMakeState(kind: WritableStreamState['kind'], extra: Partial<WritableStreamState>): WritableStreamState {
+  let closedResolve: (() => void) | undefined;
+  let closedReject: ((e: unknown) => void) | undefined;
+  const closedPromise = new Promise<void>(function captureWsClosed(res, rej) { closedResolve = res; closedReject = rej; });
   return {
     kind,
     state: 'writable',
@@ -1063,7 +1112,7 @@ function _wsMakeState(kind, extra) {
   };
 }
 
-function _wsMarkClosed(s) {
+function _wsMarkClosed(s: WritableStreamState): void {
   if (s.state === 'closed') return;
   s.state = 'closed';
   s.closedResolve?.();
@@ -1071,25 +1120,25 @@ function _wsMarkClosed(s) {
   _wsResolveReady(s);
 }
 
-function _wsMakeReadyPending(s) {
+function _wsMakeReadyPending(s: WritableStreamState): void {
   if (s.readyResolve !== null) return; // already pending
-  s.readyPromise = new Promise(resolve => { s.readyResolve = resolve; });
+  s.readyPromise = new Promise(function captureWsReady(resolve) { s.readyResolve = resolve; });
 }
 
-function _wsResolveReady(s) {
+function _wsResolveReady(s: WritableStreamState): void {
   if (s.readyResolve === null) return; // already resolved
   s.readyResolve();
   s.readyResolve = null;
   s.readyPromise = Promise.resolve();
 }
 
-function _wsAbort(s, reason) {
+function _wsAbort(s: WritableStreamState, reason: unknown): Promise<void> {
   if (s.state === 'closed' || s.state === 'errored') return Promise.resolve();
   s.state       = 'errored';
   s.storedError = reason;
   s.controller?._abort(reason);
   if (s.pendingWrites) {
-    while (s.pendingWrites.length > 0) s.pendingWrites.shift().reject(reason);
+    while (s.pendingWrites.length > 0) s.pendingWrites.shift()!.reject(reason);
   }
   s.closedReject?.(reason);
   _wsResolveReady(s); // ready resolves (permanently) once the stream is errored
@@ -1099,15 +1148,15 @@ function _wsAbort(s, reason) {
   return Promise.resolve();
 }
 
-function _wsWriteInternal(s, chunk) {
+function _wsWriteInternal(s: WritableStreamState, chunk: any): Promise<void> {
   if (s.state === 'errored')  return Promise.reject(s.storedError);
   if (s.state !== 'writable') return Promise.reject(new TypeError('WritableStream is not writable'));
   if (s.kind === 'writer')    return Promise.resolve(s.sink.write(chunk));
 
   // Sink path: compute size, apply backpressure
   const size = s.sizeAlgorithm ? s.sizeAlgorithm(chunk) : 1;
-  s.queueTotalSize += size;
-  if (s.queueTotalSize > s.highWaterMark) {
+  s.queueTotalSize! += size;
+  if (s.queueTotalSize! > s.highWaterMark!) {
     _wsMakeReadyPending(s);
   }
 
@@ -1116,24 +1165,24 @@ function _wsWriteInternal(s, chunk) {
     s.writing = true;
     return _wsDoSinkWrite(s, chunk, size);
   }
-  return new Promise((resolve, reject) => {
-    s.pendingWrites.push({ chunk, size, resolve, reject });
+  return new Promise(function parkWrite(resolve, reject) {
+    s.pendingWrites!.push({ chunk, size, resolve, reject });
   });
 }
 
-function _wsDoSinkWrite(s, chunk, size) {
+function _wsDoSinkWrite(s: WritableStreamState, chunk: any, size: number): Promise<void> {
   const p = s.underlyingSink.write
     ? Promise.resolve(s.underlyingSink.write(chunk, s.controller))
     : Promise.resolve();
-  return p.then(() => {
-    s.queueTotalSize -= size;
-    if (s.queueTotalSize < 0) s.queueTotalSize = 0;
+  return p.then(function wsAfterWrite() {
+    s.queueTotalSize! -= size;
+    if (s.queueTotalSize! < 0) s.queueTotalSize = 0;
 
     // Resolve backpressure if we're back below HWM
-    if (s.queueTotalSize <= s.highWaterMark) _wsResolveReady(s);
+    if (s.queueTotalSize! <= s.highWaterMark!) _wsResolveReady(s);
 
-    if (s.pendingWrites.length > 0) {
-      const entry = s.pendingWrites.shift();
+    if (s.pendingWrites!.length > 0) {
+      const entry = s.pendingWrites!.shift()!;
       if (entry.drain) {
         s.writing = false;
         entry.resolve();
@@ -1143,20 +1192,20 @@ function _wsDoSinkWrite(s, chunk, size) {
     } else {
       s.writing = false;
     }
-  }).catch(e => {
-    s.queueTotalSize -= size;
-    if (s.queueTotalSize < 0) s.queueTotalSize = 0;
+  }).catch(function wsWriteError(e) {
+    s.queueTotalSize! -= size;
+    if (s.queueTotalSize! < 0) s.queueTotalSize = 0;
     s.writing      = false;
     s.state        = 'errored';
     s.storedError  = e;
     s.closedReject?.(e);
     _wsResolveReady(s);
-    while (s.pendingWrites.length > 0) s.pendingWrites.shift().reject(e);
+    while (s.pendingWrites!.length > 0) s.pendingWrites!.shift()!.reject(e);
     throw e;
   });
 }
 
-async function _wsCloseInternal(s) {
+async function _wsCloseInternal(s: WritableStreamState): Promise<void> {
   if (s.state === 'closed')   return;
   if (s.state === 'closing')  throw new TypeError('WritableStream is already closing');
   if (s.state === 'errored')  throw s.storedError;
@@ -1164,8 +1213,8 @@ async function _wsCloseInternal(s) {
 
   // Wait for all in-flight writes to drain
   if (s.kind === 'sink' && s.writing) {
-    await new Promise((resolve, reject) => {
-      s.pendingWrites.push({ drain: true, size: 0, chunk: null, resolve, reject });
+    await new Promise<void>(function drainWrites(resolve, reject) {
+      s.pendingWrites!.push({ drain: true, size: 0, chunk: null, resolve, reject });
     });
   }
 
@@ -1186,7 +1235,7 @@ export class WritableStreamDefaultController {
 
   get [Symbol.toStringTag]() { return 'WritableStreamDefaultController'; }
 
-  constructor(wsState) {
+  constructor(wsState: WritableStreamState) {
     this.#abortCtrl = new AbortController();
     _wc.set(this, wsState);
   }
@@ -1194,11 +1243,11 @@ export class WritableStreamDefaultController {
   get signal()      { return this.#abortCtrl.signal; }
   get abortReason() { return this.#abortCtrl.signal.reason; }
 
-  error(reason) {
-    _wsAbort(_wc.get(this), reason);
+  error(reason: unknown) {
+    _wsAbort(_wc.get(this)!, reason);
   }
 
-  _abort(reason) { this.#abortCtrl.abort(reason); }
+  _abort(reason: unknown) { this.#abortCtrl.abort(reason); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,8 +1257,8 @@ export class WritableStreamDefaultController {
 export class WritableStream {
   get [Symbol.toStringTag]() { return 'WritableStream'; }
 
-  constructor(underlyingSink, queuingStrategy) {
-    // Fast path: if the sink is a Boats Writer, bypass all controller machinery.
+  constructor(underlyingSink?: any, queuingStrategy?: QueuingStrategyLike) {
+    // Fast path: if the sink is a Fino Writer, bypass all controller machinery.
     if (underlyingSink instanceof Writer) {
       _ws.set(this, _wsMakeState('writer', { sink: underlyingSink }));
       return;
@@ -1232,25 +1281,25 @@ export class WritableStream {
     const startResult = s.underlyingSink.start
       ? Promise.resolve(s.underlyingSink.start(controller))
       : Promise.resolve();
-    startResult.catch(e => controller.error(e));
+    startResult.catch(function wsStartError(e) { controller.error(e); });
   }
 
-  get locked() { return _ws.get(this).locked; }
+  get locked() { return _ws.get(this)!.locked; }
 
   close() {
-    const s = _ws.get(this);
+    const s = _ws.get(this)!;
     if (s.locked) return Promise.reject(new TypeError('WritableStream is locked'));
     return _wsCloseInternal(s);
   }
 
-  abort(reason) {
-    const s = _ws.get(this);
+  abort(reason: unknown) {
+    const s = _ws.get(this)!;
     if (s.locked) return Promise.reject(new TypeError('Cannot abort a locked WritableStream'));
     return _wsAbort(s, reason);
   }
 
   getWriter() {
-    const s = _ws.get(this);
+    const s = _ws.get(this)!;
     if (s.locked) throw new TypeError('WritableStream is already locked to a writer');
     const writer = new WritableStreamDefaultWriter(this);
     s.locked = true;
@@ -1266,20 +1315,21 @@ export class WritableStream {
 export class WritableStreamDefaultWriter {
   get [Symbol.toStringTag]() { return 'WritableStreamDefaultWriter'; }
 
-  constructor(stream) {
+  constructor(stream: WritableStream) {
     const s = _ws.get(stream);
     if (!s) throw new TypeError('Argument must be a WritableStream');
     if (s.locked) throw new TypeError('WritableStream is already locked to a writer');
 
-    let closedResolve, closedReject;
-    const closedPromise = new Promise((res, rej) => { closedResolve = res; closedReject = rej; });
+    let closedResolve: (() => void) | undefined;
+    let closedReject: ((e: unknown) => void) | undefined;
+    const closedPromise = new Promise<void>(function captureWwClosed(res, rej) { closedResolve = res; closedReject = rej; });
 
     _ww.set(this, { wsState: s, closedResolve, closedReject, closedPromise });
     s.locked = true;
     s.writer = this;
   }
 
-  get closed()      { return _ww.get(this).closedPromise; }
+  get closed()      { return _ww.get(this)!.closedPromise; }
 
   get desiredSize() {
     const ww = _ww.get(this);
@@ -1288,7 +1338,7 @@ export class WritableStreamDefaultWriter {
     if (s.kind === 'writer') return 1;
     if (s.state === 'errored') return null;
     if (s.state === 'closed')  return 0;
-    return s.highWaterMark - s.queueTotalSize;
+    return s.highWaterMark! - s.queueTotalSize!;
   }
 
   get ready() {
@@ -1297,7 +1347,7 @@ export class WritableStreamDefaultWriter {
     return ww.wsState.readyPromise;
   }
 
-  write(chunk) {
+  write(chunk: any) {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
     return _wsWriteInternal(ww.wsState, chunk);
@@ -1307,11 +1357,11 @@ export class WritableStreamDefaultWriter {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
     return _wsCloseInternal(ww.wsState)
-      .then(() => ww.closedResolve?.())
-      .catch(e => { ww.closedReject?.(e); throw e; });
+      .then(function wwClosed() { ww.closedResolve?.(); })
+      .catch(function wwCloseFailed(e) { ww.closedReject?.(e); throw e; });
   }
 
-  abort(reason) {
+  abort(reason: unknown) {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
     return _wsAbort(ww.wsState, reason);
@@ -1334,24 +1384,24 @@ export class WritableStreamDefaultWriter {
 // ---------------------------------------------------------------------------
 
 export class TransformStreamDefaultController {
-  #rsState = null;
+  #rsState: ReadableStreamState | null = null;
 
   get [Symbol.toStringTag]() { return 'TransformStreamDefaultController'; }
 
-  constructor(channel) {
+  constructor(channel: Channel) {
     _tc.set(this, channel);
   }
 
-  _setReadableState(rsState) { this.#rsState = rsState; }
+  _setReadableState(rsState: ReadableStreamState | undefined) { this.#rsState = rsState ?? null; }
 
   get desiredSize() {
     if (this.#rsState) return _rsDesiredSize(this.#rsState);
     return 1;
   }
 
-  enqueue(chunk)  { _tc.get(this).enqueue(chunk); }
-  terminate()     { _tc.get(this).close(); }
-  error(reason)   { _tc.get(this).error(reason); }
+  enqueue(chunk: any)  { _tc.get(this)!.enqueue(chunk); }
+  terminate()     { _tc.get(this)!.close(); }
+  error(reason: unknown)   { _tc.get(this)!.error(reason); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,7 +1414,7 @@ export class TransformStream {
 
   get [Symbol.toStringTag]() { return 'TransformStream'; }
 
-  constructor(transformer, writableStrategy, readableStrategy) {
+  constructor(transformer?: any, writableStrategy?: QueuingStrategyLike, readableStrategy?: QueuingStrategyLike) {
     const channel    = createChannel();
     const controller = new TransformStreamDefaultController(channel);
 
@@ -1372,19 +1422,19 @@ export class TransformStream {
     const flush     = transformer?.flush     ?? null;
 
     this.#writable = new WritableStream({
-      start(ctrl) {
+      start(ctrl: WritableStreamDefaultController) {
         if (transformer?.start) return transformer.start(controller);
       },
-      write(chunk) {
+      write(chunk: any) {
         if (transform) return Promise.resolve(transform(chunk, controller));
         controller.enqueue(chunk); // identity pass-through
         return Promise.resolve();
       },
       close() {
         const result = flush ? Promise.resolve(flush(controller)) : Promise.resolve();
-        return result.then(() => channel.close());
+        return result.then(function tsCloseChannel() { channel.close(); });
       },
-      abort(reason) {
+      abort(reason: unknown) {
         channel.error(reason);
       },
     }, writableStrategy);
@@ -1394,13 +1444,13 @@ export class TransformStream {
       // backpressure are respected, and desiredSize reflects the real queue.
       const chIter = channel[Symbol.asyncIterator]();
       this.#readable = new ReadableStream({
-        pull(ctrl) {
-          return chIter.next().then(({ done, value }) => {
+        pull(ctrl: ReadableStreamDefaultController) {
+          return chIter.next().then(function tsChannelPull({ done, value }: IteratorResult<any, any>) {
             if (done) ctrl.close();
             else ctrl.enqueue(value);
           });
         },
-        cancel(reason) {
+        cancel(reason: unknown) {
           channel.error(reason);
         },
       }, readableStrategy);

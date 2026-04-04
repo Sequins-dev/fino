@@ -1,9 +1,9 @@
 /**
- * Tests for AbortController and AbortSignal (boats:abort / globalThis).
+ * Tests for AbortController and AbortSignal (fino:abort / globalThis).
  * Uses the global instances registered by _main.mjs.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 
 describe('AbortController', () => {
   it('signal starts non-aborted', (t) => {
@@ -57,15 +57,17 @@ describe('AbortSignal', () => {
   it('addEventListener fires on abort', (t) => {
     const ctrl = new AbortController();
     let fired = false;
-    let firedEvent = null;
+    let firedEvent: Event | null = null;
     ctrl.signal.addEventListener('abort', (e) => {
       fired = true;
       firedEvent = e;
     });
     ctrl.abort();
     t.equal(fired, true, 'listener fired');
-    t.equal(firedEvent.type, 'abort', 'event.type is abort');
-    t.equal(firedEvent.target, ctrl.signal, 'event.target is the signal');
+    if (firedEvent === null) throw new Error('abort listener should receive an event');
+    const event = firedEvent as Event;
+    t.equal(event.type, 'abort', 'event.type is abort');
+    t.equal(event.target, ctrl.signal, 'event.target is the signal');
   });
 
   it('addEventListener fires immediately if already aborted? (no)', (t) => {
@@ -97,7 +99,7 @@ describe('AbortSignal', () => {
 
   it('onabort null does nothing', (t) => {
     const ctrl = new AbortController();
-    ctrl.signal.onabort = 42; // invalid — should be silently ignored
+    ctrl.signal.onabort = 42 as unknown as ((this: AbortSignal, ev: Event) => any); // invalid — should be silently ignored
     t.equal(ctrl.signal.onabort, null, 'non-function sets onabort to null');
     let threw = false;
     try { ctrl.abort(); } catch (_) { threw = true; }
@@ -320,12 +322,12 @@ describe('AbortSignal — manual dispatchEvent fires onabort', () => {
 describe('Symbol.toStringTag', () => {
   it('AbortSignal [Symbol.toStringTag] is "AbortSignal"', (t) => {
     const signal = new AbortController().signal;
-    t.equal(signal[Symbol.toStringTag], 'AbortSignal', 'toStringTag is AbortSignal');
+    t.equal((signal as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'AbortSignal', 'toStringTag is AbortSignal');
   });
 
   it('AbortController [Symbol.toStringTag] is "AbortController"', (t) => {
     const ctrl = new AbortController();
-    t.equal(ctrl[Symbol.toStringTag], 'AbortController', 'toStringTag is AbortController');
+    t.equal((ctrl as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'AbortController', 'toStringTag is AbortController');
   });
 });
 

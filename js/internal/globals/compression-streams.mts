@@ -2,7 +2,7 @@
  * internal:compression-streams — CompressionStream and DecompressionStream.
  *
  * WHATWG Compression Streams specification implementation.
- * Wraps the streaming compression API from boats:compression in the
+ * Wraps the streaming compression API from fino:compression in the
  * standard Web Streams interface (ReadableStream / WritableStream pair).
  *
  * Supported formats: 'gzip', 'deflate', 'deflate-raw'
@@ -11,7 +11,7 @@
  *
  * ## Bridging the two streaming APIs
  *
- * boats:compression provides streaming via factories: `createGzip(opts)` returns
+ * fino:compression provides streaming via factories: `createGzip(opts)` returns
  * an object with `transform(asyncIterable) → asyncIterable`. This does not speak
  * Web Streams. To bridge:
  *
@@ -24,12 +24,12 @@
  * generators and avoids duplicating the zlib/brotli logic here.
  */
 
-import { ReadableStream, WritableStream } from 'internal:globals/webstreams';
+import { ReadableStream, WritableStream } from './webstreams.mts';
 import {
   createGzip, createGunzip,
   createDeflate, createInflate,
   createDeflateRaw, createInflateRaw,
-} from 'boats:util/compression';
+} from '../../util/compression.mts';
 
 // ---------------------------------------------------------------------------
 // Format maps
@@ -55,7 +55,7 @@ const DECOMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<
 
 /**
  * Create a (readable, writable) Web Streams pair backed by one of the
- * boats:compression streaming factories.
+ * fino:compression streaming factories.
  *
  * @param {Function} factory — e.g. createGzip, createGunzip
  * @returns {{ readable: ReadableStream, writable: WritableStream }}
@@ -65,22 +65,22 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
   // A simple buffered async iterable. The WritableStream sink enqueues chunks
   // here; the compression generator pulls from here.
 
-  const inputChunks = [];
-  let inputResolve = null;
-  let inputReject  = null;
+  const inputChunks: Uint8Array[] = [];
+  let inputResolve: ((value: IteratorResult<Uint8Array>) => void) | null = null;
+  let inputReject: ((reason?: unknown) => void) | null = null;
   let inputDone    = false;
-  let inputError   = null;
+  let inputError: unknown = null;
 
-  const inputIterable = {
-    [Symbol.asyncIterator]() {
+  const inputIterable: AsyncIterable<Uint8Array> = {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
       return {
-        next() {
+        next(): Promise<IteratorResult<Uint8Array>> {
           if (inputChunks.length > 0) {
-            return Promise.resolve({ value: inputChunks.shift(), done: false });
+            return Promise.resolve({ value: inputChunks.shift()!, done: false });
           }
           if (inputDone && inputError !== null) return Promise.reject(inputError);
           if (inputDone) return Promise.resolve({ done: true, value: undefined });
-          return new Promise((resolve, reject) => {
+          return new Promise(function parkInput(resolve, reject) {
             inputResolve = resolve;
             inputReject  = reject;
           });
@@ -89,7 +89,7 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
     },
   };
 
-  function _enqueue(chunk) {
+  function _enqueue(chunk: Uint8Array): void {
     if (inputResolve) {
       const r = inputResolve; inputResolve = null; inputReject = null;
       r({ value: chunk, done: false });
@@ -106,7 +106,7 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
     }
   }
 
-  function _error(reason) {
+  function _error(reason: unknown): void {
     inputDone  = true;
     inputError = reason ?? new Error('stream aborted');
     if (inputReject) {
@@ -118,7 +118,7 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
   // ---- Writable side -------------------------------------------------------
 
   const writable = new WritableStream({
-    write(chunk) {
+    write(chunk: BufferSource) {
       if (!(chunk instanceof ArrayBuffer) && !ArrayBuffer.isView(chunk)) {
         throw new TypeError('CompressionStream: chunk must be a BufferSource (ArrayBuffer or ArrayBufferView)');
       }
@@ -133,8 +133,8 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
       _enqueue(bytes);
     },
     close() { _close(); },
-    abort(reason) { _error(reason); },
-  });
+    abort(reason: unknown) { _error(reason); },
+  }, undefined);
 
   // ---- Compression / decompression chain -----------------------------------
 

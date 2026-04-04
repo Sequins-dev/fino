@@ -1,128 +1,61 @@
-use std::{
-    cell::RefCell,
-    collections::HashMap,
-    path::{Path, PathBuf},
-    rc::Rc,
-};
+//! V8 module loader — resolve callback, import.meta hook, dynamic import,
+//! and the `internal:loader-hooks` synthetic module.
 
-use boa_engine::{
-    Context, JsArgs, JsNativeError, JsResult, JsString, JsValue, Module, NativeFunction, js_string,
-    module::{ModuleLoader, Referrer, SyntheticModuleInitializer},
-    object::{FunctionObjectBuilder, JsObject},
-};
-use boa_parser::Source;
+use std::path::{Component, Path, PathBuf};
 
-use crate::{
-    async_context::{self, BoatsJobExecutor},
-    ffi, platform,
-};
+use ::v8;
+use oxc_sourcemap::SourceMap;
+
+use crate::{async_context, docgen, ffi, platform, profiler, state::get_state};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
 // ---------------------------------------------------------------------------
 
-/// How a `boats:*` or `internal:*` built-in module is produced.
 enum BuiltinKind {
-    /// Embedded JS source parsed into a module on first import.
-    Source(&'static str),
-    /// A Rust function that constructs a synthetic module on first import.
-    Synthetic(fn(&mut Context) -> JsResult<Module>),
+    Source {
+        code: &'static str,
+        source_map: &'static str,
+    },
+    Synthetic(for<'s> fn(&mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module>),
 }
 
-/// A built-in entry: `(full specifier, kind)`.
 type BuiltinEntry = (&'static str, BuiltinKind);
 
-/// Platform-selected backend source: kqueue on macOS, io_uring on Linux.
-/// Used so `boats:runtime/loop` can import the right backend with a static (sync)
-/// import rather than `await import(...)`, which would make loop.mjs an
-/// async module and trigger a Boa 0.21.1 panic on teardown.
 #[cfg(target_os = "macos")]
 const LOOP_BACKEND_SRC: &str =
     include_str!(concat!(env!("OUT_DIR"), "/js/internal/runtime/kqueue.mjs"));
+#[cfg(target_os = "macos")]
+const LOOP_BACKEND_MAP: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/js/internal/runtime/kqueue.mjs.map"
+));
 #[cfg(not(target_os = "macos"))]
 const LOOP_BACKEND_SRC: &str = include_str!(concat!(
     env!("OUT_DIR"),
     "/js/internal/runtime/io_uring.mjs"
 ));
+#[cfg(not(target_os = "macos"))]
+const LOOP_BACKEND_MAP: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/js/internal/runtime/io_uring.mjs.map"
+));
 
-/// Embeds a JS file at `js/<path>.mjs` as a built-in with the given specifier.
-///
-/// To add a new built-in:
-/// - `boats:net/socket`       → `source_builtin!("boats:net/socket", "net/socket")`
-/// - `internal:globals/url`   → `source_builtin!("internal:globals/url", "internal/globals/url")`
-///
-/// `internal:*` modules can only be imported by other built-in modules
-/// (those without a filesystem path, i.e. `boats:*` and `internal:*`).
 macro_rules! source_builtin {
     ($specifier:literal, $path:literal) => {
         (
             $specifier,
-            BuiltinKind::Source(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/js/",
-                $path,
-                ".mjs"
-            ))),
+            BuiltinKind::Source {
+                code: include_str!(concat!(env!("OUT_DIR"), "/js/", $path, ".mjs")),
+                source_map: include_str!(concat!(env!("OUT_DIR"), "/js/", $path, ".mjs.map")),
+            },
         )
     };
 }
 
-/// Synthetic module that exposes `registerResolve` and `registerInitMeta`.
-///
-/// These functions are called by `internal:loader` (a JS module) to install
-/// JS callbacks that the `BoatsModuleLoader` uses for filesystem resolution
-/// and `import.meta` population. The callbacks are stored on `BoatsJobExecutor`
-/// so Boa's GC can trace the `JsObject` references.
-fn loader_hooks_module(context: &mut Context) -> JsResult<Module> {
-    let module = Module::synthetic(
-        &[
-            js_string!("registerResolve"),
-            js_string!("registerInitMeta"),
-        ],
-        SyntheticModuleInitializer::from_copy_closure(|module, context| {
-            let register_resolve = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let func = args.get_or_undefined(0).as_object();
-                    if let Some(exec) = context.downcast_job_executor::<BoatsJobExecutor>() {
-                        *exec.resolve_fn.borrow_mut() = func;
-                    }
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("registerResolve"))
-            .length(1)
-            .build();
-
-            let register_init_meta = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let func = args.get_or_undefined(0).as_object();
-                    if let Some(exec) = context.downcast_job_executor::<BoatsJobExecutor>() {
-                        *exec.init_meta_fn.borrow_mut() = func;
-                    }
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("registerInitMeta"))
-            .length(1)
-            .build();
-
-            module.set_export(&js_string!("registerResolve"), register_resolve.into())?;
-            module.set_export(&js_string!("registerInitMeta"), register_init_meta.into())?;
-            Ok(())
-        }),
-        None,
-        None,
-        context,
-    );
-    Ok(module)
-}
-
-/// The complete set of `boats:*` and `internal:*` built-ins.
 static BUILTINS: &[BuiltinEntry] = &[
     // Synthetic Rust modules
-    ("boats:ffi", BuiltinKind::Synthetic(ffi::create_module)),
+    ("fino:ffi", BuiltinKind::Synthetic(ffi::create_module)),
     (
         "internal:process",
         BuiltinKind::Synthetic(platform::create_module),
@@ -132,11 +65,24 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(async_context::create_module),
     ),
     (
+        "internal:docgen",
+        BuiltinKind::Synthetic(docgen::create_module),
+    ),
+    (
         "internal:loader-hooks",
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
     source_builtin!("internal:loader", "internal/loader"),
-    // internal: globals (web spec globals, accessible only via globalThis)
+    // internal: CLI commands
+    source_builtin!("internal:commands/root", "commands/root"),
+    source_builtin!("internal:commands/test", "commands/test"),
+    source_builtin!("internal:commands/bench", "commands/bench"),
+    source_builtin!("internal:commands/install", "commands/install"),
+    source_builtin!("internal:commands/init", "commands/init"),
+    source_builtin!("internal:commands/doc", "commands/doc"),
+    source_builtin!("internal:shutdown", "internal/shutdown"),
+    source_builtin!("internal:package_manager", "internal/package_manager"),
+    // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "internal/globals/encoding"),
     source_builtin!("internal:globals/console", "internal/globals/console"),
     source_builtin!(
@@ -173,43 +119,1070 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
     (
         "internal:runtime/loop-backend",
-        BuiltinKind::Source(LOOP_BACKEND_SRC),
+        BuiltinKind::Source {
+            code: LOOP_BACKEND_SRC,
+            source_map: LOOP_BACKEND_MAP,
+        },
     ),
-    source_builtin!("boats:runtime/loop", "runtime/loop"),
-    source_builtin!("boats:runtime/process", "runtime/process"),
-    source_builtin!("boats:runtime/context", "runtime/context"),
+    source_builtin!("fino:runtime/loop", "runtime/loop"),
+    source_builtin!("fino:runtime/process", "runtime/process"),
+    source_builtin!("fino:runtime/context", "runtime/context"),
+    source_builtin!("fino:tty", "tty"),
     // net
-    source_builtin!("boats:net/socket", "net/socket"),
-    source_builtin!("boats:net/http", "net/http"),
-    source_builtin!("boats:net/tls", "net/tls"),
-    source_builtin!("boats:net/dns", "net/dns"),
-    source_builtin!("boats:net/serve", "net/serve"),
-    source_builtin!("boats:net/eventsource", "net/eventsource"),
+    source_builtin!("fino:net/socket", "net/socket"),
+    source_builtin!("fino:net/http", "net/http"),
+    source_builtin!("fino:net/tls", "net/tls"),
+    source_builtin!("fino:net/dns", "net/dns"),
+    source_builtin!("fino:net/serve", "net/serve"),
+    source_builtin!("fino:net/eventsource", "net/eventsource"),
+    source_builtin!("fino:net/websocket", "net/websocket"),
     // file
-    source_builtin!("boats:file", "file/fs"),
-    source_builtin!("boats:file/path", "file/path"),
-    source_builtin!("boats:file/watch", "file/watch"),
+    source_builtin!("fino:file", "file/fs"),
+    source_builtin!("fino:file/path", "file/path"),
+    source_builtin!("fino:file/watch", "file/watch"),
+    source_builtin!("fino:archive", "archive"),
+    source_builtin!("internal:opentelemetry/core", "opentelemetry/core"),
+    source_builtin!("internal:opentelemetry/common", "opentelemetry/common"),
+    source_builtin!("internal:opentelemetry/traces", "opentelemetry/traces"),
+    source_builtin!("internal:opentelemetry/logs", "opentelemetry/logs"),
+    source_builtin!("internal:opentelemetry/metrics", "opentelemetry/metrics"),
+    source_builtin!(
+        "internal:opentelemetry/exporters",
+        "opentelemetry/exporters"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/bootstrap",
+        "opentelemetry/bootstrap"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/index",
+        "opentelemetry/instrumentations/index"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/http-server",
+        "opentelemetry/instrumentations/http-server"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/fetch",
+        "opentelemetry/instrumentations/fetch"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/trace-topic",
+        "opentelemetry/instrumentations/trace-topic"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/_runtime-client",
+        "opentelemetry/instrumentations/_runtime-client"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/dns",
+        "opentelemetry/instrumentations/dns"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/socket",
+        "opentelemetry/instrumentations/socket"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/instrumentations/tls",
+        "opentelemetry/instrumentations/tls"
+    ),
+    source_builtin!("internal:opentelemetry/sdk", "opentelemetry/sdk"),
+    source_builtin!("fino:opentelemetry", "opentelemetry"),
+    source_builtin!("fino:semver", "semver"),
     // test
-    source_builtin!("boats:test/assert", "test/assert"),
-    source_builtin!("boats:test/test", "test/test"),
-    source_builtin!("boats:test/bench", "test/bench"),
+    source_builtin!("fino:test/assert", "test/assert"),
+    source_builtin!("fino:test/test", "test/test"),
+    source_builtin!("fino:test/bench", "test/bench"),
+    source_builtin!("fino:test/mock", "test/mock"),
     // util
-    source_builtin!("boats:util/compression", "util/compression"),
-    source_builtin!("boats:util/topic", "util/topic"),
+    source_builtin!("fino:util/argv", "util/argv"),
+    source_builtin!("fino:util/compression", "util/compression"),
+    source_builtin!("fino:util/prompt", "util/prompt"),
+    source_builtin!("fino:util/topic", "util/topic"),
+    // profiler
+    (
+        "fino:profiler",
+        BuiltinKind::Synthetic(profiler::create_module),
+    ),
 ];
 
+fn builtin_source_path(spec: &str) -> Option<&'static str> {
+    match spec {
+        "_main.mjs" => Some(""),
+        "internal:loader" => Some("internal/loader"),
+        "internal:commands/root" => Some("commands/root"),
+        "internal:commands/test" => Some("commands/test"),
+        "internal:commands/bench" => Some("commands/bench"),
+        "internal:commands/install" => Some("commands/install"),
+        "internal:commands/init" => Some("commands/init"),
+        "internal:commands/doc" => Some("commands/doc"),
+        "internal:shutdown" => Some("internal/shutdown"),
+        "internal:package_manager" => Some("internal/package_manager"),
+        "internal:globals/encoding" => Some("internal/globals/encoding"),
+        "internal:globals/console" => Some("internal/globals/console"),
+        "internal:globals/eventtarget" => Some("internal/globals/eventtarget"),
+        "internal:globals/abort" => Some("internal/globals/abort"),
+        "internal:globals/blob" => Some("internal/globals/blob"),
+        "internal:globals/url" => Some("internal/globals/url"),
+        "internal:globals/urlpattern" => Some("internal/globals/urlpattern"),
+        "internal:globals/webstreams" => Some("internal/globals/webstreams"),
+        "internal:globals/formdata" => Some("internal/globals/formdata"),
+        "internal:globals/crypto" => Some("internal/globals/crypto"),
+        "internal:globals/time" => Some("internal/globals/time"),
+        "internal:globals/fetch" => Some("internal/globals/fetch"),
+        "internal:globals/compression-streams" => Some("internal/globals/compression-streams"),
+        "internal:globals/global" => Some("internal/globals/global"),
+        "internal:stream" => Some("internal/stream"),
+        "internal:openssl" => Some("internal/openssl"),
+        "internal:file/bindings" => Some("file/bindings"),
+        "internal:file/stat" => Some("file/stat"),
+        "internal:file/handle" => Some("file/handle"),
+        "internal:file/entry" => Some("file/entry"),
+        "internal:file/glob" => Some("file/glob"),
+        "internal:file/watch-bindings" => Some("file/watch-bindings"),
+        "internal:runtime/libc" => Some("internal/runtime/libc"),
+        "internal:runtime/kqueue" => Some("internal/runtime/kqueue"),
+        "internal:runtime/io_uring" => Some("internal/runtime/io_uring"),
+        "internal:runtime/loop-backend" => Some("internal/runtime/loop-backend"),
+        "fino:runtime/loop" => Some("runtime/loop"),
+        "fino:runtime/process" => Some("runtime/process"),
+        "fino:runtime/context" => Some("runtime/context"),
+        "fino:tty" => Some("tty"),
+        "fino:net/socket" => Some("net/socket"),
+        "fino:net/http" => Some("net/http"),
+        "fino:net/tls" => Some("net/tls"),
+        "fino:net/dns" => Some("net/dns"),
+        "fino:net/serve" => Some("net/serve"),
+        "fino:net/eventsource" => Some("net/eventsource"),
+        "fino:net/websocket" => Some("net/websocket"),
+        "fino:file" => Some("file/fs"),
+        "fino:file/path" => Some("file/path"),
+        "fino:file/watch" => Some("file/watch"),
+        "fino:archive" => Some("archive"),
+        "internal:opentelemetry/core" => Some("opentelemetry/core"),
+        "internal:opentelemetry/common" => Some("opentelemetry/common"),
+        "internal:opentelemetry/traces" => Some("opentelemetry/traces"),
+        "internal:opentelemetry/logs" => Some("opentelemetry/logs"),
+        "internal:opentelemetry/metrics" => Some("opentelemetry/metrics"),
+        "internal:opentelemetry/exporters" => Some("opentelemetry/exporters"),
+        "internal:opentelemetry/bootstrap" => Some("opentelemetry/bootstrap"),
+        "internal:opentelemetry/instrumentations/index" => {
+            Some("opentelemetry/instrumentations/index")
+        }
+        "internal:opentelemetry/instrumentations/http-server" => {
+            Some("opentelemetry/instrumentations/http-server")
+        }
+        "internal:opentelemetry/instrumentations/fetch" => {
+            Some("opentelemetry/instrumentations/fetch")
+        }
+        "internal:opentelemetry/instrumentations/trace-topic" => {
+            Some("opentelemetry/instrumentations/trace-topic")
+        }
+        "internal:opentelemetry/instrumentations/_runtime-client" => {
+            Some("opentelemetry/instrumentations/_runtime-client")
+        }
+        "internal:opentelemetry/instrumentations/dns" => Some("opentelemetry/instrumentations/dns"),
+        "internal:opentelemetry/instrumentations/socket" => {
+            Some("opentelemetry/instrumentations/socket")
+        }
+        "internal:opentelemetry/instrumentations/tls" => Some("opentelemetry/instrumentations/tls"),
+        "internal:opentelemetry/sdk" => Some("opentelemetry/sdk"),
+        "fino:opentelemetry" => Some("opentelemetry"),
+        "fino:semver" => Some("semver"),
+        "fino:test/assert" => Some("test/assert"),
+        "fino:test/test" => Some("test/test"),
+        "fino:test/bench" => Some("test/bench"),
+        "fino:test/mock" => Some("test/mock"),
+        "fino:util/argv" => Some("util/argv"),
+        "fino:util/compression" => Some("util/compression"),
+        "fino:util/prompt" => Some("util/prompt"),
+        "fino:util/topic" => Some("util/topic"),
+        _ => None,
+    }
+}
+
+fn strip_builtin_extension(path: &str) -> &str {
+    for ext in [".mts", ".mjs", ".ts", ".js", ".json"] {
+        if let Some(stripped) = path.strip_suffix(ext) {
+            return stripped;
+        }
+    }
+    path
+}
+
+fn normalize_builtin_path(path: &Path) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(part) => parts.push(part.to_string_lossy().into_owned()),
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    parts.join("/")
+}
+
+fn resolve_builtin_relative(referrer_spec: &str, specifier: &str) -> Option<&'static str> {
+    if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        return None;
+    }
+    let referrer_path = builtin_source_path(referrer_spec)?;
+    let mut base = PathBuf::from(referrer_path);
+    base.pop();
+    let resolved = normalize_builtin_path(&base.join(strip_builtin_extension(specifier)));
+
+    BUILTINS.iter().find_map(|(candidate, _)| {
+        if builtin_source_path(candidate) == Some(resolved.as_str()) {
+            Some(*candidate)
+        } else {
+            None
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
-// Module loader
+// internal:loader-hooks synthetic module
 // ---------------------------------------------------------------------------
 
-/// A module loader that serves both embedded `boats:*` / `internal:*` built-ins
-/// Strips TypeScript type annotations from `source_text`, returning plain JS.
-///
-/// Uses OXC's transformer with only the TypeScript pass enabled — no downleveling,
-/// no JSX. The `path` argument is used solely for `SourceType` detection.
-fn strip_types(path: &Path, source_text: &str) -> Result<String, String> {
+/// Creates `internal:loader-hooks` — exposes `registerResolve` and
+/// `registerInitMeta` so `internal:loader` can install JS callbacks for
+/// filesystem resolution and `import.meta` population.
+pub fn loader_hooks_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "registerResolve",
+        "registerInitMeta",
+        "getPackageMap",
+        "lookupOriginalPosition",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
+    let name = v8::String::new(scope, "internal:loader-hooks").unwrap();
+    v8::Module::create_synthetic_module(scope, name, &export_names, loader_hooks_eval)
+}
+
+fn loader_hooks_eval<'a>(
+    context: v8::Local<'a, v8::Context>,
+    module: v8::Local<'a, v8::Module>,
+) -> Option<v8::Local<'a, v8::Value>> {
+    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+
+    macro_rules! set_fn {
+        ($name:expr, $cb:expr) => {{
+            let tmpl = v8::FunctionTemplate::new(scope, $cb);
+            let func = tmpl.get_function(scope)?;
+            let key = v8::String::new(scope, $name)?;
+            module.set_synthetic_module_export(scope, key, func.into())?;
+        }};
+    }
+
+    set_fn!("registerResolve", register_resolve);
+    set_fn!("registerInitMeta", register_init_meta);
+    set_fn!("getPackageMap", get_package_map);
+    set_fn!("lookupOriginalPosition", lookup_original_position);
+
+    Some(v8::undefined(scope).into())
+}
+
+fn register_resolve(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let func_val: v8::Local<v8::Value> = args.get(0);
+    if let Ok(func) = v8::Local::<v8::Function>::try_from(func_val) {
+        let global = v8::Global::new(scope, func);
+        get_state(scope).borrow_mut().resolve_fn = Some(global);
+    }
+}
+
+fn register_init_meta(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let func_val: v8::Local<v8::Value> = args.get(0);
+    if let Ok(func) = v8::Local::<v8::Function>::try_from(func_val) {
+        let global = v8::Global::new(scope, func);
+        get_state(scope).borrow_mut().init_meta_fn = Some(global);
+    }
+}
+
+fn get_package_map(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state = get_state(scope);
+    let json = state.borrow().package_map_json.clone();
+    match json {
+        Some(text) => {
+            if let Some(value) = v8::String::new(scope, &text) {
+                rv.set(value.into());
+            } else {
+                rv.set(v8::null(scope).into());
+            }
+        }
+        None => rv.set(v8::null(scope).into()),
+    }
+}
+
+fn lookup_original_position(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resource = args
+        .get(0)
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope));
+    let line = args.get(1).uint32_value(scope);
+    let column = args.get(2).uint32_value(scope);
+
+    let (Some(resource), Some(line), Some(column)) = (resource, line, column) else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+
+    let mapped = {
+        let state = get_state(scope);
+        let state = state.borrow();
+        state
+            .source_maps
+            .get(&resource)
+            .and_then(|cache| cache.lookup(line.saturating_sub(1), column.saturating_sub(1)))
+    };
+
+    let Some((source, mapped_line, mapped_column)) = mapped else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+
+    let obj = v8::Object::new(scope);
+    let source_key = v8::String::new(scope, "source").unwrap();
+    let line_key = v8::String::new(scope, "line").unwrap();
+    let column_key = v8::String::new(scope, "column").unwrap();
+    let Some(source_value) = v8::String::new(scope, &source) else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+    let line_value = v8::Integer::new_from_unsigned(scope, mapped_line + 1);
+    let column_value = v8::Integer::new_from_unsigned(scope, mapped_column + 1);
+    obj.set(scope, source_key.into(), source_value.into());
+    obj.set(scope, line_key.into(), line_value.into());
+    obj.set(scope, column_key.into(), column_value.into());
+    rv.set(obj.into());
+}
+
+// ---------------------------------------------------------------------------
+// Module resolution callback
+// ---------------------------------------------------------------------------
+
+pub fn resolve_module_callback<'s>(
+    context: v8::Local<'s, v8::Context>,
+    specifier: v8::Local<'s, v8::String>,
+    _import_attrs: v8::Local<'s, v8::FixedArray>,
+    referrer: v8::Local<'s, v8::Module>,
+) -> Option<v8::Local<'s, v8::Module>> {
+    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    let raw_spec = specifier.to_rust_string_lossy(scope);
+
+    let state_rc = get_state(scope);
+    let builtin_referrer = referrer
+        .script_id()
+        .and_then(|id| state_rc.borrow().builtin_specifiers.get(&id).copied());
+    let spec = if let Some(referrer_spec) = builtin_referrer {
+        if let Some(builtin_spec) = resolve_builtin_relative(referrer_spec, &raw_spec) {
+            builtin_spec.to_string()
+        } else if raw_spec.starts_with("./") || raw_spec.starts_with("../") {
+            let msg = v8::String::new(
+                scope,
+                &format!(
+                    "Relative builtin import '{raw_spec}' from '{referrer_spec}' did not match another builtin; use file:// to load disk files"
+                ),
+            )?;
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
+        } else {
+            raw_spec
+        }
+    } else {
+        raw_spec
+    };
+
+    if spec.starts_with("fino:") || spec.starts_with("internal:") {
+        // Enforce internal:* restriction.
+        if spec.starts_with("internal:") {
+            let referrer_is_builtin = match referrer.script_id() {
+                None => true,
+                Some(id) => state_rc.borrow().builtin_script_ids.contains(&id),
+            };
+            if !referrer_is_builtin {
+                let msg = v8::String::new(
+                    scope,
+                    &format!("Cannot import internal module '{spec}' from user code"),
+                )?;
+                let exc = v8::Exception::error(scope, msg);
+                scope.throw_exception(exc);
+                return None;
+            }
+        }
+
+        return get_or_load_builtin(scope, &spec);
+    }
+
+    // Filesystem module.
+    let path = {
+        let (referrer_dir, resolve_fn, root) = {
+            let st = state_rc.borrow();
+            let referrer_dir = referrer
+                .script_id()
+                .and_then(|id| st.module_paths.get(&id))
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf());
+            let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(scope, f));
+            let root = st.root.clone();
+            (referrer_dir, resolve_fn, root)
+        };
+
+        if let Some(func) = resolve_fn {
+            let dir_val: v8::Local<v8::Value> = referrer_dir
+                .as_deref()
+                .and_then(|d| v8::String::new(scope, &d.to_string_lossy()))
+                .map(|s| s.into())
+                .unwrap_or_else(|| v8::null(scope).into());
+            let root_val: v8::Local<v8::Value> =
+                v8::String::new(scope, &root.to_string_lossy())?.into();
+            let spec_val: v8::Local<v8::Value> = v8::String::new(scope, &spec)?.into();
+            let this = v8::undefined(scope).into();
+            let result = func.call(scope, this, &[spec_val, dir_val, root_val])?;
+            let path_str = result.to_string(scope)?.to_rust_string_lossy(scope);
+            PathBuf::from(path_str)
+        } else {
+            match resolve_path(&spec, referrer_dir.as_deref(), &root) {
+                Ok(p) => p,
+                Err(e) => {
+                    if let Some(msg) = v8::String::new(scope, &e) {
+                        let exc = v8::Exception::error(scope, msg);
+                        scope.throw_exception(exc);
+                    }
+                    return None;
+                }
+            }
+        }
+    };
+
+    get_or_load_fs_module(scope, &path)
+}
+
+// ---------------------------------------------------------------------------
+// import.meta callback (registered on the isolate)
+// ---------------------------------------------------------------------------
+
+pub unsafe extern "C" fn init_import_meta_callback(
+    context: v8::Local<v8::Context>,
+    module: v8::Local<v8::Module>,
+    meta: v8::Local<v8::Object>,
+) {
+    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    let state_rc = get_state(scope);
+
+    let path = {
+        let st = state_rc.borrow();
+        module
+            .script_id()
+            .and_then(|id| st.module_paths.get(&id).cloned())
+    };
+    let Some(path) = path else { return };
+
+    // Delegate to JS callback if registered.
+    let init_meta_fn = state_rc
+        .borrow()
+        .init_meta_fn
+        .as_ref()
+        .map(|f| v8::Local::new(scope, f));
+
+    if let Some(func) = init_meta_fn {
+        let root = state_rc.borrow().root.clone();
+        let Some(filename_val) = v8::String::new(scope, &path.to_string_lossy())
+            .map(|s| -> v8::Local<v8::Value> { s.into() })
+        else {
+            return;
+        };
+        let Some(root_val) = v8::String::new(scope, &root.to_string_lossy())
+            .map(|s| -> v8::Local<v8::Value> { s.into() })
+        else {
+            return;
+        };
+        let this = v8::undefined(scope).into();
+        let _ = func.call(scope, this, &[meta.into(), filename_val, root_val]);
+        return;
+    }
+
+    // Rust fallback (before internal:loader registers its callback).
+    let filename = path.to_string_lossy();
+    let url = format!("file://{filename}");
+
+    if let Some(url_str) = v8::String::new(scope, &url) {
+        let key = v8::String::new(scope, "url").unwrap();
+        meta.set(scope, key.into(), url_str.into());
+    }
+    if let Some(fname_str) = v8::String::new(scope, filename.as_ref()) {
+        let key = v8::String::new(scope, "filename").unwrap();
+        meta.set(scope, key.into(), fname_str.into());
+    }
+    if let Some(dir) = path.parent() {
+        let dirname = dir.to_string_lossy();
+        if let Some(dir_str) = v8::String::new(scope, dirname.as_ref()) {
+            let key = v8::String::new(scope, "dirname").unwrap();
+            meta.set(scope, key.into(), dir_str.into());
+        }
+    }
+
+    // import.meta.resolve(specifier) — stores base_dir and root in data array.
+    let base_dir = path.parent().unwrap_or(&path).to_path_buf();
+    let root = state_rc.borrow().root.clone();
+    if let (Some(base_str), Some(root_str)) = (
+        v8::String::new(scope, &base_dir.to_string_lossy()),
+        v8::String::new(scope, &root.to_string_lossy()),
+    ) {
+        let data_arr = v8::Array::new(scope, 2);
+        data_arr.set_index(scope, 0, base_str.into());
+        data_arr.set_index(scope, 1, root_str.into());
+        let resolve_tmpl = v8::FunctionTemplate::builder(meta_resolve)
+            .data(data_arr.into())
+            .build(scope);
+        if let Some(resolve_fn) = resolve_tmpl.get_function(scope) {
+            let key = v8::String::new(scope, "resolve").unwrap();
+            meta.set(scope, key.into(), resolve_fn.into());
+        }
+    }
+}
+
+fn meta_resolve(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let data = args.data();
+    let Ok(arr) = v8::Local::<v8::Array>::try_from(data) else {
+        return;
+    };
+    let base_dir = arr
+        .get_index(scope, 0)
+        .and_then(|v| v.to_string(scope))
+        .map(|s| PathBuf::from(s.to_rust_string_lossy(scope)))
+        .unwrap_or_default();
+    let root = arr
+        .get_index(scope, 1)
+        .and_then(|v| v.to_string(scope))
+        .map(|s| PathBuf::from(s.to_rust_string_lossy(scope)))
+        .unwrap_or_default();
+
+    let spec_val: v8::Local<v8::Value> = args.get(0);
+    let spec = spec_val
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+
+    if spec.starts_with("fino:") || spec.starts_with("internal:") {
+        if let Some(s) = v8::String::new(scope, &spec) {
+            rv.set(s.into());
+        }
+        return;
+    }
+
+    let raw = if spec.starts_with("./") || spec.starts_with("../") {
+        base_dir.join(&spec)
+    } else if spec.starts_with('/') {
+        PathBuf::from(&spec)
+    } else {
+        root.join(&spec)
+    };
+
+    match raw.canonicalize() {
+        Ok(canonical) => {
+            let url = format!("file://{}", canonical.to_string_lossy());
+            if let Some(s) = v8::String::new(scope, &url) {
+                rv.set(s.into());
+            }
+        }
+        Err(e) => {
+            let msg = format!("Cannot resolve '{spec}': {e}");
+            if let Some(msg_str) = v8::String::new(scope, &msg) {
+                let exc = v8::Exception::error(scope, msg_str);
+                scope.throw_exception(exc);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic import callback
+// ---------------------------------------------------------------------------
+
+pub fn dynamic_import_callback<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    _host_defined_options: v8::Local<'s, v8::Data>,
+    resource_name: v8::Local<'s, v8::Value>,
+    specifier: v8::Local<'s, v8::String>,
+    _import_attrs: v8::Local<'s, v8::FixedArray>,
+) -> Option<v8::Local<'s, v8::Promise>> {
+    let resolver = v8::PromiseResolver::new(scope)?;
+    let promise = resolver.get_promise(scope);
+    let raw_spec = specifier.to_rust_string_lossy(scope);
+
+    // Extract the referrer URL from resource_name.  Filesystem modules have
+    // resource names like "file:///path/to/file.mts"; builtins use their spec
+    // string (e.g. "fino:test/test").
+    let referrer_url = resource_name
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    let referrer_is_user_code = referrer_url.starts_with("file://");
+    let builtin_spec = if referrer_is_user_code {
+        None
+    } else {
+        resolve_builtin_relative(&referrer_url, &raw_spec)
+    };
+    let spec = if let Some(spec) = builtin_spec {
+        spec.to_string()
+    } else if !referrer_is_user_code && (raw_spec.starts_with("./") || raw_spec.starts_with("../"))
+    {
+        let msg = v8::String::new(
+            scope,
+            &format!(
+                "Relative builtin import '{raw_spec}' from '{referrer_url}' did not match another builtin; use file:// to load disk files"
+            ),
+        )?;
+        let exc = v8::Exception::error(scope, msg);
+        resolver.reject(scope, exc);
+        return Some(promise);
+    } else {
+        raw_spec
+    };
+
+    // Derive the referrer's directory for relative-path resolution.
+    let referrer_dir: Option<PathBuf> = if referrer_is_user_code {
+        PathBuf::from(&referrer_url["file://".len()..])
+            .parent()
+            .map(|p| p.to_path_buf())
+    } else {
+        None
+    };
+
+    // Wrap the operation in a TryCatch so we can reject the promise on error.
+    let tc = &mut v8::TryCatch::new(scope);
+
+    let module: Option<v8::Local<v8::Module>> =
+        if spec.starts_with("fino:") || spec.starts_with("internal:") {
+            // Enforce internal:* restriction for dynamic imports from user code.
+            if spec.starts_with("internal:") && referrer_is_user_code {
+                let msg = v8::String::new(
+                    tc,
+                    &format!("Cannot import internal module '{spec}' from user code"),
+                )?;
+                let exc = v8::Exception::error(tc, msg);
+                tc.throw_exception(exc);
+                None
+            } else {
+                get_or_load_builtin(tc, &spec)
+            }
+        } else {
+            let state_rc = get_state(tc);
+            let (resolve_fn, root) = {
+                let st = state_rc.borrow();
+                let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(tc, f));
+                let root = st.root.clone();
+                (resolve_fn, root)
+            };
+
+            let path: Option<PathBuf> = if let Some(func) = resolve_fn {
+                let root_str = match v8::String::new(tc, &root.to_string_lossy()) {
+                    Some(s) => s,
+                    None => {
+                        let undef = v8::undefined(tc).into();
+                        resolver.reject(tc, undef);
+                        return Some(promise);
+                    }
+                };
+                let spec_val: v8::Local<v8::Value> = match v8::String::new(tc, &spec) {
+                    Some(s) => s.into(),
+                    None => {
+                        let undef = v8::undefined(tc).into();
+                        resolver.reject(tc, undef);
+                        return Some(promise);
+                    }
+                };
+                let this = v8::undefined(tc).into();
+                // Pass the referrer's directory so relative specifiers resolve correctly.
+                let dir_val: v8::Local<v8::Value> = referrer_dir
+                    .as_deref()
+                    .and_then(|d| v8::String::new(tc, &d.to_string_lossy()))
+                    .map(|s| s.into())
+                    .unwrap_or_else(|| v8::null(tc).into());
+                func.call(tc, this, &[spec_val, dir_val, root_str.into()])
+                    .and_then(|r| r.to_string(tc))
+                    .map(|s| PathBuf::from(s.to_rust_string_lossy(tc)))
+            } else {
+                match resolve_path(&spec, referrer_dir.as_deref(), &root) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        if let Some(msg) = v8::String::new(tc, &e) {
+                            let exc = v8::Exception::error(tc, msg);
+                            tc.throw_exception(exc);
+                        }
+                        None
+                    }
+                }
+            };
+
+            path.and_then(|p| get_or_load_fs_module(tc, &p))
+        };
+
+    if let Some(m) = module {
+        match instantiate_and_evaluate(tc, m) {
+            Some(eval_result) if !tc.has_caught() => {
+                let namespace = m.get_module_namespace();
+                // Check if eval returned a Promise (module uses top-level await).
+                if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
+                    // TLA: defer resolution until the eval Promise settles.
+                    let state_rc = get_state(tc);
+                    let id = {
+                        let mut st = state_rc.borrow_mut();
+                        let id = st.tla_resolvers.len() as u32;
+                        st.tla_resolvers.push(Some((
+                            v8::Global::new(tc, resolver),
+                            v8::Global::new(tc, namespace),
+                        )));
+                        id
+                    };
+                    let id_val: v8::Local<v8::Value> = v8::Integer::new(tc, id as i32).into();
+                    let fulfill_tmpl = v8::FunctionTemplate::builder(tla_fulfill_callback)
+                        .data(id_val)
+                        .build(tc);
+                    let reject_tmpl = v8::FunctionTemplate::builder(tla_reject_callback)
+                        .data(id_val)
+                        .build(tc);
+                    if let (Some(fulfill_fn), Some(reject_fn)) =
+                        (fulfill_tmpl.get_function(tc), reject_tmpl.get_function(tc))
+                    {
+                        eval_promise.then2(tc, fulfill_fn, reject_fn);
+                    }
+                    // Don't resolve yet — the callbacks will settle the resolver.
+                } else {
+                    // Non-TLA: resolve immediately.
+                    resolver.resolve(tc, namespace);
+                }
+            }
+            _ => {
+                let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+                resolver.reject(tc, exc);
+            }
+        }
+    } else {
+        let exc = if tc.has_caught() {
+            tc.exception().unwrap_or_else(|| v8::undefined(tc).into())
+        } else {
+            v8::String::new(tc, "dynamic import failed")
+                .map(|s| -> v8::Local<v8::Value> { s.into() })
+                .unwrap_or_else(|| v8::undefined(tc).into())
+        };
+        resolver.reject(tc, exc);
+    }
+
+    Some(promise)
+}
+
+/// Called when a TLA module's evaluation Promise fulfills (all top-level awaits done).
+/// Resolves the dynamic-import Promise with the module namespace.
+fn tla_fulfill_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let id = args.data().integer_value(scope).unwrap_or(-1) as u32;
+    let state_rc = get_state(scope);
+    let entry = {
+        let mut st = state_rc.borrow_mut();
+        st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take())
+    };
+    if let Some((resolver_global, namespace_global)) = entry {
+        let resolver = v8::Local::new(scope, &resolver_global);
+        let namespace = v8::Local::new(scope, &namespace_global);
+        resolver.resolve(scope, namespace);
+    }
+}
+
+/// Called when a TLA module's evaluation Promise rejects.
+/// Rejects the dynamic-import Promise with the rejection reason.
+fn tla_reject_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let id = args.data().integer_value(scope).unwrap_or(-1) as u32;
+    let state_rc = get_state(scope);
+    let entry = {
+        let mut st = state_rc.borrow_mut();
+        st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take())
+    };
+    if let Some((resolver_global, _namespace_global)) = entry {
+        let resolver = v8::Local::new(scope, &resolver_global);
+        let reason = args.get(0);
+        resolver.reject(scope, reason);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+fn get_or_load_builtin<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    spec: &str,
+) -> Option<v8::Local<'s, v8::Module>> {
+    let state_rc = get_state(scope);
+
+    let cached = {
+        let st = state_rc.borrow();
+        st.builtin_cache.get(spec).map(|m| v8::Local::new(scope, m))
+    };
+    if let Some(m) = cached {
+        return Some(m);
+    }
+
+    let entry = BUILTINS.iter().find(|(s, _)| *s == spec)?;
+    let (spec_key, kind) = entry;
+
+    let module = match kind {
+        BuiltinKind::Source { code, source_map } => {
+            register_source_map_from_json(scope, spec, source_map);
+            let m = compile_source_module(scope, code, spec, Some(source_map))?;
+            if let Some(id) = m.script_id() {
+                let mut st = state_rc.borrow_mut();
+                st.builtin_script_ids.insert(id);
+                st.builtin_specifiers.insert(id, spec_key);
+            }
+            m
+        }
+        BuiltinKind::Synthetic(factory) => factory(scope),
+    };
+
+    let global = v8::Global::new(scope, module);
+    state_rc.borrow_mut().builtin_cache.insert(spec_key, global);
+    Some(module)
+}
+
+fn get_or_load_fs_module<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    path: &Path,
+) -> Option<v8::Local<'s, v8::Module>> {
+    let state_rc = get_state(scope);
+
+    let cached = {
+        let st = state_rc.borrow();
+        st.fs_cache.get(path).map(|m| v8::Local::new(scope, m))
+    };
+    if let Some(m) = cached {
+        return Some(m);
+    }
+
+    let module = load_fs_module_uncached(scope, path)?;
+
+    if let Some(id) = module.script_id() {
+        state_rc
+            .borrow_mut()
+            .module_paths
+            .insert(id, path.to_path_buf());
+    }
+
+    let global = v8::Global::new(scope, module);
+    state_rc
+        .borrow_mut()
+        .fs_cache
+        .insert(path.to_path_buf(), global);
+    Some(module)
+}
+
+fn load_fs_module_uncached<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    path: &Path,
+) -> Option<v8::Local<'s, v8::Module>> {
+    let resource_name = format!("file://{}", path.to_string_lossy());
+
+    if is_json(path) {
+        let text = std::fs::read_to_string(path).ok()?;
+        let escaped = escape_js_string(&text);
+        let src = format!("export default JSON.parse('{escaped}');");
+        compile_source_module(scope, &src, &resource_name, None)
+    } else if is_typescript(path) {
+        let text = std::fs::read_to_string(path).ok()?;
+        let stripped = strip_types(path, &text).ok()?;
+        register_source_map(scope, &resource_name, stripped.map.clone());
+        compile_source_module(
+            scope,
+            &stripped.code,
+            &resource_name,
+            Some(stripped.map.to_json_string().as_str()),
+        )
+    } else {
+        let text = std::fs::read_to_string(path).ok()?;
+        compile_source_module(scope, &text, &resource_name, None)
+    }
+}
+
+/// Compile a JS string as a V8 ES module with the given resource name (URL).
+pub fn compile_source_module<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    source_text: &str,
+    resource_name: &str,
+    source_map_json: Option<&str>,
+) -> Option<v8::Local<'s, v8::Module>> {
+    let name = v8::String::new(scope, resource_name)?;
+    let source_map_url = source_map_json
+        .and_then(|json| SourceMap::from_json_string(json).ok())
+        .and_then(|map| v8::String::new(scope, &map.to_data_url()))
+        .map(|value| value.into());
+    let origin = v8::ScriptOrigin::new(
+        scope,
+        name.into(),
+        0,
+        0,
+        false,
+        -1,
+        source_map_url,
+        false,
+        false,
+        true,
+        None,
+    );
+    let source_str = v8::String::new(scope, source_text)?;
+    let mut source = v8::script_compiler::Source::new(source_str, Some(&origin));
+    v8::script_compiler::compile_module(scope, &mut source)
+}
+
+pub fn register_source_map(scope: &mut v8::HandleScope, resource_name: &str, map: SourceMap) {
+    get_state(scope).borrow_mut().source_maps.insert(
+        resource_name.to_string(),
+        crate::state::SourceMapCache::new(map),
+    );
+}
+
+pub fn register_source_map_from_json(
+    scope: &mut v8::HandleScope,
+    resource_name: &str,
+    source_map_json: &str,
+) {
+    if let Ok(map) = SourceMap::from_json_string(source_map_json) {
+        register_source_map(scope, resource_name, map);
+    }
+}
+
+/// Register a module's script_id as a builtin so `internal:*` imports are
+/// allowed from it.
+pub fn register_as_builtin(
+    scope: &mut v8::HandleScope,
+    module: v8::Local<v8::Module>,
+    spec: &'static str,
+) {
+    if let Some(id) = module.script_id() {
+        let state_rc = get_state(scope);
+        let mut st = state_rc.borrow_mut();
+        st.builtin_script_ids.insert(id);
+        st.builtin_specifiers.insert(id, spec);
+    }
+}
+
+fn instantiate_and_evaluate<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    module: v8::Local<'s, v8::Module>,
+) -> Option<v8::Local<'s, v8::Value>> {
+    use v8::ModuleStatus;
+    match module.get_status() {
+        ModuleStatus::Uninstantiated => {
+            module.instantiate_module(scope, resolve_module_callback)?;
+            module.evaluate(scope)
+        }
+        ModuleStatus::Instantiated => module.evaluate(scope),
+        ModuleStatus::Evaluated => Some(v8::undefined(scope).into()),
+        _ => Some(v8::undefined(scope).into()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Path helpers
+// ---------------------------------------------------------------------------
+
+fn resolve_path(
+    specifier: &str,
+    referrer_dir: Option<&Path>,
+    root: &Path,
+) -> Result<PathBuf, String> {
+    let base = referrer_dir.unwrap_or(root);
+    let raw = if specifier.starts_with("./") || specifier.starts_with("../") {
+        base.join(specifier)
+    } else if let Some(path) = specifier.strip_prefix("file://") {
+        PathBuf::from(path)
+    } else if specifier.starts_with('/') {
+        PathBuf::from(specifier)
+    } else {
+        root.join(specifier)
+    };
+    if let Ok(p) = raw.canonicalize() {
+        return Ok(p);
+    }
+    // Extension probing: try TypeScript/JS extensions in order.
+    for ext in [".ts", ".mts", ".mjs", ".js", ".json"] {
+        let mut probed = raw.as_os_str().to_owned();
+        probed.push(ext);
+        if let Ok(p) = PathBuf::from(probed).canonicalize() {
+            return Ok(p);
+        }
+    }
+    Err(format!(
+        "Cannot resolve '{specifier}': No such file or directory"
+    ))
+}
+
+fn is_typescript(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("ts" | "mts" | "cts")
+    )
+}
+
+fn is_json(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("json")
+}
+
+fn escape_js_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 16);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\0' => out.push_str("\\0"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+struct TranspiledSource {
+    code: String,
+    map: SourceMap,
+}
+
+fn strip_types(path: &Path, source_text: &str) -> Result<TranspiledSource, String> {
     use oxc_allocator::Allocator;
-    use oxc_codegen::Codegen;
+    use oxc_codegen::{Codegen, CodegenOptions};
     use oxc_parser::Parser;
     use oxc_semantic::SemanticBuilder;
     use oxc_span::SourceType;
@@ -249,312 +1222,16 @@ fn strip_types(path: &Path, source_text: &str) -> Result<String, String> {
         return Err(msgs.join("\n"));
     }
 
-    Ok(Codegen::new().build(&program).code)
-}
-
-/// Returns true if the path has a TypeScript file extension.
-fn is_typescript(path: &Path) -> bool {
-    matches!(
-        path.extension().and_then(|e| e.to_str()),
-        Some("ts" | "mts" | "cts")
-    )
-}
-
-/// Returns true if the path is a JSON file.
-fn is_json(path: &Path) -> bool {
-    path.extension().and_then(|e| e.to_str()) == Some("json")
-}
-
-/// Escape a raw string for embedding as a JS string literal (single-quoted).
-fn escape_js_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 16);
-    for ch in s.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\'' => out.push_str("\\'"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\0' => out.push_str("\\0"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// and ordinary filesystem modules.
-///
-/// Specifier resolution:
-/// - `boats:<name>`    → looked up in `BUILTINS`, cached after first load
-/// - `internal:<name>` → same as above, but restricted to built-in importers
-/// - `./foo` / `../foo` → relative to the importing module's directory
-/// - `/abs/path`       → absolute
-/// - `bare`            → resolved from the entry-point directory (`root`)
-pub struct BoatsModuleLoader {
-    root: PathBuf,
-    /// Parsed / constructed modules for `boats:*` and `internal:*` specifiers.
-    /// Keyed by the full specifier string (e.g. `"boats:ffi"`, `"internal:process"`).
-    builtin_cache: RefCell<HashMap<&'static str, Module>>,
-    /// Parsed modules for filesystem paths.
-    fs_cache: RefCell<HashMap<PathBuf, Module>>,
-}
-
-impl BoatsModuleLoader {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            builtin_cache: RefCell::new(HashMap::new()),
-            fs_cache: RefCell::new(HashMap::new()),
-        }
-    }
-
-    fn resolve_path(&self, referrer: &Referrer, specifier: &str) -> JsResult<PathBuf> {
-        let base = match referrer {
-            Referrer::Module(module) => module
-                .path()
-                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
-                .unwrap_or_else(|| self.root.clone()),
-            Referrer::Realm(_) | Referrer::Script(_) => self.root.clone(),
-        };
-
-        let resolved = if specifier.starts_with("./") || specifier.starts_with("../") {
-            base.join(specifier)
-        } else if specifier.starts_with('/') {
-            PathBuf::from(specifier)
-        } else {
-            self.root.join(specifier)
-        };
-
-        resolved.canonicalize().map_err(|e| {
-            JsNativeError::error()
-                .with_message(format!("Cannot resolve module '{specifier}': {e}"))
-                .into()
+    let generated = Codegen::new()
+        .with_options(CodegenOptions {
+            source_map_path: Some(path.to_path_buf()),
+            ..CodegenOptions::default()
         })
-    }
-}
+        .with_source_text(source_text)
+        .build(&program);
 
-impl ModuleLoader for BoatsModuleLoader {
-    async fn load_imported_module(
-        self: Rc<Self>,
-        referrer: Referrer,
-        specifier: JsString,
-        context: &RefCell<&mut Context>,
-    ) -> JsResult<Module> {
-        let specifier_str = specifier.to_std_string_escaped();
-
-        // ---- boats:* and internal:* built-ins ------------------------------
-        if specifier_str.starts_with("boats:") || specifier_str.starts_with("internal:") {
-            // `internal:*` modules are restricted to built-in importers.
-            // Built-in modules have no filesystem path (parsed from embedded bytes).
-            // User filesystem modules have a path set by Source::from_filepath.
-            if specifier_str.starts_with("internal:") {
-                let allowed = match &referrer {
-                    Referrer::Module(m) => m.path().is_none(),
-                    _ => false,
-                };
-                if !allowed {
-                    return Err(JsNativeError::error()
-                        .with_message(format!(
-                            "Cannot import internal module '{specifier_str}' from user code"
-                        ))
-                        .into());
-                }
-            }
-
-            // Return cached module if already loaded.
-            if let Some(module) = self.builtin_cache.borrow().get(specifier_str.as_str()) {
-                return Ok(module.clone());
-            }
-
-            // Find the registry entry.
-            let entry = BUILTINS
-                .iter()
-                .find(|(spec, _)| *spec == specifier_str)
-                .ok_or_else(|| {
-                    JsNativeError::error()
-                        .with_message(format!("Unknown built-in: '{specifier_str}'"))
-                })?;
-            let (spec, kind) = entry;
-
-            let module = match kind {
-                BuiltinKind::Source(src) => {
-                    let source = Source::from_bytes(src.as_bytes());
-                    Module::parse(source, None, *context.borrow_mut())?
-                }
-                BuiltinKind::Synthetic(factory) => factory(*context.borrow_mut())?,
-            };
-
-            // `spec` is `&'static str` so it's safe as a HashMap key.
-            self.builtin_cache.borrow_mut().insert(spec, module.clone());
-            return Ok(module);
-        }
-
-        // ---- Filesystem modules --------------------------------------------
-
-        // Try the JS resolver (registered by `internal:loader` after _main.mjs loads).
-        // Falls back to Rust resolution if not yet registered.
-        let path = {
-            let resolve_fn = context
-                .borrow()
-                .downcast_job_executor::<BoatsJobExecutor>()
-                .and_then(|exec| exec.resolve_fn.borrow().clone());
-
-            if let Some(func) = resolve_fn {
-                let referrer_dir = match &referrer {
-                    Referrer::Module(m) => m
-                        .path()
-                        .and_then(|p| p.parent())
-                        .map(|p| JsValue::from(js_string!(p.to_string_lossy().as_ref())))
-                        .unwrap_or(JsValue::null()),
-                    _ => JsValue::null(),
-                };
-                let root_val = JsValue::from(js_string!(self.root.to_string_lossy().as_ref()));
-                let spec_val = JsValue::from(specifier.clone());
-
-                let result = func.call(
-                    &JsValue::undefined(),
-                    &[spec_val, referrer_dir, root_val],
-                    *context.borrow_mut(),
-                )?;
-
-                PathBuf::from(
-                    result
-                        .to_string(*context.borrow_mut())?
-                        .to_std_string_escaped(),
-                )
-            } else {
-                self.resolve_path(&referrer, &specifier_str)?
-            }
-        };
-
-        if let Some(module) = self.fs_cache.borrow().get(&path) {
-            return Ok(module.clone());
-        }
-
-        let module = if is_json(&path) {
-            let json_text = std::fs::read_to_string(&path).map_err(|e| {
-                JsNativeError::error()
-                    .with_message(format!("Cannot read '{}': {e}", path.display()))
-            })?;
-            let escaped = escape_js_string(&json_text);
-            let src = format!("export default JSON.parse('{escaped}');");
-            let source = Source::from_reader(std::io::Cursor::new(src), Some(path.as_path()));
-            Module::parse(source, None, *context.borrow_mut())?
-        } else if is_typescript(&path) {
-            let source_text = std::fs::read_to_string(&path).map_err(|e| {
-                JsNativeError::error()
-                    .with_message(format!("Cannot read '{}': {e}", path.display()))
-            })?;
-            let stripped = strip_types(&path, &source_text).map_err(|e| {
-                JsNativeError::error()
-                    .with_message(format!("TypeScript error in '{}': {e}", path.display()))
-            })?;
-            let source = Source::from_reader(std::io::Cursor::new(stripped), Some(path.as_path()));
-            Module::parse(source, None, *context.borrow_mut())?
-        } else {
-            let source = Source::from_filepath(&path).map_err(|e| {
-                JsNativeError::error()
-                    .with_message(format!("Cannot read '{}': {e}", path.display()))
-            })?;
-            Module::parse(source, None, *context.borrow_mut())?
-        };
-
-        self.fs_cache.borrow_mut().insert(path, module.clone());
-        Ok(module)
-    }
-
-    fn init_import_meta(
-        self: Rc<Self>,
-        import_meta: &JsObject,
-        module: &Module,
-        context: &mut Context,
-    ) {
-        // Builtin modules (boats:*, internal:*) have no filesystem path.
-        // Leave import.meta empty for them.
-        let Some(path) = module.path() else { return };
-
-        // Delegate to the JS callback registered by `internal:loader` if available.
-        let init_meta_fn = context
-            .downcast_job_executor::<BoatsJobExecutor>()
-            .and_then(|exec| exec.init_meta_fn.borrow().clone());
-
-        if let Some(func) = init_meta_fn {
-            let filename = JsValue::from(js_string!(path.to_string_lossy().as_ref()));
-            let root_val = JsValue::from(js_string!(self.root.to_string_lossy().as_ref()));
-            let _ = func.call(
-                &JsValue::undefined(),
-                &[JsValue::from(import_meta.clone()), filename, root_val],
-                context,
-            );
-            return;
-        }
-
-        // Fallback: Rust implementation (used before internal:loader registers its callback).
-        let filename = path.to_string_lossy();
-        let url = format!("file://{filename}");
-
-        let _ = import_meta.set(
-            js_string!("url"),
-            JsValue::from(js_string!(url.as_str())),
-            false,
-            context,
-        );
-        let _ = import_meta.set(
-            js_string!("filename"),
-            JsValue::from(js_string!(filename.as_ref())),
-            false,
-            context,
-        );
-
-        if let Some(dir) = path.parent() {
-            let dirname = dir.to_string_lossy();
-            let _ = import_meta.set(
-                js_string!("dirname"),
-                JsValue::from(js_string!(dirname.as_ref())),
-                false,
-                context,
-            );
-        }
-
-        // import.meta.resolve(specifier) — resolves relative/absolute paths to file:// URLs.
-        // boats:* and internal:* specifiers are returned as-is.
-        let base_dir = path.parent().unwrap_or(path).to_path_buf();
-        let root = self.root.clone();
-        // SAFETY: Captures only PathBuf values, which contain no GC-traced types.
-        let resolve_fn = FunctionObjectBuilder::new(context.realm(), unsafe {
-            NativeFunction::from_closure(move |_this, args, ctx| {
-                let spec = args
-                    .get_or_undefined(0)
-                    .to_string(ctx)?
-                    .to_std_string_escaped();
-
-                if spec.starts_with("boats:") || spec.starts_with("internal:") {
-                    return Ok(JsValue::from(js_string!(spec.as_str())));
-                }
-
-                let raw = if spec.starts_with("./") || spec.starts_with("../") {
-                    base_dir.join(&spec)
-                } else if spec.starts_with('/') {
-                    PathBuf::from(&spec)
-                } else {
-                    root.join(&spec)
-                };
-
-                let canonical = raw.canonicalize().map_err(|e| {
-                    JsNativeError::error().with_message(format!("Cannot resolve '{spec}': {e}"))
-                })?;
-                let resolved_url = format!("file://{}", canonical.to_string_lossy());
-                Ok(JsValue::from(js_string!(resolved_url.as_str())))
-            })
-        })
-        .name(js_string!("resolve"))
-        .length(1)
-        .build();
-
-        let _ = import_meta.set(
-            js_string!("resolve"),
-            JsValue::from(resolve_fn),
-            false,
-            context,
-        );
-    }
+    Ok(TranspiledSource {
+        code: generated.code,
+        map: generated.map.expect("source map should be generated"),
+    })
 }

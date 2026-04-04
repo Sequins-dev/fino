@@ -1,0 +1,76 @@
+{
+  // Visit https://aka.ms/tsconfig to read more about this file
+  "compilerOptions": {
+    // File Layout
+    // "rootDir": "./src",
+    // "outDir": "./dist",
+
+    // Environment Settings
+    // See also https://aka.ms/tsconfig/module
+    "module": "nodenext",
+    "baseUrl": ".",
+    "paths": {
+      "fino:archive": ["./js/archive.mts"],
+      "fino:file": ["./js/file/fs.mts"],
+      "fino:file/*": ["./js/file/*.mts"],
+      "fino:net/*": ["./js/net/*.mts"],
+      "fino:opentelemetry": ["./js/opentelemetry.mts"],
+      "fino:runtime/*": ["./js/runtime/*.mts"],
+      "fino:semver": ["./js/semver.mts"],
+      "fino:test/*": ["./js/test/*.mts"],
+      "fino:tty": ["./js/tty.mts"],
+      "fino:util/*": ["./js/util/*.mts"],
+      "internal:commands/*": ["./js/commands/*.mts"],
+      "internal:file/*": ["./js/file/*.mts"],
+      "internal:globals/*": ["./js/internal/globals/*.mts"],
+      "internal:loader": ["./js/internal/loader.mts"],
+      "internal:openssl": ["./js/internal/openssl.mts"],
+      "internal:package_manager": ["./js/internal/package_manager.mts"],
+      "internal:runtime/*": ["./js/internal/runtime/*.mts"],
+      "internal:shutdown": ["./js/internal/shutdown.mts"],
+      "internal:stream": ["./js/internal/stream.mts"],
+      "internal:opentelemetry/bootstrap": ["./js/opentelemetry/bootstrap.mts"],
+      "internal:opentelemetry/common": ["./js/opentelemetry/common.mts"],
+      "internal:opentelemetry/exporters": ["./js/opentelemetry/exporters.mts"],
+      "internal:opentelemetry/logs": ["./js/opentelemetry/logs.mts"],
+      "internal:opentelemetry/metrics": ["./js/opentelemetry/metrics.mts"],
+      "internal:opentelemetry/sdk": ["./js/opentelemetry/sdk.mts"],
+      "internal:opentelemetry/traces": ["./js/opentelemetry/traces.mts"],
+      "internal:opentelemetry/instrumentations/*": ["./js/opentelemetry/instrumentations/*.mts"]
+    },
+    "target": "esnext",
+    "ignoreDeprecations": "6.0",
+    "allowImportingTsExtensions": true,
+    "types": [],
+    // For nodejs:
+    // "lib": ["esnext"],
+    // "types": ["node"],
+    // and npm install -D @types/node
+
+    // Other Outputs
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+
+    // Stricter Typechecking Options
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    // Style Options
+    // "noImplicitReturns": true,
+    // "noImplicitOverride": true,
+    // "noUnusedLocals": true,
+    // "noUnusedParameters": true,
+    // "noFallthroughCasesInSwitch": true,
+    // "noPropertyAccessFromIndexSignature": true,
+
+    // Recommended Options
+    "strict": true,
+    "jsx": "react-jsx",
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noUncheckedSideEffectImports": true,
+    "moduleDetection": "force",
+    "skipLibCheck": true,
+  }
+}

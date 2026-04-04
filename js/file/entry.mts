@@ -1,5 +1,5 @@
 /**
- * internal:file-entry — Entry, FileEntry, DirEntry classes for boats:file.
+ * internal:file-entry — Entry, FileEntry, DirEntry classes for fino:file.
  *
  * Entry hierarchy for filesystem directory listing results.
  * DirEntry additionally implements the async iterator protocol.
@@ -9,9 +9,19 @@ import {
   lib, isDarwin, Pointer,
   cstr, throwErrno, readCStr, _toPath, joinPath,
   DT_UNKNOWN, DT_DIR, DT_REG, DT_LNK, decodeUtf8,
-} from 'internal:file/bindings';
-import { Stat } from 'internal:file/stat';
-import { Path } from 'boats:file/path';
+} from './bindings.mts';
+import { Stat } from './stat.mts';
+import { Path } from './path.mts';
+
+interface EntryFileSystem {
+  stat(path: Path | string): Promise<Stat>;
+  lstat(path: Path | string): Promise<Stat>;
+  open(path: Path | string, mode?: string): Promise<unknown>;
+  entry(path: Path | string): Promise<Entry>;
+  mkdir(path: Path | string, mode?: number): Promise<void>;
+  rmdir(path: Path | string): Promise<void>;
+  unlink(path: Path | string): Promise<void>;
+}
 
 /**
  * Base handle for a filesystem entry. Holds the name, full path, a reference
@@ -21,10 +31,10 @@ import { Path } from 'boats:file/path';
 export class Entry {
   #name: string;
   #path: Path;
-  #fs: object;
+  #fs: EntryFileSystem | null;
   #dtype: number;
 
-  constructor(name: string, path: Path | string, fs: object, dtype: number) {
+  constructor(name: string, path: Path | string, fs: EntryFileSystem | null, dtype: number) {
     this.#name  = String(name);
     this.#path  = _toPath(path);
     this.#fs    = fs;
@@ -43,21 +53,27 @@ export class Entry {
   /**
    * Stat this entry, following symlinks.
    */
-  async stat():  Promise<Stat> { return (this.#fs as any).stat(this.#path);  }
+  async stat(): Promise<Stat> {
+    if (this.#fs === null) throw new Error('Entry is not attached to a filesystem');
+    return this.#fs.stat(this.#path);
+  }
 
   /**
    * Lstat this entry, without following symlinks.
    */
-  async lstat(): Promise<Stat> { return (this.#fs as any).lstat(this.#path); }
+  async lstat(): Promise<Stat> {
+    if (this.#fs === null) throw new Error('Entry is not attached to a filesystem');
+    return this.#fs.lstat(this.#path);
+  }
 }
 
 /**
  * A filesystem entry that represents a regular file.
  */
 export class FileEntry extends Entry {
-  #fs: object;
+  #fs: EntryFileSystem | null;
 
-  constructor(name: string, path: Path | string, fs: object, dtype: number) {
+  constructor(name: string, path: Path | string, fs: EntryFileSystem | null, dtype: number) {
     super(name, path, fs, dtype);
     this.#fs = fs;
   }
@@ -68,7 +84,8 @@ export class FileEntry extends Entry {
    * @returns {Promise<File>}
    */
   async open(mode: string = 'r') {
-    return (this.#fs as any).open(this.path, mode);
+    if (this.#fs === null) throw new Error('Entry is not attached to a filesystem');
+    return this.#fs.open(this.path, mode);
   }
 }
 
@@ -77,9 +94,9 @@ export class FileEntry extends Entry {
  * iterator protocol so it can be used directly in `for await` loops.
  */
 export class DirEntry extends Entry {
-  #fs: object;
+  #fs: EntryFileSystem | null;
 
-  constructor(name: string, path: Path | string, fs: object, dtype: number) {
+  constructor(name: string, path: Path | string, fs: EntryFileSystem | null, dtype: number) {
     super(name, path, fs, dtype);
     this.#fs = fs;
   }
@@ -96,7 +113,7 @@ export class DirEntry extends Entry {
     const dirPtr = lib.symbols.opendir(cstr(s));
     if (dirPtr === null) throwErrno('opendir', s);
 
-    const result = [];
+    const result: Entry[] = [];
     while (true) {
       const direntPtr = lib.symbols.readdir(dirPtr);
       if (direntPtr === null) break;
@@ -133,12 +150,13 @@ export class DirEntry extends Entry {
     return result;
   }
 
-  [Symbol.asyncIterator]() {
-    let iter = null;
+  [Symbol.asyncIterator](): AsyncIterator<Entry> {
+    const dirEntry = this;
+    let iter: Iterator<Entry> | null = null;
     return {
-      next: async () => {
+      async next(): Promise<IteratorResult<Entry>> {
         if (iter === null) {
-          const arr = await this.entries();
+          const arr = await dirEntry.entries();
           iter = arr[Symbol.iterator]();
         }
         return iter.next();
@@ -153,7 +171,8 @@ export class DirEntry extends Entry {
    * @returns {Promise<Entry>}
    */
   async child(name: string): Promise<Entry> {
-    return (this.#fs as any).entry(this.path.join(name));
+    if (this.#fs === null) throw new Error('Entry is not attached to a filesystem');
+    return this.#fs.entry(this.path.join(name));
   }
 
   /**
@@ -178,18 +197,20 @@ export class DirEntry extends Entry {
    * Create a child directory.
    */
   async mkdir(name: string, mode: number = 0o755): Promise<void> {
-    return (this.#fs as any).mkdir(this.path.join(name), mode);
+    if (this.#fs === null) throw new Error('Entry is not attached to a filesystem');
+    return this.#fs.mkdir(this.path.join(name), mode);
   }
 
   /**
    * Remove a child entry. Uses unlink for files and rmdir for directories.
    */
   async remove(name: string): Promise<void> {
+    if (this.#fs === null) throw new Error('Entry is not attached to a filesystem');
     const childPath = this.path.join(name);
     const st = await this.#fs.lstat(childPath);
     if (st.isDirectory()) {
-      return (this.#fs as any).rmdir(childPath);
+      return this.#fs.rmdir(childPath);
     }
-    return (this.#fs as any).unlink(childPath);
+    return this.#fs.unlink(childPath);
   }
 }

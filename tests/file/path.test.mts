@@ -1,13 +1,13 @@
 /**
- * Tests for boats:path — Path class and module-level helpers.
+ * Tests for fino:path — Path class and module-level helpers.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 import {
   Path,
   join, resolve, normalize, dirname, basename, extname, isAbsolute, relative,
   sep,
-} from 'boats:file/path';
+} from 'fino:file/path';
 
 describe('Constructor / coercion', () => {
   it('constructs from string', (t) => {

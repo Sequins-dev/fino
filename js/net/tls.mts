@@ -1,13 +1,13 @@
 /**
- * boats:tls — TLS socket layer.
+ * fino:tls — TLS socket layer.
  *
- * `TlsSocket` extends `Socket` from `boats:socket`. TCP connection setup is
+ * `TlsSocket` extends `Socket` from `fino:socket`. TCP connection setup is
  * shared via `connectTcp()` — no duplication. TlsSocket overrides `split()`
  * to return `TlsReader`/`TlsWriter` (which handle SSL_read/SSL_write), and
  * overrides `close()` to perform SSL teardown before the fd close.
  *
  * `TlsReader` and `TlsWriter` extend the base `Reader`/`Writer` from
- * `boats:stream`, implementing the template methods with SSL-specific I/O.
+ * `fino:stream`, implementing the template methods with SSL-specific I/O.
  * All loop machinery (readability waiting, retry, backpressure, async
  * iteration, pipe) is inherited — no duplication.
  *
@@ -29,14 +29,14 @@
  * teardown happens before calling `super.close()`.
  */
 
-import * as openssl from 'internal:openssl';
-import * as loop from 'boats:runtime/loop';
-import { Reader, Writer } from 'internal:stream';
-import { Socket, connectTcp, close as closeFd } from 'boats:net/socket';
-import type { LoopHandle } from 'boats:runtime/loop';
-import type { Address } from 'boats:net/socket';
+import * as openssl from '../internal/openssl.mts';
+import * as loop from '../runtime/loop.mts';
+import { BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.mts';
+import { Socket, connectTcp, close as closeFd } from './socket.mts';
+import type { Address } from './socket.mts';
+import type { ConnectOptions } from './socket.mts';
 
-export interface TlsConnectOptions {
+export interface TlsConnectOptions extends ConnectOptions {
   hostname?:           string;
   ca?:                 string;
   rejectUnauthorized?: boolean;
@@ -55,16 +55,16 @@ function _checkTlsAvailable() {
 // Async TLS handshake helper
 // ---------------------------------------------------------------------------
 
-async function _doHandshake(ssl: object, fd: number, lp: LoopHandle, handshakeFn: (ssl: object) => number): Promise<void> {
+async function _doHandshake(ssl: object, fd: number, handshakeFn: (ssl: object) => number): Promise<void> {
   while (true) {
     const ret = handshakeFn(ssl);
     if (ret === 1) return; // success
 
     const err = openssl.sslGetError(ssl, ret);
     if (err === openssl.SSL_ERROR_WANT_READ) {
-      await loop.readable(lp, fd);
+      await loop.readable(fd);
     } else if (err === openssl.SSL_ERROR_WANT_WRITE) {
-      await loop.writable(lp, fd);
+      await loop.writable(fd);
     } else {
       throw new Error('TLS handshake failed (error=' + err + '): ' + openssl.getErrorString());
     }
@@ -76,40 +76,50 @@ async function _doHandshake(ssl: object, fd: number, lp: LoopHandle, handshakeFn
 // ---------------------------------------------------------------------------
 
 /**
- * Read half of a TLS connection. Extends the base Reader with SSL-specific
+ * Read half of a TLS connection. Extends BufferedBytesReader with SSL-specific
  * I/O: uses SSL_read instead of read(2), checks SSL_pending before waiting
  * for fd readability, and classifies SSL error codes correctly.
  *
- * `[Symbol.asyncIterator]` is inherited from Reader.
+ * Buffering, structural reads (readExactly, readUntil, etc.), and the async
+ * iterator protocol are all inherited from BufferedBytesReader.
  */
-export class TlsReader extends Reader {
+export class TlsReader extends BufferedBytesReader {
   #ssl: object;
+  #fd:  number;
+  #readBuf: ArrayBuffer = new ArrayBuffer(65536);
 
-  constructor(ssl: object, fd: number, lp: LoopHandle, onClose: () => void) {
-    super(fd, lp, onClose);
+  constructor(ssl: object, fd: number, onClose: () => void | Promise<void>) {
+    super(onClose);
     this.#ssl = ssl;
+    this.#fd  = fd;
   }
 
-  doRead(buf: ArrayBuffer, len: number): number {
-    return openssl.sslRead(this.#ssl, buf, len);
-  }
+  get fd(): number { return this.#fd; }
 
-  /**
-   * Returns true if OpenSSL has buffered decrypted data that can be read
-   * without waiting for the fd to become readable.
-   */
-  hasPending(): boolean {
-    return openssl.sslPending(this.#ssl) > 0;
-  }
-
-  classifyRead(n: number): 'data' | 'eof' | 'retry-read' | 'retry-write' {
-    if (n > 0) return 'data';
-    if (n === 0) return 'eof';
-    const err = openssl.sslGetError(this.#ssl, n);
-    if (err === openssl.SSL_ERROR_ZERO_RETURN) return 'eof';
-    if (err === openssl.SSL_ERROR_WANT_READ) return 'retry-read';
-    if (err === openssl.SSL_ERROR_WANT_WRITE) return 'retry-write'; // renegotiation
-    return 'eof'; // fatal — signal EOF
+  protected async doPull(): Promise<Uint8Array | null> {
+    while (true) {
+      if (this.closed) return null;
+      const n = openssl.sslRead(this.#ssl, this.#readBuf, 65536);
+      if (n > 0) {
+        const out = new Uint8Array(n);
+        out.set(new Uint8Array(this.#readBuf, 0, n));
+        return out;
+      }
+      if (n === 0) return null;
+      const err = openssl.sslGetError(this.#ssl, n);
+      if (err === openssl.SSL_ERROR_ZERO_RETURN) return null;
+      if (err === openssl.SSL_ERROR_WANT_READ) {
+        // No data yet — wait for fd readability, then retry.
+        await loop.readable(this.#fd);
+        if (this.closed) return null;
+        continue;
+      }
+      if (err === openssl.SSL_ERROR_WANT_WRITE) {
+        await loop.writable(this.#fd); // TLS renegotiation
+        continue;
+      }
+      return null; // fatal SSL error — treat as EOF
+    }
   }
 }
 
@@ -118,30 +128,44 @@ export class TlsReader extends Reader {
 // ---------------------------------------------------------------------------
 
 /**
- * Write half of a TLS connection. Extends the base Writer with SSL-specific
+ * Write half of a TLS connection. Extends BufferedBytesWriter with SSL-specific
  * I/O: uses SSL_write instead of write(2) and handles SSL_ERROR_WANT_READ
  * during TLS renegotiation.
  *
- * `pipe()` is inherited from Writer.
+ * Write coalescing, pipe(), and async close() are inherited from
+ * BufferedBytesWriter.
  */
-export class TlsWriter extends Writer {
+export class TlsWriter extends BufferedBytesWriter {
   #ssl: object;
+  #fd:  number;
 
-  constructor(ssl: object, fd: number, lp: LoopHandle, onClose: () => void) {
-    super(fd, lp, onClose);
+  constructor(ssl: object, fd: number, onClose: () => void | Promise<void>) {
+    super(onClose);
     this.#ssl = ssl;
+    this.#fd  = fd;
   }
 
-  doWrite(buf: Uint8Array, len: number): number {
-    return openssl.sslWrite(this.#ssl, buf, len);
-  }
+  get fd(): number { return this.#fd; }
 
-  classifyWrite(n: number): 'ok' | 'retry-write' | 'retry-read' | 'fatal' {
-    if (n > 0) return 'ok';
-    const err = openssl.sslGetError(this.#ssl, n);
-    if (err === openssl.SSL_ERROR_WANT_WRITE) return 'retry-write';
-    if (err === openssl.SSL_ERROR_WANT_READ) return 'retry-read'; // renegotiation
-    return 'fatal';
+  protected async doFlush(buf: Uint8Array): Promise<void> {
+    let off = 0;
+    while (off < buf.byteLength) {
+      const slice = off === 0 ? buf : buf.subarray(off);
+      const n = openssl.sslWrite(this.#ssl, slice, slice.byteLength);
+      if (n > 0) { off += n; continue; }
+      const err = openssl.sslGetError(this.#ssl, n);
+      if (err === openssl.SSL_ERROR_WANT_WRITE) {
+        await loop.writable(this.#fd);
+        if (this.closed) throw new Error('TlsWriter closed during write');
+        continue;
+      }
+      if (err === openssl.SSL_ERROR_WANT_READ) {
+        await loop.readable(this.#fd); // TLS renegotiation
+        if (this.closed) throw new Error('TlsWriter closed during write');
+        continue;
+      }
+      throw new Error('TLS write failed');
+    }
   }
 }
 
@@ -167,8 +191,8 @@ export class TlsSocket extends Socket {
   // where `super` is not lexically accessible.
   #superClose: () => void;
 
-  constructor(fd: number, lp: LoopHandle, remoteAddr: Address | null, ssl: object, sslCtx: object | null) {
-    super(fd, lp, remoteAddr, null);
+  constructor(fd: number, remoteAddr: Address | null, ssl: object, sslCtx: object | null) {
+    super(fd, remoteAddr, null);
     this.#ssl    = ssl;
     this.#sslCtx = sslCtx;
     this.#superClose = () => super.close();
@@ -189,7 +213,7 @@ export class TlsSocket extends Socket {
     const superClose = this.#superClose;
     let closeCount = 0;
 
-    const onBothClosed = () => {
+    const onBothClosed = function onBothClosed() {
       if (++closeCount < 2) return;
       try { openssl.sslShutdown(ssl); } catch (_) {}
       openssl.sslFree(ssl);
@@ -198,8 +222,8 @@ export class TlsSocket extends Socket {
     };
 
     return [
-      new TlsReader(ssl, this.fd, this.lp, onBothClosed),
-      new TlsWriter(ssl, this.fd, this.lp, onBothClosed),
+      new TlsReader(ssl, this.fd, onBothClosed),
+      new TlsWriter(ssl, this.fd, onBothClosed),
     ];
   }
 
@@ -220,17 +244,18 @@ export class TlsSocket extends Socket {
    * Uses `connectTcp()` for the TCP layer (same helper as `Socket.connect()`),
    * then performs the TLS handshake.
    *
-   * @param {object} lp — loop handle from boats:loop
+   * @param {object} lp — loop handle from fino:loop
    * @param {{ family: 'ipv4'|'ipv6', ip: string, port: number }} addr
    * @param {{ hostname?: string, ca?: string, rejectUnauthorized?: boolean }} [opts]
    * @returns {Promise<TlsSocket>}
    */
-  static async connect(lp: LoopHandle, addr: Address, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
+  static async connect(addr: Address, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
     _checkTlsAvailable();
-    const fd = await connectTcp(lp, addr, opts);
-    const hostname = opts.hostname ?? addr.ip ?? null;
+    const fd = await connectTcp(addr);
+    const hostname = opts.hostname
+      ?? ((addr.family === 'ipv4' || addr.family === 'ipv6') ? addr.ip : null);
     try {
-      return await TlsSocket._handshakeClient(fd, lp, addr, hostname, opts);
+      return await TlsSocket._handshakeClient(fd, addr, hostname, opts);
     } catch (e) {
       closeFd(fd);
       throw e;
@@ -246,11 +271,11 @@ export class TlsSocket extends Socket {
    * @param {{ hostname?: string, ca?: string, rejectUnauthorized?: boolean }} [opts]
    * @returns {Promise<TlsSocket>}
    */
-  static async upgrade(socket: Socket, lp: LoopHandle, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
+  static async upgrade(socket: Socket, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
     _checkTlsAvailable();
     const hostname = opts.hostname ?? null;
     try {
-      return await TlsSocket._handshakeClient(socket.fd, lp, null, hostname, opts);
+      return await TlsSocket._handshakeClient(socket.fd, null, hostname, opts);
     } catch (e) {
       // Don't close socket.fd here — caller owns it
       throw e;
@@ -265,28 +290,28 @@ export class TlsSocket extends Socket {
    * @param {object} sslCtx — server SSL_CTX* (pre-configured with cert/key; not owned)
    * @returns {Promise<TlsSocket>}
    */
-  static async accept(fd: number, lp: LoopHandle, sslCtx: object): Promise<TlsSocket> {
+  static async accept(fd: number, sslCtx: object): Promise<TlsSocket> {
     _checkTlsAvailable();
 
     const ssl = openssl.sslNew(sslCtx);
     openssl.sslSetFd(ssl, fd);
 
     try {
-      await _doHandshake(ssl, fd, lp, openssl.sslAccept);
+      await _doHandshake(ssl, fd, openssl.sslAccept);
     } catch (e) {
       openssl.sslFree(ssl);
       throw e;
     }
 
     // sslCtx is owned by the caller (server); pass null so close() won't free it.
-    return new TlsSocket(fd, lp, null, ssl, null);
+    return new TlsSocket(fd, null, ssl, null);
   }
 
   // ---------------------------------------------------------------------------
   // Private helper: shared client-side TLS setup + handshake
   // ---------------------------------------------------------------------------
 
-  static async _handshakeClient(fd: number, lp: LoopHandle, remoteAddr: Address | null, hostname: string | null, opts: TlsConnectOptions): Promise<TlsSocket> {
+  static async _handshakeClient(fd: number, remoteAddr: Address | null, hostname: string | null, opts: TlsConnectOptions): Promise<TlsSocket> {
     const sslCtx = openssl.sslCtxNewClient();
     const rejectUnauthorized = opts.rejectUnauthorized !== false;
 
@@ -307,13 +332,13 @@ export class TlsSocket extends Socket {
     }
 
     try {
-      await _doHandshake(ssl, fd, lp, openssl.sslConnect);
+      await _doHandshake(ssl, fd, openssl.sslConnect);
     } catch (e) {
       openssl.sslFree(ssl);
       openssl.sslCtxFree(sslCtx);
       throw e;
     }
 
-    return new TlsSocket(fd, lp, remoteAddr, ssl, sslCtx);
+    return new TlsSocket(fd, remoteAddr, ssl, sslCtx);
   }
 }

@@ -8,12 +8,18 @@
  *   resolve() — resolves a specifier relative to this module's location
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+
+const meta = import.meta as ImportMeta & {
+  filename: string;
+  dirname: string;
+  resolve(specifier: string): string;
+};
 
 // The test file itself is the module under test — import.meta refers to this file.
-const thisFile = import.meta.filename;
-const thisDir  = import.meta.dirname;
-const thisUrl  = import.meta.url;
+const thisFile = meta.filename;
+const thisDir  = meta.dirname;
+const thisUrl  = meta.url;
 
 describe('properties', () => {
   it('import.meta.url is a file:// URL', (t) => {
@@ -44,28 +50,28 @@ describe('properties', () => {
 
 describe('resolve()', () => {
   it('import.meta.resolve is a function', (t) => {
-    t.ok(typeof import.meta.resolve === 'function', 'resolve is a function');
+    t.ok(typeof meta.resolve === 'function', 'resolve is a function');
   });
 
   it('import.meta.resolve resolves a relative path', (t) => {
-    const resolved = import.meta.resolve('./typescript.test.mts');
+    const resolved = meta.resolve('./typescript.test.mts');
     t.ok(resolved.startsWith('file://'), 'resolved URL starts with file://');
     t.ok(resolved.endsWith('typescript.test.mts'), 'resolved URL ends with typescript.test.mts');
   });
 
   it('import.meta.resolve resolves an absolute path', (t) => {
-    const resolved = import.meta.resolve(thisFile);
+    const resolved = meta.resolve(thisFile);
     t.equal(resolved, 'file://' + thisFile, 'absolute path resolves to file:// URL');
   });
 
-  it('import.meta.resolve passes through boats: specifiers', (t) => {
-    const resolved = import.meta.resolve('boats:test/test');
-    t.equal(resolved, 'boats:test/test', 'boats: specifier returned as-is');
+  it('import.meta.resolve passes through fino: specifiers', (t) => {
+    const resolved = meta.resolve('fino:test/test');
+    t.equal(resolved, 'fino:test/test', 'fino: specifier returned as-is');
   });
 
   it('import.meta.resolve throws on non-existent path', async (t) => {
     await t.rejects(
-      async () => import.meta.resolve('./definitely-does-not-exist-xyz.mjs'),
+      async () => meta.resolve('./definitely-does-not-exist-xyz.mjs'),
       /Cannot resolve/,
       'throws on missing file',
     );

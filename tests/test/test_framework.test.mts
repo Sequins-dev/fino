@@ -1,9 +1,9 @@
 /**
- * Tests for boats:test — the TAP test framework itself.
+ * Tests for fino:test — the TAP test framework itself.
  * Tests the framework's assertion helpers and async test support.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 
 describe('assertion helpers', () => {
   it('t.ok — truthy values', (t) => {

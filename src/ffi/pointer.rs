@@ -1,337 +1,392 @@
+//! V8 representation of an opaque C pointer exposed to JS.
+//!
+//! Pointers are represented as an 8-byte `ArrayBuffer` whose contents are the
+//! raw memory address as a little-endian `u64`. Null pointers are JS `null`.
+//! This lets JS callers read the address as a pair of `Uint32`s (or via
+//! `DataView.getBigUint64`) without any BigInt arithmetic on hot paths.
+
 use std::ffi::c_void;
 
-use boa_engine::{
-    Context, JsBigInt, JsData, JsNativeError, JsObject, JsResult, JsValue, NativeFunction,
-    js_string, object::FunctionObjectBuilder, object::builtins::JsArrayBuffer,
-};
-use boa_gc::{Finalize, Trace};
+use ::v8;
 
-/// An opaque C pointer exposed to JS. JS code cannot dereference it directly;
-/// it is passed through FFI calls that expect a `pointer` argument.
-#[derive(Debug, Trace, Finalize)]
-pub struct BoatsPointer {
-    #[unsafe_ignore_trace]
-    pub ptr: *mut c_void,
+// ---------------------------------------------------------------------------
+// Create / unwrap a pointer value
+// ---------------------------------------------------------------------------
+
+/// Convert a raw C pointer to an 8-byte JS `ArrayBuffer` containing the
+/// address as a little-endian `u64`. Null pointers become JS `null`.
+pub fn into_js<'s>(scope: &mut v8::HandleScope<'s>, ptr: *mut c_void) -> v8::Local<'s, v8::Value> {
+    if ptr.is_null() {
+        return v8::null(scope).into();
+    }
+    let ab = v8::ArrayBuffer::new(scope, 8);
+    let bs = ab.get_backing_store();
+    if let Some(data) = bs.data() {
+        // SAFETY: data points to 8 bytes we just allocated; no aliasing.
+        unsafe {
+            std::ptr::write_unaligned(data.as_ptr() as *mut u64, ptr as u64);
+        }
+    }
+    ab.into()
 }
 
-impl JsData for BoatsPointer {}
-
-impl BoatsPointer {
-    pub fn new(ptr: *mut c_void) -> Self {
-        Self { ptr }
+/// Convert a JS pointer value back to a raw C pointer.
+///
+/// Accepts:
+///   - `null` / `undefined` → C null pointer
+///   - An 8-byte `ArrayBuffer` → read `u64` from backing store
+///   - An `ArrayBufferView` into an ≥8-byte buffer (offset applied)
+///
+/// Returns `None` and throws a `TypeError` for any other value.
+pub fn from_js(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> Option<*mut c_void> {
+    if val.is_null_or_undefined() {
+        return Some(std::ptr::null_mut());
     }
 
-    /// Wrap a raw pointer in a JS object. Null pointers become JS `null`.
-    pub fn into_js(ptr: *mut c_void, context: &mut Context) -> JsResult<JsValue> {
-        if ptr.is_null() {
-            return Ok(JsValue::null());
-        }
-        let obj = JsObject::from_proto_and_data(
-            context.intrinsics().constructors().object().prototype(),
-            Self::new(ptr),
+    let (base_ptr, available): (*const u8, usize) =
+        if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
+            let bs = ab.get_backing_store();
+            let len = bs.byte_length();
+            let p = bs
+                .data()
+                .map(|d| d.as_ptr() as *const u8)
+                .unwrap_or(std::ptr::null());
+            (p, len)
+        } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(val) {
+            // abv.data() already applies byteOffset.
+            let p = abv.data() as *const u8;
+            let len = abv.byte_length();
+            (p, len)
+        } else {
+            throw_type_error(scope, "Expected a pointer buffer (ArrayBuffer) or null");
+            return None;
+        };
+
+    if available < 8 {
+        throw_type_error(scope, "Pointer buffer must be at least 8 bytes");
+        return None;
+    }
+
+    // SAFETY: we've verified at least 8 bytes are available.
+    let addr: u64 = unsafe { std::ptr::read_unaligned(base_ptr as *const u64) };
+    Some(addr as *mut c_void)
+}
+
+// ---------------------------------------------------------------------------
+// Pointer namespace object
+// ---------------------------------------------------------------------------
+
+pub fn namespace<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Object> {
+    let obj = v8::Object::new(scope);
+
+    macro_rules! set_method {
+        ($name:expr, $cb:expr) => {{
+            let tmpl = v8::FunctionTemplate::new(scope, $cb);
+            let func = tmpl.get_function(scope).expect("get_function");
+            let key = v8::String::new(scope, $name).unwrap();
+            obj.set(scope, key.into(), func.into());
+        }};
+    }
+
+    set_method!("null", ptr_null);
+    set_method!("addr", ptr_addr);
+    set_method!("offset", ptr_offset);
+    set_method!("of", ptr_of);
+    set_method!("readU8", read_u8);
+    set_method!("readI8", read_i8);
+    set_method!("readU16", read_u16);
+    set_method!("readI16", read_i16);
+    set_method!("readU32", read_u32);
+    set_method!("readI32", read_i32);
+    set_method!("readU64", read_u64);
+    set_method!("readI64", read_i64);
+    set_method!("readF32", read_f32);
+    set_method!("readF64", read_f64);
+    set_method!("readPointer", read_pointer);
+    set_method!("writeU8", write_u8);
+    set_method!("writeI8", write_i8);
+    set_method!("writeU16", write_u16);
+    set_method!("writeI16", write_i16);
+    set_method!("writeU32", write_u32);
+    set_method!("writeI32", write_i32);
+    set_method!("writeU64", write_u64);
+    set_method!("writeI64", write_i64);
+    set_method!("writeF32", write_f32);
+    set_method!("writeF64", write_f64);
+    set_method!("writePointer", write_pointer);
+
+    obj
+}
+
+// ---------------------------------------------------------------------------
+// Pointer methods
+// ---------------------------------------------------------------------------
+
+fn ptr_null(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set(v8::null(scope).into());
+}
+
+fn ptr_addr(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let src_val: v8::Local<v8::Value> = args.get(0);
+    let src_ptr: u64 = if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(src_val) {
+        ab.get_backing_store()
+            .data()
+            .map(|p| p.as_ptr() as u64)
+            .unwrap_or(0)
+    } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(src_val) {
+        abv.data() as u64
+    } else {
+        throw_type_error(
+            scope,
+            "Pointer.addr: expected an ArrayBuffer or ArrayBufferView",
         );
-        Ok(JsValue::from(obj))
-    }
+        return;
+    };
 
-    /// Extract a raw pointer from a JS value that is a `BoatsPointer` object,
-    /// or `null` → null pointer.
-    pub fn from_js(val: &JsValue) -> JsResult<*mut c_void> {
-        if val.is_null() {
-            return Ok(std::ptr::null_mut());
+    rv.set(v8::BigInt::new_from_u64(scope, src_ptr).into());
+}
+
+fn ptr_offset(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(ptr) = from_js(scope, args.get(0)) else {
+        return;
+    };
+    let bytes = args.get(1).integer_value(scope).unwrap_or(0) as usize;
+    let new_ptr = unsafe { (ptr as *mut u8).add(bytes) as *mut c_void };
+    rv.set(into_js(scope, new_ptr));
+}
+
+/// `Pointer.of(source)` — returns a fresh 8-byte `ArrayBuffer` containing the
+/// backing-store address of `source`. For an `ArrayBufferView` (TypedArray /
+/// DataView), `byteOffset` is included so the address points at element 0.
+///
+/// `Pointer.of(source, arena, byteOffset)` — arena path: writes the address
+/// directly into `arena` at `byteOffset` without allocating a new buffer.
+/// Returns `undefined`. Use this when the caller owns a reusable arena and
+/// wants zero per-call allocation.
+fn ptr_of(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    // Extract the backing-store address of source.
+    let src_val: v8::Local<v8::Value> = args.get(0);
+    let src_ptr: u64 = if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(src_val) {
+        ab.get_backing_store()
+            .data()
+            .map(|p| p.as_ptr() as u64)
+            .unwrap_or(0)
+    } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(src_val) {
+        // data() applies byteOffset — correct for TypedArray views.
+        abv.data() as u64
+    } else {
+        throw_type_error(
+            scope,
+            "Pointer.of: expected an ArrayBuffer or ArrayBufferView",
+        );
+        return;
+    };
+
+    // Arena path: if a dest buffer is provided, write there and return undefined.
+    let dest_val: v8::Local<v8::Value> = args.get(1);
+    if !dest_val.is_undefined() {
+        let (dest_base, dest_len): (*mut u8, usize) =
+            if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(dest_val) {
+                let bs = ab.get_backing_store();
+                let p = bs
+                    .data()
+                    .map(|d| d.as_ptr() as *mut u8)
+                    .unwrap_or(std::ptr::null_mut());
+                (p, bs.byte_length())
+            } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(dest_val) {
+                (abv.data() as *mut u8, abv.byte_length())
+            } else {
+                throw_type_error(
+                    scope,
+                    "Pointer.of: dest must be an ArrayBuffer or ArrayBufferView",
+                );
+                return;
+            };
+        let byte_off = args.get(2).integer_value(scope).unwrap_or(0) as usize;
+        if dest_len < byte_off + 8 {
+            throw_type_error(scope, "Pointer.of: dest too small");
+            return;
         }
-        let obj = val.as_object().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("Expected a Pointer object or null for 'pointer' argument")
-        })?;
-        let borrow = obj.downcast_ref::<BoatsPointer>().ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message("Expected a Pointer object or null for 'pointer' argument")
-        })?;
-        Ok(borrow.ptr)
+        // SAFETY: bounds checked above; dest is pinned for the call duration.
+        unsafe { std::ptr::write_unaligned(dest_base.add(byte_off) as *mut u64, src_ptr) };
+        return; // return undefined
     }
 
-    /// Build the `Pointer` namespace object exported from `boats:ffi`.
-    pub fn namespace(context: &mut Context) -> JsResult<JsObject> {
-        let obj = JsObject::with_object_proto(context.intrinsics());
+    // No arena: allocate a fresh 8-byte ArrayBuffer.
+    rv.set(into_js(scope, src_ptr as *mut c_void));
+}
 
-        // -----------------------------------------------------------------
-        // Pointer.null() — returns a null pointer
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "null", 0, |_, _, context| {
-            BoatsPointer::into_js(std::ptr::null_mut(), context)
-        })?;
+// ---------------------------------------------------------------------------
+// Read methods
+// ---------------------------------------------------------------------------
 
-        // -----------------------------------------------------------------
-        // Pointer.offset(ptr, bytes) — arithmetic
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "offset", 2, |_, args, context| {
-            let ptr = BoatsPointer::from_js(args.first().unwrap_or(&JsValue::undefined()))?;
-            let bytes = args
-                .get(1)
-                .unwrap_or(&JsValue::undefined())
-                .to_index(context)? as usize;
-            BoatsPointer::into_js(
-                unsafe { (ptr as *mut u8).add(bytes) as *mut c_void },
-                context,
-            )
-        })?;
-
-        // -----------------------------------------------------------------
-        // Pointer.of(arrayBuffer) — get a pointer to the backing data
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "of", 1, |_, args, context| {
-            let undef = JsValue::undefined();
-            let val = args.first().unwrap_or(&undef);
-            let obj = val.as_object().ok_or_else(|| {
-                JsNativeError::typ()
-                    .with_message("Pointer.of: expected an ArrayBuffer or TypedArray")
-            })?;
-
-            // Try ArrayBuffer first, then TypedArray.
-            let ab = if let Ok(ab) = JsArrayBuffer::from_object(obj.clone()) {
-                ab
-            } else {
-                let ta = boa_engine::object::builtins::JsTypedArray::from_object(obj.clone())
-                    .map_err(|_| {
-                        JsNativeError::typ()
-                            .with_message("Pointer.of: expected an ArrayBuffer or TypedArray")
-                    })?;
-                let buf_val = ta.buffer(context)?;
-                let buf_obj = buf_val.as_object().ok_or_else(|| {
-                    JsNativeError::typ().with_message("Pointer.of: TypedArray has no buffer")
-                })?;
-                JsArrayBuffer::from_object(buf_obj.clone())?
+macro_rules! read_int {
+    ($name:ident, $ty:ty, $conv:expr) => {
+        fn $name(
+            scope: &mut v8::HandleScope,
+            args: v8::FunctionCallbackArguments,
+            mut rv: v8::ReturnValue,
+        ) {
+            let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
+                return;
             };
+            let v: $ty = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const $ty) };
+            rv.set($conv(scope, v));
+        }
+    };
+}
 
-            let data = ab.data().ok_or_else(|| {
-                JsNativeError::typ().with_message("Pointer.of: ArrayBuffer is detached")
-            })?;
-            let ptr = data.as_ptr() as *mut c_void;
-            // SAFETY: We return the raw pointer. The caller is responsible for
-            // keeping the ArrayBuffer alive while the pointer is in use.
-            BoatsPointer::into_js(ptr, context)
-        })?;
+read_int!(read_u8, u8, |scope, v: u8| v8::Number::new(scope, v as f64)
+    .into());
+read_int!(read_i8, i8, |scope, v: i8| v8::Number::new(scope, v as f64)
+    .into());
+read_int!(read_u16, u16, |scope, v: u16| v8::Number::new(
+    scope, v as f64
+)
+.into());
+read_int!(read_i16, i16, |scope, v: i16| v8::Number::new(
+    scope, v as f64
+)
+.into());
+read_int!(read_u32, u32, |scope, v: u32| v8::Number::new(
+    scope, v as f64
+)
+.into());
+read_int!(read_i32, i32, |scope, v: i32| v8::Number::new(
+    scope, v as f64
+)
+.into());
+read_int!(read_u64, u64, |scope, v: u64| -> v8::Local<v8::Value> {
+    v8::BigInt::new_from_u64(scope, v).into()
+});
+read_int!(read_i64, i64, |scope, v: i64| -> v8::Local<v8::Value> {
+    v8::BigInt::new_from_i64(scope, v).into()
+});
+read_int!(read_f32, f32, |scope, v: f32| v8::Number::new(
+    scope, v as f64
+)
+.into());
+read_int!(read_f64, f64, |scope, v: f64| v8::Number::new(scope, v)
+    .into());
 
-        // -----------------------------------------------------------------
-        // Pointer.toAddress(ptr) — returns the address as a BigInt
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "toAddress", 1, |_, args, _context| {
-            let ptr = BoatsPointer::from_js(args.first().unwrap_or(&JsValue::undefined()))?;
-            let addr = ptr as usize as u64;
-            Ok(JsValue::from(JsBigInt::from(addr)))
-        })?;
+fn read_pointer(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
+        return;
+    };
+    let v: *mut c_void = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const *mut c_void) };
+    rv.set(into_js(scope, v));
+}
 
-        // -----------------------------------------------------------------
-        // Pointer.fromAddress(bigint) — wraps a raw numeric address
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "fromAddress", 1, |_, args, context| {
-            let undef = JsValue::undefined();
-            let val = args.first().unwrap_or(&undef);
-            let addr: u64 = if let Some(bi) = val.as_bigint() {
-                bi.to_i128() as u64
-            } else {
-                val.to_number(context)? as u64
+// ---------------------------------------------------------------------------
+// Write methods
+// ---------------------------------------------------------------------------
+
+macro_rules! write_int {
+    ($name:ident, $ty:ty) => {
+        fn $name(
+            scope: &mut v8::HandleScope,
+            args: v8::FunctionCallbackArguments,
+            _rv: v8::ReturnValue,
+        ) {
+            let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
+                return;
             };
-            BoatsPointer::into_js(addr as *mut c_void, context)
-        })?;
+            let v = val_to_i128(scope, args.get(2)) as $ty;
+            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut $ty, v) };
+        }
+    };
+}
 
-        // -----------------------------------------------------------------
-        // Read methods — Pointer.readU8(ptr, offset), etc.
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "readU8", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: u8 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const u8) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readI8", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: i8 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const i8) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readU16", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: u16 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const u16) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readI16", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: i16 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const i16) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readU32", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: u32 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const u32) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readI32", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: i32 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const i32) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readU64", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: u64 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const u64) };
-            Ok(JsValue::from(JsBigInt::from(v)))
-        })?;
-        add_fn(&obj, context, "readI64", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: i64 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const i64) };
-            Ok(JsValue::from(JsBigInt::from(v)))
-        })?;
-        add_fn(&obj, context, "readF32", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: f32 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const f32) };
-            Ok(JsValue::from(f64::from(v)))
-        })?;
-        add_fn(&obj, context, "readF64", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: f64 = unsafe { std::ptr::read_unaligned(ptr.add(off) as *const f64) };
-            Ok(JsValue::from(v))
-        })?;
-        add_fn(&obj, context, "readPointer", 2, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v: *mut c_void =
-                unsafe { std::ptr::read_unaligned(ptr.add(off) as *const *mut c_void) };
-            BoatsPointer::into_js(v, context)
-        })?;
+write_int!(write_u8, u8);
+write_int!(write_i8, i8);
+write_int!(write_u16, u16);
+write_int!(write_i16, i16);
+write_int!(write_u32, u32);
+write_int!(write_i32, i32);
+write_int!(write_u64, u64);
+write_int!(write_i64, i64);
 
-        // -----------------------------------------------------------------
-        // Write methods — Pointer.writeU8(ptr, offset, value), etc.
-        // -----------------------------------------------------------------
-        add_fn(&obj, context, "writeU8", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_int(args.get(2), context)? as u8;
-            unsafe { std::ptr::write_unaligned(ptr.add(off), v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeI8", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_int(args.get(2), context)? as i8;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut i8, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeU16", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_int(args.get(2), context)? as u16;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut u16, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeI16", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_int(args.get(2), context)? as i16;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut i16, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeU32", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_int(args.get(2), context)? as u32;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut u32, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeI32", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_int(args.get(2), context)? as i32;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut i32, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeU64", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_u64(args.get(2), context)?;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut u64, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeI64", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = val_to_i64(args.get(2), context)?;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut i64, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeF32", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = args
-                .get(2)
-                .unwrap_or(&JsValue::undefined())
-                .to_number(context)? as f32;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut f32, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writeF64", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = args
-                .get(2)
-                .unwrap_or(&JsValue::undefined())
-                .to_number(context)?;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut f64, v) };
-            Ok(JsValue::undefined())
-        })?;
-        add_fn(&obj, context, "writePointer", 3, |_, args, context| {
-            let (ptr, off) = ptr_and_offset(args, context)?;
-            let v = BoatsPointer::from_js(args.get(2).unwrap_or(&JsValue::undefined()))?;
-            unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut *mut c_void, v) };
-            let _ = context;
-            Ok(JsValue::undefined())
-        })?;
+fn write_f32(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
+        return;
+    };
+    let v = args.get(2).number_value(scope).unwrap_or(0.0) as f32;
+    unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut f32, v) };
+}
 
-        Ok(obj)
-    }
+fn write_f64(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
+        return;
+    };
+    let v = args.get(2).number_value(scope).unwrap_or(0.0);
+    unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut f64, v) };
+}
+
+fn write_pointer(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
+        return;
+    };
+    let Some(v) = from_js(scope, args.get(2)) else {
+        return;
+    };
+    unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut *mut c_void, v) };
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Register a native function as a property on `obj`.
-fn add_fn(
-    obj: &JsObject,
-    context: &mut Context,
-    name: &str,
-    length: usize,
-    f: fn(&JsValue, &[JsValue], &mut Context) -> JsResult<JsValue>,
-) -> JsResult<()> {
-    let js_name = JsValue::from(js_string!(name));
-    let name_str = js_name.to_string(context)?;
-    let func = FunctionObjectBuilder::new(context.realm(), NativeFunction::from_fn_ptr(f))
-        .name(name_str)
-        .length(length)
-        .build();
-    obj.set(js_string!(name), func, false, context)?;
-    Ok(())
+fn ptr_and_offset(
+    scope: &mut v8::HandleScope,
+    args: &v8::FunctionCallbackArguments,
+) -> Option<(*mut u8, usize)> {
+    let ptr = from_js(scope, args.get(0))? as *mut u8;
+    let off = args.get(1).integer_value(scope).unwrap_or(0) as usize;
+    Some((ptr, off))
 }
 
-/// Extract `(*mut u8, usize)` from `(ptr_arg, offset_arg)`.
-fn ptr_and_offset(args: &[JsValue], context: &mut Context) -> JsResult<(*mut u8, usize)> {
-    let ptr = BoatsPointer::from_js(args.first().unwrap_or(&JsValue::undefined()))?;
-    let off = args
-        .get(1)
-        .unwrap_or(&JsValue::undefined())
-        .to_index(context)? as usize;
-    Ok((ptr as *mut u8, off))
-}
-
-/// Accept number or BigInt, return i128.
-fn val_to_int(val: Option<&JsValue>, context: &mut Context) -> JsResult<i128> {
-    let undef = JsValue::undefined();
-    let v = val.unwrap_or(&undef);
-    if let Some(bi) = v.as_bigint() {
-        return Ok(bi.to_i128());
+fn val_to_i128(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> i128 {
+    if let Ok(bi) = v8::Local::<v8::BigInt>::try_from(val) {
+        return bi.i64_value().0 as i128;
     }
-    Ok(v.to_number(context)? as i128)
+    val.number_value(scope).unwrap_or(0.0) as i128
 }
 
-fn val_to_u64(val: Option<&JsValue>, context: &mut Context) -> JsResult<u64> {
-    let undef = JsValue::undefined();
-    let v = val.unwrap_or(&undef);
-    if let Some(bi) = v.as_bigint() {
-        return Ok(bi.to_i128() as u64);
+fn throw_type_error(scope: &mut v8::HandleScope, msg: &str) {
+    if let Some(msg_str) = v8::String::new(scope, msg) {
+        let exc = v8::Exception::type_error(scope, msg_str);
+        scope.throw_exception(exc);
     }
-    Ok(v.to_number(context)? as u64)
-}
-
-fn val_to_i64(val: Option<&JsValue>, context: &mut Context) -> JsResult<i64> {
-    let undef = JsValue::undefined();
-    let v = val.unwrap_or(&undef);
-    if let Some(bi) = v.as_bigint() {
-        return Ok(bi.to_i128() as i64);
-    }
-    Ok(v.to_number(context)? as i64)
 }

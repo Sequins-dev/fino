@@ -1,10 +1,19 @@
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+
+type ReadableStreamWithFrom = typeof ReadableStream & {
+  from<T>(iterable: AsyncIterable<T> | Iterable<T>): ReadableStream<T>;
+};
+type WritableControllerWithAbortReason = WritableStreamDefaultController & {
+  abortReason?: unknown;
+};
+type SymbolRecord = Record<symbol, unknown>;
+const ReadableStreamCtor = ReadableStream as ReadableStreamWithFrom;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeReadable(chunks) {
+function makeReadable<T>(chunks: Iterable<T>) {
   return new ReadableStream({
     start(controller) {
       for (const chunk of chunks) controller.enqueue(chunk);
@@ -13,19 +22,19 @@ function makeReadable(chunks) {
   });
 }
 
-async function collect(readable) {
-  const results = [];
+async function collect<T>(readable: AsyncIterable<T>) {
+  const results: T[] = [];
   for await (const chunk of readable) results.push(chunk);
   return results;
 }
 
-function makeSinkWritable() {
-  const chunks = [];
-  let closedResolve;
-  const closed = new Promise(r => { closedResolve = r; });
+function makeSinkWritable<T = unknown>() {
+  const chunks: T[] = [];
+  let closedResolve: (() => void) | undefined;
+  const closed = new Promise<void>(r => { closedResolve = r; });
   const stream = new WritableStream({
     write(chunk) { chunks.push(chunk); },
-    close() { closedResolve(); },
+    close() { closedResolve?.(); },
   });
   return { stream, chunks, closed };
 }
@@ -57,13 +66,13 @@ describe('ReadableStream basics', () => {
 
   it('ReadableStream.from() — async iterable fast path', async (t) => {
     async function* gen() { yield 'x'; yield 'y'; }
-    const rs = ReadableStream.from(gen());
+    const rs = ReadableStreamCtor.from(gen());
     t.deepEqual(await collect(rs), ['x', 'y']);
   });
 
   it('ReadableStream.from() — array iteration', async (t) => {
     async function* gen() { for (const x of [10, 20, 30]) yield x; }
-    const rs = ReadableStream.from(gen());
+    const rs = ReadableStreamCtor.from(gen());
     t.deepEqual(await collect(rs), [10, 20, 30]);
   });
 
@@ -170,7 +179,7 @@ describe('WritableStream', () => {
   });
 
   it('writes are serialized (not concurrent)', async (t) => {
-    const order = [];
+    const order: string[] = [];
     const stream = new WritableStream({
       write(chunk) {
         order.push(`start:${chunk}`);
@@ -217,12 +226,12 @@ describe('pipeTo', () => {
   it('iterable→sink uses general pump', async (t) => {
     const { stream, chunks } = makeSinkWritable();
     async function* gen() { yield 'a'; yield 'b'; }
-    await ReadableStream.from(gen()).pipeTo(stream);
+    await ReadableStreamCtor.from(gen()).pipeTo(stream);
     t.deepEqual(chunks, ['a', 'b'], 'chunks received');
   });
 
   it('preventClose keeps writable open', async (t) => {
-    const chunks = [];
+    const chunks: string[] = [];
     let closeCalled = false;
     const ws = new WritableStream({
       write(chunk) { chunks.push(chunk); },
@@ -234,7 +243,7 @@ describe('pipeTo', () => {
   });
 
   it('multiple chunks, stream closes', async (t) => {
-    const received = [];
+    const received: number[] = [];
     let closedCount = 0;
     const ws = new WritableStream({
       write(c) { received.push(c); },
@@ -350,11 +359,12 @@ describe('Queuing strategies', () => {
 
 describe('ReadableStream desiredSize', () => {
   it('CountQueuingStrategy: desiredSize tracks queue', async (t) => {
-    let ctrl;
+    let ctrl: ReadableStreamDefaultController<string> | undefined;
     const rs = new ReadableStream(
       { start(c) { ctrl = c; } },
       new CountQueuingStrategy({ highWaterMark: 3 }),
     );
+    if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.desiredSize, 3, 'starts at hwm');
     ctrl.enqueue('a');
     t.equal(ctrl.desiredSize, 2, 'after one enqueue');
@@ -367,32 +377,41 @@ describe('ReadableStream desiredSize', () => {
   });
 
   it('ReadableStreamDefaultController.desiredSize is null when errored', (t) => {
-    let ctrl;
+    let ctrl: ReadableStreamDefaultController<unknown> | undefined;
     const rs = new ReadableStream({ start(c) { ctrl = c; } });
+    if (!ctrl) throw new Error('controller not set');
     ctrl.error(new Error('oops'));
     t.equal(ctrl.desiredSize, null, 'null when errored');
   });
 
   it('ReadableStreamDefaultController.desiredSize is 0 when closed', async (t) => {
-    let ctrl;
+    let ctrl: ReadableStreamDefaultController<unknown> | undefined;
     const rs = new ReadableStream({ start(c) { ctrl = c; ctrl.close(); } });
     await collect(rs);
+    if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.desiredSize, 0, 'zero when closed');
   });
 
   it('ReadableStreamDefaultController: enqueue after close throws', (t) => {
-    let ctrl;
+    let ctrl: ReadableStreamDefaultController<unknown> | undefined;
     new ReadableStream({ start(c) { ctrl = c; ctrl.close(); } });
-    t.throws(() => ctrl.enqueue('x'), /close/, 'throws after close');
+    if (!ctrl) throw new Error('controller not set');
+    const controller = ctrl;
+    t.throws(() => controller.enqueue('x'), /close/, 'throws after close');
   });
 
   it('pull called proactively when desiredSize > 0', async (t) => {
     let pullCount = 0;
-    let ctrl;
+    let ctrl: ReadableStreamDefaultController<number> | undefined;
     const rs = new ReadableStream(
       {
         start(c) { ctrl = c; },
-        pull() { pullCount++; ctrl.enqueue(pullCount); if (pullCount >= 3) ctrl.close(); },
+        pull() {
+          if (!ctrl) throw new Error('controller not set');
+          pullCount++;
+          ctrl.enqueue(pullCount);
+          if (pullCount >= 3) ctrl.close();
+        },
       },
       new CountQueuingStrategy({ highWaterMark: 3 }),
     );
@@ -404,7 +423,7 @@ describe('ReadableStream desiredSize', () => {
 
 describe('WritableStream desiredSize / ready', () => {
   it('ByteLengthQueuingStrategy: desiredSize', async (t) => {
-    const writes = [];
+    const writes: ArrayBufferView[] = [];
     const ws = new WritableStream(
       { write(c) { writes.push(c); } },
       new ByteLengthQueuingStrategy({ highWaterMark: 10 }),
@@ -412,14 +431,14 @@ describe('WritableStream desiredSize / ready', () => {
     const writer = ws.getWriter();
     t.equal(writer.desiredSize, 10, 'starts at hwm');
     const p = writer.write(new Uint8Array(6));
-    t.ok(writer.desiredSize <= 4, 'desiredSize reduced after write');
+    t.ok(writer.desiredSize !== null && writer.desiredSize <= 4, 'desiredSize reduced after write');
     await p;
     writer.releaseLock();
   });
 
   it('WritableStreamDefaultWriter.desiredSize tracks queue', async (t) => {
-    const writes = [];
-    let resolveWrite;
+    const writes: string[] = [];
+    let resolveWrite: (() => void) | undefined;
     const ws = new WritableStream({
       write(c) {
         writes.push(c);
@@ -466,7 +485,7 @@ describe('WritableStream desiredSize / ready', () => {
   });
 
   it('WritableStreamDefaultWriter.ready: pending when backpressure, resolves after write', async (t) => {
-    let resolveWrite;
+    let resolveWrite: (() => void) | undefined;
     const ws = new WritableStream(
       { write() { return new Promise(r => { resolveWrite = r; }); } },
       new CountQueuingStrategy({ highWaterMark: 1 }),
@@ -497,6 +516,7 @@ describe('Byte streams (BYOB)', () => {
     const reader = rs.getReader();
     const { done, value } = await reader.read();
     t.ok(!done, 'not done');
+    if (value === undefined) throw new Error('expected value');
     t.deepEqual(Array.from(value), [1, 2, 3], 'chunk received');
     const { done: done2 } = await reader.read();
     t.ok(done2, 'stream closed');
@@ -504,11 +524,12 @@ describe('Byte streams (BYOB)', () => {
   });
 
   it('ReadableByteStreamController: desiredSize tracks byte queue', (t) => {
-    let ctrl;
+    let ctrl: ReadableByteStreamController | undefined;
     const rs = new ReadableStream(
       { type: 'bytes', start(c) { ctrl = c; } },
       { highWaterMark: 10 },
     );
+    if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.desiredSize, 10, 'starts at hwm');
     ctrl.enqueue(new Uint8Array(4));
     t.equal(ctrl.desiredSize, 6, 'after 4 bytes');
@@ -518,8 +539,9 @@ describe('Byte streams (BYOB)', () => {
   });
 
   it('ReadableByteStreamController: byobRequest is null when no BYOB reader', (t) => {
-    let ctrl;
+    let ctrl: ReadableByteStreamController | undefined;
     new ReadableStream({ type: 'bytes', start(c) { ctrl = c; } });
+    if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.byobRequest, null, 'null when no BYOB reader');
   });
 
@@ -547,6 +569,7 @@ describe('Byte streams (BYOB)', () => {
     const view = new Uint8Array(4);
     const { done, value } = await reader.read(view);
     t.ok(!done, 'not done');
+    if (value === undefined) throw new Error('expected value');
     t.deepEqual(Array.from(value), [10, 20, 30, 40], 'bytes filled');
     reader.releaseLock();
   });
@@ -563,18 +586,19 @@ describe('Byte streams (BYOB)', () => {
     const view = new Uint8Array(8);
     const { done, value } = await reader.read(view, { min: 1 });
     t.ok(!done, 'not done');
+    if (value === undefined) throw new Error('expected value');
     t.equal(value.byteLength, 2, 'partial fill returned');
     t.deepEqual(Array.from(value), [1, 2], 'correct bytes');
     reader.releaseLock();
   });
 
   it('ReadableStreamBYOBReader: byobRequest provided to pull', async (t) => {
-    let byobReq = null;
+    let byobReq: ReadableStreamBYOBRequest | null = null;
     const rs = new ReadableStream({
       type: 'bytes',
       pull(ctrl) {
         byobReq = ctrl.byobRequest;
-        if (byobReq) {
+        if (byobReq && byobReq.view !== null) {
           new Uint8Array(byobReq.view.buffer, byobReq.view.byteOffset, 3).set([7, 8, 9]);
           byobReq.respond(3);
         } else {
@@ -587,6 +611,7 @@ describe('Byte streams (BYOB)', () => {
     const view = new Uint8Array(3);
     const { done, value } = await reader.read(view);
     t.ok(!done, 'not done');
+    if (value === undefined) throw new Error('expected value');
     t.deepEqual(Array.from(value), [7, 8, 9], 'bytes filled via byobRequest.respond');
     reader.releaseLock();
   });
@@ -648,7 +673,7 @@ describe('ReadableStream cancel on iterable-backed stream', () => {
         finallyCalled = true;
       }
     }
-    const rs = ReadableStream.from(gen());
+    const rs = ReadableStreamCtor.from(gen());
     const reader = rs.getReader();
     await reader.read(); // consume first chunk
     await reader.cancel('stop');
@@ -660,7 +685,7 @@ describe('ReadableStream cancel on iterable-backed stream', () => {
   });
 
   it('ReadableStream.from() with a sync iterable (array)', async (t) => {
-    const rs = ReadableStream.from([1, 2, 3]);
+    const rs = ReadableStreamCtor.from([1, 2, 3]);
     t.deepEqual(await collect(rs), [1, 2, 3], 'all array values yielded');
   });
 });
@@ -861,15 +886,15 @@ describe('ReadableStream start() error', () => {
 
 describe('ReadableStream.from() — validation', () => {
   it('throws TypeError for null', (t) => {
-    t.throws(() => ReadableStream.from(null), /must be an async iterable/, 'null throws');
+    t.throws(() => ReadableStreamCtor.from(null as never), /must be an async iterable/, 'null throws');
   });
 
   it('throws TypeError for a plain number', (t) => {
-    t.throws(() => ReadableStream.from(42 as any), /must be an async iterable/, 'number throws');
+    t.throws(() => ReadableStreamCtor.from(42 as any), /must be an async iterable/, 'number throws');
   });
 
   it('throws TypeError for a plain object without iterator', (t) => {
-    t.throws(() => ReadableStream.from({} as any), /must be an async iterable/, 'plain object throws');
+    t.throws(() => ReadableStreamCtor.from({} as any), /must be an async iterable/, 'plain object throws');
   });
 });
 
@@ -909,16 +934,17 @@ describe('pipeTo() — returns rejected promise for locked streams', () => {
 
 describe('WritableStreamDefaultController.abortReason', () => {
   it('abortReason is undefined before abort', async (t) => {
-    let ctrl;
+    let ctrl: WritableControllerWithAbortReason | undefined;
     const ws = new WritableStream({
       start(c) { ctrl = c; },
     });
+    if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.abortReason, undefined, 'abortReason is undefined before abort');
     ws.abort(); // clean up
   });
 
   it('abortReason reflects the abort reason after abort', async (t) => {
-    let ctrl;
+    let ctrl: WritableControllerWithAbortReason | undefined;
     const reason = new Error('cancelled');
     const ws = new WritableStream({
       start(c) { ctrl = c; },
@@ -927,6 +953,7 @@ describe('WritableStreamDefaultController.abortReason', () => {
     ws.abort(reason);
     // Give the abort a chance to propagate
     await new Promise(r => setTimeout(r, 0));
+    if (!ctrl) throw new Error('controller not set');
     t.equal(ctrl.signal.aborted, true, 'signal is aborted');
     t.equal(ctrl.abortReason, reason, 'abortReason matches abort reason');
   });
@@ -935,17 +962,17 @@ describe('WritableStreamDefaultController.abortReason', () => {
 describe('[Symbol.toStringTag]', () => {
   it('ReadableStream has correct toStringTag', (t) => {
     const rs = new ReadableStream({ start(c) { c.close(); } });
-    t.equal(rs[Symbol.toStringTag], 'ReadableStream', 'ReadableStream toStringTag');
+    t.equal((rs as unknown as SymbolRecord)[Symbol.toStringTag], 'ReadableStream', 'ReadableStream toStringTag');
   });
 
   it('WritableStream has correct toStringTag', (t) => {
     const ws = new WritableStream();
-    t.equal(ws[Symbol.toStringTag], 'WritableStream', 'WritableStream toStringTag');
+    t.equal((ws as unknown as SymbolRecord)[Symbol.toStringTag], 'WritableStream', 'WritableStream toStringTag');
   });
 
   it('TransformStream has correct toStringTag', (t) => {
     const ts = new TransformStream();
-    t.equal(ts[Symbol.toStringTag], 'TransformStream', 'TransformStream toStringTag');
+    t.equal((ts as unknown as SymbolRecord)[Symbol.toStringTag], 'TransformStream', 'TransformStream toStringTag');
   });
 });
 
@@ -955,7 +982,7 @@ describe('ReadableStreamDefaultReader.releaseLock() rejects pending reads', () =
     const rs = new ReadableStream({
       start(controller) {
         // Don't enqueue anything yet — reads will be pending
-        (globalThis as any).__resolveChunk = (v) => controller.enqueue(v);
+        (globalThis as any).__resolveChunk = (v: Uint8Array) => controller.enqueue(v);
       },
     });
     const reader = rs.getReader();

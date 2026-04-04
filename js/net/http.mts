@@ -1,8 +1,8 @@
 /**
- * boats:http — incremental HTTP/1.1 parser and serializer.
+ * fino:http — incremental HTTP/1.1 parser and serializer.
  *
  * This module implements HTTP/1.1 parsing and serialization entirely in JS,
- * building on Boats's async iterator model. There are no native bindings; the
+ * building on Fino's async iterator model. There are no native bindings; the
  * parser is a hand-rolled state machine over byte chunks from any async source.
  *
  * It exports:
@@ -18,7 +18,7 @@
  * ## Intentional deviation from the Fetch spec
  *
  * The WHATWG Fetch spec uses `ReadableStream` for response/request bodies.
- * Boats does not implement ReadableStream (it's a large, complex API). Instead,
+ * Fino does not implement ReadableStream (it's a large, complex API). Instead,
  * `body` is an async iterable of `Uint8Array` chunks, which is simpler and
  * composable with `for await` loops and `writer.pipe()`.
  *
@@ -83,12 +83,10 @@
  * chunks. For requests with a body but no `Content-Length`, chunked encoding
  * is injected automatically.
  *
- * The `_concat(parts, totalLen)` helper always allocates a fresh buffer rather
- * than returning a subarray. This is necessary because the FFI `write(2)` call
- * uses the buffer's `byteOffset` to find the start of the data. A subarray of
- * a larger buffer (e.g. the Reader's 64 KiB socket buffer) would have a
- * nonzero `byteOffset` that the FFI layer ignores, causing writes to start
- * from byte 0 of the backing buffer instead of the intended data.
+ * The `_concat(parts, totalLen, arena?)` helper merges slices into a single
+ * buffer. When an `Arena` is provided, the result is a view into the arena's
+ * backing buffer (zero allocation). The FFI `write(2)` call correctly handles
+ * the non-zero `byteOffset` of arena views.
  *
  *
  * ## Contributing
@@ -103,10 +101,10 @@
  *   (< 50 entries) this is fine; for exotic use cases, a Map could be used.
  */
 
-import { decodeUtf8, encodeUtf8 } from 'internal:globals/encoding';
-import { ReadableStream } from 'internal:globals/webstreams';
-import { Blob } from 'internal:globals/blob';
-import { FormData, _serializeFormData } from 'internal:globals/formdata';
+import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
+import { ReadableStream } from '../internal/globals/webstreams.mts';
+import { Blob } from '../internal/globals/blob.mts';
+import { FormData, _serializeFormData } from '../internal/globals/formdata.mts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,6 +141,14 @@ interface WireResponseInit {
   redirected?: boolean;
 }
 
+type AsyncByteSource = AsyncIterable<Uint8Array | ArrayBuffer>;
+type AsyncByteIterable = AsyncIterable<Uint8Array>;
+type BodyFraming =
+  | { type: 'fixed'; length: number }
+  | { type: 'chunked' }
+  | { type: 'eof' }
+  | { type: 'none' };
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -151,9 +157,55 @@ const CR = 0x0D; // '\r'
 const LF = 0x0A; // '\n'
 const SPACE = 0x20; // ' '
 
+// Constant byte sequences used in framing — allocated once, never modified.
+const CRLF_BYTES = new Uint8Array([CR, LF]);
+const LAST_CHUNK_BYTES = new Uint8Array([0x30, CR, LF, CR, LF]); // "0\r\n\r\n"
+
 // Maximum header section size (prevents malicious clients from sending
 // unbounded headers).  64 KiB should be plenty.
 const MAX_HEADER_SIZE = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Arena: per-connection bump allocator
+// ---------------------------------------------------------------------------
+
+/**
+ * Bump allocator backed by a single ArrayBuffer.
+ *
+ * Each `alloc(n)` returns a `Uint8Array` view at the current cursor, advances
+ * the cursor by `n`, and never allocates a new backing store. `reset()` sets
+ * the cursor back to zero, logically freeing all previous allocations in O(1).
+ *
+ * Used to eliminate per-request allocations for response encoding. All bytes
+ * written into arena views are consumed by `write(2)` before `reset()` is
+ * called, so there is no aliasing hazard. If the arena is full, `alloc()`
+ * falls back to a regular `new Uint8Array(n)` — no failure mode.
+ *
+ * The FFI layer correctly handles the non-zero `byteOffset` of arena views
+ * when they are passed to `write(2)` as `buffer` arguments.
+ */
+export class Arena {
+  #buf: ArrayBuffer;
+  #cursor: number;
+
+  constructor(size: number = 8192) {
+    this.#buf = new ArrayBuffer(size);
+    this.#cursor = 0;
+  }
+
+  alloc(n: number): Uint8Array {
+    if (this.#cursor + n > this.#buf.byteLength) {
+      return new Uint8Array(n); // fallback if arena is full
+    }
+    const view = new Uint8Array(this.#buf, this.#cursor, n);
+    this.#cursor += n;
+    return view;
+  }
+
+  reset(): void {
+    this.#cursor = 0;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Internal: buffered reader over an async iterable of chunks
@@ -166,14 +218,23 @@ const MAX_HEADER_SIZE = 64 * 1024;
  *   - bodyIterator(contentLength | null)  — returns an async iterable
  *     that yields remaining body data (either fixed-length or until EOF).
  */
-function _createReader(source) {
+function _createReader(source: AsyncByteSource) {
   const iter = source[Symbol.asyncIterator]();
-  let buf = null;   // Uint8Array — leftover bytes from the current chunk
+  let buf: Uint8Array | null = null;   // leftover bytes from the current chunk
   let offset = 0;   // read position within `buf`
   let done = false;  // upstream exhausted?
 
+  function _findDoubleCRLF(bytes: Uint8Array, start: number = 0): number {
+    for (let i = start; i + 3 < bytes.byteLength; i++) {
+      if (bytes[i] === CR && bytes[i + 1] === LF && bytes[i + 2] === CR && bytes[i + 3] === LF) {
+        return i + 4;
+      }
+    }
+    return -1;
+  }
+
   /** Pull the next chunk from the upstream iterator. */
-  async function pull() {
+  async function pull(): Promise<boolean> {
     if (done) return false;
     const result = await iter.next();
     if (result.done) { done = true; return false; }
@@ -184,7 +245,7 @@ function _createReader(source) {
   }
 
   /** Return currently buffered but un-consumed bytes (may be empty). */
-  function remaining() {
+  function remaining(): Uint8Array | null {
     if (buf === null || offset >= buf.byteLength) return null;
     return buf.subarray(offset);
   }
@@ -195,50 +256,57 @@ function _createReader(source) {
    * terminator.  Any bytes after the terminator are kept in the internal buffer
    * for subsequent body reads.
    */
-  async function readUntilDoubleCRLF() {
-    const parts = [];
-    let totalLen = 0;
-
-    // State machine: track how many bytes of "\r\n\r\n" we have matched.
-    let matchCount = 0;
-    const target = [CR, LF, CR, LF];
-
-    while (true) {
-      // Ensure we have data.
-      if (buf === null || offset >= buf.byteLength) {
-        if (!(await pull())) {
-          throw new Error('Unexpected end of stream before header terminator');
-        }
-      }
-
-      // Scan the current chunk for the terminator.
-      const start = offset;
-      while (offset < buf.byteLength) {
-        if (buf[offset] === target[matchCount]) {
-          matchCount++;
-          if (matchCount === 4) {
-            // Found the full terminator.  Include this byte in the header
-            // segment and leave offset pointing to the byte AFTER.
-            offset++;
-            parts.push(buf.subarray(start, offset));
-            totalLen += offset - start;
-            return _concat(parts, totalLen);
-          }
-        } else {
-          matchCount = buf[offset] === CR ? 1 : 0;
-        }
-        offset++;
-      }
-
-      // Consumed the whole chunk — stash what we read and loop.
-      const slice = buf.subarray(start, offset);
-      parts.push(slice);
-      totalLen += slice.byteLength;
-
-      if (totalLen > MAX_HEADER_SIZE) {
-        throw new Error('HTTP header section exceeds ' + MAX_HEADER_SIZE + ' bytes');
+  async function readUntilDoubleCRLF(): Promise<Uint8Array> {
+    // Fast path: CRLFCRLF is entirely within the current chunk — no allocation.
+    const rem = remaining();
+    if (rem !== null && rem.byteLength > 3) {
+      const headerEnd = _findDoubleCRLF(rem, 0);
+      if (headerEnd >= 0) {
+        offset += headerEnd; // advance past headers; leftover bytes stay in buf
+        return rem.subarray(0, headerEnd);
       }
     }
+
+    // Slow path: headers span chunk boundaries (rare for typical HTTP traffic).
+    const parts: Uint8Array[] = [];
+    let totalLen = 0;
+
+    while (true) {
+      const r = remaining();
+      if (r !== null && r.byteLength > 0) {
+        const prefixLen = totalLen;
+        parts.push(r);
+        totalLen += r.byteLength;
+        buf = null;
+        offset = 0;
+        if (totalLen > MAX_HEADER_SIZE) {
+          throw new Error('HTTP header section exceeds ' + MAX_HEADER_SIZE + ' bytes');
+        }
+
+        const joined = parts.length === 1 ? r : _concat(parts, totalLen);
+        const headerEnd = _findDoubleCRLF(joined, Math.max(0, prefixLen - 3));
+        if (headerEnd >= 0) {
+          const consumedFromCurrent = headerEnd - prefixLen;
+          buf = r;
+          offset = consumedFromCurrent;
+          return joined.subarray(0, headerEnd);
+        }
+      }
+
+      if (!(await pull())) {
+        throw new Error('Unexpected end of stream before header terminator');
+      }
+    }
+  }
+
+  function readUntilDoubleCRLFBuffered(): Uint8Array | null {
+    const rem = remaining();
+    if (rem === null) return null;
+    const headerEnd = _findDoubleCRLF(rem);
+    if (headerEnd < 0) return null;
+    const start = offset;
+    offset += headerEnd;
+    return rem.subarray(0, headerEnd);
   }
 
   /**
@@ -246,13 +314,13 @@ function _createReader(source) {
    *
    * @param {number|null} contentLength  Known length, or null for read-until-EOF.
    */
-  function bodyIterator(contentLength) {
+  function bodyIterator(contentLength: number | null): AsyncByteIterable {
     let bytesLeft = contentLength; // null ⇒ read until EOF
 
-    return {
-      [Symbol.asyncIterator]() { return this; },
+    const iterator: AsyncIterator<Uint8Array> & AsyncByteIterable = {
+      [Symbol.asyncIterator]() { return iterator; },
 
-      async next() {
+      async next(): Promise<IteratorResult<Uint8Array>> {
         // Fixed-length body — stop when we've emitted enough bytes.
         if (bytesLeft !== null && bytesLeft <= 0) {
           return { done: true, value: undefined };
@@ -283,7 +351,11 @@ function _createReader(source) {
         if (!(await pull())) {
           return { done: true, value: undefined };
         }
-        const chunk = buf.subarray(offset);
+        const current = buf;
+        if (current === null) {
+          return { done: true, value: undefined };
+        }
+        const chunk = current.subarray(offset);
 
         if (bytesLeft !== null) {
           if (chunk.byteLength <= bytesLeft) {
@@ -304,6 +376,7 @@ function _createReader(source) {
         return { done: false, value: chunk };
       },
     };
+    return iterator;
   }
 
   /**
@@ -312,32 +385,36 @@ function _createReader(source) {
    * Each HTTP chunk is: <hex-size>\r\n<data>\r\n
    * Terminated by a zero-length chunk: 0\r\n\r\n
    */
-  function chunkedBodyIterator() {
+  function chunkedBodyIterator(): AsyncByteIterable {
     let finished = false;
 
     // Internal byte-level helpers.
-    async function ensureData() {
+    async function ensureData(): Promise<void> {
       if (buf === null || offset >= buf.byteLength) {
         if (!(await pull())) throw new Error('Unexpected end of chunked stream');
       }
     }
 
-    async function readByte() {
+    async function readByte(): Promise<number> {
       await ensureData();
-      return buf[offset++];
+      const current = buf;
+      if (current === null) throw new Error('Unexpected end of chunked stream');
+      return current[offset++] ?? 0;
     }
 
     // Read bytes until CRLF and return them as a Uint8Array (excluding CRLF).
-    async function readLine() {
-      const parts = [];
+    async function readLine(): Promise<Uint8Array> {
+      const parts: Uint8Array[] = [];
       let total = 0;
       while (true) {
         await ensureData();
+        const current = buf;
+        if (current === null) throw new Error('Unexpected end of chunked stream');
         const start = offset;
-        while (offset < buf.byteLength) {
-          if (buf[offset] === CR) {
+        while (offset < current.byteLength) {
+          if (current[offset] === CR) {
             // Peek for LF
-            parts.push(buf.subarray(start, offset));
+            parts.push(current.subarray(start, offset));
             total += offset - start;
             offset++; // skip CR
             const lf = await readByte(); // should be LF
@@ -346,31 +423,34 @@ function _createReader(source) {
           }
           offset++;
         }
-        parts.push(buf.subarray(start, offset));
+        parts.push(current.subarray(start, offset));
         total += offset - start;
       }
     }
 
     // Read exactly `n` bytes.
-    async function readExact(n) {
+    async function readExact(n: number): Promise<Uint8Array> {
       if (n === 0) return new Uint8Array(0);
-      const parts = [];
+      const parts: Uint8Array[] = [];
       let remaining = n;
       while (remaining > 0) {
         await ensureData();
-        const avail = buf.byteLength - offset;
+        const current = buf;
+        if (current === null) throw new Error('Unexpected end of chunked stream');
+        const avail = current.byteLength - offset;
         const take = Math.min(avail, remaining);
-        parts.push(buf.subarray(offset, offset + take));
+        parts.push(current.subarray(offset, offset + take));
         offset += take;
         remaining -= take;
       }
-      return parts.length === 1 ? parts[0] : _concat(parts, n);
+      const first = parts[0];
+      return parts.length === 1 && first ? first : _concat(parts, n);
     }
 
-    return {
-      [Symbol.asyncIterator]() { return this; },
+    const iterator: AsyncIterator<Uint8Array> & AsyncByteIterable = {
+      [Symbol.asyncIterator]() { return iterator; },
 
-      async next() {
+      async next(): Promise<IteratorResult<Uint8Array>> {
         if (finished) return { done: true, value: undefined };
 
         // Read the chunk-size line.
@@ -404,9 +484,10 @@ function _createReader(source) {
         return { done: false, value: data };
       },
     };
+    return iterator;
   }
 
-  return { readUntilDoubleCRLF, bodyIterator, chunkedBodyIterator };
+  return { readUntilDoubleCRLF, readUntilDoubleCRLFBuffered, bodyIterator, chunkedBodyIterator };
 }
 
 // ---------------------------------------------------------------------------
@@ -417,7 +498,7 @@ function _createReader(source) {
 const INTERNAL = Symbol('internal');
 
 /** Wrap a Uint8Array as a single-chunk async iterable. */
-function _iterableFromBytes(bytes) {
+function _iterableFromBytes(bytes: Uint8Array): AsyncByteIterable {
   return {
     [Symbol.asyncIterator]() {
       let sent = false;
@@ -435,7 +516,7 @@ function _iterableFromBytes(bytes) {
  * Convert a body init value to Uint8Array.
  * Accepts: string, ArrayBuffer, Uint8Array.
  */
-function _toBytes(body) {
+function _toBytes(body: Exclude<BodyInit, null>): Uint8Array {
   if (body instanceof Uint8Array) return body;
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
   if (typeof body === 'string') return encodeUtf8(body);
@@ -455,6 +536,7 @@ function _toBytes(body) {
  */
 export class Headers {
   #list: [string, string][];
+  #sortedCache: [string, string][] | null = null;
 
   constructor(init?: HeadersInit) {
     this.#list = []; // [[name, value], ...]
@@ -463,11 +545,15 @@ export class Headers {
       this.#list = init.#list.slice();
     } else if (Array.isArray(init)) {
       for (const pair of init) {
+        if (pair.length < 2 || pair[0] === undefined || pair[1] === undefined) {
+          throw new TypeError('Header pair must contain exactly two items');
+        }
         this.append(pair[0], pair[1]);
       }
     } else if (typeof init === 'object') {
       for (const name of Object.keys(init)) {
-        this.append(name, init[name]);
+        const value = init[name];
+        if (value !== undefined) this.append(name, value);
       }
     }
   }
@@ -480,6 +566,17 @@ export class Headers {
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
     this.#list.push([name, value]);
+    this.#sortedCache = null;
+  }
+
+  /**
+   * Internal: append a pre-normalized [name, value] pair without validation.
+   * name must already be lowercased and trimmed; value must already be trimmed
+   * and free of control characters (guaranteed for wire-parsed headers).
+   */
+  _appendTrusted(name: string, value: string): void {
+    this.#list.push([name, value]);
+    this.#sortedCache = null;
   }
 
   /**
@@ -488,18 +585,23 @@ export class Headers {
   set(name: string, value: string): void {
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
-    let replaced = false;
-    const next = [];
-    for (const entry of this.#list) {
+    // Mutate in place: find the first occurrence and replace it, then remove
+    // any duplicates. Avoids allocating a `next` array on every call.
+    let firstIdx = -1;
+    for (let i = 0; i < this.#list.length; i++) {
+      const entry = this.#list[i]!;
       if (entry[0] === name) {
-        if (!replaced) { next.push([name, value]); replaced = true; }
-        // else drop duplicate
-      } else {
-        next.push(entry);
+        if (firstIdx < 0) {
+          entry[1] = value;
+          firstIdx = i;
+        } else {
+          this.#list.splice(i, 1);
+          i--;
+        }
       }
     }
-    if (!replaced) next.push([name, value]);
-    this.#list = next;
+    if (firstIdx < 0) this.#list.push([name, value]);
+    this.#sortedCache = null;
   }
 
   /**
@@ -508,11 +610,16 @@ export class Headers {
    */
   get(name: string): string | null {
     name = name.toLowerCase().trim();
-    const values = [];
-    for (const entry of this.#list) {
-      if (entry[0] === name) values.push(entry[1]);
+    // Avoid allocating an array for the common single-value case.
+    let result: string | null = null;
+    const list = this.#list;
+    for (let i = 0; i < list.length; i++) {
+      const entry = list[i]!;
+      if (entry[0] === name) {
+        result = result === null ? entry[1] : result + ', ' + entry[1];
+      }
     }
-    return values.length === 0 ? null : values.join(', ');
+    return result;
   }
 
   /** Return true if a header with the given name exists. */
@@ -527,7 +634,8 @@ export class Headers {
   /** Remove all values for the given header name. */
   delete(name: string): void {
     name = name.toLowerCase().trim();
-    this.#list = this.#list.filter(function(entry) { return entry[0] !== name; });
+    this.#list = this.#list.filter(function keepNonMatching(entry) { return entry[0] !== name; });
+    this.#sortedCache = null;
   }
 
   /**
@@ -536,8 +644,8 @@ export class Headers {
    */
   getSetCookie() {
     return this.#list
-      .filter(function(entry) { return entry[0] === 'set-cookie'; })
-      .map(function(entry) { return entry[1]; });
+      .filter(function isSetCookie(entry) { return entry[0] === 'set-cookie'; })
+      .map(function extractValue(entry) { return entry[1]; });
   }
 
   /** Return an iterator over [name, value] pairs, sorted by name. */
@@ -547,16 +655,16 @@ export class Headers {
 
   /** Return an iterator over header names, sorted. */
   keys() {
-    return this.#sorted().map(function(e) { return e[0]; })[Symbol.iterator]();
+    return this.#sorted().map(function extractName(e) { return e[0]; })[Symbol.iterator]();
   }
 
   /** Return an iterator over header values, sorted by name. */
   values() {
-    return this.#sorted().map(function(e) { return e[1]; })[Symbol.iterator]();
+    return this.#sorted().map(function extractValue(e) { return e[1]; })[Symbol.iterator]();
   }
 
   /** Iterate over [name, value] pairs, sorted by name. */
-  forEach(callback, thisArg) {
+  forEach(callback: (value: string, name: string, headers: Headers) => void, thisArg?: unknown): void {
     for (const entry of this.#sorted()) {
       callback.call(thisArg, entry[1], entry[0], this);
     }
@@ -566,20 +674,22 @@ export class Headers {
     return this.entries();
   }
 
-  #sorted() {
-    return this.#list.slice().sort(function(a, b) {
+  #sorted(): [string, string][] {
+    if (this.#sortedCache !== null) return this.#sortedCache;
+    this.#sortedCache = this.#list.slice().sort(function compareHeaderNames(a, b) {
       return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
     });
+    return this.#sortedCache;
   }
 }
 
-function _normalizeHeaderName(name) {
+function _normalizeHeaderName(name: string): string {
   name = String(name).toLowerCase().trim();
   if (!name) throw new TypeError('Header name must not be empty');
   return name;
 }
 
-function _normalizeHeaderValue(value) {
+function _normalizeHeaderValue(value: string): string {
   value = String(value).trim();
   if (/[\x00\r\n]/.test(value)) throw new TypeError('Header value contains invalid characters');
   return value;
@@ -596,26 +706,47 @@ function _normalizeHeaderValue(value) {
  * @param {Uint8Array} raw
  * @returns {{ firstLine: string, headers: Headers }}
  */
-function _parseHeaders(raw) {
+function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers } {
   const text = decodeUtf8(raw);
-  const lines = text.split('\r\n');
-
-  // First line: request-line or status-line.
-  const firstLine = lines[0];
+  let lineEnd = text.indexOf('\r\n');
+  if (lineEnd < 0) lineEnd = text.length;
+  const firstLine = text.substring(0, lineEnd);
 
   const headers = new Headers();
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.length === 0) break; // end of headers
+  let pos = lineEnd + 2;
+  while (pos < text.length) {
+    const nextLineEnd = text.indexOf('\r\n', pos);
+    if (nextLineEnd < 0 || nextLineEnd === pos) break;
 
-    // Handle header continuations (obs-fold: line starts with SP or HT).
-    if (line.charCodeAt(0) === SPACE || line.charCodeAt(0) === 0x09) continue;
+    const firstChar = text.charCodeAt(pos);
+    if (firstChar === SPACE || firstChar === 0x09) {
+      pos = nextLineEnd + 2;
+      continue;
+    }
 
-    const colonIdx = line.indexOf(':');
-    if (colonIdx < 0) continue; // malformed line — skip
-    const name  = line.substring(0, colonIdx).toLowerCase().trim();
-    const value = line.substring(colonIdx + 1).trim();
-    if (name) headers.append(name, value);
+    const colonIdx = text.indexOf(':', pos);
+    if (colonIdx > pos && colonIdx < nextLineEnd) {
+      const name = text.substring(pos, colonIdx).toLowerCase().trim();
+      if (name) {
+        let valueStart = colonIdx + 1;
+        while (valueStart < nextLineEnd) {
+          const ch = text.charCodeAt(valueStart);
+          if (ch !== SPACE && ch !== 0x09) break;
+          valueStart++;
+        }
+
+        let valueEnd = nextLineEnd;
+        while (valueEnd > valueStart) {
+          const ch = text.charCodeAt(valueEnd - 1);
+          if (ch !== SPACE && ch !== 0x09) break;
+          valueEnd--;
+        }
+
+        headers._appendTrusted(name, text.substring(valueStart, valueEnd));
+      }
+    }
+
+    pos = nextLineEnd + 2;
   }
 
   return { firstLine, headers };
@@ -630,7 +761,7 @@ function _parseHeaders(raw) {
  *   { type: 'eof' }                      — read until connection closes
  *   { type: 'none' }                     — no body expected
  */
-function _bodyFraming(headers, isRequest, statusCode) {
+function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number): BodyFraming {
   // Responses to HEAD, 1xx, 204, 304 have no body.
   if (!isRequest) {
     if (statusCode >= 100 && statusCode < 200) return { type: 'none' };
@@ -639,7 +770,7 @@ function _bodyFraming(headers, isRequest, statusCode) {
 
   const te = headers.get('transfer-encoding');
   if (te) {
-    const last = te.split(',').pop().trim().toLowerCase();
+      const last = (te.split(',').pop() ?? '').trim().toLowerCase();
     if (last === 'chunked') return { type: 'chunked' };
   }
 
@@ -711,7 +842,7 @@ export class Request {
         if (!this.#headers.has('content-type')) {
           this.#headers.set('content-type', `multipart/form-data; boundary=${boundary}`);
         }
-        this.#rawBody = { [Symbol.asyncIterator]: async function*() {
+        this.#rawBody = { [Symbol.asyncIterator]: async function* formDataBodyGenerator() {
           const { body } = await _serializeFormData(fd, boundary);
           yield body;
         } };
@@ -746,7 +877,7 @@ export class Request {
     return this.#bodyUsed || (this.#bodyStream !== null && this.#bodyStream.locked);
   }
 
-  /** HTTP version string — boats extension (e.g. "HTTP/1.1"). */
+  /** HTTP version string — fino extension (e.g. "HTTP/1.1"). */
   get version() { return this.#version; }
 
   /** True if the request has a body. */
@@ -812,7 +943,7 @@ export class Request {
    * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
    * @returns {Promise<Request>}
    */
-  static from(source) { return parseRequest(source); }
+  static from(source: AsyncByteSource) { return parseRequest(source); }
 }
 
 // ---------------------------------------------------------------------------
@@ -839,7 +970,7 @@ export class Response {
   #status: number;
   #statusText: string;
   #headers: Headers;
-  #rawBody: AsyncIterable<Uint8Array> | null;
+  #rawBody: AsyncIterable<Uint8Array> | Uint8Array | null;
   #bodyStream: ReadableStream | null = null;
 
   constructor(body: BodyInit | symbol, init?: ResponseInit | any) {
@@ -871,12 +1002,14 @@ export class Response {
         if (!this.#headers.has('content-type')) {
           this.#headers.set('content-type', `multipart/form-data; boundary=${boundary}`);
         }
-        this.#rawBody = { [Symbol.asyncIterator]: async function*() {
+        this.#rawBody = { [Symbol.asyncIterator]: async function* formDataBodyGenerator() {
           const { body: bytes } = await _serializeFormData(fd, boundary);
           yield bytes;
         } };
       } else {
-        this.#rawBody = _iterableFromBytes(_toBytes(body));
+        // Store bytes directly — avoids _iterableFromBytes wrapper allocation.
+        // body getter wraps lazily in ReadableStream only when accessed.
+        this.#rawBody = _toBytes(body as Exclude<BodyInit, null>);
       }
     } else {
       this.#rawBody = null;
@@ -901,7 +1034,10 @@ export class Response {
    */
   get body(): ReadableStream | null {
     if (this.#rawBody === null) return null;
-    return this.#bodyStream ??= ReadableStream.from(this.#rawBody);
+    const iterable = this.#rawBody instanceof Uint8Array
+      ? _iterableFromBytes(this.#rawBody)
+      : this.#rawBody;
+    return this.#bodyStream ??= ReadableStream.from(iterable);
   }
 
   /** True if the body has been read or the stream is locked. */
@@ -918,13 +1054,29 @@ export class Response {
   /** True if the response is the result of a redirect. */
   get redirected() { return this.#redirected; }
 
-  /** HTTP version string — boats extension (e.g. "HTTP/1.1"). */
+  /** HTTP version string — fino extension (e.g. "HTTP/1.1"). */
   get version() { return this.#version; }
+
+  /**
+   * @internal — serve.mts fast path: returns the raw Uint8Array if the body
+   * is a pre-buffered byte payload, without allocating a ReadableStream wrapper.
+   * Marks bodyUsed = true. Returns null when the body is null or a streaming
+   * async iterable.
+   */
+  _extractBytes(): Uint8Array | null {
+    if (this.#rawBody instanceof Uint8Array) {
+      this.#bodyUsed = true;
+      return this.#rawBody;
+    }
+    return null;
+  }
 
   async #consumeBody() {
     if (this.#bodyUsed) throw new TypeError('body already consumed');
     if (this.#rawBody === null) return new Uint8Array(0);
     this.#bodyUsed = true;
+    // Fast path: avoid ReadableStream wrapping when body is already bytes.
+    if (this.#rawBody instanceof Uint8Array) return this.#rawBody;
     const source: AsyncIterable<Uint8Array> = this.#bodyStream ?? this.#rawBody;
     const parts = [];
     let total = 0;
@@ -968,10 +1120,16 @@ export class Response {
       cloned.#type = this.#type;
       return cloned;
     }
+    // Uint8Array bodies are immutable — both copies can reference the same bytes.
+    if (this.#rawBody instanceof Uint8Array) {
+      const cloned = new Response(INTERNAL, { version: this.#version, status: this.#status, statusText: this.#statusText, headers: new Headers(this.#headers), body: this.#rawBody, url: this.#url, redirected: this.#redirected });
+      cloned.#type = this.#type;
+      return cloned;
+    }
     const stream = this.#bodyStream ?? ReadableStream.from(this.#rawBody);
     const [a, b] = stream.tee();
     this.#bodyStream = a;
-    this.#rawBody = a as any;
+    this.#rawBody = a;
     const cloned = new Response(INTERNAL, { version: this.#version, status: this.#status, statusText: this.#statusText, headers: new Headers(this.#headers), body: b, url: this.#url, redirected: this.#redirected });
     cloned.#type = this.#type;
     return cloned;
@@ -981,7 +1139,7 @@ export class Response {
    * Create a Response with a JSON-serialised body and
    * Content-Type: application/json.
    */
-  static json(data, init) {
+  static json(data: unknown, init?: ResponseInit) {
     const body = JSON.stringify(data);
     const headers = new Headers((init && init.headers) ? init.headers : {});
     headers.set('content-type', 'application/json');
@@ -995,7 +1153,7 @@ export class Response {
    * @param {string} url
    * @param {number} [status=302]
    */
-  static redirect(url, status) {
+  static redirect(url: string, status?: number) {
     status = (status != null) ? Number(status) : 302;
     if (![301, 302, 303, 307, 308].includes(status)) {
       throw new RangeError(`Response.redirect: invalid redirect status ${status}`);
@@ -1020,7 +1178,7 @@ export class Response {
    * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
    * @returns {Promise<Response>}
    */
-  static from(source) { return parseResponse(source); }
+  static from(source: AsyncByteSource) { return parseResponse(source); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,7 +1232,7 @@ export async function parseResponse(source: AsyncIterable<Uint8Array | ArrayBuff
   // Status-Line: HTTP-Version SP Status-Code SP Reason-Phrase
   const parts = firstLine.split(' ');
   const version    = parts[0] || 'HTTP/1.1';
-  const status     = parseInt(parts[1], 10) || 0;
+  const status     = parseInt(parts[1] ?? '0', 10) || 0;
   const statusText = parts.slice(2).join(' ') || '';
 
   const framing = _bodyFraming(headers, false, status);
@@ -1092,13 +1250,10 @@ export async function parseResponse(source: AsyncIterable<Uint8Array | ArrayBuff
 // ---------------------------------------------------------------------------
 
 /** Concatenate an array of Uint8Array slices into a single Uint8Array. */
-function _concat(parts, totalLen) {
-  // Always allocate a fresh buffer so the result has byteOffset=0.
-  // Returning a subarray of a larger buffer (e.g. the Reader's 64 KiB socket
-  // buffer) would give a nonzero byteOffset that the FFI write call ignores,
-  // causing writes to start from byte 0 of the underlying buffer instead of
-  // the intended offset.
-  const result = new Uint8Array(totalLen);
+function _concat(parts: Uint8Array[], totalLen: number, arena?: Arena): Uint8Array {
+  const first = parts[0];
+  if (parts.length === 1 && first) return first;
+  const result = arena ? arena.alloc(totalLen) : new Uint8Array(totalLen);
   let pos = 0;
   for (const p of parts) {
     result.set(p, pos);
@@ -1107,12 +1262,22 @@ function _concat(parts, totalLen) {
   return result;
 }
 
+/**
+ * Encode an ASCII-only string into the given arena (or a fresh Uint8Array).
+ * HTTP headers are always ASCII, so this avoids the 4x overalloc in encodeUtf8.
+ */
+function _encodeAscii(str: string, arena: Arena): Uint8Array {
+  const buf = arena.alloc(str.length);
+  for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i);
+  return buf;
+}
+
 // ---------------------------------------------------------------------------
 // Serialization helpers
 // ---------------------------------------------------------------------------
 
 /** Extract the path+query from a URL string (may be absolute or path-only). */
-function _pathFromUrl(url) {
+function _pathFromUrl(url: string): string {
   const schemeEnd = url.indexOf('://');
   if (schemeEnd !== -1) {
     const hostStart = schemeEnd + 3;
@@ -1123,7 +1288,7 @@ function _pathFromUrl(url) {
 }
 
 /** Extract the host (with optional port) from an absolute URL, or null. */
-function _hostFromUrl(url) {
+function _hostFromUrl(url: string): string | null {
   const schemeEnd = url.indexOf('://');
   if (schemeEnd === -1) return null;
   const hostStart = schemeEnd + 3;
@@ -1132,7 +1297,7 @@ function _hostFromUrl(url) {
 }
 
 /** Serialize HTTP response headers to a string (status-line + headers + CRLF). */
-function _buildResponseHead(res) {
+export function _buildResponseHead(res: Response): string {
   const version    = res.version || 'HTTP/1.1';
   const status     = res.status != null ? res.status : 200;
   const statusText = res.statusText != null ? res.statusText : '';
@@ -1149,7 +1314,7 @@ function _buildResponseHead(res) {
  * @param {Request} req
  * @param {boolean} chunked  When true, injects Transfer-Encoding: chunked.
  */
-function _buildRequestHead(req, chunked) {
+function _buildRequestHead(req: Request, chunked: boolean): string {
   const method = req.method || 'GET';
   const path   = _pathFromUrl(req.url);
   let head = method + ' ' + path + ' HTTP/1.1\r\n';
@@ -1169,13 +1334,18 @@ function _buildRequestHead(req, chunked) {
 }
 
 /** Encode a single data chunk in HTTP chunked transfer-encoding format. */
-function _chunkedFrame(bytes) {
-  const sizeLine = encodeUtf8(bytes.byteLength.toString(16) + '\r\n');
-  const crlf     = encodeUtf8('\r\n');
-  const out = new Uint8Array(sizeLine.byteLength + bytes.byteLength + crlf.byteLength);
-  out.set(sizeLine, 0);
-  out.set(bytes, sizeLine.byteLength);
-  out.set(crlf, sizeLine.byteLength + bytes.byteLength);
+function _chunkedFrame(bytes: Uint8Array, arena?: Arena): Uint8Array {
+  const hex = bytes.byteLength.toString(16);
+  const totalLen = hex.length + 2 + bytes.byteLength + 2; // hex + CRLF + data + CRLF
+  const out = arena ? arena.alloc(totalLen) : new Uint8Array(totalLen);
+  let pos = 0;
+  for (let i = 0; i < hex.length; i++) out[pos++] = hex.charCodeAt(i);
+  out[pos++] = CR;
+  out[pos++] = LF;
+  out.set(bytes, pos);
+  pos += bytes.byteLength;
+  out[pos++] = CR;
+  out[pos++] = LF;
   return out;
 }
 
@@ -1184,40 +1354,25 @@ function _chunkedFrame(bytes) {
  * piping to a TCP connection: status-line + headers first, then body chunks.
  *
  * @param {Response} res
+ * @param {Arena} [arena] — optional per-connection arena; when provided, header
+ *   bytes and chunked framing are allocated from the arena (zero extra alloc).
  * @returns {AsyncIterable<Uint8Array>}
  */
-export function serializeResponse(res: Response): AsyncIterable<Uint8Array> {
+export async function* serializeResponse(res: Response, arena?: Arena): AsyncGenerator<Uint8Array> {
   const te = (res.headers.get('transfer-encoding') || '').toLowerCase();
-  const isChunked = te.split(',').map(s => s.trim()).includes('chunked');
+  const isChunked = te.split(',').map(function trimPart(s) { return s.trim(); }).includes('chunked');
 
-  return {
-    [Symbol.asyncIterator]() {
-      let headerSent = false;
-      let bodyIter   = null;
-      let bodyDone   = false;
-      return {
-        async next() {
-          if (!headerSent) {
-            headerSent = true;
-            return { done: false, value: encodeUtf8(_buildResponseHead(res)) };
-          }
-          if (bodyDone) return { done: true, value: undefined };
-          if (bodyIter === null) {
-            const body = res.body;
-            if (body === null) return { done: true, value: undefined };
-            bodyIter = body[Symbol.asyncIterator]();
-          }
-          const { done, value } = await bodyIter.next();
-          if (done) {
-            if (isChunked) { bodyDone = true; return { done: false, value: encodeUtf8('0\r\n\r\n') }; }
-            return { done: true, value: undefined };
-          }
-          if (isChunked) return { done: false, value: _chunkedFrame(value) };
-          return { done: false, value };
-        },
-      };
-    },
-  };
+  const headStr = _buildResponseHead(res);
+  yield arena ? _encodeAscii(headStr, arena) : encodeUtf8(headStr);
+
+  const body = res.body;
+  if (body === null) return;
+
+  for await (const chunk of body) {
+    yield isChunked ? _chunkedFrame(chunk, arena) : chunk;
+  }
+
+  if (isChunked) yield LAST_CHUNK_BYTES;
 }
 
 /**
@@ -1232,39 +1387,22 @@ export function serializeResponse(res: Response): AsyncIterable<Uint8Array> {
  * @param {Request} req
  * @returns {AsyncIterable<Uint8Array>}
  */
-export function serializeRequest(req: Request): AsyncIterable<Uint8Array> {
-  return {
-    [Symbol.asyncIterator]() {
-      let headerSent = false;
-      let bodyIter   = null;
-      let chunked    = false;
-      return {
-        async next() {
-          if (!headerSent) {
-            headerSent = true;
-            chunked = req.hasBody && !req.headers.has('content-length');
-            return { done: false, value: encodeUtf8(_buildRequestHead(req, chunked)) };
-          }
-          if (bodyIter === null) {
-            const body = req.body;
-            if (body === null) return { done: true, value: undefined };
-            bodyIter = body[Symbol.asyncIterator]();
-          }
-          const result = await bodyIter.next();
-          if (result.done) {
-            if (chunked) { chunked = false; return { done: false, value: encodeUtf8('0\r\n\r\n') }; }
-            return { done: true, value: undefined };
-          }
-          if (chunked) return { done: false, value: _chunkedFrame(result.value) };
-          return result;
-        },
-      };
-    },
-  };
+export async function* serializeRequest(req: Request): AsyncGenerator<Uint8Array> {
+  const chunked = req.hasBody && !req.headers.has('content-length');
+  yield encodeUtf8(_buildRequestHead(req, chunked));
+
+  const body = req.body;
+  if (body === null) return;
+
+  for await (const chunk of body) {
+    yield chunked ? _chunkedFrame(chunk) : chunk;
+  }
+
+  if (chunked) yield LAST_CHUNK_BYTES;
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers for boats:serve
+// Internal helpers for fino:serve
 // ---------------------------------------------------------------------------
 
 /**
@@ -1273,42 +1411,51 @@ export function serializeRequest(req: Request): AsyncIterable<Uint8Array> {
  * time from a shared buffered reader, preserving leftover bytes between
  * requests — required for correct keep-alive (pipelined) behavior.
  *
- * Used by `boats:serve` so that multiple requests on the same TCP connection
+ * Used by `fino:serve` so that multiple requests on the same TCP connection
  * share a single `_createReader` instance. Calling `parseRequest()` directly
  * would create a fresh reader each time and lose bytes between requests.
  *
  * @param {AsyncIterable<Uint8Array>} source — socket reader
- * @returns {{ parseNext(): Promise<Request> }}
+ * @returns {{ parseNext(): Promise<Request>, parseBufferedNext(): Request | null }}
  */
-export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext(): Promise<Request> } {
+export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext(): Promise<Request>, parseBufferedNext(): Request | null } {
   const reader = _createReader(source);
+  function _requestFromRaw(raw: Uint8Array): Request {
+    const { firstLine, headers } = _parseHeaders(raw);
+
+    // Parse request line manually — avoids split() array + slice(2).join() allocations.
+    const sp1     = firstLine.indexOf(' ');
+    const sp2     = sp1 >= 0 ? firstLine.indexOf(' ', sp1 + 1) : -1;
+    const method  = sp1 > 0 ? firstLine.substring(0, sp1).toUpperCase() : 'GET';
+    const path    = sp1 >= 0 && sp2 > sp1 ? firstLine.substring(sp1 + 1, sp2) : '/';
+    const version = sp2 >= 0 ? firstLine.substring(sp2 + 1) : 'HTTP/1.1';
+
+    const host = headers.get('host');
+    const url  = host ? 'http://' + host + path : path;
+
+    const framing = _bodyFraming(headers, true, 0);
+    let body;
+    if (framing.type === 'fixed')        body = reader.bodyIterator(framing.length);
+    else if (framing.type === 'chunked') body = reader.chunkedBodyIterator();
+    else                                 body = _emptyBody;
+
+    return new Request(INTERNAL, { method, url, version, headers, body });
+  }
+
   return {
     async parseNext() {
-      const raw = await reader.readUntilDoubleCRLF();
-      const { firstLine, headers } = _parseHeaders(raw);
-
-      const parts   = firstLine.split(' ');
-      const method  = (parts[0] || 'GET').toUpperCase();
-      const path    = parts[1] || '/';
-      const version = parts.slice(2).join(' ') || 'HTTP/1.1';
-
-      const host = headers.get('host');
-      const url  = host ? 'http://' + host + path : path;
-
-      const framing = _bodyFraming(headers, true, 0);
-      let body;
-      if (framing.type === 'fixed')        body = reader.bodyIterator(framing.length);
-      else if (framing.type === 'chunked') body = reader.chunkedBodyIterator();
-      else                                 body = _emptyBody;
-
-      return new Request(INTERNAL, { method, url, version, headers, body });
+      return _requestFromRaw(await reader.readUntilDoubleCRLF());
+    },
+    parseBufferedNext() {
+      const raw = reader.readUntilDoubleCRLFBuffered();
+      return raw === null ? null : _requestFromRaw(raw);
     },
   };
 }
 
 /**
  * Build a Response from already-prepared wire components.
- * Used by `boats:serve` to inject `Connection` and `Content-Length` headers
+ * Used by `fino:serve` to inject `Connection` and `Content-Length` headers
  * and set the HTTP version without exposing the `INTERNAL` sentinel publicly.
  *
  * @param {{ version: string, status: number, statusText: string, headers: Headers, body: AsyncIterable|null }} opts
@@ -1327,7 +1474,7 @@ export function buildWireResponse({ version, status, statusText, headers, body, 
 }
 
 /**
- * Wrap bytes as a single-chunk async iterable. Exported for boats:serve.
+ * Wrap bytes as a single-chunk async iterable. Exported for fino:serve.
  * @param {Uint8Array} bytes
  * @returns {AsyncIterable<Uint8Array>}
  */

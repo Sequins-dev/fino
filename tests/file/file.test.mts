@@ -1,27 +1,24 @@
 /**
- * Tests for boats:file — DiskFileSystem, File, DirEntry, Stat, etc.
+ * Tests for fino:file — DiskFileSystem, File, DirEntry, Stat, etc.
  */
 
-import { describe, it, before, after } from 'boats:test/test';
-import { DiskFileSystem } from 'boats:file';
-import * as loop from 'boats:runtime/loop';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
+import { describe, it, before, after } from 'fino:test/test';
+import { DiskFileSystem } from 'fino:file';
+const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
 
-const TEST_DIR = '/tmp/boats-file-test-' + Math.floor(Math.random() * 1_000_000);
+const TEST_DIR = '/tmp/fino-file-test-' + Math.floor(Math.random() * 1_000_000);
 
 describe('DiskFileSystem', () => {
-  let lp, fs;
+  let fs: DiskFileSystem;
 
   before(async () => {
-    lp = loop.create();
-    fs = new DiskFileSystem(lp);
+    fs = new DiskFileSystem();
     await fs.mkdir(TEST_DIR);
   });
 
   after(async () => {
     await fs.rmdir(TEST_DIR);
-    loop.destroy(lp);
   });
 
   describe('stat / lstat', () => {
@@ -74,7 +71,7 @@ describe('DiskFileSystem', () => {
       await fs.writeFile(path, 'chunk data');
 
       const file   = await fs.open(path, 'r');
-      const chunks = [];
+      const chunks: Uint8Array[] = [];
       for await (const chunk of file.reader()) {
         chunks.push(chunk);
       }
@@ -123,6 +120,7 @@ describe('DiskFileSystem', () => {
 
       const rw = await fs.open(path, 'r+');
       t.ok(typeof rw.split === 'function', 'split() method exists on r+ file');
+      if (rw.split === undefined) throw new Error('split() should exist for r+ files');
       const [r, w] = rw.split();
       t.ok(r !== null, 'reader from split');
       t.ok(w !== null, 'writer from split');
@@ -242,7 +240,7 @@ describe('DiskFileSystem', () => {
 
       const d    = await fs.dir(subDir);
       const list = await d.entries();
-      const names = list.map(e => e.name).sort();
+      const names = list.map((e) => e.name).sort();
       t.ok(names.includes('alpha.txt'), 'alpha.txt present');
       t.ok(names.includes('beta.txt'),  'beta.txt present');
       t.ok(!names.includes('.'),  '. excluded');
@@ -282,6 +280,7 @@ describe('DiskFileSystem', () => {
       const child = await d.child('child.txt');
       t.ok(child.isFile(),           'child is a file');
       t.equal(child.name, 'child.txt', 'child name');
+      if (!('open' in child) || typeof child.open !== 'function') throw new Error('child entry should be openable');
 
       const file = await child.open('r');
       const text = await file.text();

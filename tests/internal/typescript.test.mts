@@ -6,8 +6,14 @@
  * probing finds .ts files when no extension is given.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 import { add, identity, Stack, origin } from '../fixtures/typescript-sample.ts';
+import { throwFromTypedTs } from '../fixtures/source-map-throw.ts';
+
+const meta = import.meta as ImportMeta & {
+  filename: string;
+};
+const typescriptSampleSpecifier = '../fixtures/typescript-sample';
 
 describe('type stripping', () => {
   it('strips function parameter types', (t) => {
@@ -41,17 +47,42 @@ describe('type stripping', () => {
 
 describe('import.meta for .ts modules', () => {
   it('import.meta.filename ends with .ts', (t) => {
-    t.ok(
-      import.meta.filename.endsWith('typescript.test.mts'),
-      'test file filename is correct',
-    );
+    t.ok(meta.filename.endsWith('typescript.test.mts'), 'test file filename is correct');
   });
 });
 
 describe('extension probing', () => {
   it('resolves .ts file when imported without extension', async (t) => {
     // Import specifier has no extension — the resolver should probe .ts
-    const m = await import('../fixtures/typescript-sample');
+    const m = await import(typescriptSampleSpecifier);
     t.equal(m.add(1, 2), 3, 'extension-probed import evaluates correctly');
+  });
+});
+
+describe('source maps', () => {
+  it('maps thrown stack traces back to the original ts source', (t) => {
+    let err = null;
+    try {
+      throwFromTypedTs();
+    } catch (caught) {
+      err = caught;
+    }
+
+    t.ok(err instanceof Error, 'throws an Error');
+    const error = err as Error;
+    t.ok(error.stack?.includes('source-map-throw.ts:18') === true, 'stack points at original ts line');
+  });
+
+  it('maps builtin stack traces back to the original mts source', (t) => {
+    let err = null;
+    try {
+      queueMicrotask(42 as any);
+    } catch (caught) {
+      err = caught;
+    }
+
+    t.ok(err instanceof Error, 'throws an Error');
+    const error = err as Error;
+    t.ok(error.stack?.includes('js/internal/globals/time.mts:217') === true, 'stack points at original builtin mts line');
   });
 });

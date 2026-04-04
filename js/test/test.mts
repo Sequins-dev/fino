@@ -1,11 +1,11 @@
 /**
- * boats:test — TAP-13 test framework with nesting and BDD-style describe/it.
+ * fino:test — TAP-13 test framework with nesting and BDD-style describe/it.
  *
  * Two equivalent but non-mixable patterns:
  *
  *   **Pattern 1: suite + test**
  *   ```js
- *   import { test, suite } from 'boats:test/test';
+ *   import { test, suite } from './test.mts';
  *
  *   test('standalone', (t) => { t.ok(true); });
  *
@@ -17,7 +17,7 @@
  *
  *   **Pattern 2: describe + it + lifecycle hooks**
  *   ```js
- *   import { describe, it } from 'boats:test/test';
+ *   import { describe, it } from './test.mts';
  *
  *   describe('math', () => {
  *     before(async () => { ... });       // once, before first it
@@ -65,9 +65,9 @@
  * applying hooks from `parentNode` to each leaf inside a `describe` group.
  */
 
-import console from 'internal:globals/console';
-import { Assert, AssertionError } from 'boats:test/assert';
-import * as loop from 'boats:runtime/loop';
+import console from '../internal/globals/console.mts';
+import { Assert, AssertionError } from './assert.mts';
+import { scheduleSync as _scheduleSync } from 'internal:async-context';
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -94,6 +94,12 @@ interface GroupNode {
 type TestNode = LeafNode | GroupNode;
 
 interface RunResult { passed: number; failed: number; skipped: number; }
+interface RunOptions { filter?: string; }
+type SkipOption = boolean | string;
+type RegisterOptions = { skip?: SkipOption };
+type TestFn = (t: Assert) => void | Promise<void>;
+type GroupFn = () => void;
+type HookFn = () => void | Promise<void>;
 
 /** Top-level test/suite/describe entries. */
 const _tests: TestNode[] = [];
@@ -108,16 +114,16 @@ let _current: GroupNode | null = null;
 /**
  * Parse the optional middle `opts` argument from `name, [opts], fn` signatures.
  */
-function _parseArgs(optsOrFn: ((...args: any[]) => any) | { skip?: boolean | string } | null | undefined, maybeFn?: (...args: any[]) => any): { opts: { skip?: boolean | string } | null; fn: (...args: any[]) => any } {
+function _parseArgs<TFn extends (...args: any[]) => any>(optsOrFn: TFn | RegisterOptions | null | undefined, maybeFn?: TFn): { opts: RegisterOptions | null; fn: TFn } {
   if (typeof optsOrFn === 'function') return { opts: null, fn: optsOrFn };
-  return { opts: optsOrFn, fn: maybeFn };
+  return { opts: optsOrFn ?? null, fn: maybeFn as TFn };
 }
 
 /**
  * Normalise a `skip` option value to a string reason ('' if no reason given)
  * or `null` if the test should not be skipped.
  */
-function _skipReason(opts: { skip?: boolean | string } | null): string | null {
+function _skipReason(opts: RegisterOptions | null): string | null {
   if (!opts || !opts.skip) return null;
   return typeof opts.skip === 'string' ? opts.skip : '';
 }
@@ -152,7 +158,7 @@ function _push(node: TestNode): void {
  * Register a test case. Can be top-level or inside `suite()`.
  * Throws inside `describe()`.
  */
-export function test(name, optsOrFn, maybeFn) {
+export function test(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): void {
   const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
   _requireOutside('suite', 'test');
   _push({ name, fn, children: null, skip: _skipReason(opts) });
@@ -162,10 +168,10 @@ export function test(name, optsOrFn, maybeFn) {
  * Register a group of tests. Can be nested inside other `suite()` calls.
  * Throws inside `describe()`.
  */
-export function suite(name, optsOrFn, maybeFn) {
+export function suite(name: string, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): void {
   const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
   _requireOutside('suite', 'suite');
-  const node = { name, kind: 'suite', children: [], before: null, beforeEach: null, after: null, afterEach: null, skip: _skipReason(opts) };
+  const node: GroupNode = { name, kind: 'suite', children: [], before: null, beforeEach: null, after: null, afterEach: null, skip: _skipReason(opts) };
   const prev = _current;
   _current = node;
   fn();
@@ -182,10 +188,10 @@ export function suite(name, optsOrFn, maybeFn) {
  * Can be nested inside other `describe()` calls.
  * Throws inside `suite()`.
  */
-export function describe(name, optsOrFn, maybeFn) {
+export function describe(name: string, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): void {
   const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
   _requireOutside('describe', 'describe');
-  const node = { name, kind: 'describe', children: [], before: null, beforeEach: null, after: null, afterEach: null, skip: _skipReason(opts) };
+  const node: GroupNode = { name, kind: 'describe', children: [], before: null, beforeEach: null, after: null, afterEach: null, skip: _skipReason(opts) };
   const prev = _current;
   _current = node;
   fn();
@@ -196,7 +202,7 @@ export function describe(name, optsOrFn, maybeFn) {
 /**
  * Register a test case inside `describe()`. Throws outside `describe()`.
  */
-export function it(name, optsOrFn, maybeFn) {
+export function it(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): void {
   const { opts, fn } = _parseArgs(optsOrFn, maybeFn);
   _requireInside('describe', 'it');
   _push({ name, fn, children: null, skip: _skipReason(opts) });
@@ -206,8 +212,9 @@ export function it(name, optsOrFn, maybeFn) {
  * Run `fn` once before the first `it` in this `describe` block.
  * Throws outside `describe()`.
  */
-export function before(fn) {
+export function before(fn: HookFn): void {
   _requireInside('describe', 'before');
+  if (_current === null) throw new Error('before() must be called inside describe()');
   _current.before = fn;
 }
 
@@ -215,8 +222,9 @@ export function before(fn) {
  * Run `fn` once after the last `it` in this `describe` block.
  * Always runs even if tests fail. Throws outside `describe()`.
  */
-export function after(fn) {
+export function after(fn: HookFn): void {
   _requireInside('describe', 'after');
+  if (_current === null) throw new Error('after() must be called inside describe()');
   _current.after = fn;
 }
 
@@ -224,8 +232,9 @@ export function after(fn) {
  * Run `fn` before each `it` in this `describe` block.
  * Throws outside `describe()`.
  */
-export function beforeEach(fn) {
+export function beforeEach(fn: HookFn): void {
   _requireInside('describe', 'beforeEach');
+  if (_current === null) throw new Error('beforeEach() must be called inside describe()');
   _current.beforeEach = fn;
 }
 
@@ -233,8 +242,9 @@ export function beforeEach(fn) {
  * Run `fn` after each `it` in this `describe` block.
  * Always runs even if the test fails. Throws outside `describe()`.
  */
-export function afterEach(fn) {
+export function afterEach(fn: HookFn): void {
   _requireInside('describe', 'afterEach');
+  if (_current === null) throw new Error('afterEach() must be called inside describe()');
   _current.afterEach = fn;
 }
 
@@ -260,8 +270,9 @@ function _printError(err: unknown, depth: number): void {
   } else {
     _log(depth, '  ---');
     _log(depth, '  message: threw ' + err);
-    if (err && err.stack) {
-      for (const line of err.stack.split('\n')) {
+    const stack = err instanceof Error ? err.stack : undefined;
+    if (typeof stack === 'string') {
+      for (const line of stack.split('\n')) {
         _log(depth, '  ' + line);
       }
     }
@@ -286,9 +297,8 @@ async function _runLeaf(entry: LeafNode, num: number, depth: number, hooks: Grou
     _log(depth, 'ok ' + num + ' - ' + entry.name + suffix);
     return 'skip';
   }
-  const failures = [];
+  const failures: unknown[] = [];
   const t = new Assert({ onFail(err) { failures.push(err); } });
-  const testLp = loop.create();
 
   try {
     // Run beforeEach (hook failure skips the body but still runs afterEach).
@@ -302,8 +312,9 @@ async function _runLeaf(entry: LeafNode, num: number, depth: number, hooks: Grou
     let bodyError = null;
     if (beforeError === null) {
       try {
-        const result = loop.runWith(testLp, () => entry.fn(t));
-        if (result && typeof result.then === 'function') await result;
+        // Call via scheduleSync so the function executes outside the microtask
+        // checkpoint — this allows spin() to drain microtasks correctly.
+        const result = await _scheduleSync(() => entry.fn(t));
       } catch (e) {
         bodyError = e;
       }
@@ -326,8 +337,6 @@ async function _runLeaf(entry: LeafNode, num: number, depth: number, hooks: Grou
     _log(depth, 'not ok ' + num + ' - ' + entry.name);
     _printError(err, depth);
     return 'fail';
-  } finally {
-    loop.destroy(testLp);
   }
 }
 
@@ -364,7 +373,9 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
     catch (err) {
       // before() failure — mark all entries as failed immediately.
       for (let i = 0; i < entries.length; i++) {
-        _log(depth, 'not ok ' + (i + 1) + ' - ' + entries[i].name);
+        const failedEntry = entries[i];
+        if (failedEntry === undefined) continue;
+        _log(depth, 'not ok ' + (i + 1) + ' - ' + failedEntry.name);
         _printError(err, depth);
         failed++;
       }
@@ -376,6 +387,7 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
     try {
       for (let i = 0; i < entries.length; i++) {
         const entry = entries[i];
+        if (entry === undefined) continue;
         const num = i + 1;
 
         if (entry.children === null) {
@@ -416,6 +428,32 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
   return { passed, failed, skipped };
 }
 
+function _filterEntries(entries: TestNode[], filter: string, path: string[] = []): TestNode[] {
+  const filtered: TestNode[] = [];
+
+  for (const entry of entries) {
+    if (entry.children === null) continue;
+
+    if (entry.kind === 'suite') {
+      const children = _filterEntries(entry.children, filter, path);
+      if (children.length > 0) filtered.push({ ...entry, children });
+      continue;
+    }
+
+    const nextPath = [...path, entry.name];
+    const fullPath = nextPath.join(' ');
+    if (fullPath.includes(filter)) {
+      filtered.push(entry);
+      continue;
+    }
+
+    const children = _filterEntries(entry.children, filter, nextPath);
+    if (children.length > 0) filtered.push({ ...entry, children });
+  }
+
+  return filtered;
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -423,15 +461,16 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
 /**
  * Run all registered tests and print TAP-13 output.
  *
- * Called automatically by the boats CLI in `--test` mode. User test files
+ * Called automatically by the fino CLI in `--test` mode. User test files
  * only need to call `test()` / `suite()` / `describe()` — never `run()`.
  *
  * @throws {Error} If any test fails (causes the process to exit with code 1).
  */
-export async function run() {
+export async function run(options: RunOptions = {}): Promise<void> {
   console.log('TAP version 13');
 
-  const { passed, failed, skipped } = await _runEntries(_tests, 0, null);
+  const entries = options.filter ? _filterEntries(_tests, options.filter) : _tests;
+  const { passed, failed, skipped } = await _runEntries(entries, 0, null);
   const total = passed + failed + skipped;
 
   console.log('');

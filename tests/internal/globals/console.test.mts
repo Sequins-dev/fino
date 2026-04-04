@@ -1,5 +1,5 @@
 /**
- * Tests for boats:console.
+ * Tests for fino:console.
  *
  * Since console output goes directly to fd 1/2 via libc (not capturable in
  * tests), these tests focus on behavioral correctness: functions are callable,
@@ -7,9 +7,10 @@
  * references without crashing.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 
 const { console } = globalThis;
+const consoleRecord = console as unknown as Record<string | symbol, unknown>;
 
 describe('console exists and has expected methods', () => {
   it('has all required methods', (t) => {
@@ -17,12 +18,12 @@ describe('console exists and has expected methods', () => {
       'table', 'group', 'groupCollapsed', 'groupEnd', 'time', 'timeEnd',
       'timeLog', 'count', 'countReset', 'clear'];
     for (const m of methods) {
-      t.equal(typeof console[m], 'function', `console.${m} is a function`);
+      t.equal(typeof consoleRecord[m], 'function', `console.${m} is a function`);
     }
   });
 
   it('[Symbol.toStringTag] is "console"', (t) => {
-    t.equal(console[Symbol.toStringTag], 'console');
+    t.equal(consoleRecord[Symbol.toStringTag], 'console');
   });
 });
 
@@ -88,8 +89,8 @@ describe('console.assert', () => {
     try {
       console.assert(false, 'assertion message');
       console.assert(false);
-      console.assert(0, 'falsy number');
-      console.assert(null, 'null');
+      console.assert(0 as any, 'falsy number');
+      console.assert(null as any, 'null');
     } catch (_) { threw = true; }
     t.equal(threw, false, 'no throw on falsy condition');
   });

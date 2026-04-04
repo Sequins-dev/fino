@@ -1,12 +1,12 @@
 /**
- * Tests for boats:socket + boats:loop (promise-based API).
+ * Tests for fino:socket + fino:loop (promise-based API).
  */
 
-import { describe, it } from 'boats:test/test';
-import * as sock from 'boats:net/socket';
-import * as loop from 'boats:runtime/loop';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
+import { describe, it } from 'fino:test/test';
+import * as sock from 'fino:net/socket';
+import * as loop from 'fino:runtime/loop';
+const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 
 describe('Constants', () => {
   it('AF_INET is 2', (t) => {
@@ -27,6 +27,7 @@ describe('Address encoding / decoding', () => {
     const { buf } = sock.encodeAddr({ family: 'ipv4', ip: '127.0.0.1', port: 9900 });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'ipv4');
+    if (a.family !== 'ipv4' || !('ip' in a) || !('port' in a)) throw new Error('expected ipv4');
     t.equal(a.ip, '127.0.0.1');
     t.equal(a.port, 9900);
   });
@@ -35,22 +36,23 @@ describe('Address encoding / decoding', () => {
     const { buf } = sock.encodeAddr({ family: 'ipv6', ip: '::1', port: 9901 });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'ipv6');
+    if (a.family !== 'ipv6' || !('ip' in a) || !('port' in a)) throw new Error('expected ipv6');
     t.equal(a.ip, '::1');
     t.equal(a.port, 9901);
   });
 
   it('encodeAddr / decodeAddr — Unix', (t) => {
-    const { buf } = sock.encodeAddr({ family: 'unix', path: '/tmp/boats_test.sock' });
+    const { buf } = sock.encodeAddr({ family: 'unix', path: '/tmp/fino_test.sock' });
     const a = sock.decodeAddr(buf);
     t.equal(a.family, 'unix');
-    t.equal(a.path, '/tmp/boats_test.sock');
+    if (a.family !== 'unix' || !('path' in a)) throw new Error('expected unix');
+    t.equal(a.path, '/tmp/fino_test.sock');
   });
 });
 
 describe('TCP / UDP loopback', () => {
   it('TCP echo via loop.readable / loop.writable', async (t) => {
     const PORT = 19900;
-    const lp = loop.create();
 
     const serverFd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
     sock.setsockopt(serverFd, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
@@ -62,44 +64,42 @@ describe('TCP / UDP loopback', () => {
     sock.setNonblocking(clientFd);
     sock.connect(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
 
-    await loop.readable(lp, serverFd);
+    await loop.readable(serverFd);
     const result = sock.accept(serverFd);
     t.ok(result !== null, 'accept returned a connection');
+    if (result === null) throw new Error('expected accept result');
     const acceptedFd = result.fd;
     sock.setNonblocking(acceptedFd);
 
-    await loop.writable(lp, clientFd);
+    await loop.writable(clientFd);
     const errBuf = sock.getsockopt(clientFd, sock.SOL_SOCKET, sock.SO_ERROR);
     const errno  = new DataView(errBuf).getInt32(0, true);
     t.equal(errno, 0, 'connect succeeded');
 
-    const msg  = encodeUtf8('hello, boats!');
+    const msg  = encodeUtf8('hello, fino!');
     const sent = sock.send(clientFd, msg, 0);
     t.ok(sent > 0, 'send returned bytes written');
 
-    await loop.readable(lp, acceptedFd);
+    await loop.readable(acceptedFd);
     const received = sock.recv(acceptedFd, 256, 0);
     t.ok(received instanceof Uint8Array, 'recv returned Uint8Array');
-    t.equal(decodeUtf8(received), 'hello, boats!', 'message matches');
+    if (!(received instanceof Uint8Array)) throw new Error('expected Uint8Array');
+    t.equal(decodeUtf8(received), 'hello, fino!', 'message matches');
 
     sock.close(acceptedFd);
     sock.close(clientFd);
     sock.close(serverFd);
-    loop.destroy(lp);
   });
 
   it('loop.timeout fires after delay', async (t) => {
-    const lp = loop.create();
     const before = Date.now();
-    await loop.timeout(lp, 50);
+    await loop.timeout(50);
     const elapsed = Date.now() - before;
     t.ok(elapsed >= 40, 'at least 40ms elapsed (got ' + elapsed + 'ms)');
-    loop.destroy(lp);
   });
 
   it('UDP sendto / recvfrom', async (t) => {
     const PORT = 19901;
-    const lp = loop.create();
 
     const server = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
     const client = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
@@ -108,14 +108,14 @@ describe('TCP / UDP loopback', () => {
 
     sock.sendto(client, encodeUtf8('udp-ping'), { family: 'ipv4', ip: '127.0.0.1', port: PORT });
 
-    await loop.readable(lp, server);
+    await loop.readable(server);
     const res = sock.recvfrom(server, 256);
     t.ok(res !== null, 'recvfrom returned data');
+    if (res === null || typeof res === 'number') throw new Error('expected recvfrom result');
     t.equal(decodeUtf8(res.data), 'udp-ping', 'udp payload matches');
     t.equal(res.addr.family, 'ipv4', 'sender is ipv4');
 
     sock.close(server);
     sock.close(client);
-    loop.destroy(lp);
   });
 });

@@ -1,8 +1,9 @@
 /**
- * Tests for boats:url — URL and URLSearchParams.
+ * Tests for fino:url — URL and URLSearchParams.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+type SymbolRecord = Record<symbol, unknown>;
 const { URL, URLSearchParams } = globalThis;
 
 describe('URLSearchParams construction', () => {
@@ -118,7 +119,7 @@ describe('URLSearchParams iteration', () => {
 
   it('forEach', (t) => {
     const p = new URLSearchParams('a=1&b=2');
-    const seen = [];
+    const seen: Array<[string, string]> = [];
     p.forEach((value, name) => seen.push([name, value]));
     t.deepEqual(seen, [['a', '1'], ['b', '2']]);
   });
@@ -329,6 +330,7 @@ describe('URL static methods', () => {
   it('URL.parse — returns URL on success', (t) => {
     const u = URL.parse('http://example.com/');
     t.ok(u instanceof URL);
+    if (u === null) throw new Error('expected URL');
     t.equal(u.hostname, 'example.com');
   });
 
@@ -396,7 +398,7 @@ describe('URL additional construction', () => {
 
   it('URL [Symbol.toStringTag] is "URL"', (t) => {
     const u = new URL('http://example.com/');
-    t.equal(u[Symbol.toStringTag], 'URL');
+    t.equal((u as unknown as SymbolRecord)[Symbol.toStringTag], 'URL');
   });
 });
 
@@ -448,6 +450,7 @@ describe('URL.parse — with base argument', () => {
   it('URL.parse with relative input and base', (t) => {
     const u = URL.parse('/path', 'http://example.com');
     t.ok(u instanceof URL, 'returns URL');
+    if (u === null) throw new Error('expected URL');
     t.equal(u.href, 'http://example.com/path', 'resolves relative against base');
   });
 
@@ -518,7 +521,7 @@ describe('URLSearchParams additional', () => {
 
   it('URLSearchParams [Symbol.toStringTag] is "URLSearchParams"', (t) => {
     const p = new URLSearchParams();
-    t.equal(p[Symbol.toStringTag], 'URLSearchParams');
+    t.equal((p as unknown as SymbolRecord)[Symbol.toStringTag], 'URLSearchParams');
   });
 });
 

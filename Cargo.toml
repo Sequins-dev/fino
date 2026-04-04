@@ -1,28 +1,30 @@
 [package]
-name = "boats"
+name = "fino"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-boa_engine = "0.21.1"
-boa_parser = "0.21.1"
-boa_runtime = "0.21.1"
-boa_gc = "0.21.1"
+v8 = "139.0.0"
 libffi = "5.1.0"
 libloading = "0.8"
-futures-concurrency = "7.7.1"
-futures-lite = "2.6.1"
+smallvec = "1.13"
 oxc_allocator = "0.123"
+oxc_ast = "0.123"
 oxc_codegen = "0.123"
 oxc_parser = "0.123"
 oxc_semantic = "0.123"
+oxc_sourcemap = "6.1.1"
 oxc_span = "0.123"
 oxc_transformer = "0.123"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
+cc = "1"
 oxc_allocator = "0.123"
 oxc_codegen = "0.123"
 oxc_parser = "0.123"
 oxc_semantic = "0.123"
+oxc_sourcemap = "6.1.1"
 oxc_span = "0.123"
 oxc_transformer = "0.123"

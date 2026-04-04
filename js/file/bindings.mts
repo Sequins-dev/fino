@@ -1,32 +1,49 @@
 /**
  * internal:file-bindings — shared libc FFI bindings, constants, and helpers
- * for the boats:file sub-modules (stat, handle, entry, fs).
+ * for the fino:file sub-modules (stat, handle, entry, fs).
  */
 
-import { dlopen, Pointer } from 'boats:ffi';
+import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from 'internal:globals/encoding';
-import { Path } from 'boats:file/path';
+import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
+import { Path } from './path.mts';
 
 export { Pointer };
 export { encodeUtf8, decodeUtf8 };
 
+interface LoopModule {
+  submit(fn: (raw: object, id: number) => void): Promise<{ res: number }>;
+  readable(fd: number): Promise<number>;
+}
+
+interface AsyncOpsModule {
+  asyncOpen(raw: object, pathBuf: ArrayBuffer, flags: number, mode: number, id: number): void;
+  asyncRead(raw: object, fd: number, buf: ArrayBuffer, len: number, id: number): void;
+  asyncClose(raw: object, fd: number, id: number): void;
+}
+
+interface ErrnoError extends Error {
+  code?: number;
+  syscall?: string;
+  path?: string;
+}
+
 export const isDarwin = os === 'darwin';
 const LIBC = isDarwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
-// Both platforms need boats:loop for async reads.
-// Linux additionally uses boats:io_uring for IORING_OP_READ / IORING_OP_OPENAT.
+// Both platforms need fino:loop for async reads.
+// Linux additionally uses fino:io_uring for IORING_OP_READ / IORING_OP_OPENAT.
 //
 // macOS: kqueue EVFILT_READ on a regular file (vnode) fires when
 //   current_file_offset < file_size, with ev.data = file_size - current_offset
 //   (bytes remaining). It does NOT fire when offset == file_size (at EOF).
 //   We therefore check the current offset via lseek(SEEK_CUR) before each
 //   loop.readable() call to avoid hanging at EOF.
-export let loopModule = null;
-export let asyncOps   = null;
-loopModule = await import('boats:runtime/loop');
+export let loopModule: LoopModule | null = null;
+export let asyncOps: AsyncOpsModule | null = null;
+loopModule = await import('../runtime/loop.mts');
 if (!isDarwin) {
-  asyncOps = await import('internal:runtime/io_uring');
+  asyncOps = await import('../internal/runtime/io_uring.mts');
 }
 const errnoFn = isDarwin ? '__error' : '__errno_location';
 
@@ -101,8 +118,9 @@ export function cstr(s: string): Uint8Array {
 
 /** Throw an error annotated with the current errno value. */
 export function throwErrno(syscall: string, path: string): never {
-  const code = Pointer.readI32(lib.symbols[errnoFn](), 0);
-  const err = new Error(`${syscall}('${path}'): errno ${code}`);
+  const getErrno = lib.symbols[errnoFn] as () => object;
+  const code = Pointer.readI32(getErrno(), 0);
+  const err: ErrnoError = new Error(`${syscall}('${path}'): errno ${code}`);
   err.code = code;
   err.syscall = syscall;
   err.path = path;

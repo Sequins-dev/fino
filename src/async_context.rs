@@ -1,776 +1,351 @@
-//! Async context propagation for Boats.
+//! Async context propagation for Fino on V8 via ContinuationPreservedEmbedderData.
 //!
-//! Provides `BoatsJobExecutor` — a custom Boa `JobExecutor` that:
+//! The live async-context frame is stored as a JS Array in V8's CPED slot.
+//! V8 automatically captures the CPED reference when a continuation is enqueued
+//! and restores it before each `.then()` callback fires — no promise hook needed.
 //!
-//! 1. Propagates context frames (async slot values) through `await` / `.then()`
-//!    boundaries, giving JS-visible `Context` objects automatic propagation.
+//! **COW invariant**: `setSlot()` and `clearSlot()` always create a NEW array
+//! (shallow copy + modification) rather than mutating in place. V8 holds a
+//! reference to the array at enqueue time; in-place mutation would corrupt
+//! previously-captured frames.
 //!
-//! 2. Tags every enqueued job with the current loop ID so jobs can be selectively
-//!    drained per-loop. This is the foundation of per-loop microtask isolation:
-//!    each event loop drains only its own promise reactions, leaving other loops'
-//!    jobs queued until those loops drain them.
-//!
-//! Also exposes the `internal:async-context` synthetic module with the primitive
-//! operations that `js/context.mjs` and `js/loop.mjs` build their APIs on top of.
+//! `createSlot()` is the only exception: it runs during synchronous module init
+//! and simply pushes `undefined` at a new index, which is safe because no
+//! continuation has yet captured the array.
 
-use std::{
-    cell::{Cell, RefCell},
-    collections::{BTreeMap, HashMap, VecDeque},
-    mem,
-    rc::Rc,
-};
+use ::v8;
 
-use boa_engine::{
-    Context, JsError, JsNativeError, JsResult, JsValue, Module, NativeFunction,
-    context::time::JsInstant,
-    job::{GenericJob, Job, JobExecutor, NativeAsyncJob, PromiseJob, TimeoutJob},
-    js_string,
-    module::SyntheticModuleInitializer,
-    object::FunctionObjectBuilder,
-};
-use futures_concurrency::future::FutureGroup;
-use futures_lite::{StreamExt, future};
+use crate::state::{get_state, root_queue_ptr};
 
-// ---------------------------------------------------------------------------
-// Frame type
-// ---------------------------------------------------------------------------
-
-/// A snapshot of all context slot values at a point in time.
-type Frame = Vec<Option<JsValue>>;
-
-// ---------------------------------------------------------------------------
-// AsyncContextStore
-// ---------------------------------------------------------------------------
-
-/// Holds the live context slot values and a table of named snapshots.
-///
-/// Each `Context` object created in JS allocates one slot here (via
-/// `createSlot`). The executor captures and restores frames around each job.
-pub struct AsyncContextStore {
-    /// The current live slot values, indexed by slot ID.
-    slots: RefCell<Frame>,
-    /// Snapshot table: integer handle → captured frame.
-    snapshots: RefCell<HashMap<u32, Frame>>,
-    next_snapshot_id: Cell<u32>,
-}
-
-impl AsyncContextStore {
-    pub fn new() -> Self {
-        Self {
-            slots: RefCell::new(Vec::new()),
-            snapshots: RefCell::new(HashMap::new()),
-            next_snapshot_id: Cell::new(0),
-        }
-    }
-
-    /// Append a new slot (initially `None`) and return its index.
-    pub fn create_slot(&self) -> u32 {
-        let id = self.slots.borrow().len() as u32;
-        self.slots.borrow_mut().push(None);
-        id
-    }
-
-    /// Read the current value of a slot.
-    pub fn get_slot(&self, id: u32) -> JsValue {
-        self.slots
-            .borrow()
-            .get(id as usize)
-            .and_then(|v| v.clone())
-            .unwrap_or(JsValue::undefined())
-    }
-
-    /// Write a value to a slot.
-    pub fn set_slot(&self, id: u32, value: JsValue) {
-        let mut slots = self.slots.borrow_mut();
-        if let Some(slot) = slots.get_mut(id as usize) {
-            *slot = Some(value);
-        }
-    }
-
-    /// Reset a slot to `None` (the "unset" / "cleared" state).
-    pub fn clear_slot(&self, id: u32) {
-        let mut slots = self.slots.borrow_mut();
-        if let Some(slot) = slots.get_mut(id as usize) {
-            *slot = None;
-        }
-    }
-
-    /// Capture the current frame and return an integer handle.
-    pub fn snapshot(&self) -> u32 {
-        let id = self.next_snapshot_id.get();
-        self.next_snapshot_id.set(id + 1);
-        self.snapshots
-            .borrow_mut()
-            .insert(id, self.slots.borrow().clone());
-        id
-    }
-
-    /// Restore the slots from a previously-captured snapshot handle.
-    /// The snapshot remains in the table so it can be re-entered multiple times.
-    pub fn restore(&self, id: u32) {
-        if let Some(frame) = self.snapshots.borrow().get(&id).cloned() {
-            *self.slots.borrow_mut() = frame;
-        }
-    }
-
-    /// Clone the current slots for pairing with an enqueued job.
-    fn capture(&self) -> Frame {
-        self.slots.borrow().clone()
-    }
-
-    /// Atomically replace the slots with `frame`, returning the old frame.
-    ///
-    /// If `frame` is shorter than the current slots vector (because new slots
-    /// were created via `create_slot` after this frame was captured), the slots
-    /// vector is extended with `None` entries to preserve the newly allocated
-    /// indices. This ensures that `create_slot` IDs remain valid across job
-    /// boundaries even when the job was enqueued before those slots existed.
-    fn install(&self, frame: Frame) -> Frame {
-        let mut slots = self.slots.borrow_mut();
-        let current_len = slots.len();
-        let old = mem::replace(&mut *slots, frame);
-        if slots.len() < current_len {
-            slots.resize(current_len, None);
-        }
-        old
-    }
-}
-
-// ---------------------------------------------------------------------------
-// BoatsJobExecutor
-// ---------------------------------------------------------------------------
-
-/// A Boa `JobExecutor` that propagates context frames and loop tags.
-///
-/// Every enqueued job is paired with:
-/// - A `Frame`: the async context slot snapshot at enqueue time (for Context propagation)
-/// - An `Option<u32>`: the loop ID at enqueue time (for per-loop microtask draining)
-///
-/// The loop tag is set by JS via `enterLoop(id)` / `exitLoop(prev)` before/after
-/// each iteration of a loop's spin. This allows `run_jobs_for_loop(id)` to drain
-/// only the jobs belonging to a specific loop, leaving others queued.
-pub struct BoatsJobExecutor {
-    pub store: Rc<AsyncContextStore>,
-    /// The loop ID currently "in scope" — captured by enqueue_job.
-    current_loop_id: Cell<Option<u32>>,
-    /// Monotonically increasing ID counter for allocating loop IDs.
-    next_loop_id: Cell<u32>,
-    promise_jobs: RefCell<VecDeque<(PromiseJob, Frame, Option<u32>)>>,
-    async_jobs: RefCell<VecDeque<(NativeAsyncJob, Frame, Option<u32>)>>,
-    #[allow(clippy::type_complexity)]
-    timeout_jobs: RefCell<BTreeMap<JsInstant, (TimeoutJob, Frame, Option<u32>)>>,
-    generic_jobs: RefCell<VecDeque<(GenericJob, Frame, Option<u32>)>>,
-    /// JS callback registered by `internal:loader` for filesystem path resolution.
-    /// Stored here (on the executor) so Boa's GC can trace the `JsObject` reference.
-    pub resolve_fn: RefCell<Option<boa_engine::JsObject>>,
-    /// JS callback registered by `internal:loader` for populating `import.meta`.
-    pub init_meta_fn: RefCell<Option<boa_engine::JsObject>>,
-}
-
-impl BoatsJobExecutor {
-    pub fn new(store: Rc<AsyncContextStore>) -> Self {
-        Self {
-            store,
-            current_loop_id: Cell::new(None),
-            next_loop_id: Cell::new(0),
-            promise_jobs: RefCell::new(VecDeque::new()),
-            async_jobs: RefCell::new(VecDeque::new()),
-            timeout_jobs: RefCell::new(BTreeMap::new()),
-            generic_jobs: RefCell::new(VecDeque::new()),
-            resolve_fn: RefCell::new(None),
-            init_meta_fn: RefCell::new(None),
-        }
-    }
-
-    fn clear(&self) {
-        self.promise_jobs.borrow_mut().clear();
-        self.async_jobs.borrow_mut().clear();
-        self.timeout_jobs.borrow_mut().clear();
-        self.generic_jobs.borrow_mut().clear();
-    }
-
-    /// Allocate a fresh loop ID. Called once per `loop.create()`.
-    pub fn create_loop_id(&self) -> u32 {
-        let id = self.next_loop_id.get();
-        self.next_loop_id.set(id + 1);
-        id
-    }
-
-    /// Set the current loop ID for job tagging. Returns the previous value so
-    /// the caller can restore it (enabling nested loop scopes).
-    pub fn enter_loop(&self, id: u32) -> Option<u32> {
-        self.current_loop_id.replace(Some(id))
-    }
-
-    /// Restore the loop ID to a previous value returned by `enter_loop`.
-    pub fn exit_loop(&self, prev: Option<u32>) {
-        self.current_loop_id.set(prev);
-    }
-
-    /// Returns true if there are any pending jobs tagged with `loop_id`.
-    pub fn has_loop_work(&self, loop_id: u32) -> bool {
-        let target = Some(loop_id);
-        self.promise_jobs
-            .borrow()
-            .iter()
-            .any(|(_, _, id)| *id == target)
-            || self
-                .async_jobs
-                .borrow()
-                .iter()
-                .any(|(_, _, id)| *id == target)
-            || self
-                .generic_jobs
-                .borrow()
-                .iter()
-                .any(|(_, _, id)| *id == target)
-            || self
-                .timeout_jobs
-                .borrow()
-                .values()
-                .any(|(_, _, id)| *id == target)
-    }
-
-    /// Drain only jobs tagged with `loop_id`, leaving all other jobs queued.
-    ///
-    /// This is the per-loop counterpart to `run_jobs`. It runs until no more
-    /// jobs tagged with `loop_id` remain. Jobs with a different tag (including
-    /// `None`) are untouched.
-    ///
-    /// On error, only jobs from this loop are cleared; other loops' jobs survive.
-    pub fn run_jobs_for_loop(self: Rc<Self>, loop_id: u32, context: &mut Context) -> JsResult<()> {
-        future::block_on(self.run_jobs_for_loop_async(loop_id, &RefCell::new(context)))
-    }
-
-    async fn run_jobs_for_loop_async(
-        self: Rc<Self>,
-        loop_id: u32,
-        context: &RefCell<&mut Context>,
-    ) -> JsResult<()>
-    where
-        Self: Sized,
-    {
-        let target = Some(loop_id);
-        let mut group: FutureGroup<_> = FutureGroup::new();
-
-        loop {
-            // Kick off async jobs tagged with this loop.
-            {
-                let all = mem::take(&mut *self.async_jobs.borrow_mut());
-                let mut to_keep = VecDeque::with_capacity(all.len());
-                for (job, frame, id) in all {
-                    if id == target {
-                        let prev = self.store.install(frame);
-                        let fut = job.call(context);
-                        self.store.install(prev);
-                        group.insert(fut);
-                    } else {
-                        to_keep.push_back((job, frame, id));
-                    }
-                }
-                *self.async_jobs.borrow_mut() = to_keep;
-            }
-
-            let has_matching_timeout = {
-                let now = context.borrow().clock().now();
-                self.timeout_jobs
-                    .borrow()
-                    .iter()
-                    .any(|(t, (_, _, id))| &now >= t && *id == target)
-            };
-
-            let has_matching_promise = self
-                .promise_jobs
-                .borrow()
-                .iter()
-                .any(|(_, _, id)| *id == target);
-
-            let has_matching_generic = self
-                .generic_jobs
-                .borrow()
-                .iter()
-                .any(|(_, _, id)| *id == target);
-
-            if !has_matching_promise
-                && !has_matching_generic
-                && !has_matching_timeout
-                && group.is_empty()
-            {
-                break;
-            }
-
-            if let Some(Err(err)) = future::poll_once(group.next()).await.flatten() {
-                self.clear_loop(loop_id);
-                return Err(err);
-            }
-
-            // Run matured timeout jobs for this loop.
-            {
-                let now = context.borrow().clock().now();
-                let mut timeouts = self.timeout_jobs.borrow_mut();
-                let all: BTreeMap<_, _> = mem::take(&mut *timeouts);
-                let mut to_run = Vec::new();
-                let mut to_keep = BTreeMap::new();
-                for (deadline, (job, frame, id)) in all {
-                    if id == target && now >= deadline && !job.is_cancelled() {
-                        to_run.push((job, frame));
-                    } else {
-                        to_keep.insert(deadline, (job, frame, id));
-                    }
-                }
-                *timeouts = to_keep;
-                drop(timeouts);
-
-                for (job, frame) in to_run {
-                    let prev = self.store.install(frame);
-                    let result = job.call(&mut context.borrow_mut());
-                    self.store.install(prev);
-                    if let Err(err) = result {
-                        self.clear_loop(loop_id);
-                        return Err(err);
-                    }
-                }
-            }
-
-            // Run promise jobs for this loop.
-            {
-                let all = mem::take(&mut *self.promise_jobs.borrow_mut());
-                let mut to_keep = VecDeque::with_capacity(all.len());
-                let mut to_run = Vec::new();
-                for (job, frame, id) in all {
-                    if id == target {
-                        to_run.push((job, frame));
-                    } else {
-                        to_keep.push_back((job, frame, id));
-                    }
-                }
-                *self.promise_jobs.borrow_mut() = to_keep;
-
-                for (job, frame) in to_run {
-                    let prev = self.store.install(frame);
-                    let result = job.call(&mut context.borrow_mut());
-                    self.store.install(prev);
-                    if let Err(err) = result {
-                        self.clear_loop(loop_id);
-                        return Err(err);
-                    }
-                }
-            }
-
-            // Run generic jobs for this loop.
-            {
-                let all = mem::take(&mut *self.generic_jobs.borrow_mut());
-                let mut to_keep = VecDeque::with_capacity(all.len());
-                let mut to_run = Vec::new();
-                for (job, frame, id) in all {
-                    if id == target {
-                        to_run.push((job, frame));
-                    } else {
-                        to_keep.push_back((job, frame, id));
-                    }
-                }
-                *self.generic_jobs.borrow_mut() = to_keep;
-
-                for (job, frame) in to_run {
-                    let prev = self.store.install(frame);
-                    let result = job.call(&mut context.borrow_mut());
-                    self.store.install(prev);
-                    if let Err(err) = result {
-                        self.clear_loop(loop_id);
-                        return Err(err);
-                    }
-                }
-            }
-
-            context.borrow_mut().clear_kept_objects();
-            future::yield_now().await;
-        }
-
-        Ok(())
-    }
-
-    /// Clear all pending jobs tagged with `loop_id` (e.g. on error).
-    /// Other loops' jobs are unaffected.
-    fn clear_loop(&self, loop_id: u32) {
-        let target = Some(loop_id);
-        self.promise_jobs
-            .borrow_mut()
-            .retain(|(_, _, id)| *id != target);
-        self.async_jobs
-            .borrow_mut()
-            .retain(|(_, _, id)| *id != target);
-        self.generic_jobs
-            .borrow_mut()
-            .retain(|(_, _, id)| *id != target);
-        self.timeout_jobs
-            .borrow_mut()
-            .retain(|_, (_, _, id)| *id != target);
-    }
-}
-
-impl JobExecutor for BoatsJobExecutor {
-    fn enqueue_job(self: Rc<Self>, job: Job, context: &mut Context) {
-        let frame = self.store.capture();
-        let loop_id = self.current_loop_id.get();
-        match job {
-            Job::PromiseJob(p) => self
-                .promise_jobs
-                .borrow_mut()
-                .push_back((p, frame, loop_id)),
-            Job::AsyncJob(a) => self.async_jobs.borrow_mut().push_back((a, frame, loop_id)),
-            Job::TimeoutJob(t) => {
-                let now = context.clock().now();
-                let deadline = now + t.timeout();
-                self.timeout_jobs
-                    .borrow_mut()
-                    .insert(deadline, (t, frame, loop_id));
-            }
-            Job::GenericJob(g) => self
-                .generic_jobs
-                .borrow_mut()
-                .push_back((g, frame, loop_id)),
-            // Job is #[non_exhaustive]
-            _ => {}
-        }
-    }
-
-    fn run_jobs(self: Rc<Self>, context: &mut Context) -> JsResult<()> {
-        future::block_on(self.run_jobs_async(&RefCell::new(context)))
-    }
-
-    async fn run_jobs_async(self: Rc<Self>, context: &RefCell<&mut Context>) -> JsResult<()>
-    where
-        Self: Sized,
-    {
-        let mut group: FutureGroup<_> = FutureGroup::new();
-
-        loop {
-            // Kick off async jobs. Restore the enqueued frame before calling
-            // .call() so the async closure captures the right context.
-            for (job, frame, _) in mem::take(&mut *self.async_jobs.borrow_mut()) {
-                let prev = self.store.install(frame);
-                let fut = job.call(context);
-                self.store.install(prev);
-                group.insert(fut);
-            }
-
-            let no_timeout_jobs = {
-                let now = context.borrow().clock().now();
-                !self.timeout_jobs.borrow().iter().any(|(t, _)| &now >= t)
-            };
-
-            if self.promise_jobs.borrow().is_empty()
-                && self.async_jobs.borrow().is_empty()
-                && self.generic_jobs.borrow().is_empty()
-                && no_timeout_jobs
-                && group.is_empty()
-            {
-                break;
-            }
-
-            if let Some(Err(err)) = future::poll_once(group.next()).await.flatten() {
-                self.clear();
-                return Err(err);
-            }
-
-            // Run matured timeout jobs.
-            {
-                let now = context.borrow().clock().now();
-                let mut timeouts = self.timeout_jobs.borrow_mut();
-                let mut to_keep = timeouts.split_off(&now);
-                to_keep.retain(|_, (job, _, _)| !job.is_cancelled());
-                let ready = mem::replace(&mut *timeouts, to_keep);
-                drop(timeouts);
-
-                for (_, (job, frame, _)) in ready {
-                    let prev = self.store.install(frame);
-                    let result = job.call(&mut context.borrow_mut());
-                    self.store.install(prev);
-                    if let Err(err) = result {
-                        self.clear();
-                        return Err(err);
-                    }
-                }
-            }
-
-            // Run promise jobs.
-            let promise_jobs = mem::take(&mut *self.promise_jobs.borrow_mut());
-            for (job, frame, _) in promise_jobs {
-                let prev = self.store.install(frame);
-                let result = job.call(&mut context.borrow_mut());
-                self.store.install(prev);
-                if let Err(err) = result {
-                    self.clear();
-                    return Err(err);
-                }
-            }
-
-            // Run generic jobs.
-            let generic_jobs = mem::take(&mut *self.generic_jobs.borrow_mut());
-            for (job, frame, _) in generic_jobs {
-                let prev = self.store.install(frame);
-                let result = job.call(&mut context.borrow_mut());
-                self.store.install(prev);
-                if let Err(err) = result {
-                    self.clear();
-                    return Err(err);
-                }
-            }
-
-            context.borrow_mut().clear_kept_objects();
-            future::yield_now().await;
-        }
-
-        Ok(())
-    }
+fn loop_debug_enabled() -> bool {
+    std::env::var_os("FINO_LOOP_DEBUG").is_some()
 }
 
 // ---------------------------------------------------------------------------
 // internal:async-context synthetic module
 // ---------------------------------------------------------------------------
 
-/// Build the `internal:async-context` synthetic module.
+pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "createSlot",
+        "getSlot",
+        "setSlot",
+        "clearSlot",
+        "snapshot",
+        "restore",
+        "drainMicrotasks",
+        "hasPendingV8Tasks",
+        "scheduleSync",
+        "runLoop",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
+
+    let module_name = v8::String::new(scope, "internal:async-context").unwrap();
+    v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
+}
+
+fn eval_steps<'a>(
+    context: v8::Local<'a, v8::Context>,
+    module: v8::Local<'a, v8::Module>,
+) -> Option<v8::Local<'a, v8::Value>> {
+    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+
+    macro_rules! set_fn {
+        ($name:expr, $cb:expr) => {{
+            let tmpl = v8::FunctionTemplate::new(scope, $cb);
+            let func = tmpl.get_function(scope)?;
+            let key = v8::String::new(scope, $name)?;
+            module.set_synthetic_module_export(scope, key, func.into())?;
+        }};
+    }
+
+    set_fn!("createSlot", create_slot);
+    set_fn!("getSlot", get_slot);
+    set_fn!("setSlot", set_slot);
+    set_fn!("clearSlot", clear_slot);
+    set_fn!("snapshot", snapshot);
+    set_fn!("restore", restore);
+    set_fn!("drainMicrotasks", drain_microtasks);
+    set_fn!("hasPendingV8Tasks", has_pending_v8_tasks);
+    set_fn!("scheduleSync", schedule_sync);
+    set_fn!("runLoop", run_loop);
+
+    Some(v8::undefined(scope).into())
+}
+
+// ---------------------------------------------------------------------------
+// Slot functions
+// ---------------------------------------------------------------------------
+
+fn create_slot(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let id = {
+        let mut st = state_rc.borrow_mut();
+        let id = st.slot_count;
+        st.slot_count += 1;
+        id
+    };
+
+    // Extend the live CPED array in place with `undefined` at the new index.
+    // This is safe: createSlot only runs during synchronous module init, so no
+    // continuation has captured the current array yet.
+    let frame = scope.get_continuation_preserved_embedder_data();
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(frame) {
+        let undef = v8::undefined(scope);
+        arr.set_index(scope, id, undef.into());
+    }
+
+    rv.set(v8::Number::new(scope, id as f64).into());
+}
+
+fn get_slot(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let id = match get_u32_arg(scope, &args, 0, "getSlot") {
+        Ok(v) => v,
+        Err(()) => return,
+    };
+
+    let frame = scope.get_continuation_preserved_embedder_data();
+    if let Ok(arr) = v8::Local::<v8::Array>::try_from(frame)
+        && id < arr.length()
+        && let Some(val) = arr.get_index(scope, id)
+    {
+        rv.set(val);
+        return;
+    }
+    rv.set(v8::undefined(scope).into());
+}
+
+fn set_slot(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut _rv: v8::ReturnValue,
+) {
+    let id = match get_u32_arg(scope, &args, 0, "setSlot") {
+        Ok(v) => v,
+        Err(()) => return,
+    };
+    let value: v8::Local<v8::Value> = args.get(1);
+
+    let state_rc = get_state(scope);
+    let slot_count = state_rc.borrow().slot_count;
+
+    // COW: create a new array, copy current frame, write new value at id.
+    let len = slot_count;
+    let new_arr = v8::Array::new(scope, len as i32);
+    let frame = scope.get_continuation_preserved_embedder_data();
+    if let Ok(old) = v8::Local::<v8::Array>::try_from(frame) {
+        for i in 0..len {
+            let v = old
+                .get_index(scope, i)
+                .unwrap_or_else(|| v8::undefined(scope).into());
+            new_arr.set_index(scope, i, v);
+        }
+    }
+    new_arr.set_index(scope, id, value);
+    scope.set_continuation_preserved_embedder_data(new_arr.into());
+}
+
+fn clear_slot(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut _rv: v8::ReturnValue,
+) {
+    let id = match get_u32_arg(scope, &args, 0, "clearSlot") {
+        Ok(v) => v,
+        Err(()) => return,
+    };
+
+    let state_rc = get_state(scope);
+    let slot_count = state_rc.borrow().slot_count;
+
+    // COW: create a new array with `undefined` at index id.
+    let len = slot_count;
+    let new_arr = v8::Array::new(scope, len as i32);
+    let undef = v8::undefined(scope);
+    let frame = scope.get_continuation_preserved_embedder_data();
+    if let Ok(old) = v8::Local::<v8::Array>::try_from(frame) {
+        for i in 0..len {
+            let v = old.get_index(scope, i).unwrap_or_else(|| undef.into());
+            new_arr.set_index(scope, i, v);
+        }
+    }
+    new_arr.set_index(scope, id, undef.into());
+    scope.set_continuation_preserved_embedder_data(new_arr.into());
+}
+
+fn snapshot(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let frame = scope.get_continuation_preserved_embedder_data();
+    let global = v8::Global::new(scope, frame);
+
+    let state_rc = get_state(scope);
+    let id = {
+        let mut st = state_rc.borrow_mut();
+        let id = st.snapshot_store.len() as u32;
+        st.snapshot_store.push(global);
+        id
+    };
+
+    rv.set(v8::Number::new(scope, id as f64).into());
+}
+
+fn restore(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut _rv: v8::ReturnValue,
+) {
+    let id = match get_u32_arg(scope, &args, 0, "restore") {
+        Ok(v) => v,
+        Err(()) => return,
+    };
+
+    let state_rc = get_state(scope);
+    let (maybe_global, slot_count) = {
+        let st = state_rc.borrow();
+        let g = st.snapshot_store.get(id as usize).cloned();
+        (g, st.slot_count)
+    };
+
+    if let Some(global) = maybe_global {
+        let stored = v8::Local::new(scope, &global);
+        if let Ok(arr) = v8::Local::<v8::Array>::try_from(stored) {
+            if arr.length() >= slot_count {
+                // Array is at least as long as current slot count — use directly.
+                scope.set_continuation_preserved_embedder_data(arr.into());
+            } else {
+                // New slots were created after this snapshot; extend with undefined.
+                let new_arr = v8::Array::new(scope, slot_count as i32);
+                let undef = v8::undefined(scope);
+                for i in 0..slot_count {
+                    let v = if i < arr.length() {
+                        arr.get_index(scope, i).unwrap_or_else(|| undef.into())
+                    } else {
+                        undef.into()
+                    };
+                    new_arr.set_index(scope, i, v);
+                }
+                scope.set_continuation_preserved_embedder_data(new_arr.into());
+            }
+        }
+    }
+}
+
+fn drain_microtasks(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut _rv: v8::ReturnValue,
+) {
+    // Drain V8 platform foreground tasks first (e.g. WASM background
+    // compilation callbacks). These post promise resolutions, which in turn
+    // enqueue microtasks, so foreground tasks must run before the checkpoint.
+    let platform = v8::V8::get_current_platform();
+    while v8::Platform::pump_message_loop(&platform, scope, false) {}
+
+    let state_rc = get_state(scope);
+    let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
+    let isolate: &mut v8::Isolate = scope.as_mut();
+    unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+}
+
+/// Returns true if V8 has pending background tasks (e.g. WASM compilation in
+/// flight). JS uses this to keep the event loop alive while V8 background
+/// work is in progress, even when no I/O is registered.
 ///
-/// Context slot exports (backed by `AsyncContextStore`):
-/// - `createSlot() -> u32`           allocate a new context slot
-/// - `getSlot(id: u32) -> any`       read the current value of a slot
-/// - `setSlot(id: u32, value: any)`  write a value to a slot
-/// - `clearSlot(id: u32)`            reset a slot to the unset state
-/// - `snapshot() -> u32`             capture current frame, return handle
-/// - `restore(handle: u32)`          restore frame from handle
+/// Foreground task pumping (draining completion callbacks from background
+/// threads) is handled by `drainMicrotasks()` — not here. Calling
+/// `pump_message_loop` here would cause infinite loops because V8 continuously
+/// posts JIT/TurboFan optimization tasks.
+fn has_pending_v8_tasks(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set_bool(scope.has_pending_background_tasks());
+}
+
+/// Schedule `fn` to be called from Rust outside any microtask checkpoint.
 ///
-/// Loop execution exports (backed by `BoatsJobExecutor`):
-/// - `createLoopId() -> u32`         allocate a fresh loop tag
-/// - `enterLoop(id: u32) -> u32?`    set ambient loop tag, return previous
-/// - `exitLoop(prev: u32?)`          restore previous ambient loop tag
-/// - `drainLoopMicrotasks(id: u32)`  drain only jobs tagged with `id`
-/// - `hasLoopWork(id: u32) -> bool`  true if any jobs are tagged with `id`
-/// - `drainMicrotasks()`             global drain — all queued jobs regardless of loop tag
-pub fn create_module(context: &mut Context) -> JsResult<Module> {
-    let module = Module::synthetic(
-        &[
-            js_string!("createSlot"),
-            js_string!("getSlot"),
-            js_string!("setSlot"),
-            js_string!("clearSlot"),
-            js_string!("snapshot"),
-            js_string!("restore"),
-            js_string!("createLoopId"),
-            js_string!("enterLoop"),
-            js_string!("exitLoop"),
-            js_string!("drainLoopMicrotasks"),
-            js_string!("hasLoopWork"),
-            js_string!("drainMicrotasks"),
-        ],
-        SyntheticModuleInitializer::from_copy_closure(|module, context| {
-            // --- Context slot functions ---
+/// V8's `PerformCheckpoint` is a no-op when called re-entrantly from within a
+/// running microtask, so `drainMicrotasks()` → `spin()` deadlocks when invoked
+/// from an async test callback.  This function stores `fn` in `FinoState` so
+/// that the Rust event loop calls it between `perform_checkpoint` invocations,
+/// where `is_running_microtasks_` is false and `drainMicrotasks()` works.
+///
+/// Returns a Promise that resolves (or rejects) with the return value of `fn`.
+fn schedule_sync(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let fn_val: v8::Local<v8::Value> = args.get(0);
+    let Some(fn_obj) = v8::Local::<v8::Function>::try_from(fn_val).ok() else {
+        return;
+    };
 
-            let create_slot = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, _, context| {
-                    Ok(JsValue::from(get_store(context)?.create_slot()))
-                }),
-            )
-            .name(js_string!("createSlot"))
-            .length(0)
-            .build();
+    let Some(resolver) = v8::PromiseResolver::new(scope) else {
+        return;
+    };
+    let promise = resolver.get_promise(scope);
 
-            let get_slot = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "getSlot")?;
-                    Ok(get_store(context)?.get_slot(id))
-                }),
-            )
-            .name(js_string!("getSlot"))
-            .length(1)
-            .build();
+    let state_rc = get_state(scope);
+    let mut st = state_rc.borrow_mut();
+    st.sync_call_fn = Some(v8::Global::new(scope, fn_obj));
+    st.sync_call_resolver = Some(v8::Global::new(scope, resolver));
+    if loop_debug_enabled() {
+        eprintln!("[async-context] scheduleSync queued");
+    }
 
-            let set_slot = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "setSlot")?;
-                    let value = args.get(1).cloned().unwrap_or(JsValue::undefined());
-                    get_store(context)?.set_slot(id, value);
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("setSlot"))
-            .length(2)
-            .build();
-
-            let clear_slot = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "clearSlot")?;
-                    get_store(context)?.clear_slot(id);
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("clearSlot"))
-            .length(1)
-            .build();
-
-            let snapshot = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, _, context| {
-                    Ok(JsValue::from(get_store(context)?.snapshot()))
-                }),
-            )
-            .name(js_string!("snapshot"))
-            .length(0)
-            .build();
-
-            let restore = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "restore")?;
-                    get_store(context)?.restore(id);
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("restore"))
-            .length(1)
-            .build();
-
-            // --- Loop execution functions ---
-
-            let create_loop_id = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, _, context| {
-                    Ok(JsValue::from(get_executor(context)?.create_loop_id()))
-                }),
-            )
-            .name(js_string!("createLoopId"))
-            .length(0)
-            .build();
-
-            let enter_loop = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "enterLoop")?;
-                    let prev = get_executor(context)?.enter_loop(id);
-                    Ok(prev.map(JsValue::from).unwrap_or(JsValue::undefined()))
-                }),
-            )
-            .name(js_string!("enterLoop"))
-            .length(1)
-            .build();
-
-            let exit_loop = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    // prev is undefined (no loop) or a u32 loop ID
-                    let prev = args.first().and_then(|v| v.as_number()).map(|n| n as u32);
-                    get_executor(context)?.exit_loop(prev);
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("exitLoop"))
-            .length(1)
-            .build();
-
-            let drain_loop_microtasks = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "drainLoopMicrotasks")?;
-                    get_executor(context)?
-                        .run_jobs_for_loop(id, context)
-                        .map_err(|e| {
-                            JsError::from(
-                                JsNativeError::error()
-                                    .with_message(format!("drainLoopMicrotasks: {e}")),
-                            )
-                        })?;
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("drainLoopMicrotasks"))
-            .length(1)
-            .build();
-
-            let has_loop_work = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, args, context| {
-                    let id = slot_id_arg(args, "hasLoopWork")?;
-                    Ok(JsValue::from(get_executor(context)?.has_loop_work(id)))
-                }),
-            )
-            .name(js_string!("hasLoopWork"))
-            .length(1)
-            .build();
-
-            let drain_microtasks = FunctionObjectBuilder::new(
-                context.realm(),
-                NativeFunction::from_fn_ptr(|_, _, context| {
-                    context.run_jobs().map_err(|e| {
-                        JsError::from(
-                            JsNativeError::error().with_message(format!("drainMicrotasks: {e}")),
-                        )
-                    })?;
-                    Ok(JsValue::undefined())
-                }),
-            )
-            .name(js_string!("drainMicrotasks"))
-            .length(0)
-            .build();
-
-            module.set_export(&js_string!("createSlot"), create_slot.into())?;
-            module.set_export(&js_string!("getSlot"), get_slot.into())?;
-            module.set_export(&js_string!("setSlot"), set_slot.into())?;
-            module.set_export(&js_string!("clearSlot"), clear_slot.into())?;
-            module.set_export(&js_string!("snapshot"), snapshot.into())?;
-            module.set_export(&js_string!("restore"), restore.into())?;
-            module.set_export(&js_string!("createLoopId"), create_loop_id.into())?;
-            module.set_export(&js_string!("enterLoop"), enter_loop.into())?;
-            module.set_export(&js_string!("exitLoop"), exit_loop.into())?;
-            module.set_export(
-                &js_string!("drainLoopMicrotasks"),
-                drain_loop_microtasks.into(),
-            )?;
-            module.set_export(&js_string!("hasLoopWork"), has_loop_work.into())?;
-            module.set_export(&js_string!("drainMicrotasks"), drain_microtasks.into())?;
-            Ok(())
-        }),
-        None,
-        None,
-        context,
-    );
-
-    Ok(module)
+    rv.set(promise.into());
 }
 
-/// Retrieve the `AsyncContextStore` from the current context's job executor.
-fn get_store(context: &mut Context) -> JsResult<Rc<AsyncContextStore>> {
-    context
-        .downcast_job_executor::<BoatsJobExecutor>()
-        .map(|exec| exec.store.clone())
-        .ok_or_else(|| {
-            JsNativeError::error()
-                .with_message("internal:async-context requires BoatsJobExecutor")
-                .into()
-        })
+/// Called by `_main.mts` with `(step, onDone)` to hand off host-safe loop
+/// stepping to Rust. JS owns scheduling policy; Rust only calls `step()`
+/// outside checkpoints and services deferred sync work between calls.
+fn run_loop(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let mut st = state_rc.borrow_mut();
+    st.loop_step_fn = v8::Local::<v8::Function>::try_from(args.get(0))
+        .ok()
+        .map(|f| v8::Global::new(scope, f));
+    st.on_done_fn = v8::Local::<v8::Function>::try_from(args.get(1))
+        .ok()
+        .map(|f| v8::Global::new(scope, f));
 }
 
-/// Retrieve the `BoatsJobExecutor` itself (for loop execution operations).
-fn get_executor(context: &mut Context) -> JsResult<Rc<BoatsJobExecutor>> {
-    context
-        .downcast_job_executor::<BoatsJobExecutor>()
-        .ok_or_else(|| {
-            JsNativeError::error()
-                .with_message("internal:async-context requires BoatsJobExecutor")
-                .into()
-        })
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-/// Extract a `u32` slot / handle id from the first argument.
-fn slot_id_arg(args: &[JsValue], fn_name: &str) -> JsResult<u32> {
-    args.first()
-        .and_then(|v| v.as_number())
-        .map(|n| n as u32)
-        .ok_or_else(|| {
-            JsNativeError::typ()
-                .with_message(format!("{fn_name}: expected u32 argument"))
-                .into()
-        })
+fn get_u32_arg(
+    scope: &mut v8::HandleScope,
+    args: &v8::FunctionCallbackArguments,
+    index: i32,
+    fn_name: &str,
+) -> Result<u32, ()> {
+    let val: v8::Local<v8::Value> = args.get(index);
+    if val.is_number() {
+        Ok(val.number_value(scope).unwrap_or(0.0) as u32)
+    } else {
+        let msg = v8::String::new(scope, &format!("{fn_name}: expected u32 argument")).unwrap();
+        let exc = v8::Exception::type_error(scope, msg);
+        scope.throw_exception(exc);
+        Err(())
+    }
 }

@@ -1,13 +1,12 @@
 /**
- * Tests for Socket, Reader, and Writer classes in boats:socket,
- * and serializeRequest / serializeResponse in boats:http.
+ * Tests for Socket, Reader, and Writer classes in fino:socket,
+ * and serializeRequest / serializeResponse in fino:http.
  */
 
-import { describe, it } from 'boats:test/test';
-import { Socket } from 'boats:net/socket';
-import * as loop from 'boats:runtime/loop';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
+import { describe, it } from 'fino:test/test';
+import { Socket } from 'fino:net/socket';
+const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 import {
   parseRequest,
   parseResponse,
@@ -15,17 +14,17 @@ import {
   Response,
   serializeRequest,
   serializeResponse,
-} from 'boats:net/http';
+} from 'fino:net/http';
 
-async function readAll(reader) {
-  const parts = [];
+async function readAll(reader: AsyncIterable<Uint8Array>) {
+  const parts: Uint8Array[] = [];
   let total = 0;
   for await (const chunk of reader) {
     parts.push(chunk);
     total += chunk.byteLength;
   }
   if (parts.length === 0) return new Uint8Array(0);
-  if (parts.length === 1) return parts[0];
+  if (parts.length === 1) return parts[0]!;
   const out = new Uint8Array(total);
   let pos = 0;
   for (const p of parts) { out.set(p, pos); pos += p.byteLength; }
@@ -33,13 +32,31 @@ async function readAll(reader) {
 }
 
 describe('Connect / Listen', () => {
+  it('ephemeral IPv4 bind reports the assigned port', async (t) => {
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    try {
+      t.ok(server.address.family === 'ipv4' && server.address.port > 0, 'server address includes assigned ephemeral port');
+
+      const clientSock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: (server.address as Extract<typeof server.address, { family: 'ipv4' }>).port });
+      const serverConn = await server.accept();
+
+      t.ok(clientSock !== null, 'client connected using assigned port');
+      t.ok(serverConn !== null, 'server accepted connection');
+
+      clientSock.close();
+      serverConn?.close();
+    } finally {
+      server.close();
+    }
+  });
+
   it('IPv4 TCP — split echo', async (t) => {
     const PORT = 19910;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    const clientSock = await Socket.connect(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const clientSock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     t.ok(clientSock !== null, 'client connected');
     t.ok(serverConn !== null, 'server accepted connection');
@@ -62,16 +79,15 @@ describe('Connect / Listen', () => {
     clientReader.close();
 
     server.close();
-    loop.destroy(lp);
   });
 
   it('IPv6 TCP — split echo', async (t) => {
     const PORT = 19911;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv6', ip: '::1', port: PORT });
-    const clientSock = await Socket.connect(lp, { family: 'ipv6', ip: '::1', port: PORT });
+    const server = Socket.listen({ family: 'ipv6', ip: '::1', port: PORT });
+    const clientSock = await Socket.connect({ family: 'ipv6', ip: '::1', port: PORT });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     const [serverReader, serverWriter] = serverConn.split();
     const [clientReader, clientWriter] = clientSock.split();
@@ -86,16 +102,15 @@ describe('Connect / Listen', () => {
     serverWriter.close();
     clientReader.close();
     server.close();
-    loop.destroy(lp);
   });
 
   it('Unix domain socket — split echo', async (t) => {
-    const PATH = '/tmp/boats_socket_class_test.sock';
-    const lp = loop.create();
+    const PATH = '/tmp/fino_socket_class_test.sock';
 
-    const server = Socket.listen(lp, { family: 'unix', path: PATH });
-    const clientSock = await Socket.connect(lp, { family: 'unix', path: PATH });
+    const server = Socket.listen({ family: 'unix', path: PATH });
+    const clientSock = await Socket.connect({ family: 'unix', path: PATH });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     const [serverReader, serverWriter] = serverConn.split();
     const [clientReader, clientWriter] = clientSock.split();
@@ -110,18 +125,17 @@ describe('Connect / Listen', () => {
     serverWriter.close();
     clientReader.close();
     server.close();
-    loop.destroy(lp);
   });
 });
 
 describe('Writer', () => {
   it('Writer.pipe sends all chunks', async (t) => {
     const PORT = 19912;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    const clientSock = await Socket.connect(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const clientSock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     const [serverReader, serverWriter] = serverConn.split();
     const [clientReader, clientWriter] = clientSock.split();
@@ -141,21 +155,19 @@ describe('Writer', () => {
     serverWriter.close();
     clientReader.close();
     server.close();
-    loop.destroy(lp);
   });
 });
 
 describe('Server', () => {
   it('[Symbol.asyncIterator] yields connections', async (t) => {
     const PORT = 19913;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
 
     const NUM = 3;
     const clientSocks = [];
     for (let i = 0; i < NUM; i++) {
-      clientSocks.push(await Socket.connect(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT }));
+      clientSocks.push(await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: PORT }));
     }
 
     let accepted = 0;
@@ -170,18 +182,17 @@ describe('Server', () => {
 
     for (const c of clientSocks) c.close();
     server.close();
-    loop.destroy(lp);
   });
 });
 
 describe('HTTP integration', () => {
   it('serializeResponse + parseResponse roundtrip via Socket', async (t) => {
     const PORT = 19914;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    const clientSock = await Socket.connect(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const clientSock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     const [serverReader, serverWriter] = serverConn.split();
     const [clientReader, clientWriter] = clientSock.split();
@@ -201,16 +212,15 @@ describe('HTTP integration', () => {
     serverReader.close();
     clientReader.close();
     server.close();
-    loop.destroy(lp);
   });
 
   it('serializeRequest + parseRequest roundtrip via Socket', async (t) => {
     const PORT = 19915;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    const clientSock = await Socket.connect(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const clientSock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     const [serverReader, serverWriter] = serverConn.split();
     const [clientReader, clientWriter] = clientSock.split();
@@ -233,25 +243,24 @@ describe('HTTP integration', () => {
     serverWriter.close();
     clientReader.close();
     server.close();
-    loop.destroy(lp);
   });
 });
 
 describe('Socket lifecycle', () => {
   it('Socket.close() marks socket as closed', async (t) => {
     const PORT = 19916;
-    const lp = loop.create();
 
-    const server = Socket.listen(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    const clientSock = await Socket.connect(lp, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    const clientSock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: PORT });
     const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
 
     t.ok(!clientSock.closed, 'socket not closed initially');
     clientSock.close();
     t.ok(clientSock.closed, 'socket closed after close()');
 
+    if (serverConn === null) throw new Error('expected server connection');
     serverConn.close();
     server.close();
-    loop.destroy(lp);
   });
 });

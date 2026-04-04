@@ -1,8 +1,10 @@
 /**
- * Tests for URLPattern (boats:urlpattern / globalThis).
+ * Tests for URLPattern (fino:urlpattern / globalThis).
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+
+type SymbolRecord = Record<symbol, unknown>;
 
 describe('constructor — object form', () => {
   it('URLPattern -- object form, pathname only', (t) => {
@@ -86,6 +88,7 @@ describe('exec()', () => {
     const p = new URLPattern({ pathname: '/users/:id' });
     const m = p.exec('https://example.com/users/42');
     t.ok(m !== null, 'match is not null');
+    if (m === null) throw new Error('expected match');
     t.equal(m.pathname.input, '/users/42');
     t.equal(m.pathname.groups.id, '42');
   });
@@ -94,6 +97,7 @@ describe('exec()', () => {
     const p = new URLPattern({ pathname: '/blog/:year/:month/:slug' });
     const m = p.exec('https://example.com/blog/2024/03/hello-world');
     t.ok(m !== null);
+    if (m === null) throw new Error('expected match');
     t.equal(m.pathname.groups.year, '2024');
     t.equal(m.pathname.groups.month, '03');
     t.equal(m.pathname.groups.slug, 'hello-world');
@@ -103,6 +107,7 @@ describe('exec()', () => {
     const p = new URLPattern({ hostname: ':sub.example.com' });
     const m = p.exec('https://api.example.com/foo');
     t.ok(m !== null);
+    if (m === null) throw new Error('expected match');
     t.equal(m.hostname.groups.sub, 'api');
   });
 
@@ -110,6 +115,7 @@ describe('exec()', () => {
     const p = new URLPattern({ protocol: ':proto', hostname: 'example.com', pathname: '/' });
     const m = p.exec('https://example.com/');
     t.ok(m !== null);
+    if (m === null) throw new Error('expected match');
     t.equal(m.protocol.groups.proto, 'https');
   });
 
@@ -117,6 +123,7 @@ describe('exec()', () => {
     const p = new URLPattern({ pathname: '/search', search: 'q=:query' });
     const m = p.exec('https://example.com/search?q=hello');
     t.ok(m !== null);
+    if (m === null) throw new Error('expected match');
     t.equal(m.search.groups.query, 'hello');
   });
 });
@@ -138,6 +145,7 @@ describe('advanced patterns', () => {
     const p = new URLPattern({ pathname: '/items/:id(\\d+)' });
     const m = p.exec('https://example.com/items/99');
     t.ok(m !== null);
+    if (m === null) throw new Error('expected match');
     t.equal(m.pathname.groups.id, '99');
     t.equal(p.test('https://example.com/items/abc'), false);
   });
@@ -152,12 +160,13 @@ describe('advanced patterns', () => {
   it('URLPattern -- exec() inputs contains original input', (t) => {
     const p = new URLPattern({ pathname: '/:id' });
     const m = p.exec('https://example.com/42');
+    if (m === null) throw new Error('expected match');
     t.ok(Array.isArray(m.inputs), 'inputs is array');
     t.equal(m.inputs[0], 'https://example.com/42');
   });
 
   it('URLPattern -- throws on null input', (t) => {
-    t.throws(() => new URLPattern(null), null, 'throws on null');
+    t.throws(() => new URLPattern(null as never), null, 'throws on null');
   });
 });
 
@@ -166,6 +175,7 @@ describe('exec() and test() with baseURL', () => {
     const p = new URLPattern({ pathname: '/users/:id' });
     const m = p.exec('/users/42', 'https://example.com');
     t.ok(m !== null, 'match is not null');
+    if (m === null) throw new Error('expected match');
     t.equal(m.pathname.groups.id, '42');
   });
 
@@ -178,6 +188,7 @@ describe('exec() and test() with baseURL', () => {
   it('exec() with baseURL — inputs array contains both input and baseURL', (t) => {
     const p = new URLPattern({ pathname: '/users/:id' });
     const m = p.exec('/users/7', 'https://example.com');
+    if (m === null) throw new Error('expected match');
     t.ok(Array.isArray(m.inputs), 'inputs is array');
     t.equal(m.inputs[0], '/users/7');
     t.equal(m.inputs[1], 'https://example.com');
@@ -213,6 +224,7 @@ describe('unnamed (regex) groups in exec()', () => {
     const p = new URLPattern({ pathname: '/users/(\\d+)' });
     const m = p.exec('https://example.com/users/99');
     t.ok(m !== null, 'match is not null');
+    if (m === null) throw new Error('expected match');
     t.equal(m.pathname.groups['0'], '99');
   });
 
@@ -220,6 +232,7 @@ describe('unnamed (regex) groups in exec()', () => {
     const p = new URLPattern({ pathname: '/(\\w+)/(\\d+)' });
     const m = p.exec('https://example.com/posts/42');
     t.ok(m !== null, 'match is not null');
+    if (m === null) throw new Error('expected match');
     t.equal(m.pathname.groups['0'], 'posts');
     t.equal(m.pathname.groups['1'], '42');
   });
@@ -281,7 +294,7 @@ describe('protocol case sensitivity', () => {
 describe('URLPattern [Symbol.toStringTag]', () => {
   it('URLPattern [Symbol.toStringTag] is "URLPattern"', (t) => {
     const p = new URLPattern({ pathname: '/test' });
-    t.equal(p[Symbol.toStringTag], 'URLPattern');
+    t.equal((p as unknown as SymbolRecord)[Symbol.toStringTag], 'URLPattern');
   });
 });
 

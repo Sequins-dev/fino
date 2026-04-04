@@ -1,48 +1,30 @@
 /**
- * Tests for boats:http — Headers, Request, Response, and the HTTP/1.1 parser.
+ * Tests for fino:http — Headers, Request, Response, and the HTTP/1.1 parser.
  */
 
-import { describe, it } from 'boats:test/test';
-import { parseRequest, parseResponse, serializeRequest, serializeResponse, Headers, Request, Response } from 'boats:net/http';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
+import { describe, it } from 'fino:test/test';
+import { parseRequest, parseResponse, serializeRequest, serializeResponse, Headers, Request, Response } from 'fino:net/http';
+const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 
-function source(str) {
-  return {
-    [Symbol.asyncIterator]() {
-      let sent = false;
-      return {
-        next() {
-          if (!sent) { sent = true; return Promise.resolve({ done: false, value: encodeUtf8(str) }); }
-          return Promise.resolve({ done: true, value: undefined });
-        },
-      };
-    },
-  };
+async function* source(str: string): AsyncIterable<Uint8Array> {
+  yield encodeUtf8(str);
 }
 
-function chunkedSource(str, chunkSize) {
+async function* chunkedSource(str: string, chunkSize: number): AsyncIterable<Uint8Array> {
   const bytes = encodeUtf8(str);
-  return {
-    [Symbol.asyncIterator]() {
-      let pos = 0;
-      return {
-        next() {
-          if (pos >= bytes.byteLength) return Promise.resolve({ done: true, value: undefined });
-          const end = Math.min(pos + chunkSize, bytes.byteLength);
-          const chunk = bytes.subarray(pos, end);
-          pos = end;
-          return Promise.resolve({ done: false, value: chunk });
-        },
-      };
-    },
-  };
+  let pos = 0;
+  while (pos < bytes.byteLength) {
+    const end = Math.min(pos + chunkSize, bytes.byteLength);
+    yield bytes.subarray(pos, end);
+    pos = end;
+  }
 }
 
-async function collectBody(iter) {
+async function collectBody(iter: AsyncIterable<Uint8Array> | AsyncIterable<ArrayBuffer> | null) {
   if (iter === null) return new Uint8Array(0);
-  const parts = [];
-  for await (const chunk of iter) parts.push(chunk);
+  const parts: Uint8Array[] = [];
+  for await (const chunk of iter) parts.push(chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk));
   if (parts.length === 0) return new Uint8Array(0);
   let total = 0;
   for (const p of parts) total += p.byteLength;
@@ -106,7 +88,7 @@ describe('Headers', () => {
 
   it('iteration is sorted by name', (t) => {
     const h = new Headers({ banana: '2', apple: '1', cherry: '3' });
-    const names = [];
+    const names: string[] = [];
     for (const [name] of h) names.push(name);
     t.deepEqual(names, ['apple', 'banana', 'cherry'], 'sorted order');
   });
@@ -116,7 +98,7 @@ describe('Headers', () => {
     t.deepEqual([...h.keys()],    ['a', 'b']);
     t.deepEqual([...h.values()],  ['1', '2']);
     t.deepEqual([...h.entries()], [['a', '1'], ['b', '2']]);
-    const seen = [];
+    const seen: Array<[string, string]> = [];
     h.forEach((value, name) => seen.push([name, value]));
     t.deepEqual(seen, [['a', '1'], ['b', '2']]);
   });
@@ -465,7 +447,7 @@ describe('Request constructor', () => {
 
 describe('Response constructor', () => {
   it('new Response() — empty body, status 200', (t) => {
-    const res = new Response();
+    const res = new Response(null);
     t.equal(res.status, 200);
     t.equal(res.statusText, '');
     t.equal(res.ok, true);
@@ -486,9 +468,9 @@ describe('Response constructor', () => {
   it('new Response(body, { headers }) — headers copied', (t) => {
     const res = new Response(null, {
       status: 204,
-      headers: { 'x-powered-by': 'boats' },
+      headers: { 'x-powered-by': 'fino' },
     });
-    t.equal(res.headers.get('x-powered-by'), 'boats');
+    t.equal(res.headers.get('x-powered-by'), 'fino');
     t.equal(res.ok, true);
   });
 });
@@ -552,7 +534,7 @@ describe('Serialization', () => {
       statusText: 'OK',
       headers: { 'content-type': 'text/plain' },
     });
-    res._version = 'HTTP/1.1';
+    (res as any)._version = 'HTTP/1.1';
     const bytes = await collectBody(serializeResponse(res));
     const text  = decodeUtf8(bytes);
     t.ok(text.startsWith('HTTP/1.1 200 OK\r\n'), 'status line correct');
@@ -562,7 +544,7 @@ describe('Serialization', () => {
 
   it('serializeResponse — null body emits only head', async (t) => {
     const res = new Response(null, { status: 204 });
-    res._version = 'HTTP/1.1';
+    (res as any)._version = 'HTTP/1.1';
     const bytes = await collectBody(serializeResponse(res));
     const text  = decodeUtf8(bytes);
     t.ok(text.startsWith('HTTP/1.1 204'), 'status line');
@@ -608,7 +590,7 @@ describe('Serialization', () => {
 
   it('round-trip: serialize then parse response', async (t) => {
     const original = Response.json({ status: 'ok' }, { status: 201 });
-    original._version = 'HTTP/1.1';
+    (original as any)._version = 'HTTP/1.1';
     const parsed = await Response.from(serializeResponse(original));
     t.equal(parsed.status, 201);
     t.equal(parsed.headers.get('content-type'), 'application/json');

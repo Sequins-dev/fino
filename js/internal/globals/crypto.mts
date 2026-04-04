@@ -1,5 +1,5 @@
 /**
- * boats:crypto — Web Crypto API.
+ * fino:crypto — Web Crypto API.
  *
  * Implements a useful subset of the W3C Web Cryptography API:
  *   crypto.getRandomValues(typedArray)
@@ -19,7 +19,7 @@
  * Registers `globalThis.crypto` at import time.
  */
 
-import * as openssl from 'internal:openssl';
+import * as openssl from '../openssl.mts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,12 +78,12 @@ class CryptoKey {
   get type():        KeyType           { return this.#type; }
   get extractable(): boolean           { return this.#extractable; }
   get algorithm():   CryptoKeyAlgorithm { return this.#algorithm; }
-  get usages():      KeyUsage[]        { return Object.freeze([...this.#usages]); }
+  get usages():      readonly KeyUsage[] { return Object.freeze([...this.#usages]); }
 }
 
 function _keyData(key: CryptoKey): Uint8Array {
   if (!(key instanceof CryptoKey)) throw new Error('Invalid CryptoKey');
-  return _keyStore.get(key);
+  return _keyStore.get(key)!;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +141,20 @@ function _checkCryptoAvailable() {
   }
 }
 
+function _requiredBufferSource(value: BufferSource | undefined, name: string): BufferSource {
+  if (value === undefined) throw new Error(`${name} is required`);
+  return value;
+}
+
+function _requiredHash(value: string | { name: string } | undefined, name: string): string | { name: string } {
+  if (value === undefined) throw new Error(`${name} is required`);
+  return value;
+}
+
+function _toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 // ---------------------------------------------------------------------------
 // SubtleCrypto
 // ---------------------------------------------------------------------------
@@ -157,7 +171,7 @@ const subtle = {
     const alg  = _normalizeAlgorithm(algorithm);
     const hash = _digestAlgorithm(alg.name);
     const arr  = _toUint8Array(data);
-    return openssl.digest(hash, arr).buffer;
+    return _toArrayBuffer(openssl.digest(hash, arr));
   },
 
   // -------------------------------------------------------------------------
@@ -170,9 +184,9 @@ const subtle = {
     if (alg.name !== 'HMAC') throw new Error('sign: only HMAC is supported');
     if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
 
-    const hash = _digestAlgorithm(_hashName(key.algorithm.hash));
+    const hash = _digestAlgorithm(_hashName(_requiredHash(key.algorithm.hash, 'HMAC hash')));
     const mac  = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
-    return mac.buffer;
+    return _toArrayBuffer(mac);
   },
 
   async verify(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, signature: BufferSource, data: BufferSource): Promise<boolean> {
@@ -181,14 +195,14 @@ const subtle = {
     if (alg.name !== 'HMAC') throw new Error('verify: only HMAC is supported');
     if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
 
-    const hash     = _digestAlgorithm(_hashName(key.algorithm.hash));
+    const hash     = _digestAlgorithm(_hashName(_requiredHash(key.algorithm.hash, 'HMAC hash')));
     const expected = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
     const actual   = _toUint8Array(signature);
 
     // Constant-time comparison
     if (expected.length !== actual.length) return false;
     let diff = 0;
-    for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ actual[i];
+    for (let i = 0; i < expected.length; i++) diff |= expected[i]! ^ actual[i]!;
     return diff === 0;
   },
 
@@ -203,7 +217,7 @@ const subtle = {
 
     const keyBytes = _keyData(key);
     const cipherAlg = _cipherAlgorithm(alg.name, keyBytes.byteLength);
-    const iv  = _toUint8Array(alg.iv);
+    const iv  = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
     const aad = alg.additionalData ? _toUint8Array(alg.additionalData) : null;
     const pt  = _toUint8Array(data);
 
@@ -217,9 +231,9 @@ const subtle = {
       const out = new Uint8Array(ciphertext.byteLength + truncatedTag.byteLength);
       out.set(ciphertext);
       out.set(truncatedTag, ciphertext.byteLength);
-      return out.buffer;
+      return _toArrayBuffer(out);
     }
-    return ciphertext.buffer;
+    return _toArrayBuffer(ciphertext);
   },
 
   async decrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
@@ -229,7 +243,7 @@ const subtle = {
 
     const keyBytes  = _keyData(key);
     const cipherAlg = _cipherAlgorithm(alg.name, keyBytes.byteLength);
-    const iv = _toUint8Array(alg.iv);
+    const iv = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
     const aad = alg.additionalData ? _toUint8Array(alg.additionalData) : null;
 
     let ciphertext, tag;
@@ -246,7 +260,7 @@ const subtle = {
     }
 
     const plaintext = openssl.cipherDecrypt(cipherAlg, keyBytes, iv, ciphertext, tag, aad);
-    return plaintext.buffer;
+    return _toArrayBuffer(plaintext);
   },
 
   // -------------------------------------------------------------------------
@@ -313,7 +327,7 @@ const subtle = {
     _checkCryptoAvailable();
     if (format !== 'raw') throw new Error('exportKey: only "raw" format is supported');
     if (!key.extractable) throw new Error('CryptoKey is not extractable');
-    return _keyData(key).buffer.slice(0);
+    return _toArrayBuffer(_keyData(key));
   },
 
   async generateKey(algorithm: string | { name: string; [key: string]: unknown }, extractable: boolean, keyUsages: KeyUsage[]): Promise<CryptoKey> {
@@ -325,6 +339,7 @@ const subtle = {
       const digestName = _digestAlgorithm(hashName);
       // Key length defaults to the digest output size if not specified
       const keyLen = alg.length ? alg.length / 8 : ({ 'sha-1': 20, 'sha-256': 32, 'sha-384': 48, 'sha-512': 64 })[digestName];
+      if (keyLen === undefined) throw new Error(`Unsupported HMAC digest: ${digestName}`);
       const buf = new ArrayBuffer(keyLen);
       openssl.randBytes(buf, keyLen);
       return new CryptoKey(
@@ -370,10 +385,11 @@ const subtle = {
       if (!baseKey.usages.includes('deriveBits') && !baseKey.usages.includes('deriveKey')) {
         throw new Error('CryptoKey does not allow deriveBits');
       }
-      const salt       = _toUint8Array(alg.salt);
+      const salt       = _toUint8Array(_requiredBufferSource(alg.salt, 'PBKDF2 salt'));
       const iterations = alg.iterations;
+      if (iterations === undefined) throw new Error('PBKDF2 iterations are required');
       const hash       = _digestAlgorithm(_hashName(alg.hash ?? 'SHA-256'));
-      return openssl.pbkdf2(keyBytes, salt, iterations, hash, keyLen).buffer;
+      return _toArrayBuffer(openssl.pbkdf2(keyBytes, salt, iterations, hash, keyLen));
     }
 
     if (alg.name === 'HKDF') {
@@ -383,7 +399,7 @@ const subtle = {
       const salt = alg.salt ? _toUint8Array(alg.salt) : new Uint8Array(0);
       const info = alg.info ? _toUint8Array(alg.info) : new Uint8Array(0);
       const hash = _digestAlgorithm(_hashName(alg.hash ?? 'SHA-256'));
-      return openssl.hkdf(hash, keyBytes, salt, info, keyLen).buffer;
+      return _toArrayBuffer(openssl.hkdf(hash, keyBytes, salt, info, keyLen));
     }
 
     throw new Error('deriveBits: unsupported algorithm: ' + alg.name);
@@ -418,6 +434,14 @@ const subtle = {
     const bits = await subtle.deriveBits(algorithm, baseKey, lengthBits);
     return subtle.importKey('raw', bits, derivedKeyType, extractable, keyUsages);
   },
+
+  async wrapKey(): Promise<ArrayBuffer> {
+    throw new Error('wrapKey is not supported');
+  },
+
+  async unwrapKey(): Promise<CryptoKey> {
+    throw new Error('unwrapKey is not supported');
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -451,7 +475,7 @@ export const crypto = {
     // Fill only the portion of the backing buffer the view covers,
     // respecting byteOffset for sub-array views.
     if (typedArray.byteOffset === 0 && typedArray.byteLength === typedArray.buffer.byteLength) {
-      openssl.randBytes(typedArray.buffer, typedArray.byteLength);
+      openssl.randBytes(typedArray.buffer as ArrayBuffer, typedArray.byteLength);
     } else {
       const tmp = new ArrayBuffer(typedArray.byteLength);
       openssl.randBytes(tmp, typedArray.byteLength);
@@ -470,10 +494,10 @@ export const crypto = {
     openssl.randBytes(buf, 16);
     const bytes = new Uint8Array(buf);
     // Set version 4 (bits 12-15 of byte 6)
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
     // Set variant bits 7-8 of byte 8 to 10xx
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+    const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   },
 
@@ -481,7 +505,7 @@ export const crypto = {
 };
 
 // Register on globalThis
-globalThis.crypto = crypto;
+globalThis.crypto = crypto as unknown as typeof globalThis.crypto;
 
 /** Whether the OpenSSL (libcrypto) backend loaded successfully. */
 export const cryptoAvailable = openssl.cryptoAvailable;

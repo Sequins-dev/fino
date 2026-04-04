@@ -1,20 +1,23 @@
-// TypeScript fixture used by typescript.test.mjs.
-// All type annotations here should be stripped before Boa evaluates the module.
+/**
+ * TypeScript sample module used by tests/internal/typescript.test.mts.
+ * Exercises type-stripping: typed functions, generics, class field annotations,
+ * interface declarations, and type-only exports.
+ */
 
 interface Point {
   x: number;
   y: number;
 }
 
-function add(a: number, b: number): number {
+export function add(a: number, b: number): number {
   return a + b;
 }
 
-function identity<T>(value: T): T {
-  return value;
+export function identity<T>(val: T): T {
+  return val;
 }
 
-class Stack<T> {
+export class Stack<T> {
   #items: T[] = [];
 
   push(item: T): void {
@@ -30,7 +33,6 @@ class Stack<T> {
   }
 }
 
-const origin: Point = { x: 0, y: 0 };
+export const origin: Point = { x: 0, y: 0 };
 
-export { add, identity, Stack, origin };
 export type { Point };

@@ -1,7 +1,7 @@
 /**
- * boats:bench — benchmark suite, a JS port of benc.h.
+ * fino:bench — benchmark suite, a JS port of benc.h.
  *
- * Mirrors the structure of `boats:test`: register suites with `bench()`,
+ * Mirrors the structure of `fino:test`: register suites with `bench()`,
  * then call `run()` to execute them all and print results. Each suite
  * receives a `Group` object for registering measurements and nested
  * sub-groups. Output format matches benc.h v1.0.0 so results are comparable
@@ -9,18 +9,14 @@
  *
  * Benchmark functions may be **synchronous or async**. Async benchmarks are
  * detected automatically: if `fn()` returns a thenable, the measurement loop
- * creates a dedicated event loop for the measurement and spins it synchronously
- * to completion on every iteration. The current loop is accessible via
- * `loop.current()` for cases where the benchmark body needs to create I/O
- * objects:
+ * spins the global event loop synchronously to completion on every iteration:
  *
  * ```js
- * import * as loop from 'boats:runtime/loop';
- * import { DiskFileSystem } from 'boats:file';
+ * import { DiskFileSystem } from '../file/fs.mts';
  *
  * bench('file I/O', (b) => {
  *   b.measure('readFile', async () => {
- *     const fs = new DiskFileSystem(loop.current());
+ *     const fs = new DiskFileSystem();
  *     await fs.readFile('/etc/hosts');
  *   });
  * });
@@ -82,9 +78,8 @@
  * This adaptive approach ensures that fast functions get many samples (better
  * statistics) and slow functions get at least one full second of coverage.
  *
- * For async benchmarks, a dedicated event loop is created for the entire
- * measurement, set as the current loop via `boats:context`, and spun
- * synchronously on every iteration via `loop.spin()`.
+ * For async benchmarks, each iteration spins the global event loop
+ * synchronously via `loop.spin()`.
  *
  *
  * ## Comparison output
@@ -107,7 +102,7 @@
  *
  *
  * @example
- * import { bench } from 'boats:test/bench';
+ * import { bench } from './bench.mts';
  *
  * bench('string ops', (b) => {
  *   b.measure('concat',   () => { 'hello' + ' world'; });
@@ -122,10 +117,10 @@
  * });
  */
 
-import console from 'internal:globals/console';
+import console from '../internal/globals/console.mts';
 import { os } from 'internal:process';
-import { dlopen } from 'boats:ffi';
-import * as loopModule from 'boats:runtime/loop';
+import { dlopen } from 'fino:ffi';
+import * as loopModule from '../runtime/loop.mts';
 
 // ---------------------------------------------------------------------------
 // High-resolution timer (nanoseconds) — mirrors benc.h bench_now()
@@ -240,15 +235,35 @@ interface MeasureOptions {
   teardown?: (ctx?: unknown) => void;
 }
 
+interface PendingMeasurement {
+  name: string;
+  fn: (ctx?: unknown) => void | Promise<void>;
+  setup: (() => unknown) | undefined;
+  teardown: ((ctx?: unknown) => void) | undefined;
+  isGroup?: false;
+}
+
+interface PendingGroup {
+  name: string;
+  fn: (g: Group) => void;
+  isGroup: true;
+}
+
+type PendingSpec = PendingMeasurement | PendingGroup;
+
 class Group {
   #name: string;
   #indent: number;
+  #filter: string | null;
+  #path: string[];
   #measurements: Array<{ name: string; stats: Stats }> = [];
-  #pending: Array<{ name: string; fn: (arg?: any) => any; setup?: () => any; teardown?: (ctx?: any) => void; isGroup?: boolean }> = [];
+  #pending: PendingSpec[] = [];
 
-  constructor(name: string, indent: number = 0) {
+  constructor(name: string, indent: number = 0, filter: string | null = null, path: string[] = [name]) {
     this.#name   = name;
     this.#indent = indent;
+    this.#filter = filter;
+    this.#path = path;
   }
 
   #pad() {
@@ -264,9 +279,8 @@ class Group {
    *   b.measure('name', { setup, fn, teardown })
    *
    * `fn` may be synchronous or async. If `fn()` returns a thenable, the
-   * measurement loop creates a dedicated event loop and spins it to completion
-   * on every iteration. The loop is accessible via `loop.current()` within
-   * the async body.
+   * measurement loop spins the global event loop to completion on every
+   * iteration.
    *
    * `setup()` and `teardown()` are synchronous and are not included in timing.
    * The return value of `setup()` is passed as the first argument to `fn(ctx)`.
@@ -276,7 +290,7 @@ class Group {
    */
   measure(name: string, fnOrOpts: ((ctx?: unknown) => void | Promise<void>) | MeasureOptions): void {
     if (typeof fnOrOpts === 'function') {
-      this.#pending.push({ name, fn: fnOrOpts });
+      this.#pending.push({ name, fn: fnOrOpts, setup: undefined, teardown: undefined });
     } else {
       this.#pending.push({ name, fn: fnOrOpts.fn, setup: fnOrOpts.setup, teardown: fnOrOpts.teardown });
     }
@@ -298,14 +312,16 @@ class Group {
    */
   finalize() {
     const pad = this.#pad();
+    const selfMatches = this.#matchesSelf();
 
     for (const spec of this.#pending) {
       if (spec.isGroup) {
-        console.log(`${pad}  # ${spec.name}`);
-        const sub = new Group(spec.name, this.#indent + 2);
+        const sub = new Group(spec.name, this.#indent + 2, this.#filter, [...this.#path, spec.name]);
         spec.fn(sub);
+        if (!sub.shouldRun()) continue;
+        console.log(`${pad}  # ${spec.name}`);
         sub.finalize();
-      } else {
+      } else if (selfMatches) {
         this.#executeMeasurement(spec);
       }
     }
@@ -316,41 +332,25 @@ class Group {
   /**
    * Run a single measurement to completion, collect stats, print the result.
    *
-   * For async benchmarks (fn returns a thenable), creates one event loop for
-   * the entire measurement. The loop is set as the current bench loop via
-   * `boats:context` so async bodies can call `loop.current()`. Each iteration
-   * calls `loop.spin(lp, result)` to drive the loop synchronously to
+   * For async benchmarks (fn returns a thenable), each iteration calls
+   * `loop.spin(result)` to drive the global event loop synchronously to
    * completion before recording the elapsed time.
    *
    * @param {{ name: string, fn: function, setup?: function, teardown?: function }} spec
    */
-  #executeMeasurement({ name, fn, setup, teardown }) {
+  #executeMeasurement({ name, fn, setup, teardown }: PendingMeasurement) {
     const pad = this.#pad();
     const stats = new Stats();
     const ctx = setup ? setup() : undefined;
 
-    // Create a dedicated event loop for this measurement. It lives for the
-    // entire ~1 second run and is reused across iterations to avoid per-
-    // iteration creation overhead.
-    const lp = loopModule.create();
-
-    try {
-      // Set lp as the current loop so async fn bodies can call loop.current().
-      // loopModule.runWith() uses boats:context, which propagates through await
-      // boundaries automatically via BoatsJobExecutor.
-      loopModule.runWith(lp, () => {
-        while (stats.total < SECONDS) {
-          const start = now();
-          const result = ctx !== undefined ? fn(ctx) : fn();
-          if (result && typeof result.then === 'function') {
-            loopModule.spin(lp, result);
-          }
-          const end = now();
-          stats.push(end - start);
-        }
-      });
-    } finally {
-      loopModule.destroy(lp);
+    while (stats.total < SECONDS) {
+      const start = now();
+      const result = ctx !== undefined ? fn(ctx) : fn();
+      if (result && typeof result.then === 'function') {
+        loopModule.spin(result);
+      }
+      const end = now();
+      stats.push(end - start);
     }
 
     if (teardown) teardown(ctx);
@@ -373,9 +373,13 @@ class Group {
     const pad = this.#pad();
     console.log(`${pad}Comparing...`);
 
-    const fastestMean = sorted[0].stats.mean;
+    const fastest = sorted[0];
+    if (fastest === undefined) return;
+    const fastestMean = fastest.stats.mean;
     for (let i = 0; i < sorted.length; i++) {
-      const { name, stats } = sorted[i];
+      const item = sorted[i];
+      if (item === undefined) continue;
+      const { name, stats } = item;
       if (i === 0) {
         console.log(`${pad}  - ${name} (fastest)`);
       } else {
@@ -383,6 +387,22 @@ class Group {
         console.log(`${pad}  - ${name} (${pct}% slower)`);
       }
     }
+  }
+
+  #matchesSelf(): boolean {
+    if (this.#filter === null) return true;
+    return this.#path.join(' ').includes(this.#filter);
+  }
+
+  shouldRun(): boolean {
+    if (this.#matchesSelf()) return true;
+    for (const spec of this.#pending) {
+      if (!spec.isGroup) continue;
+      const sub = new Group(spec.name, this.#indent + 2, this.#filter, [...this.#path, spec.name]);
+      spec.fn(sub);
+      if (sub.shouldRun()) return true;
+    }
+    return false;
   }
 }
 
@@ -411,13 +431,15 @@ export function bench(name: string, fn: (b: Group) => void): void {
  *
  * Prints the benc.h v1.0.0 header, then each suite in registration order.
  */
-export async function run() {
+export async function run(options: { filter?: string } = {}) {
   console.log('benc.h v1.0.0');
+  const filter = options.filter ?? null;
 
   for (const { name, fn } of _benches) {
-    console.log(`# ${name}`);
-    const g = new Group(name, 0);
+    const g = new Group(name, 0, filter, [name]);
     fn(g);
+    if (!g.shouldRun()) continue;
+    console.log(`# ${name}`);
     g.finalize();
   }
 }

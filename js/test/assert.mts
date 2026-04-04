@@ -1,12 +1,12 @@
 /**
- * boats:assert — assertion library with configurable pass/fail callbacks.
+ * fino:assert — assertion library with configurable pass/fail callbacks.
  *
- * This module provides the assertion primitives used by `boats:test`. It is
+ * This module provides the assertion primitives used by `fino:test`. It is
  * also usable as a standalone library for any code that needs structured
  * assertions.
  *
  * The key design decision is that pass/fail behavior is injectable via
- * constructor callbacks rather than hard-coded. This allows `boats:test` to
+ * constructor callbacks rather than hard-coded. This allows `fino:test` to
  * use collect-then-throw semantics (all assertions run before any failure is
  * reported) while standalone users get the default throw-immediately behavior.
  *
@@ -16,9 +16,9 @@
  * `new Assert({ onPass, onFail })` creates a configurable assertion instance.
  *
  * - `onPass`: called with no arguments on each passing assertion. Default is
- *   a no-op. `boats:test` uses this to count passing assertions.
+ *   a no-op. `fino:test` uses this to count passing assertions.
  * - `onFail`: called with an `AssertionError` on each failing assertion.
- *   Default throws the error immediately. `boats:test` overrides this to
+ *   Default throws the error immediately. `fino:test` overrides this to
  *   push errors into an array for later `AggregateError` reporting.
  *
  * Because both callbacks are injectable, a single `Assert` class handles
@@ -60,16 +60,16 @@
  * default export and also as named free functions (`ok`, `equal`, `throws`,
  * etc.). This lets callers choose between:
  *
- *   import assert from 'boats:test/assert';        // default instance
+ *   import assert from './assert.mts';        // default instance
  *   assert.ok(value);
  *
- *   import { ok, equal } from 'boats:test/assert'; // named free functions
+ *   import { ok, equal } from './assert.mts'; // named free functions
  *   ok(value);
  *   equal(got, expected);
  *
  *
  * @example
- * import { Assert, AssertionError } from 'boats:test/assert';
+ * import { Assert, AssertionError } from './assert.mts';
  *
  * const assert = new Assert({
  *   onFail(err) { myFailures.push(err); },
@@ -99,6 +99,19 @@ interface AssertionErrorOptions {
 interface AssertCallbacks {
   onPass?: () => void;
   onFail?: (err: AssertionError) => void;
+}
+
+type ErrorCheck = ((e: unknown) => boolean) | RegExp | null;
+type IndexableRecord = Record<string, unknown>;
+
+function _isRecord(value: unknown): value is IndexableRecord {
+  return typeof value === 'object' && value !== null;
+}
+
+function _messageOf(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (_isRecord(err) && typeof err.message === 'string') return err.message;
+  return String(err);
 }
 
 export class AssertionError extends Error {
@@ -139,7 +152,7 @@ function _deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
-  if (typeof a !== 'object') return false;
+  if (!_isRecord(a) || !_isRecord(b)) return false;
 
   const aKeys = Object.keys(a);
   const bKeys = Object.keys(b);
@@ -153,9 +166,9 @@ function _deepEqual(a: unknown, b: unknown): boolean {
 }
 
 /** Validate a thrown/rejected value against a check function or RegExp. */
-function _checkErr(err: unknown, check: ((e: unknown) => boolean) | RegExp): boolean {
+function _checkErr(err: unknown, check: Exclude<ErrorCheck, null>): boolean {
   if (typeof check === 'function') return check(err);
-  if (check instanceof RegExp)     return check.test(err && err.message);
+  if (check instanceof RegExp)     return check.test(_messageOf(err));
   return true;
 }
 
@@ -178,15 +191,15 @@ export class Assert {
   #onFail: (err: AssertionError) => void;
 
   constructor({ onPass, onFail }: AssertCallbacks = {}) {
-    this.#onPass = onPass || (() => {});
-    this.#onFail = onFail || ((err) => { throw err; });
+    this.#onPass = onPass || function noopPass() {};
+    this.#onFail = onFail || function defaultFail(err) { throw err; };
   }
 
   #pass() {
     this.#onPass();
   }
 
-  #fail(message, actual, expected, operator) {
+  #fail(message: string, actual: unknown, expected: unknown, operator: string): void {
     this.#onFail(new AssertionError({ message, actual, expected, operator }));
   }
 
@@ -260,7 +273,7 @@ export class Assert {
    * value with a `check` function `(err) => boolean` or a RegExp tested
    * against `err.message`.
    */
-  throws(fn: () => void, check?: ((e: unknown) => boolean) | RegExp, msg?: string): void {
+  throws(fn: () => void, check?: ErrorCheck, msg?: string): void {
     let threw = false;
     let thrownErr;
     try {
@@ -292,7 +305,7 @@ export class Assert {
    *
    * Must be awaited: `await assert.rejects(async () => { ... })`.
    */
-  async rejects(fn: () => Promise<unknown>, check?: ((e: unknown) => boolean) | RegExp, msg?: string): Promise<void> {
+  async rejects(fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> {
     let rejected = false;
     let rejectedWith;
     try {
@@ -328,11 +341,11 @@ const _default = new Assert();
 
 export default _default;
 
-export const ok        = (value, msg)            => _default.ok(value, msg);
-export const notOk     = (value, msg)            => _default.notOk(value, msg);
-export const equal     = (actual, expected, msg) => _default.equal(actual, expected, msg);
-export const notEqual  = (actual, expected, msg) => _default.notEqual(actual, expected, msg);
-export const deepEqual = (actual, expected, msg) => _default.deepEqual(actual, expected, msg);
-export const fail      = (msg)                   => _default.fail(msg);
-export const throws    = (fn, check, msg)        => _default.throws(fn, check, msg);
-export const rejects   = (fn, check, msg)        => _default.rejects(fn, check, msg);
+export const ok = (value: unknown, msg?: string): void => _default.ok(value, msg);
+export const notOk = (value: unknown, msg?: string): void => _default.notOk(value, msg);
+export const equal = (actual: unknown, expected: unknown, msg?: string): void => _default.equal(actual, expected, msg);
+export const notEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.notEqual(actual, expected, msg);
+export const deepEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.deepEqual(actual, expected, msg);
+export const fail = (msg?: string): void => _default.fail(msg);
+export const throws = (fn: () => void, check?: ErrorCheck, msg?: string): void => _default.throws(fn, check, msg);
+export const rejects = (fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> => _default.rejects(fn, check, msg);

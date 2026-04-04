@@ -1,11 +1,11 @@
 /**
- * boats:socket — POSIX socket API for TCP, UDP, and Unix domain sockets.
+ * fino:socket — POSIX socket API for TCP, UDP, and Unix domain sockets.
  *
- * This module wraps the POSIX socket syscalls via `boats:ffi` and provides
+ * This module wraps the POSIX socket syscalls via `fino:ffi` and provides
  * both a low-level procedural API (raw fd integers) and a higher-level
  * `Socket` class with async `connect()` / `listen()` and a `split()` method
  * that divides a connection into independent `Reader` and `Writer` halves
- * (from `boats:stream`).
+ * (from `fino:stream`).
  *
  *
  * ## Address families and address objects
@@ -44,7 +44,7 @@
  *   4. `getsockopt(fd, SOL_SOCKET, SO_ERROR)` — check the actual result.
  *      Zero means success; nonzero is an errno value.
  *
- * This approach never blocks the Boats process, even for connections to remote
+ * This approach never blocks the Fino process, even for connections to remote
  * hosts that may be slow to respond.
  *
  *
@@ -112,12 +112,11 @@
  *   int. For raw option buffers (e.g. `struct linger`), pass an ArrayBuffer.
  */
 
-import { dlopen } from 'boats:ffi';
+import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from 'internal:globals/encoding';
-import * as loop from 'boats:runtime/loop';
-import { FdReader, FdWriter } from 'internal:stream';
-import type { LoopHandle } from 'boats:runtime/loop';
+import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
+import * as loop from '../runtime/loop.mts';
+import { FdReader, FdWriter, BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.mts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -127,6 +126,7 @@ export interface IPv4Address { family: 'ipv4'; ip: string; port: number; }
 export interface IPv6Address { family: 'ipv6'; ip: string; port: number; }
 export interface UnixAddress  { family: 'unix'; path: string; }
 export type Address = IPv4Address | IPv6Address | UnixAddress;
+export interface UnknownAddress { family: string; }
 
 export interface ConnectOptions { noDelay?: boolean; }
 export interface ListenOptions  { reuseAddr?: boolean; reusePort?: boolean; backlog?: number; }
@@ -142,6 +142,7 @@ export interface Server {
 
 const isDarwin = os === 'darwin';
 const isLinux  = os === 'linux';
+const errnoFn = isDarwin ? '__error' : '__errno_location';
 
 // ---------------------------------------------------------------------------
 // Open libc
@@ -152,6 +153,7 @@ const LIBC = isDarwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const _defs = {
   socket:     { parameters: ['i32', 'i32', 'i32'],              result: 'i32' },
   bind:       { parameters: ['i32', 'buffer', 'u32'],           result: 'i32' },
+  getsockname:{ parameters: ['i32', 'buffer', 'buffer'],        result: 'i32' },
   connect:    { parameters: ['i32', 'buffer', 'u32'],           result: 'i32' },
   listen:     { parameters: ['i32', 'i32'],                     result: 'i32' },
   accept:     { parameters: ['i32', 'buffer', 'buffer'],        result: 'i32' },
@@ -167,6 +169,7 @@ const _defs = {
   fcntl:      { parameters: ['i32', 'i32', 'i32'],              result: 'i32' },
   inet_pton:  { parameters: ['i32', 'buffer', 'buffer'],        result: 'i32' },
   inet_ntop:  { parameters: ['i32', 'buffer', 'buffer', 'u32'], result: 'pointer' },
+  [errnoFn]:  { parameters: [],                                 result: 'pointer' },
 };
 
 // accept4 is Linux-only (sets SOCK_NONBLOCK atomically on the accepted socket)
@@ -175,6 +178,11 @@ if (isLinux) {
 }
 
 const lib = dlopen(LIBC, _defs);
+const errnoPtr = lib.symbols[errnoFn]!() as ArrayBuffer;
+
+function getErrno(): number {
+  return Pointer.readI32(errnoPtr, 0);
+}
 
 // ---------------------------------------------------------------------------
 // Constants — platform-specific where they differ
@@ -303,9 +311,9 @@ export function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number } {
     // NUL terminator already present (ArrayBuffer is zeroed)
     return { buf, len: structLen };
 
-  } else {
-    throw new Error(`Unknown address family: ${addr.family}`);
   }
+  const unknownFamily = (addr as never as { family: string }).family;
+  throw new Error(`Unknown address family: ${unknownFamily}`);
 }
 
 /**
@@ -314,7 +322,7 @@ export function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number } {
  * @param {ArrayBuffer} buf
  * @returns {{ family: 'ipv4'|'ipv6'|'unix', ip?: string, port?: number, path?: string }}
  */
-export function decodeAddr(buf: ArrayBuffer): Address | { family: string } {
+export function decodeAddr(buf: ArrayBuffer): Address | UnknownAddress {
   const view   = new DataView(buf);
   const family = readFamily(view);
 
@@ -352,6 +360,10 @@ function nullTermIdx(buf: ArrayBuffer): number {
   return idx >= 0 ? idx : bytes.length;
 }
 
+function isKnownAddress(addr: Address | UnknownAddress): addr is Address {
+  return addr.family === 'ipv4' || addr.family === 'ipv6' || addr.family === 'unix';
+}
+
 // ---------------------------------------------------------------------------
 // Core API
 // ---------------------------------------------------------------------------
@@ -366,7 +378,7 @@ function nullTermIdx(buf: ArrayBuffer): number {
  */
 export function socket(family: number = AF_INET, type: number = SOCK_STREAM, protocol: number = 0): number {
   const fd = lib.symbols.socket(family, type, protocol);
-  if (fd < 0) throw new Error(`socket() failed: ${fd}`);
+  if (fd < 0) throw new Error(`socket() failed: errno=${getErrno()}`);
   return fd;
 }
 
@@ -383,7 +395,7 @@ export function setsockopt(fd: number, level: number, optname: number, value: bo
     buf = value;
   }
   const rc = lib.symbols.setsockopt(fd, level, optname, buf, buf.byteLength);
-  if (rc < 0) throw new Error(`setsockopt() failed: ${rc}`);
+  if (rc < 0) throw new Error(`setsockopt() failed: errno=${getErrno()}`);
 }
 
 /**
@@ -394,8 +406,18 @@ export function getsockopt(fd: number, level: number, optname: number, bufSize: 
   const lenBuf  = new ArrayBuffer(4);
   new DataView(lenBuf).setUint32(0, bufSize, true);
   const rc = lib.symbols.getsockopt(fd, level, optname, buf, lenBuf);
-  if (rc < 0) throw new Error(`getsockopt() failed: ${rc}`);
+  if (rc < 0) throw new Error(`getsockopt() failed: errno=${getErrno()}`);
   return buf;
+}
+
+export function getsockname(fd: number): Address | UnknownAddress {
+  const addrBuf = new ArrayBuffer(128);
+  const lenBuf = new ArrayBuffer(4);
+  new DataView(lenBuf).setUint32(0, addrBuf.byteLength, true);
+  const rc = lib.symbols.getsockname(fd, addrBuf, lenBuf);
+  if (rc < 0) throw new Error(`getsockname() failed: errno=${getErrno()}`);
+  const addrLen = new DataView(lenBuf).getUint32(0, true);
+  return decodeAddr(addrBuf.slice(0, addrLen));
 }
 
 /**
@@ -403,9 +425,9 @@ export function getsockopt(fd: number, level: number, optname: number, bufSize: 
  */
 export function setNonblocking(fd: number): void {
   const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed: ${flags}`);
+  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed: errno=${getErrno()}`);
   const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (rc < 0) throw new Error(`fcntl(F_SETFL, O_NONBLOCK) failed: ${rc}`);
+  if (rc < 0) throw new Error(`fcntl(F_SETFL, O_NONBLOCK) failed: errno=${getErrno()}`);
 }
 
 /**
@@ -417,7 +439,14 @@ export function setNonblocking(fd: number): void {
 export function bind(fd: number, addr: Address): void {
   const { buf, len } = encodeAddr(addr);
   const rc = lib.symbols.bind(fd, buf, len);
-  if (rc < 0) throw new Error(`bind() failed: ${rc}`);
+  if (rc < 0) {
+    const errno = getErrno();
+    const addrInUse = isDarwin ? 48 : 98;
+    const msg = errno === addrInUse
+      ? `bind() failed: address already in use${(addr as any).port !== undefined ? ` (port ${(addr as any).port})` : ''}`
+      : `bind() failed: errno=${errno}`;
+    throw new Error(msg);
+  }
 }
 
 /**
@@ -425,7 +454,7 @@ export function bind(fd: number, addr: Address): void {
  */
 export function listen(fd: number, backlog: number = 128): void {
   const rc = lib.symbols.listen(fd, backlog);
-  if (rc < 0) throw new Error(`listen() failed: ${rc}`);
+  if (rc < 0) throw new Error(`listen() failed: errno=${getErrno()}`);
 }
 
 /**
@@ -438,21 +467,24 @@ export function listen(fd: number, backlog: number = 128): void {
  * @param {boolean} [setNonblock=true]  Make the accepted fd non-blocking.
  * @returns {{ fd: number, addr: object }|null}
  */
-export function accept(serverFd: number, setNonblock: boolean = true): { fd: number; addr: Address | { family: string } } | null {
+export function accept(serverFd: number, setNonblock: boolean = true): { fd: number; addr: Address | UnknownAddress } | null {
   const addrBuf = new ArrayBuffer(128); // large enough for any sockaddr
   const lenBuf  = new ArrayBuffer(4);
   new DataView(lenBuf).setUint32(0, 128, true);
 
   let clientFd;
   if (isLinux && setNonblock) {
-    clientFd = lib.symbols.accept4(serverFd, addrBuf, lenBuf, SOCK_NONBLOCK);
+    clientFd = lib.symbols.accept4!(serverFd, addrBuf, lenBuf, SOCK_NONBLOCK);
   } else {
     clientFd = lib.symbols.accept(serverFd, addrBuf, lenBuf);
   }
 
   // EAGAIN / EWOULDBLOCK — no pending connection
-  if (clientFd === -11 || clientFd === -35) return null;
-  if (clientFd < 0) throw new Error(`accept() failed: ${clientFd}`);
+  if (clientFd < 0) {
+    const errno = getErrno();
+    if (errno === 11 || errno === 35) return null;
+    throw new Error(`accept() failed: errno=${errno}`);
+  }
 
   if (setNonblock && !isLinux) {
     setNonblocking(clientFd);
@@ -466,7 +498,7 @@ export function accept(serverFd: number, setNonblock: boolean = true): { fd: num
 /**
  * Initiate a connection to a remote address.
  * For non-blocking sockets, returns -115 (EINPROGRESS) on Linux or
- * -36 (EINPROGRESS) on macOS — use boats:loop addWrite() to wait for
+ * -36 (EINPROGRESS) on macOS — use fino:loop addWrite() to wait for
  * completion, then check SO_ERROR via getsockopt().
  *
  * @param {number} fd
@@ -475,7 +507,8 @@ export function accept(serverFd: number, setNonblock: boolean = true): { fd: num
  */
 export function connect(fd: number, addr: Address): number {
   const { buf, len } = encodeAddr(addr);
-  return lib.symbols.connect(fd, buf, len);
+  const rc = lib.symbols.connect(fd, buf, len);
+  return rc < 0 ? -getErrno() : rc;
 }
 
 /**
@@ -489,7 +522,8 @@ export function connect(fd: number, addr: Address): number {
 export function send(fd: number, data: Uint8Array | ArrayBuffer, flags: number = 0): number {
   const buf = data instanceof ArrayBuffer ? data : data.buffer;
   const len = data instanceof ArrayBuffer ? data.byteLength : data.byteLength;
-  return Number(lib.symbols.send(fd, buf, len, flags));
+  const rc = Number(lib.symbols.send(fd, buf, len, flags));
+  return rc < 0 ? -getErrno() : rc;
 }
 
 /**
@@ -504,7 +538,7 @@ export function recv(fd: number, maxBytes: number = 65536, flags: number = 0): U
   const buf = new ArrayBuffer(maxBytes);
   const n   = Number(lib.symbols.recv(fd, buf, maxBytes, flags));
   if (n === 0)  return null; // connection closed
-  if (n < 0)   return n;    // error (caller checks for EAGAIN etc.)
+  if (n < 0)   return -getErrno();
   return new Uint8Array(buf, 0, n);
 }
 
@@ -521,7 +555,8 @@ export function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Add
   const { buf: addrBuf, len: addrLen } = encodeAddr(destAddr);
   const dataBuf = data instanceof ArrayBuffer ? data : data.buffer;
   const dataLen = data instanceof ArrayBuffer ? data.byteLength : data.byteLength;
-  return Number(lib.symbols.sendto(fd, dataBuf, dataLen, flags, addrBuf, addrLen));
+  const rc = Number(lib.symbols.sendto(fd, dataBuf, dataLen, flags, addrBuf, addrLen));
+  return rc < 0 ? -getErrno() : rc;
 }
 
 /**
@@ -532,14 +567,14 @@ export function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Add
  * @param {number} [flags=0]
  * @returns {{ data: Uint8Array, addr: object }|null}
  */
-export function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | { family: string } } | number {
+export function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | UnknownAddress } | number {
   const dataBuf = new ArrayBuffer(maxBytes);
   const addrBuf = new ArrayBuffer(128);
   const lenBuf  = new ArrayBuffer(4);
   new DataView(lenBuf).setUint32(0, 128, true);
 
   const n = Number(lib.symbols.recvfrom(fd, dataBuf, maxBytes, flags, addrBuf, lenBuf));
-  if (n < 0) return n; // EAGAIN = -11 on Linux, -35 on macOS
+  if (n < 0) return -getErrno();
   const addrLen = new DataView(lenBuf).getUint32(0, true);
   return {
     data: new Uint8Array(dataBuf, 0, n),
@@ -579,7 +614,7 @@ export const ECONNREFUSED = isDarwin ? -61 : -111;
 
 /**
  * Establish a non-blocking TCP connection and return the raw fd.
- * Used by both Socket.connect() and TlsSocket.connect() (in boats:tls)
+ * Used by both Socket.connect() and TlsSocket.connect() (in fino:tls)
  * to avoid duplicating the connect/SO_ERROR dance.
  *
  * @param {object} lp — loop handle
@@ -587,7 +622,7 @@ export const ECONNREFUSED = isDarwin ? -61 : -111;
  * @param {{ noDelay?: boolean }} [opts]
  * @returns {Promise<number>} connected file descriptor
  */
-export async function connectTcp(lp: LoopHandle, addr: Address, opts: ConnectOptions = {}): Promise<number> {
+export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Promise<number> {
   const family = addr.family === 'ipv6' ? AF_INET6
                : addr.family === 'unix' ? AF_UNIX
                : AF_INET;
@@ -599,7 +634,7 @@ export async function connectTcp(lp: LoopHandle, addr: Address, opts: ConnectOpt
   // Non-blocking connect returns immediately (EINPROGRESS).
   // Wait for writable, then check SO_ERROR for the actual result.
   connect(fd, addr);
-  await loop.writable(lp, fd);
+  await loop.writable(fd);
   const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
   const errno = new DataView(errBuf).getInt32(0, true);
   if (errno !== 0) {
@@ -623,14 +658,12 @@ export async function connectTcp(lp: LoopHandle, addr: Address, opts: ConnectOpt
  */
 export class Socket {
   #fd: number;
-  #lp: LoopHandle;
   #remoteAddr: Address | null;
   #localAddr: Address | null;
   #closed: boolean;
 
-  constructor(fd: number, lp: LoopHandle, remoteAddr: Address | null, localAddr: Address | null) {
+  constructor(fd: number, remoteAddr: Address | null, localAddr: Address | null) {
     this.#fd = fd;
-    this.#lp = lp;
     this.#remoteAddr = remoteAddr;
     this.#localAddr = localAddr;
     this.#closed = false;
@@ -638,9 +671,6 @@ export class Socket {
 
   /** Raw file descriptor — for advanced use with the low-level API. */
   get fd() { return this.#fd; }
-
-  /** Loop handle — available to subclasses (e.g. TlsSocket). */
-  get lp() { return this.#lp; }
 
   /** Remote address object, or null for server-side accepted sockets. */
   get remoteAddress() { return this.#remoteAddr; }
@@ -657,24 +687,23 @@ export class Socket {
    * The Reader's close sends SHUT_RD (wakes any in-flight read with EOF).
    * The Writer's close sends SHUT_WR (sends FIN to the peer).
    *
-   * @returns {[FdReader, FdWriter]}
+   * @returns {[BufferedBytesReader, BufferedBytesWriter]}
    */
-  split(): [FdReader, FdWriter] {
+  split(): [BufferedBytesReader, BufferedBytesWriter] {
     const fd = this.#fd;
-    const lp = this.#lp;
     const self = this;
     let closeCount = 0;
-    const onBothClosed = () => {
+    const onBothClosed = function onBothClosed() {
       if (++closeCount === 2) {
         self.#closed = true;
         close(fd);
       }
     };
-    const onReadClose  = () => { shutdown(fd, SHUT_RD); onBothClosed(); };
-    const onWriteClose = () => { shutdown(fd, SHUT_WR); onBothClosed(); };
+    const onReadClose  = function onReadClose()  { shutdown(fd, SHUT_RD); onBothClosed(); };
+    const onWriteClose = function onWriteClose() { shutdown(fd, SHUT_WR); onBothClosed(); };
     return [
-      new FdReader(fd, lp, onReadClose),
-      new FdWriter(fd, lp, onWriteClose),
+      new FdReader(fd, onReadClose),
+      new FdWriter(fd, onWriteClose),
     ];
   }
 
@@ -689,9 +718,9 @@ export class Socket {
     close(this.#fd);
   }
 
-  static async connect(lp: LoopHandle, addr: Address, opts: ConnectOptions = {}): Promise<Socket> {
-    const fd = await connectTcp(lp, addr, opts);
-    return new Socket(fd, lp, addr, null);
+  static async connect(addr: Address, opts: ConnectOptions = {}): Promise<Socket> {
+    const fd = await connectTcp(addr, opts);
+    return new Socket(fd, addr, null);
   }
 
   /**
@@ -700,12 +729,12 @@ export class Socket {
    *
    * Supports IPv4, IPv6, and Unix domain sockets via `addr.family`.
    *
-   * @param {object} lp — loop handle from boats:loop
+   * @param {object} lp — loop handle from fino:loop
    * @param {{ family: 'ipv4'|'ipv6'|'unix', ip?: string, port?: number, path?: string }} addr
    * @param {{ reuseAddr?: boolean, reusePort?: boolean, backlog?: number }} [opts]
    * @returns {{ fd, address, accept(), close(), [Symbol.asyncIterator]() }}
    */
-  static listen(lp: LoopHandle, addr: Address, opts: ListenOptions = {}): Server {
+  static listen(addr: Address, opts: ListenOptions = {}): Server {
     const family = addr.family === 'ipv6' ? AF_INET6
                  : addr.family === 'unix' ? AF_UNIX
                  : AF_INET;
@@ -723,17 +752,31 @@ export class Socket {
     bind(serverFd, addr);
     listen(serverFd, opts.backlog || 128);
     setNonblocking(serverFd);
+    const decodedBoundAddr = getsockname(serverFd);
+    if (!isKnownAddress(decodedBoundAddr)) {
+      close(serverFd);
+      throw new Error(`getsockname() returned unexpected family ${decodedBoundAddr.family}`);
+    }
+    const boundAddr: Address = decodedBoundAddr;
+    if (boundAddr.family !== addr.family) {
+      close(serverFd);
+      throw new Error(`getsockname() returned unexpected family ${boundAddr.family}`);
+    }
 
     let serverClosed = false;
 
     async function acceptOne() {
       while (true) {
         if (serverClosed) return null;
-        await loop.readable(lp, serverFd);
+        await loop.readable(serverFd);
         if (serverClosed) return null;
         const result = accept(serverFd);
         if (result !== null) {
-          return new Socket(result.fd, lp, result.addr, addr);
+          if (!isKnownAddress(result.addr)) {
+            close(result.fd);
+            throw new Error(`accept() returned unexpected family ${result.addr.family}`);
+          }
+          return new Socket(result.fd, result.addr, boundAddr);
         }
         // Spurious wakeup — wait again.
       }
@@ -741,7 +784,7 @@ export class Socket {
 
     return {
       fd: serverFd,
-      address: addr,
+      address: boundAddr,
 
       /** Await the next incoming connection. Returns a Socket, or null if closed. */
       accept: acceptOne,
@@ -750,6 +793,7 @@ export class Socket {
       close() {
         if (serverClosed) return;
         serverClosed = true;
+        loop.removeRead(serverFd);
         close(serverFd);
       },
 

@@ -2,7 +2,7 @@
  * internal:file/watch-bindings — Platform-specific bindings for file watching.
  *
  * On Linux: exposes inotify syscalls and event constants via libc FFI.
- * On macOS: stubs only — watching uses kqueue EVFILT_VNODE via boats:runtime/loop.
+ * On macOS: stubs only — watching uses kqueue EVFILT_VNODE via fino:runtime/loop.
  *
  *
  * ## inotify overview (Linux)
@@ -84,8 +84,8 @@ let _inotifyClose: ((fd: number) => void) | null = null;
 let _parseEvents: ((buf: ArrayBuffer, n: number) => InotifyEvent[]) | null = null;
 
 if (!isDarwin) {
-  const { dlopen, Pointer } = await import('boats:ffi');
-  const { encodeUtf8, decodeUtf8 } = await import('internal:globals/encoding');
+  const { dlopen, Pointer } = await import('fino:ffi');
+  const { encodeUtf8, decodeUtf8 } = await import('../internal/globals/encoding.mts');
 
   const lib = dlopen('libc.so.6', {
     inotify_init1:     { parameters: ['i32'],                    result: 'i32'    },

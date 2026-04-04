@@ -1,5 +1,5 @@
 /**
- * boats:encoding — UTF-8 TextEncoder / TextDecoder (WHATWG Encoding Standard)
+ * fino:encoding — UTF-8 TextEncoder / TextDecoder (WHATWG Encoding Standard)
  *
  * This module provides two layers:
  *
@@ -80,11 +80,28 @@
  * Encode a JS string to a Uint8Array of UTF-8 bytes.
  * Handles the full Unicode range including surrogate pairs.
  *
+ * Returns a subarray view of an over-allocated backing buffer. Callers that
+ * need the exact byte count should use `.byteLength` on the returned view
+ * (not `.buffer.byteLength`). This avoids a second allocation (slice copy)
+ * while keeping the API identical to before.
+ *
  * @param {string} str
  * @returns {Uint8Array}
  */
 export function encodeUtf8(str: string): Uint8Array {
-  // Worst case: 4 bytes per JS code unit.
+  // ASCII fast path: scan for any code unit ≥ 0x80. If none found, skip the
+  // 4× over-allocation and surrogate handling — one byte per character, exact.
+  let ascii = true;
+  for (let i = 0; i < str.length; i++) {
+    if (str.charCodeAt(i) >= 0x80) { ascii = false; break; }
+  }
+  if (ascii) {
+    const buf = new Uint8Array(str.length);
+    for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i);
+    return buf;
+  }
+
+  // Non-ASCII: worst case 4 bytes per JS code unit.
   const buf = new Uint8Array(str.length * 4);
   let pos = 0;
 
@@ -121,10 +138,10 @@ export function encodeUtf8(str: string): Uint8Array {
     }
   }
 
-  // slice() copies only the written bytes, giving the result its own
-  // correctly-sized ArrayBuffer. (subarray() would share the over-allocated
-  // backing buffer, making .buffer misleading for callers.)
-  return buf.slice(0, pos);
+  // subarray() avoids a second allocation. The view's .byteLength is correct;
+  // only .buffer.byteLength is over-allocated (4× worst-case). No callers
+  // access .buffer directly on encodeUtf8 results.
+  return buf.subarray(0, pos);
 }
 
 /**
@@ -137,14 +154,36 @@ export function encodeUtf8(str: string): Uint8Array {
  * @returns {string}
  */
 export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: boolean = true): string {
+  // ASCII fast path: HTTP headers, DNS names, and most internal strings are pure
+  // ASCII. Scan for any high byte — if none, use String.fromCharCode.apply which
+  // converts the entire buffer in one native call instead of 300+ string concats.
+  // The BOM check is skipped because U+FEFF is a multi-byte sequence (0xEF 0xBB 0xBF)
+  // and would fail the < 0x80 scan, falling through to the slow path.
+  if (!fatal && skipBom) {
+    let ascii = true;
+    for (let k = 0; k < bytes.length; k++) {
+      if (bytes[k]! >= 0x80) { ascii = false; break; }
+    }
+    if (ascii) {
+      // fromCharCode.apply handles TypedArrays as array-like. Chunk at 65536 to
+      // stay within safe argument-list sizes on all engines.
+      if (bytes.length <= 65536) return String.fromCharCode.apply(null, bytes as unknown as number[]);
+      let out = '';
+      for (let k = 0; k < bytes.length; k += 65536) {
+        out += String.fromCharCode.apply(null, bytes.subarray(k, k + 65536) as unknown as number[]);
+      }
+      return out;
+    }
+  }
+
   let str = '';
   let i = 0;
   let first = true;
 
   while (i < bytes.length) {
-    const b0 = bytes[i];
-    let cp;
-    let seqLen;
+    const b0 = bytes[i]!;
+    let cp: number;
+    let seqLen: number;
 
     if (b0 < 0x80) {
       cp = b0; seqLen = 1;
@@ -165,11 +204,11 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
     // Validate and accumulate continuation bytes.
     let valid = true;
     for (let j = 1; j < seqLen; j++) {
-      if (i + j >= bytes.length || (bytes[i + j] & 0xC0) !== 0x80) {
+      if (i + j >= bytes.length || (bytes[i + j]! & 0xC0) !== 0x80) {
         valid = false;
         break;
       }
-      cp = (cp << 6) | (bytes[i + j] & 0x3F);
+      cp = (cp << 6) | (bytes[i + j]! & 0x3F);
     }
 
     if (!valid) {
@@ -284,10 +323,10 @@ export function atob(encodedData: string): string {
 
   let out = '';
   for (let i = 0; i < str.length; i += 4) {
-    const v0 = BASE64_DECODE[str.charCodeAt(i)];
-    const v1 = BASE64_DECODE[str.charCodeAt(i + 1)];
-    const v2 = BASE64_DECODE[str.charCodeAt(i + 2)];
-    const v3 = BASE64_DECODE[str.charCodeAt(i + 3)];
+    const v0 = BASE64_DECODE[str.charCodeAt(i)]!;
+    const v1 = BASE64_DECODE[str.charCodeAt(i + 1)]!;
+    const v2 = BASE64_DECODE[str.charCodeAt(i + 2)]!;
+    const v3 = BASE64_DECODE[str.charCodeAt(i + 3)]!;
 
     if (v0 < 0 || v1 < 0 || v2 === -1 || v3 === -1 || (v2 === -2 && v3 !== -2)) {
       throw new TypeError(
@@ -616,7 +655,7 @@ function _findIncompleteEnd(bytes: Uint8Array): number {
   const len = bytes.length;
   // Check last 1-3 bytes for an incomplete leading byte
   for (let back = 1; back <= 3 && back <= len; back++) {
-    const b = bytes[len - back];
+    const b = bytes[len - back]!;
     let seqLen = 0;
     if ((b & 0xE0) === 0xC0) seqLen = 2;
     else if ((b & 0xF0) === 0xE0) seqLen = 3;

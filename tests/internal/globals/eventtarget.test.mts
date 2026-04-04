@@ -1,4 +1,13 @@
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+
+type EventConstructorWithConstants = typeof Event & {
+  NONE: number;
+  CAPTURING_PHASE: number;
+  AT_TARGET: number;
+  BUBBLING_PHASE: number;
+};
+type SymbolRecord = Record<symbol, unknown>;
+
 const { Event, CustomEvent, EventTarget } = globalThis;
 
 describe('Event', () => {
@@ -113,14 +122,14 @@ describe('addEventListener / removeEventListener', () => {
 
   it('non-function callback is silently ignored', (t) => {
     const target = new EventTarget();
-    target.addEventListener('test', 'not a function');
+    target.addEventListener('test', 'not a function' as unknown as EventListener);
     target.dispatchEvent(new Event('test')); // should not throw
     t.ok(true, 'no throw');
   });
 
   it('multiple listeners for same event', (t) => {
     const target = new EventTarget();
-    const results = [];
+    const results: number[] = [];
     target.addEventListener('test', () => results.push(1));
     target.addEventListener('test', () => results.push(2));
     target.addEventListener('test', () => results.push(3));
@@ -150,7 +159,7 @@ describe('once / stopImmediatePropagation / signal / passive options', () => {
 
   it('stopImmediatePropagation halts remaining listeners', (t) => {
     const target = new EventTarget();
-    const results = [];
+    const results: number[] = [];
     target.addEventListener('test', (e) => { results.push(1); e.stopImmediatePropagation(); });
     target.addEventListener('test', () => { results.push(2); });
     target.dispatchEvent(new Event('test'));
@@ -214,10 +223,11 @@ describe('event properties during dispatch', () => {
 
   it('composedPath returns [target] during dispatch', (t) => {
     const target = new EventTarget();
-    let path = null;
+    let path: unknown = null;
     target.addEventListener('test', (e) => { path = e.composedPath(); });
     target.dispatchEvent(new Event('test'));
-    t.ok(Array.isArray(path) && path.length === 1 && path[0] === target, 'composedPath = [target]');
+    const composedPath = path as EventTarget[];
+    t.ok(Array.isArray(composedPath) && composedPath.length === 1 && composedPath[0] === target, 'composedPath = [target]');
   });
 });
 
@@ -258,9 +268,9 @@ describe('dispatchEvent', () => {
 describe('handleEvent object listeners', () => {
   it('object with handleEvent method is called as a listener', (t) => {
     const target = new EventTarget();
-    let received = null;
+    let received: Event | null = null;
     const handler = {
-      handleEvent(e) { received = e; },
+      handleEvent(e: Event) { received = e; },
     };
     target.addEventListener('test', handler);
     const evt = new Event('test');
@@ -303,7 +313,7 @@ describe('capture flag creates separate listener registrations', () => {
 describe('stopPropagation vs stopImmediatePropagation', () => {
   it('stopPropagation does NOT stop same-target listeners (only stopImmediatePropagation does)', (t) => {
     const target = new EventTarget();
-    const results = [];
+    const results: number[] = [];
     target.addEventListener('test', (e) => { results.push(1); e.stopPropagation(); });
     target.addEventListener('test', () => { results.push(2); });
     target.dispatchEvent(new Event('test'));
@@ -401,7 +411,8 @@ describe('removeEventListener — never-added callback is a no-op', () => {
 
 describe('Event() with no arguments', () => {
   it('Event() with no arguments throws TypeError per spec', (t) => {
-    t.throws(() => new Event(), /argument required/, 'no-arg Event() throws TypeError');
+    const EventCtor = Event as unknown as { new (): Event };
+    t.throws(() => new EventCtor(), /argument required/, 'no-arg Event() throws TypeError');
   });
 });
 
@@ -423,29 +434,30 @@ describe('CustomEvent — full init options', () => {
 describe('Event static phase constants via constructor reference', () => {
   it('phase constants are accessible via the constructor on an instance', (t) => {
     const e = new Event('test');
+    const ctor = e.constructor as EventConstructorWithConstants;
     // Static fields live on the class (constructor), not on instances.
     // Access them via e.constructor (same as Event itself).
-    t.equal(e.constructor.NONE, 0, 'constructor.NONE === 0');
-    t.equal(e.constructor.AT_TARGET, 2, 'constructor.AT_TARGET === 2');
-    t.equal(e.constructor.CAPTURING_PHASE, 1, 'constructor.CAPTURING_PHASE === 1');
-    t.equal(e.constructor.BUBBLING_PHASE, 3, 'constructor.BUBBLING_PHASE === 3');
+    t.equal(ctor.NONE, 0, 'constructor.NONE === 0');
+    t.equal(ctor.AT_TARGET, 2, 'constructor.AT_TARGET === 2');
+    t.equal(ctor.CAPTURING_PHASE, 1, 'constructor.CAPTURING_PHASE === 1');
+    t.equal(ctor.BUBBLING_PHASE, 3, 'constructor.BUBBLING_PHASE === 3');
   });
 });
 
 describe('Symbol.toStringTag', () => {
   it('EventTarget [Symbol.toStringTag] is "EventTarget"', (t) => {
     const target = new EventTarget();
-    t.equal(target[Symbol.toStringTag], 'EventTarget', 'toStringTag is EventTarget');
+    t.equal((target as unknown as SymbolRecord)[Symbol.toStringTag], 'EventTarget', 'toStringTag is EventTarget');
   });
 
   it('Event [Symbol.toStringTag] is "Event"', (t) => {
     const e = new Event('test');
-    t.equal(e[Symbol.toStringTag], 'Event', 'toStringTag is Event');
+    t.equal((e as unknown as SymbolRecord)[Symbol.toStringTag], 'Event', 'toStringTag is Event');
   });
 
   it('CustomEvent [Symbol.toStringTag] is "CustomEvent"', (t) => {
     const e = new CustomEvent('test');
-    t.equal(e[Symbol.toStringTag], 'CustomEvent', 'toStringTag is CustomEvent');
+    t.equal((e as unknown as SymbolRecord)[Symbol.toStringTag], 'CustomEvent', 'toStringTag is CustomEvent');
   });
 });
 
@@ -501,7 +513,7 @@ describe('Event legacy methods', () => {
 
 describe('CustomEvent.initCustomEvent', () => {
   it('re-initializes type, bubbles, cancelable, and detail', (t) => {
-    const ce = new CustomEvent('click', { bubbles: true, detail: 42 });
+    const ce = new CustomEvent<unknown>('click', { bubbles: true, detail: 42 });
     ce.initCustomEvent('change', false, false, 'newDetail');
     t.equal(ce.type, 'change', 'type updated');
     t.equal(ce.bubbles, false, 'bubbles updated');

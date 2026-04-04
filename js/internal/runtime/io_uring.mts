@@ -1,5 +1,5 @@
 /**
- * boats:io_uring — low-level io_uring backend via raw Linux syscalls.
+ * fino:io_uring — low-level io_uring backend via raw Linux syscalls.
  *
  * io_uring is Linux's high-performance asynchronous I/O interface, introduced
  * in kernel 5.1. Unlike epoll (which is level-triggered and requires separate
@@ -58,7 +58,7 @@
  *
  * ## Translating completions to kqueue-compatible events
  *
- * `boats:loop` uses kqueue filter constants (EVFILT_READ, EVFILT_WRITE,
+ * `fino:loop` uses kqueue filter constants (EVFILT_READ, EVFILT_WRITE,
  * EVFILT_TIMER) as a unified event language across platforms. `drainCqes()`
  * inspects each CQE's `user_data` to decide which filter constant to emit:
  *
@@ -67,7 +67,7 @@
  *   - Otherwise: this was an IORING_OP_POLL_ADD, `res` has the poll mask →
  *     POLLIN → EVFILT_READ, POLLOUT → EVFILT_WRITE
  *
- * The EVFILT_COMPLETION filter is unique to this backend; `boats:loop` exposes
+ * The EVFILT_COMPLETION filter is unique to this backend; `fino:loop` exposes
  * it via `loop.submit()` for callers that need async file operations.
  *
  *
@@ -75,7 +75,7 @@
  *
  * Unlike epoll with EPOLLET, an IORING_OP_POLL_ADD SQE fires exactly once when
  * the fd becomes ready, then the watch is automatically removed by the kernel.
- * This matches what `boats:loop` expects (each `readable()`/`writable()` call
+ * This matches what `fino:loop` expects (each `readable()`/`writable()` call
  * sets up a single-fire watch). We therefore have no-op implementations for
  * `removeRead()` and `removeWrite()`.
  *
@@ -95,14 +95,14 @@
  * liburing is a helper library that wraps io_uring setup and submission, but
  * it's an extra dependency and its abstractions don't match our needs well.
  * We map the ring buffers directly via `mmap(2)` using the offsets documented
- * in `linux/io_uring.h` and access them with `Pointer.*` from `boats:ffi`.
+ * in `linux/io_uring.h` and access them with `Pointer.*` from `fino:ffi`.
  *
  *
  * ## Contributing
  *
  * - All syscall numbers (425, 426) are stable on x86_64 and arm64 Linux.
  * - Pointer read/write helpers (`Pointer.readU32`, `Pointer.writeU8`, etc.)
- *   from `boats:ffi` are used for all ring accesses. Do not use DataView on
+ *   from `fino:ffi` are used for all ring accesses. Do not use DataView on
  *   mmap'd pointers — they aren't ArrayBuffers.
  * - The `params` struct at `io_uring_setup` time is 120 bytes. We only read
  *   the offsets we need (sq_entries, cq_entries, sq_off, cq_off).
@@ -110,7 +110,7 @@
  *   new Map) so that `drainCqes()` can identify the completion type correctly.
  */
 
-import { dlopen, Pointer } from 'boats:ffi';
+import { dlopen, Pointer } from 'fino:ffi';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,6 +147,7 @@ interface IoUringLoop {
   sqEntries:     number;
   cqEntries:     number;
   sqTailLocal:   number;
+  sqSubmittedLocal: number;
   timerBufs:     Map<number, ArrayBuffer>;
   fileBufs:      Map<number, ArrayBuffer[]>;
   signalFds:     Map<number, number>;     // signo → fd
@@ -212,8 +213,8 @@ const AT_FDCWD = -100;
 // Use current file position for IORING_OP_READ (equivalent to read(2) with no offset)
 const IORING_READ_AT_CURPOS = 0xFFFFFFFFFFFFFFFFn;
 
-// Kqueue-compatible filter constants (same values as boats:kqueue exports).
-// Exported so that boats:loop can use a single dispatch table on both platforms.
+// Kqueue-compatible filter constants (same values as fino:kqueue exports).
+// Exported so that fino:loop can use a single dispatch table on both platforms.
 export const EVFILT_READ       = -1;
 export const EVFILT_WRITE      = -2;
 export const EVFILT_TIMER      = -7;
@@ -258,7 +259,7 @@ function syscall(nr: bigint, a1: bigint | number = 0n, a2: bigint | number = 0n,
 }
 
 function bufPtr(ab: ArrayBuffer): bigint {
-  return Pointer.toAddress(Pointer.of(ab));
+  return Pointer.addr(ab);
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +331,8 @@ export function create(entries: number = 256): IoUringLoop {
     sqEntries, cqEntries,
     // Local sq_tail shadow — we increment this and write it to the ring
     sqTailLocal: 0,
+    // Number of SQEs already submitted to the kernel.
+    sqSubmittedLocal: 0,
     // Keeps timer ArrayBuffers alive until their completions are received
     timerBufs: new Map(),
     // Keeps buffers for async file ops alive until completions are received.
@@ -376,11 +379,19 @@ function submitSqe(loop: IoUringLoop, opcode: number, fd: number, addr: number, 
 }
 
 function submitPending(loop: IoUringLoop): void {
-  const head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
-  const toSubmit = loop.sqTailLocal - head;
-  if (toSubmit === 0) return;
-  const ret = Number(syscall(SYS_IO_URING_ENTER, BigInt(loop.ringFd), BigInt(toSubmit), 0n, 0n));
-  if (ret < 0) throw new Error(`io_uring_enter (submit) failed: ${ret}`);
+  let toSubmit = loop.sqTailLocal - loop.sqSubmittedLocal;
+  while (toSubmit > 0) {
+    const ret = Number(syscall(
+      SYS_IO_URING_ENTER,
+      BigInt(loop.ringFd),
+      BigInt(toSubmit),
+      0n,
+      0n,
+    ));
+    if (ret < 0) throw new Error(`io_uring_enter (submit) failed: ${ret}`);
+    loop.sqSubmittedLocal += ret;
+    toSubmit -= ret;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -411,12 +422,15 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
     } else if (loop.signalFdToSig.has(userData)) {
       // IORING_OP_POLL_ADD fired on a signalfd — drain and re-arm.
       const signo = loop.signalFdToSig.get(userData);
+      if (signo === undefined) {
+        head++;
+        continue;
+      }
       const infoBuf = new ArrayBuffer(SIGNALFD_SIGINFO_SIZE);
       lib.symbols.read(userData, infoBuf, SIGNALFD_SIGINFO_SIZE);
       // Re-arm POLL_ADD on the signalfd so the next signal is also caught.
       if (loop.signalFdToSig.has(userData)) {
         submitSqe(loop, IORING_OP_POLL_ADD, userData, 0, 0, 0, userData, POLLIN);
-        submitPending(loop);
       }
       filter = EVFILT_SIGNAL;
       ident  = signo;
@@ -439,12 +453,10 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
 
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, userData, POLLIN);
-  submitPending(loop);
 }
 
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, userData, POLLOUT);
-  submitPending(loop);
 }
 
 export function removeRead(loop: IoUringLoop, _fd: number): void {
@@ -486,7 +498,6 @@ export function addSignal(loop: IoUringLoop, signo: number): void {
 
   // Register POLL_ADD on the signalfd; userData = fd (used as drainCqes lookup key)
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, fd, POLLIN);
-  submitPending(loop);
 }
 
 /**
@@ -516,14 +527,13 @@ export function addTimer(loop: IoUringLoop, id: number, ms: number): void {
   loop.timerBufs.set(id, buf); // Keep buffer alive until completion
 
   submitSqe(loop, IORING_OP_TIMEOUT, -1, Number(bufPtr(buf)), 1, 0, id, 0);
-  submitPending(loop);
 }
 
 /**
  * Non-blocking poll — return any immediately available completions.
  */
 export function poll(loop: IoUringLoop): CqeEvent[] {
-  // Submit 0 SQEs, consume whatever is already in the CQ.
+  submitPending(loop);
   return drainCqes(loop);
 }
 
@@ -541,6 +551,8 @@ export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEve
   if (timeoutMs !== null) {
     addTimer(loop, Number.MAX_SAFE_INTEGER, timeoutMs);
   }
+
+  submitPending(loop);
 
   const ret = Number(syscall(
     SYS_IO_URING_ENTER,
@@ -575,7 +587,6 @@ export function asyncOpen(loop: IoUringLoop, pathBuf: ArrayBuffer, flags: number
   // sqe->fd = AT_FDCWD, sqe->addr = path, sqe->len = mode,
   // sqe->off = 0 (unused), sqe->open_flags (union@+28) = flags
   submitSqe(loop, IORING_OP_OPENAT, AT_FDCWD, addr, mode, 0, userData, flags);
-  submitPending(loop);
 }
 
 /**
@@ -591,7 +602,6 @@ export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: 
   loop.fileBufs.set(userData, [buf]);
   // sqe->off = UINT64_MAX means "use current file position" (same as read(2))
   submitSqe(loop, IORING_OP_READ, fd, addr, len, IORING_READ_AT_CURPOS, userData, 0);
-  submitPending(loop);
 }
 
 /**
@@ -603,7 +613,6 @@ export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: 
 export function asyncClose(loop: IoUringLoop, fd: number, userData: number): void {
   loop.fileBufs.set(userData, []);
   submitSqe(loop, IORING_OP_CLOSE, fd, 0, 0, 0, userData, 0);
-  submitPending(loop);
 }
 
 /**

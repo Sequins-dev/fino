@@ -1,5 +1,5 @@
 /**
- * boats:file — POSIX filesystem with async I/O and a virtualizable handle model.
+ * fino:file — POSIX filesystem with async I/O and a virtualizable handle model.
  *
  * This module provides file and directory access via `libc` FFI. It exposes a
  * `DiskFileSystem` class that wraps every relevant POSIX syscall: `open(2)`,
@@ -25,7 +25,7 @@
  *   DiskFileSystem          — the factory; owns no fds itself
  *     .open()   → File      — an open fd; owns the fd lifecycle
  *       .reader()  → async iterable of Uint8Array chunks
- *       .writer()  → Writer (from boats:stream)
+ *       .writer()  → Writer (from fino:stream)
  *       .bytes()   → Promise<Uint8Array>  (reads entire file)
  *       .text()    → Promise<string>
  *     .dir()    → DirEntry  — directory handle (uses opendir/readdir/closedir)
@@ -47,13 +47,12 @@ import {
   SEEK_SET, SEEK_CUR, SEEK_END,
   DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
   modeToFlags, encodeUtf8, decodeUtf8,
-} from 'internal:file/bindings';
-import { Stat } from 'internal:file/stat';
-import { File } from 'internal:file/handle';
-import { Entry, FileEntry, DirEntry } from 'internal:file/entry';
-import { Glob, glob as globWalk, type GlobOptions } from 'internal:file/glob';
-import type { LoopHandle } from 'boats:runtime/loop';
-import type { Path } from 'boats:file/path';
+} from './bindings.mts';
+import { Stat } from './stat.mts';
+import { File } from './handle.mts';
+import { Entry, FileEntry, DirEntry } from './entry.mts';
+import { Glob, glob as globWalk, type GlobOptions } from './glob.mts';
+import type { Path } from './path.mts';
 
 // Re-export the public API surface
 export {
@@ -73,11 +72,6 @@ export {
  * const text = await fs.readFile('/etc/hosts');
  */
 export class DiskFileSystem {
-  #lp: LoopHandle;
-
-  constructor(lp: LoopHandle) {
-    this.#lp = lp;
-  }
 
   /**
    * Stat a path, following symlinks.
@@ -115,13 +109,15 @@ export class DiskFileSystem {
     const p = _toPath(path);
     const s = p.toString();
     const flags = modeToFlags(mode);
-    let fd;
+    let fd: number;
     if (asyncOps) {
+      const loop = loopModule;
+      const ops = asyncOps;
+      if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
       // Linux: use io_uring IORING_OP_OPENAT for async open.
       const pathBuf = cstr(s);
-      const lp = this.#lp;
-      const result = await loopModule.submit(lp, (raw, id) => {
-        asyncOps.asyncOpen(raw, pathBuf, flags, 0o666, id);
+      const result = await loop.submit(function submitAsyncOpen(raw: object, id: number) {
+        ops.asyncOpen(raw, pathBuf.buffer as ArrayBuffer, flags, 0o666, id);
       });
       fd = result.res;
       if (fd < 0) throwErrno('open', s);
@@ -134,7 +130,7 @@ export class DiskFileSystem {
       if (fd < 0) throwErrno('open', s);
     }
     if (flags & O_CREAT) lib.symbols.fchmod(fd, 0o644);
-    return new File(fd, this.#lp, this, p, mode);
+    return new File(fd, this, p, mode);
   }
 
   /**
@@ -298,11 +294,11 @@ export class DiskFileSystem {
    */
   glob(pattern: string, options?: GlobOptions): AsyncGenerator<Entry> {
     // Provide a listDir function that uses DirEntry.entries() — injected here to
-    // avoid creating an async dependency path in glob.mts (Boa 0.21.1 bug).
-    const listDir = async (path: string) => {
+    // keep glob.mts free of top-level imports.
+    const listDir = async (path: string): Promise<Entry[]> => {
       const dirEntry = new DirEntry('', path, this, DT_DIR);
       return dirEntry.entries();
     };
-    return globWalk(listDir, pattern, options);
+    return globWalk(listDir, pattern, options) as AsyncGenerator<Entry>;
   }
 }

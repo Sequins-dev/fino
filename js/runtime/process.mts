@@ -1,5 +1,5 @@
 /**
- * boats:process — process information and child process spawning.
+ * fino:process — process information and child process spawning.
  *
  * This module combines two concerns: static process metadata (pid, cwd, argv,
  * env, etc.) and the `Process` class for spawning child processes with piped
@@ -30,7 +30,7 @@
  * After the fork, each process immediately closes the ends it doesn't own.
  * The parent-side fds are set to O_NONBLOCK so they can be used with the
  * event loop. The child-side fds are left blocking — they run inside
- * `execve`'d code that doesn't know about boats's event loop.
+ * `execve`'d code that doesn't know about fino's event loop.
  *
  *
  * ## buildCStringArray and GC lifetime
@@ -73,33 +73,28 @@
  *
  *
  * @example
- * import { pid, cwd, argv } from 'boats:runtime/process';
+ * import { pid, cwd, argv } from './process.mts';
  * console.log(`PID ${pid}, CWD ${cwd()}, args: ${argv.join(' ')}`);
  *
  * @example
- * import { Process } from 'boats:runtime/process';
- * import * as loop from 'boats:runtime/loop';
- * import { decodeUtf8 } from 'internal:globals/encoding';
+ * import { Process } from './process.mts';
+ * import { decodeUtf8 } from '../internal/globals/encoding.mts';
  *
- * const lp = loop.create();
- * const proc = new Process('/bin/echo', ['hello world'], { loop: lp });
+ * const proc = new Process('/bin/echo', ['hello world']);
  * for await (const chunk of proc.stdout) {
  *   console.log(decodeUtf8(chunk));
  * }
  * const { code } = await proc.wait();
- * loop.destroy(lp);
  */
 
 import { os, arch, args, env, execPath } from 'internal:process';
-import { dlopen, Pointer } from 'boats:ffi';
-import { encodeUtf8, decodeUtf8 } from 'internal:globals/encoding';
-import { FdReader, FdWriter } from 'internal:stream';
-import * as loop from 'boats:runtime/loop';
-import type { LoopHandle } from 'boats:runtime/loop';
-import { topic, Topic } from 'boats:util/topic';
+import { dlopen, Pointer } from 'fino:ffi';
+import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
+import { FdReader, FdWriter } from '../internal/stream.mts';
+import * as loop from './loop.mts';
+import { topic, Topic } from '../util/topic.mts';
 
 export interface ProcessOptions {
-  loop:  LoopHandle;
   cwd?:  string;
   env?:  Record<string, string>;
 }
@@ -115,7 +110,7 @@ export interface WaitResult {
 
 export { os, arch, env, execPath };
 
-/** Command-line arguments. argv[0] is the boats binary, argv[1] is the script. */
+/** Command-line arguments. argv[0] is the fino binary, argv[1] is the script. */
 export { args as argv };
 
 // ---------------------------------------------------------------------------
@@ -183,8 +178,7 @@ function buildCStringArray(strings: string[]): { ptrBuf: ArrayBuffer; bufs: Uint
   const ptrBuf = new ArrayBuffer((bufs.length + 1) * 8); // +1 for null terminator
   const view = new DataView(ptrBuf);
   for (let i = 0; i < bufs.length; i++) {
-    const addr = Pointer.toAddress(Pointer.of(bufs[i].buffer));
-    view.setBigUint64(i * 8, addr, true); // little-endian (x86_64 and aarch64)
+    view.setBigUint64(i * 8, Pointer.addr(bufs[i]), true);
   }
   // Last 8 bytes remain zero — null pointer terminator.
   return { ptrBuf, bufs };
@@ -218,6 +212,7 @@ export const ppid = lib.symbols.getppid();
  */
 export function exit(code: number = 0): never {
   lib.symbols._exit(code);
+  throw new Error('unreachable');
 }
 
 /**
@@ -265,12 +260,11 @@ const _noop = () => {};
 /**
  * Returns a Reader for the current process's stdin (fd 0).
  * Sets the fd to non-blocking mode on first call.
- * Must be called within a loop context (i.e., inside `loop.run()` or after `loop.create()`).
  */
 export function stdin(): FdReader {
   if (_stdin === null) {
     setNonblocking(0);
-    _stdin = new FdReader(0, loop.current(), _noop);
+    _stdin = new FdReader(0, _noop);
   }
   return _stdin;
 }
@@ -278,12 +272,11 @@ export function stdin(): FdReader {
 /**
  * Returns a Writer for the current process's stdout (fd 1).
  * Sets the fd to non-blocking mode on first call.
- * Must be called within a loop context.
  */
 export function stdout(): FdWriter {
   if (_stdout === null) {
     setNonblocking(1);
-    _stdout = new FdWriter(1, loop.current(), _noop);
+    _stdout = new FdWriter(1, _noop);
   }
   return _stdout;
 }
@@ -291,12 +284,11 @@ export function stdout(): FdWriter {
 /**
  * Returns a Writer for the current process's stderr (fd 2).
  * Sets the fd to non-blocking mode on first call.
- * Must be called within a loop context.
  */
 export function stderr(): FdWriter {
   if (_stderr === null) {
     setNonblocking(2);
-    _stderr = new FdWriter(2, loop.current(), _noop);
+    _stderr = new FdWriter(2, _noop);
   }
   return _stderr;
 }
@@ -322,27 +314,22 @@ const _signalNumbers: Record<string, number> = {
   SIGPIPE, SIGALRM, SIGTERM, SIGCHLD,
 };
 
-/**
- * Per-loop signal registration tracking. Maps each LoopHandle to the set of
- * signal names registered on that loop. Uses WeakMap so entries are
- * automatically cleaned up when the loop is garbage-collected after destroy().
- */
-const _loopSignals = new WeakMap<LoopHandle, Set<string>>();
+/** Set of signal names already registered with the event loop. */
+const _registeredSignals = new Set<string>();
 
 /**
  * Subscribe to a POSIX signal via a Topic.
  *
  * Returns a named Topic (`'process:<NAME>'`) that publishes `{ signal, signo }`
- * each time the signal is delivered. On the first call for a given signal name
- * on the current loop, the signal is registered with the event loop so that
- * delivery does not kill the process. Subsequent calls return the same topic
- * without re-registering on the same loop.
+ * each time the signal is delivered. On the first call for a given signal name,
+ * the signal is registered with the event loop so that delivery does not kill
+ * the process. Subsequent calls return the same topic without re-registering.
  *
  * @param {string} name - Signal name (e.g. `'SIGTERM'`, `'SIGUSR1'`)
  * @returns {Topic} A Topic that publishes `{ signal: string, signo: number }` on delivery
  *
  * @example
- * import { signal } from 'boats:runtime/process';
+ * import { signal } from './process.mts';
  *
  * const handle = signal('SIGTERM').subscribe(({ signal }) => {
  *   console.log(`Received ${signal}, shutting down...`);
@@ -353,17 +340,11 @@ const _loopSignals = new WeakMap<LoopHandle, Set<string>>();
  */
 export function signal(name: string): Topic {
   const t = topic('process:' + name);
-  const lp = loop.current();
-  let registered = _loopSignals.get(lp);
-  if (registered === undefined) {
-    registered = new Set();
-    _loopSignals.set(lp, registered);
-  }
-  if (!registered.has(name)) {
+  if (!_registeredSignals.has(name)) {
     const signo = _signalNumbers[name];
     if (signo == null) throw new Error('Unknown signal: ' + name);
-    registered.add(name);
-    loop.signal(lp, signo, () => t.publish({ signal: name, signo }));
+    _registeredSignals.add(name);
+    loop.signal(signo, function fireSignal() { t.publish({ signal: name, signo }); });
   }
   return t;
 }
@@ -381,7 +362,7 @@ export function signal(name: string): Topic {
  * - `stderr` — a Reader to receive bytes from the child's stderr
  *
  * @example
- * const proc = new Process('/usr/bin/cat', [], { loop: lp });
+ * const proc = new Process('/usr/bin/cat', []);
  * await proc.stdin.write(encodeUtf8('hello\n'));
  * proc.stdin.close();
  * for await (const chunk of proc.stdout) { ... }
@@ -392,18 +373,15 @@ export class Process {
   #stdin: FdWriter;
   #stdout: FdReader;
   #stderr: FdReader;
-  #lp: LoopHandle;
 
   /**
    * @param {string} command - absolute path to the executable
    * @param {string[]} [cmdArgs=[]] - arguments (excluding argv[0])
-   * @param {{ loop: object, cwd?: string, env?: object }} opts
+   * @param {{ cwd?: string, env?: object }} [opts]
    */
-  constructor(command: string, cmdArgs: string[], opts: ProcessOptions) {
-    if (cmdArgs == null) cmdArgs = [];
+  constructor(command: string, cmdArgs: string[], opts?: ProcessOptions) {
     if (opts == null) opts = {};
-    const lp = opts.loop;
-    if (!lp) throw new Error('Process requires opts.loop');
+    if (cmdArgs == null) cmdArgs = [];
 
     // Create three pipes: each pipe(buf) fills buf with [readFd, writeFd].
     const stdinBuf  = new ArrayBuffer(8);
@@ -472,10 +450,9 @@ export class Process {
     setNonblocking(stderrR);
 
     this.#pid    = childPid;
-    this.#lp     = lp;
-    this.#stdin  = new FdWriter(stdinW,  lp, () => lib.symbols.close(stdinW));
-    this.#stdout = new FdReader(stdoutR, lp, () => lib.symbols.close(stdoutR));
-    this.#stderr = new FdReader(stderrR, lp, () => lib.symbols.close(stderrR));
+    this.#stdin  = new FdWriter(stdinW,  function closeStdin()  { lib.symbols.close(stdinW);  });
+    this.#stdout = new FdReader(stdoutR, function closeStdout() { lib.symbols.close(stdoutR); });
+    this.#stderr = new FdReader(stderrR, function closeStderr() { lib.symbols.close(stderrR); });
     // argvBufs and envpBufs remain alive as local variables through the
     // execve call in the child. No explicit retention needed in the parent.
   }
@@ -508,11 +485,11 @@ export class Process {
       // pidfd_open(pid, flags=0) returns a pollable file descriptor.
       const pidfd = Number(lib.symbols.syscall(SYS_PIDFD_OPEN, BigInt(this.#pid), 0n));
       if (pidfd < 0) throw new Error(`pidfd_open(${this.#pid}) failed: errno ${-pidfd}`);
-      await loop.readable(this.#lp, pidfd);
+      await loop.readable(pidfd);
       lib.symbols.close(pidfd);
     } else {
       // macOS: EVFILT_PROC fires immediately when the child exits.
-      await loop.proc(this.#lp, this.#pid);
+      await loop.proc(this.#pid);
     }
 
     // Reap the zombie and decode the exit status.

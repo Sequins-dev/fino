@@ -1,12 +1,11 @@
 /**
- * Tests for boats:file Glob pattern matching and DiskFileSystem.glob() walk.
+ * Tests for fino:file Glob pattern matching and DiskFileSystem.glob() walk.
  */
 
-import { describe, it, before, after } from 'boats:test/test';
-import { DiskFileSystem, Glob } from 'boats:file';
-import * as loop from 'boats:runtime/loop';
+import { describe, it, before, after } from 'fino:test/test';
+import { DiskFileSystem, Glob } from 'fino:file';
 
-const TEST_DIR = '/tmp/boats-glob-test-' + Math.floor(Math.random() * 1_000_000);
+const TEST_DIR = '/tmp/fino-glob-test-' + Math.floor(Math.random() * 1_000_000);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,11 +122,10 @@ describe('Glob (pattern matching only)', () => {
 });
 
 describe('DiskFileSystem.glob() — directory walker', () => {
-  let lp: any, fs: DiskFileSystem;
+  let fs: DiskFileSystem;
 
   before(async () => {
-    lp = loop.create();
-    fs = new DiskFileSystem(lp);
+    fs = new DiskFileSystem();
     await fs.mkdir(TEST_DIR);
     // Create test tree:
     //   src/
@@ -173,7 +171,6 @@ describe('DiskFileSystem.glob() — directory walker', () => {
       }
     }
     await rm(TEST_DIR);
-    loop.destroy(lp);
   });
 
   it('matches **/*.ts in test dir', async (t) => {

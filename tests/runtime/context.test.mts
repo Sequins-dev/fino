@@ -1,10 +1,10 @@
 /**
- * Tests for boats:context and boats:topic.
+ * Tests for fino:context and fino:topic.
  */
 
-import { describe, it } from 'boats:test/test';
-import { Context, Snapshot, snapshotAll } from 'boats:runtime/context';
-import { topic, Topic, SubscriptionHandle, BindingHandle } from 'boats:util/topic';
+import { describe, it } from 'fino:test/test';
+import { Context, Snapshot, snapshotAll } from 'fino:runtime/context';
+import { topic, Topic, SubscriptionHandle, BindingHandle } from 'fino:util/topic';
 
 describe('Context basics', () => {
   it('Context — get() returns undefined when no value set', (t) => {
@@ -128,7 +128,7 @@ describe('async propagation', () => {
 
   it('Context — independent async scopes do not bleed', async (t) => {
     const ctx = new Context('no-bleed');
-    const results = [];
+    const results: Array<{ who: string; val: unknown }> = [];
 
     const runA = ctx.runWithValue('A', async () => {
       await Promise.resolve();
@@ -142,20 +142,20 @@ describe('async propagation', () => {
 
     await Promise.all([runA, runB]);
 
-    t.equal(results.find(r => r.who === 'A').val, 'A', 'A scope correct');
-    t.equal(results.find(r => r.who === 'B').val, 'B', 'B scope correct');
+    t.equal(results.find(r => r.who === 'A')!.val, 'A', 'A scope correct');
+    t.equal(results.find(r => r.who === 'B')!.val, 'B', 'B scope correct');
   });
 });
 
 describe('Snapshot', () => {
   it('Snapshot — runWithValue() re-enters captured frame', (t) => {
     const ctx = new Context('snap');
-    let snap;
+    let snap: Snapshot | undefined;
 
     ctx.runWithValue('captured', () => { snap = ctx.snapshot(); });
 
     t.equal(ctx.get(), undefined, 'outside scope');
-    snap.runWithValue(() => {
+    snap!.runWithValue(() => {
       t.equal(ctx.get(), 'captured', 'snapshot restores value');
     });
     t.equal(ctx.get(), undefined, 'restored after snapshot');
@@ -163,11 +163,11 @@ describe('Snapshot', () => {
 
   it('Snapshot — can be re-entered multiple times', (t) => {
     const ctx = new Context('multi-snap');
-    let snap;
+    let snap: Snapshot | undefined;
     ctx.runWithValue('snap-val', () => { snap = ctx.snapshot(); });
 
     for (let i = 0; i < 3; i++) {
-      snap.runWithValue(() => {
+      snap!.runWithValue(() => {
         t.equal(ctx.get(), 'snap-val', `re-entry ${i} correct`);
       });
     }
@@ -177,12 +177,12 @@ describe('Snapshot', () => {
     const a = new Context('snap-a');
     const b = new Context('snap-b');
 
-    let snap;
+    let snap: Snapshot | undefined;
     a.runWithValue('va', () => {
       b.runWithValue('vb', () => { snap = snapshotAll(); });
     });
 
-    snap.runWithValue(() => {
+    snap!.runWithValue(() => {
       t.equal(a.get(), 'va', 'a restored');
       t.equal(b.get(), 'vb', 'b restored');
     });
@@ -193,10 +193,10 @@ describe('Snapshot', () => {
 
   it('Snapshot — async re-entry propagates through await', async (t) => {
     const ctx = new Context('snap-async');
-    let snap;
+    let snap: Snapshot | undefined;
     ctx.runWithValue('snap-value', () => { snap = ctx.snapshot(); });
 
-    await snap.runWithValue(async () => {
+    await snap!.runWithValue(async () => {
       await Promise.resolve();
       t.equal(ctx.get(), 'snap-value', 'snapshot value survives await');
     });
@@ -212,8 +212,8 @@ describe('Topic', () => {
 
   it('Topic — subscribe and publish', (t) => {
     const t1 = topic('pub-sub-test');
-    const received = [];
-    const handle = t1.subscribe((msg) => received.push(msg));
+    const received: string[] = [];
+    const handle = t1.subscribe((msg) => received.push(String(msg)));
 
     t1.publish('hello');
     t1.publish('world');
@@ -233,8 +233,8 @@ describe('Topic', () => {
 
   it('Topic — unsubscribe removes callback', (t) => {
     const t1 = new Topic('unsub-test');
-    const calls = [];
-    const handle = t1.subscribe((msg) => calls.push(msg));
+    const calls: string[] = [];
+    const handle = t1.subscribe((msg) => calls.push(String(msg)));
     t1.publish('before');
     t1.unsubscribe(handle);
     t1.publish('after');
@@ -269,9 +269,9 @@ describe('Topic', () => {
 
   it('Topic — subscriber errors are isolated', (t) => {
     const t1 = new Topic('error-isolation-test');
-    const calls = [];
+    const calls: string[] = [];
     t1.subscribe(() => { throw new Error('first fails'); });
-    t1.subscribe((msg) => calls.push(msg));
+    t1.subscribe((msg) => calls.push(String(msg)));
     t1.publish('msg');
     t.deepEqual(calls, ['msg'], 'second subscriber still called');
   });
@@ -279,7 +279,7 @@ describe('Topic', () => {
   it('Topic.runWithValue — enters bound context scope', (t) => {
     const ctx = new Context('topic-ctx');
     const t1 = new Topic('binding-test');
-    t1.bindContext(ctx, (msg) => msg.id);
+    t1.bindContext(ctx, (msg: unknown) => (msg as { id: string }).id);
 
     let seen;
     t1.subscribe(() => { seen = ctx.get(); });
@@ -321,8 +321,8 @@ describe('Topic', () => {
     const ctxA = new Context('multi-bind-a');
     const ctxB = new Context('multi-bind-b');
     const t1 = new Topic('multi-bind-test');
-    t1.bindContext(ctxA, (msg) => msg.a);
-    t1.bindContext(ctxB, (msg) => msg.b);
+    t1.bindContext(ctxA, (msg: unknown) => (msg as { a: number }).a);
+    t1.bindContext(ctxB, (msg: unknown) => (msg as { b: number }).b);
 
     let seenA, seenB;
     t1.runWithValue({ a: 1, b: 2 }, () => {
@@ -335,7 +335,7 @@ describe('Topic', () => {
   });
 
   it('Topic.runWithValue — bindings entered in registration order', (t) => {
-    const order = [];
+    const order: string[] = [];
     const ctxA = new Context('order-a');
     const ctxB = new Context('order-b');
     const t1 = new Topic('order-test');

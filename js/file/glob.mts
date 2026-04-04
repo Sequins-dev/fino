@@ -1,12 +1,10 @@
 /**
  * internal:file/glob — Glob pattern matching and async directory walker.
  *
- * This module is intentionally free of top-level imports to avoid creating
- * a new async dependency path in the module graph (Boa 0.21.1 bug).
- * All I/O is injected via the `listDir` callback rather than imported.
+ * All I/O is injected via the `listDir` callback rather than imported
+ * at the top level, keeping this module free of top-level dependencies.
  *
- * NOTE: async generators (`async function*`) are not supported by Boa 0.21.1.
- * The `glob()` function therefore returns a custom async iterable backed by a
+ * The `glob()` function returns a custom async iterable backed by a
  * push-queue / pull-iterator pattern: a fire-and-forget async walk pushes
  * matching entries into a queue; the async iterator's `next()` pulls from the
  * queue or waits until an entry (or done) arrives.
@@ -58,10 +56,10 @@ function compileSegment(pat: string): string {
   let i = 0;
 
   while (i < pat.length) {
-    const ch = pat[i];
+    const ch = pat[i]!;
 
     if (ch === '\\' && i + 1 < pat.length) {
-      re += escRe(pat[i + 1]);
+      re += escRe(pat[i + 1]!);
       i += 2;
       continue;
     }
@@ -94,8 +92,8 @@ function compileSegment(pat: string): string {
       if (j < pat.length && (pat[j] === '!' || pat[j] === '^')) { cls += '^'; j++; }
       if (j < pat.length && pat[j] === ']')                      { cls += '\\]'; j++; }
       while (j < pat.length && pat[j] !== ']') {
-        if (pat[j] === '\\' && j + 1 < pat.length) { cls += escClass(pat[j + 1]); j += 2; }
-        else                                        { cls += escClass(pat[j]);     j++;     }
+        if (pat[j] === '\\' && j + 1 < pat.length) { cls += escClass(pat[j + 1]!); j += 2; }
+        else                                        { cls += escClass(pat[j]!);     j++;     }
       }
       cls += ']';
       re += cls;
@@ -162,7 +160,7 @@ export class Glob {
       const pathSegs = s.split('/');
       const patSegs = this.#pattern.split('/');
       for (let i = 0; i < pathSegs.length; i++) {
-        if (!pathSegs[i].startsWith('.')) continue;
+        if (!pathSegs[i]!.startsWith('.')) continue;
         const pat = patSegs[i] ?? '';
         if (!pat.startsWith('.')) return false;
       }
@@ -177,14 +175,14 @@ export class Glob {
     const dirSegs = dirRel.split('/');
     if (dirSegs.length >= patSegs.length) return false;
     for (let i = 0; i < dirSegs.length; i++) {
-      if (!this.#segPatterns[i].test(dirSegs[i])) return false;
+      if (!this.#segPatterns[i]!.test(dirSegs[i]!)) return false;
     }
     return true;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Directory walker (no async generators — uses push queue / pull iterator)
+// Directory walker (push queue / pull iterator pattern)
 // ---------------------------------------------------------------------------
 
 export interface GlobEntry {
@@ -208,12 +206,11 @@ export interface GlobOptions {
 /**
  * Walk the filesystem via `listDir`, yielding entries matching `pattern`.
  *
- * Returns an async iterable (not an async generator, since Boa 0.21.1 does
- * not support `async function*`). Uses a push-queue / pull-iterator pattern:
- * a fire-and-forget async walk pushes results into a queue; the iterator's
- * `next()` pulls from the queue or waits for the next push.
+ * Uses a push-queue / pull-iterator pattern: a fire-and-forget async walk
+ * pushes results into a queue; the iterator's `next()` pulls from the queue
+ * or waits for the next push.
  */
-export function glob(listDir: ListDir, pattern: string, options: GlobOptions = {}) {
+export function glob(listDir: ListDir, pattern: string, options: GlobOptions = {}): AsyncIterable<GlobEntry> {
   const dot       = options.dot            ?? false;
   const onlyFiles = options.onlyFiles      ?? false;
   const onlyDirs  = options.onlyDirectories ?? false;
@@ -270,7 +267,7 @@ export function glob(listDir: ListDir, pattern: string, options: GlobOptions = {
           if (isDone) {
             return Promise.resolve({ value: undefined as any, done: true });
           }
-          return new Promise(resolve => { waiters.push(resolve); });
+          return new Promise(function parkGlobNext(resolve) { waiters.push(resolve); });
         },
       };
     },

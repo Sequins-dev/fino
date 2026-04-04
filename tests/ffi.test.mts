@@ -1,27 +1,55 @@
 /**
- * Tests for boats:ffi — dlopen/dlsym and Pointer operations.
+ * Tests for fino:ffi — dlopen/dlsym and Pointer operations.
  */
 
-import { describe, it } from 'boats:test/test';
-import { dlopen, Pointer } from 'boats:ffi';
-import { os } from 'boats:runtime/process';
+import { describe, it } from 'fino:test/test';
+import { dlopen, Pointer } from 'fino:ffi';
+import { os } from 'fino:runtime/process';
 
 describe('Pointer helpers', () => {
-  it('Pointer.null() returns null', (t) => {
-    t.ok(Pointer.null() === null, 'null pointer is JS null');
+  it('Pointer.null() returns JS null', (t) => {
+    t.equal(Pointer.null(), null, 'null pointer is null');
   });
 
-  it('Pointer.fromAddress / toAddress round-trip', (t) => {
-    const addr = 0x1234n;
-    const ptr  = Pointer.fromAddress(addr);
-    t.notEqual(ptr, null, 'not null');
-    t.equal(Pointer.toAddress(ptr), addr, 'address round-trips');
+  it('Pointer.addr returns the backing-store address as BigInt', (t) => {
+    const buf = new ArrayBuffer(8);
+    const ptr = Pointer.of(buf);
+    const expected = new DataView(ptr).getBigUint64(0, true);
+    t.equal(Pointer.addr(buf), expected, 'address matches Pointer.of bytes');
+  });
+
+  it('Pointer.of returns an 8-byte ArrayBuffer', (t) => {
+    const buf = new ArrayBuffer(8);
+    const ptr = Pointer.of(buf);
+    t.ok(ptr instanceof ArrayBuffer, 'is an ArrayBuffer');
+    t.equal(ptr.byteLength, 8, 'is exactly 8 bytes');
+  });
+
+  it('Pointer.of with TypedArray includes byteOffset', (t) => {
+    const buf = new ArrayBuffer(16);
+    const view = new Uint8Array(buf, 8, 8); // byteOffset=8
+    const ptrBase = Pointer.of(buf);
+    const ptrView = Pointer.of(view);
+    const addrBase = new DataView(ptrBase).getBigUint64(0, true);
+    const addrView = new DataView(ptrView).getBigUint64(0, true);
+    t.equal(addrView - addrBase, 8n, 'view pointer is 8 bytes past the buffer start');
+  });
+
+  it('Pointer.addr with TypedArray includes byteOffset', (t) => {
+    const buf = new ArrayBuffer(16);
+    const view = new Uint8Array(buf, 8, 8);
+    const addrBase = Pointer.addr(buf);
+    const addrView = Pointer.addr(view);
+    t.equal(addrView - addrBase, 8n, 'view address is 8 bytes past the buffer start');
   });
 
   it('Pointer.offset moves pointer by byte count', (t) => {
-    const base = Pointer.fromAddress(0x1000n);
-    const off  = Pointer.offset(base, 16);
-    t.equal(Pointer.toAddress(off), 0x1010n, 'offset by 16 bytes');
+    const buf = new ArrayBuffer(32);
+    const ptr  = Pointer.of(buf);
+    const off  = Pointer.offset(ptr, 16);
+    const addr0 = new DataView(ptr).getBigUint64(0, true);
+    const addr1 = new DataView(off).getBigUint64(0, true);
+    t.equal(addr1 - addr0, 16n, 'offset by 16 bytes');
   });
 });
 
@@ -34,10 +62,14 @@ const libc = dlopen(
 );
 
 describe('read/write via malloc', () => {
-  it('Pointer.of returns pointer into ArrayBuffer', (t) => {
-    const buf = new ArrayBuffer(8);
-    const ptr = Pointer.of(buf);
+  it('malloc returns an 8-byte pointer buffer (non-null)', (t) => {
+    const ptr = libc.symbols.malloc(64);
+    t.ok(ptr instanceof ArrayBuffer, 'returns ArrayBuffer');
+    t.equal(ptr.byteLength, 8, '8 bytes');
     t.notEqual(ptr, null, 'not null');
+    const addr = new DataView(ptr).getBigUint64(0, true);
+    t.ok(addr > 0n, 'non-zero address');
+    libc.symbols.free(ptr);
   });
 
   it('read/write u8 round-trip', (t) => {
@@ -67,6 +99,20 @@ describe('read/write via malloc', () => {
     Pointer.writeU16(ptr, 4, 0x1234);
     t.equal(Pointer.readU16(ptr, 4), 0x1234, 'u16 at offset 4');
     t.equal(Pointer.readU16(ptr, 0), 0, 'bytes before offset untouched');
+  });
+
+  it('readPointer returns 8-byte buffer', (t) => {
+    const outer = new ArrayBuffer(8);
+    const inner = new ArrayBuffer(4);
+    const outerPtr = Pointer.of(outer);
+    const innerPtr = Pointer.of(inner);
+    Pointer.writePointer(outerPtr, 0, innerPtr);
+    const readBack = Pointer.readPointer(outerPtr, 0);
+    t.ok(readBack instanceof ArrayBuffer, 'readPointer returns ArrayBuffer');
+    t.equal(readBack.byteLength, 8, '8 bytes');
+    const a1 = new DataView(innerPtr).getBigUint64(0, true);
+    const a2 = new DataView(readBack).getBigUint64(0, true);
+    t.equal(a2, a1, 'round-trips the pointer address');
   });
 
   it('malloc / free via FFI', (t) => {

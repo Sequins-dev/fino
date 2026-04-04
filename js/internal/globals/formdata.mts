@@ -1,5 +1,5 @@
 /**
- * boats:formdata — FormData (WHATWG XHR / Fetch spec)
+ * fino:formdata — FormData (WHATWG XHR / Fetch spec)
  *
  * `FormData` is the standard representation of an HTML form submission. It
  * holds an ordered list of name/value entries where values are either strings
@@ -57,8 +57,8 @@
  * fd.forEach((value, key, fd) => { ... });
  */
 
-import { Blob, File } from 'internal:globals/blob';
-import { encodeUtf8 } from 'internal:globals/encoding';
+import { Blob, File } from './blob.mts';
+import { encodeUtf8 } from './encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Multipart/form-data serialization
@@ -93,12 +93,12 @@ export async function _serializeFormData(fd: FormData, boundary?: string): Promi
 
   // Concatenate all parts
   let totalLen = 0;
-  for (let i = 0; i < parts.length; i++) totalLen += parts[i].byteLength;
+  for (let i = 0; i < parts.length; i++) totalLen += parts[i]!.byteLength;
   const body = new Uint8Array(totalLen);
   let offset = 0;
   for (let i = 0; i < parts.length; i++) {
-    body.set(parts[i], offset);
-    offset += parts[i].byteLength;
+    body.set(parts[i]!, offset);
+    offset += parts[i]!.byteLength;
   }
 
   return { contentType: `multipart/form-data; boundary=${boundary}`, body };
@@ -121,7 +121,7 @@ function _normalizeEntry(name: string, value: string | Blob, filename?: string):
     if (filename === undefined) {
       filename = value instanceof File ? value.name : 'blob';
     }
-    value = new File([value], String(filename), { type: value.type });
+    return [name, new File([value], String(filename), { type: value.type })];
   } else {
     value = _normalizeCRLF(String(value));
   }
@@ -150,9 +150,9 @@ export class FormData {
 
   delete(name: string): void {
     name = String(name);
-    const next = [];
+    const next: [string, FormDataEntryValue][] = [];
     for (let i = 0; i < this.#entries.length; i++) {
-      if (this.#entries[i][0] !== name) next.push(this.#entries[i]);
+      if (this.#entries[i]![0] !== name) next.push(this.#entries[i]!);
     }
     this.#entries = next;
   }
@@ -160,16 +160,16 @@ export class FormData {
   get(name: string): FormDataEntryValue | null {
     name = String(name);
     for (let i = 0; i < this.#entries.length; i++) {
-      if (this.#entries[i][0] === name) return this.#entries[i][1];
+      if (this.#entries[i]![0] === name) return this.#entries[i]![1];
     }
     return null;
   }
 
   getAll(name: string): FormDataEntryValue[] {
     name = String(name);
-    const result = [];
+    const result: FormDataEntryValue[] = [];
     for (let i = 0; i < this.#entries.length; i++) {
-      if (this.#entries[i][0] === name) result.push(this.#entries[i][1]);
+      if (this.#entries[i]![0] === name) result.push(this.#entries[i]![1]);
     }
     return result;
   }
@@ -177,7 +177,7 @@ export class FormData {
   has(name: string): boolean {
     name = String(name);
     for (let i = 0; i < this.#entries.length; i++) {
-      if (this.#entries[i][0] === name) return true;
+      if (this.#entries[i]![0] === name) return true;
     }
     return false;
   }
@@ -186,12 +186,12 @@ export class FormData {
     const entry = _normalizeEntry(name, value, filename);
     const n = entry[0];
     let replaced = false;
-    const next = [];
+    const next: [string, FormDataEntryValue][] = [];
     for (let i = 0; i < this.#entries.length; i++) {
-      if (this.#entries[i][0] === n) {
+      if (this.#entries[i]![0] === n) {
         if (!replaced) { next.push(entry); replaced = true; }
       } else {
-        next.push(this.#entries[i]);
+        next.push(this.#entries[i]!);
       }
     }
     if (!replaced) next.push(entry);
@@ -203,21 +203,21 @@ export class FormData {
   }
 
   keys() {
-    const ks = [];
-    for (let i = 0; i < this.#entries.length; i++) ks.push(this.#entries[i][0]);
+    const ks: string[] = [];
+    for (let i = 0; i < this.#entries.length; i++) ks.push(this.#entries[i]![0]);
     return ks[Symbol.iterator]();
   }
 
   values() {
-    const vs = [];
-    for (let i = 0; i < this.#entries.length; i++) vs.push(this.#entries[i][1]);
+    const vs: FormDataEntryValue[] = [];
+    for (let i = 0; i < this.#entries.length; i++) vs.push(this.#entries[i]![1]);
     return vs[Symbol.iterator]();
   }
 
   forEach(callback: (value: FormDataEntryValue, name: string, parent: FormData) => void, thisArg?: unknown): void {
     const entries = this.#entries.slice();
     for (let i = 0; i < entries.length; i++) {
-      callback.call(thisArg, entries[i][1], entries[i][0], this);
+      callback.call(thisArg, entries[i]![1], entries[i]![0], this);
     }
   }
 

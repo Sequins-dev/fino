@@ -1,14 +1,14 @@
 /**
- * boats:kqueue — low-level kqueue bindings for macOS/BSD.
+ * fino:kqueue — low-level kqueue bindings for macOS/BSD.
  *
  * kqueue is the kernel event notification interface on macOS (and other BSDs).
  * A kqueue fd is a file descriptor that the kernel fills with events as they
  * become ready. You register interest in events via `kevent()` changesets, then
  * wait for them with another `kevent()` call that blocks until events arrive.
  *
- * This module wraps `kqueue(2)` and `kevent(2)` via FFI (`boats:ffi`) and
- * implements the common backend interface that `boats:loop` expects. It is
- * only loaded on macOS; Linux uses `boats:io_uring` instead.
+ * This module wraps `kqueue(2)` and `kevent(2)` via FFI (`fino:ffi`) and
+ * implements the common backend interface that `fino:loop` expects. It is
+ * only loaded on macOS; Linux uses `fino:io_uring` instead.
  *
  *
  * ## struct kevent layout
@@ -23,7 +23,7 @@
  *   offset 24: udata  (uint64)  — user-supplied opaque value, returned as-is in events
  *
  * We use `udata` to store the same value as `ident` (the fd or id) so that
- * `boats:loop`'s dispatch table can use a single field to look up the resolver.
+ * `fino:loop`'s dispatch table can use a single field to look up the resolver.
  *
  *
  * ## How kevent() is called
@@ -45,7 +45,7 @@
  * fires once. Without this flag, the timer would fire repeatedly. We also use
  * `EV_ONESHOT` for `EVFILT_PROC` (process exit) since we only want one
  * notification when the process exits. Read/write watches do NOT use EV_ONESHOT
- * — they remain registered until explicitly removed, which allows `boats:loop`
+ * — they remain registered until explicitly removed, which allows `fino:loop`
  * to re-arm them on the next `readable()`/`writable()` call.
  *
  *
@@ -56,7 +56,7 @@
  * `kevent()` call, the kernel rejects the filter (returns an error). We detect
  * this by checking the `kevent()` return value in `addProc()`: a negative
  * return means the process already exited, so `addProc()` returns `false` and
- * `boats:loop`'s `proc()` resolves immediately so the caller can proceed to
+ * `fino:loop`'s `proc()` resolves immediately so the caller can proceed to
  * `waitpid()`.
  *
  *
@@ -80,12 +80,12 @@
  * - All constants (EVFILT_*, EV_*, NOTE_*) match the macOS `<sys/event.h>` values.
  * - The `udata` field is written with the same value as `ident` everywhere. If
  *   you need to distinguish multiple registrations for the same fd, you'd change
- *   this — but `boats:loop` currently uses the fd itself as the map key.
+ *   this — but `fino:loop` currently uses the fd itself as the map key.
  * - `MAX_EVENTS = 256` is a tunable. Higher values reduce syscall overhead for
  *   high-connection servers at the cost of a larger stack-allocated buffer.
  */
 
-import { dlopen } from 'boats:ffi';
+import { dlopen, Pointer } from 'fino:ffi';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,11 +107,13 @@ interface KqueueLoop {
 }
 
 const lib = dlopen('/usr/lib/libSystem.B.dylib', {
-  kqueue:  { parameters: [], result: 'i32' },
-  kevent:  { parameters: ['i32', 'buffer', 'i32', 'buffer', 'i32', 'buffer'], result: 'i32' },
-  close:   { parameters: ['i32'], result: 'i32' },
+  kqueue:   { parameters: [], result: 'i32' },
+  kevent:   { parameters: ['i32', 'usize', 'i32', 'usize', 'i32', 'usize'], result: 'i32' },
+  close:    { parameters: ['i32'], result: 'i32' },
   // signal(int signo, void (*func)(int)) — treat func as usize for SIG_IGN (1) / SIG_DFL (0)
-  signal:  { parameters: ['i32', 'usize'], result: 'usize' },
+  signal:   { parameters: ['i32', 'usize'], result: 'usize' },
+  // __error() returns a pointer to the thread-local errno value (macOS).
+  __error:  { parameters: [], result: 'pointer' },
 });
 
 // ---------------------------------------------------------------------------
@@ -134,6 +136,11 @@ const EV_CLEAR   = 0x0020; // auto-re-arm after delivery (used for EVFILT_VNODE)
 const EV_EOF     = 0x8000;
 const EV_ERROR   = 0x4000;
 
+// POSIX errno values
+const EINTR  = 4;   // Interrupted by signal — retry
+const ENOENT = 2;   // No such file or directory — e.g. EV_DELETE on already-removed filter
+const EBADF  = 9;   // Bad file descriptor — e.g. fd already closed
+
 // EVFILT_TIMER fflags: treat `data` as milliseconds by default.
 // NOTE_NSECONDS would give nanosecond precision; we use ms for simplicity.
 const NOTE_MSECONDS = 0x00000400; // macOS 10.12+
@@ -151,8 +158,32 @@ export const NOTE_LINK   = 0x00000010; // link count changed
 export const NOTE_RENAME = 0x00000020; // file/dir was renamed
 export const NOTE_REVOKE = 0x00000040; // access was revoked (e.g. unmount)
 
-const KEVENT_SIZE = 32;    // sizeof(struct kevent) on macOS 64-bit
-const MAX_EVENTS  = 256;   // max events returned per kevent() call
+const KEVENT_SIZE    = 32;   // sizeof(struct kevent) on macOS 64-bit
+const MAX_EVENTS     = 256;  // max events returned per kevent() call
+const MAX_PENDING    = 64;   // max changes batched into a single wait() call
+
+// ---------------------------------------------------------------------------
+// Pre-allocated shared buffers (safe: all kqueue calls are synchronous)
+// ---------------------------------------------------------------------------
+
+const _changeBuf  = new ArrayBuffer(KEVENT_SIZE);                    // single-change for immediate registrations
+const _changeView = new DataView(_changeBuf);
+const _pendingBuf  = new ArrayBuffer(KEVENT_SIZE * MAX_PENDING);     // batched changes for wait()
+const _pendingView = new DataView(_pendingBuf);
+let   _pendingCount = 0;                                             // number of entries queued in _pendingBuf
+const _eventBuf   = new ArrayBuffer(KEVENT_SIZE * MAX_EVENTS);       // event wait output
+const _eventView  = new DataView(_eventBuf);
+const _zeroTs     = new ArrayBuffer(16);                        // timespec{0,0} — zero-timeout
+const _tsBuf      = new ArrayBuffer(16);                        // reusable timespec for non-zero timeouts
+const _tsView     = new DataView(_tsBuf);
+const _changePtr  = Pointer.addr(_changeBuf);
+const _pendingPtr = Pointer.addr(_pendingBuf);
+const _eventPtr   = Pointer.addr(_eventBuf);
+const _zeroTsPtr  = Pointer.addr(_zeroTs);
+const _tsPtr      = Pointer.addr(_tsBuf);
+const _errnoPtr   = lib.symbols.__error();
+
+const U32_FACTOR = 0x1_0000_0000;
 
 // ---------------------------------------------------------------------------
 // Struct helpers
@@ -171,12 +202,12 @@ const MAX_EVENTS  = 256;   // max events returned per kevent() call
  */
 function writeKevent(view: DataView, index: number, ident: number, filter: number, flags: number, fflags: number, data: number, udata: number): void {
   const base = index * KEVENT_SIZE;
-  view.setBigUint64(base + 0,  BigInt(ident),  true);
+  writeU64(view, base + 0, ident);
   view.setInt16   (base + 8,  filter,          true);
   view.setUint16  (base + 10, flags,           true);
   view.setUint32  (base + 12, fflags,          true);
-  view.setBigInt64(base + 16, BigInt(data),    true);
-  view.setBigUint64(base + 24, BigInt(udata),  true);
+  writeI64(view, base + 16, data);
+  writeU64(view, base + 24, udata);
 }
 
 /**
@@ -185,13 +216,39 @@ function writeKevent(view: DataView, index: number, ident: number, filter: numbe
 function readKevent(view: DataView, index: number): Kevent {
   const base = index * KEVENT_SIZE;
   return {
-    ident:  Number(view.getBigUint64(base + 0,  true)),
+    ident:  readU64(view, base + 0),
     filter: view.getInt16(base + 8,  true),
     flags:  view.getUint16(base + 10, true),
     fflags: view.getUint32(base + 12, true),
-    data:   Number(view.getBigInt64(base + 16, true)),
-    udata:  Number(view.getBigUint64(base + 24, true)),
+    data:   readI64(view, base + 16),
+    udata:  readU64(view, base + 24),
   };
+}
+
+function writeU64(view: DataView, offset: number, value: number): void {
+  const lo = value >>> 0;
+  const hi = Math.floor(value / U32_FACTOR) >>> 0;
+  view.setUint32(offset, lo, true);
+  view.setUint32(offset + 4, hi, true);
+}
+
+function writeI64(view: DataView, offset: number, value: number): void {
+  const lo = value >>> 0;
+  const hi = Math.floor(value / U32_FACTOR);
+  view.setUint32(offset, lo, true);
+  view.setInt32(offset + 4, hi, true);
+}
+
+function readU64(view: DataView, offset: number): number {
+  const lo = view.getUint32(offset, true);
+  const hi = view.getUint32(offset + 4, true);
+  return hi * U32_FACTOR + lo;
+}
+
+function readI64(view: DataView, offset: number): number {
+  const lo = view.getUint32(offset, true);
+  const hi = view.getInt32(offset + 4, true);
+  return hi * U32_FACTOR + lo;
 }
 
 /**
@@ -200,13 +257,16 @@ function readKevent(view: DataView, index: number): Kevent {
  */
 function makeTimespec(ms: number | null): ArrayBuffer | null {
   if (ms === null) return null;
-  const buf = new ArrayBuffer(16);
-  const view = new DataView(buf);
+  if (ms === 0) return _zeroTs;
   const sec  = Math.floor(ms / 1000);
   const nsec = (ms % 1000) * 1_000_000;
-  view.setBigInt64(0, BigInt(sec),  true);
-  view.setBigInt64(8, BigInt(nsec), true);
-  return buf;
+  writeI64(_tsView, 0, sec);
+  writeI64(_tsView, 8, nsec);
+  return _tsBuf;
+}
+
+function errno(): number {
+  return Pointer.readI32(_errnoPtr, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,17 +283,24 @@ function makeTimespec(ms: number | null): ArrayBuffer | null {
  * @returns {Array<{ident,filter,flags,fflags,data,udata}>}
  */
 function kevent(kqFd: number, changeBuf: ArrayBuffer | null, nChanges: number, timeoutBuf: ArrayBuffer | null): Kevent[] {
-  const eventBuf  = new ArrayBuffer(KEVENT_SIZE * MAX_EVENTS);
-  const n = lib.symbols.kevent(kqFd, changeBuf, nChanges, eventBuf, MAX_EVENTS, timeoutBuf);
+  const changePtr = changeBuf === null ? 0n : changeBuf === _pendingBuf ? _pendingPtr : _changePtr;
+  const timeoutPtr = timeoutBuf === null ? 0n : timeoutBuf === _zeroTs ? _zeroTsPtr : _tsPtr;
+  let n: number;
+  // Retry on EINTR — a signal interrupted the wait; the timeout has not elapsed.
+  do {
+    n = lib.symbols.kevent(kqFd, changePtr, nChanges, _eventPtr, MAX_EVENTS, timeoutPtr);
+  } while (n < 0 && errno() === EINTR);
   if (n < 0) {
-    throw new Error(`kevent failed: ${n}`);
+    throw new Error(`kevent failed: errno=${errno()}`);
   }
-  const view = new DataView(eventBuf);
   const events = [];
   for (let i = 0; i < n; i++) {
-    const ev = readKevent(view, i);
+    const ev = readKevent(_eventView, i);
     // EV_ERROR in flags means the change failed, not a real event.
     if (ev.flags & EV_ERROR) {
+      // ENOENT: filter already removed (fd closed, kernel auto-removed it).
+      // EBADF: fd closed before EV_DELETE was processed. Both are benign.
+      if (ev.data === ENOENT || ev.data === EBADF) continue;
       throw new Error(`kevent change error: errno=${ev.data} for ident=${ev.ident}`);
     }
     events.push(ev);
@@ -245,8 +312,16 @@ function kevent(kqFd: number, changeBuf: ArrayBuffer | null, nChanges: number, t
  * Register one or more changes without waiting for events.
  */
 function registerChanges(kqFd: number, changeBuf: ArrayBuffer, nChanges: number): void {
-  const n = lib.symbols.kevent(kqFd, changeBuf, nChanges, null, 0, makeTimespec(0));
-  if (n < 0) throw new Error(`kevent register failed: ${n}`);
+  const changePtr = changeBuf === _pendingBuf ? _pendingPtr : _changePtr;
+  const n = lib.symbols.kevent(kqFd, changePtr, nChanges, 0n, 0, _zeroTsPtr);
+  if (n < 0) {
+    const err = errno();
+    // ENOENT: filter was already removed (e.g. fd closed, kernel auto-removed it).
+    // EBADF: fd already closed before EV_DELETE was issued. Both are benign.
+    if (err !== ENOENT && err !== EBADF) {
+      throw new Error(`kevent register failed: errno=${err}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -263,43 +338,46 @@ export function create(): KqueueLoop {
 }
 
 /**
- * Watch `fd` for read readiness. `userData` is a number returned with the event.
+ * Queue a struct kevent into the pending-changes buffer.
+ * If the buffer is full, flush it immediately to the kqueue.
+ */
+function queueChange(loop: KqueueLoop, ident: number, filter: number, flags: number, fflags: number, data: number, udata: number): void {
+  if (_pendingCount >= MAX_PENDING) {
+    // Flush pending changes before adding more.
+    registerChanges(loop.fd, _pendingBuf, _pendingCount);
+    _pendingCount = 0;
+  }
+  writeKevent(_pendingView, _pendingCount++, ident, filter, flags, fflags, data, udata);
+}
+
+/**
+ * Watch `fd` for read readiness (one-shot — auto-removed after delivery).
+ * `userData` is a number returned with the event.
  */
 export function addRead(loop: KqueueLoop, fd: number, userData: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, userData);
-  registerChanges(loop.fd, buf, 1);
+  queueChange(loop, fd, EVFILT_READ, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, 0, userData);
 }
 
 /**
- * Watch `fd` for write readiness.
+ * Watch `fd` for write readiness (one-shot — auto-removed after delivery).
  */
 export function addWrite(loop: KqueueLoop, fd: number, userData: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, fd, EVFILT_WRITE, EV_ADD | EV_ENABLE, 0, 0, userData);
-  registerChanges(loop.fd, buf, 1);
+  queueChange(loop, fd, EVFILT_WRITE, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, 0, userData);
 }
 
 /**
- * Remove read watch for `fd`.
+ * Explicitly cancel a read watch for `fd` (e.g. on connection close before event fires).
+ * Queued as a pending change so it batches with the next wait().
  */
 export function removeRead(loop: KqueueLoop, fd: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, fd, EVFILT_READ, EV_DELETE, 0, 0, 0);
-  registerChanges(loop.fd, buf, 1);
+  queueChange(loop, fd, EVFILT_READ, EV_DELETE, 0, 0, 0);
 }
 
 /**
- * Remove write watch for `fd`.
+ * Explicitly cancel a write watch for `fd`.
  */
 export function removeWrite(loop: KqueueLoop, fd: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, fd, EVFILT_WRITE, EV_DELETE, 0, 0, 0);
-  registerChanges(loop.fd, buf, 1);
+  queueChange(loop, fd, EVFILT_WRITE, EV_DELETE, 0, 0, 0);
 }
 
 /**
@@ -307,11 +385,15 @@ export function removeWrite(loop: KqueueLoop, fd: number): void {
  * `id` is returned as `ident` in the event.
  */
 export function addTimer(loop: KqueueLoop, id: number, ms: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
   // data = ms when no NOTE_* fflag is set (default unit is milliseconds on macOS)
-  writeKevent(view, 0, id, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, ms, id);
-  registerChanges(loop.fd, buf, 1);
+  queueChange(loop, id, EVFILT_TIMER, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, ms, id);
+}
+
+/**
+ * Cancel a pending timer. Queued as a pending change so it batches with the next wait().
+ */
+export function removeTimer(loop: KqueueLoop, id: number): void {
+  queueChange(loop, id, EVFILT_TIMER, EV_DELETE, 0, 0, 0);
 }
 
 /**
@@ -323,10 +405,8 @@ export function addTimer(loop: KqueueLoop, id: number, ms: number): void {
  * caller is responsible for handling the already-exited case.
  */
 export function addProc(loop: KqueueLoop, pid: number, userData: number): boolean {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_ONESHOT, NOTE_EXIT, 0, userData);
-  const n = lib.symbols.kevent(loop.fd, buf, 1, null, 0, makeTimespec(0));
+  writeKevent(_changeView, 0, pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_ONESHOT, NOTE_EXIT, 0, userData);
+  const n = lib.symbols.kevent(loop.fd, _changePtr, 1, 0n, 0, _zeroTsPtr);
   return n >= 0;
 }
 
@@ -334,10 +414,8 @@ export function addProc(loop: KqueueLoop, pid: number, userData: number): boolea
  * Remove a process watch for `pid`.
  */
 export function removeProc(loop: KqueueLoop, pid: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, pid, EVFILT_PROC, EV_DELETE, 0, 0, 0);
-  registerChanges(loop.fd, buf, 1);
+  writeKevent(_changeView, 0, pid, EVFILT_PROC, EV_DELETE, 0, 0, 0);
+  registerChanges(loop.fd, _changeBuf, 1);
 }
 
 /**
@@ -349,10 +427,14 @@ export function poll(loop: KqueueLoop): Kevent[] {
 
 /**
  * Blocking wait — blocks until events arrive or `timeoutMs` elapses.
+ * Flushes any pending add/remove changes in the same syscall.
  * Pass `null` to block indefinitely.
  */
 export function wait(loop: KqueueLoop, timeoutMs: number | null = null): Kevent[] {
-  return kevent(loop.fd, null, 0, makeTimespec(timeoutMs));
+  const changes = _pendingCount;
+  const changeBuf = changes > 0 ? _pendingBuf : null;
+  _pendingCount = 0;
+  return kevent(loop.fd, changeBuf, changes, makeTimespec(timeoutMs));
 }
 
 /**
@@ -368,25 +450,21 @@ export function wait(loop: KqueueLoop, timeoutMs: number | null = null): Kevent[
  * The `fd` must remain open for as long as the watch is active. Closing the
  * fd automatically removes the filter from kqueue.
  *
- * `userData` is returned as `udata` in events (used by boats:loop to look
+ * `userData` is returned as `udata` in events (used by fino:loop to look
  * up the callback via the fd).
  */
 export function addVnode(loop: KqueueLoop, fd: number, fflags: number, userData: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, fd, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR, fflags, 0, userData);
-  registerChanges(loop.fd, buf, 1);
+  writeKevent(_changeView, 0, fd, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR, fflags, 0, userData);
+  registerChanges(loop.fd, _changeBuf, 1);
 }
 
 /**
  * Remove a vnode watch for `fd`.
  */
 export function removeVnode(loop: KqueueLoop, fd: number): void {
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, fd, EVFILT_VNODE, EV_DELETE, 0, 0, 0);
+  writeKevent(_changeView, 0, fd, EVFILT_VNODE, EV_DELETE, 0, 0, 0);
   // Ignore errors — the fd may already be closed or the filter removed.
-  lib.symbols.kevent(loop.fd, buf, 1, null, 0, makeTimespec(0));
+  lib.symbols.kevent(loop.fd, _changePtr, 1, 0n, 0, _zeroTsPtr);
 }
 
 // SIG_IGN sentinel: override default signal disposition so the process is not
@@ -407,10 +485,8 @@ const SIG_DFL = 0;
 export function addSignal(loop: KqueueLoop, signo: number): void {
   // Suppress default disposition so the process is not killed.
   lib.symbols.signal(signo, SIG_IGN);
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, signo, EVFILT_SIGNAL, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, signo);
-  registerChanges(loop.fd, buf, 1);
+  writeKevent(_changeView, 0, signo, EVFILT_SIGNAL, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, signo);
+  registerChanges(loop.fd, _changeBuf, 1);
 }
 
 /**
@@ -418,11 +494,9 @@ export function addSignal(loop: KqueueLoop, signo: number): void {
  */
 export function removeSignal(loop: KqueueLoop, signo: number): void {
   lib.symbols.signal(signo, SIG_DFL);
-  const buf  = new ArrayBuffer(KEVENT_SIZE);
-  const view = new DataView(buf);
-  writeKevent(view, 0, signo, EVFILT_SIGNAL, EV_DELETE, 0, 0, 0);
+  writeKevent(_changeView, 0, signo, EVFILT_SIGNAL, EV_DELETE, 0, 0, 0);
   // Ignore errors — if the filter was never registered this is a no-op.
-  lib.symbols.kevent(loop.fd, buf, 1, null, 0, makeTimespec(0));
+  lib.symbols.kevent(loop.fd, _changePtr, 1, 0n, 0, _zeroTsPtr);
 }
 
 /**

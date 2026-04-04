@@ -1,12 +1,12 @@
 /**
- * boats:eventtarget — Event, CustomEvent, and EventTarget
+ * fino:eventtarget — Event, CustomEvent, and EventTarget
  *
  * Pure JS implementation of the WHATWG EventTarget interface:
  * https://dom.spec.whatwg.org/#interface-eventtarget
  *
  * Scope: flat dispatch only (no DOM tree). All events fire at AT_TARGET.
  * The `bubbles` and `composed` flags are stored but have no propagation
- * effect — Boats has no parent node traversal.
+ * effect — Fino has no parent node traversal.
  *
  * Spec conformance:
  *   - addEventListener is idempotent for the same (callback, capture) pair
@@ -28,8 +28,10 @@ interface EventState {
   stopImmediate: boolean; inPassiveListener: boolean; timeStamp: number;
 }
 
+type EventCallback = ((event: Event) => void) | { handleEvent(event: Event): void };
+
 interface ListenerRecord {
-  callback: (event: Event) => void;
+  callback: EventCallback;
   capture: boolean; once: boolean; passive: boolean; removed: boolean;
 }
 
@@ -89,46 +91,54 @@ export class Event {
     });
   }
 
-  get type()             { return _eventState.get(this).type; }
-  get bubbles()          { return _eventState.get(this).bubbles; }
-  get cancelable()       { return _eventState.get(this).cancelable; }
-  get composed()         { return _eventState.get(this).composed; }
-  get defaultPrevented() { return _eventState.get(this).defaultPrevented; }
-  get target()           { return _eventState.get(this).target; }
-  get currentTarget()    { return _eventState.get(this).currentTarget; }
-  get eventPhase()       { return _eventState.get(this).eventPhase; }
-  get timeStamp()        { return _eventState.get(this).timeStamp; }
+  get type()             { return _eventState.get(this)!.type; }
+  get bubbles()          { return _eventState.get(this)!.bubbles; }
+  get cancelable()       { return _eventState.get(this)!.cancelable; }
+  get composed()         { return _eventState.get(this)!.composed; }
+  get defaultPrevented() { return _eventState.get(this)!.defaultPrevented; }
+  get target()           { return _eventState.get(this)!.target; }
+  get currentTarget()    { return _eventState.get(this)!.currentTarget; }
+  get eventPhase()       { return _eventState.get(this)!.eventPhase; }
+  get timeStamp()        { return _eventState.get(this)!.timeStamp; }
   get isTrusted()        { return false; }
 
   preventDefault() {
-    const s = _eventState.get(this);
+    const s = _eventState.get(this)!;
     if (s.cancelable && !s.inPassiveListener) s.defaultPrevented = true;
   }
 
   stopPropagation() {
-    _eventState.get(this).stopPropagation = true;
+    _eventState.get(this)!.stopPropagation = true;
   }
 
   stopImmediatePropagation() {
-    const s = _eventState.get(this);
+    const s = _eventState.get(this)!;
     s.stopPropagation = true;
     s.stopImmediate = true;
   }
 
   composedPath() {
-    const s = _eventState.get(this);
+    const s = _eventState.get(this)!;
     return s.target != null ? [s.target] : [];
   }
 }
 
 // Phase constants on prototype (spec requires instance access via event.NONE etc.)
-Event.prototype.NONE            = 0;
-Event.prototype.CAPTURING_PHASE = 1;
-Event.prototype.AT_TARGET       = 2;
-Event.prototype.BUBBLING_PHASE  = 3;
+const eventPrototype = Event.prototype as Event & {
+  NONE: number;
+  CAPTURING_PHASE: number;
+  AT_TARGET: number;
+  BUBBLING_PHASE: number;
+  initEvent(type: string, bubbles?: boolean, cancelable?: boolean): void;
+};
+
+eventPrototype.NONE = 0;
+eventPrototype.CAPTURING_PHASE = 1;
+eventPrototype.AT_TARGET = 2;
+eventPrototype.BUBBLING_PHASE = 3;
 
 // Legacy methods
-Event.prototype.initEvent = function(type: string, bubbles: boolean = false, cancelable: boolean = false): void {
+eventPrototype.initEvent = function initEvent(type: string, bubbles: boolean = false, cancelable: boolean = false): void {
   const s = _eventState.get(this);
   if (!s || s.dispatch) return; // no-op if currently dispatching
   s.type = String(type);
@@ -141,19 +151,19 @@ Event.prototype.initEvent = function(type: string, bubbles: boolean = false, can
 };
 
 Object.defineProperty(Event.prototype, 'cancelBubble', {
-  get() { return _eventState.get(this).stopPropagation; },
+  get() { return _eventState.get(this as Event)!.stopPropagation; },
   set(v) { if (v) this.stopPropagation(); },
   configurable: true,
 });
 
 Object.defineProperty(Event.prototype, 'returnValue', {
-  get() { return !_eventState.get(this).defaultPrevented; },
+  get() { return !_eventState.get(this as Event)!.defaultPrevented; },
   set(v) { if (!v) this.preventDefault(); },
   configurable: true,
 });
 
 Object.defineProperty(Event.prototype, 'srcElement', {
-  get() { return _eventState.get(this).target; },
+  get() { return _eventState.get(this as Event)!.target; },
   configurable: true,
 });
 
@@ -176,7 +186,7 @@ export class CustomEvent extends Event {
   initCustomEvent(type: string, bubbles: boolean = false, cancelable: boolean = false, detail: unknown = null): void {
     const s = _eventState.get(this);
     if (!s || s.dispatch) return; // no-op if currently dispatching
-    this.initEvent(type, bubbles, cancelable);
+    eventPrototype.initEvent.call(this, type, bubbles, cancelable);
     this.#detail = detail;
   }
 }
@@ -192,7 +202,7 @@ export class EventTarget {
     _listeners.set(this, new Map());
   }
 
-  addEventListener(type: string, callback: ((event: Event) => void) | { handleEvent(event: Event): void } | null, options?: boolean | AddEventListenerOptions): void {
+  addEventListener(type: string, callback: EventCallback | null, options?: boolean | AddEventListenerOptions): void {
     if (callback === null) return;
     if (typeof callback !== 'function' && typeof (callback as any)?.handleEvent !== 'function') return;
     const t = String(type);
@@ -202,7 +212,7 @@ export class EventTarget {
     // If the signal is already aborted, skip adding the listener.
     if (signal != null && signal.aborted) return;
 
-    const listenersMap = _listeners.get(this);
+    const listenersMap = _listeners.get(this)!;
     let list = listenersMap.get(t);
     if (list == null) {
       list = [];
@@ -211,7 +221,7 @@ export class EventTarget {
 
     // Idempotent: same (callback, capture) pair is not added twice.
     for (let i = 0; i < list.length; i++) {
-      if (!list[i].removed && list[i].callback === callback && list[i].capture === capture) {
+      if (!list[i]!.removed && list[i]!.callback === callback && list[i]!.capture === capture) {
         return;
       }
     }
@@ -228,15 +238,15 @@ export class EventTarget {
     }
   }
 
-  removeEventListener(type: string, callback: ((event: Event) => void) | { handleEvent(event: Event): void }, options?: boolean | { capture?: boolean }): void {
+  removeEventListener(type: string, callback: EventCallback, options?: boolean | { capture?: boolean }): void {
     const t = String(type);
     const { capture } = normalizeOptions(options);
-    const listenersMap = _listeners.get(this);
+    const listenersMap = _listeners.get(this)!;
     const list = listenersMap.get(t);
     if (list == null) return;
     for (let i = 0; i < list.length; i++) {
-      if (list[i].callback === callback && list[i].capture === capture && !list[i].removed) {
-        list[i].removed = true;
+      if (list[i]!.callback === callback && list[i]!.capture === capture && !list[i]!.removed) {
+        list[i]!.removed = true;
         list.splice(i, 1);
         return;
       }
@@ -257,14 +267,14 @@ export class EventTarget {
     s.currentTarget = this;
     s.eventPhase = Event.AT_TARGET;
 
-    const listenersMap = _listeners.get(this);
+    const listenersMap = _listeners.get(this)!;
     const list = listenersMap.get(s.type);
 
     if (list != null && list.length > 0) {
       // Snapshot before iteration so mutations during dispatch don't affect order.
       const snapshot = list.slice();
       for (let i = 0; i < snapshot.length; i++) {
-        const lr = snapshot[i];
+        const lr = snapshot[i]!;
         if (lr.removed) continue;
 
         if (lr.once) {

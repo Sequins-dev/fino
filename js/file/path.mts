@@ -1,14 +1,14 @@
 /**
- * boats:path — POSIX path manipulation.
+ * fino:path — POSIX path manipulation.
  *
  * Provides an immutable `Path` class and a set of module-level functions for
  * working with filesystem path strings. All operations are purely in-memory
  * string transformations — no filesystem access, no stat() calls. For actual
- * filesystem I/O, see `boats:file`.
+ * filesystem I/O, see `fino:file`.
  *
  * The module supports POSIX paths (macOS, Linux) by default and has minimal
  * Windows stubs (the separator constants and `isAbsolute` regex detect Windows
- * paths), though Boats itself only runs on POSIX systems today.
+ * paths), though Fino itself only runs on POSIX systems today.
  *
  *
  * ## Immutability
@@ -62,7 +62,7 @@
  *
  *
  * @example
- * import { Path, join, resolve, relative, dirname, basename } from 'boats:file/path';
+ * import { Path, join, resolve, relative, dirname, basename } from './path.mts';
  *
  * const p = new Path('/usr/local/bin');
  * p.dirname()       // Path('/usr/local')
@@ -150,7 +150,9 @@ function _join(parts: (string | Path)[]): string {
 function _resolve(parts: (string | Path)[]): string {
   let resolved = '';
   for (let i = parts.length - 1; i >= 0; i--) {
-    const s = typeof parts[i] === 'string' ? parts[i] : parts[i].toString();
+    const part = parts[i];
+    if (part === undefined) continue;
+    const s = typeof part === 'string' ? part : part.toString();
     if (s.length === 0) continue;
     resolved = resolved.length === 0 ? s : s + SEP + resolved;
     if (IS_ABS_RE.test(s)) break;

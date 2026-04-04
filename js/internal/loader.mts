@@ -14,16 +14,40 @@
  * which would make this module (and `_main.mjs`) async.
  */
 
-import { dlopen } from 'boats:ffi';
+import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from 'internal:globals/encoding';
-import { registerResolve, registerInitMeta } from 'internal:loader-hooks';
+import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
+import { registerResolve, registerInitMeta, getPackageMap } from 'internal:loader-hooks';
 
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
 const lib = dlopen(LIBC, {
   realpath: { parameters: ['buffer', 'buffer'], result: 'pointer' },
 });
+
+interface PackageMapPackage {
+  dir: string;
+  entrypoints?: Record<string, string>;
+  dependencies?: Record<string, string>;
+}
+
+interface PackageMap {
+  root: string;
+  rootDependencies?: Record<string, string>;
+  packages: Record<string, PackageMapPackage>;
+}
+
+const packageMapJson = getPackageMap();
+const packageMap: PackageMap | null = packageMapJson ? JSON.parse(packageMapJson) as PackageMap : null;
+const packageOwners = packageMap
+  ? Object.entries(packageMap.packages)
+    .map(([id, pkg]) => ({
+      id,
+      prefix: packageMap.root + '/' + String(pkg.dir).replace(/\\/g, '/'),
+      dependencies: pkg.dependencies ?? {},
+    }))
+    .sort((a, b) => b.prefix.length - a.prefix.length)
+  : [];
 
 function cstr(s: string): Uint8Array {
   const enc = encodeUtf8(s);
@@ -46,6 +70,59 @@ function realpath(path: string): string | null {
   return decodeUtf8(bytes.subarray(0, len));
 }
 
+function normalizeBareSpecifier(specifier: string): { packageName: string; subpath: string } {
+  if (specifier.startsWith('@')) {
+    const firstSlash = specifier.indexOf('/');
+    const secondSlash = specifier.indexOf('/', firstSlash + 1);
+    if (secondSlash < 0) return { packageName: specifier, subpath: '.' };
+    return {
+      packageName: specifier.slice(0, secondSlash),
+      subpath: './' + specifier.slice(secondSlash + 1),
+    };
+  }
+  const slash = specifier.indexOf('/');
+  if (slash < 0) return { packageName: specifier, subpath: '.' };
+  return {
+    packageName: specifier.slice(0, slash),
+    subpath: './' + specifier.slice(slash + 1),
+  };
+}
+
+function resolveWithPackageMap(specifier: string, referrerDir: string | null): string | null {
+  if (!packageMap) return null;
+  const { packageName, subpath } = normalizeBareSpecifier(specifier);
+  let packageId = packageMap.rootDependencies?.[packageName] ?? null;
+
+  if (referrerDir) {
+    for (const owner of packageOwners) {
+      if (referrerDir === owner.prefix || referrerDir.startsWith(owner.prefix + '/')) {
+        packageId = owner.dependencies?.[packageName] ?? packageId;
+        break;
+      }
+    }
+  }
+
+  if (!packageId) {
+    throw new Error(`Cannot resolve package '${specifier}': no package-map entry. Run 'fino install'.`);
+  }
+
+  const pkg = packageMap.packages?.[packageId];
+  if (!pkg) {
+    throw new Error(`Cannot resolve package '${specifier}': missing package-map record for '${packageId}'`);
+  }
+
+  const target = pkg.entrypoints?.[subpath];
+  if (!target) {
+    throw new Error(`Cannot resolve package subpath '${specifier}' from package map`);
+  }
+
+  const resolved = realpath(packageMap.root + '/' + pkg.dir + '/' + target);
+  if (resolved === null) {
+    throw new Error(`Cannot resolve package '${specifier}': mapped file not found`);
+  }
+  return resolved;
+}
+
 /**
  * Resolve a module specifier to a canonical absolute path.
  *
@@ -63,9 +140,13 @@ function resolve(specifier: string, referrerDir: string | null, root: string): s
   let raw;
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     raw = base + '/' + specifier;
+  } else if (specifier.startsWith('file://')) {
+    raw = specifier.slice('file://'.length);
   } else if (specifier.startsWith('/')) {
     raw = specifier;
   } else {
+    const packageResolved = resolveWithPackageMap(specifier, referrerDir);
+    if (packageResolved !== null) return packageResolved;
     raw = root + '/' + specifier;
   }
 
@@ -90,7 +171,11 @@ function resolve(specifier: string, referrerDir: string | null, root: string): s
  * @param {string} filename   - Absolute canonical path of the module
  * @param {string} root       - The module loader root directory
  */
-function initImportMeta(importMeta: { url: string; filename: string; dirname: string; resolve: (spec: string) => string }, filename: string, root: string): void {
+function initImportMeta(
+  importMeta: ImportMeta & { url?: string; filename?: string; dirname?: string; resolve?: (spec: string) => string },
+  filename: string,
+  root: string,
+): void {
   importMeta.url = 'file://' + filename;
   importMeta.filename = filename;
 
@@ -99,16 +184,20 @@ function initImportMeta(importMeta: { url: string; filename: string; dirname: st
   importMeta.dirname = dirname;
 
   importMeta.resolve = function resolve(spec) {
-    if (spec.startsWith('boats:') || spec.startsWith('internal:')) {
+    if (spec.startsWith('fino:') || spec.startsWith('internal:')) {
       return spec;
     }
 
     let raw;
     if (spec.startsWith('./') || spec.startsWith('../')) {
       raw = dirname + '/' + spec;
+    } else if (spec.startsWith('file://')) {
+      raw = spec.slice('file://'.length);
     } else if (spec.startsWith('/')) {
       raw = spec;
     } else {
+      const packageResolved = resolveWithPackageMap(spec, dirname);
+      if (packageResolved !== null) return 'file://' + packageResolved;
       raw = root + '/' + spec;
     }
 

@@ -1,5 +1,5 @@
 /**
- * boats:urlpattern — URLPattern (WHATWG URL Pattern API)
+ * fino:urlpattern — URLPattern (WHATWG URL Pattern API)
  *
  * URLPattern lets you declare a pattern for URL matching and then test or
  * match URLs against it. It is used primarily in HTTP routing (matching
@@ -103,7 +103,7 @@
  * //   \x            — literal escape
  */
 
-import { URL } from 'internal:globals/url';
+import { URL } from './url.mts';
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -132,9 +132,31 @@ interface URLPatternInit {
   hash?: string;
 }
 
+interface ParsedURLPatternInit {
+  protocol: string | undefined;
+  username: string | undefined;
+  password: string | undefined;
+  hostname: string | undefined;
+  port: string | undefined;
+  pathname: string | undefined;
+  search: string | undefined;
+  hash: string | undefined;
+}
+
 interface URLPatternComponentResult {
   input: string;
   groups: Record<string, string | undefined>;
+}
+
+interface URLComponentDict {
+  protocol: string;
+  username: string;
+  password: string;
+  hostname: string;
+  port: string;
+  pathname: string;
+  search: string;
+  hash: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +174,7 @@ const T_CLOSE    = 7;
 const T_MODIFIER = 8;
 
 function _tokenize(pattern: string): Token[] {
-  const tokens = [];
+  const tokens: Token[] = [];
   let i = 0;
   let textBuf = '';
 
@@ -164,11 +186,11 @@ function _tokenize(pattern: string): Token[] {
   }
 
   while (i < pattern.length) {
-    const ch = pattern[i];
+    const ch = pattern[i]!;
 
     if (ch === '\\' && i + 1 < pattern.length) {
       flushText();
-      tokens.push({ type: T_ESCAPED, value: pattern[i + 1] });
+      tokens.push({ type: T_ESCAPED, value: pattern[i + 1]! });
       i += 2;
       continue;
     }
@@ -176,8 +198,8 @@ function _tokenize(pattern: string): Token[] {
     if (ch === ':') {
       let name = '';
       i++;
-      while (i < pattern.length && /[\w]/.test(pattern[i])) {
-        name += pattern[i++];
+      while (i < pattern.length && /[\w]/.test(pattern[i]!)) {
+        name += pattern[i++]!;
       }
       if (name) {
         flushText();
@@ -194,9 +216,9 @@ function _tokenize(pattern: string): Token[] {
       let regex = '';
       i++;
       while (i < pattern.length) {
-        const c = pattern[i];
+        const c = pattern[i]!;
         if (c === '\\' && i + 1 < pattern.length) {
-          regex += c + pattern[i + 1];
+          regex += c + pattern[i + 1]!;
           i += 2;
           continue;
         }
@@ -246,7 +268,7 @@ function _escapeRe(str: string): string {
 function _peekModifier(tokens: Token[], i: number): string {
   const tok = tokens[i];
   if (!tok) return '';
-  if (tok.type === T_MODIFIER) return tok.value;
+  if (tok.type === T_MODIFIER) return tok.value ?? '';
   if (tok.type === T_ASTERISK) return '*';
   return '';
 }
@@ -280,23 +302,23 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
   const defaultPat = delimiter ? '[^' + _escapeRe(delimiter) + ']+?' : '.+?';
   const escapedDelim = delimiter ? _escapeRe(delimiter) : '';
 
-  const keys = [];
+  const keys: Array<{ name: string }> = [];
   let groupIndex = 0;
   let src = '';
   let i = 0;
   let hasRegExpGroups = false;
 
-  while (tokens[i].type !== T_END) {
-    const tok = tokens[i];
+  while (tokens[i]!.type !== T_END) {
+    const tok = tokens[i]!;
 
     if (tok.type === T_TEXT) {
-      src += _escapeRe(tok.value);
+      src += _escapeRe(tok.value!);
       i++;
       continue;
     }
 
     if (tok.type === T_ESCAPED) {
-      src += _escapeRe(tok.value);
+      src += _escapeRe(tok.value!);
       i++;
       continue;
     }
@@ -311,11 +333,11 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
     }
 
     if (tok.type === T_NAME) {
-      const name = tok.value;
+      const name = tok.value!;
       i++;
       let pat;
-      if (tokens[i].type === T_PATTERN) {
-        pat = tokens[i].value;
+      if (tokens[i]!.type === T_PATTERN) {
+        pat = tokens[i]!.value!;
         // A named param with a custom regexp counts as a regexp group.
         hasRegExpGroups = true;
         i++;
@@ -336,7 +358,7 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
       i++;
       const mod = _peekModifier(tokens, i);
       if (mod) i++;
-      src += _applyModifier(tok.value, mod, escapedDelim);
+      src += _applyModifier(tok.value!, mod, escapedDelim);
       continue;
     }
 
@@ -344,26 +366,26 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
       i++; // consume {
       let innerSrc = '';
       let depth = 1;
-      while (tokens[i].type !== T_END) {
-        if (tokens[i].type === T_CLOSE) {
+      while (tokens[i]!.type !== T_END) {
+        if (tokens[i]!.type === T_CLOSE) {
           depth--;
           if (depth === 0) { i++; break; }
         }
-        if (tokens[i].type === T_OPEN) depth++;
+        if (tokens[i]!.type === T_OPEN) depth++;
 
-        const inner = tokens[i];
+        const inner = tokens[i]!;
         if (inner.type === T_TEXT) {
-          innerSrc += _escapeRe(inner.value);
+          innerSrc += _escapeRe(inner.value!);
           i++;
         } else if (inner.type === T_ESCAPED) {
-          innerSrc += _escapeRe(inner.value);
+          innerSrc += _escapeRe(inner.value!);
           i++;
         } else if (inner.type === T_NAME) {
-          keys.push({ name: inner.value });
+          keys.push({ name: inner.value! });
           i++;
           let ipat;
-          if (tokens[i].type === T_PATTERN) {
-            ipat = tokens[i].value;
+          if (tokens[i]!.type === T_PATTERN) {
+            ipat = tokens[i]!.value!;
             hasRegExpGroups = true;
             i++;
           } else {
@@ -373,7 +395,7 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
         } else if (inner.type === T_PATTERN) {
           hasRegExpGroups = true;
           keys.push({ name: String(groupIndex++) });
-          innerSrc += '(' + inner.value + ')';
+          innerSrc += '(' + inner.value! + ')';
           i++;
         } else if (inner.type === T_ASTERISK) {
           keys.push({ name: String(groupIndex++) });
@@ -450,18 +472,18 @@ function _splitHostPort(str: string): { hostname: string; port: string } {
  * a named param (:name), a pattern group ((...)), a brace group ({...}),
  * or an asterisk (*). In those cases '?' is a modifier.
  */
-function _splitPathnameSearchHash(str: string): { pathname: string; search?: string; hash?: string } {
+function _splitPathnameSearchHash(str: string): { pathname: string; search: string | undefined; hash: string | undefined } {
   let pathname = '';
-  let search;
-  let hash;
+  let search: string | undefined;
+  let hash: string | undefined;
   let i = 0;
   let lastWasParam = false;
 
   while (i < str.length) {
-    const ch = str[i];
+    const ch = str[i]!;
 
     if (ch === '\\' && i + 1 < str.length) {
-      pathname += ch + str[i + 1];
+      pathname += ch + str[i + 1]!;
       i += 2;
       lastWasParam = false;
       continue;
@@ -470,7 +492,7 @@ function _splitPathnameSearchHash(str: string): { pathname: string; search?: str
     if (ch === ':') {
       let name = ch;
       i++;
-      while (i < str.length && /\w/.test(str[i])) name += str[i++];
+      while (i < str.length && /\w/.test(str[i]!)) name += str[i++]!;
       if (name.length > 1) {
         pathname += name;
         lastWasParam = true;
@@ -485,8 +507,8 @@ function _splitPathnameSearchHash(str: string): { pathname: string; search?: str
       let depth = 1, group = ch;
       i++;
       while (i < str.length && depth > 0) {
-        const c = str[i];
-        if (c === '\\' && i + 1 < str.length) { group += c + str[i + 1]; i += 2; continue; }
+        const c = str[i]!;
+        if (c === '\\' && i + 1 < str.length) { group += c + str[i + 1]!; i += 2; continue; }
         if (c === '(') depth++;
         else if (c === ')') depth--;
         group += c;
@@ -561,8 +583,8 @@ function _splitPathnameSearchHash(str: string): { pathname: string; search?: str
  * Returns an object with the same shape as a URLPatternInit, but any
  * component not present in the string is left as undefined.
  */
-function _parsePatternInitString(input: string): URLPatternInit {
-  const result = {
+function _parsePatternInitString(input: string): ParsedURLPatternInit {
+  const result: ParsedURLPatternInit = {
     protocol: undefined, username: undefined, password: undefined,
     hostname: undefined, port: undefined, pathname: undefined,
     search: undefined, hash: undefined,
@@ -660,9 +682,9 @@ function _compileComponent(patternStr: string | undefined, options: { delimiter:
 function _matchComponent(compiled: CompiledPattern, value: string): URLPatternComponentResult | null {
   const m = compiled.regexp.exec(value);
   if (!m) return null;
-  const groups = {};
+  const groups: Record<string, string | undefined> = {};
   for (let i = 0; i < compiled.keys.length; i++) {
-    const k = compiled.keys[i];
+    const k = compiled.keys[i]!;
     const v = m[i + 1];
     groups[k.name] = v !== undefined ? v : undefined;
   }
@@ -673,10 +695,15 @@ function _matchComponent(compiled: CompiledPattern, value: string): URLPatternCo
 // Resolve test/exec input → URL component dict
 // ---------------------------------------------------------------------------
 
-function _extractComponents(input: string | { href: string } | URLPatternInit, baseURL?: string): Record<string, string> | null {
-  if (typeof input === 'string' || (input != null && typeof input.href === 'string')) {
+function _hasHref(input: unknown): input is { href: string } {
+  return input != null && typeof input === 'object' && typeof (input as { href?: string }).href === 'string';
+}
+
+function _extractComponents(input: string | { href: string } | URLPatternInit, baseURL?: string): URLComponentDict | null {
+  if (typeof input === 'string' || _hasHref(input)) {
     try {
-      const url = new URL(typeof input === 'string' ? input : input.href, baseURL);
+      const href = typeof input === 'string' ? input : input.href;
+      const url = new URL(href, baseURL);
       return {
         protocol: url.protocol.replace(/:$/, ''),
         username: url.username,
@@ -692,15 +719,16 @@ function _extractComponents(input: string | { href: string } | URLPatternInit, b
     }
   }
   // URLPatternInit object
+  const init = input as URLPatternInit;
   return {
-    protocol: input.protocol != null ? String(input.protocol).replace(/:$/, '') : '',
-    username: input.username != null ? String(input.username) : '',
-    password: input.password != null ? String(input.password) : '',
-    hostname: input.hostname != null ? String(input.hostname) : '',
-    port:     input.port     != null ? String(input.port)     : '',
-    pathname: input.pathname != null ? String(input.pathname) : '',
-    search:   input.search   != null ? String(input.search).replace(/^\?/, '') : '',
-    hash:     input.hash     != null ? String(input.hash).replace(/^#/, '')    : '',
+    protocol: init.protocol != null ? String(init.protocol).replace(/:$/, '') : '',
+    username: init.username != null ? String(init.username) : '',
+    password: init.password != null ? String(init.password) : '',
+    hostname: init.hostname != null ? String(init.hostname) : '',
+    port:     init.port     != null ? String(init.port)     : '',
+    pathname: init.pathname != null ? String(init.pathname) : '',
+    search:   init.search   != null ? String(init.search).replace(/^\?/, '') : '',
+    hash:     init.hash     != null ? String(init.hash).replace(/^#/, '')    : '',
   };
 }
 
@@ -721,7 +749,7 @@ export class URLPattern {
   get [Symbol.toStringTag]() { return 'URLPattern'; }
 
   constructor(input: string | URLPatternInit, baseURL?: string) {
-    let init;
+    let init: ParsedURLPatternInit | URLPatternInit;
 
     if (typeof input === 'string') {
       init = _parsePatternInitString(input);
@@ -742,14 +770,14 @@ export class URLPattern {
       throw new TypeError('URLPattern: first argument must be a string or object');
     }
 
-    this.#protocol = _compileComponent(init.protocol, COMPONENT_OPTIONS.protocol);
-    this.#username = _compileComponent(init.username, COMPONENT_OPTIONS.username);
-    this.#password = _compileComponent(init.password, COMPONENT_OPTIONS.password);
-    this.#hostname = _compileComponent(init.hostname, COMPONENT_OPTIONS.hostname);
-    this.#port     = _compileComponent(init.port,     COMPONENT_OPTIONS.port);
-    this.#pathname = _compileComponent(init.pathname, COMPONENT_OPTIONS.pathname);
-    this.#search   = _compileComponent(init.search,   COMPONENT_OPTIONS.search);
-    this.#hash     = _compileComponent(init.hash,     COMPONENT_OPTIONS.hash);
+    this.#protocol = _compileComponent(init.protocol, COMPONENT_OPTIONS.protocol!);
+    this.#username = _compileComponent(init.username, COMPONENT_OPTIONS.username!);
+    this.#password = _compileComponent(init.password, COMPONENT_OPTIONS.password!);
+    this.#hostname = _compileComponent(init.hostname, COMPONENT_OPTIONS.hostname!);
+    this.#port     = _compileComponent(init.port,     COMPONENT_OPTIONS.port!);
+    this.#pathname = _compileComponent(init.pathname, COMPONENT_OPTIONS.pathname!);
+    this.#search   = _compileComponent(init.search,   COMPONENT_OPTIONS.search!);
+    this.#hash     = _compileComponent(init.hash,     COMPONENT_OPTIONS.hash!);
   }
 
   // Pattern string accessors

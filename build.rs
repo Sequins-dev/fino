@@ -1,7 +1,10 @@
-use std::{env, fs, path::Path};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use oxc_allocator::Allocator;
-use oxc_codegen::Codegen;
+use oxc_codegen::{Codegen, CodegenOptions};
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
@@ -9,6 +12,18 @@ use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
 
 fn main() {
     println!("cargo:rerun-if-changed=js/");
+    println!("cargo:rerun-if-changed=src/profiler/binding.cc");
+
+    // Compile the CpuProfiler C++ shim against V8 headers.
+    let v8_include = find_v8_include();
+    let v8_src = v8_include.parent().unwrap().parent().unwrap().join("src"); // for support.h
+    cc::Build::new()
+        .cpp(true)
+        .flag("-std=c++20")
+        .include(&v8_include)
+        .include(&v8_src)
+        .file("src/profiler/binding.cc")
+        .compile("fino_profiler_binding");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
     let out_dir = env::var("OUT_DIR").unwrap();
@@ -42,6 +57,7 @@ fn process_dir(src_root: &Path, src_dir: &Path, out_root: &Path) {
 fn process_mts(src_root: &Path, src_path: &Path, out_root: &Path) {
     let rel = src_path.strip_prefix(src_root).unwrap();
     let out_path = out_root.join(rel).with_extension("mjs");
+    let map_path = out_root.join(rel).with_extension("mjs.map");
 
     fs::create_dir_all(out_path.parent().unwrap()).expect("failed to create output directory");
 
@@ -51,8 +67,10 @@ fn process_mts(src_root: &Path, src_path: &Path, out_root: &Path) {
     let stripped = strip_types(src_path, &source_text)
         .unwrap_or_else(|e| panic!("TypeScript error in {}: {e}", src_path.display()));
 
-    fs::write(&out_path, stripped)
+    fs::write(&out_path, stripped.code)
         .unwrap_or_else(|e| panic!("failed to write {}: {e}", out_path.display()));
+    fs::write(&map_path, stripped.map.to_json_string())
+        .unwrap_or_else(|e| panic!("failed to write {}: {e}", map_path.display()));
 }
 
 /// Copy a .mjs file as-is into OUT_DIR (for files not yet converted to .mts).
@@ -66,8 +84,13 @@ fn copy_mjs(src_root: &Path, src_path: &Path, out_root: &Path) {
         .unwrap_or_else(|e| panic!("failed to copy {}: {e}", src_path.display()));
 }
 
+struct TranspiledSource {
+    code: String,
+    map: oxc_sourcemap::SourceMap,
+}
+
 /// Strip TypeScript type annotations from source text, returning plain JS.
-fn strip_types(path: &Path, source_text: &str) -> Result<String, String> {
+fn strip_types(path: &Path, source_text: &str) -> Result<TranspiledSource, String> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
 
@@ -102,5 +125,46 @@ fn strip_types(path: &Path, source_text: &str) -> Result<String, String> {
         return Err(msgs.join("\n"));
     }
 
-    Ok(Codegen::new().build(&program).code)
+    let generated = Codegen::new()
+        .with_options(CodegenOptions {
+            source_map_path: Some(path.to_path_buf()),
+            ..CodegenOptions::default()
+        })
+        .with_source_text(source_text)
+        .build(&program);
+
+    Ok(TranspiledSource {
+        code: generated.code,
+        map: generated.map.expect("source map should be generated"),
+    })
+}
+
+/// Locate the V8 crate's `v8/include/` directory by scanning the Cargo registry.
+/// The v8 crate vendors its V8 headers, and we need them to compile our C++ shim.
+fn find_v8_include() -> PathBuf {
+    let cargo_home = env::var("CARGO_HOME").unwrap_or_else(|_| {
+        let home = env::var("HOME").expect("HOME not set");
+        format!("{home}/.cargo")
+    });
+    let registry_src = PathBuf::from(&cargo_home).join("registry/src");
+
+    if let Ok(entries) = fs::read_dir(&registry_src) {
+        for index_entry in entries.flatten() {
+            if let Ok(pkgs) = fs::read_dir(index_entry.path()) {
+                for pkg_entry in pkgs.flatten() {
+                    let name = pkg_entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("v8-") {
+                        let include = pkg_entry.path().join("v8/include");
+                        if include.exists() {
+                            return include;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    panic!(
+        "Could not find v8 crate include directory in Cargo registry. Set CARGO_HOME if needed."
+    );
 }

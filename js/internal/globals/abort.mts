@@ -1,5 +1,5 @@
 /**
- * boats:abort — AbortController and AbortSignal (WHATWG DOM spec)
+ * fino:abort — AbortController and AbortSignal (WHATWG DOM spec)
  *
  * AbortController / AbortSignal is the cancellation primitive used across
  * the web platform: fetch(), stream readers, and any API that accepts a
@@ -10,7 +10,7 @@
  * ## AbortSignal extends EventTarget
  *
  * AbortSignal inherits addEventListener / removeEventListener / dispatchEvent
- * from `boats:eventtarget`. The abort event is dispatched as a proper Event
+ * from `fino:eventtarget`. The abort event is dispatched as a proper Event
  * instance. The `onabort` IDL event handler fires before registered listeners
  * (consistent with browsers and the previous ad-hoc implementation).
  *
@@ -30,8 +30,8 @@
  *
  * ## AbortSignal.timeout(ms)
  *
- * Uses `boats:loop` to set a timer. The import is done lazily
- * (`import('boats:runtime/loop')`) to avoid a circular dependency.
+ * Uses `fino:loop` to set a timer. The import is done lazily to avoid a
+ * circular dependency at module load time.
  *
  *
  * ## AbortSignal.any(signals)
@@ -57,7 +57,7 @@
  * AbortSignal.any(signals)     // signal that aborts when any input signal aborts
  */
 
-import { EventTarget, Event } from 'internal:globals/eventtarget';
+import { EventTarget, Event } from './eventtarget.mts';
 
 // ---------------------------------------------------------------------------
 // Internal
@@ -66,6 +66,12 @@ import { EventTarget, Event } from 'internal:globals/eventtarget';
 // Maps each AbortSignal to its internal abort trigger function.
 // Created inside the constructor so the closure has private-field access.
 const _signalAbort = new WeakMap<AbortSignal, (reason: unknown) => void>();
+
+function defaultAbortError(message: string, name: string): Error {
+  const error = new Error(message);
+  error.name = name;
+  return error;
+}
 
 // Guards against direct `new AbortSignal()` — must only be created via _createSignal().
 let _allowConstruct = false;
@@ -90,7 +96,7 @@ export class AbortSignal extends EventTarget {
     _allowConstruct = false;
     super();
     const signal = this;
-    _signalAbort.set(this, function (reason) {
+    _signalAbort.set(this, function (reason: unknown) {
       if (signal.#aborted) return;
       signal.#aborted = true;
       signal.#reason = reason;
@@ -121,38 +127,20 @@ export class AbortSignal extends EventTarget {
 
   static abort(reason?: unknown): AbortSignal {
     if (reason === undefined) {
-      reason = new Error('The operation was aborted.');
-      reason.name = 'AbortError';
+      reason = defaultAbortError('The operation was aborted.', 'AbortError');
     }
     const signal = _createSignal();
-    _signalAbort.get(signal)(reason);
+    _signalAbort.get(signal)?.(reason);
     return signal;
   }
 
   static timeout(ms: number): AbortSignal {
     const signal = _createSignal();
     const fireAbort = _signalAbort.get(signal);
-    import('boats:runtime/loop').then(function (loop) {
-      const currentLp = loop.current();
-      if (currentLp) {
-        // Attach the timer to the current loop so it's owned by whoever called
-        // AbortSignal.timeout() — no extra root loop created.
-        loop.timeout(currentLp, ms).then(function () {
-          const err = new Error('The operation timed out.');
-          err.name = 'TimeoutError';
-          fireAbort(err);
-        });
-      } else {
-        // No current loop (e.g., called at module level) — create an ephemeral
-        // root loop just for this timer and destroy it when the timer fires.
-        const lp = loop.create();
-        loop.timeout(lp, ms).then(function () {
-          loop.destroy(lp);
-          const err = new Error('The operation timed out.');
-          err.name = 'TimeoutError';
-          fireAbort(err);
-        });
-      }
+    import('../../runtime/loop.mts').then(function (loop) {
+      loop.timeout(ms).then(function () {
+        fireAbort?.(defaultAbortError('The operation timed out.', 'TimeoutError'));
+      });
     });
     return signal;
   }
@@ -173,15 +161,15 @@ export class AbortSignal extends EventTarget {
     for (let i = 0; i < arr.length; i++) {
       const sig = arr[i] as AbortSignal;
       if (sig.aborted) {
-        doAbort(sig.reason);
+        doAbort?.(sig.reason);
         return out;
       }
     }
     const listeners: Array<[AbortSignal, () => void]> = [];
     function onAbort(sig: AbortSignal): void {
-      doAbort(sig.reason);
+      doAbort?.(sig.reason);
       for (let j = 0; j < listeners.length; j++) {
-        listeners[j][0].removeEventListener('abort', listeners[j][1]);
+        listeners[j]![0].removeEventListener('abort', listeners[j]![1]);
       }
     }
     for (let i = 0; i < arr.length; i++) {
@@ -206,9 +194,8 @@ export class AbortController {
 
   abort(reason?: unknown): void {
     if (reason === undefined) {
-      reason = new Error('The operation was aborted.');
-      reason.name = 'AbortError';
+      reason = defaultAbortError('The operation was aborted.', 'AbortError');
     }
-    _signalAbort.get(this.#signal)(reason);
+    _signalAbort.get(this.#signal)?.(reason);
   }
 }

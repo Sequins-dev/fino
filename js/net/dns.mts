@@ -1,16 +1,16 @@
 /**
- * boats:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.
+ * fino:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.
  *
  * This module implements DNS resolution entirely in JS by speaking the DNS
- * wire protocol directly over UDP sockets (from `boats:socket`). It reads
- * nameservers from `/etc/resolv.conf` via `boats:file`. No blocking libc
+ * wire protocol directly over UDP sockets (from `fino:socket`). It reads
+ * nameservers from `/etc/resolv.conf` via `fino:file`. No blocking libc
  * calls are made — the entire resolution path is async and event-loop driven.
  *
  *
  * ## Why not use libc getaddrinfo?
  *
  * `getaddrinfo(3)` is the standard libc function for DNS resolution, but it
- * blocks the calling thread. Calling it from Boats would freeze the entire
+ * blocks the calling thread. Calling it from Fino would freeze the entire
  * event loop for the duration of the DNS query — potentially hundreds of
  * milliseconds. Using raw UDP lets us await the response asynchronously via
  * `loop.readable()`, keeping the process responsive to other I/O while the
@@ -103,16 +103,19 @@
  * - DNSSEC validation is not implemented. Responses are trusted at face value.
  */
 
-import * as sock from 'boats:net/socket';
-import * as loop from 'boats:runtime/loop';
-import { DiskFileSystem } from 'boats:file';
-import { decodeUtf8, encodeUtf8 } from 'internal:globals/encoding';
+import * as sock from './socket.mts';
+import * as loop from '../runtime/loop.mts';
+import { DiskFileSystem } from '../file/fs.mts';
+import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
 import { os } from 'internal:process';
-import type { LoopHandle } from 'boats:runtime/loop';
 
-interface DnsServer { ip: string; family: string; }
+type DnsServerFamily = 'ipv4' | 'ipv6';
+type RecordTypeName = keyof typeof RECORD_TYPES;
 
-export interface MxRecord   { preference: number; exchange: string; }
+interface DnsServer { ip: string; family: DnsServerFamily; }
+interface DnsError extends Error { code?: string; hostname?: string; }
+
+export interface MxRecord   { priority: number; exchange: string; }
 export interface SoaRecord  { nsname: string; hostmaster: string; serial: number; refresh: number; retry: number; expire: number; minttl: number; }
 export interface SrvRecord  { priority: number; weight: number; port: number; name: string; }
 
@@ -162,7 +165,7 @@ export const RECORD_TYPES = {
   TXT:   QTYPE_TXT,   AAAA: QTYPE_AAAA, SRV:  QTYPE_SRV,
 };
 
-const RCODE_ERRORS = {
+const RCODE_ERRORS: Partial<Record<number, { code: string; msg: string }>> = {
   1: { code: 'EFORMERR',  msg: 'format error'    },
   2: { code: 'ESERVFAIL', msg: 'server failure'   },
   3: { code: 'ENOTFOUND', msg: 'domain not found' },
@@ -173,19 +176,24 @@ const RCODE_ERRORS = {
 const DEFAULT_SERVERS = [
   { ip: '8.8.8.8', family: 'ipv4' },
   { ip: '8.8.4.4', family: 'ipv4' },
-];
+] satisfies DnsServer[];
 
 // ---------------------------------------------------------------------------
 // Binary read helpers (big-endian, operating on Uint8Array)
 // ---------------------------------------------------------------------------
 
 function readU16(buf: Uint8Array, offset: number): number {
-  return (buf[offset] << 8) | buf[offset + 1];
+  const a = buf[offset] ?? 0;
+  const b = buf[offset + 1] ?? 0;
+  return (a << 8) | b;
 }
 
 function readU32(buf: Uint8Array, offset: number): number {
-  return ((buf[offset] << 24) | (buf[offset + 1] << 16) |
-          (buf[offset + 2] << 8)  | buf[offset + 3]) >>> 0;
+  const a = buf[offset] ?? 0;
+  const b = buf[offset + 1] ?? 0;
+  const c = buf[offset + 2] ?? 0;
+  const d = buf[offset + 3] ?? 0;
+  return ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +276,7 @@ export function _buildQuery(id: number, name: string, qtype: number): Uint8Array
  * Exported for unit testing.
  */
 export function _decodeName(msg: Uint8Array, startOffset: number): { name: string; nextOffset: number } {
-  const parts = [];
+  const parts: string[] = [];
   let offset    = startOffset;
   let hops      = 0;
   let endOffset = -1;
@@ -276,12 +284,13 @@ export function _decodeName(msg: Uint8Array, startOffset: number): { name: strin
   while (true) {
     if (offset >= msg.length) break;
     const len = msg[offset];
+    if (len === undefined) break;
 
     if ((len & 0xC0) === 0xC0) {
       // Compression pointer (2 bytes): remaining 14 bits = offset into msg
       if (endOffset === -1) endOffset = offset + 2;
       if (hops++ > 128) throw new Error('DNS: compression pointer loop detected');
-      offset = ((len & 0x3F) << 8) | msg[offset + 1];
+      offset = ((len & 0x3F) << 8) | (msg[offset + 1] ?? 0);
       continue;
     }
 
@@ -296,6 +305,7 @@ export function _decodeName(msg: Uint8Array, startOffset: number): { name: strin
     offset += len;
   }
 
+  if (endOffset === -1) endOffset = offset;
   return { name: parts.join('.'), nextOffset: endOffset };
 }
 
@@ -316,7 +326,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
   const rdataStart = offset;
   const rdataEnd   = offset + rdlength;
 
-  let data;
+  let data: DnsRecordData;
   switch (type) {
     case QTYPE_A: {
       data = `${msg[rdataStart]}.${msg[rdataStart+1]}.${msg[rdataStart+2]}.${msg[rdataStart+3]}`;
@@ -333,16 +343,17 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
       break;
     }
     case QTYPE_MX: {
-      const preference = readU16(msg, rdataStart);
+      const priority = readU16(msg, rdataStart);
       const exchange   = _decodeName(msg, rdataStart + 2).name;
-      data = { preference, exchange };
+      data = { priority, exchange };
       break;
     }
     case QTYPE_TXT: {
-      const strings = [];
+      const strings: string[] = [];
       let pos = rdataStart;
       while (pos < rdataEnd) {
         const slen = msg[pos++];
+        if (slen === undefined) break;
         strings.push(decodeUtf8(msg.subarray(pos, pos + slen)));
         pos += slen;
       }
@@ -413,12 +424,12 @@ export function _parseResponse(msg: Uint8Array): DnsResponse {
     offset = nextOffset + 4; // +4: QTYPE(2) + QCLASS(2)
   }
 
-  const answers     = [];
-  const authorities = [];
-  const additionals = [];
+  const answers: DnsResourceRecord[] = [];
+  const authorities: DnsResourceRecord[] = [];
+  const additionals: DnsResourceRecord[] = [];
 
   // Closure captures and mutates `offset`
-  function readRRs(out, count) {
+  function readRRs(out: DnsResourceRecord[], count: number) {
     for (let i = 0; i < count; i++) {
       const { record, nextOffset } = parseResourceRecord(msg, offset);
       offset = nextOffset;
@@ -454,7 +465,11 @@ function formatIPv6(bytes16: Uint8Array): string {
   // bytes 2-3: port = 0 | bytes 4-7: flowinfo = 0
   new Uint8Array(buf, 8, 16).set(bytes16.subarray(0, 16)); // sin6_addr
   // bytes 24-27: scope_id = 0
-  return sock.decodeAddr(buf).ip;
+  const addr = sock.decodeAddr(buf);
+  if ('ip' in addr && typeof addr.ip === 'string') {
+    return addr.ip;
+  }
+  return '';
 }
 
 /**
@@ -475,7 +490,7 @@ export function _reverseIP(ip: string): string {
 function ipv6ToPtrName(ip: string): string {
   // Handle :: expansion → full 8 groups of 4 hex digits
   const halves = ip.split('::');
-  let groups;
+  let groups: string[];
   if (halves.length === 2) {
     const left  = halves[0] ? halves[0].split(':') : [];
     const right = halves[1] ? halves[1].split(':') : [];
@@ -492,20 +507,31 @@ function ipv6ToPtrName(ip: string): string {
 // Result formatting per record type
 // ---------------------------------------------------------------------------
 
-function formatRecords(records: DnsResourceRecord[], rrtype: string): DnsRecordData[] | DnsRecordData {
+function isStringRecord(record: DnsResourceRecord): record is DnsResourceRecord & { data: string } {
+  return typeof record.data === 'string';
+}
+
+function isMxRecord(record: DnsResourceRecord): record is DnsResourceRecord & { data: MxRecord } {
+  return record.data !== null
+    && typeof record.data === 'object'
+    && 'exchange' in record.data
+    && 'priority' in record.data;
+}
+
+function formatRecords(records: DnsResourceRecord[], rrtype: RecordTypeName): DnsRecordData[] {
   switch (rrtype) {
     case 'A':
     case 'AAAA':
     case 'CNAME':
     case 'NS':
     case 'PTR':
-      return records.map(r => r.data);
+      return records.filter(isStringRecord).map(r => r.data);
     case 'MX':
-      return records.map(r => ({ exchange: r.data.exchange, priority: r.data.preference }));
+      return records.filter(isMxRecord).map(r => r.data);
     case 'TXT':
       return records.map(r => r.data);
     case 'SOA':
-      return records.length > 0 ? records[0].data : null;
+      return records.length > 0 && records[0] ? [records[0].data] : [];
     case 'SRV':
       return records.map(r => r.data);
     default:
@@ -518,20 +544,17 @@ function formatRecords(records: DnsResourceRecord[], rrtype: string): DnsRecordD
 // ---------------------------------------------------------------------------
 
 export class Resolver {
-  #lp: LoopHandle;
   #servers: DnsServer[] | null;
   #serversLoaded: Promise<void> | null;
   #timeout: number;
   #retries: number;
 
   /**
-   * @param {object} lp              Event loop handle from `loop.create()`.
    * @param {object} [opts]
    * @param {number} [opts.timeout=5000]  Query timeout in milliseconds.
    * @param {number} [opts.retries=2]     Retry attempts per server.
    */
-  constructor(lp: LoopHandle, opts: ResolverOptions = {}) {
-    this.#lp            = lp;
+  constructor(opts: ResolverOptions = {}) {
     this.#servers       = null;
     this.#serversLoaded = null;
     this.#timeout       = opts.timeout ?? 5000;
@@ -579,11 +602,8 @@ export class Resolver {
    * @param {string} [rrtype='A']  One of: A AAAA CNAME MX NS PTR SOA SRV TXT
    * @returns {Promise<Array>}
    */
-  async resolve(hostname: string, rrtype: string = 'A'): Promise<DnsRecordData[]> {
+  async resolve(hostname: string, rrtype: RecordTypeName = 'A'): Promise<DnsRecordData[]> {
     const qtypeNum = RECORD_TYPES[rrtype];
-    if (qtypeNum === undefined) {
-      throw new Error(`dns: unknown record type '${rrtype}'`);
-    }
 
     // For A/AAAA, follow CNAME chains up to 10 hops
     const followCname = (rrtype === 'A' || rrtype === 'AAAA');
@@ -599,7 +619,7 @@ export class Resolver {
 
       if (followCname) {
         const cname = response.answers.find(r => r.type === QTYPE_CNAME);
-        if (cname) {
+        if (cname && typeof cname.data === 'string') {
           name = cname.data;
           continue;
         }
@@ -608,7 +628,7 @@ export class Resolver {
       return [];
     }
 
-    const err = new Error(`dns: too many CNAME hops for '${hostname}'`);
+    const err: DnsError = new Error(`dns: too many CNAME hops for '${hostname}'`);
     err.code     = 'ENODATA';
     err.hostname = hostname;
     throw err;
@@ -654,14 +674,14 @@ export class Resolver {
 
   async #loadServers() {
     try {
-      const fs   = new DiskFileSystem(this.#lp);
+      const fs   = new DiskFileSystem();
       const text = await fs.readFile('/etc/resolv.conf');
-      const servers = [];
+      const servers: DnsServer[] = [];
       for (const line of text.split('\n')) {
         const trimmed = line.trim();
         if (!trimmed.startsWith('nameserver')) continue;
         const parts = trimmed.split(/\s+/);
-        if (parts.length >= 2) {
+        if (parts.length >= 2 && parts[1]) {
           const ip = parts[1];
           servers.push({ ip, family: ip.includes(':') ? 'ipv6' : 'ipv4' });
         }
@@ -688,9 +708,10 @@ export class Resolver {
     const packet = _buildQuery(id, name, qtype);
 
     const TIMED_OUT = Symbol('timeout');
+    const servers = this.#servers ?? DEFAULT_SERVERS;
 
     for (let attempt = 0; attempt <= this.#retries; attempt++) {
-      for (const server of this.#servers) {
+      for (const server of servers) {
         const af = server.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET;
 
         let fd;
@@ -713,13 +734,14 @@ export class Resolver {
         }
 
         // Race the fd becoming readable against a timeout
+        const dnsTimer = loop.timeout(this.#timeout);
         const result = await Promise.race([
-          loop.readable(this.#lp, fd).then(() => 'ready'),
-          loop.timeout(this.#lp, this.#timeout).then(() => TIMED_OUT),
+          loop.readable(fd).then(function dnsReady() { dnsTimer.cancel(); return 'ready'; }),
+          dnsTimer.then(function dnsTimedOut() { return TIMED_OUT; }),
         ]);
 
         if (result === TIMED_OUT) {
-          loop.removeRead(this.#lp, fd);
+          loop.removeRead(fd);
           sock.close(fd);
           continue; // try next server
         }
@@ -746,7 +768,7 @@ export class Resolver {
         if (response.rcode !== 0) {
           const rcodeInfo = RCODE_ERRORS[response.rcode];
           if (rcodeInfo) {
-            const err = new Error(`dns: ${rcodeInfo.msg} for '${name}'`);
+            const err: DnsError = new Error(`dns: ${rcodeInfo.msg} for '${name}'`);
             err.code     = rcodeInfo.code;
             err.hostname = name;
             throw err;
@@ -758,7 +780,7 @@ export class Resolver {
       }
     }
 
-    const err = new Error(`dns: query timed out for '${name}'`);
+    const err: DnsError = new Error(`dns: query timed out for '${name}'`);
     err.code     = 'ETIMEOUT';
     err.hostname = name;
     throw err;
@@ -769,18 +791,17 @@ export class Resolver {
 // Module-level convenience
 // ---------------------------------------------------------------------------
 
-/** One default Resolver per loop handle. */
-const defaultResolvers = new WeakMap<LoopHandle, Resolver>();
+/** Module-level default Resolver (created on first use). */
+let _defaultResolver: Resolver | null = null;
 
 /**
  * Look up the primary address for a hostname.
  *
- * @param {object}  lp               Event loop handle.
  * @param {string}  hostname
  * @param {{ family?: 4|6 }} [opts]  Defaults to IPv4.
  * @returns {Promise<{ address: string, family: 4|6 }>}
  */
-export async function lookup(lp: LoopHandle, hostname: string, opts: LookupOptions = {}): Promise<LookupResult> {
+export async function lookup(hostname: string, opts: LookupOptions = {}): Promise<LookupResult> {
   const family = opts.family ?? 4;
 
   // If hostname is already an IP literal, return it directly without DNS lookup.
@@ -792,20 +813,23 @@ export async function lookup(lp: LoopHandle, hostname: string, opts: LookupOptio
     return { address: hostname, family: 6 };
   }
 
-  let resolver = defaultResolvers.get(lp);
-  if (!resolver) {
-    resolver = new Resolver(lp);
-    defaultResolvers.set(lp, resolver);
-  }
+  if (!_defaultResolver) _defaultResolver = new Resolver();
   const rrtype = family === 6 ? 'AAAA' : 'A';
-  const addresses = await resolver.resolve(hostname, rrtype);
+  const addresses = await _defaultResolver.resolve(hostname, rrtype);
   if (addresses.length === 0) {
-    const err = new Error(`dns: no ${rrtype} record for '${hostname}'`);
+    const err: DnsError = new Error(`dns: no ${rrtype} record for '${hostname}'`);
     err.code     = 'ENOTFOUND';
     err.hostname = hostname;
     throw err;
   }
-  return { address: addresses[0], family };
+  const address = addresses[0];
+  if (typeof address !== 'string') {
+    const err: DnsError = new Error(`dns: invalid ${rrtype} response for '${hostname}'`);
+    err.code = 'ENODATA';
+    err.hostname = hostname;
+    throw err;
+  }
+  return { address, family };
 }
 
 export default { Resolver, lookup, RECORD_TYPES };

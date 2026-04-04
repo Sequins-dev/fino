@@ -1,8 +1,8 @@
 /**
- * boats:libc — low-level C library bindings used by the Boats standard library.
+ * fino:libc — low-level C library bindings used by the Fino standard library.
  *
- * This module opens the platform's C library via `boats:ffi` and exposes the
- * small set of primitives that the rest of the Boats standard library builds
+ * This module opens the platform's C library via `fino:ffi` and exposes the
+ * small set of primitives that the rest of the Fino standard library builds
  * on. It is intentionally minimal: only functions that are needed by multiple
  * other modules and that are awkward to reopen in each module live here.
  *
@@ -16,12 +16,12 @@
  *
  * ## Why this exists as a separate module
  *
- * Boats's design principle is "thin Rust, everything else in JS". That means
- * even basic output (e.g. `console.log`) is implemented in JS. But JS running
- * on Boa has no built-in way to write to a file descriptor. This module
- * bridges that gap by opening libc and exposing `write(2)` directly.
+ * Fino's design principle is "thin Rust, everything else in JS". That means
+ * even basic output (e.g. `console.log`) is implemented in JS. This module
+ * bridges the gap between JS and the OS by opening libc and exposing
+ * `write(2)` directly.
  *
- * By centralising this here, other modules (`boats:console`, etc.) don't each
+ * By centralising this here, other modules (`fino:console`, etc.) don't each
  * need to open libc themselves for simple output needs. Modules that need more
  * libc functions (sockets, files, etc.) open libc themselves with their
  * specific function signatures.
@@ -35,7 +35,7 @@
  *   - Linux (musl):  `libc.so`
  *
  * `openLibc()` tries each candidate in order and returns the first successful
- * `dlopen`. If all fail, it throws — Boats cannot run without a C library.
+ * `dlopen`. If all fail, it throws — Fino cannot run without a C library.
  *
  *
  * ## printf vs write
@@ -43,7 +43,7 @@
  * Both `printfRaw` and `writeLine` ultimately write to stdout, but via
  * different C functions. `writeLine` uses `write(2)` which is the raw POSIX
  * syscall wrapper — it writes exactly the bytes given, no formatting. This is
- * what `boats:console` uses because it formats strings in JS first.
+ * what `fino:console` uses because it formats strings in JS first.
  *
  * `printfRaw` uses `printf(3)` and is provided as an alternative for cases
  * where the C-level buffering of printf is acceptable. The string must not
@@ -60,14 +60,19 @@
  *   console output, where you want deterministic, in-order output.
  */
 
-import { dlopen } from 'boats:ffi';
-import { encodeUtf8 } from 'internal:globals/encoding';
+import { dlopen } from 'fino:ffi';
+import type { DynamicLibrary } from 'fino:ffi';
+import { encodeUtf8 } from '../globals/encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Platform library path
 // ---------------------------------------------------------------------------
 
-function openLibc(): object {
+function openLibc(): DynamicLibrary<{
+  write: { parameters: ['i32', 'buffer', 'usize']; result: 'isize' };
+  printf: { parameters: ['buffer']; result: 'i32' };
+  getpid: { parameters: []; result: 'i32' };
+}> {
   const candidates = [
     '/usr/lib/libSystem.B.dylib', // macOS
     'libc.so.6',                   // Linux (glibc)
@@ -94,7 +99,7 @@ function openLibc(): object {
     }
   }
 
-  throw new Error('boats:libc — could not open the platform C library');
+  throw new Error('fino:libc — could not open the platform C library');
 }
 
 const _lib = openLibc();
@@ -149,5 +154,5 @@ export function getpid(): number {
 // In practice the library stays open for the lifetime of the process,
 // but this is the correct thing to expose.
 export function close() {
-  _lib.close();
+  // dlopen() handles stay process-global for the runtime lifetime.
 }

@@ -1,129 +1,109 @@
 /**
- * Tests for boats:tls — TLS socket layer.
+ * Tests for fino:tls — TLS socket layer.
  *
  * These tests make real HTTPS connections to public servers. They are skipped
  * automatically when OpenSSL is not available, and may fail if the network is
  * unreachable.
  */
 
-import { describe, it } from 'boats:test/test';
-import { TlsSocket } from 'boats:net/tls';
-const { tlsAvailable } = globalThis;
+import { describe, it } from 'fino:test/test';
+import { TlsSocket } from 'fino:net/tls';
+const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
 const skip = !tlsAvailable && 'OpenSSL (libssl) not available';
-import * as loop from 'boats:runtime/loop';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
-import { Resolver } from 'boats:net/dns';
+const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
+import { Resolver } from 'fino:net/dns';
 
 describe('TlsSocket', () => {
   it('connects to one.one.one.one:443', { skip }, async (t) => {
-    const lp = loop.create();
-    try {
-      const ips = await new Resolver(lp).resolve('one.one.one.one', 'A');
-      t.ok(ips.length > 0, 'DNS resolved one.one.one.one');
+    const ips = await new Resolver().resolve('one.one.one.one', 'A');
+    t.ok(ips.length > 0, 'DNS resolved one.one.one.one');
+    const ip = ips[0];
+    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
 
-      const tls = await TlsSocket.connect(
-        lp,
-        { family: 'ipv4', ip: ips[0], port: 443 },
-        { hostname: 'one.one.one.one' },
-      );
-      t.ok(!tls.closed, 'TlsSocket is open');
+    const tls = await TlsSocket.connect(
+      { family: 'ipv4', ip, port: 443 },
+      { hostname: 'one.one.one.one' },
+    );
+    t.ok(!tls.closed, 'TlsSocket is open');
 
-      const [reader, writer] = tls.split();
-      const request = 'GET / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n';
-      await writer.write(encodeUtf8(request));
+    const [reader, writer] = tls.split();
+    const request = 'GET / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n';
+    await writer.write(encodeUtf8(request));
+    await writer.flush();
 
-      const chunk = await reader.read();
-      t.ok(chunk !== null, 'received data from server');
-      t.ok(chunk.byteLength > 0, 'non-empty response');
-      t.ok(decodeUtf8(chunk).includes('HTTP/'), 'response starts with HTTP/');
+    const chunk = await reader.read();
+    t.ok(chunk !== null, 'received data from server');
+    if (chunk === null) throw new Error('expected chunk');
+    t.ok(chunk.byteLength > 0, 'non-empty response');
+    t.ok(decodeUtf8(chunk).includes('HTTP/'), 'response starts with HTTP/');
 
-      reader.close();
-      writer.close();
-    } finally {
-      loop.destroy(lp);
-    }
+    reader.close();
+    writer.close();
   });
 
   it('TlsReader/TlsWriter pipe data correctly', { skip }, async (t) => {
-    const lp = loop.create();
-    try {
-      const ips = await new Resolver(lp).resolve('one.one.one.one', 'A');
-      const tls = await TlsSocket.connect(
-        lp,
-        { family: 'ipv4', ip: ips[0], port: 443 },
-        { hostname: 'one.one.one.one' },
-      );
-      const [reader, writer] = tls.split();
-      await writer.write(encodeUtf8('HEAD / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n'));
+    const ips = await new Resolver().resolve('one.one.one.one', 'A');
+    const ip = ips[0];
+    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
+    const tls = await TlsSocket.connect(
+      { family: 'ipv4', ip, port: 443 },
+      { hostname: 'one.one.one.one' },
+    );
+    const [reader, writer] = tls.split();
+    await writer.write(encodeUtf8('HEAD / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n'));
+    await writer.flush();
 
-      let response = '';
-      let chunk;
-      while ((chunk = await reader.read()) !== null) {
-        response += decodeUtf8(chunk);
-        if (response.includes('\r\n\r\n')) break;
-      }
-      t.ok(response.includes('HTTP/'), 'got HTTP response');
-      t.ok(response.includes('\r\n'), 'response has CRLF headers');
-
-      reader.close();
-      writer.close();
-    } finally {
-      loop.destroy(lp);
+    let response = '';
+    let chunk;
+    while ((chunk = await reader.read()) !== null) {
+      response += decodeUtf8(chunk);
+      if (response.includes('\r\n\r\n')) break;
     }
+    t.ok(response.includes('HTTP/'), 'got HTTP response');
+    t.ok(response.includes('\r\n'), 'response has CRLF headers');
+
+    reader.close();
+    writer.close();
   });
 
   it('close() works without split', { skip }, async (t) => {
-    const lp = loop.create();
-    try {
-      const ips = await new Resolver(lp).resolve('one.one.one.one', 'A');
-      const tls = await TlsSocket.connect(
-        lp,
-        { family: 'ipv4', ip: ips[0], port: 443 },
-        { hostname: 'one.one.one.one' },
-      );
-      t.ok(!tls.closed, 'open before close');
-      tls.close();
-      t.ok(tls.closed, 'closed after close');
-      tls.close();
-      t.ok(true, 'double-close is safe');
-    } finally {
-      loop.destroy(lp);
-    }
+    const ips = await new Resolver().resolve('one.one.one.one', 'A');
+    const ip = ips[0];
+    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
+    const tls = await TlsSocket.connect(
+      { family: 'ipv4', ip, port: 443 },
+      { hostname: 'one.one.one.one' },
+    );
+    t.ok(!tls.closed, 'open before close');
+    tls.close();
+    t.ok(tls.closed, 'closed after close');
+    tls.close();
+    t.ok(true, 'double-close is safe');
   });
 
   it('rejects bad hostname (wrong cert)', { skip }, async (t) => {
-    const lp = loop.create();
+    let threw = false;
     try {
-      let threw = false;
-      try {
-        await TlsSocket.connect(
-          lp,
-          { family: 'ipv4', ip: '1.1.1.1', port: 443 },
-          { hostname: 'google.com', rejectUnauthorized: true },
-        );
-      } catch (_) {
-        threw = true;
-      }
-      t.ok(threw, 'hostname mismatch causes handshake failure');
-    } finally {
-      loop.destroy(lp);
+      await TlsSocket.connect(
+        { family: 'ipv4', ip: '1.1.1.1', port: 443 },
+        { hostname: 'google.com', rejectUnauthorized: true },
+      );
+    } catch (_) {
+      threw = true;
     }
+    t.ok(threw, 'hostname mismatch causes handshake failure');
   });
 
   it('rejectUnauthorized:false skips cert check', { skip }, async (t) => {
-    const lp = loop.create();
-    try {
-      const ips = await new Resolver(lp).resolve('one.one.one.one', 'A');
-      const tls = await TlsSocket.connect(
-        lp,
-        { family: 'ipv4', ip: ips[0], port: 443 },
-        { hostname: 'one.one.one.one', rejectUnauthorized: false },
-      );
-      t.ok(!tls.closed, 'connected with rejectUnauthorized=false');
-      tls.close();
-    } finally {
-      loop.destroy(lp);
-    }
+    const ips = await new Resolver().resolve('one.one.one.one', 'A');
+    const ip = ips[0];
+    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
+    const tls = await TlsSocket.connect(
+      { family: 'ipv4', ip, port: 443 },
+      { hostname: 'one.one.one.one', rejectUnauthorized: false },
+    );
+    t.ok(!tls.closed, 'connected with rejectUnauthorized=false');
+    tls.close();
   });
 });

@@ -1,5 +1,5 @@
 /**
- * boats:file/watch — Cross-platform filesystem event watcher.
+ * fino:file/watch — Cross-platform filesystem event watcher.
  *
  * Watches files and directories for changes and exposes a unified async
  * iterator interface. Platform implementations differ, but the event model
@@ -10,7 +10,7 @@
  *
  * ## Platform details
  *
- * **macOS** — uses kqueue EVFILT_VNODE (via `boats:runtime/loop`'s `vnode()`
+ * **macOS** — uses kqueue EVFILT_VNODE (via `fino:runtime/loop`'s `vnode()`
  * API). One open fd is required per watched path. EV_CLEAR auto-re-arms the
  * filter after each delivery. Events report which flags fired (NOTE_WRITE,
  * NOTE_DELETE, etc.) but not which specific file changed within a directory —
@@ -35,11 +35,9 @@
  * ## Usage
  *
  * ```ts
- * import { Watcher } from 'boats:file/watch';
- * import * as loop from 'boats:runtime/loop';
+ * import { Watcher } from './watch.mts';
  *
- * const lp = loop.current();
- * const watcher = new Watcher(lp);
+ * const watcher = new Watcher();
  * watcher.watch('/tmp/mydir');
  *
  * for await (const event of watcher) {
@@ -50,9 +48,9 @@
  * ```
  */
 
-import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from 'internal:file/bindings';
-import { DirEntry } from 'internal:file/entry';
-import * as loopMod from 'boats:runtime/loop';
+import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from './bindings.mts';
+import { DirEntry } from './entry.mts';
+import * as loopMod from '../runtime/loop.mts';
 import {
   isDarwin as _watchIsDarwin,
   inotifyInit, inotifyAddWatch, inotifyRmWatch, inotifyRead, inotifyClose,
@@ -60,7 +58,7 @@ import {
   IN_MODIFY, IN_ATTRIB, IN_CREATE, IN_DELETE, IN_DELETE_SELF,
   IN_MOVED_FROM, IN_MOVED_TO, IN_MOVE_SELF, IN_ISDIR, IN_IGNORED,
   IN_ALL_CHANGES,
-} from 'internal:file/watch-bindings';
+} from './watch-bindings.mts';
 
 // ---------------------------------------------------------------------------
 // macOS NOTE_* constants (kqueue EVFILT_VNODE fflags)
@@ -125,7 +123,6 @@ export interface WatchOptions {
  * }
  */
 export class Watcher {
-  #lp: any;
   #recursive: boolean;
   #closed = false;
 
@@ -144,10 +141,10 @@ export class Watcher {
   #closePromise: Promise<void>;
   #resolveClose!: () => void;
 
-  constructor(lp: any, options: WatchOptions = {}) {
-    this.#lp = lp;
+  constructor(options: WatchOptions = {}) {
     this.#recursive = options.recursive ?? false;
-    this.#closePromise = new Promise(resolve => { this.#resolveClose = resolve; });
+    const watcher = this;
+    this.#closePromise = new Promise(function captureCloseResolve(resolve) { watcher.#resolveClose = resolve; });
 
     if (!isDarwin) {
       this.#inotifyFd = inotifyInit();
@@ -190,13 +187,13 @@ export class Watcher {
 
     if (isDarwin) {
       for (const [fd] of this.#fds) {
-        loopMod.removeVnode(this.#lp, fd);
+        loopMod.removeVnode(fd);
         lib.symbols.close(fd);
       }
       this.#fds.clear();
     } else {
       // Cancel the pending readable (if any)
-      loopMod.removeRead(this.#lp, this.#inotifyFd);
+      loopMod.removeRead(this.#inotifyFd);
       for (const [wd] of this.#wds) {
         inotifyRmWatch(this.#inotifyFd, wd);
       }
@@ -212,20 +209,21 @@ export class Watcher {
   }
 
   [Symbol.asyncIterator](): AsyncIterator<WatchEvent> {
+    const watcher = this;
     return {
-      next: (): Promise<IteratorResult<WatchEvent>> => {
-        if (this.#closed && this.#queue.length === 0) {
+      next(): Promise<IteratorResult<WatchEvent>> {
+        if (watcher.#closed && watcher.#queue.length === 0) {
           return Promise.resolve({ value: undefined as any, done: true });
         }
-        if (this.#queue.length > 0) {
-          return Promise.resolve({ value: this.#queue.shift()!, done: false });
+        if (watcher.#queue.length > 0) {
+          return Promise.resolve({ value: watcher.#queue.shift()!, done: false });
         }
-        return new Promise(resolve => {
-          this.#waiters.push(resolve);
+        return new Promise(function parkWatchNext(resolve) {
+          watcher.#waiters.push(resolve);
         });
       },
-      return: (): Promise<IteratorResult<WatchEvent>> => {
-        this.close();
+      return(): Promise<IteratorResult<WatchEvent>> {
+        watcher.close();
         return Promise.resolve({ value: undefined as any, done: true });
       },
     };
@@ -254,8 +252,9 @@ export class Watcher {
     if (fd < 0) throw new Error(`watch: cannot open '${path}'`);
 
     this.#fds.set(fd, path);
-    loopMod.vnode(this.#lp, fd, ALL_NOTES, (ev: { fflags: number }) => {
-      this.#handleVnode(fd, path, ev.fflags);
+    const watcher = this;
+    loopMod.vnode(fd, ALL_NOTES, function onVnodeEvent(ev: { fflags: number }) {
+      watcher.#handleVnode(fd, path, ev.fflags);
     });
 
     if (this.#recursive) {
@@ -267,7 +266,7 @@ export class Watcher {
     if (fflags & NOTE_DELETE) {
       this.#emit({ type: 'delete', path });
       // The fd is now invalid (deleted file). Clean up.
-      loopMod.removeVnode(this.#lp, fd);
+      loopMod.removeVnode(fd);
       lib.symbols.close(fd);
       this.#fds.delete(fd);
       return;
@@ -294,18 +293,19 @@ export class Watcher {
   #scanDirDarwin(dirPath: string): void {
     // Use DirEntry.entries() for directory listing.
     // Pass null as fs — entries() doesn't use it for the opendir/readdir syscalls.
+    const watcher = this;
     const dirEntry = new DirEntry('', dirPath, null, DT_DIR);
-    dirEntry.entries().then((entries: any[]) => {
+    dirEntry.entries().then(function darwinDirEntries(entries: any[]) {
       for (const entry of entries) {
         if (entry.isDirectory()) {
           const childPath = entry.path.toString();
           // Only watch if not already watching
-          if (![...this.#fds.values()].includes(childPath)) {
-            this.#watchDarwin(childPath);
+          if (![...watcher.#fds.values()].includes(childPath)) {
+            watcher.#watchDarwin(childPath);
           }
         }
       }
-    }).catch(() => {
+    }).catch(function swallowDarwinScanErr() {
       // Directory may have been deleted — ignore
     });
   }
@@ -368,19 +368,20 @@ export class Watcher {
 
   /** Recursively add inotify watches for all subdirectories under `dirPath`. */
   #scanDirLinux(dirPath: string): void {
+    const watcher = this;
     const dirEntry = new DirEntry('', dirPath, null, DT_DIR);
-    dirEntry.entries().then((entries: any[]) => {
+    dirEntry.entries().then(function linuxDirEntries(entries: any[]) {
       for (const entry of entries) {
         if (entry.isDirectory()) {
           const childPath = entry.path.toString();
           // Check if not already watching
-          const alreadyWatched = [...this.#wds.values()].some(v => v.path === childPath);
+          const alreadyWatched = [...watcher.#wds.values()].some(function isWatched(v) { return v.path === childPath; });
           if (!alreadyWatched) {
-            this.#watchLinux(childPath, true);
+            watcher.#watchLinux(childPath, true);
           }
         }
       }
-    }).catch(() => {
+    }).catch(function swallowLinuxScanErr() {
       // Directory may have been deleted — ignore
     });
   }
@@ -394,7 +395,7 @@ export class Watcher {
     while (!this.#closed) {
       // Race between becoming readable and the watcher being closed.
       const winner = await Promise.race([
-        loopMod.readable(this.#lp, this.#inotifyFd).then(() => null),
+        loopMod.readable(this.#inotifyFd).then(() => null),
         closedSignal,
       ]);
       if (winner === closedTag || this.#closed) break;

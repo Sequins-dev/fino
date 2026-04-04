@@ -1,14 +1,14 @@
 /**
- * boats:context — Async context propagation.
+ * fino:context — Async context propagation.
  *
  * A `Context` is a named slot whose value follows the causal chain of async
- * execution through `await` and `.then()`. It works by hooking into Boa's
- * job scheduler: when a promise continuation is enqueued, the current frame
- * is captured; when the continuation runs, the frame is restored.
+ * execution through `await` and `.then()`. It works by hooking into V8's ContinuationPreservedEmbedderData (CPED):
+ * when a promise continuation is enqueued, the current frame is captured;
+ * when the continuation runs, the frame is restored.
  *
  * API mirrors the execution-flow library (closure-based):
  *
- *   import { Context } from 'boats:runtime/context';
+ *   import { Context } from './context.mts';
  *
  *   const requestId = new Context('requestId');
  *
@@ -18,12 +18,10 @@
  *   });
  */
 
-import { createSlot, getSlot, setSlot, clearSlot, snapshot, restore, createLoopId, enterLoop, exitLoop, drainLoopMicrotasks, hasLoopWork } from 'internal:async-context';
-
-export { createLoopId, enterLoop, exitLoop, drainLoopMicrotasks, hasLoopWork };
+import { createSlot, getSlot, setSlot, clearSlot, snapshot, restore } from 'internal:async-context';
 
 export class Context<T = unknown> {
-  #id: number;
+  #id: symbol;
   #name: string;
 
   /**

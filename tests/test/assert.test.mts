@@ -1,11 +1,11 @@
 /**
- * Tests for boats:assert — AssertionError, Assert class, default instance,
+ * Tests for fino:assert — AssertionError, Assert class, default instance,
  * and named exports.
  */
 
-import { describe, it } from 'boats:test/test';
-import { Assert, AssertionError, ok, notOk, equal, notEqual, deepEqual, fail, throws, rejects } from 'boats:test/assert';
-import assertDefault from 'boats:test/assert';
+import { describe, it } from 'fino:test/test';
+import { Assert, AssertionError, ok, notOk, equal, notEqual, deepEqual, fail, throws, rejects } from 'fino:test/assert';
+import assertDefault from 'fino:test/assert';
 
 describe('AssertionError', () => {
   it('is an Error subclass', (t) => {
@@ -25,21 +25,21 @@ describe('AssertionError', () => {
   });
 
   it('fields from equal failure', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.equal(1, 2, 'values differ');
-    t.equal(errors[0].actual,   1,       'actual');
-    t.equal(errors[0].expected, 2,       'expected');
-    t.equal(errors[0].operator, 'equal', 'operator');
+    t.equal(errors[0]!.actual,   1,       'actual');
+    t.equal(errors[0]!.expected, 2,       'expected');
+    t.equal(errors[0]!.operator, 'equal', 'operator');
   });
 
   it('fields from ok failure', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.ok(false, 'must be true');
-    t.equal(errors[0].actual,   false, 'actual');
-    t.equal(errors[0].expected, true,  'expected');
-    t.equal(errors[0].operator, 'ok',  'operator');
+    t.equal(errors[0]!.actual,   false, 'actual');
+    t.equal(errors[0]!.expected, true,  'expected');
+    t.equal(errors[0]!.operator, 'ok',  'operator');
   });
 });
 
@@ -75,7 +75,7 @@ describe('default assert instance', () => {
 
 describe('Assert callbacks', () => {
   it('onFail is called with AssertionError', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(err) { errors.push(err); } });
     a.ok(false);
     t.equal(errors.length, 1, 'one error collected');
@@ -92,7 +92,7 @@ describe('Assert callbacks', () => {
   });
 
   it('multiple failures accumulate without throwing', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(err) { errors.push(err); } });
     a.ok(false, 'first');
     a.equal(1, 2, 'second');
@@ -103,7 +103,7 @@ describe('Assert callbacks', () => {
 
 describe('ok / notOk', () => {
   it('ok — passes for truthy, fails for falsy', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.ok(true); a.ok(1); a.ok('x'); a.ok({});
     a.ok(false); a.ok(0); a.ok(''); a.ok(null);
@@ -111,7 +111,7 @@ describe('ok / notOk', () => {
   });
 
   it('notOk — passes for falsy, fails for truthy', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.notOk(false); a.notOk(0); a.notOk(null); a.notOk(undefined);
     a.notOk(true); a.notOk(1);
@@ -121,7 +121,7 @@ describe('ok / notOk', () => {
 
 describe('equal / notEqual / deepEqual / fail', () => {
   it('equal — strict equality (===)', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.equal(1, 1);
     a.equal('a', 'a');
@@ -129,21 +129,21 @@ describe('equal / notEqual / deepEqual / fail', () => {
     a.equal(1, '1');   // fail: different types
     a.equal(1, 2);     // fail
     t.equal(errors.length, 2, '2 failures');
-    t.ok(errors[0].message.includes('expected'), 'message includes "expected"');
-    t.equal(errors[0].operator, 'equal', 'operator is equal');
+    t.ok(errors[0]!.message.includes('expected'), 'message includes "expected"');
+    t.equal(errors[0]!.operator, 'equal', 'operator is equal');
   });
 
   it('notEqual — strict inequality (!==)', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.notEqual(1, 2);
     a.notEqual(1, 1);  // fail
     t.equal(errors.length, 1, '1 failure');
-    t.equal(errors[0].operator, 'notEqual', 'operator is notEqual');
+    t.equal(errors[0]!.operator, 'notEqual', 'operator is notEqual');
   });
 
   it('deepEqual — nested objects and arrays', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.deepEqual({ x: 1 },      { x: 1 });
     a.deepEqual([1, 2, 3],     [1, 2, 3]);
@@ -154,40 +154,40 @@ describe('equal / notEqual / deepEqual / fail', () => {
   });
 
   it('fail — always invokes onFail', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.fail('something went wrong');
     t.equal(errors.length, 1, '1 error');
-    t.equal(errors[0].message, 'something went wrong', 'message preserved');
-    t.equal(errors[0].operator, 'fail', 'operator is fail');
+    t.equal(errors[0]!.message, 'something went wrong', 'message preserved');
+    t.equal(errors[0]!.operator, 'fail', 'operator is fail');
   });
 
   it('fail — default message when none given', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.fail();
-    t.equal(errors[0].message, 'fail called', 'default message');
+    t.equal(errors[0]!.message, 'fail called', 'default message');
   });
 });
 
 describe('throws', () => {
   it('passes when fn throws', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.throws(() => { throw new Error('boom'); }, null, 'does throw');
     t.equal(errors.length, 0, 'no failures');
   });
 
   it('fails when fn does not throw', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.throws(() => {}, null, 'should throw but does not');
     t.equal(errors.length, 1, '1 failure');
-    t.equal(errors[0].operator, 'throws', 'operator is throws');
+    t.equal(errors[0]!.operator, 'throws', 'operator is throws');
   });
 
   it('check function validates thrown value', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.throws(() => { throw new TypeError(); }, (e) => e instanceof TypeError, 'right type');
     a.throws(() => { throw new Error(); },     (e) => e instanceof TypeError, 'wrong type');
@@ -195,7 +195,7 @@ describe('throws', () => {
   });
 
   it('RegExp check tested against err.message', (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     a.throws(() => { throw new Error('bad value'); }, /bad/, 'matches regex');
     a.throws(() => { throw new Error('bad value'); }, /good/, 'no match');
@@ -205,18 +205,18 @@ describe('throws', () => {
 
 describe('rejects', () => {
   it('passes when async fn rejects', async (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     await a.rejects(async () => { throw new Error('boom'); }, null);
     t.equal(errors.length, 0, 'no failures');
   });
 
   it('fails when async fn resolves', async (t) => {
-    const errors = [];
+    const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
     await a.rejects(async () => {}, null);
     t.equal(errors.length, 1, '1 failure');
-    t.equal(errors[0].operator, 'rejects', 'operator is rejects');
+    t.equal(errors[0]!.operator, 'rejects', 'operator is rejects');
   });
 
   it('check function validates rejection', async (t) => {

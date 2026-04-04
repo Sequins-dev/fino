@@ -1,12 +1,13 @@
 /**
- * Tests for boats:time — setTimeout, setInterval, clearTimeout, clearInterval,
+ * Tests for fino:time — setTimeout, setInterval, clearTimeout, clearInterval,
  * queueMicrotask, and performance.now().
  *
- * Also tests atob/btoa (boats:encoding) and structuredClone (boats:encoding),
- * and console.count / console.countReset (boats:console).
+ * Also tests atob/btoa (fino:encoding) and structuredClone (fino:encoding),
+ * and console.count / console.countReset (fino:console).
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+type CloneMapValue = number | { x: number };
 const { setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, performance } = globalThis;
 const { atob, btoa, structuredClone } = globalThis;
 const { console } = globalThis;
@@ -14,16 +15,16 @@ const { console } = globalThis;
 describe('setTimeout', () => {
   it('fires after delay', async (t) => {
     let fired = false;
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       setTimeout(() => { fired = true; resolve(); }, 10);
     });
     t.ok(fired, 'callback fired');
   });
 
   it('passes extra args to fn', async (t) => {
-    let received;
-    await new Promise((resolve) => {
-      setTimeout((a, b) => { received = [a, b]; resolve(); }, 5, 'x', 42);
+    let received: [string, number] | undefined;
+    await new Promise<void>((resolve) => {
+      setTimeout((a: string, b: number) => { received = [a, b]; resolve(); }, 5, 'x', 42);
     });
     t.deepEqual(received, ['x', 42], 'args forwarded');
   });
@@ -38,7 +39,7 @@ describe('setTimeout', () => {
     let fired = false;
     const id = setTimeout(() => { fired = true; }, 10);
     clearTimeout(id);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
     t.ok(!fired, 'callback was not called');
   });
 
@@ -49,8 +50,8 @@ describe('setTimeout', () => {
   });
 
   it('ms=0 fires in the next tick', async (t) => {
-    let order = [];
-    await new Promise((resolve) => {
+    let order: string[] = [];
+    await new Promise<void>((resolve) => {
       order.push('sync');
       setTimeout(() => { order.push('timer'); resolve(); }, 0);
       order.push('sync2');
@@ -64,7 +65,7 @@ describe('setTimeout', () => {
 describe('setInterval / clearInterval', () => {
   it('setInterval fires multiple times', async (t) => {
     let count = 0;
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       const id = setInterval(() => {
         count++;
         if (count >= 3) { clearInterval(id); resolve(); }
@@ -76,18 +77,18 @@ describe('setInterval / clearInterval', () => {
   it('clearInterval stops future invocations', async (t) => {
     let count = 0;
     const id = setInterval(() => { count++; }, 10);
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
     clearInterval(id);
     const countAtCancel = count;
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
     t.equal(count, countAtCancel, 'no more calls after clearInterval');
   });
 });
 
 describe('queueMicrotask', () => {
   it('runs before next setTimeout', async (t) => {
-    const order = [];
-    await new Promise((resolve) => {
+    const order: string[] = [];
+    await new Promise<void>((resolve) => {
       setTimeout(() => { order.push('timer'); resolve(); }, 0);
       queueMicrotask(() => { order.push('microtask'); });
     });
@@ -96,8 +97,8 @@ describe('queueMicrotask', () => {
   });
 
   it('multiple microtasks run in order', async (t) => {
-    const order = [];
-    await new Promise((resolve) => {
+    const order: number[] = [];
+    await new Promise<void>((resolve) => {
       queueMicrotask(() => order.push(1));
       queueMicrotask(() => order.push(2));
       queueMicrotask(() => { order.push(3); resolve(); });
@@ -123,14 +124,14 @@ describe('performance.now', () => {
 
   it('is monotonically increasing', async (t) => {
     const t0 = performance.now();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
     const t1 = performance.now();
     t.ok(t1 > t0, 't1 > t0');
   });
 
   it('measures elapsed time with sub-ms precision', async (t) => {
     const t0 = performance.now();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
     const t1 = performance.now();
     const elapsed = t1 - t0;
     t.ok(elapsed >= 40, `elapsed >= 40ms (got ${elapsed.toFixed(2)}ms)`);
@@ -223,7 +224,7 @@ describe('structuredClone', () => {
   });
 
   it('clones arrays', (t) => {
-    const arr = [1, [2, 3], { x: 4 }];
+    const arr: [number, number[], { x: number }] = [1, [2, 3], { x: 4 }];
     const clone = structuredClone(arr);
     t.deepEqual(clone, arr, 'deep equal');
     clone[1][0] = 99;
@@ -248,7 +249,7 @@ describe('structuredClone', () => {
   });
 
   it('clones Map', (t) => {
-    const m = new Map([['a', 1], ['b', { x: 2 }]]);
+    const m = new Map<string, CloneMapValue>([['a', 1], ['b', { x: 2 }]]);
     const clone = structuredClone(m);
     t.ok(clone instanceof Map, 'is Map');
     t.equal(clone.get('a'), 1, 'a value');
@@ -283,7 +284,7 @@ describe('structuredClone', () => {
   });
 
   it('handles cycles', (t) => {
-    const obj = { name: 'root' };
+    const obj: { name: string; self?: unknown } = { name: 'root' };
     obj.self = obj;
     const clone = structuredClone(obj);
     t.equal(clone.name, 'root', 'name cloned');
@@ -303,7 +304,7 @@ describe('structuredClone', () => {
 describe('setTimeout — edge cases', () => {
   it('negative delay is clamped to 0', async (t) => {
     let fired = false;
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       setTimeout(() => { fired = true; resolve(); }, -100);
     });
     t.ok(fired, 'callback fired despite negative delay');
@@ -311,7 +312,7 @@ describe('setTimeout — edge cases', () => {
 
   it('NaN delay is clamped to 0', async (t) => {
     let fired = false;
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       setTimeout(() => { fired = true; resolve(); }, NaN);
     });
     t.ok(fired, 'callback fired with NaN delay (treated as 0)');
@@ -325,16 +326,16 @@ describe('setTimeout — edge cases', () => {
 
   it('clearTimeout with null is a no-op', (t) => {
     let threw = false;
-    try { clearTimeout(null); } catch (_) { threw = true; }
+    try { clearTimeout(null as any); } catch (_) { threw = true; }
     t.equal(threw, false, 'clearTimeout(null) does not throw');
   });
 });
 
 describe('setInterval — args forwarding', () => {
   it('passes extra args to interval callback', async (t) => {
-    let received;
-    await new Promise((resolve) => {
-      const id = setInterval((a, b) => {
+    let received: [string, number] | undefined;
+    await new Promise<void>((resolve) => {
+      const id = setInterval((a: string, b: number) => {
         received = [a, b];
         clearInterval(id);
         resolve();
@@ -349,7 +350,7 @@ describe('clearTimeout / clearInterval interchangeability', () => {
     let fired = false;
     const id = setTimeout(() => { fired = true; }, 20);
     clearInterval(id); // cross-cancel
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
     t.equal(fired, false, 'setTimeout cancelled via clearInterval');
   });
 
@@ -357,7 +358,7 @@ describe('clearTimeout / clearInterval interchangeability', () => {
     let count = 0;
     const id = setInterval(() => { count++; }, 50);
     clearTimeout(id); // synchronous cancel — before any event loop tick
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
     t.equal(count, 0, 'setInterval cancelled via clearTimeout before first fire');
   });
 });
@@ -366,7 +367,7 @@ describe('setTimeout — clearTimeout after fired', () => {
   it('clearTimeout after timer already fired is a no-op', async (t) => {
     let fired = false;
     const id = setTimeout(() => { fired = true; }, 10);
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
     t.ok(fired, 'timer fired');
     let threw = false;
     try { clearTimeout(id); } catch (_) { threw = true; }
@@ -379,7 +380,7 @@ describe('setTimeout — clearTimeout after fired', () => {
     clearTimeout(id);
     clearTimeout(id); // second call — should be a no-op
     clearTimeout(id); // third call — also no-op
-    await new Promise((resolve) => setTimeout(resolve, 80));
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
     t.equal(count, 0, 'timer never fired; multiple clears are safe');
   });
 });
@@ -391,8 +392,9 @@ describe('performance.now — sub-millisecond precision', () => {
       readings.push(performance.now());
     }
     const hasDecimal = readings.some(v => v !== Math.floor(v));
-    t.ok(hasDecimal || readings[0] >= 0, 'performance.now returns non-negative numbers');
-    t.ok(typeof readings[0] === 'number', 'values are numbers');
+    const first = readings[0];
+    t.ok(typeof first === 'number', 'values are numbers');
+    t.ok(hasDecimal || (first !== undefined && first >= 0), 'performance.now returns non-negative numbers');
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * internal:file-handle — File class for boats:file.
+ * internal:file-handle — File class for fino:file.
  *
  * An opened file handle. Provides metadata access and Reader/Writer factories.
  * The File owns the fd lifecycle — call close() when done.
@@ -9,11 +9,10 @@ import {
   lib, isDarwin, loopModule, asyncOps,
   throwErrno, _toPath, modeIsReadable, modeIsWritable,
   SEEK_CUR, O_CREAT, decodeUtf8,
-} from 'internal:file/bindings';
-import { Stat } from 'internal:file/stat';
-import { FdWriter } from 'internal:stream';
-import type { LoopHandle } from 'boats:runtime/loop';
-import type { Path } from 'boats:file/path';
+} from './bindings.mts';
+import { Stat } from './stat.mts';
+import { FdWriter } from '../internal/stream.mts';
+import type { Path } from './path.mts';
 
 /**
  * An opened file handle. Provides metadata access and Reader/Writer factories.
@@ -24,15 +23,15 @@ import type { Path } from 'boats:file/path';
  */
 export class File {
   #fd: number;
-  #lp: LoopHandle;
   #fs: object;
   #path: Path;
   #mode: string;
   #closed: boolean;
+  #activeWriter: FdWriter | null = null;
+  split?: () => [AsyncIterable<Uint8Array>, FdWriter];
 
-  constructor(fd: number, lp: LoopHandle, fs: object, path: Path | string, mode: string) {
+  constructor(fd: number, fs: object, path: Path | string, mode: string) {
     this.#fd     = fd;
-    this.#lp     = lp;
     this.#fs     = fs;
     this.#path   = _toPath(path);
     this.#mode   = mode;
@@ -77,40 +76,42 @@ export class File {
       throw new Error(`File opened in mode '${this.#mode}' is not readable`);
     }
     const fd = this.#fd;
-    const lp = this.#lp;
-    const isClosed = () => this.#closed;
+    const isClosed = (): boolean => this.#closed;
     const bufSize = 65536;
 
     // macOS: capture file size once at reader() creation time for EOF detection.
     // lseek(SEEK_CUR) is called per-iteration to get the current offset.
-    let fileSize = null;
+    let fileSize: number | null = null;
     if (!asyncOps) {
       const statBuf = new ArrayBuffer(256);
       lib.symbols.fstat(fd, statBuf);
       fileSize = Stat.parse(statBuf).size;
     }
 
-    const iterable = {
-      [Symbol.asyncIterator]() {
+    const iterable: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
         return {
-          next: async () => {
+          async next(): Promise<IteratorResult<Uint8Array>> {
             if (isClosed()) return { done: true, value: undefined };
             const buf = new ArrayBuffer(bufSize);
-            let n;
+            let n: number;
             if (asyncOps) {
+              const loop = loopModule;
+              const ops = asyncOps;
+              if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
               // Linux: io_uring IORING_OP_READ.
-              const result = await loopModule.submit(lp, (raw, id) => {
-                asyncOps.asyncRead(raw, fd, buf, bufSize, id);
+              const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
+                ops.asyncRead(raw, fd, buf, bufSize, id);
               });
               n = result.res;
             } else {
               // macOS: check EOF via lseek before calling readable() to avoid
               // hanging (EVFILT_READ does not fire when offset == file_size).
               const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-              if (offset >= fileSize) return { done: true, value: undefined };
+              if (fileSize !== null && offset >= fileSize) return { done: true, value: undefined };
               // Yield to the event loop. For a vnode with remaining data,
               // EVFILT_READ fires immediately on the next tick.
-              await loopModule.readable(lp, fd);
+              await loopModule!.readable(fd);
               n = Number(lib.symbols.read(fd, buf, bufSize));
             }
             if (n <= 0) return { done: true, value: undefined };
@@ -131,7 +132,9 @@ export class File {
     if (!modeIsWritable(this.#mode)) {
       throw new Error(`File opened in mode '${this.#mode}' is not writable`);
     }
-    return new FdWriter(this.#fd, this.#lp, () => {});
+    const w = new FdWriter(this.#fd, function noop() {});
+    this.#activeWriter = w;
+    return w;
   }
 
   /**
@@ -145,14 +148,13 @@ export class File {
    */
   async bytes(): Promise<Uint8Array> {
     if (this.#closed) throw new Error('File is closed');
-    const chunks = [];
+    const chunks: Uint8Array[] = [];
     let total = 0;
     const bufSize = 65536;
     const fd = this.#fd;
-    const lp = this.#lp;
 
     // macOS: capture file size once for EOF detection (same strategy as reader()).
-    let fileSize = null;
+    let fileSize: number | null = null;
     if (!asyncOps) {
       const statBuf = new ArrayBuffer(256);
       lib.symbols.fstat(fd, statBuf);
@@ -161,18 +163,21 @@ export class File {
 
     while (true) {
       const buf = new ArrayBuffer(bufSize);
-      let n;
+      let n: number;
       if (asyncOps) {
-        const result = await loopModule.submit(lp, (raw, id) => {
-          asyncOps.asyncRead(raw, fd, buf, bufSize, id);
+        const loop = loopModule;
+        const ops = asyncOps;
+        if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
+        const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
+          ops.asyncRead(raw, fd, buf, bufSize, id);
         });
         n = result.res;
       } else {
         // macOS: check EOF via lseek before calling readable() to avoid
         // hanging (EVFILT_READ does not fire when offset == file_size).
         const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-        if (offset >= fileSize) break;
-        await loopModule.readable(lp, fd);
+        if (fileSize !== null && offset >= fileSize) break;
+        await loopModule!.readable(fd);
         n = Number(lib.symbols.read(fd, buf, bufSize));
       }
       if (n <= 0) break;
@@ -180,7 +185,7 @@ export class File {
       total += n;
     }
     if (chunks.length === 0) return new Uint8Array(0);
-    if (chunks.length === 1) return new Uint8Array(chunks[0]);
+    if (chunks.length === 1) return new Uint8Array(chunks[0]!);
     const out = new Uint8Array(total);
     let pos = 0;
     for (const c of chunks) { out.set(c, pos); pos += c.byteLength; }
@@ -204,11 +209,17 @@ export class File {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    // Flush any buffered writes before closing the fd.
+    if (this.#activeWriter !== null && !this.#activeWriter.closed) {
+      await this.#activeWriter.flush();
+    }
     if (asyncOps) {
+      const loop = loopModule;
+      const ops = asyncOps;
+      if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
       const fd = this.#fd;
-      const lp = this.#lp;
-      await loopModule.submit(lp, (raw, id) => {
-        asyncOps.asyncClose(raw, fd, id);
+      await loop.submit(function submitAsyncClose(raw: object, id: number) {
+        ops.asyncClose(raw, fd, id);
       });
     } else {
       lib.symbols.close(this.#fd);

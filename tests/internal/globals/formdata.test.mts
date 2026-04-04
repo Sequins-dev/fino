@@ -1,8 +1,15 @@
 /**
- * Tests for FormData (boats:formdata / globalThis).
+ * Tests for FormData (fino:formdata / globalThis).
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
+
+type SymbolRecord = Record<symbol, unknown>;
+type FormDataConstructor = {
+  new (): FormData;
+  new (formData: FormData): FormData;
+};
+const FormDataWithCopy = FormData as unknown as FormDataConstructor;
 
 describe('append / get', () => {
   it('FormData -- append and get string value', (t) => {
@@ -18,7 +25,7 @@ describe('append / get', () => {
 
   it('FormData -- append coerces non-string values', (t) => {
     const fd = new FormData();
-    fd.append('n', 42);
+    (fd as any).append('n', 42);
     t.equal(fd.get('n'), '42', 'number coerced to string');
   });
 
@@ -101,6 +108,7 @@ describe('Blob and File values', () => {
     fd.append('file', b);
     const v = fd.get('file');
     t.ok(v instanceof File, 'value is File');
+    if (!(v instanceof File)) throw new Error('expected File');
     t.equal(v.name, 'blob', 'default filename is "blob"');
     t.equal(v.type, 'text/plain');
   });
@@ -111,6 +119,7 @@ describe('Blob and File values', () => {
     fd.append('file', b, 'upload.txt');
     const v = fd.get('file');
     t.ok(v instanceof File, 'is File');
+    if (!(v instanceof File)) throw new Error('expected File');
     t.equal(v.name, 'upload.txt');
   });
 
@@ -120,6 +129,7 @@ describe('Blob and File values', () => {
     fd.append('file', f);
     const v = fd.get('file');
     t.ok(v instanceof File);
+    if (!(v instanceof File)) throw new Error('expected File');
     t.equal(v.name, 'original.txt');
   });
 
@@ -128,6 +138,8 @@ describe('Blob and File values', () => {
     const f = new File(['data'], 'original.txt');
     fd.append('file', f, 'override.txt');
     const v = fd.get('file');
+    t.ok(v instanceof File, 'is File');
+    if (!(v instanceof File)) throw new Error('expected File');
     t.equal(v.name, 'override.txt');
   });
 });
@@ -137,7 +149,7 @@ describe('iteration', () => {
     const fd = new FormData();
     fd.append('a', '1');
     fd.append('b', '2');
-    const pairs = [];
+    const pairs: Array<[string, FormDataEntryValue]> = [];
     for (const pair of fd.entries()) pairs.push(pair);
     t.deepEqual(pairs, [['a', '1'], ['b', '2']]);
   });
@@ -146,7 +158,7 @@ describe('iteration', () => {
     const fd = new FormData();
     fd.append('a', '1');
     fd.append('b', '2');
-    const ks = [];
+    const ks: string[] = [];
     for (const k of fd.keys()) ks.push(k);
     t.deepEqual(ks, ['a', 'b']);
   });
@@ -155,7 +167,7 @@ describe('iteration', () => {
     const fd = new FormData();
     fd.append('a', '1');
     fd.append('b', '2');
-    const vs = [];
+    const vs: FormDataEntryValue[] = [];
     for (const v of fd.values()) vs.push(v);
     t.deepEqual(vs, ['1', '2']);
   });
@@ -163,7 +175,7 @@ describe('iteration', () => {
   it('FormData -- for...of uses entries()', (t) => {
     const fd = new FormData();
     fd.append('x', 'hello');
-    const pairs = [];
+    const pairs: Array<[string, FormDataEntryValue]> = [];
     for (const pair of fd) pairs.push(pair);
     t.deepEqual(pairs, [['x', 'hello']]);
   });
@@ -172,7 +184,7 @@ describe('iteration', () => {
     const fd = new FormData();
     fd.append('a', '1');
     fd.append('b', '2');
-    const results = [];
+    const results: Array<[string, FormDataEntryValue, boolean]> = [];
     fd.forEach((value, key, ref) => {
       results.push([key, value, ref === fd]);
     });
@@ -187,6 +199,7 @@ describe('set() with Blob/File values', () => {
     fd.set('f', b);
     const v = fd.get('f');
     t.ok(v instanceof File, 'set Blob entry is a File');
+    if (!(v instanceof File)) throw new Error('expected File');
     t.equal(v.name, 'blob', 'default filename is "blob"');
     t.equal(v.type, 'text/plain', 'type preserved');
   });
@@ -197,6 +210,7 @@ describe('set() with Blob/File values', () => {
     fd.set('upload', f);
     const v = fd.get('upload');
     t.ok(v instanceof File, 'value is File');
+    if (!(v instanceof File)) throw new Error('expected File');
     t.equal(v.name, 'myfile.txt', 'original name preserved');
   });
 
@@ -268,7 +282,7 @@ describe('FormData iteration completeness', () => {
 describe('[Symbol.toStringTag]', () => {
   it('FormData has correct toStringTag', (t) => {
     const fd = new FormData();
-    t.equal(fd[Symbol.toStringTag], 'FormData', 'FormData toStringTag');
+    t.equal((fd as unknown as SymbolRecord)[Symbol.toStringTag], 'FormData', 'FormData toStringTag');
   });
 });
 
@@ -327,7 +341,7 @@ describe('FormData — forEach validation', () => {
 describe('FormData [Symbol.toStringTag]', () => {
   it('[Symbol.toStringTag] is "FormData"', (t) => {
     const fd = new FormData();
-    t.equal(fd[Symbol.toStringTag], 'FormData', '[Symbol.toStringTag] correct');
+    t.equal((fd as unknown as SymbolRecord)[Symbol.toStringTag], 'FormData', '[Symbol.toStringTag] correct');
   });
 });
 
@@ -337,7 +351,7 @@ describe('FormData copy constructor (F9)', () => {
     src.append('a', '1');
     src.append('b', '2');
     src.append('a', '3');
-    const copy = new FormData(src);
+    const copy = new FormDataWithCopy(src);
     t.deepEqual(copy.getAll('a'), ['1', '3'], 'all a values copied');
     t.equal(copy.get('b'), '2', 'b copied');
   });
@@ -345,7 +359,7 @@ describe('FormData copy constructor (F9)', () => {
   it('copy is independent — mutating copy does not affect source', (t) => {
     const src = new FormData();
     src.append('x', 'original');
-    const copy = new FormData(src);
+    const copy = new FormDataWithCopy(src);
     copy.set('x', 'modified');
     t.equal(src.get('x'), 'original', 'source unchanged');
     t.equal(copy.get('x'), 'modified', 'copy has new value');
@@ -354,7 +368,7 @@ describe('FormData copy constructor (F9)', () => {
   it('copy is independent — mutating source does not affect copy', (t) => {
     const src = new FormData();
     src.append('x', 'original');
-    const copy = new FormData(src);
+    const copy = new FormDataWithCopy(src);
     src.set('x', 'changed');
     t.equal(copy.get('x'), 'original', 'copy unaffected by source mutation');
   });

@@ -1,11 +1,11 @@
 /**
- * boats:fetch — spec-compliant Fetch API implementation.
+ * fino:fetch — spec-compliant Fetch API implementation.
  *
  * Implements the WHATWG Fetch spec's core flow:
  *   - HTTP and HTTPS support (plain TCP and TLS)
  *   - Redirect following with configurable `redirect` mode
  *   - AbortSignal cancellation (including during body streaming)
- *   - Request/Response/Headers from boats:http
+ *   - Request/Response/Headers from fino:http
  *
  *
  * ## Connection lifecycle
@@ -58,24 +58,27 @@
  *   });
  */
 
-import { lookup } from 'boats:net/dns';
-import { Socket } from 'boats:net/socket';
-import { TlsSocket } from 'boats:net/tls';
+import { lookup } from '../../net/dns.mts';
+import { Socket } from '../../net/socket.mts';
+import { TlsSocket } from '../../net/tls.mts';
 import {
   Request,
+  Response,
   Headers,
   parseResponse,
   serializeRequest,
   buildWireResponse,
-} from 'boats:net/http';
-import * as loop from 'boats:runtime/loop';
+} from '../../net/http.mts';
+import type { Address } from '../../net/socket.mts';
 import {
   brotliAvailable,
   createGunzip,
   createInflate,
   createInflateRaw,
   createBrotliDecompress,
-} from 'boats:util/compression';
+} from '../../util/compression.mts';
+import { topic } from '../../util/topic.mts';
+import { otelRuntimeEvent, otelRuntimeTopic } from '../../opentelemetry/common.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -85,6 +88,35 @@ const MAX_REDIRECTS = 20;
 
 /** HTTP status codes that the fetch spec treats as redirects. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+let _fetchRequestSeq = 0;
+
+type HeadersInput = Headers | string[][] | Record<string, string> | null | undefined;
+type FetchBody = unknown;
+
+interface MinimalAbortSignal {
+  aborted: boolean;
+  reason: unknown;
+  addEventListener(type: string, fn: () => void, opts?: { once?: boolean }): void;
+  removeEventListener(type: string, fn: () => void): void;
+}
+
+interface FetchInit {
+  method?: string;
+  headers?: HeadersInput;
+  body?: FetchBody;
+  signal?: MinimalAbortSignal | null;
+  redirect?: 'follow' | 'error' | 'manual';
+}
+
+interface TraceRuntime {
+  requestId?: string;
+  hop?: number;
+}
+
+interface ClosableSocket {
+  closed: boolean;
+  close(): void;
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -101,15 +133,16 @@ function _closeSocket(sock: { closed: boolean; close(): void } | null | undefine
  * Race `promise` against an AbortSignal, if one is provided.
  * Removes the abort listener when the promise settles to avoid leaks.
  */
-function _raceAbort<T>(signal: { aborted: boolean; reason: unknown; addEventListener(type: string, fn: () => void, opts?: { once?: boolean }): void; removeEventListener(type: string, fn: () => void): void } | null | undefined, promise: Promise<T>): Promise<T> {
+function _raceAbort<T>(signal: MinimalAbortSignal | null | undefined, promise: Promise<T>): Promise<T> {
   if (!signal) return promise;
   if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    function onAbort() { reject(signal.reason); }
-    signal.addEventListener('abort', onAbort, { once: true });
+  const activeSignal = signal;
+  return new Promise(function raceAbortExecutor(resolve, reject) {
+    function onAbort() { reject(activeSignal.reason); }
+    activeSignal.addEventListener('abort', onAbort, { once: true });
     promise.then(
-      (v) => { signal.removeEventListener('abort', onAbort); resolve(v); },
-      (e) => { signal.removeEventListener('abort', onAbort); reject(e); },
+      function onFulfilled(v) { activeSignal.removeEventListener('abort', onAbort); resolve(v); },
+      function onRejected(e) { activeSignal.removeEventListener('abort', onAbort); reject(e); },
     );
   });
 }
@@ -119,12 +152,12 @@ function _raceAbort<T>(signal: { aborted: boolean; reason: unknown; addEventList
  * Also checks the AbortSignal on each `.next()` call, so long-running
  * streaming bodies respect cancellation.
  */
-function _wrapBody(rawBody, sock, signal) {
+function _wrapBody(rawBody: AsyncIterable<Uint8Array>, sock: ClosableSocket, signal: MinimalAbortSignal | null | undefined): AsyncIterable<Uint8Array> {
   return {
-    [Symbol.asyncIterator]() {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
       const iter = rawBody[Symbol.asyncIterator]();
       return {
-        async next() {
+        async next(): Promise<IteratorResult<Uint8Array>> {
           if (signal?.aborted) {
             _closeSocket(sock);
             throw signal.reason;
@@ -138,7 +171,7 @@ function _wrapBody(rawBody, sock, signal) {
             throw e;
           }
         },
-        async return() {
+        async return(): Promise<IteratorResult<Uint8Array>> {
           _closeSocket(sock);
           if (typeof iter.return === 'function') {
             try { await iter.return(); } catch (_) {}
@@ -152,7 +185,7 @@ function _wrapBody(rawBody, sock, signal) {
 
 /**
  * Determine whether the response is expected to have a body.
- * Mirrors _bodyFraming in boats:http but without access to internals.
+ * Mirrors _bodyFraming in fino:http but without access to internals.
  */
 function _hasBody(status: number, method?: string): boolean {
   if (method && method.toUpperCase() === 'HEAD') return false;
@@ -167,7 +200,6 @@ function _hasBody(status: number, method?: string): boolean {
  *
  * Caller is responsible for closing the socket on error paths.
  *
- * @param {object}   lp       — loop handle
  * @param {string}   url      — absolute URL string
  * @param {string}   method   — HTTP method
  * @param {Headers}  headers  — request headers (Host will be auto-injected)
@@ -175,7 +207,14 @@ function _hasBody(status: number, method?: string): boolean {
  * @param {AbortSignal|null} signal
  * @returns {Promise<{ response: Response, sock: Socket, reader, writer }>}
  */
-async function _singleFetch(lp, url, method, headers, body, signal) {
+async function _singleFetch(
+  url: string,
+  method: string,
+  headers: Headers,
+  body: FetchBody,
+  signal: MinimalAbortSignal | null,
+  runtime: TraceRuntime = {},
+): Promise<{ response: Response; sock: Socket | TlsSocket }> {
   const parsed   = new URL(url);
   const isHttps  = parsed.protocol === 'https:';
   const hostname = parsed.hostname;
@@ -185,16 +224,132 @@ async function _singleFetch(lp, url, method, headers, body, signal) {
 
   // ---- DNS lookup ----------------------------------------------------------
 
-  const { address, family } = await _raceAbort(signal, lookup(lp, hostname));
-  const addr = { family: family === 6 ? 'ipv6' : 'ipv4', ip: address, port };
+  const lookupId = `dns-${runtime.requestId || 'fetch'}-${runtime.hop || 0}`;
+  topic(otelRuntimeTopic('dns', 'lookup', 'start')).publish(otelRuntimeEvent('dns', 'lookup', 'start', {
+    lookupId,
+    requestId: runtime.requestId,
+    hop: runtime.hop,
+    hostname,
+    timeUnixNano: Date.now() * 1_000_000,
+  }));
+  let lookupResult;
+  try {
+    lookupResult = await _raceAbort(signal, lookup(hostname));
+  } catch (error) {
+    topic(otelRuntimeTopic('dns', 'lookup', 'error')).publish(otelRuntimeEvent('dns', 'lookup', 'error', {
+      lookupId,
+      requestId: runtime.requestId,
+      hop: runtime.hop,
+      hostname,
+      error,
+      timeUnixNano: Date.now() * 1_000_000,
+    }));
+    throw error;
+  }
+  const { address, family } = lookupResult;
+  topic(otelRuntimeTopic('dns', 'lookup', 'end')).publish(otelRuntimeEvent('dns', 'lookup', 'end', {
+    lookupId,
+    requestId: runtime.requestId,
+    hop: runtime.hop,
+    hostname,
+    address,
+    family,
+    timeUnixNano: Date.now() * 1_000_000,
+  }));
+  const addr: Address = family === 6
+    ? { family: 'ipv6', ip: address, port }
+    : { family: 'ipv4', ip: address, port };
 
   // ---- TCP / TLS connect ---------------------------------------------------
 
-  let sock;
+  let sock: Socket | TlsSocket;
+  const connectId = `socket-${runtime.requestId || 'fetch'}-${runtime.hop || 0}`;
+  topic(otelRuntimeTopic('socket', 'connect', 'start')).publish(otelRuntimeEvent('socket', 'connect', 'start', {
+    connectId,
+    requestId: runtime.requestId,
+    hop: runtime.hop,
+    host: address,
+    port,
+    transport: 'tcp',
+    timeUnixNano: Date.now() * 1_000_000,
+  }));
   if (isHttps) {
-    sock = await _raceAbort(signal, TlsSocket.connect(lp, addr, { hostname }));
+    const handshakeId = `tls-${runtime.requestId || 'fetch'}-${runtime.hop || 0}`;
+    topic(otelRuntimeTopic('tls', 'handshake', 'start')).publish(otelRuntimeEvent('tls', 'handshake', 'start', {
+      handshakeId,
+      requestId: runtime.requestId,
+      hop: runtime.hop,
+      hostname,
+      port,
+      timeUnixNano: Date.now() * 1_000_000,
+    }));
+    try {
+      sock = await _raceAbort(signal, TlsSocket.connect(addr, { hostname }));
+      topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(otelRuntimeEvent('socket', 'connect', 'end', {
+        connectId,
+        requestId: runtime.requestId,
+        hop: runtime.hop,
+        host: address,
+        port,
+        transport: 'tcp',
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+      topic(otelRuntimeTopic('tls', 'handshake', 'end')).publish(otelRuntimeEvent('tls', 'handshake', 'end', {
+        handshakeId,
+        requestId: runtime.requestId,
+        hop: runtime.hop,
+        hostname,
+        port,
+        protocol: 'tls',
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+    } catch (error) {
+      topic(otelRuntimeTopic('socket', 'connect', 'error')).publish(otelRuntimeEvent('socket', 'connect', 'error', {
+        connectId,
+        requestId: runtime.requestId,
+        hop: runtime.hop,
+        host: address,
+        port,
+        transport: 'tcp',
+        error,
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+      topic(otelRuntimeTopic('tls', 'handshake', 'error')).publish(otelRuntimeEvent('tls', 'handshake', 'error', {
+        handshakeId,
+        requestId: runtime.requestId,
+        hop: runtime.hop,
+        hostname,
+        port,
+        error,
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+      throw error;
+    }
   } else {
-    sock = await _raceAbort(signal, Socket.connect(lp, addr));
+    try {
+      sock = await _raceAbort(signal, Socket.connect(addr));
+      topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(otelRuntimeEvent('socket', 'connect', 'end', {
+        connectId,
+        requestId: runtime.requestId,
+        hop: runtime.hop,
+        host: address,
+        port,
+        transport: 'tcp',
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+    } catch (error) {
+      topic(otelRuntimeTopic('socket', 'connect', 'error')).publish(otelRuntimeEvent('socket', 'connect', 'error', {
+        connectId,
+        requestId: runtime.requestId,
+        hop: runtime.hop,
+        host: address,
+        port,
+        transport: 'tcp',
+        error,
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+      throw error;
+    }
   }
 
   try {
@@ -222,17 +377,18 @@ async function _singleFetch(lp, url, method, headers, body, signal) {
     const outReq = new Request(url, {
       method,
       headers: reqHeaders,
-      body: body !== null ? body : undefined,
+      body: body !== null ? body as any : undefined,
     });
 
     // ---- Send request --------------------------------------------------------
 
     await _raceAbort(signal, writer.pipe(serializeRequest(outReq)));
+    await _raceAbort(signal, writer.flush());
 
     // ---- Parse response headers ----------------------------------------------
 
     const response = await _raceAbort(signal, parseResponse(reader));
-    return { response, sock, reader, writer };
+    return { response, sock };
 
   } catch (e) {
     _closeSocket(sock);
@@ -247,7 +403,14 @@ async function _singleFetch(lp, url, method, headers, body, signal) {
  *
  * For bodyless responses (204, 304, 1xx) the socket is closed immediately.
  */
-function _buildFinalResponse(response, sock, url, redirected, signal, method?) {
+function _buildFinalResponse(
+  response: Response,
+  sock: Socket | TlsSocket,
+  url: string,
+  redirected: boolean,
+  signal: MinimalAbortSignal | null,
+  method?: string,
+): Response {
   const status     = response.status;
   const statusText = response.statusText;
   const headers    = response.headers;
@@ -280,7 +443,7 @@ function _buildFinalResponse(response, sock, url, redirected, signal, method?) {
   // async iterable so no TransformStream overhead is needed.
   const responseHeaders = new Headers(headers);
   const encoding = (responseHeaders.get('content-encoding') || '').trim().toLowerCase();
-  let bodyIterable = rawBody;
+  let bodyIterable: AsyncIterable<Uint8Array> = rawBody as unknown as AsyncIterable<Uint8Array>;
 
   if (encoding && encoding !== 'identity') {
     let decompressor;
@@ -295,7 +458,7 @@ function _buildFinalResponse(response, sock, url, redirected, signal, method?) {
     }
 
     if (decompressor) {
-      bodyIterable = decompressor.transform(rawBody);
+      bodyIterable = decompressor.transform(rawBody as unknown as AsyncIterable<Uint8Array>);
       // Remove framing headers that no longer apply after decompression.
       responseHeaders.delete('content-encoding');
       responseHeaders.delete('content-length');
@@ -317,25 +480,20 @@ function _buildFinalResponse(response, sock, url, redirected, signal, method?) {
 /**
  * Fetch a resource over HTTP or HTTPS.
  *
- * Follows the WHATWG Fetch API. Requires an active event loop — must be
- * called inside `loop.run()` / `loop.runWith()`, or from a user script where
- * the event loop is already running.
+ * Follows the WHATWG Fetch API.
  *
  * @param {string|Request} input   — URL string or Request object
  * @param {object}         [init]  — RequestInit options:
  *   method?, headers?, body?, signal?, redirect?
  * @returns {Promise<Response>}
  */
-export async function fetch(input: string | Request, init?: RequestInit): Promise<Response> {
-  const lp = loop.current();
-  if (!lp) throw new TypeError('fetch() requires an active event loop');
-
+export async function fetch(input: string | Request, init?: FetchInit): Promise<Response> {
   // ---- Normalize input -------------------------------------------------------
 
-  let baseUrl;
-  let baseMethod;
-  let baseHeaders;
-  let baseBody;
+  let baseUrl: string;
+  let baseMethod: string;
+  let baseHeaders: Headers;
+  let baseBody: FetchBody | null;
 
   if (input instanceof Request) {
     baseUrl     = input.url;
@@ -383,7 +541,8 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
   let currentHeaders = baseHeaders;
   let currentBody    = baseBody;
   let redirected     = false;
-  let currentOrigin  = null;
+  let currentOrigin: string | null = null;
+  const requestId = 'fetch-' + (++_fetchRequestSeq);
   try { currentOrigin = new URL(baseUrl).origin; } catch (_) {}
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -391,9 +550,32 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
       throw new TypeError('fetch: too many redirects');
     }
 
-    const { response, sock } = await _singleFetch(
-      lp, currentUrl, currentMethod, currentHeaders, currentBody, signal
-    );
+    topic(otelRuntimeTopic('fetch', 'request', 'start')).publish(otelRuntimeEvent('fetch', 'request', 'start', {
+      requestId,
+      hop,
+      method: currentMethod,
+      url: currentUrl,
+      headers: currentHeaders,
+      timeUnixNano: Date.now() * 1_000_000,
+    }));
+
+    let response: Response;
+    let sock: Socket | TlsSocket;
+    try {
+      ({ response, sock } = await _singleFetch(
+        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }
+      ));
+    } catch (error) {
+      topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {
+        requestId,
+        hop,
+        method: currentMethod,
+        url: currentUrl,
+        error,
+        timeUnixNano: Date.now() * 1_000_000,
+      }));
+      throw error;
+    }
 
     const status = response.status;
 
@@ -403,6 +585,14 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
       if (redirect === 'manual') {
         // Per spec: return an opaque redirect response (status 0, empty headers, null body).
         _closeSocket(sock);
+        topic(otelRuntimeTopic('fetch', 'request', 'end')).publish(otelRuntimeEvent('fetch', 'request', 'end', {
+          requestId,
+          hop,
+          method: currentMethod,
+          url: currentUrl,
+          statusCode: 0,
+          timeUnixNano: Date.now() * 1_000_000,
+        }));
         return buildWireResponse({
           version: response.version,
           status: 0,
@@ -417,6 +607,15 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
       // redirect === 'error'
       if (redirect === 'error') {
         _closeSocket(sock);
+        topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {
+          requestId,
+          hop,
+          method: currentMethod,
+          url: currentUrl,
+          error: new TypeError(`fetch: redirect response with status ${status}`),
+          statusCode: status,
+          timeUnixNano: Date.now() * 1_000_000,
+        }));
         throw new TypeError(`fetch: redirect response with status ${status}`);
       }
 
@@ -432,7 +631,7 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
       _closeSocket(sock);
 
       // Resolve Location relative to current URL
-      let resolvedUrl;
+      let resolvedUrl: string;
       try {
         resolvedUrl = new URL(location, currentUrl).href;
       } catch (_) {
@@ -440,7 +639,7 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
       }
 
       // Compute new origin for cross-origin header stripping
-      let newOrigin = null;
+      let newOrigin: string | null = null;
       try { newOrigin = new URL(resolvedUrl).origin; } catch (_) {}
 
       const nextHeaders = new Headers(currentHeaders);
@@ -469,7 +668,14 @@ export async function fetch(input: string | Request, init?: RequestInit): Promis
     }
 
     // ---- Final response --------------------------------------------------------
-
+    topic(otelRuntimeTopic('fetch', 'request', 'end')).publish(otelRuntimeEvent('fetch', 'request', 'end', {
+      requestId,
+      hop,
+      method: currentMethod,
+      url: currentUrl,
+      statusCode: status,
+      timeUnixNano: Date.now() * 1_000_000,
+    }));
     return _buildFinalResponse(response, sock, currentUrl, redirected, signal, currentMethod);
   }
 

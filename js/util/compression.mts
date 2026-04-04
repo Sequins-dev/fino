@@ -1,5 +1,5 @@
 /**
- * boats:compression — gzip, deflate, brotli
+ * fino:compression — gzip, deflate, brotli
  *
  * Wraps system zlib (always available) and optional brotli (homebrew on macOS,
  * libbrotli on Linux) via FFI.
@@ -7,14 +7,14 @@
  * ## One-shot API
  *
  *   import { gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw,
- *            brotliCompress, brotliDecompress, brotliAvailable } from 'boats:util/compression';
+ *            brotliCompress, brotliDecompress, brotliAvailable } from './compression.mts';
  *
  *   const compressed = gzip(new Uint8Array([...]));          // → Uint8Array
  *   const original   = gunzip(compressed);                  // → Uint8Array
  *
  * ## Streaming API
  *
- *   import { createGzip, createGunzip } from 'boats:util/compression';
+ *   import { createGzip, createGunzip } from './compression.mts';
  *
  *   const gz = createGzip({ level: 6 });
  *   for await (const chunk of gz.transform(source)) { ... }
@@ -23,7 +23,7 @@
  * Options: { level } — 0-9 for zlib, 0-11 for brotli.
  */
 
-import { dlopen, Pointer } from 'boats:ffi';
+import { dlopen, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
 
 export interface CompressionOptions { level?: number; }
@@ -34,7 +34,7 @@ export interface CompressionOptions { level?: number; }
 
 const _isDarwin = os === 'darwin';
 
-function _tryOpen(paths: string[], symbols: object): object | null {
+function _tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TSymbols): DynamicLibrary<TSymbols> | null {
   for (const p of paths) {
     try { return dlopen(p, symbols); } catch (_) {}
   }
@@ -61,7 +61,7 @@ const _zlibSymbols = {
   inflate:       { parameters: ['buffer', 'i32'], result: 'i32' },
   inflateEnd:    { parameters: ['buffer'], result: 'i32' },
   compressBound: { parameters: ['usize'], result: 'usize' },
-};
+} satisfies NativeSymbolMap;
 
 const _brotliEncSymbols = {
   BrotliEncoderCreateInstance:   { parameters: ['pointer', 'pointer', 'pointer'], result: 'pointer' },
@@ -72,7 +72,7 @@ const _brotliEncSymbols = {
   BrotliEncoderHasMoreOutput:    { parameters: ['pointer'], result: 'i32' },
   BrotliEncoderIsFinished:       { parameters: ['pointer'], result: 'i32' },
   BrotliEncoderMaxCompressedSize: { parameters: ['usize'], result: 'usize' },
-};
+} satisfies NativeSymbolMap;
 
 const _brotliDecSymbols = {
   BrotliDecoderCreateInstance:      { parameters: ['pointer', 'pointer', 'pointer'], result: 'pointer' },
@@ -81,16 +81,35 @@ const _brotliDecSymbols = {
   BrotliDecoderDecompressStream:    { parameters: ['pointer', 'buffer', 'buffer', 'buffer', 'buffer', 'buffer'], result: 'i32' },
   BrotliDecoderHasMoreOutput:       { parameters: ['pointer'], result: 'i32' },
   BrotliDecoderIsFinished:          { parameters: ['pointer'], result: 'i32' },
-};
+} satisfies NativeSymbolMap;
+
+type ZlibLibrary = DynamicLibrary<typeof _zlibSymbols>;
+type BrotliEncoderLibrary = DynamicLibrary<typeof _brotliEncSymbols>;
+type BrotliDecoderLibrary = DynamicLibrary<typeof _brotliDecSymbols>;
 
 const _zlib    = _tryOpen(_zlibPaths, _zlibSymbols);
 const _brotliE = _tryOpen(_brotliEncPaths, _brotliEncSymbols);
 const _brotliD = _tryOpen(_brotliDecPaths, _brotliDecSymbols);
 
-if (!_zlib) throw new Error('boats:compression: could not load zlib');
+if (!_zlib) throw new Error('fino:compression: could not load zlib');
 
 /** True when brotli encode/decode libraries are available. */
 export const brotliAvailable = _brotliE !== null && _brotliD !== null;
+
+function _requireZlib(): ZlibLibrary {
+  if (_zlib === null) throw new Error('fino:compression: could not load zlib');
+  return _zlib;
+}
+
+function _requireBrotliEncoder(): BrotliEncoderLibrary {
+  if (_brotliE === null) throw new Error('brotli library not available');
+  return _brotliE;
+}
+
+function _requireBrotliDecoder(): BrotliDecoderLibrary {
+  if (_brotliD === null) throw new Error('brotli library not available');
+  return _brotliD;
+}
 
 // ---------------------------------------------------------------------------
 // zlib constants
@@ -169,9 +188,7 @@ class ZStream {
    * Sets avail_in to u8.byteLength.
    */
   setInput(u8: Uint8Array): void {
-    const addr = u8.byteLength > 0
-      ? Pointer.toAddress(Pointer.of(u8.buffer)) + BigInt(u8.byteOffset)
-      : 0n;
+    const addr = u8.byteLength > 0 ? Pointer.addr(u8) : 0n;
     this.#view.setBigUint64(0, addr, true);
     this.#view.setUint32(8, u8.byteLength, true);
   }
@@ -181,7 +198,7 @@ class ZStream {
    * Sets avail_out to buf.byteLength.
    */
   setOutput(buf: ArrayBuffer): void {
-    const addr = Pointer.toAddress(Pointer.of(buf));
+    const addr = Pointer.addr(buf);
     this.#view.setBigUint64(24, addr, true);
     this.#view.setUint32(32, buf.byteLength, true);
   }
@@ -203,7 +220,11 @@ function _toU8(data: Uint8Array | ArrayBuffer): Uint8Array {
 
 function _concat(parts: Uint8Array[], total: number): Uint8Array {
   if (parts.length === 0) return new Uint8Array(0);
-  if (parts.length === 1) return parts[0];
+  if (parts.length === 1) {
+    const part = parts[0];
+    if (part === undefined) return new Uint8Array(0);
+    return part;
+  }
   const out = new Uint8Array(total);
   let pos = 0;
   for (const p of parts) { out.set(p, pos); pos += p.byteLength; }
@@ -219,9 +240,10 @@ function _concat(parts: Uint8Array[], total: number): Uint8Array {
  * windowBits controls the format (gzip, zlib, raw).
  */
 function _deflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number, level: number): Uint8Array {
+  const zlib = _requireZlib();
   const u8  = _toU8(data);
   const zs  = new ZStream();
-  const r0  = _zlib.symbols.deflateInit2_(
+  const r0  = zlib.symbols.deflateInit2_(
     zs.buffer, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY,
     _ZLIB_VERSION_BUF, Z_STREAM_SIZE,
   );
@@ -236,7 +258,7 @@ function _deflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number, lev
     let r;
     do {
       zs.setOutput(outBuf);
-      r = _zlib.symbols.deflate(zs.buffer, Z_FINISH);
+      r = zlib.symbols.deflate(zs.buffer, Z_FINISH);
       const produced = CHUNK - zs.availOut;
       if (produced > 0) {
         parts.push(new Uint8Array(outBuf, 0, produced).slice());
@@ -246,7 +268,7 @@ function _deflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number, lev
         throw new Error(`zlib deflate error (${r})`);
     } while (r !== Z_STREAM_END);
   } finally {
-    _zlib.symbols.deflateEnd(zs.buffer);
+    zlib.symbols.deflateEnd(zs.buffer);
   }
 
   return _concat(parts, total);
@@ -257,9 +279,10 @@ function _deflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number, lev
  * windowBits controls format detection.
  */
 function _inflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number): Uint8Array {
+  const zlib = _requireZlib();
   const u8  = _toU8(data);
   const zs  = new ZStream();
-  const r0  = _zlib.symbols.inflateInit2_(
+  const r0  = zlib.symbols.inflateInit2_(
     zs.buffer, windowBits, _ZLIB_VERSION_BUF, Z_STREAM_SIZE,
   );
   if (r0 !== Z_OK) throw new Error(`zlib inflateInit2_ failed (${r0})`);
@@ -274,7 +297,7 @@ function _inflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number): Ui
     let r;
     do {
       zs.setOutput(outBuf);
-      r = _zlib.symbols.inflate(zs.buffer, Z_NO_FLUSH);
+      r = zlib.symbols.inflate(zs.buffer, Z_NO_FLUSH);
       const produced = CHUNK - zs.availOut;
       if (produced > 0) {
         parts.push(new Uint8Array(outBuf, 0, produced).slice());
@@ -285,7 +308,7 @@ function _inflateOneShot(data: Uint8Array | ArrayBuffer, windowBits: number): Ui
         throw new Error(`zlib inflate error (${r})`);
     } while (zs.availIn > 0 || zs.availOut === 0);
   } finally {
-    _zlib.symbols.inflateEnd(zs.buffer);
+    zlib.symbols.inflateEnd(zs.buffer);
   }
 
   if (!done) throw new Error('zlib inflate: unexpected end of compressed data');
@@ -341,7 +364,7 @@ function _makeZlibTransformFactory(windowBits: number, defaultLevel: number, isD
   return function(opts?: CompressionOptions) {
     const level = opts?.level ?? defaultLevel;
     return {
-      transform(source) {
+      transform(source: AsyncIterable<Uint8Array | ArrayBuffer>) {
         return {
           [Symbol.asyncIterator]() {
             return _zlibTransformIterator(source, windowBits, level, isDeflate);
@@ -353,10 +376,11 @@ function _makeZlibTransformFactory(windowBits: number, defaultLevel: number, isD
 }
 
 async function* _zlibTransformIterator(source: AsyncIterable<Uint8Array | ArrayBuffer>, windowBits: number, level: number, isDeflate: boolean): AsyncGenerator<Uint8Array> {
+  const zlib = _requireZlib();
   const zs  = new ZStream();
   const r0  = isDeflate
-    ? _zlib.symbols.deflateInit2_(zs.buffer, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY, _ZLIB_VERSION_BUF, Z_STREAM_SIZE)
-    : _zlib.symbols.inflateInit2_(zs.buffer, windowBits, _ZLIB_VERSION_BUF, Z_STREAM_SIZE);
+    ? zlib.symbols.deflateInit2_(zs.buffer, level, Z_DEFLATED, windowBits, 8, Z_DEFAULT_STRATEGY, _ZLIB_VERSION_BUF, Z_STREAM_SIZE)
+    : zlib.symbols.inflateInit2_(zs.buffer, windowBits, _ZLIB_VERSION_BUF, Z_STREAM_SIZE);
   if (r0 !== Z_OK) throw new Error(`zlib init failed (${r0})`);
 
   const outBuf = new ArrayBuffer(CHUNK);
@@ -370,8 +394,8 @@ async function* _zlibTransformIterator(source: AsyncIterable<Uint8Array | ArrayB
       do {
         zs.setOutput(outBuf);
         r = isDeflate
-          ? _zlib.symbols.deflate(zs.buffer, Z_NO_FLUSH)
-          : _zlib.symbols.inflate(zs.buffer, Z_NO_FLUSH);
+          ? zlib.symbols.deflate(zs.buffer, Z_NO_FLUSH)
+          : zlib.symbols.inflate(zs.buffer, Z_NO_FLUSH);
 
         const produced = CHUNK - zs.availOut;
         if (produced > 0) yield new Uint8Array(outBuf, 0, produced).slice();
@@ -387,7 +411,7 @@ async function* _zlibTransformIterator(source: AsyncIterable<Uint8Array | ArrayB
       let r;
       do {
         zs.setOutput(outBuf);
-        r = _zlib.symbols.deflate(zs.buffer, Z_FINISH);
+        r = zlib.symbols.deflate(zs.buffer, Z_FINISH);
         const produced = CHUNK - zs.availOut;
         if (produced > 0) yield new Uint8Array(outBuf, 0, produced).slice();
         if (r !== Z_OK && r !== Z_BUF_ERROR && r !== Z_STREAM_END)
@@ -395,8 +419,8 @@ async function* _zlibTransformIterator(source: AsyncIterable<Uint8Array | ArrayB
       } while (r !== Z_STREAM_END);
     }
   } finally {
-    if (isDeflate) _zlib.symbols.deflateEnd(zs.buffer);
-    else           _zlib.symbols.inflateEnd(zs.buffer);
+    if (isDeflate) zlib.symbols.deflateEnd(zs.buffer);
+    else           zlib.symbols.inflateEnd(zs.buffer);
   }
 }
 
@@ -418,16 +442,17 @@ export const createInflateRaw = _makeZlibTransformFactory(W_RAW,  Z_DEFAULT_COMP
 /** Compress data using brotli. Throws if brotli is not available. */
 export function brotliCompress(data: Uint8Array | ArrayBuffer, opts?: CompressionOptions): Uint8Array {
   if (!brotliAvailable) throw new Error('brotli library not available');
+  const brotli = _requireBrotliEncoder();
   const u8      = _toU8(data);
   const quality = opts?.level ?? BROTLI_DEFAULT_QUALITY;
 
-  const maxSize = Number(_brotliE.symbols.BrotliEncoderMaxCompressedSize(u8.byteLength));
+  const maxSize = Number(brotli.symbols.BrotliEncoderMaxCompressedSize(u8.byteLength));
   const outBuf  = new ArrayBuffer(maxSize);
   // encoded_size is an in/out parameter: pass max, read back actual.
   const sizeBuf = new ArrayBuffer(8);
   new DataView(sizeBuf).setBigUint64(0, BigInt(maxSize), true);
 
-  const ok = _brotliE.symbols.BrotliEncoderCompress(
+  const ok = brotli.symbols.BrotliEncoderCompress(
     quality, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC,
     u8.byteLength, u8, sizeBuf, outBuf,
   );
@@ -440,6 +465,7 @@ export function brotliCompress(data: Uint8Array | ArrayBuffer, opts?: Compressio
 /** Decompress brotli data. Throws if brotli is not available. */
 export function brotliDecompress(data: Uint8Array | ArrayBuffer): Uint8Array {
   if (!brotliAvailable) throw new Error('brotli library not available');
+  const brotli = _requireBrotliDecoder();
   const u8 = _toU8(data);
 
   // BrotliDecoderDecompress (one-shot) returns ERROR for both corrupt data AND
@@ -454,7 +480,7 @@ export function brotliDecompress(data: Uint8Array | ArrayBuffer): Uint8Array {
     const sizeBuf = new ArrayBuffer(8);
     new DataView(sizeBuf).setBigUint64(0, BigInt(outSize), true);
 
-    const result = _brotliD.symbols.BrotliDecoderDecompress(
+    const result = brotli.symbols.BrotliDecoderDecompress(
       u8.byteLength, u8, sizeBuf, outBuf,
     );
 
@@ -475,7 +501,7 @@ function _makeBrotliTransformFactory(isEncode: boolean, defaultLevel: number) {
   return function(opts?: CompressionOptions) {
     const level = opts?.level ?? defaultLevel;
     return {
-      transform(source) {
+      transform(source: AsyncIterable<Uint8Array | ArrayBuffer>) {
         return {
           [Symbol.asyncIterator]() {
             return isEncode
@@ -490,16 +516,17 @@ function _makeBrotliTransformFactory(isEncode: boolean, defaultLevel: number) {
 
 async function* _brotliEncodeIterator(source: AsyncIterable<Uint8Array | ArrayBuffer>, level: number): AsyncGenerator<Uint8Array> {
   if (!brotliAvailable) throw new Error('brotli library not available');
+  const brotli = _requireBrotliEncoder();
 
-  const state = _brotliE.symbols.BrotliEncoderCreateInstance(null, null, null);
+  const state = brotli.symbols.BrotliEncoderCreateInstance(null, null, null);
   if (!state) throw new Error('BrotliEncoderCreateInstance failed');
 
-  _brotliE.symbols.BrotliEncoderSetParameter(state, BROTLI_PARAM_QUALITY, level);
-  _brotliE.symbols.BrotliEncoderSetParameter(state, BROTLI_PARAM_LGWIN, BROTLI_DEFAULT_WINDOW);
+  brotli.symbols.BrotliEncoderSetParameter(state, BROTLI_PARAM_QUALITY, level);
+  brotli.symbols.BrotliEncoderSetParameter(state, BROTLI_PARAM_LGWIN, BROTLI_DEFAULT_WINDOW);
 
   // Reusable output buffer and the 8-byte buffers for pointer-size in/out parameters.
   const outBuf    = new ArrayBuffer(CHUNK);
-  const outBufAddr = Pointer.toAddress(Pointer.of(outBuf));
+  const outBufAddr = Pointer.addr(outBuf);
   const availInBuf = new ArrayBuffer(8);
   const nextInBuf  = new ArrayBuffer(8);
   const availOutBuf = new ArrayBuffer(8);
@@ -512,9 +539,7 @@ async function* _brotliEncodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
   try {
     for await (const chunk of source) {
       const u8 = _toU8(chunk);
-      const inputAddr = u8.byteLength > 0
-        ? Pointer.toAddress(Pointer.of(u8.buffer)) + BigInt(u8.byteOffset)
-        : 0n;
+      const inputAddr = u8.byteLength > 0 ? Pointer.addr(u8) : 0n;
 
       dvAI.setBigUint64(0, BigInt(u8.byteLength), true);
       dvNI.setBigUint64(0, inputAddr, true);
@@ -524,7 +549,7 @@ async function* _brotliEncodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
         dvAO.setBigUint64(0, BigInt(CHUNK), true);
         dvNO.setBigUint64(0, outBufAddr, true);
 
-        const ok = _brotliE.symbols.BrotliEncoderCompressStream(
+        const ok = brotli.symbols.BrotliEncoderCompressStream(
           state, BROTLI_OPERATION_PROCESS,
           availInBuf, nextInBuf, availOutBuf, nextOutBuf, null,
         );
@@ -534,17 +559,17 @@ async function* _brotliEncodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
         if (produced > 0) yield new Uint8Array(outBuf, 0, produced).slice();
 
         remaining = Number(dvAI.getBigUint64(0, true));
-      } while (remaining > 0 || _brotliE.symbols.BrotliEncoderHasMoreOutput(state));
+      } while (remaining > 0 || brotli.symbols.BrotliEncoderHasMoreOutput(state));
     }
 
     // Finish — flush all remaining compressed output.
     dvAI.setBigUint64(0, 0n, true);
     dvNI.setBigUint64(0, 0n, true);
-    while (!_brotliE.symbols.BrotliEncoderIsFinished(state)) {
+    while (!brotli.symbols.BrotliEncoderIsFinished(state)) {
       dvAO.setBigUint64(0, BigInt(CHUNK), true);
       dvNO.setBigUint64(0, outBufAddr, true);
 
-      const ok = _brotliE.symbols.BrotliEncoderCompressStream(
+      const ok = brotli.symbols.BrotliEncoderCompressStream(
         state, BROTLI_OPERATION_FINISH,
         availInBuf, nextInBuf, availOutBuf, nextOutBuf, null,
       );
@@ -554,18 +579,19 @@ async function* _brotliEncodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
       if (produced > 0) yield new Uint8Array(outBuf, 0, produced).slice();
     }
   } finally {
-    _brotliE.symbols.BrotliEncoderDestroyInstance(state);
+    brotli.symbols.BrotliEncoderDestroyInstance(state);
   }
 }
 
 async function* _brotliDecodeIterator(source: AsyncIterable<Uint8Array | ArrayBuffer>): AsyncGenerator<Uint8Array> {
   if (!brotliAvailable) throw new Error('brotli library not available');
+  const brotli = _requireBrotliDecoder();
 
-  const state = _brotliD.symbols.BrotliDecoderCreateInstance(null, null, null);
+  const state = brotli.symbols.BrotliDecoderCreateInstance(null, null, null);
   if (!state) throw new Error('BrotliDecoderCreateInstance failed');
 
   const outBuf     = new ArrayBuffer(CHUNK);
-  const outBufAddr = Pointer.toAddress(Pointer.of(outBuf));
+  const outBufAddr = Pointer.addr(outBuf);
   const availInBuf = new ArrayBuffer(8);
   const nextInBuf  = new ArrayBuffer(8);
   const availOutBuf = new ArrayBuffer(8);
@@ -579,9 +605,7 @@ async function* _brotliDecodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
     let finished = false;
     for await (const chunk of source) {
       const u8 = _toU8(chunk);
-      const inputAddr = u8.byteLength > 0
-        ? Pointer.toAddress(Pointer.of(u8.buffer)) + BigInt(u8.byteOffset)
-        : 0n;
+      const inputAddr = u8.byteLength > 0 ? Pointer.addr(u8) : 0n;
 
       dvAI.setBigUint64(0, BigInt(u8.byteLength), true);
       dvNI.setBigUint64(0, inputAddr, true);
@@ -591,7 +615,7 @@ async function* _brotliDecodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
         dvAO.setBigUint64(0, BigInt(CHUNK), true);
         dvNO.setBigUint64(0, outBufAddr, true);
 
-        const result = _brotliD.symbols.BrotliDecoderDecompressStream(
+        const result = brotli.symbols.BrotliDecoderDecompressStream(
           state, availInBuf, nextInBuf, availOutBuf, nextOutBuf, null,
         );
 
@@ -604,12 +628,12 @@ async function* _brotliDecodeIterator(source: AsyncIterable<Uint8Array | ArrayBu
           throw new Error(`BrotliDecoderDecompressStream failed (result=${result})`);
 
         remaining = Number(dvAI.getBigUint64(0, true));
-      } while (remaining > 0 || _brotliD.symbols.BrotliDecoderHasMoreOutput(state));
+      } while (remaining > 0 || brotli.symbols.BrotliDecoderHasMoreOutput(state));
 
       if (finished) break;
     }
   } finally {
-    _brotliD.symbols.BrotliDecoderDestroyInstance(state);
+    brotli.symbols.BrotliDecoderDestroyInstance(state);
   }
 }
 

@@ -1,8 +1,8 @@
 /**
- * Tests for Blob and File (boats:blob / globalThis).
+ * Tests for Blob and File (fino:blob / globalThis).
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 
 describe('Blob construction', () => {
   it('empty constructor', (t) => {
@@ -137,13 +137,13 @@ describe('slice()', () => {
 describe('stream()', () => {
   it('yields bytes as async iterable', async (t) => {
     const b = new Blob(['abc']);
-    const chunks = [];
+    const chunks: Uint8Array[] = [];
     for await (const chunk of b.stream()) {
       chunks.push(chunk);
     }
     t.equal(chunks.length, 1, 'one chunk');
     t.ok(chunks[0] instanceof Uint8Array, 'chunk is Uint8Array');
-    t.equal(chunks[0].length, 3);
+    t.equal(chunks[0]?.length, 3);
   });
 });
 
@@ -289,12 +289,12 @@ describe('File.slice() returns Blob (not File)', () => {
 describe('[Symbol.toStringTag]', () => {
   it('Blob has correct toStringTag', (t) => {
     const b = new Blob(['x']);
-    t.equal(b[Symbol.toStringTag], 'Blob', 'Blob toStringTag');
+    t.equal((b as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'Blob', 'Blob toStringTag');
   });
 
   it('File has correct toStringTag', (t) => {
     const f = new File(['x'], 'x.txt');
-    t.equal(f[Symbol.toStringTag], 'File', 'File toStringTag');
+    t.equal((f as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'File', 'File toStringTag');
   });
 });
 

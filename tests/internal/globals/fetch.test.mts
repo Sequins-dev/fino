@@ -1,18 +1,20 @@
 /**
  * Tests for the global `fetch()` function.
  *
- * Uses boats:serve to spin up local HTTP servers so no external network is
+ * Uses fino:serve to spin up local HTTP servers so no external network is
  * required. Each test uses a distinct port in the 19801–19823 range.
  */
 
-import { describe, it } from 'boats:test/test';
-import { serve } from 'boats:net/serve';
-import { Request, Response, Headers } from 'boats:net/http';
-import * as loop from 'boats:runtime/loop';
-import { gzip, brotliAvailable, brotliCompress } from 'boats:util/compression';
+import { describe, it } from 'fino:test/test';
+import { serve } from 'fino:net/serve';
+import { Request, Response, Headers } from 'fino:net/http';
+import { gzip, brotliAvailable, brotliCompress } from 'fino:util/compression';
 
-async function withServer(lp, port, handler, fn) {
-  const srv = serve(lp, { port, hostname: '127.0.0.1' }, handler);
+type Server = ReturnType<typeof serve>;
+type Handler = (req: Request) => Response | Promise<Response>;
+
+async function withServer<T>(port: number, handler: Handler, fn: (url: string, srv: Server) => Promise<T>): Promise<T> {
+  const srv = serve({ port, hostname: '127.0.0.1' }, handler);
   const url = `http://127.0.0.1:${port}`;
   try {
     return await fn(url, srv);
@@ -23,8 +25,7 @@ async function withServer(lp, port, handler, fn) {
 
 describe('Basic GET / POST', () => {
   it('basic GET returns 200', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19801,
+    await withServer(19801,
       () => new Response('hello world', { status: 200 }),
       async (url) => {
         const res = await fetch(url);
@@ -33,12 +34,10 @@ describe('Basic GET / POST', () => {
         t.equal(await res.text(), 'hello world', 'body text');
       },
     );
-    loop.destroy(lp);
   });
 
   it('response.url is set to the request URL', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19802,
+    await withServer(19802,
       () => new Response('ok'),
       async (url) => {
         const res = await fetch(url);
@@ -46,24 +45,20 @@ describe('Basic GET / POST', () => {
         t.equal(res.redirected, false, 'not redirected');
       },
     );
-    loop.destroy(lp);
   });
 
   it('response headers are accessible', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19803,
-      () => new Response('body', { headers: { 'x-custom': 'boats' } }),
+    await withServer(19803,
+      () => new Response('body', { headers: { 'x-custom': 'fino' } }),
       async (url) => {
         const res = await fetch(url);
-        t.equal(res.headers.get('x-custom'), 'boats', 'custom header');
+        t.equal(res.headers.get('x-custom'), 'fino', 'custom header');
       },
     );
-    loop.destroy(lp);
   });
 
   it('POST sends body and receives echo', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19804,
+    await withServer(19804,
       async (req) => {
         const body = await req.text();
         return new Response(body, { status: 201, headers: { 'x-method': req.method } });
@@ -79,24 +74,20 @@ describe('Basic GET / POST', () => {
         t.equal(await res.text(), 'payload data', 'body echoed');
       },
     );
-    loop.destroy(lp);
   });
 
   it('response.json() parses JSON body', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19805,
+    await withServer(19805,
       () => Response.json({ hello: 'world' }),
       async (url) => {
         const data = await (await fetch(url)).json();
         t.equal(data.hello, 'world', 'json parsed');
       },
     );
-    loop.destroy(lp);
   });
 
   it('204 No Content has null body', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19806,
+    await withServer(19806,
       () => new Response(null, { status: 204 }),
       async (url) => {
         const res = await fetch(url);
@@ -104,16 +95,14 @@ describe('Basic GET / POST', () => {
         t.equal(res.body, null, 'body is null');
       },
     );
-    loop.destroy(lp);
   });
 });
 
 describe('Redirects', () => {
   it('301 redirect is followed and method becomes GET', async (t) => {
-    const lp = loop.create();
     let requestCount = 0;
-    let finalMethod;
-    await withServer(lp, 19807,
+    let finalMethod: string | undefined;
+    await withServer(19807,
       (req) => {
         requestCount++;
         if (requestCount === 1) {
@@ -133,13 +122,11 @@ describe('Redirects', () => {
         t.equal(res.url, url + '/final', 'final url');
       },
     );
-    loop.destroy(lp);
   });
 
   it('302 redirect is followed', async (t) => {
-    const lp = loop.create();
     let count = 0;
-    await withServer(lp, 19808,
+    await withServer(19808,
       (req) => {
         count++;
         if (count === 1) {
@@ -157,14 +144,12 @@ describe('Redirects', () => {
         t.equal(await res.text(), 'target reached', 'body from target');
       },
     );
-    loop.destroy(lp);
   });
 
   it('303 See Other changes method to GET', async (t) => {
-    const lp = loop.create();
     let count = 0;
-    let method;
-    await withServer(lp, 19809,
+    let method: string | undefined;
+    await withServer(19809,
       (req) => {
         count++;
         if (count === 1) {
@@ -181,14 +166,12 @@ describe('Redirects', () => {
         t.equal(method, 'GET', '303 changes to GET');
       },
     );
-    loop.destroy(lp);
   });
 
   it('307 redirect preserves method', async (t) => {
-    const lp = loop.create();
     let count = 0;
-    let finalMethod;
-    await withServer(lp, 19810,
+    let finalMethod: string | undefined;
+    await withServer(19810,
       (req) => {
         count++;
         if (count === 1) {
@@ -205,12 +188,10 @@ describe('Redirects', () => {
         t.equal(finalMethod, 'PUT', '307 preserves PUT');
       },
     );
-    loop.destroy(lp);
   });
 
   it("redirect: 'error' throws on redirect response", async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19811,
+    await withServer(19811,
       (req) => new Response(null, {
         status: 302,
         headers: { location: new URL('/other', req.url).href },
@@ -223,12 +204,10 @@ describe('Redirects', () => {
         );
       },
     );
-    loop.destroy(lp);
   });
 
   it("redirect: 'manual' returns opaque redirect response", async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19812,
+    await withServer(19812,
       () => new Response(null, {
         status: 302,
         headers: { location: 'http://example.com/other' },
@@ -241,13 +220,11 @@ describe('Redirects', () => {
         t.equal(res.headers.get('location'), null, 'headers are empty');
       },
     );
-    loop.destroy(lp);
   });
 
   it('throws after too many redirects', async (t) => {
-    const lp = loop.create();
     let count = 0;
-    await withServer(lp, 19813,
+    await withServer(19813,
       (req) => {
         count++;
         return new Response(null, {
@@ -263,15 +240,13 @@ describe('Redirects', () => {
         );
       },
     );
-    loop.destroy(lp);
   });
 });
 
 describe('AbortSignal', () => {
   it('pre-aborted signal rejects immediately', async (t) => {
-    const lp = loop.create();
     const signal = AbortSignal.abort();
-    await withServer(lp, 19814,
+    await withServer(19814,
       () => new Response('never'),
       async (url) => {
         await t.rejects(
@@ -281,12 +256,10 @@ describe('AbortSignal', () => {
         );
       },
     );
-    loop.destroy(lp);
   });
 
   it('AbortSignal.timeout cancels a slow request', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19815,
+    await withServer(19815,
       async () => {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         return new Response('late');
@@ -300,28 +273,24 @@ describe('AbortSignal', () => {
         );
       },
     );
-    loop.destroy(lp);
   });
 });
 
 describe('Misc', () => {
   it('accepts a Request object as input', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19816,
+    await withServer(19816,
       async (req) => new Response(req.method + ':' + new URL(req.url).pathname),
       async (url) => {
         const req = new Request(url + '/path', { method: 'PATCH' });
-        const text = await (await fetch(req)).text();
+        const text = await (await fetch(req as unknown as RequestInfo)).text();
         t.equal(text, 'PATCH:/path', 'Request object used');
       },
     );
-    loop.destroy(lp);
   });
 
   it('Host header is automatically set', async (t) => {
-    const lp = loop.create();
-    let receivedHost;
-    await withServer(lp, 19817,
+    let receivedHost: string | null = null;
+    await withServer(19817,
       (req) => {
         receivedHost = req.headers.get('host');
         return new Response('ok');
@@ -329,15 +298,14 @@ describe('Misc', () => {
       async (url) => {
         await fetch(url);
         t.ok(receivedHost, 'Host header present');
+        if (receivedHost === null) throw new Error('Host header should be present');
         t.ok(receivedHost.startsWith('127.0.0.1'), 'Host is 127.0.0.1');
       },
     );
-    loop.destroy(lp);
   });
 
   it('chunked response body is readable', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19818,
+    await withServer(19818,
       () => {
         const body = 'chunk1chunk2chunk3';
         return new Response(body, {
@@ -349,12 +317,10 @@ describe('Misc', () => {
         t.equal(text, 'chunk1chunk2chunk3', 'chunked body assembled');
       },
     );
-    loop.destroy(lp);
   });
 
   it('response.bytes() returns Uint8Array', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19819,
+    await withServer(19819,
       () => new Response('binary'),
       async (url) => {
         const bytes = await (await fetch(url)).bytes();
@@ -362,16 +328,14 @@ describe('Misc', () => {
         t.equal(bytes.length, 6, 'correct byte count');
       },
     );
-    loop.destroy(lp);
   });
 });
 
 describe('Redirects — additional', () => {
   it('307 redirect preserves request body', async (t) => {
-    const lp = loop.create();
     let count = 0;
     let receivedBody: string | null = null;
-    await withServer(lp, 19824,
+    await withServer(19824,
       async (req) => {
         count++;
         if (count === 1) {
@@ -388,15 +352,13 @@ describe('Redirects — additional', () => {
         t.equal(receivedBody, 'original body', '307 redirect preserves request body');
       },
     );
-    loop.destroy(lp);
   });
 
   it('308 redirect preserves request body and method', async (t) => {
-    const lp = loop.create();
     let count = 0;
     let finalMethod: string | null = null;
     let receivedBody: string | null = null;
-    await withServer(lp, 19825,
+    await withServer(19825,
       async (req) => {
         count++;
         if (count === 1) {
@@ -415,13 +377,11 @@ describe('Redirects — additional', () => {
         t.equal(receivedBody, 'patch data', '308 preserves request body');
       },
     );
-    loop.destroy(lp);
   });
 
   it('redirect with relative Location header is followed', async (t) => {
-    const lp = loop.create();
     let count = 0;
-    await withServer(lp, 19826,
+    await withServer(19826,
       (req) => {
         count++;
         if (count === 1) {
@@ -439,30 +399,23 @@ describe('Redirects — additional', () => {
         t.equal(await res.text(), 'relative redirect worked', 'correct body');
       },
     );
-    loop.destroy(lp);
   });
 });
 
 describe('fetch — invalid URL', () => {
   it('fetch with invalid URL throws TypeError', async (t) => {
-    const lp = loop.create();
-    try {
-      await t.rejects(
-        () => fetch('not a valid url'),
-        undefined,
-        'fetch with invalid URL rejects',
-      );
-    } finally {
-      loop.destroy(lp);
-    }
+    await t.rejects(
+      () => fetch('not a valid url'),
+      undefined,
+      'fetch with invalid URL rejects',
+    );
   });
 });
 
 describe('Compression', () => {
   it('sends Accept-Encoding header', async (t) => {
-    const lp = loop.create();
-    let receivedEncoding;
-    await withServer(lp, 19820,
+    let receivedEncoding: string | null = null;
+    await withServer(19820,
       (req) => {
         receivedEncoding = req.headers.get('accept-encoding');
         return new Response('ok');
@@ -470,16 +423,15 @@ describe('Compression', () => {
       async (url) => {
         await fetch(url);
         t.ok(receivedEncoding, 'Accept-Encoding header was sent');
+        if (receivedEncoding === null) throw new Error('Accept-Encoding should be present');
         t.ok(receivedEncoding.includes('gzip'), 'includes gzip');
       },
     );
-    loop.destroy(lp);
   });
 
   it('auto-decompresses gzip Content-Encoding', async (t) => {
-    const lp = loop.create();
     const original = 'Hello, compressed world!';
-    await withServer(lp, 19821,
+    await withServer(19821,
       () => {
         const compressed = gzip(new TextEncoder().encode(original));
         return new Response(compressed, {
@@ -497,13 +449,11 @@ describe('Compression', () => {
         t.equal(await res.text(), original, 'body decompressed correctly');
       },
     );
-    loop.destroy(lp);
   });
 
   it('user-set Accept-Encoding is preserved', async (t) => {
-    const lp = loop.create();
-    let received;
-    await withServer(lp, 19822,
+    let received: string | null = null;
+    await withServer(19822,
       (req) => {
         received = req.headers.get('accept-encoding');
         return new Response('ok');
@@ -513,23 +463,19 @@ describe('Compression', () => {
         t.equal(received, 'identity', 'user Accept-Encoding not overwritten');
       },
     );
-    loop.destroy(lp);
   });
 
   it('uncompressed response passes through unchanged', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19823,
+    await withServer(19823,
       () => new Response('plain text'),
       async (url) => {
         t.equal(await (await fetch(url)).text(), 'plain text', 'uncompressed body unchanged');
       },
     );
-    loop.destroy(lp);
   });
 
   it('HEAD response has no body (bodyless)', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19828,
+    await withServer(19828,
       () => new Response('body content', {
         status: 200,
         headers: { 'content-type': 'text/plain', 'content-length': '12' },
@@ -542,12 +488,10 @@ describe('Compression', () => {
         t.equal(text, '', 'HEAD response text() is empty string');
       },
     );
-    loop.destroy(lp);
   });
 
   it('304 response is bodyless', async (t) => {
-    const lp = loop.create();
-    await withServer(lp, 19829,
+    await withServer(19829,
       () => new Response(null, { status: 304 }),
       async (url) => {
         const res = await fetch(url);
@@ -555,13 +499,11 @@ describe('Compression', () => {
         t.equal(res.body, null, '304 response has null body');
       },
     );
-    loop.destroy(lp);
   });
 
   it('method normalization: lowercase method is uppercased', async (t) => {
-    const lp = loop.create();
-    let receivedMethod;
-    await withServer(lp, 19830,
+    let receivedMethod: string | undefined;
+    await withServer(19830,
       (req) => {
         receivedMethod = req.method;
         return new Response('ok');
@@ -571,7 +513,6 @@ describe('Compression', () => {
         t.equal(receivedMethod, 'GET', 'lowercase method normalized to uppercase');
       },
     );
-    loop.destroy(lp);
   });
 
   it('auto-decompresses brotli Content-Encoding (if brotli available)', async (t) => {
@@ -579,9 +520,8 @@ describe('Compression', () => {
       t.ok(true, 'brotli not available, skipping');
       return;
     }
-    const lp = loop.create();
     const original = 'brotli compressed content';
-    await withServer(lp, 19827,
+    await withServer(19827,
       () => {
         const compressed = brotliCompress(new TextEncoder().encode(original));
         return new Response(compressed, {
@@ -597,7 +537,6 @@ describe('Compression', () => {
         t.equal(await res.text(), original, 'brotli body decompressed correctly');
       },
     );
-    loop.destroy(lp);
   });
 });
 

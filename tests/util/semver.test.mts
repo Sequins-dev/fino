@@ -1,0 +1,69 @@
+import { describe, it } from 'fino:test/test';
+import { compare, maxSatisfying, parse, satisfies } from 'fino:semver';
+
+describe('fino:semver parse', () => {
+  it('parses core, prerelease, and build metadata', (t) => {
+    const version = parse('1.2.3-alpha.1+build.5');
+
+    t.equal(version.major, 1, 'major parsed');
+    t.equal(version.minor, 2, 'minor parsed');
+    t.equal(version.patch, 3, 'patch parsed');
+    t.deepEqual(version.prerelease, ['alpha', 1], 'prerelease identifiers parsed');
+    t.deepEqual(version.build, ['build', '5'], 'build identifiers parsed');
+    t.equal(version.version, '1.2.3-alpha.1+build.5', 'normalized version preserved');
+  });
+
+  it('rejects invalid versions', (t) => {
+    t.throws(() => parse('1.2'), /Invalid semver version/, 'missing patch rejected');
+    t.throws(() => parse('01.2.3'), /Invalid semver version/, 'leading zero rejected');
+  });
+});
+
+describe('fino:semver compare', () => {
+  it('ignores build metadata and orders prereleases below stable versions', (t) => {
+    t.equal(compare('1.2.3+build.1', '1.2.3+build.9'), 0, 'build metadata does not affect precedence');
+    t.ok(compare('1.2.3-alpha.1', '1.2.3') < 0, 'prerelease sorts below stable');
+    t.ok(compare('1.2.3-alpha.1', '1.2.3-alpha.2') < 0, 'numeric prerelease identifiers compare numerically');
+    t.ok(compare('1.2.3-beta', '1.2.3-alpha.9') > 0, 'later prerelease identifiers compare lexically');
+  });
+});
+
+describe('fino:semver satisfies', () => {
+  it('supports exact, wildcard, x-range, caret, tilde, comparator, and or ranges', (t) => {
+    t.equal(satisfies('1.2.3', '1.2.3'), true, 'exact version matches');
+    t.equal(satisfies('1.2.3', '*'), true, 'wildcard matches');
+    t.equal(satisfies('1.9.9', '1.x'), true, 'x-range matches');
+    t.equal(satisfies('1.2.5', '~1.2.3'), true, 'tilde range matches');
+    t.equal(satisfies('1.4.0', '^1.2.3'), true, 'caret range matches');
+    t.equal(satisfies('1.5.0', '>=1.2.3 <2.0.0'), true, 'comparator set matches');
+    t.equal(satisfies('2.3.0', '^1.2.3 || ^2.1.0'), true, 'or range matches');
+    t.equal(satisfies('1.2.3', '1.2.0 - 1.2.5'), true, 'hyphen range matches');
+    t.equal(satisfies('0.2.5', '^0.2.3'), true, 'caret range respects zero-major semantics');
+    t.equal(satisfies('0.3.0', '^0.2.3'), false, 'caret range excludes next zero-major minor');
+    t.equal(satisfies('0.9.0', '<1.x'), true, 'partial less-than range matches below major floor');
+    t.equal(satisfies('1.2.3', '<1.x'), false, 'partial less-than range excludes the target x-range');
+    t.equal(satisfies('1.2.3', '>1.x'), false, 'partial greater-than range excludes values inside the target x-range');
+    t.equal(satisfies('2.0.0', '>1.x'), true, 'partial greater-than range matches above the target x-range');
+  });
+
+  it('applies npm-style prerelease exclusion for stable ranges', (t) => {
+    t.equal(satisfies('1.2.3-alpha.1', '^1.2.3'), false, 'stable caret range excludes prereleases');
+    t.equal(satisfies('1.2.3-alpha.2', '>=1.2.3-alpha.1 <1.2.3'), true, 'prerelease comparator range admits prereleases');
+  });
+});
+
+describe('fino:semver maxSatisfying', () => {
+  it('returns the highest matching stable version and skips prereleases unless admitted', (t) => {
+    const versions = [
+      '1.2.3-alpha.1',
+      '1.2.3',
+      '1.4.0',
+      '1.5.0-beta.1',
+      '2.0.0',
+    ];
+
+    t.equal(maxSatisfying(versions, '^1.2.3'), '1.4.0', 'highest stable match selected');
+    t.equal(maxSatisfying(versions, '>=1.2.3-alpha.1 <1.2.3'), '1.2.3-alpha.1', 'prerelease match selected when range admits it');
+    t.equal(maxSatisfying(versions, '^3.0.0'), null, 'null returned when nothing matches');
+  });
+});

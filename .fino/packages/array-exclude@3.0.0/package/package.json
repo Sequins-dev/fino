@@ -1,0 +1,43 @@
+{
+	"name": "array-exclude",
+	"version": "3.0.0",
+	"description": "Exclude certain items from an array",
+	"license": "MIT",
+	"repository": "sindresorhus/array-exclude",
+	"funding": "https://github.com/sponsors/sindresorhus",
+	"author": {
+		"name": "Sindre Sorhus",
+		"email": "sindresorhus@gmail.com",
+		"url": "https://sindresorhus.com"
+	},
+	"type": "module",
+	"exports": {
+		"types": "./index.d.ts",
+		"default": "./index.js"
+	},
+	"sideEffects": false,
+	"engines": {
+		"node": ">=20"
+	},
+	"scripts": {
+		"test": "xo && ava"
+	},
+	"files": [
+		"index.js"
+	],
+	"keywords": [
+		"array",
+		"list",
+		"exclude",
+		"ignore",
+		"without",
+		"items",
+		"elements",
+		"values",
+		"filter"
+	],
+	"devDependencies": {
+		"ava": "^6.4.0",
+		"xo": "^1.1.0"
+	}
+}

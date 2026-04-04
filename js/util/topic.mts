@@ -1,13 +1,13 @@
 /**
- * boats:topic — Named pub/sub channels with Context binding.
+ * fino:topic — Named pub/sub channels with Context binding.
  *
  * A `Topic` is a named pub/sub channel. When a `Context` is bound to a Topic,
  * calling `topic.runWithValue(msg, fn)` automatically derives and installs the
  * bound context value for the duration of `fn`. This separates the concerns of
  * *publishing* (the library/framework) from *consuming* context (application code).
  *
- *   import { topic } from 'boats:util/topic';
- *   import { Context } from 'boats:runtime/context';
+ *   import { topic } from './topic.mts';
+ *   import { Context } from '../runtime/context.mts';
  *
  *   const requestCtx = new Context('request');
  *   const httpTopic = topic('http.request');
@@ -26,6 +26,7 @@
 // ---------------------------------------------------------------------------
 
 const registry = new Map<string, Topic<any>>();
+const topicCreationSubscribers = new Map<symbol, (name: string, topic: Topic<unknown>) => void>();
 
 /**
  * Get or create a named `Topic`. Topics with the same name share state across
@@ -39,8 +40,37 @@ export function topic<T = unknown>(name: string): Topic<T> {
   if (t === undefined) {
     t = new Topic(name);
     registry.set(name, t);
+    for (const subscriber of topicCreationSubscribers.values()) subscriber(name, t);
   }
   return t;
+}
+
+export function subscribeMatching<T = unknown>(
+  matcher: (name: string) => boolean,
+  fn: (msg: T, topicName: string) => void,
+): SubscriptionHandle {
+  const handles = new Map<string, SubscriptionHandle>();
+
+  function attach(name: string, currentTopic: Topic<unknown>) {
+    if (!matcher(name) || handles.has(name)) return;
+    handles.set(
+      name,
+      currentTopic.subscribe((msg) => {
+        fn(msg as T, name);
+      }),
+    );
+  }
+
+  for (const [name, currentTopic] of registry.entries()) attach(name, currentTopic);
+
+  const creationId = Symbol();
+  topicCreationSubscribers.set(creationId, attach);
+
+  return new SubscriptionHandle(function unsubscribeMatching() {
+    topicCreationSubscribers.delete(creationId);
+    for (const handle of handles.values()) handle.dispose();
+    handles.clear();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -87,7 +117,7 @@ export class Topic<T = unknown> {
     const id = Symbol();
     this.#subscribers.set(id, fn);
     const subscribers = this.#subscribers;
-    return new SubscriptionHandle(() => subscribers.delete(id));
+    return new SubscriptionHandle(function unsubscribe() { subscribers.delete(id); });
   }
 
   /**
@@ -119,7 +149,7 @@ export class Topic<T = unknown> {
     let pending: ((result: IteratorResult<T>) => void) | null = null;
     let done = false;
 
-    const handle = this.subscribe((msg) => {
+    const handle = this.subscribe(function onTopicMessage(msg) {
       if (pending !== null) {
         const resolve = pending;
         pending = null;
@@ -137,7 +167,7 @@ export class Topic<T = unknown> {
         if (done) {
           return Promise.resolve({ value: undefined as unknown as T, done: true });
         }
-        return new Promise((resolve) => { pending = resolve; });
+        return new Promise(function waitForMessage(resolve) { pending = resolve; });
       },
       return(): Promise<IteratorResult<T>> {
         done = true;
@@ -190,7 +220,7 @@ export class Topic<T = unknown> {
    * be set to `transform(msg)` for the duration of the call. Multiple bindings
    * are entered in registration order (outermost first) and restored in reverse.
    *
-   * @param {import('boats:runtime/context').Context} ctx
+   * @param {import('../runtime/context.mts').Context} ctx
    * @param {(msg: any) => any} transform
    * @returns {BindingHandle}
    */
@@ -198,7 +228,7 @@ export class Topic<T = unknown> {
     const binding = { ctx, transform };
     this.#bindings.push(binding);
     const bindings = this.#bindings;
-    return new BindingHandle(() => {
+    return new BindingHandle(function removeBinding() {
       const i = bindings.indexOf(binding);
       if (i !== -1) bindings.splice(i, 1);
     });
@@ -234,10 +264,13 @@ export class Topic<T = unknown> {
       this.publish(msg);
       return fn();
     }
-    const { ctx, transform } = this.#bindings[index];
-    return ctx.runWithValue(transform(msg), () =>
-      this.#runWithBindings(msg, index + 1, fn),
-    );
+    const binding = this.#bindings[index];
+    if (binding === undefined) return fn();
+    const { ctx, transform } = binding;
+    const self = this;
+    return ctx.runWithValue(transform(msg), function runNextBinding() {
+      return self.#runWithBindings(msg, index + 1, fn);
+    });
   }
 }
 

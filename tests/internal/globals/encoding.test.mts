@@ -1,9 +1,9 @@
 /**
- * Tests for boats:encoding —
+ * Tests for fino:encoding —
  * TextEncoder, TextDecoder, btoa, atob, structuredClone.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 
 const { TextEncoder, TextDecoder, atob, btoa, structuredClone } = globalThis;
 
@@ -18,7 +18,7 @@ describe('TextEncoder', () => {
   });
 
   it('[Symbol.toStringTag] is "TextEncoder"', (t) => {
-    t.equal(new TextEncoder()[Symbol.toStringTag], 'TextEncoder');
+    t.equal((new TextEncoder() as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'TextEncoder');
   });
 
   it('encode() with no argument returns empty Uint8Array', (t) => {
@@ -81,7 +81,7 @@ describe('TextEncoder', () => {
 
 describe('TextDecoder', () => {
   it('[Symbol.toStringTag] is "TextDecoder"', (t) => {
-    t.equal(new TextDecoder()[Symbol.toStringTag], 'TextDecoder');
+    t.equal((new TextDecoder() as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'TextDecoder');
   });
 
   it('encoding property is "utf-8"', (t) => {

@@ -1,15 +1,14 @@
 /**
- * Tests for boats:process — process info APIs and child process spawning.
+ * Tests for fino:process — process info APIs and child process spawning.
  */
 
-import { describe, it } from 'boats:test/test';
-import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'boats:runtime/process';
-import * as loop from 'boats:runtime/loop';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
+import { describe, it } from 'fino:test/test';
+import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'fino:runtime/process';
+const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 
-function joinChunks(chunks) {
-  return decodeUtf8(chunks.reduce((acc, c) => {
+function joinChunks(chunks: Uint8Array[]): string {
+  return decodeUtf8(chunks.reduce((acc: Uint8Array, c: Uint8Array) => {
     const merged = new Uint8Array(acc.byteLength + c.byteLength);
     merged.set(acc);
     merged.set(c, acc.byteLength);
@@ -92,9 +91,9 @@ describe('Process APIs', () => {
     let errMsg = '';
     try {
       await import('internal:process');
-    } catch (e) {
+    } catch (e: unknown) {
       threw = true;
-      errMsg = String(e.message ?? e);
+      errMsg = String(e instanceof Error ? e.message : e);
     }
     t.ok(threw, 'importing internal:process from user code throws');
     t.ok(errMsg.includes('Cannot import internal module'), `error mentions internal module: ${errMsg}`);
@@ -103,88 +102,58 @@ describe('Process APIs', () => {
 
 describe('Process class', () => {
   it('spawns /bin/echo and reads stdout', async (t) => {
-    const lp = loop.create();
-    try {
-      const proc = new Process('/bin/echo', ['hello boats'], { loop: lp });
-      const chunks = [];
-      for await (const chunk of proc.stdout) chunks.push(chunk);
-      t.equal(joinChunks(chunks).trim(), 'hello boats');
-      const { code } = await proc.wait();
-      t.equal(code, 0);
-    } finally {
-      loop.destroy(lp);
-    }
+    const proc = new Process('/bin/echo', ['hello fino']);
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    t.equal(joinChunks(chunks).trim(), 'hello fino');
+    const { code } = await proc.wait();
+    t.equal(code, 0);
   });
 
   it('wait() returns correct exit code', async (t) => {
-    const lp = loop.create();
-    try {
-      const proc = new Process('/bin/sh', ['-c', 'exit 42'], { loop: lp });
-      proc.stdin.close();
-      for await (const _ of proc.stdout) { /* drain */ }
-      for await (const _ of proc.stderr) { /* drain */ }
-      const { code, signal } = await proc.wait();
-      t.equal(code, 42);
-      t.equal(signal, null);
-    } finally {
-      loop.destroy(lp);
-    }
+    const proc = new Process('/bin/sh', ['-c', 'exit 42']);
+    proc.stdin.close();
+    for await (const _ of proc.stdout) { /* drain */ }
+    for await (const _ of proc.stderr) { /* drain */ }
+    const { code, signal } = await proc.wait();
+    t.equal(code, 42);
+    t.equal(signal, null);
   });
 
   it('stdin pipes to child stdin', async (t) => {
-    const lp = loop.create();
-    try {
-      const proc = new Process('/bin/cat', [], { loop: lp });
-      await proc.stdin.write(encodeUtf8('ping\n'));
-      proc.stdin.close();
-      const chunks = [];
-      for await (const chunk of proc.stdout) chunks.push(chunk);
-      t.equal(joinChunks(chunks), 'ping\n');
-      await proc.wait();
-    } finally {
-      loop.destroy(lp);
-    }
+    const proc = new Process('/bin/cat', []);
+    await proc.stdin.write(encodeUtf8('ping\n'));
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    t.equal(joinChunks(chunks), 'ping\n');
+    await proc.wait();
   });
 
   it('captures stderr', async (t) => {
-    const lp = loop.create();
-    try {
-      const proc = new Process('/bin/sh', ['-c', 'echo err >&2'], { loop: lp });
-      proc.stdin.close();
-      for await (const _ of proc.stdout) { /* drain */ }
-      const errChunks = [];
-      for await (const chunk of proc.stderr) errChunks.push(chunk);
-      t.equal(joinChunks(errChunks).trim(), 'err');
-      await proc.wait();
-    } finally {
-      loop.destroy(lp);
-    }
+    const proc = new Process('/bin/sh', ['-c', 'echo err >&2']);
+    proc.stdin.close();
+    for await (const _ of proc.stdout) { /* drain */ }
+    const errChunks = [];
+    for await (const chunk of proc.stderr) errChunks.push(chunk);
+    t.equal(joinChunks(errChunks).trim(), 'err');
+    await proc.wait();
   });
 
   it('cwd option changes child working directory', async (t) => {
-    const lp = loop.create();
-    try {
-      const proc = new Process('/bin/pwd', [], { loop: lp, cwd: '/tmp' });
-      proc.stdin.close();
-      const chunks = [];
-      for await (const chunk of proc.stdout) chunks.push(chunk);
-      t.ok(joinChunks(chunks).trim().endsWith('tmp'), 'pwd output ends with tmp');
-      await proc.wait();
-    } finally {
-      loop.destroy(lp);
-    }
+    const proc = new Process('/bin/pwd', [], { cwd: '/tmp' });
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    t.ok(joinChunks(chunks).trim().endsWith('tmp'), 'pwd output ends with tmp');
+    await proc.wait();
   });
 
   it('kill() sends signal to child', async (t) => {
-    const lp = loop.create();
-    try {
-      const proc = new Process('/bin/sleep', ['60'], { loop: lp });
-      proc.kill();
-      const { code, signal } = await proc.wait();
-      t.equal(code, null);
-      t.ok(signal !== null, 'child was signalled');
-    } finally {
-      loop.destroy(lp);
-    }
+    const proc = new Process('/bin/sleep', ['60']);
+    proc.kill();
+    const { code, signal } = await proc.wait();
+    t.equal(code, null);
+    t.ok(signal !== null, 'child was signalled');
   });
 });

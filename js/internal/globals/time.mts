@@ -1,5 +1,5 @@
 /**
- * boats:time — Timer globals and performance.now().
+ * fino:time — Timer globals and performance.now().
  *
  * Implements the web-standard timer API:
  *   - `setTimeout(fn, ms, ...args)`  → integer id
@@ -12,18 +12,15 @@
  * All timer functions are automatically installed on `globalThis` when this
  * module is first imported, so importing the module is sufficient:
  *
- *   import 'boats:time';
+ *   import 'fino:time';
  *   setTimeout(() => console.log('hi'), 500);
  *
  *
  * ## Loop integration
  *
- * Timers are scheduled via `boats:loop`. When called within a `loop.run()`
- * scope, timers are attached to that loop. When called outside any explicit
- * loop context (e.g. in a top-level script), a shared root timer loop is
- * created lazily and reused for all such timers. This root loop has no I/O
- * of its own — it exists only to hold pending timer registrations and keep
- * the process alive until they fire.
+ * Timers are scheduled via `fino:loop`, which is a singleton. Timers keep
+ * the process alive until they fire; cancelled timers still consume a slot
+ * until they expire.
  *
  *
  * ## Cancellation
@@ -39,14 +36,14 @@
  *
  * Returns the elapsed time in milliseconds since module load, with sub-
  * millisecond precision. Uses the same high-resolution monotonic clock as
- * `boats:bench`:
+ * `fino:bench`:
  *   - macOS: `mach_continuous_time()` (advances during sleep)
  *   - Linux: `clock_gettime(CLOCK_MONOTONIC)`
  */
 
-import * as loop from 'boats:runtime/loop';
+import * as loop from '../../runtime/loop.mts';
 import { os } from 'internal:process';
-import { dlopen } from 'boats:ffi';
+import { dlopen } from 'fino:ffi';
 
 // ---------------------------------------------------------------------------
 // High-resolution monotonic timer (nanoseconds) — mirrors bench.mjs
@@ -63,14 +60,14 @@ const _getNanos = (() => {
     const tbView = new DataView(tbiBuf);
     const numer = tbView.getUint32(0, true);
     const denom = tbView.getUint32(4, true);
-    return () => Number(lib.symbols.mach_continuous_time()) * numer / denom;
+    return function getMachNanos() { return Number(lib.symbols.mach_continuous_time()) * numer / denom; };
   } else {
     const CLOCK_MONOTONIC = 1;
     const lib = dlopen('libc.so.6', {
       clock_gettime: { parameters: ['i32', 'buffer'], result: 'i32' },
     });
     const tsBuf = new ArrayBuffer(16);
-    return () => {
+    return function getClockNanos() {
       lib.symbols.clock_gettime(CLOCK_MONOTONIC, tsBuf);
       const v = new DataView(tsBuf);
       const sec  = Number(v.getBigInt64(0, true));
@@ -108,19 +105,14 @@ export const performance = {
 // Timer state
 // ---------------------------------------------------------------------------
 
-// Lazily-created root loop for timers scheduled outside any explicit loop
-// context. Kept alive by pending kqueue/io_uring timers; the process exits
-// naturally once all timers have fired and no other work remains.
-let _timerLoop: object | null = null;
-
-/** Return the active loop, or create a shared timer-only root loop. */
-function _getLoop() {
-  return loop.current() ?? (_timerLoop ??= loop.create());
-}
-
 let _nextId = 1;
 
-const _timers = new Map<number, { cancelled: boolean }>();
+interface TimerState {
+  cancelled: boolean;
+  cancelCurrent: () => void;
+}
+
+const _timers = new Map<number, TimerState>();
 
 // ---------------------------------------------------------------------------
 // setTimeout / clearTimeout
@@ -136,10 +128,10 @@ const _timers = new Map<number, { cancelled: boolean }>();
  */
 export function setTimeout(fn: (...args: any[]) => void, ms: number = 0, ...args: any[]): number {
   const id = _nextId++;
-  const state = { cancelled: false };
+  const t = loop.timeout(Math.max(0, Number(ms)) || 0);
+  const state: TimerState = { cancelled: false, cancelCurrent: () => t.cancel() };
   _timers.set(id, state);
-  const lp = _getLoop();
-  loop.timeout(lp, Math.max(0, Number(ms)) || 0).then(() => {
+  t.then(function fireTimeout() {
     _timers.delete(id);
     if (!state.cancelled) fn(...args);
   });
@@ -155,6 +147,7 @@ export function clearTimeout(id: number): void {
   const state = _timers.get(id);
   if (state) {
     state.cancelled = true;
+    state.cancelCurrent();
     _timers.delete(id);
   }
 }
@@ -173,14 +166,24 @@ export function clearTimeout(id: number): void {
  */
 export function setInterval(fn: (...args: any[]) => void, ms: number = 0, ...args: any[]): number {
   const id = _nextId++;
-  const state = { cancelled: false };
-  _timers.set(id, state);
-  const lp = _getLoop();
   const delay = Math.max(0, Number(ms)) || 0;
+  let currentTimer: loop.CancelablePromise | null = null;
+  const state: TimerState = {
+    cancelled: false,
+    cancelCurrent: () => {
+      if (currentTimer !== null) {
+        currentTimer.cancel();
+        currentTimer = null;
+      }
+    },
+  };
+  _timers.set(id, state);
 
   function schedule() {
     if (state.cancelled) return;
-    loop.timeout(lp, delay).then(() => {
+    currentTimer = loop.timeout(delay);
+    currentTimer.then(function fireInterval() {
+      currentTimer = null;
       if (!state.cancelled) {
         fn(...args);
         schedule();
@@ -215,13 +218,3 @@ export function queueMicrotask(fn: () => void): void {
   Promise.resolve().then(fn);
 }
 
-// ---------------------------------------------------------------------------
-// Self-install on globalThis
-// ---------------------------------------------------------------------------
-
-globalThis.setTimeout     = setTimeout;
-globalThis.clearTimeout   = clearTimeout;
-globalThis.setInterval    = setInterval;
-globalThis.clearInterval  = clearInterval;
-globalThis.queueMicrotask = queueMicrotask;
-globalThis.performance    = performance;

@@ -1,8 +1,8 @@
 /**
- * Tests for boats:compression — gzip, deflate, brotli one-shot and streaming.
+ * Tests for fino:compression — gzip, deflate, brotli one-shot and streaming.
  */
 
-import { describe, it } from 'boats:test/test';
+import { describe, it } from 'fino:test/test';
 import {
   gzip, gunzip,
   deflate, inflate,
@@ -13,26 +13,30 @@ import {
   createDeflate, createInflate,
   createDeflateRaw, createInflateRaw,
   createBrotliCompress, createBrotliDecompress,
-} from 'boats:util/compression';
-const encodeUtf8 = s => new TextEncoder().encode(s);
-const decodeUtf8 = b => new TextDecoder().decode(b);
+} from 'fino:util/compression';
+const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
 
-function str(u8) { return decodeUtf8(u8); }
-function bytes(s) { return encodeUtf8(s); }
+function str(u8: Uint8Array): string { return decodeUtf8(u8); }
+function bytes(s: string): Uint8Array { return encodeUtf8(s); }
 
-async function collect(iter) {
-  const parts = [];
+async function* asAsyncIterable(chunks: Array<Uint8Array | ArrayBuffer>): AsyncGenerator<Uint8Array | ArrayBuffer> {
+  for (const chunk of chunks) yield chunk;
+}
+
+async function collect(iter: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
   let total = 0;
   for await (const chunk of iter) { parts.push(chunk); total += chunk.byteLength; }
   if (parts.length === 0) return new Uint8Array(0);
-  if (parts.length === 1) return parts[0];
+  if (parts.length === 1) return parts[0]!;
   const out = new Uint8Array(total);
   let pos = 0;
   for (const p of parts) { out.set(p, pos); pos += p.byteLength; }
   return out;
 }
 
-const HELLO = bytes('Hello, boats:compression!');
+const HELLO = bytes('Hello, fino:compression!');
 const LONG  = bytes('A'.repeat(100_000));
 
 describe('One-shot gzip / gunzip', () => {
@@ -102,56 +106,56 @@ describe('One-shot brotli', () => {
 
 describe('Streaming', () => {
   it('createGzip/createGunzip roundtrip (single chunk)', async (t) => {
-    const gzipped = await collect(createGzip().transform([HELLO]));
+    const gzipped = await collect(createGzip().transform(asAsyncIterable([HELLO])));
     t.ok(gzipped.byteLength > 0, 'gzip produced output');
-    const restored = await collect(createGunzip().transform([gzipped]));
+    const restored = await collect(createGunzip().transform(asAsyncIterable([gzipped])));
     t.equal(str(restored), str(HELLO), 'gunzip recovers original');
   });
 
   it('createGzip/createGunzip roundtrip (multiple chunks)', async (t) => {
     const chunks = [bytes('Hello, '), bytes('streaming '), bytes('world!')];
-    const gzipped = await collect(createGzip().transform(chunks));
-    const restored = await collect(createGunzip().transform([gzipped]));
+    const gzipped = await collect(createGzip().transform(asAsyncIterable(chunks)));
+    const restored = await collect(createGunzip().transform(asAsyncIterable([gzipped])));
     t.equal(str(restored), 'Hello, streaming world!', 'multi-chunk roundtrip');
   });
 
   it('createGzip compresses large data', async (t) => {
-    const gzipped = await collect(createGzip().transform([LONG]));
+    const gzipped = await collect(createGzip().transform(asAsyncIterable([LONG])));
     t.ok(gzipped.byteLength < LONG.byteLength, 'gzip reduces size');
-    const restored = await collect(createGunzip().transform([gzipped]));
+    const restored = await collect(createGunzip().transform(asAsyncIterable([gzipped])));
     t.equal(restored.byteLength, LONG.byteLength, 'decompressed size matches');
     t.equal(restored[0], LONG[0], 'first byte matches');
   });
 
   it('createGzip output has valid gzip magic', async (t) => {
-    const gzipped = await collect(createGzip().transform([HELLO]));
+    const gzipped = await collect(createGzip().transform(asAsyncIterable([HELLO])));
     t.equal(gzipped[0], 0x1f, 'gzip magic byte 0');
     t.equal(gzipped[1], 0x8b, 'gzip magic byte 1');
   });
 
   it('createDeflate/createInflate roundtrip', async (t) => {
-    const compressed = await collect(createDeflate().transform([HELLO]));
-    const restored   = await collect(createInflate().transform([compressed]));
+    const compressed = await collect(createDeflate().transform(asAsyncIterable([HELLO])));
+    const restored   = await collect(createInflate().transform(asAsyncIterable([compressed])));
     t.equal(str(restored), str(HELLO), 'deflate/inflate streaming roundtrip');
   });
 
   it('createDeflateRaw/createInflateRaw roundtrip', async (t) => {
-    const compressed = await collect(createDeflateRaw().transform([HELLO]));
-    const restored   = await collect(createInflateRaw().transform([compressed]));
+    const compressed = await collect(createDeflateRaw().transform(asAsyncIterable([HELLO])));
+    const restored   = await collect(createInflateRaw().transform(asAsyncIterable([compressed])));
     t.equal(str(restored), str(HELLO), 'deflateRaw/inflateRaw streaming roundtrip');
   });
 
   it('createBrotliCompress/createBrotliDecompress roundtrip', { skip: !brotliAvailable && 'brotli not available' }, async (t) => {
-    const compressed = await collect(createBrotliCompress().transform([HELLO]));
+    const compressed = await collect(createBrotliCompress().transform(asAsyncIterable([HELLO])));
     t.ok(compressed.byteLength > 0, 'brotli produced output');
-    const restored = await collect(createBrotliDecompress().transform([compressed]));
+    const restored = await collect(createBrotliDecompress().transform(asAsyncIterable([compressed])));
     t.equal(str(restored), str(HELLO), 'brotli streaming roundtrip');
   });
 
   it('createBrotliCompress/createBrotliDecompress multiple chunks', { skip: !brotliAvailable && 'brotli not available' }, async (t) => {
     const chunks = [bytes('chunk one '), bytes('chunk two '), bytes('chunk three')];
-    const compressed = await collect(createBrotliCompress().transform(chunks));
-    const restored   = await collect(createBrotliDecompress().transform([compressed]));
+    const compressed = await collect(createBrotliCompress().transform(asAsyncIterable(chunks)));
+    const restored   = await collect(createBrotliDecompress().transform(asAsyncIterable([compressed])));
     t.equal(str(restored), 'chunk one chunk two chunk three', 'multi-chunk brotli roundtrip');
   });
 });
@@ -159,7 +163,7 @@ describe('Streaming', () => {
 describe('Cross-format', () => {
   it('gzip and streaming createGzip produce compatible output', async (t) => {
     const oneShot   = gzip(HELLO);
-    const streaming = await collect(createGzip().transform([HELLO]));
+    const streaming = await collect(createGzip().transform(asAsyncIterable([HELLO])));
     t.equal(str(gunzip(oneShot)),   str(HELLO), 'one-shot decompresses');
     t.equal(str(gunzip(streaming)), str(HELLO), 'streaming decompresses');
   });

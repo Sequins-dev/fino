@@ -1,27 +1,28 @@
 /**
- * Tests for boats:file/watch — cross-platform filesystem watcher.
+ * Tests for fino:file/watch — cross-platform filesystem watcher.
  */
 
-import { describe, it, before, after } from 'boats:test/test';
-import { DiskFileSystem } from 'boats:file';
-import { Watcher } from 'boats:file/watch';
-import * as loop from 'boats:runtime/loop';
+import { describe, it, before, after } from 'fino:test/test';
+import { DiskFileSystem } from 'fino:file';
+import { Watcher } from 'fino:file/watch';
+import * as loop from 'fino:runtime/loop';
 
-const TEST_DIR = '/tmp/boats-watch-test-' + Math.floor(Math.random() * 1_000_000);
+const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1_000_000);
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /** Collect the next `n` events from the watcher within `timeoutMs`. */
-async function collectEvents(watcher: Watcher, n: number, lp: any, timeoutMs = 2000): Promise<any[]> {
+async function collectEvents(watcher: Watcher, n: number, timeoutMs = 2000): Promise<any[]> {
   const events: any[] = [];
   const iter = watcher[Symbol.asyncIterator]();
 
   for (let i = 0; i < n; i++) {
+    const t = loop.timeout(timeoutMs);
     const result = await Promise.race([
-      iter.next(),
-      loop.timeout(lp, timeoutMs).then(() => ({ value: null, done: false, timedOut: true })),
+      iter.next().then(r => { t.cancel(); return r; }),
+      t.then(() => ({ value: null, done: false, timedOut: true })),
     ]);
     if ((result as any).timedOut) break;
     if (result.done) break;
@@ -35,11 +36,10 @@ async function collectEvents(watcher: Watcher, n: number, lp: any, timeoutMs = 2
 // ---------------------------------------------------------------------------
 
 describe('Watcher', () => {
-  let lp: any, fs: DiskFileSystem;
+  let fs: DiskFileSystem;
 
   before(async () => {
-    lp = loop.create();
-    fs = new DiskFileSystem(lp);
+    fs = new DiskFileSystem();
     await fs.mkdir(TEST_DIR);
   });
 
@@ -58,20 +58,19 @@ describe('Watcher', () => {
       }
     }
     await rm(TEST_DIR);
-    loop.destroy(lp);
   });
 
   it('detects file modification', async (t) => {
     const path = TEST_DIR + '/modify-test.txt';
     await fs.writeFile(path, 'initial');
 
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.watch(path);
 
     // Write to the file to trigger an event
     await fs.writeFile(path, 'modified');
 
-    const events = await collectEvents(watcher, 1, lp);
+    const events = await collectEvents(watcher, 1);
     watcher.close();
     await fs.unlink(path);
 
@@ -84,12 +83,12 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/delete-test.txt';
     await fs.writeFile(path, 'hello');
 
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.watch(path);
 
     await fs.unlink(path);
 
-    const events = await collectEvents(watcher, 1, lp);
+    const events = await collectEvents(watcher, 1);
     watcher.close();
 
     t.ok(events.length >= 1, 'got at least one event');
@@ -100,14 +99,14 @@ describe('Watcher', () => {
     const dir = TEST_DIR + '/dir-watch';
     await fs.mkdir(dir);
 
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.watch(dir);
 
     // Create a file in the watched directory
     const newFile = dir + '/newfile.txt';
     await fs.writeFile(newFile, 'content');
 
-    const events = await collectEvents(watcher, 1, lp);
+    const events = await collectEvents(watcher, 1);
     watcher.close();
 
     // Cleanup
@@ -126,7 +125,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/close-test.txt';
     await fs.writeFile(path, 'x');
 
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.watch(path);
 
     watcher.close();
@@ -139,14 +138,14 @@ describe('Watcher', () => {
   });
 
   it('close() is idempotent', async (t) => {
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.close();
     watcher.close(); // should not throw
     t.ok(true, 'double close() does not throw');
   });
 
   it('watch() after close() throws', async (t) => {
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.close();
     t.throws(() => watcher.watch(TEST_DIR), /closed/, 'throws on watch after close');
   });
@@ -157,13 +156,13 @@ describe('Watcher', () => {
     await fs.writeFile(file1, 'a');
     await fs.writeFile(file2, 'b');
 
-    const watcher = new Watcher(lp);
+    const watcher = new Watcher();
     watcher.watch(file1);
     watcher.watch(file2);
 
     await fs.writeFile(file1, 'aa');
 
-    const events = await collectEvents(watcher, 1, lp);
+    const events = await collectEvents(watcher, 1);
     watcher.close();
 
     await fs.unlink(file1);
@@ -178,17 +177,17 @@ describe('Watcher', () => {
     await fs.mkdir(dir);
     await fs.mkdir(sub);
 
-    const watcher = new Watcher(lp, { recursive: true });
+    const watcher = new Watcher({ recursive: true });
     watcher.watch(dir);
 
     // Give watcher time to set up recursive watches
-    await loop.timeout(lp, 50);
+    await loop.timeout(50);
 
     // Write to a file in the subdirectory
     const newFile = sub + '/deep.txt';
     await fs.writeFile(newFile, 'deep content');
 
-    const events = await collectEvents(watcher, 1, lp);
+    const events = await collectEvents(watcher, 1);
     watcher.close();
 
     // Cleanup
