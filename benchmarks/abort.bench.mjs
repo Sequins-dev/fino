@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:abort
+ * Benchmarks for fino:abort
  *
  * Run with: cargo run -- --bench benchmarks/abort.bench.mjs
  */
 
-import { AbortController, AbortSignal } from 'surge:abort';
-import { bench } from 'surge:bench';
+import { AbortController, AbortSignal } from 'fino:abort';
+import { bench } from 'fino:bench';
 
 bench('AbortController / AbortSignal creation', (b) => {
   b.measure('new AbortController',    () => new AbortController());

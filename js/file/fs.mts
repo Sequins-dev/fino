@@ -53,8 +53,10 @@ import { File } from './handle.mts';
 import { Entry, FileEntry, DirEntry } from './entry.mts';
 import { Glob, glob as globWalk, type GlobOptions } from './glob.mts';
 import type { Path } from './path.mts';
+import { FileSystem } from './provider.mts';
 
 // Re-export the public API surface
+export { FileSystem };
 export {
   Stat, File, Entry, FileEntry, DirEntry,
   O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_EXCL,
@@ -71,7 +73,7 @@ export {
  * const fs = new DiskFileSystem(lp);
  * const text = await fs.readFile('/etc/hosts');
  */
-export class DiskFileSystem {
+export class DiskFileSystem extends FileSystem {
 
   /**
    * Stat a path, following symlinks.

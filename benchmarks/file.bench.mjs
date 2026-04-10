@@ -1,12 +1,12 @@
 /**
- * Benchmarks for surge:file
+ * Benchmarks for fino:file
  *
  * Run with: cargo run -- --bench benchmarks/file.bench.mjs
  */
 
-import { DiskFileSystem } from 'surge:file';
-import * as loop from 'surge:loop';
-import { bench } from 'surge:bench';
+import { DiskFileSystem } from 'fino:file';
+import * as loop from 'fino:loop';
+import { bench } from 'fino:bench';
 
 const WRITE_PATH = '/tmp/surge_bench_file.txt';
 const KB_DATA    = 'x'.repeat(1024);

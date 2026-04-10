@@ -107,6 +107,7 @@ import { TlsSocket } from './tls.mts';
 import { lookup } from './dns.mts';
 import * as loop from '../runtime/loop.mts';
 import { EventTarget, Event } from '../internal/globals/eventtarget.mts';
+import { MessageEvent } from '../internal/globals/messaging.mts';
 import { URL } from '../internal/globals/url.mts';
 import type { Address, IPv4Address, IPv6Address } from './socket.mts';
 
@@ -115,12 +116,6 @@ export interface SseEvent {
   data:  string;
   id:    string | null;
   retry: number | null;
-}
-
-interface MessageEventInit {
-  data?:        string;
-  lastEventId?: string;
-  origin?:      string;
 }
 
 export interface EventSourceInit {
@@ -140,32 +135,6 @@ interface WriterLike {
 
 interface ClosableAsyncByteReader extends AsyncIterable<Uint8Array | ArrayBuffer> {
   close(): void;
-}
-
-// ---------------------------------------------------------------------------
-// MessageEvent — local to this module; not exported
-// ---------------------------------------------------------------------------
-
-/**
- * An SSE event dispatched through the EventSource's EventTarget interface.
- * Carries the event payload, the last event ID at time of dispatch, and
- * the event source URL origin.
- */
-class MessageEvent extends Event {
-  #data: string;
-  #lastEventId: string;
-  #origin: string;
-
-  constructor(type: string, init?: MessageEventInit) {
-    super(type);
-    this.#data        = init?.data        ?? '';
-    this.#lastEventId = init?.lastEventId ?? '';
-    this.#origin      = init?.origin      ?? '';
-  }
-
-  get data()        { return this.#data; }
-  get lastEventId() { return this.#lastEventId; }
-  get origin()      { return this.#origin; }
 }
 
 // ---------------------------------------------------------------------------

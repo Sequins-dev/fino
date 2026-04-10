@@ -1,12 +1,12 @@
 /**
- * Smoke-test for surge:bench — exercises sync, async, object-form, and
+ * Smoke-test for fino:bench — exercises sync, async, object-form, and
  * sub-group measurements. Run with:
  *
  *   cargo run -- --bench benchmarks/bench.bench.mjs
  */
 
-import { bench } from 'surge:bench';
-import * as loop from 'surge:loop';
+import { bench } from 'fino:bench';
+import * as loop from 'fino:loop';
 
 bench('sync measurements', (b) => {
   b.measure('parseInt', () => { parseInt('42', 10); });

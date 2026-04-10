@@ -1,5 +1,5 @@
 /**
- * Benchmarks for surge:socket (low-level syscall wrappers)
+ * Benchmarks for fino:socket (low-level syscall wrappers)
  *
  * Run with: cargo run -- --bench benchmarks/socket.bench.mjs
  *
@@ -10,8 +10,8 @@
 import {
   socket, close, encodeAddr, decodeAddr,
   AF_INET, AF_INET6, AF_UNIX, SOCK_STREAM, SOCK_DGRAM,
-} from 'surge:socket';
-import { bench } from 'surge:bench';
+} from 'fino:socket';
+import { bench } from 'fino:bench';
 
 bench('socket() + close()', (b) => {
   b.group('by family', (g) => {

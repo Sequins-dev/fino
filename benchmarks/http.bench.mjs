@@ -1,12 +1,12 @@
 /**
- * Benchmarks for surge:http
+ * Benchmarks for fino:http
  *
  * Run with: cargo run -- --bench benchmarks/http.bench.mjs
  */
 
-import { Headers, Request, Response, parseRequest, parseResponse, serializeRequest, serializeResponse } from 'surge:http';
-import { encodeUtf8 } from 'surge:encoding';
-import { bench } from 'surge:bench';
+import { Headers, Request, Response, parseRequest, parseResponse, serializeRequest, serializeResponse } from 'fino:http';
+import { encodeUtf8 } from 'fino:encoding';
+import { bench } from 'fino:bench';
 
 // Build a single-chunk async iterable from a pre-encoded Uint8Array.
 // This isolates the cost of parsing from the cost of producing the input.

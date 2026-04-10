@@ -1,5 +1,5 @@
 /**
- * Benchmarks for surge:loop
+ * Benchmarks for fino:loop
  *
  * Run with: cargo run -- --bench benchmarks/loop.bench.mjs
  *
@@ -8,8 +8,8 @@
  * manage the measurement loop. Only independent operations are measured here.
  */
 
-import * as loop from 'surge:loop';
-import { bench } from 'surge:bench';
+import * as loop from 'fino:loop';
+import { bench } from 'fino:bench';
 
 bench('loop.current()', (b) => {
   b.measure('current() in sync context',  () => loop.current());

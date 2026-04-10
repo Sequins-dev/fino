@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:urlpattern
+ * Benchmarks for fino:urlpattern
  *
  * Run with: cargo run -- --bench benchmarks/urlpattern.bench.mjs
  */
 
-import { URLPattern } from 'surge:urlpattern';
-import { bench } from 'surge:bench';
+import { URLPattern } from 'fino:urlpattern';
+import { bench } from 'fino:bench';
 
 bench('URLPattern construction', (b) => {
   b.group('object form', (g) => {

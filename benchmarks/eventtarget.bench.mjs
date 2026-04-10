@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:eventtarget
+ * Benchmarks for fino:eventtarget
  *
  * Run with: cargo run -- --bench benchmarks/eventtarget.bench.mjs
  */
 
-import { EventTarget, Event, CustomEvent } from 'surge:eventtarget';
-import { bench } from 'surge:bench';
+import { EventTarget, Event, CustomEvent } from 'fino:eventtarget';
+import { bench } from 'fino:bench';
 
 bench('Event construction', (b) => {
   b.measure('Event bare',            () => new Event('click'));

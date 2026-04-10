@@ -1,5 +1,5 @@
 /**
- * Benchmarks for surge:crypto
+ * Benchmarks for fino:crypto
  *
  * Run with: cargo run -- --bench benchmarks/crypto.bench.mjs
  *
@@ -10,8 +10,8 @@
  * - Raw key bytes are generated once at module level using getRandomValues() (sync).
  */
 
-import { crypto } from 'surge:crypto';
-import { bench } from 'surge:bench';
+import { crypto } from 'fino:crypto';
+import { bench } from 'fino:bench';
 
 // Pre-generate raw key material synchronously — used in async import inside fn
 const HMAC_KEY_BYTES = new Uint8Array(32);

@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:formdata
+ * Benchmarks for fino:formdata
  *
  * Run with: cargo run -- --bench benchmarks/formdata.bench.mjs
  */
 
-import { FormData } from 'surge:formdata';
-import { bench } from 'surge:bench';
+import { FormData } from 'fino:formdata';
+import { bench } from 'fino:bench';
 
 function fdWith(n) {
   const fd = new FormData();

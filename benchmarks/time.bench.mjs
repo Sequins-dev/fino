@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:time
+ * Benchmarks for fino:time
  *
  * Run with: cargo run -- --bench benchmarks/time.bench.mjs
  */
 
-import { setTimeout, clearTimeout, setInterval, clearInterval, performance } from 'surge:time';
-import { bench } from 'surge:bench';
+import { setTimeout, clearTimeout, setInterval, clearInterval, performance } from 'fino:time';
+import { bench } from 'fino:bench';
 
 bench('performance.now()', (b) => {
   b.measure('now()', () => performance.now());

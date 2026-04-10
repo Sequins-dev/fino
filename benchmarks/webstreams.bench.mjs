@@ -1,5 +1,5 @@
 /**
- * Benchmarks for surge:webstreams
+ * Benchmarks for fino:webstreams
  *
  * Run with: cargo run -- --bench benchmarks/webstreams.bench.mjs
  *
@@ -9,8 +9,8 @@
  * cover construction, sync-observable operations, and the piping fast path.
  */
 
-import { ReadableStream, WritableStream, TransformStream, CountQueuingStrategy, ByteLengthQueuingStrategy } from 'surge:webstreams';
-import { bench } from 'surge:bench';
+import { ReadableStream, WritableStream, TransformStream, CountQueuingStrategy, ByteLengthQueuingStrategy } from 'fino:webstreams';
+import { bench } from 'fino:bench';
 
 const DATA_5  = ['a', 'b', 'c', 'd', 'e'];
 const DATA_10 = Array.from({ length: 10 }, (_, i) => `chunk${i}`);

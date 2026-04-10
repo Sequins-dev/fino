@@ -6,7 +6,10 @@ use std::path::{Component, Path, PathBuf};
 use ::v8;
 use oxc_sourcemap::SourceMap;
 
-use crate::{async_context, docgen, ffi, platform, profiler, state::get_state};
+use crate::{
+    async_context, docgen, ffi, platform, profiler, realm, serializer, thread_realm,
+    state::get_state,
+};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
@@ -57,6 +60,22 @@ static BUILTINS: &[BuiltinEntry] = &[
     // Synthetic Rust modules
     ("fino:ffi", BuiltinKind::Synthetic(ffi::create_module)),
     (
+        "internal:serializer",
+        BuiltinKind::Synthetic(serializer::create_module),
+    ),
+    (
+        "internal:thread-port",
+        BuiltinKind::Synthetic(thread_realm::create_thread_port_module),
+    ),
+    (
+        "internal:realm-bridge",
+        BuiltinKind::Synthetic(realm::create_realm_bridge_module),
+    ),
+    (
+        "internal:realm-native",
+        BuiltinKind::Synthetic(realm::create_realm_native_module),
+    ),
+    (
         "internal:process",
         BuiltinKind::Synthetic(platform::create_module),
     ),
@@ -73,6 +92,15 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
     source_builtin!("internal:loader", "internal/loader"),
+    source_builtin!("internal:bootstrap", "_bootstrap"),
+    source_builtin!("fino:realm", "runtime/realm"),
+    source_builtin!("fino:realm/pool", "runtime/realm-pool"),
+    source_builtin!("fino:realm/self", "runtime/realm-self"),
+    source_builtin!("fino:messaging", "runtime/messaging"),
+    source_builtin!(
+        "internal:globals/messaging",
+        "internal/globals/messaging"
+    ),
     // internal: CLI commands
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
@@ -107,6 +135,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:stream", "internal/stream"),
     source_builtin!("internal:openssl", "internal/openssl"),
     // internal: file sub-modules
+    source_builtin!("internal:file/provider", "file/provider"),
     source_builtin!("internal:file/bindings", "file/bindings"),
     source_builtin!("internal:file/stat", "file/stat"),
     source_builtin!("internal:file/handle", "file/handle"),
@@ -129,6 +158,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:runtime/context", "runtime/context"),
     source_builtin!("fino:tty", "tty"),
     // net
+    source_builtin!("internal:net/provider", "net/provider"),
+    source_builtin!("internal:net/dns-provider", "net/dns-provider"),
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/http", "net/http"),
     source_builtin!("fino:net/tls", "net/tls"),
@@ -210,6 +241,12 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
     match spec {
         "_main.mjs" => Some(""),
         "internal:loader" => Some("internal/loader"),
+        "internal:bootstrap" => Some("_bootstrap"),
+        "fino:realm" => Some("runtime/realm"),
+        "fino:realm/pool" => Some("runtime/realm-pool"),
+        "fino:realm/self" => Some("runtime/realm-self"),
+        "fino:messaging" => Some("runtime/messaging"),
+        "internal:globals/messaging" => Some("internal/globals/messaging"),
         "internal:commands/root" => Some("commands/root"),
         "internal:commands/test" => Some("commands/test"),
         "internal:commands/bench" => Some("commands/bench"),
@@ -234,6 +271,7 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
         "internal:globals/global" => Some("internal/globals/global"),
         "internal:stream" => Some("internal/stream"),
         "internal:openssl" => Some("internal/openssl"),
+        "internal:file/provider" => Some("file/provider"),
         "internal:file/bindings" => Some("file/bindings"),
         "internal:file/stat" => Some("file/stat"),
         "internal:file/handle" => Some("file/handle"),
@@ -248,6 +286,8 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
         "fino:runtime/process" => Some("runtime/process"),
         "fino:runtime/context" => Some("runtime/context"),
         "fino:tty" => Some("tty"),
+        "internal:net/provider" => Some("net/provider"),
+        "internal:net/dns-provider" => Some("net/dns-provider"),
         "fino:net/socket" => Some("net/socket"),
         "fino:net/http" => Some("net/http"),
         "fino:net/tls" => Some("net/tls"),
@@ -515,16 +555,33 @@ pub fn resolve_module_callback<'s>(
     };
 
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
+        let referrer_is_builtin = match referrer.script_id() {
+            None => true,
+            Some(id) => state_rc.borrow().builtin_script_ids.contains(&id),
+        };
+
         // Enforce internal:* restriction.
-        if spec.starts_with("internal:") {
-            let referrer_is_builtin = match referrer.script_id() {
-                None => true,
-                Some(id) => state_rc.borrow().builtin_script_ids.contains(&id),
-            };
-            if !referrer_is_builtin {
+        if spec.starts_with("internal:") && !referrer_is_builtin {
+            let msg = v8::String::new(
+                scope,
+                &format!("Cannot import internal module '{spec}' from user code"),
+            )?;
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
+        }
+
+        // Enforce per-Realm blocked providers for user code.
+        if !referrer_is_builtin {
+            let is_blocked = state_rc
+                .borrow()
+                .providers
+                .get(spec.as_str())
+                .is_some_and(|v| v.is_none());
+            if is_blocked {
                 let msg = v8::String::new(
                     scope,
-                    &format!("Cannot import internal module '{spec}' from user code"),
+                    &format!("Import of '{spec}' is blocked in this Realm"),
                 )?;
                 let exc = v8::Exception::error(scope, msg);
                 scope.throw_exception(exc);
@@ -778,14 +835,31 @@ pub fn dynamic_import_callback<'s>(
     // Wrap the operation in a TryCatch so we can reject the promise on error.
     let tc = &mut v8::TryCatch::new(scope);
 
-    let module: Option<v8::Local<v8::Module>> =
-        if spec.starts_with("fino:") || spec.starts_with("internal:") {
-            // Enforce internal:* restriction for dynamic imports from user code.
-            if spec.starts_with("internal:") && referrer_is_user_code {
-                let msg = v8::String::new(
-                    tc,
-                    &format!("Cannot import internal module '{spec}' from user code"),
-                )?;
+    let module: Option<v8::Local<v8::Module>> = if spec.starts_with("fino:")
+        || spec.starts_with("internal:")
+    {
+        // Enforce internal:* restriction for dynamic imports from user code.
+        if spec.starts_with("internal:") && referrer_is_user_code {
+            let msg = v8::String::new(
+                tc,
+                &format!("Cannot import internal module '{spec}' from user code"),
+            )?;
+            let exc = v8::Exception::error(tc, msg);
+            tc.throw_exception(exc);
+            None
+        } else if referrer_is_user_code {
+            // Enforce per-Realm blocked providers for user code.
+            let is_blocked = {
+                let state_rc = get_state(tc);
+                state_rc
+                    .borrow()
+                    .providers
+                    .get(spec.as_str())
+                    .is_some_and(|v| v.is_none())
+            };
+            if is_blocked {
+                let msg =
+                    v8::String::new(tc, &format!("Import of '{spec}' is blocked in this Realm"))?;
                 let exc = v8::Exception::error(tc, msg);
                 tc.throw_exception(exc);
                 None
@@ -793,56 +867,59 @@ pub fn dynamic_import_callback<'s>(
                 get_or_load_builtin(tc, &spec)
             }
         } else {
-            let state_rc = get_state(tc);
-            let (resolve_fn, root) = {
-                let st = state_rc.borrow();
-                let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(tc, f));
-                let root = st.root.clone();
-                (resolve_fn, root)
-            };
+            get_or_load_builtin(tc, &spec)
+        }
+    } else {
+        let state_rc = get_state(tc);
+        let (resolve_fn, root) = {
+            let st = state_rc.borrow();
+            let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(tc, f));
+            let root = st.root.clone();
+            (resolve_fn, root)
+        };
 
-            let path: Option<PathBuf> = if let Some(func) = resolve_fn {
-                let root_str = match v8::String::new(tc, &root.to_string_lossy()) {
-                    Some(s) => s,
-                    None => {
-                        let undef = v8::undefined(tc).into();
-                        resolver.reject(tc, undef);
-                        return Some(promise);
-                    }
-                };
-                let spec_val: v8::Local<v8::Value> = match v8::String::new(tc, &spec) {
-                    Some(s) => s.into(),
-                    None => {
-                        let undef = v8::undefined(tc).into();
-                        resolver.reject(tc, undef);
-                        return Some(promise);
-                    }
-                };
-                let this = v8::undefined(tc).into();
-                // Pass the referrer's directory so relative specifiers resolve correctly.
-                let dir_val: v8::Local<v8::Value> = referrer_dir
-                    .as_deref()
-                    .and_then(|d| v8::String::new(tc, &d.to_string_lossy()))
-                    .map(|s| s.into())
-                    .unwrap_or_else(|| v8::null(tc).into());
-                func.call(tc, this, &[spec_val, dir_val, root_str.into()])
-                    .and_then(|r| r.to_string(tc))
-                    .map(|s| PathBuf::from(s.to_rust_string_lossy(tc)))
-            } else {
-                match resolve_path(&spec, referrer_dir.as_deref(), &root) {
-                    Ok(p) => Some(p),
-                    Err(e) => {
-                        if let Some(msg) = v8::String::new(tc, &e) {
-                            let exc = v8::Exception::error(tc, msg);
-                            tc.throw_exception(exc);
-                        }
-                        None
-                    }
+        let path: Option<PathBuf> = if let Some(func) = resolve_fn {
+            let root_str = match v8::String::new(tc, &root.to_string_lossy()) {
+                Some(s) => s,
+                None => {
+                    let undef = v8::undefined(tc).into();
+                    resolver.reject(tc, undef);
+                    return Some(promise);
                 }
             };
-
-            path.and_then(|p| get_or_load_fs_module(tc, &p))
+            let spec_val: v8::Local<v8::Value> = match v8::String::new(tc, &spec) {
+                Some(s) => s.into(),
+                None => {
+                    let undef = v8::undefined(tc).into();
+                    resolver.reject(tc, undef);
+                    return Some(promise);
+                }
+            };
+            let this = v8::undefined(tc).into();
+            // Pass the referrer's directory so relative specifiers resolve correctly.
+            let dir_val: v8::Local<v8::Value> = referrer_dir
+                .as_deref()
+                .and_then(|d| v8::String::new(tc, &d.to_string_lossy()))
+                .map(|s| s.into())
+                .unwrap_or_else(|| v8::null(tc).into());
+            func.call(tc, this, &[spec_val, dir_val, root_str.into()])
+                .and_then(|r| r.to_string(tc))
+                .map(|s| PathBuf::from(s.to_rust_string_lossy(tc)))
+        } else {
+            match resolve_path(&spec, referrer_dir.as_deref(), &root) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    if let Some(msg) = v8::String::new(tc, &e) {
+                        let exc = v8::Exception::error(tc, msg);
+                        tc.throw_exception(exc);
+                    }
+                    None
+                }
+            }
         };
+
+        path.and_then(|p| get_or_load_fs_module(tc, &p))
+    };
 
     if let Some(m) = module {
         match instantiate_and_evaluate(tc, m) {
@@ -948,6 +1025,7 @@ fn get_or_load_builtin<'s>(
 ) -> Option<v8::Local<'s, v8::Module>> {
     let state_rc = get_state(scope);
 
+    // 1. Check cache.
     let cached = {
         let st = state_rc.borrow();
         st.builtin_cache.get(spec).map(|m| v8::Local::new(scope, m))
@@ -956,6 +1034,38 @@ fn get_or_load_builtin<'s>(
         return Some(m);
     }
 
+    // 2. Check per-Realm provider configuration before falling back to BUILTINS.
+    //    Some(Some(config)) = use this source. Some(None) = blocked (already
+    //    checked in the resolve callback for user code; builtins can't reach here
+    //    for blocked specifiers either since they bypass the blocked check).
+    let provider_source = {
+        let st = state_rc.borrow();
+        st.providers
+            .get(spec)
+            .and_then(|v| v.as_ref())
+            .map(|o| (o.code.clone(), o.source_map.clone()))
+    };
+
+    if let Some((code, source_map)) = provider_source {
+        register_source_map_from_json(scope, spec, &source_map);
+        let m = compile_source_module(scope, &code, spec, Some(&source_map))?;
+        if let Some(id) = m.script_id() {
+            // Register as a builtin script so internal: access checks pass.
+            state_rc.borrow_mut().builtin_script_ids.insert(id);
+            // Note: we do NOT insert into builtin_specifiers here because we
+            // have no &'static str for an override specifier. This means
+            // override modules cannot use relative imports to other builtins,
+            // which is intentional — they should use absolute specifiers.
+        }
+        let global = v8::Global::new(scope, m);
+        state_rc
+            .borrow_mut()
+            .builtin_cache
+            .insert(spec.to_string(), global);
+        return Some(m);
+    }
+
+    // 3. Fall back to the static BUILTINS registry.
     let entry = BUILTINS.iter().find(|(s, _)| *s == spec)?;
     let (spec_key, kind) = entry;
 
@@ -974,7 +1084,10 @@ fn get_or_load_builtin<'s>(
     };
 
     let global = v8::Global::new(scope, module);
-    state_rc.borrow_mut().builtin_cache.insert(spec_key, global);
+    state_rc
+        .borrow_mut()
+        .builtin_cache
+        .insert(spec_key.to_string(), global);
     Some(module)
 }
 

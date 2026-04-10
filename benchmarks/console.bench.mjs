@@ -1,5 +1,5 @@
 /**
- * Benchmarks for surge:console
+ * Benchmarks for fino:console
  *
  * Run with: cargo run -- --bench benchmarks/console.bench.mjs
  *
@@ -9,8 +9,8 @@
  *   cargo run -- --bench benchmarks/console.bench.mjs 2>/dev/null
  */
 
-import console from 'surge:console';
-import { bench } from 'surge:bench';
+import console from 'fino:console';
+import { bench } from 'fino:bench';
 
 // Pre-build test values to isolate formatting cost from allocation
 const STR       = 'hello, world';

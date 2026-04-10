@@ -44,6 +44,56 @@ impl SourceMapCache {
     }
 }
 
+/// An owned child Realm (V8 Context) running in the same Isolate.
+///
+/// The parent's `FinoState.child_contexts` owns these. When the parent's
+/// loop exits, it terminates all children before calling `on_done_fn`.
+pub struct ChildRealm {
+    pub context: v8::Global<v8::Context>,
+}
+
+/// A deferred request to create a child Realm.
+///
+/// `native_create_context` queues one of these instead of calling
+/// `create_child_context` directly, because context creation requires a
+/// `HandleScope<()>` (unbound) which is unavailable inside a JS callback.
+/// The host loop drains `pending_creates` between iterations where
+/// `isolate_scope` (`HandleScope<()>`) is accessible.
+pub struct PendingRealm {
+    /// Pre-allocated slot index in `FinoState::child_contexts`.
+    pub handle_idx: usize,
+    pub root: std::path::PathBuf,
+    pub entry_path: String,
+    pub providers: HashMap<String, Option<ProviderConfig>>,
+    pub package_map_json: Option<String>,
+    /// The child's MessagePort object (created in parent context).
+    /// Stored here so it can be set into the child's FinoState after context
+    /// creation, and later read via `internal:realm-bridge.getPort()`.
+    pub port: Option<v8::Global<v8::Value>>,
+}
+
+/// Slot in the parent's `child_contexts` Vec.
+pub enum ChildRealmSlot {
+    /// Creation queued but not yet processed by `process_pending_creates`.
+    Pending,
+    /// Created and running — step returns the child's loop bool.
+    Active(ChildRealm),
+    /// Creation failed — `stepContext` immediately returns false.
+    Failed,
+}
+
+/// The source code for a specific provider module in a Realm.
+///
+/// `FinoState::providers` maps specifiers to their configured provider.
+/// `Some(ProviderConfig)` means use this source for the specifier.
+/// `None` means the specifier is blocked for user code in this Realm.
+/// Specifiers not in the map fall through to the static `BUILTINS` array.
+#[derive(Clone)]
+pub struct ProviderConfig {
+    pub code: String,
+    pub source_map: String,
+}
+
 /// All per-run state, stored in the V8 context slot so every Rust callback can
 /// access it without passing extra arguments.
 pub struct FinoState {
@@ -65,9 +115,23 @@ pub struct FinoState {
     pub root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
 
     // ---------------------------------------------------------------------------
+    // Per-Realm provider configuration
+    // ---------------------------------------------------------------------------
+    /// Authoritative provider map for this Realm. Each entry is the definitive
+    /// provider for that specifier:
+    ///   `Some(ProviderConfig)` — use this source as the module implementation.
+    ///   `None` — specifier is blocked for user code in this Realm.
+    /// Specifiers absent from the map fall through to the static BUILTINS array.
+    /// Children inherit the parent's full map and can override individual entries.
+    pub providers: HashMap<String, Option<ProviderConfig>>,
+
+    // ---------------------------------------------------------------------------
     // Module caches
     // ---------------------------------------------------------------------------
-    pub builtin_cache: HashMap<&'static str, v8::Global<v8::Module>>,
+    /// Compiled builtin modules keyed by specifier string.
+    /// Uses `String` (not `&'static str`) so dynamic override specifiers can
+    /// also be cached alongside static BUILTINS entries.
+    pub builtin_cache: HashMap<String, v8::Global<v8::Module>>,
     pub fs_cache: HashMap<PathBuf, v8::Global<v8::Module>>,
     /// Script IDs of source builtin modules (for `internal:*` access restriction).
     /// Synthetic modules return `None` from `module.script_id()` and are never
@@ -121,6 +185,61 @@ pub struct FinoState {
     /// Raw pointer to the V8 CpuProfiler, created lazily on first startProfiling
     /// call. Disposed before isolate teardown.
     pub cpu_profiler: Option<*mut std::ffi::c_void>,
+
+    // ---------------------------------------------------------------------------
+    // Child Realm management
+    // ---------------------------------------------------------------------------
+    /// Child Realm slot table. Indexed by the handle returned to JS.
+    ///
+    /// - `Pending` — slot allocated by `native_create_context`; the host loop
+    ///   will call `process_pending_creates` to upgrade it to `Active`.
+    /// - `Active` — context created and running.
+    /// - `Failed` — creation failed; `stepContext` returns false immediately.
+    pub child_contexts: Vec<ChildRealmSlot>,
+
+    /// Deferred context-creation requests drained between host-loop iterations
+    /// when a bare `HandleScope<()>` is available.
+    pub pending_creates: Vec<PendingRealm>,
+
+    /// Live thread realm handles indexed by the JS handle returned from
+    /// `createThreadContext`. Slot is `None` when the thread has exited and the
+    /// handle has been reaped.
+    // `allow(dead_code)`: used by `realm.rs` native functions via `crate::state`.
+    #[allow(dead_code)]
+    pub thread_contexts: Vec<Option<crate::thread_realm::ThreadRealmHandle>>,
+
+    /// Entry module path for child Realms. Set by `createContext` before
+    /// evaluating `_bootstrap.mjs` in the child context. The child's bootstrap
+    /// reads this via `internal:realm-bridge.getEntryPath()`.
+    pub entry_path: Option<String>,
+
+    /// Termination flag for child Realms. The parent sets this to `true` via
+    /// `terminateChild()` from `internal:realm-native`. The child's `isDone`
+    /// callback checks this via `internal:realm-bridge.isTerminated()`.
+    pub terminated: bool,
+
+    /// The child's MessagePort object, passed by the parent at creation time.
+    /// Read-only after bootstrap; accessed via `internal:realm-bridge.getPort()`.
+    pub port: Option<v8::Global<v8::Value>>,
+
+    // ---------------------------------------------------------------------------
+    // Thread Realm channels (populated only in thread-realm Isolates)
+    // ---------------------------------------------------------------------------
+    // `allow(dead_code)`: used by Phase 3 native send/recv functions.
+    #[allow(dead_code)]
+    /// Receives serialized messages sent from the partner Isolate.
+    pub channel_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    #[allow(dead_code)]
+    /// Sends serialized messages to the partner Isolate.
+    pub channel_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    #[allow(dead_code)]
+    /// Own wake-pipe read end — registered with the event loop; readable when
+    /// the partner has deposited a message in `channel_rx`.
+    pub wake_read_fd: Option<std::os::unix::io::RawFd>,
+    #[allow(dead_code)]
+    /// Partner's wake-pipe write end — write 1 byte here after each
+    /// `channel_tx.send()` to unblock the partner's event-loop wait.
+    pub wake_write_fd: Option<std::os::unix::io::RawFd>,
 }
 
 /// Retrieve the state `Rc` from the current V8 context's slot.

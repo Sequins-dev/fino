@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:url
+ * Benchmarks for fino:url
  *
  * Run with: cargo run -- --bench benchmarks/url.bench.mjs
  */
 
-import { URL, URLSearchParams } from 'surge:url';
-import { bench } from 'surge:bench';
+import { URL, URLSearchParams } from 'fino:url';
+import { bench } from 'fino:bench';
 
 bench('URL parsing', (b) => {
   b.measure('simple',   () => new URL('https://example.com/path'));

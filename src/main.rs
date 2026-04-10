@@ -6,8 +6,11 @@ mod loader;
 mod platform;
 mod profiler;
 mod protobuf;
+mod realm;
 mod runtime;
+mod serializer;
 mod state;
+mod thread_realm;
 mod types;
 
 fn main() {

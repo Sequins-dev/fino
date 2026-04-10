@@ -533,14 +533,19 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     return clone;
   }
 
-  // Plain object (prototype must be Object.prototype or null)
+  // Plain object: prototype must be null, or be itself null-prototyped (i.e.
+  // Object.prototype-like — handles cross-realm plain objects where the proto
+  // is a different context's Object.prototype, not === the current one).
   const proto = Object.getPrototypeOf(value);
-  if (proto !== Object.prototype && proto !== null) {
+  if (proto !== null && proto !== Object.prototype && Object.getPrototypeOf(proto) !== null) {
     const err = new Error('structuredClone: object with non-plain prototype cannot be cloned.');
     err.name = 'DataCloneError';
     throw err;
   }
-  const clone = Object.create(proto);
+  // When cloning cross-realm objects, map their proto to the local Object.prototype
+  // so the clone is a proper plain object in the current realm.
+  const cloneProto = proto === null ? null : Object.prototype;
+  const clone = Object.create(cloneProto);
   seen.set(value, clone);
   for (const key of Object.keys(value)) {
     (clone as any)[key] = _clone((value as any)[key], seen, transferSet);

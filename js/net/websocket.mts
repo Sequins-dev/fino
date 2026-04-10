@@ -73,6 +73,7 @@ import { TlsSocket }          from './tls.mts';
 import { lookup }             from './dns.mts';
 import * as loop              from '../runtime/loop.mts';
 import { EventTarget, Event } from '../internal/globals/eventtarget.mts';
+import { MessageEvent } from '../internal/globals/messaging.mts';
 import { URL }                from '../internal/globals/url.mts';
 import { Blob }               from '../internal/globals/blob.mts';
 import { crypto }             from '../internal/globals/crypto.mts';
@@ -101,27 +102,10 @@ const DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024; // 16 MiB
 const CLOSE_TIMEOUT_MS    = 5_000;
 
 // ---------------------------------------------------------------------------
-// Event classes (MessageEvent, CloseEvent, ErrorEvent)
+// Event classes (CloseEvent, ErrorEvent — MessageEvent imported from shared module)
 // ---------------------------------------------------------------------------
 
-interface MessageEventInit {
-  data?: string | Uint8Array | Blob | ArrayBuffer;
-  origin?: string;
-}
-
-export class MessageEvent extends Event {
-  #data:   string | Uint8Array | Blob | ArrayBuffer;
-  #origin: string;
-
-  constructor(type: string, init?: MessageEventInit) {
-    super(type);
-    this.#data   = init?.data   ?? '';
-    this.#origin = init?.origin ?? '';
-  }
-
-  get data()   { return this.#data; }
-  get origin() { return this.#origin; }
-}
+export { MessageEvent };
 
 interface CloseEventInit {
   code?:     number;

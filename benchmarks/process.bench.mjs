@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:process
+ * Benchmarks for fino:process
  *
  * Run with: cargo run -- --bench benchmarks/process.bench.mjs
  */
 
-import { pid, ppid, argv, env, execPath, cwd, exit, os, arch } from 'surge:process';
-import { bench } from 'surge:bench';
+import { pid, ppid, argv, env, execPath, cwd, exit, os, arch } from 'fino:process';
+import { bench } from 'fino:bench';
 
 bench('static properties', (b) => {
   b.measure('pid',      () => pid);

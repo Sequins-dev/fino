@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:context
+ * Benchmarks for fino:context
  *
  * Run with: cargo run -- --bench benchmarks/context.bench.mjs
  */
 
-import { Context, Snapshot, snapshotAll } from 'surge:context';
-import { bench } from 'surge:bench';
+import { Context, Snapshot, snapshotAll } from 'fino:context';
+import { bench } from 'fino:bench';
 
 const ctx1 = new Context('ctx1');
 const ctx2 = new Context('ctx2');

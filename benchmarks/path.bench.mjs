@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:path
+ * Benchmarks for fino:path
  *
  * Run with: cargo run -- --bench benchmarks/path.bench.mjs
  */
 
-import { Path, join, resolve, normalize, relative, dirname, basename, extname, isAbsolute } from 'surge:path';
-import { bench } from 'surge:bench';
+import { Path, join, resolve, normalize, relative, dirname, basename, extname, isAbsolute } from 'fino:path';
+import { bench } from 'fino:bench';
 
 bench('module-level functions', (b) => {
   b.group('join', (g) => {

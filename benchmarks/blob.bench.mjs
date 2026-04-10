@@ -1,11 +1,11 @@
 /**
- * Benchmarks for surge:blob
+ * Benchmarks for fino:blob
  *
  * Run with: cargo run -- --bench benchmarks/blob.bench.mjs
  */
 
-import { Blob, File } from 'surge:blob';
-import { bench } from 'surge:bench';
+import { Blob, File } from 'fino:blob';
+import { bench } from 'fino:bench';
 
 const KB_STR    = 'x'.repeat(1024);
 const LARGE_STR = 'x'.repeat(65536);

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 v8 = "139.0.0"
+libc = "0.2"
 libffi = "5.1.0"
 libloading = "0.8"
 smallvec = "1.13"

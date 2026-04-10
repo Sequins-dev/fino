@@ -1,5 +1,5 @@
 /**
- * Benchmarks for surge:dns (packet encoding/decoding only — no network)
+ * Benchmarks for fino:dns (packet encoding/decoding only — no network)
  *
  * Run with: cargo run -- --bench benchmarks/dns.bench.mjs
  *
@@ -8,8 +8,8 @@
  * the parsing benchmarks.
  */
 
-import { _encodeName, _buildQuery, _parseResponse, RECORD_TYPES } from 'surge:dns';
-import { bench } from 'surge:bench';
+import { _encodeName, _buildQuery, _parseResponse, RECORD_TYPES } from 'fino:dns';
+import { bench } from 'fino:bench';
 
 // ---------------------------------------------------------------------------
 // Build a synthetic valid DNS A-record response for parsing benchmarks.
