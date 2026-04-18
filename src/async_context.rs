@@ -1,17 +1,14 @@
 //! Async context propagation for Fino on V8 via ContinuationPreservedEmbedderData.
 //!
-//! The live async-context frame is stored as a JS Array in V8's CPED slot.
-//! V8 automatically captures the CPED reference when a continuation is enqueued
-//! and restores it before each `.then()` callback fires — no promise hook needed.
+//! Exposes `internal:async-context` as a synthetic V8 module. The slot management
+//! logic (COW array manipulation, snapshot/restore) lives entirely in JavaScript
+//! (`js/runtime/context.mts`). This module only provides:
 //!
-//! **COW invariant**: `setSlot()` and `clearSlot()` always create a NEW array
-//! (shallow copy + modification) rather than mutating in place. V8 holds a
-//! reference to the array at enqueue time; in-place mutation would corrupt
-//! previously-captured frames.
-//!
-//! `createSlot()` is the only exception: it runs during synchronous module init
-//! and simply pushes `undefined` at a new index, which is safe because no
-//! continuation has yet captured the array.
+//! - `getCPED` / `setCPED`: V8 Torque builtins extracted from the extras binding
+//!   object. These compile to direct CPED memory loads/stores on the V8 isolate
+//!   and can be inlined by TurboFan/Maglev — no native barrier crossing.
+//! - `drainMicrotasks`, `hasPendingV8Tasks`, `scheduleSync`, `runLoop`: host loop
+//!   primitives that must remain in Rust.
 
 use ::v8;
 
@@ -27,12 +24,8 @@ fn loop_debug_enabled() -> bool {
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
-        "createSlot",
-        "getSlot",
-        "setSlot",
-        "clearSlot",
-        "snapshot",
-        "restore",
+        "getCPED",
+        "setCPED",
         "drainMicrotasks",
         "hasPendingV8Tasks",
         "scheduleSync",
@@ -61,186 +54,29 @@ fn eval_steps<'a>(
         }};
     }
 
-    set_fn!("createSlot", create_slot);
-    set_fn!("getSlot", get_slot);
-    set_fn!("setSlot", set_slot);
-    set_fn!("clearSlot", clear_slot);
-    set_fn!("snapshot", snapshot);
-    set_fn!("restore", restore);
+    // Extract getContinuationPreservedEmbedderData / setContinuationPreservedEmbedderData
+    // from the V8 extras binding object. These are Torque builtins that compile to
+    // direct CPED memory loads/stores on the V8 isolate — callable from JS without
+    // crossing the native barrier. TurboFan/Maglev can inline them at call sites.
+    let extras = context.get_extras_binding_object(&mut **scope);
+    let get_cped_key = v8::String::new(scope, "getContinuationPreservedEmbedderData")?;
+    let set_cped_key = v8::String::new(scope, "setContinuationPreservedEmbedderData")?;
+    let get_cped_fn: v8::Local<v8::Function> =
+        extras.get(scope, get_cped_key.into())?.try_into().ok()?;
+    let set_cped_fn: v8::Local<v8::Function> =
+        extras.get(scope, set_cped_key.into())?.try_into().ok()?;
+
+    let key = v8::String::new(scope, "getCPED")?;
+    module.set_synthetic_module_export(scope, key, get_cped_fn.into())?;
+    let key = v8::String::new(scope, "setCPED")?;
+    module.set_synthetic_module_export(scope, key, set_cped_fn.into())?;
+
     set_fn!("drainMicrotasks", drain_microtasks);
     set_fn!("hasPendingV8Tasks", has_pending_v8_tasks);
     set_fn!("scheduleSync", schedule_sync);
     set_fn!("runLoop", run_loop);
 
     Some(v8::undefined(scope).into())
-}
-
-// ---------------------------------------------------------------------------
-// Slot functions
-// ---------------------------------------------------------------------------
-
-fn create_slot(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let state_rc = get_state(scope);
-    let id = {
-        let mut st = state_rc.borrow_mut();
-        let id = st.slot_count;
-        st.slot_count += 1;
-        id
-    };
-
-    // Extend the live CPED array in place with `undefined` at the new index.
-    // This is safe: createSlot only runs during synchronous module init, so no
-    // continuation has captured the current array yet.
-    let frame = scope.get_continuation_preserved_embedder_data();
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(frame) {
-        let undef = v8::undefined(scope);
-        arr.set_index(scope, id, undef.into());
-    }
-
-    rv.set(v8::Number::new(scope, id as f64).into());
-}
-
-fn get_slot(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let id = match get_u32_arg(scope, &args, 0, "getSlot") {
-        Ok(v) => v,
-        Err(()) => return,
-    };
-
-    let frame = scope.get_continuation_preserved_embedder_data();
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(frame)
-        && id < arr.length()
-        && let Some(val) = arr.get_index(scope, id)
-    {
-        rv.set(val);
-        return;
-    }
-    rv.set(v8::undefined(scope).into());
-}
-
-fn set_slot(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut _rv: v8::ReturnValue,
-) {
-    let id = match get_u32_arg(scope, &args, 0, "setSlot") {
-        Ok(v) => v,
-        Err(()) => return,
-    };
-    let value: v8::Local<v8::Value> = args.get(1);
-
-    let state_rc = get_state(scope);
-    let slot_count = state_rc.borrow().slot_count;
-
-    // COW: create a new array, copy current frame, write new value at id.
-    let len = slot_count;
-    let new_arr = v8::Array::new(scope, len as i32);
-    let frame = scope.get_continuation_preserved_embedder_data();
-    if let Ok(old) = v8::Local::<v8::Array>::try_from(frame) {
-        for i in 0..len {
-            let v = old
-                .get_index(scope, i)
-                .unwrap_or_else(|| v8::undefined(scope).into());
-            new_arr.set_index(scope, i, v);
-        }
-    }
-    new_arr.set_index(scope, id, value);
-    scope.set_continuation_preserved_embedder_data(new_arr.into());
-}
-
-fn clear_slot(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut _rv: v8::ReturnValue,
-) {
-    let id = match get_u32_arg(scope, &args, 0, "clearSlot") {
-        Ok(v) => v,
-        Err(()) => return,
-    };
-
-    let state_rc = get_state(scope);
-    let slot_count = state_rc.borrow().slot_count;
-
-    // COW: create a new array with `undefined` at index id.
-    let len = slot_count;
-    let new_arr = v8::Array::new(scope, len as i32);
-    let undef = v8::undefined(scope);
-    let frame = scope.get_continuation_preserved_embedder_data();
-    if let Ok(old) = v8::Local::<v8::Array>::try_from(frame) {
-        for i in 0..len {
-            let v = old.get_index(scope, i).unwrap_or_else(|| undef.into());
-            new_arr.set_index(scope, i, v);
-        }
-    }
-    new_arr.set_index(scope, id, undef.into());
-    scope.set_continuation_preserved_embedder_data(new_arr.into());
-}
-
-fn snapshot(
-    scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
-    let frame = scope.get_continuation_preserved_embedder_data();
-    let global = v8::Global::new(scope, frame);
-
-    let state_rc = get_state(scope);
-    let id = {
-        let mut st = state_rc.borrow_mut();
-        let id = st.snapshot_store.len() as u32;
-        st.snapshot_store.push(global);
-        id
-    };
-
-    rv.set(v8::Number::new(scope, id as f64).into());
-}
-
-fn restore(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut _rv: v8::ReturnValue,
-) {
-    let id = match get_u32_arg(scope, &args, 0, "restore") {
-        Ok(v) => v,
-        Err(()) => return,
-    };
-
-    let state_rc = get_state(scope);
-    let (maybe_global, slot_count) = {
-        let st = state_rc.borrow();
-        let g = st.snapshot_store.get(id as usize).cloned();
-        (g, st.slot_count)
-    };
-
-    if let Some(global) = maybe_global {
-        let stored = v8::Local::new(scope, &global);
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(stored) {
-            if arr.length() >= slot_count {
-                // Array is at least as long as current slot count — use directly.
-                scope.set_continuation_preserved_embedder_data(arr.into());
-            } else {
-                // New slots were created after this snapshot; extend with undefined.
-                let new_arr = v8::Array::new(scope, slot_count as i32);
-                let undef = v8::undefined(scope);
-                for i in 0..slot_count {
-                    let v = if i < arr.length() {
-                        arr.get_index(scope, i).unwrap_or_else(|| undef.into())
-                    } else {
-                        undef.into()
-                    };
-                    new_arr.set_index(scope, i, v);
-                }
-                scope.set_continuation_preserved_embedder_data(new_arr.into());
-            }
-        }
-    }
 }
 
 fn drain_microtasks(
@@ -329,23 +165,3 @@ fn run_loop(
         .map(|f| v8::Global::new(scope, f));
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn get_u32_arg(
-    scope: &mut v8::HandleScope,
-    args: &v8::FunctionCallbackArguments,
-    index: i32,
-    fn_name: &str,
-) -> Result<u32, ()> {
-    let val: v8::Local<v8::Value> = args.get(index);
-    if val.is_number() {
-        Ok(val.number_value(scope).unwrap_or(0.0) as u32)
-    } else {
-        let msg = v8::String::new(scope, &format!("{fn_name}: expected u32 argument")).unwrap();
-        let exc = v8::Exception::type_error(scope, msg);
-        scope.throw_exception(exc);
-        Err(())
-    }
-}

@@ -97,8 +97,6 @@ pub fn run(root: &Path) -> Result<(), String> {
         let state = FinoState {
             root: root.to_path_buf(),
             package_map_json: std::fs::read_to_string(root.join(".fino/package-map.json")).ok(),
-            slot_count: 0,
-            snapshot_store: Vec::new(),
             root_queue,
             providers: HashMap::new(),
             builtin_cache: HashMap::new(),

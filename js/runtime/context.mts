@@ -18,10 +18,56 @@
  *   });
  */
 
-import { createSlot, getSlot, setSlot, clearSlot, snapshot, restore } from 'internal:async-context';
+import { getCPED, setCPED } from 'internal:async-context';
+
+// ---------------------------------------------------------------------------
+// Slot management — implemented in JS using V8 CPED intrinsics.
+//
+// getCPED() / setCPED() are Torque builtins extracted from the V8 extras
+// binding object. They compile to direct CPED memory loads/stores on the
+// V8 isolate and can be inlined by TurboFan/Maglev.
+//
+// COW invariant: setSlot and clearSlot always create a NEW array so that
+// previously-enqueued promise continuations keep their captured frame intact.
+// ---------------------------------------------------------------------------
+
+let slotCount = 0;
+
+function createSlot(): number {
+  return slotCount++;
+}
+
+function getSlot<T>(slot: number): T | undefined {
+  const arr = getCPED() as unknown[] | undefined;
+  return arr ? (arr[slot] as T) : undefined;
+}
+
+function setSlot<T>(slot: number, value: T): void {
+  const old = getCPED() as unknown[] | undefined;
+  // COW: create a new array so V8-captured continuations keep their frame.
+  const arr: unknown[] = old ? old.slice() : new Array(slotCount);
+  arr[slot] = value;
+  setCPED(arr);
+}
+
+function clearSlot(slot: number): void {
+  const old = getCPED() as unknown[] | undefined;
+  if (!old) return;
+  const arr = old.slice(); // COW
+  arr[slot] = undefined;
+  setCPED(arr);
+}
+
+function snapshot(): unknown {
+  return getCPED();
+}
+
+function restore(state: unknown): void {
+  setCPED(state);
+}
 
 export class Context<T = unknown> {
-  #id: symbol;
+  #id: number;
   #name: string;
 
   /**

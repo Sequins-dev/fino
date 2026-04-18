@@ -722,8 +722,6 @@ fn create_child_context(
         let state = FinoState {
             root,
             package_map_json,
-            slot_count: 0,
-            snapshot_store: Vec::new(),
             root_queue: child_queue,
             providers,
             builtin_cache: HashMap::new(),

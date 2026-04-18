@@ -101,14 +101,6 @@ pub struct FinoState {
     pub package_map_json: Option<String>,
 
     // ---------------------------------------------------------------------------
-    // Async context slots (CPED-based)
-    // ---------------------------------------------------------------------------
-    /// Number of allocated slots. The live frame is the JS Array stored as CPED.
-    pub slot_count: u32,
-    /// Snapshot store: index = handle, value = a captured frame array.
-    pub snapshot_store: Vec<v8::Global<v8::Value>>,
-
-    // ---------------------------------------------------------------------------
     // Microtask queue
     // ---------------------------------------------------------------------------
     /// The context's single microtask queue.

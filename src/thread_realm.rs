@@ -274,8 +274,6 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
         let state = FinoState {
             root: config.root,
             package_map_json: config.package_map_json,
-            slot_count: 0,
-            snapshot_store: Vec::new(),
             root_queue,
             providers: config.providers,
             builtin_cache: HashMap::new(),

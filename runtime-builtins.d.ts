@@ -33,12 +33,8 @@ declare module 'internal:async-context' {
   export function hasPendingV8Tasks(): boolean;
   export function runLoop(step: () => boolean, onDone: () => void): void;
   export function scheduleSync(fn: () => void): void;
-  export function createSlot<T>(): symbol;
-  export function getSlot<T>(slot: symbol): T | undefined;
-  export function setSlot<T>(slot: symbol, value: T): void;
-  export function clearSlot(slot: symbol): void;
-  export function snapshot(): unknown;
-  export function restore(state: unknown): void;
+  export function getCPED(): unknown;
+  export function setCPED(value: unknown): void;
 }
 
 declare module 'internal:loader-hooks' {
