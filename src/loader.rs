@@ -7,8 +7,7 @@ use ::v8;
 use oxc_sourcemap::SourceMap;
 
 use crate::{
-    async_context, broadcast, docgen, ffi, platform, profiler, realm, serializer, thread_realm,
-    transit,
+    async_context, docgen, ffi, platform, profiler, realm,
     state::get_state,
 };
 
@@ -61,20 +60,20 @@ static BUILTINS: &[BuiltinEntry] = &[
     // Synthetic Rust modules
     (
         "internal:broadcast",
-        BuiltinKind::Synthetic(broadcast::create_module),
+        BuiltinKind::Synthetic(realm::broadcast::create_module),
     ),
     ("fino:ffi", BuiltinKind::Synthetic(ffi::create_module)),
     (
         "internal:serializer",
-        BuiltinKind::Synthetic(serializer::create_module),
+        BuiltinKind::Synthetic(realm::serializer::create_module),
     ),
     (
         "internal:thread-port",
-        BuiltinKind::Synthetic(thread_realm::create_thread_port_module),
+        BuiltinKind::Synthetic(realm::thread::create_thread_port_module),
     ),
     (
         "internal:transit-port",
-        BuiltinKind::Synthetic(transit::create_module),
+        BuiltinKind::Synthetic(realm::transit::create_module),
     ),
     (
         "internal:realm-bridge",

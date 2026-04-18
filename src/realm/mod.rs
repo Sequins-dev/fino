@@ -27,6 +27,11 @@
 //! ContextScope is not entered, giving access to the bare `isolate_scope`
 //! (`HandleScope<()>`).
 
+pub mod broadcast;
+pub mod serializer;
+pub mod thread;
+pub mod transit;
+
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -38,7 +43,7 @@ use ::v8;
 use ::libc;
 
 use crate::{
-    loader, thread_realm,
+    loader,
     state::{
         ChildRealm, ChildRealmSlot, FinoState, PendingRealm, ProviderConfig, get_state,
         root_queue_ptr,
@@ -471,14 +476,14 @@ fn native_create_thread_context(
     let package_map_json = get_state(scope).borrow().package_map_json.clone();
 
     // --- Spawn the thread realm ---
-    let spawn_config = thread_realm::SpawnConfig {
+    let spawn_config = thread::SpawnConfig {
         process_env,
         entry_path,
         providers,
         package_map_json,
     };
 
-    let handle = match thread_realm::spawn_thread_realm(spawn_config) {
+    let handle = match thread::spawn_thread_realm(spawn_config) {
         Ok(h) => h,
         Err(e) => {
             let msg = v8::String::new(scope, &format!("createThreadContext: {e}")).unwrap();
@@ -536,7 +541,7 @@ fn native_thread_port_send(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    use crate::thread_realm::ThreadMessage;
+    use thread::ThreadMessage;
 
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let bytes_arg = args.get(1);
@@ -591,7 +596,7 @@ fn native_thread_port_send(
         };
 
     // Port transfer infos (optional fourth arg — Array of [handle, wakeReadFd]).
-    let transfer_ports = crate::thread_realm::extract_port_infos(scope, args.get(3));
+    let transfer_ports = thread::extract_port_infos(scope, args.get(3));
 
     let thread_msg = ThreadMessage { data, transfer_stores, transfer_ports };
 
@@ -622,7 +627,7 @@ fn native_thread_port_recv(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    use crate::thread_realm::ThreadMessage;
+    use thread::ThreadMessage;
 
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
 
@@ -648,7 +653,7 @@ fn native_thread_port_recv(
         unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
     }
 
-    rv.set(crate::transit::build_message_array(scope, messages).into());
+    rv.set(transit::build_message_array(scope, messages).into());
 }
 
 /// JS: `getThreadPortWakeReadFd(handle: number): number`

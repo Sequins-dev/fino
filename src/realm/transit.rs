@@ -29,7 +29,7 @@ use std::{
 
 use ::v8;
 
-use crate::thread_realm::ThreadMessage;
+use crate::realm::thread::ThreadMessage;
 
 // ---------------------------------------------------------------------------
 // Global registry

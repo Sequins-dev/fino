@@ -32,7 +32,8 @@ use std::{
 use ::v8;
 
 use crate::{
-    loader, realm,
+    loader,
+    realm,
     state::{FinoState, ProviderConfig, get_state, root_queue_ptr},
 };
 
@@ -636,7 +637,7 @@ fn native_recv(
         unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
     }
 
-    rv.set(crate::transit::build_message_array(scope, messages).into());
+    rv.set(crate::realm::transit::build_message_array(scope, messages).into());
 }
 
 /// JS: `getWakeReadFd(): number`
