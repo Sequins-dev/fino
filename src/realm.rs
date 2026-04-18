@@ -513,23 +513,33 @@ fn native_step_thread_context(
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let state_rc = get_state(scope);
     let st = state_rc.borrow();
-    let still_running = st
-        .thread_contexts
-        .get(handle)
-        .and_then(|slot| slot.as_ref())
-        .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
-        .unwrap_or(false);
+    let h = st.thread_contexts.get(handle).and_then(|slot| slot.as_ref());
+    let still_running = h.map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire)).unwrap_or(false);
+    if !still_running {
+        // Check for a crash/error message and throw it as a JS exception.
+        if let Some(err_msg) = h.and_then(|h| h.error.lock().ok()?.clone()) {
+            let msg = v8::String::new(scope, &err_msg).unwrap_or_else(|| {
+                v8::String::new(scope, "thread realm error").unwrap()
+            });
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
+    }
     rv.set(v8::Boolean::new(scope, still_running).into());
 }
 
-/// JS: `threadPortSend(handle: number, bytes: Uint8Array): void`
+/// JS: `threadPortSend(handle: number, bytes: Uint8Array, stores?: Uint8Array[]): void`
 ///
-/// Sends a serialized message to the thread realm identified by `handle`.
+/// Sends a serialized message (and optional transfer stores) to the thread
+/// realm identified by `handle`.
 fn native_thread_port_send(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    use crate::thread_realm::ThreadMessage;
+
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let bytes_arg = args.get(1);
 
@@ -540,8 +550,8 @@ fn native_thread_port_send(
         return;
     };
 
-    // Copy bytes out before releasing scope borrow.
-    let bytes: Vec<u8> = {
+    // Copy main bytes.
+    let data: Vec<u8> = {
         let Some(ab) = u8a.buffer(scope) else { return };
         let Some(data_ptr) = ab.data() else { return };
         let offset = u8a.byte_offset();
@@ -551,6 +561,41 @@ fn native_thread_port_send(
             std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len).to_vec()
         }
     };
+
+    // Copy transfer stores (optional third arg — Array of Uint8Array).
+    let transfer_stores: Vec<Vec<u8>> =
+        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(2)) {
+            let count = arr.length();
+            let mut stores = Vec::with_capacity(count as usize);
+            for i in 0..count {
+                let idx = v8::Integer::new(scope, i as i32);
+                if let Some(elem) = arr.get(scope, idx.into())
+                    && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
+                {
+                    let Some(sab) = su8a.buffer(scope) else { continue };
+                    let Some(sptr) = sab.data() else { continue };
+                    let soff = su8a.byte_offset();
+                    let slen = su8a.byte_length();
+                    // SAFETY: same as above.
+                    let raw = unsafe {
+                        std::slice::from_raw_parts(
+                            (sptr.as_ptr() as *const u8).add(soff),
+                            slen,
+                        )
+                        .to_vec()
+                    };
+                    stores.push(raw);
+                }
+            }
+            stores
+        } else {
+            Vec::new()
+        };
+
+    // Port transfer infos (optional fourth arg — Array of [handle, wakeReadFd]).
+    let transfer_ports = crate::thread_realm::extract_port_infos(scope, args.get(3));
+
+    let thread_msg = ThreadMessage { data, transfer_stores, transfer_ports };
 
     let (maybe_tx, maybe_wake_write) = {
         let state_rc = get_state(scope);
@@ -562,21 +607,25 @@ fn native_thread_port_send(
     };
 
     if let (Some(tx), Some(wake_write)) = (maybe_tx, maybe_wake_write) {
-        let _ = tx.send(bytes);
+        let _ = tx.send(thread_msg);
         let byte: [u8; 1] = [1];
         // SAFETY: wake_write is a valid open fd owned by this handle.
         unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
     }
 }
 
-/// JS: `threadPortRecv(handle: number): Uint8Array[]`
+/// JS: `threadPortRecv(handle: number): [Uint8Array, ...Uint8Array[]][]`
 ///
-/// Non-blocking drain of the channel from the thread realm identified by `handle`.
+/// Non-blocking drain of the channel from the thread realm identified by
+/// `handle`. Returns a JS Array of inner Arrays: each inner Array has the main
+/// bytes at `[0]` and transfer-store bytes at `[1..]`.
 fn native_thread_port_recv(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    use crate::thread_realm::ThreadMessage;
+
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
 
     let (messages, maybe_wake_read) = {
@@ -584,7 +633,7 @@ fn native_thread_port_recv(
         let st = state_rc.borrow();
         match st.thread_contexts.get(handle).and_then(|s| s.as_ref()) {
             Some(h) => {
-                let mut msgs = Vec::new();
+                let mut msgs: Vec<ThreadMessage> = Vec::new();
                 while let Ok(msg) = h.rx.try_recv() {
                     msgs.push(msg);
                 }
@@ -601,24 +650,7 @@ fn native_thread_port_recv(
         unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
     }
 
-    let arr = v8::Array::new(scope, messages.len() as i32);
-    for (i, bytes) in messages.into_iter().enumerate() {
-        let len = bytes.len();
-        let store = {
-            let bs = v8::ArrayBuffer::new_backing_store(scope, len);
-            let store_data = bs.data().unwrap().as_ptr() as *mut u8;
-            // SAFETY: backing store freshly allocated, we own the only reference.
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), store_data, len) };
-            bs.make_shared()
-        };
-        let ab = v8::ArrayBuffer::with_backing_store(scope, &store);
-        if let Some(u8a) = v8::Uint8Array::new(scope, ab, 0, len) {
-            let idx = v8::Integer::new(scope, i as i32);
-            arr.set(scope, idx.into(), u8a.into());
-        }
-    }
-
-    rv.set(arr.into());
+    rv.set(crate::transit::build_message_array(scope, messages).into());
 }
 
 /// JS: `getThreadPortWakeReadFd(handle: number): number`

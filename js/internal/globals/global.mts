@@ -61,3 +61,4 @@ export { Headers, Request, Response } from '../../net/http.mts';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
 export { WebSocket, CloseEvent, ErrorEvent } from '../../net/websocket.mts';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.mts';
+export { BroadcastChannel } from './broadcast-channel.mts';

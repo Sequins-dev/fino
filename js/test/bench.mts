@@ -229,15 +229,15 @@ function formatStats(stats: Stats): string {
 // Group — a named collection of measurements with optional sub-groups
 // ---------------------------------------------------------------------------
 
-interface MeasureOptions {
-  setup?: () => unknown;
-  fn: (ctx?: unknown) => void | Promise<void>;
-  teardown?: (ctx?: unknown) => void;
+export interface MeasureOptions<T = unknown> {
+  setup?: () => T;
+  fn: (ctx: T) => unknown;
+  teardown?: (ctx: T) => void;
 }
 
 interface PendingMeasurement {
   name: string;
-  fn: (ctx?: unknown) => void | Promise<void>;
+  fn: (ctx?: unknown) => unknown;
   setup: (() => unknown) | undefined;
   teardown: ((ctx?: unknown) => void) | undefined;
   isGroup?: false;
@@ -251,7 +251,7 @@ interface PendingGroup {
 
 type PendingSpec = PendingMeasurement | PendingGroup;
 
-class Group {
+export class Group {
   #name: string;
   #indent: number;
   #filter: string | null;
@@ -288,11 +288,16 @@ class Group {
    * @param {string}            name
    * @param {function|object}   fnOrOpts  Function or `{ setup, fn, teardown }`.
    */
-  measure(name: string, fnOrOpts: ((ctx?: unknown) => void | Promise<void>) | MeasureOptions): void {
+  measure<T>(name: string, fnOrOpts: ((ctx?: unknown) => unknown) | MeasureOptions<T>): void {
     if (typeof fnOrOpts === 'function') {
       this.#pending.push({ name, fn: fnOrOpts, setup: undefined, teardown: undefined });
     } else {
-      this.#pending.push({ name, fn: fnOrOpts.fn, setup: fnOrOpts.setup, teardown: fnOrOpts.teardown });
+      this.#pending.push({
+        name,
+        fn: fnOrOpts.fn as (ctx?: unknown) => unknown,
+        setup: fnOrOpts.setup as (() => unknown) | undefined,
+        teardown: fnOrOpts.teardown as ((ctx?: unknown) => void) | undefined,
+      });
     }
   }
 
@@ -346,8 +351,8 @@ class Group {
     while (stats.total < SECONDS) {
       const start = now();
       const result = ctx !== undefined ? fn(ctx) : fn();
-      if (result && typeof result.then === 'function') {
-        loopModule.spin(result);
+      if (result !== null && result !== undefined && typeof (result as Record<string, unknown>)['then'] === 'function') {
+        loopModule.spin(result as Promise<unknown>);
       }
       const end = now();
       stats.push(end - start);

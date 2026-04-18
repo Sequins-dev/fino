@@ -88,6 +88,28 @@ declare module 'internal:runtime/loop-backend' {
   export function wait(raw: object, timeout: number): Array<{ ident: number; filter: number; flags: number; fflags?: number; res?: number }>;
 }
 
+// Shorthand ambient declarations for fino: built-in modules that don't have
+// explicit tsconfig path mappings (e.g. fino:bench, fino:abort, fino:crypto…).
+// Shorthand form makes all exports `any`; modules with explicit paths override.
+declare module 'fino:abort';
+declare module 'fino:blob';
+declare module 'fino:console';
+declare module 'fino:context';
+declare module 'fino:crypto';
+declare module 'fino:dns';
+declare module 'fino:encoding';
+declare module 'fino:eventtarget';
+declare module 'fino:formdata';
+declare module 'fino:http';
+declare module 'fino:loop';
+declare module 'fino:path';
+declare module 'fino:process';
+declare module 'fino:socket';
+declare module 'fino:time';
+declare module 'fino:url';
+declare module 'fino:urlpattern';
+declare module 'fino:webstreams';
+
 declare global {
   interface ImportMeta {
     filename?: string;

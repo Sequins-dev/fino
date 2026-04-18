@@ -107,6 +107,8 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   #timeout: number;
   #nextCorrelation = 0;
   #closed = false;
+  #entry: string;
+  #baseRealm: Omit<RealmOptions, 'entry' | 'thread'>;
 
   /**
    * Create a pool of `size` warm thread-realm workers.
@@ -118,72 +120,87 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   constructor(opts: PoolOptions) {
     const size = opts.size ?? (navigator.hardwareConcurrency || 4);
     this.#timeout = opts.timeout ?? 30_000;
+    this.#entry = opts.entry;
+    this.#baseRealm = opts.realm ?? {};
 
-    const baseRealm: Omit<RealmOptions, 'entry' | 'thread'> = opts.realm ?? {};
+    this.#workers = Array.from({ length: size }, (_, i) => this.#spawnWorker(i));
+  }
 
-    this.#workers = Array.from({ length: size }, () => {
-      const realm = new Realm({ ...baseRealm, entry: opts.entry, thread: true });
+  #spawnWorker(slotIndex: number): PoolWorker {
+    const realm = new Realm({ ...this.#baseRealm, entry: this.#entry, thread: true });
 
-      const worker: PoolWorker = {
-        realm,
-        activeTasks: 0,
-        pending: new Map(),
-        submissionRate: 0,
-        completionRate: 0,
-        avgLatencyMs: 0,
-        lastSubmitTime: 0,
-        completedCount: 0,
+    const worker: PoolWorker = {
+      realm,
+      activeTasks: 0,
+      pending: new Map(),
+      submissionRate: 0,
+      completionRate: 0,
+      avgLatencyMs: 0,
+      lastSubmitTime: 0,
+      completedCount: 0,
+    };
+
+    // Wire up the response handler on the parent-side port.
+    realm.port.addEventListener('message', (ev) => {
+      const msg = (ev as MessageEvent).data as {
+        __pool_result?: boolean;
+        __pool_error?: boolean;
+        correlationId?: number;
+        result?: unknown;
+        message?: string;
+        stack?: string;
       };
 
-      // Wire up the response handler on the parent-side port.
-      realm.port.addEventListener('message', (ev) => {
-        const msg = (ev as MessageEvent).data as {
-          __pool_result?: boolean;
-          __pool_error?: boolean;
-          correlationId?: number;
-          result?: unknown;
-          message?: string;
-          stack?: string;
-        };
+      if (!msg || typeof msg !== 'object') return;
 
-        if (!msg || typeof msg !== 'object') return;
+      const { correlationId } = msg;
+      if (correlationId === undefined) return;
 
-        const { correlationId } = msg;
-        if (correlationId === undefined) return;
+      const call = worker.pending.get(correlationId);
+      if (!call) return;
 
-        const call = worker.pending.get(correlationId);
-        if (!call) return;
+      if (call.timer !== null) clearTimeout(call.timer);
+      worker.pending.delete(correlationId);
+      worker.activeTasks = Math.max(0, worker.activeTasks - 1);
 
-        if (call.timer !== null) clearTimeout(call.timer);
-        worker.pending.delete(correlationId);
-        worker.activeTasks = Math.max(0, worker.activeTasks - 1);
+      // Update completion rate / latency EMAs.
+      const latencyMs = performance.now() - call.submittedAt;
+      worker.avgLatencyMs = worker.completedCount === 0
+        ? latencyMs
+        : ema(worker.avgLatencyMs, latencyMs);
+      // Rate as tasks per ms (avoid div-by-zero).
+      if (latencyMs > 0) {
+        worker.completionRate = ema(worker.completionRate, 1 / latencyMs);
+      }
+      worker.completedCount++;
 
-        // Update completion rate / latency EMAs.
-        const latencyMs = performance.now() - call.submittedAt;
-        worker.avgLatencyMs = worker.completedCount === 0
-          ? latencyMs
-          : ema(worker.avgLatencyMs, latencyMs);
-        // Rate as tasks per ms (avoid div-by-zero).
-        if (latencyMs > 0) {
-          worker.completionRate = ema(worker.completionRate, 1 / latencyMs);
-        }
-        worker.completedCount++;
-
-        if (msg.__pool_result) {
-          call.resolve(msg.result);
-        } else if (msg.__pool_error) {
-          const err = new Error(msg.message ?? 'Pool worker error');
-          if (msg.stack !== undefined) err.stack = msg.stack;
-          call.reject(err);
-        }
-      });
-
-      realm.port.start();
-      // Register realm for stepping so the parent event loop ticks it.
-      realm.run().catch(() => {/* worker exited — already handled by pending rejections */});
-
-      return worker;
+      if (msg.__pool_result) {
+        call.resolve(msg.result);
+      } else if (msg.__pool_error) {
+        const err = new Error(msg.message ?? 'Pool worker error');
+        if (msg.stack !== undefined) err.stack = msg.stack;
+        call.reject(err);
+      }
     });
+
+    realm.port.start();
+    // Register realm for stepping so the parent event loop ticks it.
+    realm.run().catch((crashErr: unknown) => {
+      // Worker crashed — reject all pending calls for this slot.
+      for (const call of worker.pending.values()) {
+        if (call.timer !== null) clearTimeout(call.timer);
+        call.reject(crashErr instanceof Error ? crashErr : new Error(String(crashErr)));
+      }
+      worker.pending.clear();
+      worker.activeTasks = 0;
+
+      // Respawn a replacement unless the pool is closed.
+      if (!this.#closed) {
+        this.#workers[slotIndex] = this.#spawnWorker(slotIndex);
+      }
+    });
+
+    return worker;
   }
 
   // ---------------------------------------------------------------------------

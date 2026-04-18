@@ -191,11 +191,24 @@ const _activeChildren: ActiveChild[] = [];
 export function _stepChildren(): void {
   for (let i = _activeChildren.length - 1; i >= 0; i--) {
     const child = _activeChildren[i]!;
-    const alive = child.thread
-      ? (stepThreadContext(child.handle) as boolean)
-      : (stepContext(child.handle) as boolean);
+    let alive: boolean;
+    let stepError: unknown = undefined;
+    if (child.thread) {
+      try {
+        alive = stepThreadContext(child.handle) as boolean;
+      } catch (err) {
+        alive = false;
+        stepError = err;
+      }
+    } else {
+      alive = stepContext(child.handle) as boolean;
+    }
     if (!alive) {
-      child.resolve();
+      if (stepError !== undefined) {
+        child.reject(stepError);
+      } else {
+        child.resolve();
+      }
       _activeChildren.splice(i, 1);
     }
   }
@@ -353,6 +366,10 @@ export class Realm<F extends RealmFn = RealmFn> {
   terminate(): void {
     if (this.#thread) {
       this.port.postMessage({ __terminate: true });
+      // Close the parent-side port so its wake-pipe readable() watcher is
+      // removed from the event loop — otherwise alive() stays true after
+      // the thread exits and the process never exits cleanly.
+      this.port.close();
     } else {
       terminateChild(this.#handle);
     }

@@ -14,6 +14,28 @@ use crate::{loader, realm, state::FinoState};
 
 static V8_INIT: OnceLock<()> = OnceLock::new();
 
+/// Newtype wrapper so `SharedPtr<Allocator>` can be stored in a global.
+///
+/// The V8 default allocator is thread-safe (malloc/free under the hood) and
+/// is designed to be shared across Isolates for SharedArrayBuffer support.
+struct SharedAllocator(v8::SharedPtr<v8::Allocator>);
+unsafe impl Send for SharedAllocator {}
+unsafe impl Sync for SharedAllocator {}
+
+static SHARED_ALLOCATOR: OnceLock<SharedAllocator> = OnceLock::new();
+
+/// Return a clone of the global shared allocator.
+///
+/// Both the main Isolate and every thread Isolate use the same allocator so
+/// that SharedArrayBuffer backing stores are accessible across Isolates.
+pub(crate) fn shared_allocator() -> v8::SharedPtr<v8::Allocator> {
+    SHARED_ALLOCATOR
+        .get()
+        .expect("shared_allocator() called before init_v8()")
+        .0
+        .clone()
+}
+
 pub(crate) fn init_v8() {
     V8_INIT.get_or_init(|| {
         let mut flags = "--turbo_fast_api_calls".to_string();
@@ -25,6 +47,10 @@ pub(crate) fn init_v8() {
         v8::V8::initialize_platform(platform);
         v8::V8::initialize();
     });
+    // Initialize the shared allocator once V8 is up.  Multiple calls are safe.
+    SHARED_ALLOCATOR.get_or_init(|| {
+        SharedAllocator(v8::new_default_allocator().into())
+    });
 }
 
 pub fn run(root: &Path) -> Result<(), String> {
@@ -32,9 +58,12 @@ pub fn run(root: &Path) -> Result<(), String> {
 
     let mut params = v8::CreateParams::default();
     params = params.heap_limits(0, 1 << 30);
+    params = params.array_buffer_allocator(shared_allocator());
 
     let isolate = &mut v8::Isolate::new(params);
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+    // Atomics.wait() blocks the thread — not safe on the main event-loop thread.
+    isolate.set_allow_atomics_wait(false);
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 

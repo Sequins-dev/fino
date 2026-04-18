@@ -228,10 +228,10 @@ pub struct FinoState {
     // `allow(dead_code)`: used by Phase 3 native send/recv functions.
     #[allow(dead_code)]
     /// Receives serialized messages sent from the partner Isolate.
-    pub channel_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    pub channel_rx: Option<std::sync::mpsc::Receiver<crate::thread_realm::ThreadMessage>>,
     #[allow(dead_code)]
     /// Sends serialized messages to the partner Isolate.
-    pub channel_tx: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    pub channel_tx: Option<std::sync::mpsc::Sender<crate::thread_realm::ThreadMessage>>,
     #[allow(dead_code)]
     /// Own wake-pipe read end — registered with the event loop; readable when
     /// the partner has deposited a message in `channel_rx`.

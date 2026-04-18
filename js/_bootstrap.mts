@@ -71,6 +71,7 @@ import {
   MessageChannel,
   ThreadPort,
   _flushPorts,
+  BroadcastChannel,
 } from './internal/globals/global.mts';
 import { getWakeReadFd } from 'internal:thread-port';
 
@@ -138,6 +139,7 @@ Object.assign(globalThis, {
   MessagePort,
   MessageChannel,
   ThreadPort,
+  BroadcastChannel,
   setTimeout,
   clearTimeout,
   setInterval,
@@ -246,6 +248,10 @@ const _childPort: MessagePort | ThreadPort | undefined =
   _threadWakeReadFd >= 0
     ? new ThreadPort(_threadWakeReadFd)
     : (getPort() as MessagePort | undefined);
+
+// Expose the child port as `realmPort` on globalThis so entry modules can
+// add their own message listeners (e.g. for port-transfer fixtures).
+(globalThis as Record<string, unknown>).realmPort = _childPort;
 
 if (_childEntry !== undefined) {
   let _childDone = false;

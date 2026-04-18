@@ -27,7 +27,7 @@ use std::{
     os::unix::io::RawFd,
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc},
+    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc},
 };
 
 use ::v8;
@@ -37,7 +37,28 @@ use crate::{
     state::{FinoState, ProviderConfig, get_state, root_queue_ptr},
 };
 
-pub type MessageBytes = Vec<u8>;
+/// Info shipped alongside a message for each transferred MessagePort.
+///
+/// The receiver uses `handle` to look up the Q-half transit channel and
+/// `wake_read_fd` to register with the event loop via `loop.readable()`.
+#[derive(Debug)]
+pub struct TransferredPortInfo {
+    pub handle: u32,
+    pub wake_read_fd: i32,
+}
+
+/// A message transmitted across thread-realm boundaries.
+///
+/// `data` is the V8 ValueSerializer wire format for the message value.
+/// `transfer_stores` holds raw bytes for each transferred ArrayBuffer.
+/// `transfer_ports` carries transit channel info for each transferred
+/// MessagePort so the receiver can reconstruct a live cross-thread port.
+#[derive(Debug)]
+pub struct ThreadMessage {
+    pub data: Vec<u8>,
+    pub transfer_stores: Vec<Vec<u8>>,
+    pub transfer_ports: Vec<TransferredPortInfo>,
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -58,17 +79,19 @@ pub struct SpawnConfig {
 /// messages.
 pub struct ThreadRealmHandle {
     /// Send serialized messages to the child.
-    pub tx: mpsc::Sender<MessageBytes>,
+    pub tx: mpsc::Sender<ThreadMessage>,
     /// Write to wake the child after sending (1 byte is sufficient).
     pub child_wake_write: RawFd,
     /// Receive serialized messages from the child.
-    pub rx: mpsc::Receiver<MessageBytes>,
+    pub rx: mpsc::Receiver<ThreadMessage>,
     /// Register with the parent's kqueue/io_uring to detect child messages.
     pub parent_wake_read: RawFd,
-    /// Set to `true` by the child thread just before it exits.
+    /// Set to `true` by the child thread just before it exits (including panics).
     pub done: Arc<AtomicBool>,
+    /// Error message if the thread exited due to an error or panic. `None` = clean exit.
+    pub error: Arc<Mutex<Option<String>>>,
     /// Thread join handle — resolves when the child loop exits.
-    pub join: std::thread::JoinHandle<Result<(), String>>,
+    pub join: std::thread::JoinHandle<()>,
 }
 
 impl Drop for ThreadRealmHandle {
@@ -95,9 +118,9 @@ struct IsolateConfig {
     providers: HashMap<String, Option<ProviderConfig>>,
     package_map_json: Option<String>,
     /// Receives messages sent from the parent.
-    channel_rx: mpsc::Receiver<MessageBytes>,
+    channel_rx: mpsc::Receiver<ThreadMessage>,
     /// Sends messages to the parent.
-    channel_tx: mpsc::Sender<MessageBytes>,
+    channel_tx: mpsc::Sender<ThreadMessage>,
     /// Own wake-pipe read end — register with child event loop.
     wake_read_fd: RawFd,
     /// Parent's wake-pipe write end — write here after each send.
@@ -148,14 +171,16 @@ fn create_pipe() -> Result<(RawFd, RawFd), String> {
 /// wake pipes (one per direction), then launches `run_thread_isolate` on a
 /// new OS thread.
 pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, String> {
-    let (parent_tx, child_rx) = mpsc::channel::<MessageBytes>();
-    let (child_tx, parent_rx) = mpsc::channel::<MessageBytes>();
+    let (parent_tx, child_rx) = mpsc::channel::<ThreadMessage>();
+    let (child_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
 
     let (child_wake_read, child_wake_write) = create_pipe()?;
     let (parent_wake_read, parent_wake_write) = create_pipe()?;
 
     let done_flag = Arc::new(AtomicBool::new(false));
     let done_for_thread = done_flag.clone();
+    let error_flag: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let error_for_thread = error_flag.clone();
 
     let iso_config = IsolateConfig {
         root: config.root,
@@ -169,9 +194,26 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
     };
 
     let join = std::thread::spawn(move || {
-        let result = run_thread_isolate(iso_config);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run_thread_isolate(iso_config)
+        }));
+        // Always set done so the parent's polling loop exits.
         done_for_thread.store(true, Ordering::Release);
-        result
+        let msg = match result {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e),
+            Err(payload) => {
+                let desc = payload
+                    .downcast_ref::<String>()
+                    .map(|s| s.clone())
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_else(|| "thread realm panicked".to_string());
+                Some(format!("thread realm panicked: {desc}"))
+            }
+        };
+        if let Some(msg) = msg {
+            *error_for_thread.lock().unwrap() = Some(msg);
+        }
     });
 
     Ok(ThreadRealmHandle {
@@ -180,6 +222,7 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
         rx: parent_rx,
         parent_wake_read,
         done: done_flag,
+        error: error_flag,
         join,
     })
 }
@@ -203,9 +246,14 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
 
     let mut params = v8::CreateParams::default();
     params = params.heap_limits(0, 1 << 30);
+    // Share the same allocator as the main Isolate so SAB backing stores are
+    // accessible across both Isolates.
+    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
 
     let isolate = &mut v8::Isolate::new(params);
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
+    // Thread realms run on their own OS thread — Atomics.wait() is safe here.
+    isolate.set_allow_atomics_wait(true);
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 
@@ -476,10 +524,10 @@ fn thread_port_eval_steps<'a>(
     Some(v8::undefined(scope).into())
 }
 
-/// JS: `nativeSend(bytes: Uint8Array): void`
+/// JS: `nativeSend(bytes: Uint8Array, stores?: Uint8Array[], ports?: [handle,wakeReadFd][]): void`
 ///
-/// Sends the byte payload to the partner Isolate via mpsc and writes 1 byte
-/// to the partner's wake pipe to unblock its event-loop wait.
+/// Sends the byte payload (and optional transfer stores + port transfer infos)
+/// to the partner Isolate via mpsc and writes 1 byte to the partner's wake pipe.
 fn native_send(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
@@ -487,20 +535,16 @@ fn native_send(
 ) {
     let bytes_arg = args.get(0);
     let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
-        let msg = v8::String::new(scope, "nativeSend: argument must be a Uint8Array").unwrap();
+        let msg = v8::String::new(scope, "nativeSend: first argument must be a Uint8Array").unwrap();
         let exc = v8::Exception::type_error(scope, msg);
         scope.throw_exception(exc);
         return;
     };
 
-    // Copy bytes out of the V8 ArrayBuffer before releasing the scope borrow.
-    let bytes: Vec<u8> = {
-        let Some(ab) = u8a.buffer(scope) else {
-            return; // detached — silently drop
-        };
-        let Some(data_ptr) = ab.data() else {
-            return;
-        };
+    // Copy main bytes.
+    let data: Vec<u8> = {
+        let Some(ab) = u8a.buffer(scope) else { return };
+        let Some(data_ptr) = ab.data() else { return };
         let offset = u8a.byte_offset();
         let len = u8a.byte_length();
         // SAFETY: data_ptr points into a live V8 ArrayBuffer owned for this scope.
@@ -508,6 +552,41 @@ fn native_send(
             std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len).to_vec()
         }
     };
+
+    // Copy transfer stores (optional second arg — Array of Uint8Array).
+    let transfer_stores: Vec<Vec<u8>> =
+        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(1)) {
+            let count = arr.length();
+            let mut stores = Vec::with_capacity(count as usize);
+            for i in 0..count {
+                let idx = v8::Integer::new(scope, i as i32);
+                if let Some(elem) = arr.get(scope, idx.into())
+                    && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
+                {
+                    let Some(sab) = su8a.buffer(scope) else { continue };
+                    let Some(sptr) = sab.data() else { continue };
+                    let soff = su8a.byte_offset();
+                    let slen = su8a.byte_length();
+                    // SAFETY: same as above.
+                    let raw = unsafe {
+                        std::slice::from_raw_parts(
+                            (sptr.as_ptr() as *const u8).add(soff),
+                            slen,
+                        )
+                        .to_vec()
+                    };
+                    stores.push(raw);
+                }
+            }
+            stores
+        } else {
+            Vec::new()
+        };
+
+    // Port transfer infos (optional third arg — Array of [handle, wakeReadFd]).
+    let transfer_ports = extract_port_infos(scope, args.get(2));
+
+    let msg = ThreadMessage { data, transfer_stores, transfer_ports };
 
     // Extract tx and wake_write_fd without holding the borrow during send.
     let state_rc = get_state(scope);
@@ -517,7 +596,7 @@ fn native_send(
     };
 
     if let (Some(tx), Some(wake_write)) = (maybe_tx, maybe_wake_write) {
-        let _ = tx.send(bytes);
+        let _ = tx.send(msg);
         // Write a single byte to the partner's wake pipe to unblock its wait.
         let byte: [u8; 1] = [1];
         // SAFETY: wake_write is a valid open fd owned by this runtime.
@@ -525,10 +604,11 @@ fn native_send(
     }
 }
 
-/// JS: `nativeRecv(): Uint8Array[]`
+/// JS: `nativeRecv(): [Uint8Array, ...Uint8Array[]][]`
 ///
 /// Non-blocking drain of `channel_rx`. Returns all currently buffered messages
-/// as an Array of Uint8Array values. Also drains any wake bytes from the read
+/// as a JS Array of inner Arrays. Each inner Array has the main bytes at `[0]`
+/// and transfer-store bytes at `[1..]`. Also drains wake bytes from the read
 /// pipe so the next `loop.readable()` arms cleanly.
 fn native_recv(
     scope: &mut v8::HandleScope,
@@ -539,7 +619,7 @@ fn native_recv(
     let (messages, maybe_wake_read) = {
         let state_rc = get_state(scope);
         let st = state_rc.borrow();
-        let msgs: Vec<Vec<u8>> = if let Some(rx) = st.channel_rx.as_ref() {
+        let msgs: Vec<ThreadMessage> = if let Some(rx) = st.channel_rx.as_ref() {
             let mut v = Vec::new();
             while let Ok(msg) = rx.try_recv() {
                 v.push(msg);
@@ -559,25 +639,7 @@ fn native_recv(
         unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
     }
 
-    // Build V8 Array of Uint8Array.
-    let arr = v8::Array::new(scope, messages.len() as i32);
-    for (i, bytes) in messages.into_iter().enumerate() {
-        let len = bytes.len();
-        let store = {
-            let bs = v8::ArrayBuffer::new_backing_store(scope, len);
-            let store_data = bs.data().unwrap().as_ptr() as *mut u8;
-            // SAFETY: backing store freshly allocated; we own the only reference.
-            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), store_data, len) };
-            bs.make_shared()
-        };
-        let ab = v8::ArrayBuffer::with_backing_store(scope, &store);
-        if let Some(u8a) = v8::Uint8Array::new(scope, ab, 0, len) {
-            let idx = v8::Integer::new(scope, i as i32);
-            arr.set(scope, idx.into(), u8a.into());
-        }
-    }
-
-    rv.set(arr.into());
+    rv.set(crate::transit::build_message_array(scope, messages).into());
 }
 
 /// JS: `getWakeReadFd(): number`
@@ -598,6 +660,31 @@ fn native_get_wake_read_fd(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Extract `[[handle: number, wakeReadFd: number], ...]` from a JS value.
+pub(crate) fn extract_port_infos(
+    scope: &mut v8::HandleScope,
+    val: v8::Local<v8::Value>,
+) -> Vec<TransferredPortInfo> {
+    let Ok(arr) = v8::Local::<v8::Array>::try_from(val) else {
+        return Vec::new();
+    };
+    let count = arr.length();
+    let mut infos = Vec::with_capacity(count as usize);
+    for i in 0..count {
+        let idx = v8::Integer::new(scope, i as i32);
+        let Some(elem) = arr.get(scope, idx.into()) else { continue };
+        let Ok(pair) = v8::Local::<v8::Array>::try_from(elem) else { continue };
+        let zero = v8::Integer::new(scope, 0);
+        let one  = v8::Integer::new(scope, 1);
+        let Some(h_val)  = pair.get(scope, zero.into()) else { continue };
+        let Some(fd_val) = pair.get(scope, one.into())  else { continue };
+        let handle       = h_val.integer_value(scope).unwrap_or(-1) as u32;
+        let wake_read_fd = fd_val.integer_value(scope).unwrap_or(-1) as i32;
+        infos.push(TransferredPortInfo { handle, wake_read_fd });
+    }
+    infos
+}
+
 fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
     let platform = v8::V8::get_current_platform();
     while v8::Platform::pump_message_loop(&platform, scope, false) {}
@@ -617,4 +704,86 @@ fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
             .and_then(|stack| stack.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
             .or_else(|| exc.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that `done` is set and `error` is populated even when the thread
+    /// body panics — i.e. that `catch_unwind` properly contains the panic.
+    #[test]
+    fn catch_unwind_sets_done_and_error_on_panic() {
+        let done = Arc::new(AtomicBool::new(false));
+        let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let done_clone = done.clone();
+        let error_clone = error.clone();
+
+        let handle = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                panic!("deliberate test panic");
+            }));
+            done_clone.store(true, Ordering::Release);
+            let msg = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(payload) => {
+                    let desc = payload
+                        .downcast_ref::<String>()
+                        .map(|s| s.clone())
+                        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "panicked".to_string());
+                    Some(format!("thread realm panicked: {desc}"))
+                }
+            };
+            if let Some(msg) = msg {
+                *error_clone.lock().unwrap() = Some(msg);
+            }
+        });
+        handle.join().unwrap();
+
+        assert!(
+            done.load(Ordering::Acquire),
+            "done flag must be set even after a panic"
+        );
+        let err = error.lock().unwrap();
+        assert!(err.is_some(), "error should be populated after a panic");
+        assert!(
+            err.as_ref().unwrap().contains("deliberate test panic"),
+            "error message should contain the panic description"
+        );
+    }
+
+    /// Verify that a clean return also sets done but leaves error as None.
+    #[test]
+    fn catch_unwind_clean_exit_no_error() {
+        let done = Arc::new(AtomicBool::new(false));
+        let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        let done_clone = done.clone();
+        let error_clone = error.clone();
+
+        let handle = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Ok::<(), String>(())
+            }));
+            done_clone.store(true, Ordering::Release);
+            let msg: Option<String> = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(e)) => Some(e),
+                Err(_) => Some("panicked".to_string()),
+            };
+            if let Some(msg) = msg {
+                *error_clone.lock().unwrap() = Some(msg);
+            }
+        });
+        handle.join().unwrap();
+
+        assert!(done.load(Ordering::Acquire), "done flag must be set on clean exit");
+        assert!(
+            error.lock().unwrap().is_none(),
+            "error should be None on clean exit"
+        );
+    }
 }

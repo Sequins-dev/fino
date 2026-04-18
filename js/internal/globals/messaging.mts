@@ -11,6 +11,12 @@
  * via V8 ValueSerializer (internal:serializer) + Rust mpsc channels
  * (internal:thread-port). The wake-pipe read fd is registered with
  * loop.readable() so the event loop wakes when the partner sends a message.
+ *
+ * MessagePort transfer: a MessagePort can be transferred via postMessage. For
+ * same-Isolate transfers the partner is captured in the queue item and a fresh
+ * port is re-entangled on delivery. For cross-Isolate transfers a transit
+ * channel is created (internal:transit-port) and the partner port is upgraded
+ * in-place to use cross-thread messaging.
  */
 
 import { Event, EventTarget } from './eventtarget.mts';
@@ -18,6 +24,7 @@ import { structuredClone } from './encoding.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
 import { threadPortSend, threadPortRecv } from 'internal:realm-native';
+import { createTransitChannel, transitSend, transitRecv } from 'internal:transit-port';
 import { readable, removeRead } from 'fino:runtime/loop';
 
 // ---------------------------------------------------------------------------
@@ -62,34 +69,150 @@ export class MessageEvent extends Event {
 // Module-level set of ports that have been start()ed and are awaiting drain.
 const _activePorts = new Set<MessagePort>();
 
+// Counter used to assign unique IDs to ports (for same-Isolate transfer).
+let _nextPortId = 0;
+
+interface QueueItem {
+  data: any;
+  /** Ports captured during same-Isolate transfer — re-entangled on delivery. */
+  transferredPortPartners?: MessagePort[];
+}
+
 export class MessagePort extends EventTarget {
   #partner: MessagePort | null = null;
-  #queue: { data: any }[] = [];
+  #queue: QueueItem[] = [];
   #started = false;
   #closed  = false;
+  #neutered = false;
   #onmessage: ((ev: MessageEvent) => void) | null = null;
   #onmessageerror: ((ev: MessageEvent) => void) | null = null;
+
+  // Transit mode: set when this port is created from a cross-thread transit
+  // half, or when its partner was transferred cross-Isolate (upgrade).
+  #transitHandle: number | null = null;
+  #transitWakeReadFd: number = -1;
 
   /** @internal — called by MessageChannel constructor */
   _entangle(partner: MessagePort): void {
     this.#partner = partner;
   }
 
+  /** @internal — called when the partner is neutered during transfer */
+  _disentangle(): void {
+    this.#partner = null;
+  }
+
+  /**
+   * Upgrade this port from intra-Isolate to cross-thread mode after its
+   * partner has been transferred to another Isolate.
+   *
+   * @internal
+   * @param handle — transit half handle for this (P2) side
+   * @param wakeReadFd — fd to watch for incoming messages from Q
+   */
+  _upgradeToTransit(handle: number, wakeReadFd: number): void {
+    this.#partner = null;
+    this.#transitHandle = handle;
+    this.#transitWakeReadFd = wakeReadFd;
+    if (this.#started) {
+      this.#startTransitWatch();
+    }
+  }
+
+  /**
+   * Neuter this port and upgrade its partner (P2) to cross-thread transit
+   * mode in preparation for cross-Isolate transfer.
+   *
+   * Called by ThreadPort.postMessage when this port is in the transfer list.
+   *
+   * @internal
+   * @param p2Handle — transit half handle for the partner (P2) side
+   * @param p2WakeReadFd — fd the partner will watch for incoming messages
+   */
+  _transferCrossThread(p2Handle: number, p2WakeReadFd: number): void {
+    if (this.#neutered || this.#closed) return;
+    const partner = this.#partner;
+    this.#neutered = true;
+    _activePorts.delete(this);
+    this.#partner = null;
+    partner?._upgradeToTransit(p2Handle, p2WakeReadFd);
+  }
+
+  /**
+   * Create a new MessagePort in transit mode (Q side after cross-Isolate
+   * port transfer).
+   *
+   * @internal
+   */
+  static _fromTransit(handle: number, wakeReadFd: number): MessagePort {
+    const p = new MessagePort();
+    p.#transitHandle = handle;
+    p.#transitWakeReadFd = wakeReadFd;
+    return p;
+  }
+
   postMessage(message: any, transfer?: Transferable[]): void;
   postMessage(message: any, options?: StructuredSerializeOptions): void;
   postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this.#closed || !this.#partner) return;
-    const transfer = Array.isArray(transferOrOpts)
+    if (this.#closed || this.#neutered) return;
+
+    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
       ? (transferOrOpts as Transferable[])
       : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const cloned = structuredClone(message, transfer ? { transfer } : undefined);
-    this.#partner.#queue.push({ data: cloned });
+
+    // --- Transit mode: serialize and send cross-thread ---
+    if (this.#transitHandle !== null) {
+      const transferABs = rawTransfer
+        ? (rawTransfer.filter((t) => t instanceof ArrayBuffer) as ArrayBuffer[])
+        : [];
+      const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+        message,
+        transferABs.length > 0 ? transferABs : undefined,
+      );
+      const data = serResult[0];
+      const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
+      (transitSend as (h: number, b: Uint8Array, s: Uint8Array[]) => void)(
+        this.#transitHandle, data, stores,
+      );
+      return;
+    }
+
+    // --- Intra-Isolate mode ---
+    if (!this.#partner) return;
+
+    // Separate out any MessagePort instances from the transfer list.
+    const portPartners: MessagePort[] = [];
+    const abTransfer: Transferable[] = [];
+    if (rawTransfer) {
+      for (const item of rawTransfer) {
+        if (item instanceof MessagePort) {
+          if (item.#neutered || item.#closed) continue;
+          const partner = item.#partner;
+          item.#neutered = true;
+          _activePorts.delete(item);
+          item.#partner?._disentangle();
+          item.#partner = null;
+          if (partner !== null) portPartners.push(partner);
+        } else {
+          abTransfer.push(item);
+        }
+      }
+    }
+
+    const cloned = structuredClone(message, abTransfer.length > 0 ? { transfer: abTransfer } : undefined);
+    const item: QueueItem = { data: cloned };
+    if (portPartners.length > 0) item.transferredPortPartners = portPartners;
+    this.#partner.#queue.push(item);
   }
 
   start(): void {
     if (this.#started) return;
     this.#started = true;
-    _activePorts.add(this);
+    if (this.#transitHandle !== null) {
+      this.#startTransitWatch();
+    } else {
+      _activePorts.add(this);
+    }
   }
 
   close(): void {
@@ -97,6 +220,11 @@ export class MessagePort extends EventTarget {
     this.#started = false;
     _activePorts.delete(this);
     this.#partner = null;
+    if (this.#transitWakeReadFd >= 0) {
+      removeRead(this.#transitWakeReadFd);
+    }
+    this.#transitHandle = null;
+    this.#transitWakeReadFd = -1;
   }
 
   get onmessage() { return this.#onmessage; }
@@ -124,13 +252,59 @@ export class MessagePort extends EventTarget {
     }
   }
 
-  /** @internal — called by _flushPorts */
+  /** @internal — called by _flushPorts for intra-Isolate ports */
   _drain(): void {
     if (!this.#started) return;
+    if (this.#transitHandle !== null) return; // handled by #watchTransit
     const pending = this.#queue.splice(0);
-    for (const msg of pending) {
-      this.dispatchEvent(new MessageEvent('message', { data: msg.data }));
+    for (const item of pending) {
+      const ports = this.#reconstructTransferredPorts(item.transferredPortPartners);
+      this.dispatchEvent(new MessageEvent('message', { data: item.data, ports }));
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private helpers
+  // ---------------------------------------------------------------------------
+
+  /** Re-entangle each captured partner with a fresh port for the recipient. */
+  #reconstructTransferredPorts(partners?: MessagePort[]): MessagePort[] {
+    if (!partners || partners.length === 0) return [];
+    return partners.map((partner) => {
+      const fresh = new MessagePort();
+      fresh._entangle(partner);
+      partner._entangle(fresh);
+      return fresh;
+    });
+  }
+
+  /** Start the transit watch loop and drain incoming messages from it. */
+  #startTransitWatch(): void {
+    const fd = this.#transitWakeReadFd;
+    const handle = this.#transitHandle!;
+    const self = this;
+    (async () => {
+      while (!self.#closed && self.#transitHandle !== null) {
+        await readable(fd);
+        if (self.#closed || self.#transitHandle === null) break;
+        const msgs = (transitRecv as (h: number) => [[Uint8Array[], [number, number][]]]) (handle) as unknown as [[Uint8Array[], [number, number][]]];
+        for (const [byteArr, portArr] of (msgs as any[])) {
+          try {
+            const [buf, ...stores] = byteArr as Uint8Array[];
+            const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+              buf,
+              stores.length > 0 ? stores : undefined,
+            );
+            const ports = (portArr as [number, number][]).map(
+              ([h, wfd]) => MessagePort._fromTransit(h, wfd),
+            );
+            self.dispatchEvent(new MessageEvent('message', { data: value, ports }));
+          } catch (err) {
+            self.dispatchEvent(new MessageEvent('messageerror', { data: err }));
+          }
+        }
+      }
+    })();
   }
 }
 
@@ -189,15 +363,47 @@ export class ThreadPort extends EventTarget {
     this.#handle = handle ?? null;
   }
 
-  postMessage(message: any, _transfer?: Transferable[] | StructuredSerializeOptions): void {
+  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
     if (this.#closed) return;
-    const bytes = serialize(message);
+    // Extract ArrayBuffer elements from the transfer list.
+    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
+      ? (transferOrOpts as Transferable[])
+      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
+
+    const transferABs: ArrayBuffer[] = [];
+    const portInfos: [number, number][] = []; // [qHandle, qWakeReadFd]
+
+    if (rawTransfer) {
+      for (const item of rawTransfer) {
+        if (item instanceof ArrayBuffer) {
+          transferABs.push(item);
+        } else if (item instanceof MessagePort) {
+          // Cross-Isolate port transfer: create a transit channel pair, upgrade
+          // the partner port (P2) to use the P2-half, and ship the Q-half info.
+          const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } =
+            (createTransitChannel as () => { p2Handle: number; p2WakeReadFd: number; qHandle: number; qWakeReadFd: number })();
+          item._transferCrossThread(p2Handle, p2WakeReadFd);
+          portInfos.push([qHandle, qWakeReadFd]);
+        }
+      }
+    }
+
+    // serialize() returns [mainBytes, store0, store1, ...].
+    const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+      message,
+      transferABs.length > 0 ? transferABs : undefined,
+    );
+    const data = serResult[0];
+    const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
+
     if (this.#handle !== null) {
       // Parent side: route through handle-indexed send.
-      (threadPortSend as (h: number, b: Uint8Array) => void)(this.#handle, bytes);
+      (threadPortSend as (h: number, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
+        this.#handle, data, stores, portInfos,
+      );
     } else {
       // Child side: send via FinoState channel.
-      nativeSend(bytes);
+      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(data, stores, portInfos);
     }
   }
 
@@ -248,13 +454,22 @@ export class ThreadPort extends EventTarget {
 
   /** @internal — drain the mpsc channel and dispatch all buffered messages */
   _drain(): void {
-    const buffers: Uint8Array[] = this.#handle !== null
-      ? (threadPortRecv as (h: number) => Uint8Array[])(this.#handle)
-      : (nativeRecv() as Uint8Array[]);
-    for (const buf of buffers) {
+    // Each message is [[Uint8Array[], [handle, wakeReadFd][]], ...].
+    const messages = (this.#handle !== null
+      ? (threadPortRecv as (h: number) => unknown)(this.#handle)
+      : (nativeRecv as () => unknown)()) as [[Uint8Array[], [number, number][]]];
+
+    for (const [byteArr, portArr] of (messages as any[])) {
       try {
-        const value = deserialize(buf);
-        this.dispatchEvent(new MessageEvent('message', { data: value }));
+        const [buf, ...stores] = byteArr as Uint8Array[];
+        const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+          buf,
+          stores.length > 0 ? stores : undefined,
+        );
+        const ports = (portArr as [number, number][]).map(
+          ([h, wfd]) => MessagePort._fromTransit(h, wfd),
+        );
+        this.dispatchEvent(new MessageEvent('message', { data: value, ports }));
       } catch (err) {
         this.dispatchEvent(new MessageEvent('messageerror', { data: err }));
       }

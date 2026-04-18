@@ -18,6 +18,7 @@
       "fino:realm": ["./js/runtime/realm.mts"],
       "fino:runtime/*": ["./js/runtime/*.mts"],
       "fino:semver": ["./js/semver.mts"],
+      "fino:bench": ["./js/test/bench.mts"],
       "fino:test/*": ["./js/test/*.mts"],
       "fino:tty": ["./js/tty.mts"],
       "fino:util/*": ["./js/util/*.mts"],

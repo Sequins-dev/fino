@@ -7,7 +7,8 @@ use ::v8;
 use oxc_sourcemap::SourceMap;
 
 use crate::{
-    async_context, docgen, ffi, platform, profiler, realm, serializer, thread_realm,
+    async_context, broadcast, docgen, ffi, platform, profiler, realm, serializer, thread_realm,
+    transit,
     state::get_state,
 };
 
@@ -58,6 +59,10 @@ macro_rules! source_builtin {
 
 static BUILTINS: &[BuiltinEntry] = &[
     // Synthetic Rust modules
+    (
+        "internal:broadcast",
+        BuiltinKind::Synthetic(broadcast::create_module),
+    ),
     ("fino:ffi", BuiltinKind::Synthetic(ffi::create_module)),
     (
         "internal:serializer",
@@ -66,6 +71,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     (
         "internal:thread-port",
         BuiltinKind::Synthetic(thread_realm::create_thread_port_module),
+    ),
+    (
+        "internal:transit-port",
+        BuiltinKind::Synthetic(transit::create_module),
     ),
     (
         "internal:realm-bridge",
@@ -129,6 +138,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!(
         "internal:globals/compression-streams",
         "internal/globals/compression-streams"
+    ),
+    source_builtin!(
+        "internal:globals/broadcast-channel",
+        "internal/globals/broadcast-channel"
     ),
     source_builtin!("internal:globals/global", "internal/globals/global"),
     // internal: stream and openssl
@@ -268,6 +281,7 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
         "internal:globals/time" => Some("internal/globals/time"),
         "internal:globals/fetch" => Some("internal/globals/fetch"),
         "internal:globals/compression-streams" => Some("internal/globals/compression-streams"),
+        "internal:globals/broadcast-channel" => Some("internal/globals/broadcast-channel"),
         "internal:globals/global" => Some("internal/globals/global"),
         "internal:stream" => Some("internal/stream"),
         "internal:openssl" => Some("internal/openssl"),
