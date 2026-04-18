@@ -12,7 +12,7 @@ use libffi::middle::{Arg, Ret, arg};
 use smallvec::SmallVec;
 
 use super::pointer;
-use crate::library::FfiSymbol;
+use super::library::FfiSymbol;
 use crate::types::{NativeType, NativeValue};
 
 pub struct CallScratch {

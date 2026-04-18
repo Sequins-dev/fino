@@ -2,7 +2,6 @@ mod async_context;
 mod broadcast;
 mod docgen;
 mod ffi;
-mod library;
 mod loader;
 mod platform;
 mod profiler;

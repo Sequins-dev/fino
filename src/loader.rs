@@ -544,6 +544,7 @@ pub fn resolve_module_callback<'s>(
     let scope = &mut unsafe { v8::CallbackScope::new(context) };
     let raw_spec = specifier.to_rust_string_lossy(scope);
 
+    // Resolve builtin-relative specifiers (e.g. './loop.mts' from a builtin).
     let state_rc = get_state(scope);
     let builtin_referrer = referrer
         .script_id()
@@ -573,80 +574,15 @@ pub fn resolve_module_callback<'s>(
             None => true,
             Some(id) => state_rc.borrow().builtin_script_ids.contains(&id),
         };
-
-        // Enforce internal:* restriction.
-        if spec.starts_with("internal:") && !referrer_is_builtin {
-            let msg = v8::String::new(
-                scope,
-                &format!("Cannot import internal module '{spec}' from user code"),
-            )?;
-            let exc = v8::Exception::error(scope, msg);
-            scope.throw_exception(exc);
-            return None;
-        }
-
-        // Enforce per-Realm blocked providers for user code.
-        if !referrer_is_builtin {
-            let is_blocked = state_rc
-                .borrow()
-                .providers
-                .get(spec.as_str())
-                .is_some_and(|v| v.is_none());
-            if is_blocked {
-                let msg = v8::String::new(
-                    scope,
-                    &format!("Import of '{spec}' is blocked in this Realm"),
-                )?;
-                let exc = v8::Exception::error(scope, msg);
-                scope.throw_exception(exc);
-                return None;
-            }
-        }
-
+        check_builtin_access(scope, &spec, referrer_is_builtin).ok()?;
         return get_or_load_builtin(scope, &spec);
     }
 
-    // Filesystem module.
-    let path = {
-        let (referrer_dir, resolve_fn, root) = {
-            let st = state_rc.borrow();
-            let referrer_dir = referrer
-                .script_id()
-                .and_then(|id| st.module_paths.get(&id))
-                .and_then(|p| p.parent())
-                .map(|p| p.to_path_buf());
-            let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(scope, f));
-            let root = st.root.clone();
-            (referrer_dir, resolve_fn, root)
-        };
-
-        if let Some(func) = resolve_fn {
-            let dir_val: v8::Local<v8::Value> = referrer_dir
-                .as_deref()
-                .and_then(|d| v8::String::new(scope, &d.to_string_lossy()))
-                .map(|s| s.into())
-                .unwrap_or_else(|| v8::null(scope).into());
-            let root_val: v8::Local<v8::Value> =
-                v8::String::new(scope, &root.to_string_lossy())?.into();
-            let spec_val: v8::Local<v8::Value> = v8::String::new(scope, &spec)?.into();
-            let this = v8::undefined(scope).into();
-            let result = func.call(scope, this, &[spec_val, dir_val, root_val])?;
-            let path_str = result.to_string(scope)?.to_rust_string_lossy(scope);
-            PathBuf::from(path_str)
-        } else {
-            match resolve_path(&spec, referrer_dir.as_deref(), &root) {
-                Ok(p) => p,
-                Err(e) => {
-                    if let Some(msg) = v8::String::new(scope, &e) {
-                        let exc = v8::Exception::error(scope, msg);
-                        scope.throw_exception(exc);
-                    }
-                    return None;
-                }
-            }
-        }
-    };
-
+    let referrer_dir = referrer
+        .script_id()
+        .and_then(|id| state_rc.borrow().module_paths.get(&id).cloned())
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
+    let path = resolve_fs_specifier(scope, &spec, referrer_dir.as_deref())?;
     get_or_load_fs_module(scope, &path)
 }
 
@@ -798,7 +734,7 @@ fn meta_resolve(
 
 pub fn dynamic_import_callback<'s>(
     scope: &mut v8::HandleScope<'s>,
-    _host_defined_options: v8::Local<'s, v8::Data>,
+    host_defined_options: v8::Local<'s, v8::Data>,
     resource_name: v8::Local<'s, v8::Value>,
     specifier: v8::Local<'s, v8::String>,
     _import_attrs: v8::Local<'s, v8::FixedArray>,
@@ -806,15 +742,10 @@ pub fn dynamic_import_callback<'s>(
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);
     let raw_spec = specifier.to_rust_string_lossy(scope);
-
-    // Extract the referrer URL from resource_name.  Filesystem modules have
-    // resource names like "file:///path/to/file.mts"; builtins use their spec
-    // string (e.g. "fino:test/test").
-    let referrer_url = resource_name
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_default();
+    let referrer_url = referrer_from_hdo(scope, host_defined_options, resource_name);
     let referrer_is_user_code = referrer_url.starts_with("file://");
+
+    // Resolve builtin-relative specifiers (e.g. './loop.mts' from a builtin).
     let builtin_spec = if referrer_is_user_code {
         None
     } else {
@@ -846,146 +777,21 @@ pub fn dynamic_import_callback<'s>(
         None
     };
 
-    // Wrap the operation in a TryCatch so we can reject the promise on error.
     let tc = &mut v8::TryCatch::new(scope);
 
-    let module: Option<v8::Local<v8::Module>> = if spec.starts_with("fino:")
-        || spec.starts_with("internal:")
-    {
-        // Enforce internal:* restriction for dynamic imports from user code.
-        if spec.starts_with("internal:") && referrer_is_user_code {
-            let msg = v8::String::new(
-                tc,
-                &format!("Cannot import internal module '{spec}' from user code"),
-            )?;
-            let exc = v8::Exception::error(tc, msg);
-            tc.throw_exception(exc);
-            None
-        } else if referrer_is_user_code {
-            // Enforce per-Realm blocked providers for user code.
-            let is_blocked = {
-                let state_rc = get_state(tc);
-                state_rc
-                    .borrow()
-                    .providers
-                    .get(spec.as_str())
-                    .is_some_and(|v| v.is_none())
-            };
-            if is_blocked {
-                let msg =
-                    v8::String::new(tc, &format!("Import of '{spec}' is blocked in this Realm"))?;
-                let exc = v8::Exception::error(tc, msg);
-                tc.throw_exception(exc);
+    let module: Option<v8::Local<v8::Module>> =
+        if spec.starts_with("fino:") || spec.starts_with("internal:") {
+            if check_builtin_access(tc, &spec, !referrer_is_user_code).is_err() {
                 None
             } else {
                 get_or_load_builtin(tc, &spec)
             }
         } else {
-            get_or_load_builtin(tc, &spec)
-        }
-    } else {
-        let state_rc = get_state(tc);
-        let (resolve_fn, root) = {
-            let st = state_rc.borrow();
-            let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(tc, f));
-            let root = st.root.clone();
-            (resolve_fn, root)
+            resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
+                .and_then(|p| get_or_load_fs_module(tc, &p))
         };
 
-        let path: Option<PathBuf> = if let Some(func) = resolve_fn {
-            let root_str = match v8::String::new(tc, &root.to_string_lossy()) {
-                Some(s) => s,
-                None => {
-                    let undef = v8::undefined(tc).into();
-                    resolver.reject(tc, undef);
-                    return Some(promise);
-                }
-            };
-            let spec_val: v8::Local<v8::Value> = match v8::String::new(tc, &spec) {
-                Some(s) => s.into(),
-                None => {
-                    let undef = v8::undefined(tc).into();
-                    resolver.reject(tc, undef);
-                    return Some(promise);
-                }
-            };
-            let this = v8::undefined(tc).into();
-            // Pass the referrer's directory so relative specifiers resolve correctly.
-            let dir_val: v8::Local<v8::Value> = referrer_dir
-                .as_deref()
-                .and_then(|d| v8::String::new(tc, &d.to_string_lossy()))
-                .map(|s| s.into())
-                .unwrap_or_else(|| v8::null(tc).into());
-            func.call(tc, this, &[spec_val, dir_val, root_str.into()])
-                .and_then(|r| r.to_string(tc))
-                .map(|s| PathBuf::from(s.to_rust_string_lossy(tc)))
-        } else {
-            match resolve_path(&spec, referrer_dir.as_deref(), &root) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    if let Some(msg) = v8::String::new(tc, &e) {
-                        let exc = v8::Exception::error(tc, msg);
-                        tc.throw_exception(exc);
-                    }
-                    None
-                }
-            }
-        };
-
-        path.and_then(|p| get_or_load_fs_module(tc, &p))
-    };
-
-    if let Some(m) = module {
-        match instantiate_and_evaluate(tc, m) {
-            Some(eval_result) if !tc.has_caught() => {
-                let namespace = m.get_module_namespace();
-                // Check if eval returned a Promise (module uses top-level await).
-                if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
-                    // TLA: defer resolution until the eval Promise settles.
-                    let state_rc = get_state(tc);
-                    let id = {
-                        let mut st = state_rc.borrow_mut();
-                        let id = st.tla_resolvers.len() as u32;
-                        st.tla_resolvers.push(Some((
-                            v8::Global::new(tc, resolver),
-                            v8::Global::new(tc, namespace),
-                        )));
-                        id
-                    };
-                    let id_val: v8::Local<v8::Value> = v8::Integer::new(tc, id as i32).into();
-                    let fulfill_tmpl = v8::FunctionTemplate::builder(tla_fulfill_callback)
-                        .data(id_val)
-                        .build(tc);
-                    let reject_tmpl = v8::FunctionTemplate::builder(tla_reject_callback)
-                        .data(id_val)
-                        .build(tc);
-                    if let (Some(fulfill_fn), Some(reject_fn)) =
-                        (fulfill_tmpl.get_function(tc), reject_tmpl.get_function(tc))
-                    {
-                        eval_promise.then2(tc, fulfill_fn, reject_fn);
-                    }
-                    // Don't resolve yet — the callbacks will settle the resolver.
-                } else {
-                    // Non-TLA: resolve immediately.
-                    resolver.resolve(tc, namespace);
-                }
-            }
-            _ => {
-                let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                resolver.reject(tc, exc);
-            }
-        }
-    } else {
-        let exc = if tc.has_caught() {
-            tc.exception().unwrap_or_else(|| v8::undefined(tc).into())
-        } else {
-            v8::String::new(tc, "dynamic import failed")
-                .map(|s| -> v8::Local<v8::Value> { s.into() })
-                .unwrap_or_else(|| v8::undefined(tc).into())
-        };
-        resolver.reject(tc, exc);
-    }
-
+    settle_dynamic_import(tc, module, resolver);
     Some(promise)
 }
 
@@ -1032,6 +838,169 @@ fn tla_reject_callback(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Extract the referrer URL from `host_defined_options[0]`.
+///
+/// `compile_source_module` stores the resource name there as a canonical
+/// embedder-controlled identifier. Falls back to `resource_name` for any code
+/// compiled outside our loader (e.g. eval, snapshots).
+///
+/// # Safety
+/// V8 always provides a valid `PrimitiveArray` for `host_defined_options` —
+/// either the one we set or an empty default — so the unchecked cast is safe
+/// and the length check guards the `get()` call.
+fn referrer_from_hdo(
+    scope: &mut v8::HandleScope,
+    hdo: v8::Local<v8::Data>,
+    resource_name: v8::Local<v8::Value>,
+) -> String {
+    let arr = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(hdo) };
+    if arr.length() > 0 {
+        arr.get(scope, 0)
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default()
+    } else {
+        resource_name
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default()
+    }
+}
+
+/// Enforce `internal:*` import restrictions and per-Realm blocked providers.
+///
+/// Returns `Err(())` (with an exception thrown on `scope`) if access is denied.
+fn check_builtin_access(
+    scope: &mut v8::HandleScope,
+    spec: &str,
+    referrer_is_builtin: bool,
+) -> Result<(), ()> {
+    if referrer_is_builtin {
+        return Ok(());
+    }
+    if spec.starts_with("internal:") {
+        let msg = v8::String::new(scope, &format!("Cannot import internal module '{spec}' from user code"))
+            .ok_or(())?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return Err(());
+    }
+    let is_blocked = {
+        let state_rc = get_state(scope);
+        state_rc.borrow().providers.get(spec).is_some_and(|v| v.is_none())
+    };
+    if is_blocked {
+        let msg = v8::String::new(scope, &format!("Import of '{spec}' is blocked in this Realm"))
+            .ok_or(())?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return Err(());
+    }
+    Ok(())
+}
+
+/// Resolve a filesystem specifier to an absolute `PathBuf`.
+///
+/// Delegates to the JS `resolve_fn` callback if one has been registered by
+/// `internal:loader`, otherwise falls back to the Rust `resolve_path` helper.
+fn resolve_fs_specifier(
+    scope: &mut v8::HandleScope,
+    spec: &str,
+    referrer_dir: Option<&Path>,
+) -> Option<PathBuf> {
+    let state_rc = get_state(scope);
+    let (resolve_fn, root) = {
+        let st = state_rc.borrow();
+        let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(scope, f));
+        let root = st.root.clone();
+        (resolve_fn, root)
+    };
+
+    if let Some(func) = resolve_fn {
+        let root_str = v8::String::new(scope, &root.to_string_lossy())?;
+        let spec_val: v8::Local<v8::Value> = v8::String::new(scope, spec)?.into();
+        let this = v8::undefined(scope).into();
+        let dir_val: v8::Local<v8::Value> = referrer_dir
+            .and_then(|d| v8::String::new(scope, &d.to_string_lossy()))
+            .map(|s| s.into())
+            .unwrap_or_else(|| v8::null(scope).into());
+        func.call(scope, this, &[spec_val, dir_val, root_str.into()])
+            .and_then(|r| r.to_string(scope))
+            .map(|s| PathBuf::from(s.to_rust_string_lossy(scope)))
+    } else {
+        match resolve_path(spec, referrer_dir, &root) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                if let Some(msg) = v8::String::new(scope, &e) {
+                    let exc = v8::Exception::error(scope, msg);
+                    scope.throw_exception(exc);
+                }
+                None
+            }
+        }
+    }
+}
+
+/// Instantiate, evaluate, and settle a dynamic-import promise resolver.
+///
+/// Handles TLA by storing the resolver in `tla_resolvers` and chaining
+/// `.then2()` on the eval promise; non-TLA modules resolve immediately.
+fn settle_dynamic_import<'s, 'tc>(
+    tc: &mut v8::TryCatch<'tc, v8::HandleScope<'s>>,
+    module: Option<v8::Local<'s, v8::Module>>,
+    resolver: v8::Local<'s, v8::PromiseResolver>,
+) {
+    if let Some(m) = module {
+        match instantiate_and_evaluate(tc, m) {
+            Some(eval_result) if !tc.has_caught() => {
+                let namespace = m.get_module_namespace();
+                if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
+                    // TLA: defer resolution until the eval Promise settles.
+                    let state_rc = get_state(tc);
+                    let id = {
+                        let mut st = state_rc.borrow_mut();
+                        let id = st.tla_resolvers.len() as u32;
+                        st.tla_resolvers.push(Some((
+                            v8::Global::new(tc, resolver),
+                            v8::Global::new(tc, namespace),
+                        )));
+                        id
+                    };
+                    let id_val: v8::Local<v8::Value> = v8::Integer::new(tc, id as i32).into();
+                    let fulfill_tmpl = v8::FunctionTemplate::builder(tla_fulfill_callback)
+                        .data(id_val)
+                        .build(tc);
+                    let reject_tmpl = v8::FunctionTemplate::builder(tla_reject_callback)
+                        .data(id_val)
+                        .build(tc);
+                    if let (Some(fulfill_fn), Some(reject_fn)) =
+                        (fulfill_tmpl.get_function(tc), reject_tmpl.get_function(tc))
+                    {
+                        eval_promise.then2(tc, fulfill_fn, reject_fn);
+                    }
+                    // Don't resolve yet — the callbacks will settle the resolver.
+                } else {
+                    // Non-TLA: resolve immediately.
+                    resolver.resolve(tc, namespace);
+                }
+            }
+            _ => {
+                let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+                resolver.reject(tc, exc);
+            }
+        }
+    } else {
+        let exc = if tc.has_caught() {
+            tc.exception().unwrap_or_else(|| v8::undefined(tc).into())
+        } else {
+            v8::String::new(tc, "dynamic import failed")
+                .map(|s| -> v8::Local<v8::Value> { s.into() })
+                .unwrap_or_else(|| v8::undefined(tc).into())
+        };
+        resolver.reject(tc, exc);
+    }
+}
 
 fn get_or_load_builtin<'s>(
     scope: &mut v8::HandleScope<'s>,
@@ -1141,14 +1110,13 @@ fn load_fs_module_uncached<'s>(
     path: &Path,
 ) -> Option<v8::Local<'s, v8::Module>> {
     let resource_name = format!("file://{}", path.to_string_lossy());
+    let text = std::fs::read_to_string(path).ok()?;
 
     if is_json(path) {
-        let text = std::fs::read_to_string(path).ok()?;
         let escaped = escape_js_string(&text);
         let src = format!("export default JSON.parse('{escaped}');");
         compile_source_module(scope, &src, &resource_name, None)
     } else if is_typescript(path) {
-        let text = std::fs::read_to_string(path).ok()?;
         let stripped = strip_types(path, &text).ok()?;
         register_source_map(scope, &resource_name, stripped.map.clone());
         compile_source_module(
@@ -1158,12 +1126,15 @@ fn load_fs_module_uncached<'s>(
             Some(stripped.map.to_json_string().as_str()),
         )
     } else {
-        let text = std::fs::read_to_string(path).ok()?;
         compile_source_module(scope, &text, &resource_name, None)
     }
 }
 
 /// Compile a JS string as a V8 ES module with the given resource name (URL).
+///
+/// Stores `resource_name` in V8's host-defined options (`PrimitiveArray[0]`)
+/// so the dynamic-import callback can reliably identify the referrer
+/// regardless of how the code was invoked (module, eval, etc.).
 pub fn compile_source_module<'s>(
     scope: &mut v8::HandleScope<'s>,
     source_text: &str,
@@ -1175,6 +1146,8 @@ pub fn compile_source_module<'s>(
         .and_then(|json| SourceMap::from_json_string(json).ok())
         .and_then(|map| v8::String::new(scope, &map.to_data_url()))
         .map(|value| value.into());
+    let hdo = v8::PrimitiveArray::new(scope, 1);
+    hdo.set(scope, 0, name.into());
     let origin = v8::ScriptOrigin::new(
         scope,
         name.into(),
@@ -1186,7 +1159,7 @@ pub fn compile_source_module<'s>(
         false,
         false,
         true,
-        None,
+        Some(hdo.into()),
     );
     let source_str = v8::String::new(scope, source_text)?;
     let mut source = v8::script_compiler::Source::new(source_str, Some(&origin));

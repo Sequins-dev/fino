@@ -38,7 +38,7 @@ use v8::fast_api::{
 };
 
 use super::SymbolData;
-use crate::library::FfiSymbol;
+use super::library::FfiSymbol;
 use crate::types::NativeType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
