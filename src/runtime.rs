@@ -3,14 +3,13 @@
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
-    path::Path,
     rc::Rc,
     sync::OnceLock,
 };
 
 use ::v8;
 
-use crate::{loader, realm, state::FinoState};
+use crate::{loader, realm, state::{FinoState, ProcessEnv}};
 
 static V8_INIT: OnceLock<()> = OnceLock::new();
 
@@ -53,7 +52,7 @@ pub(crate) fn init_v8() {
     });
 }
 
-pub fn run(root: &Path) -> Result<(), String> {
+pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     init_v8();
 
     let mut params = v8::CreateParams::default();
@@ -94,9 +93,11 @@ pub fn run(root: &Path) -> Result<(), String> {
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
+        let package_map_json =
+            std::fs::read_to_string(process_env.root.join(".fino/package-map.json")).ok();
         let state = FinoState {
-            root: root.to_path_buf(),
-            package_map_json: std::fs::read_to_string(root.join(".fino/package-map.json")).ok(),
+            process_env,
+            package_map_json,
             root_queue,
             providers: HashMap::new(),
             builtin_cache: HashMap::new(),

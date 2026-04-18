@@ -206,16 +206,15 @@ fn native_create_context(
     let blocked_arg = args.get(3);
     let port_arg = args.get(4);
 
-    // --- Parse root path ---
-    let root: std::path::PathBuf = {
+    // --- Build process_env: inherit from parent, override root if provided ---
+    let mut process_env = get_state(scope).borrow().process_env.clone();
+    {
         let s = root_arg
             .to_string(scope)
             .map(|s| s.to_rust_string_lossy(scope))
             .unwrap_or_default();
-        if s.is_empty() {
-            get_state(scope).borrow().root.clone()
-        } else {
-            std::path::PathBuf::from(s)
+        if !s.is_empty() {
+            process_env.root = std::path::PathBuf::from(s);
         }
     };
 
@@ -303,7 +302,7 @@ fn native_create_context(
         st.child_contexts.push(ChildRealmSlot::Pending);
         st.pending_creates.push(PendingRealm {
             handle_idx: idx,
-            root,
+            process_env,
             entry_path,
             providers: child_providers,
             package_map_json,
@@ -396,16 +395,15 @@ fn native_create_thread_context(
     let overrides_arg = args.get(2);
     let blocked_arg = args.get(3);
 
-    // --- Parse root path ---
-    let root: std::path::PathBuf = {
+    // --- Build process_env: inherit from parent, override root if provided ---
+    let mut process_env = get_state(scope).borrow().process_env.clone();
+    {
         let s = root_arg
             .to_string(scope)
             .map(|s| s.to_rust_string_lossy(scope))
             .unwrap_or_default();
-        if s.is_empty() {
-            get_state(scope).borrow().root.clone()
-        } else {
-            std::path::PathBuf::from(s)
+        if !s.is_empty() {
+            process_env.root = std::path::PathBuf::from(s);
         }
     };
 
@@ -474,7 +472,7 @@ fn native_create_thread_context(
 
     // --- Spawn the thread realm ---
     let spawn_config = thread_realm::SpawnConfig {
-        root,
+        process_env,
         entry_path,
         providers,
         package_map_json,
@@ -686,7 +684,7 @@ fn native_get_thread_port_wake_read_fd(
 /// current iteration has already been dropped.
 fn create_child_context(
     scope: &mut v8::HandleScope<()>,
-    root: std::path::PathBuf,
+    process_env: crate::state::ProcessEnv,
     entry_path: String,
     providers: HashMap<String, Option<ProviderConfig>>,
     package_map_json: Option<String>,
@@ -720,7 +718,7 @@ fn create_child_context(
         let child_scope = &mut v8::ContextScope::new(scope, child_ctx_local);
 
         let state = FinoState {
-            root,
+            process_env,
             package_map_json,
             root_queue: child_queue,
             providers,
@@ -841,7 +839,7 @@ pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<Re
     for pending_realm in pending {
         let slot = match create_child_context(
             scope,
-            pending_realm.root,
+            pending_realm.process_env,
             pending_realm.entry_path,
             pending_realm.providers,
             pending_realm.package_map_json,

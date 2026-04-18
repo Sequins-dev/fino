@@ -1,5 +1,7 @@
 use ::v8;
 
+use crate::state::get_state;
+
 /// Build the `internal:process` synthetic module.
 ///
 /// Exports: `os`, `arch`, `args`, `env`, `execPath` — identical to the Boa
@@ -49,28 +51,29 @@ fn eval_steps<'a>(
     let arch_str = v8::String::new(scope, arch)?;
     set_export(scope, module, "arch", arch_str.into())?;
 
+    let state_rc = get_state(scope);
+    let state = state_rc.borrow();
+    let process_env = &state.process_env;
+
     // args array
     let args_arr = v8::Array::new(scope, 0);
-    for (i, arg) in std::env::args().enumerate() {
-        let v = v8::String::new(scope, &arg)?;
+    for (i, arg) in process_env.args.iter().enumerate() {
+        let v = v8::String::new(scope, arg)?;
         args_arr.set_index(scope, i as u32, v.into());
     }
     set_export(scope, module, "args", args_arr.into())?;
 
     // env object
     let env_obj = v8::Object::new(scope);
-    for (k, v) in std::env::vars() {
-        let key = v8::String::new(scope, &k)?;
-        let val = v8::String::new(scope, &v)?;
+    for (k, v) in &process_env.env_vars {
+        let key = v8::String::new(scope, k)?;
+        let val = v8::String::new(scope, v)?;
         env_obj.set(scope, key.into(), val.into());
     }
     set_export(scope, module, "env", env_obj.into())?;
 
     // execPath
-    let exec_path = std::env::current_exe()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let exec_val = v8::String::new(scope, &exec_path)?;
+    let exec_val = v8::String::new(scope, &process_env.exec_path.clone())?;
     set_export(scope, module, "execPath", exec_val.into())?;
 
     Some(v8::undefined(scope).into())

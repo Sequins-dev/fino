@@ -58,7 +58,7 @@ fn eval_steps<'a>(
     // from the V8 extras binding object. These are Torque builtins that compile to
     // direct CPED memory loads/stores on the V8 isolate — callable from JS without
     // crossing the native barrier. TurboFan/Maglev can inline them at call sites.
-    let extras = context.get_extras_binding_object(&mut **scope);
+    let extras = context.get_extras_binding_object(scope);
     let get_cped_key = v8::String::new(scope, "getContinuationPreservedEmbedderData")?;
     let set_cped_key = v8::String::new(scope, "setContinuationPreservedEmbedderData")?;
     let get_cped_fn: v8::Local<v8::Function> =

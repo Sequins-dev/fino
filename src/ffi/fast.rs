@@ -39,7 +39,7 @@ use v8::fast_api::{
 
 use super::SymbolData;
 use super::library::FfiSymbol;
-use crate::types::NativeType;
+use super::types::NativeType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastCallKind {

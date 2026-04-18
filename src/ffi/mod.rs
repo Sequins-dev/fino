@@ -4,6 +4,7 @@ pub mod call;
 pub mod fast;
 pub mod library;
 pub mod pointer;
+pub mod types;
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -11,7 +12,7 @@ use std::rc::Rc;
 use ::v8;
 
 use library::{DynLib, FfiSymbol};
-use crate::types::NativeType;
+use types::NativeType;
 
 use call::{CallScratch, ffi_call};
 

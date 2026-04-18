@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use super::pointer;
 use super::library::FfiSymbol;
-use crate::types::{NativeType, NativeValue};
+use super::types::{NativeType, NativeValue};
 
 pub struct CallScratch {
     storage: SmallVec<[NativeValue; 8]>,

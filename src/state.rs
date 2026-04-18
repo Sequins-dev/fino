@@ -52,6 +52,23 @@ pub struct ChildRealm {
     pub context: v8::Global<v8::Context>,
 }
 
+/// Virtualised process-level identity for a Realm.
+///
+/// Collected once from the real environment in `main.rs` and stored on the
+/// root `FinoState`. Child and thread realms inherit this by default; it can
+/// be overridden at creation time to produce fully isolated sandboxes.
+#[derive(Clone)]
+pub struct ProcessEnv {
+    /// Filesystem root used for module resolution (equivalent to CWD).
+    pub root: PathBuf,
+    /// Command-line arguments (argv).
+    pub args: Vec<String>,
+    /// Environment variable map.
+    pub env_vars: HashMap<String, String>,
+    /// Absolute path to the runtime executable.
+    pub exec_path: String,
+}
+
 /// A deferred request to create a child Realm.
 ///
 /// `native_create_context` queues one of these instead of calling
@@ -62,7 +79,7 @@ pub struct ChildRealm {
 pub struct PendingRealm {
     /// Pre-allocated slot index in `FinoState::child_contexts`.
     pub handle_idx: usize,
-    pub root: std::path::PathBuf,
+    pub process_env: ProcessEnv,
     pub entry_path: String,
     pub providers: HashMap<String, Option<ProviderConfig>>,
     pub package_map_json: Option<String>,
@@ -97,7 +114,7 @@ pub struct ProviderConfig {
 /// All per-run state, stored in the V8 context slot so every Rust callback can
 /// access it without passing extra arguments.
 pub struct FinoState {
-    pub root: PathBuf,
+    pub process_env: ProcessEnv,
     pub package_map_json: Option<String>,
 
     // ---------------------------------------------------------------------------

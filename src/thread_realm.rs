@@ -25,7 +25,6 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     os::unix::io::RawFd,
-    path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc},
 };
@@ -66,7 +65,7 @@ pub struct ThreadMessage {
 
 /// Caller-supplied configuration for a new thread realm.
 pub struct SpawnConfig {
-    pub root: PathBuf,
+    pub process_env: crate::state::ProcessEnv,
     pub entry_path: String,
     pub providers: HashMap<String, Option<ProviderConfig>>,
     pub package_map_json: Option<String>,
@@ -113,7 +112,7 @@ impl Drop for ThreadRealmHandle {
 /// Configuration threaded through the OS thread boundary into
 /// `run_thread_isolate`.
 struct IsolateConfig {
-    root: PathBuf,
+    process_env: crate::state::ProcessEnv,
     entry_path: String,
     providers: HashMap<String, Option<ProviderConfig>>,
     package_map_json: Option<String>,
@@ -183,7 +182,7 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
     let error_for_thread = error_flag.clone();
 
     let iso_config = IsolateConfig {
-        root: config.root,
+        process_env: config.process_env,
         entry_path: config.entry_path,
         providers: config.providers,
         package_map_json: config.package_map_json,
@@ -205,7 +204,7 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
             Err(payload) => {
                 let desc = payload
                     .downcast_ref::<String>()
-                    .map(|s| s.clone())
+                    .map(|s| s.to_owned())
                     .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
                     .unwrap_or_else(|| "thread realm panicked".to_string());
                 Some(format!("thread realm panicked: {desc}"))
@@ -272,7 +271,7 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
         let state = FinoState {
-            root: config.root,
+            process_env: config.process_env,
             package_map_json: config.package_map_json,
             root_queue,
             providers: config.providers,

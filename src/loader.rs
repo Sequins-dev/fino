@@ -614,7 +614,7 @@ pub unsafe extern "C" fn init_import_meta_callback(
         .map(|f| v8::Local::new(scope, f));
 
     if let Some(func) = init_meta_fn {
-        let root = state_rc.borrow().root.clone();
+        let root = state_rc.borrow().process_env.root.clone();
         let Some(filename_val) = v8::String::new(scope, &path.to_string_lossy())
             .map(|s| -> v8::Local<v8::Value> { s.into() })
         else {
@@ -652,7 +652,7 @@ pub unsafe extern "C" fn init_import_meta_callback(
 
     // import.meta.resolve(specifier) — stores base_dir and root in data array.
     let base_dir = path.parent().unwrap_or(&path).to_path_buf();
-    let root = state_rc.borrow().root.clone();
+    let root = state_rc.borrow().process_env.root.clone();
     if let (Some(base_str), Some(root_str)) = (
         v8::String::new(scope, &base_dir.to_string_lossy()),
         v8::String::new(scope, &root.to_string_lossy()),
@@ -913,7 +913,7 @@ fn resolve_fs_specifier(
     let (resolve_fn, root) = {
         let st = state_rc.borrow();
         let resolve_fn = st.resolve_fn.as_ref().map(|f| v8::Local::new(scope, f));
-        let root = st.root.clone();
+        let root = st.process_env.root.clone();
         (resolve_fn, root)
     };
 

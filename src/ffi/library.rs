@@ -4,7 +4,7 @@ use libffi::middle::{Cif, CodePtr};
 use libloading::Library;
 
 use crate::ffi::fast::{self, FastCallKind};
-use crate::types::NativeType;
+use super::types::NativeType;
 
 /// A loaded shared library. Kept alive by `Rc` in all symbol closures so
 /// the library is only unloaded when every reference is gone (or `close()` is
