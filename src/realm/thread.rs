@@ -26,7 +26,8 @@ use std::{
     collections::{HashMap, HashSet},
     os::unix::io::RawFd,
     rc::Rc,
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}, mpsc},
+    sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}, mpsc},
+    time::Instant,
 };
 
 use ::v8;
@@ -139,6 +140,15 @@ impl Drop for OwnedFd {
 }
 
 // ---------------------------------------------------------------------------
+// Realm creation timing (FINO_REALM_TIMING=1)
+// ---------------------------------------------------------------------------
+
+fn realm_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("FINO_REALM_TIMING").is_some())
+}
+
+// ---------------------------------------------------------------------------
 // Pipe creation
 // ---------------------------------------------------------------------------
 
@@ -244,13 +254,19 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
     // V8 is initialized once globally; safe to call from any thread.
     crate::runtime::init_v8();
 
+    let total_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
+
     let mut params = v8::CreateParams::default();
     params = params.heap_limits(0, 1 << 30);
     // Share the same allocator as the main Isolate so SAB backing stores are
     // accessible across both Isolates.
     params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
 
+    let isolate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
     let isolate = &mut v8::Isolate::new(params);
+    if let Some(t) = isolate_start {
+        eprintln!("[fino:realm-timing] thread-realm  isolate-new: {:?}", t.elapsed());
+    }
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     // Thread realms run on their own OS thread — Atomics.wait() is safe here.
     isolate.set_allow_atomics_wait(true);
@@ -312,6 +328,7 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
         let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs"));
         let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs.map"));
 
+        let compile_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
         let bootstrap_module = {
             let tc = &mut v8::TryCatch::new(scope);
             loader::register_source_map_from_json(tc, "_bootstrap.mjs", bootstrap_map);
@@ -329,9 +346,13 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
                 }
             }
         };
+        if let Some(t) = compile_start {
+            eprintln!("[fino:realm-timing] thread-realm  compile:     {:?}", t.elapsed());
+        }
 
         loader::register_as_builtin(scope, bootstrap_module, "internal:bootstrap");
 
+        let instantiate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
         {
             let tc = &mut v8::TryCatch::new(scope);
             if bootstrap_module
@@ -343,7 +364,11 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
                 return Err(msg);
             }
         }
+        if let Some(t) = instantiate_start {
+            eprintln!("[fino:realm-timing] thread-realm  instantiate: {:?}", t.elapsed());
+        }
 
+        let evaluate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
         {
             let tc = &mut v8::TryCatch::new(scope);
             if bootstrap_module.evaluate(tc).is_none() {
@@ -352,8 +377,10 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
                 return Err(msg);
             }
         }
-
         pump_and_checkpoint(scope);
+        if let Some(t) = evaluate_start {
+            eprintln!("[fino:realm-timing] thread-realm  evaluate:    {:?}", t.elapsed());
+        }
 
         if bootstrap_module.get_status() == v8::ModuleStatus::Errored {
             let exc = bootstrap_module.get_exception();
@@ -366,6 +393,10 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
 
         state_rc = get_state(scope);
         bootstrap_module_global = v8::Global::new(scope, bootstrap_module);
+
+        if let Some(t) = total_start {
+            eprintln!("[fino:realm-timing] thread-realm  total:       {:?}", t.elapsed());
+        }
     } // ContextScope dropped — isolate_scope is free.
 
     // -------------------------------------------------------------------

@@ -103,6 +103,7 @@ const _vnodes:      Map<number, (event: { fflags: number }) => void>     = new M
 const _signals:     Map<number, () => void>                              = new Map();
 let _nextTimerId      = 1;
 let _nextCompletionId = 1;
+let _atomicsWaiters   = 0;
 
 // ---------------------------------------------------------------------------
 // Dispatch
@@ -181,8 +182,14 @@ export function tick(timeoutMs: number): number {
 export function alive(): boolean {
   return _reads.size > 0 || _writes.size > 0 || _timers.size > 0 ||
          _procs.size > 0 || _completions.size > 0 || _vnodes.size > 0 ||
-         hasPendingV8Tasks();
+         hasPendingV8Tasks() || _atomicsWaiters > 0;
 }
+
+/** @internal — called by the Atomics.waitAsync shim when a new async wait starts */
+export function _trackAtomicsWaiter(): void { _atomicsWaiters++; }
+
+/** @internal — called by the Atomics.waitAsync shim when an async wait settles */
+export function _untrackAtomicsWaiter(): void { _atomicsWaiters--; }
 
 // ---------------------------------------------------------------------------
 // Public I/O API

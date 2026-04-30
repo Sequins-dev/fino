@@ -12,7 +12,7 @@
  * own isDone/onDone callbacks.
  */
 
-import { tick, alive } from './runtime/loop.mts';
+import { tick, alive, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.mts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
 import './internal/loader.mts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
@@ -94,6 +94,35 @@ type RuntimeErrorConstructor = ErrorConstructor & {
 
 const runtimeGlobalThis = globalThis as RuntimeGlobalThis;
 const runtimeError = Error as RuntimeErrorConstructor;
+
+// Wrap Atomics.waitAsync so alive() can track pending async waits and keep
+// the event loop alive until they settle. V8 resolves waitAsync via foreground
+// tasks (drained by drainMicrotasks/pump_message_loop), but
+// has_pending_background_tasks() does not cover futex waiters, so without this
+// shim the loop could exit before the notify fires.
+if (typeof Atomics !== 'undefined' && typeof (Atomics as any).waitAsync === 'function') {
+  const _origWaitAsync: typeof Atomics.waitAsync = (Atomics as any).waitAsync.bind(Atomics);
+  Object.defineProperty(Atomics, 'waitAsync', {
+    value: function waitAsync(
+      typedArray: Parameters<typeof Atomics.waitAsync>[0],
+      index: number,
+      value: Parameters<typeof Atomics.waitAsync>[2],
+      timeout?: number,
+    ): ReturnType<typeof Atomics.waitAsync> {
+      const result = _origWaitAsync(typedArray, index, value, timeout);
+      if (result.async) {
+        _trackAtomicsWaiter();
+        (result.value as Promise<string>).then(
+          () => { _untrackAtomicsWaiter(); },
+          () => { _untrackAtomicsWaiter(); },
+        );
+      }
+      return result;
+    },
+    writable: true,
+    configurable: true,
+  });
+}
 
 Object.assign(globalThis, {
   Event,

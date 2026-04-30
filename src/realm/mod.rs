@@ -38,6 +38,8 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     rc::Rc,
+    sync::OnceLock,
+    time::Instant,
 };
 
 use ::v8;
@@ -204,6 +206,15 @@ pub fn terminate_all_children(scope: &mut v8::HandleScope) {
 }
 
 // ---------------------------------------------------------------------------
+// Realm creation timing (shared with thread.rs via FINO_REALM_TIMING=1)
+// ---------------------------------------------------------------------------
+
+fn realm_timing_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("FINO_REALM_TIMING").is_some())
+}
+
+// ---------------------------------------------------------------------------
 // Core: create a child V8 context with its own FinoState
 // ---------------------------------------------------------------------------
 
@@ -221,6 +232,8 @@ fn create_child_context(
     package_map_json: Option<String>,
     port: Option<v8::Global<v8::Value>>,
 ) -> Result<ChildRealm, String> {
+    let total_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
+
     // 1. Create a dedicated microtask queue for the child context.
     let child_queue = v8::MicrotaskQueue::new(scope, v8::MicrotasksPolicy::Explicit);
 
@@ -292,6 +305,7 @@ fn create_child_context(
         let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs"));
         let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs.map"));
 
+        let compile_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
         let bootstrap_module = {
             let tc = &mut v8::TryCatch::new(child_scope);
             loader::register_source_map_from_json(tc, "_bootstrap.mjs", bootstrap_map);
@@ -309,12 +323,16 @@ fn create_child_context(
                 }
             }
         };
+        if let Some(t) = compile_start {
+            eprintln!("[fino:realm-timing] embedded-realm  compile:     {:?}", t.elapsed());
+        }
 
         // Register as "internal:bootstrap" so resolve_builtin_relative can
         // look up its source path and correctly resolve relative imports
         // like './runtime/loop.mts' within the bootstrap module body.
         loader::register_as_builtin(child_scope, bootstrap_module, "internal:bootstrap");
 
+        let instantiate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
         {
             let tc = &mut v8::TryCatch::new(child_scope);
             if bootstrap_module
@@ -326,7 +344,11 @@ fn create_child_context(
                 return Err(msg);
             }
         }
+        if let Some(t) = instantiate_start {
+            eprintln!("[fino:realm-timing] embedded-realm  instantiate: {:?}", t.elapsed());
+        }
 
+        let evaluate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
         {
             let tc = &mut v8::TryCatch::new(child_scope);
             if bootstrap_module.evaluate(tc).is_none() {
@@ -338,6 +360,9 @@ fn create_child_context(
 
         // 6. Pump + checkpoint to run the bootstrap module body.
         pump_and_checkpoint_in(child_scope);
+        if let Some(t) = evaluate_start {
+            eprintln!("[fino:realm-timing] embedded-realm  evaluate:    {:?}", t.elapsed());
+        }
 
         if bootstrap_module.get_status() == v8::ModuleStatus::Errored {
             let exc = bootstrap_module.get_exception();
@@ -347,6 +372,10 @@ fn create_child_context(
                 .unwrap_or_else(|| "Error in _bootstrap.mjs".to_string());
             return Err(msg);
         }
+    }
+
+    if let Some(t) = total_start {
+        eprintln!("[fino:realm-timing] embedded-realm  total:       {:?}", t.elapsed());
     }
 
     Ok(ChildRealm {
