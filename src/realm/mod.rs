@@ -27,26 +27,25 @@
 //! ContextScope is not entered, giving access to the bare `isolate_scope`
 //! (`HandleScope<()>`).
 
-pub mod broadcast;
 pub mod bridge;
+pub mod broadcast;
+pub mod child;
+pub mod facade;
 pub mod native;
+pub mod process;
 pub mod serializer;
 pub mod thread;
 pub mod transit;
 
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    rc::Rc,
-    sync::OnceLock,
-    time::Instant,
-};
+use std::{cell::RefCell, rc::Rc, sync::OnceLock, time::Instant};
 
 use ::v8;
 
 use crate::{
     loader,
-    state::{ChildRealm, ChildRealmSlot, FinoState, PendingRealm, get_state, root_queue_ptr},
+    state::{
+        ChildRealm, ChildRealmSlot, FinoState, ImportRule, PendingRealm, get_state, root_queue_ptr,
+    },
 };
 
 // Public re-exports used by loader.rs (BUILTINS registry).
@@ -63,19 +62,15 @@ pub use native::create_module as create_realm_native_module;
 /// context (the ContextScope for the current host-loop iteration must have
 /// already been dropped).  On success the slot is upgraded from `Pending` to
 /// `Active`; on failure it becomes `Failed`.
-pub fn process_pending_creates(
-    scope: &mut v8::HandleScope<()>,
-    state_rc: &Rc<RefCell<FinoState>>,
-) {
-    let pending: Vec<PendingRealm> =
-        std::mem::take(&mut state_rc.borrow_mut().pending_creates);
+pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<RefCell<FinoState>>) {
+    let pending: Vec<PendingRealm> = std::mem::take(&mut state_rc.borrow_mut().pending_creates);
 
     for pending_realm in pending {
         let slot = match create_child_context(
             scope,
             pending_realm.process_env,
             pending_realm.entry_path,
-            pending_realm.providers,
+            pending_realm.import_rules,
             pending_realm.package_map_json,
             pending_realm.port,
         ) {
@@ -228,11 +223,15 @@ fn create_child_context(
     scope: &mut v8::HandleScope<()>,
     process_env: crate::state::ProcessEnv,
     entry_path: String,
-    providers: HashMap<String, Option<crate::state::ProviderConfig>>,
+    import_rules: Vec<ImportRule>,
     package_map_json: Option<String>,
     port: Option<v8::Global<v8::Value>>,
 ) -> Result<ChildRealm, String> {
-    let total_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
+    let total_start = if realm_timing_enabled() {
+        Some(Instant::now())
+    } else {
+        None
+    };
 
     // 1. Create a dedicated microtask queue for the child context.
     let child_queue = v8::MicrotaskQueue::new(scope, v8::MicrotasksPolicy::Explicit);
@@ -265,13 +264,12 @@ fn create_child_context(
             process_env,
             package_map_json,
             root_queue: child_queue,
-            providers,
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_script_ids: HashSet::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
+            import_rules,
+            builtin_cache: std::collections::HashMap::new(),
+            fs_cache: std::collections::HashMap::new(),
+            builtin_specifiers: std::collections::HashMap::new(),
+            module_paths: std::collections::HashMap::new(),
+            source_maps: std::collections::HashMap::new(),
             resolve_fn: None,
             init_meta_fn: None,
             loop_step_fn: None,
@@ -290,6 +288,7 @@ fn create_child_context(
             wake_read_fd: None,
             wake_write_fd: None,
             thread_contexts: Vec::new(),
+            process_contexts: Vec::new(),
         };
 
         child_ctx_local.set_slot(Rc::new(RefCell::new(state)));
@@ -305,7 +304,11 @@ fn create_child_context(
         let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs"));
         let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs.map"));
 
-        let compile_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
+        let compile_start = if realm_timing_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
         let bootstrap_module = {
             let tc = &mut v8::TryCatch::new(child_scope);
             loader::register_source_map_from_json(tc, "_bootstrap.mjs", bootstrap_map);
@@ -324,7 +327,10 @@ fn create_child_context(
             }
         };
         if let Some(t) = compile_start {
-            eprintln!("[fino:realm-timing] embedded-realm  compile:     {:?}", t.elapsed());
+            eprintln!(
+                "[fino:realm-timing] embedded-realm  compile:     {:?}",
+                t.elapsed()
+            );
         }
 
         // Register as "internal:bootstrap" so resolve_builtin_relative can
@@ -332,7 +338,11 @@ fn create_child_context(
         // like './runtime/loop.mts' within the bootstrap module body.
         loader::register_as_builtin(child_scope, bootstrap_module, "internal:bootstrap");
 
-        let instantiate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
+        let instantiate_start = if realm_timing_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
         {
             let tc = &mut v8::TryCatch::new(child_scope);
             if bootstrap_module
@@ -345,10 +355,17 @@ fn create_child_context(
             }
         }
         if let Some(t) = instantiate_start {
-            eprintln!("[fino:realm-timing] embedded-realm  instantiate: {:?}", t.elapsed());
+            eprintln!(
+                "[fino:realm-timing] embedded-realm  instantiate: {:?}",
+                t.elapsed()
+            );
         }
 
-        let evaluate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
+        let evaluate_start = if realm_timing_enabled() {
+            Some(Instant::now())
+        } else {
+            None
+        };
         {
             let tc = &mut v8::TryCatch::new(child_scope);
             if bootstrap_module.evaluate(tc).is_none() {
@@ -361,7 +378,10 @@ fn create_child_context(
         // 6. Pump + checkpoint to run the bootstrap module body.
         pump_and_checkpoint_in(child_scope);
         if let Some(t) = evaluate_start {
-            eprintln!("[fino:realm-timing] embedded-realm  evaluate:    {:?}", t.elapsed());
+            eprintln!(
+                "[fino:realm-timing] embedded-realm  evaluate:    {:?}",
+                t.elapsed()
+            );
         }
 
         if bootstrap_module.get_status() == v8::ModuleStatus::Errored {
@@ -375,7 +395,10 @@ fn create_child_context(
     }
 
     if let Some(t) = total_start {
-        eprintln!("[fino:realm-timing] embedded-realm  total:       {:?}", t.elapsed());
+        eprintln!(
+            "[fino:realm-timing] embedded-realm  total:       {:?}",
+            t.elapsed()
+        );
     }
 
     Ok(ChildRealm {
@@ -402,9 +425,7 @@ fn catch_js_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
     }
     tc.exception().and_then(|exc| {
         exc.to_object(tc)
-            .and_then(|obj| {
-                v8::String::new(tc, "stack").and_then(|key| obj.get(tc, key.into()))
-            })
+            .and_then(|obj| v8::String::new(tc, "stack").and_then(|key| obj.get(tc, key.into())))
             .and_then(|stack| stack.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
             .or_else(|| exc.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
     })

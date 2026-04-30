@@ -6,10 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use ::v8;
 use oxc_sourcemap::SourceMap;
 
-use crate::{
-    async_context, docgen, ffi, platform, profiler, realm,
-    state::get_state,
-};
+use crate::{async_context, docgen, ffi, platform, profiler, realm, state::get_state};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
@@ -105,10 +102,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:realm/pool", "runtime/realm-pool"),
     source_builtin!("fino:realm/self", "runtime/realm-self"),
     source_builtin!("fino:messaging", "runtime/messaging"),
-    source_builtin!(
-        "internal:globals/messaging",
-        "internal/globals/messaging"
-    ),
+    source_builtin!("internal:globals/messaging", "internal/globals/messaging"),
     // internal: CLI commands
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
@@ -156,6 +150,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:file/watch-bindings", "file/watch-bindings"),
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
+    source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
     source_builtin!("internal:runtime/kqueue", "internal/runtime/kqueue"),
     source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
     (
@@ -184,6 +179,17 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:file/path", "file/path"),
     source_builtin!("fino:file/watch", "file/watch"),
     source_builtin!("fino:archive", "archive"),
+    // cluster
+    source_builtin!("internal:cluster/protocol", "internal/cluster/protocol"),
+    source_builtin!("internal:cluster/transport", "internal/cluster/transport"),
+    source_builtin!(
+        "internal:cluster/websocket-transport",
+        "internal/cluster/websocket-transport"
+    ),
+    source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
+    source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
+    source_builtin!("internal:cluster/client", "internal/cluster/client"),
+    source_builtin!("fino:cluster", "runtime/cluster"),
     source_builtin!("internal:opentelemetry/core", "opentelemetry/core"),
     source_builtin!("internal:opentelemetry/common", "opentelemetry/common"),
     source_builtin!("internal:opentelemetry/traces", "opentelemetry/traces"),
@@ -251,7 +257,7 @@ static BUILTINS: &[BuiltinEntry] = &[
 
 fn builtin_source_path(spec: &str) -> Option<&'static str> {
     match spec {
-        "_main.mjs" => Some(""),
+        "internal:main" => Some(""),
         "internal:loader" => Some("internal/loader"),
         "internal:bootstrap" => Some("_bootstrap"),
         "fino:realm" => Some("runtime/realm"),
@@ -292,6 +298,7 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
         "internal:file/glob" => Some("file/glob"),
         "internal:file/watch-bindings" => Some("file/watch-bindings"),
         "internal:runtime/libc" => Some("internal/runtime/libc"),
+        "internal:parent-rpc" => Some("internal/runtime/parent-rpc"),
         "internal:runtime/kqueue" => Some("internal/runtime/kqueue"),
         "internal:runtime/io_uring" => Some("internal/runtime/io_uring"),
         "internal:runtime/loop-backend" => Some("internal/runtime/loop-backend"),
@@ -312,6 +319,13 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
         "fino:file/path" => Some("file/path"),
         "fino:file/watch" => Some("file/watch"),
         "fino:archive" => Some("archive"),
+        "internal:cluster/protocol" => Some("internal/cluster/protocol"),
+        "internal:cluster/transport" => Some("internal/cluster/transport"),
+        "internal:cluster/websocket-transport" => Some("internal/cluster/websocket-transport"),
+        "internal:cluster/registry" => Some("internal/cluster/registry"),
+        "internal:cluster/seed" => Some("internal/cluster/seed"),
+        "internal:cluster/client" => Some("internal/cluster/client"),
+        "fino:cluster" => Some("runtime/cluster"),
         "internal:opentelemetry/core" => Some("opentelemetry/core"),
         "internal:opentelemetry/common" => Some("opentelemetry/common"),
         "internal:opentelemetry/traces" => Some("opentelemetry/traces"),
@@ -545,10 +559,10 @@ pub fn resolve_module_callback<'s>(
 
     // Resolve builtin-relative specifiers (e.g. './loop.mts' from a builtin).
     let state_rc = get_state(scope);
-    let builtin_referrer = referrer
+    let builtin_referrer: Option<String> = referrer
         .script_id()
-        .and_then(|id| state_rc.borrow().builtin_specifiers.get(&id).copied());
-    let spec = if let Some(referrer_spec) = builtin_referrer {
+        .and_then(|id| state_rc.borrow().builtin_specifiers.get(&id).cloned());
+    let spec = if let Some(ref referrer_spec) = builtin_referrer {
         if let Some(builtin_spec) = resolve_builtin_relative(referrer_spec, &raw_spec) {
             builtin_spec.to_string()
         } else if raw_spec.starts_with("./") || raw_spec.starts_with("../") {
@@ -569,12 +583,13 @@ pub fn resolve_module_callback<'s>(
     };
 
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
-        let referrer_is_builtin = match referrer.script_id() {
-            None => true,
-            Some(id) => state_rc.borrow().builtin_script_ids.contains(&id),
-        };
-        check_builtin_access(scope, &spec, referrer_is_builtin).ok()?;
-        return get_or_load_builtin(scope, &spec);
+        let from_spec = builtin_referrer.clone().or_else(|| {
+            referrer
+                .script_id()
+                .and_then(|id| state_rc.borrow().module_paths.get(&id).cloned())
+                .map(|p| format!("file://{}", p.to_string_lossy()))
+        });
+        return get_or_load_builtin(scope, &spec, from_spec.as_deref());
     }
 
     let referrer_dir = referrer
@@ -780,11 +795,7 @@ pub fn dynamic_import_callback<'s>(
 
     let module: Option<v8::Local<v8::Module>> =
         if spec.starts_with("fino:") || spec.starts_with("internal:") {
-            if check_builtin_access(tc, &spec, !referrer_is_user_code).is_err() {
-                None
-            } else {
-                get_or_load_builtin(tc, &spec)
-            }
+            get_or_load_builtin(tc, &spec, Some(&referrer_url))
         } else {
             resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
                 .and_then(|p| get_or_load_fs_module(tc, &p))
@@ -865,38 +876,6 @@ fn referrer_from_hdo(
             .map(|s| s.to_rust_string_lossy(scope))
             .unwrap_or_default()
     }
-}
-
-/// Enforce `internal:*` import restrictions and per-Realm blocked providers.
-///
-/// Returns `Err(())` (with an exception thrown on `scope`) if access is denied.
-fn check_builtin_access(
-    scope: &mut v8::HandleScope,
-    spec: &str,
-    referrer_is_builtin: bool,
-) -> Result<(), ()> {
-    if referrer_is_builtin {
-        return Ok(());
-    }
-    if spec.starts_with("internal:") {
-        let msg = v8::String::new(scope, &format!("Cannot import internal module '{spec}' from user code"))
-            .ok_or(())?;
-        let exc = v8::Exception::error(scope, msg);
-        scope.throw_exception(exc);
-        return Err(());
-    }
-    let is_blocked = {
-        let state_rc = get_state(scope);
-        state_rc.borrow().providers.get(spec).is_some_and(|v| v.is_none())
-    };
-    if is_blocked {
-        let msg = v8::String::new(scope, &format!("Import of '{spec}' is blocked in this Realm"))
-            .ok_or(())?;
-        let exc = v8::Exception::error(scope, msg);
-        scope.throw_exception(exc);
-        return Err(());
-    }
-    Ok(())
 }
 
 /// Resolve a filesystem specifier to an absolute `PathBuf`.
@@ -1004,7 +983,10 @@ fn settle_dynamic_import<'s, 'tc>(
 fn get_or_load_builtin<'s>(
     scope: &mut v8::HandleScope<'s>,
     spec: &str,
+    from: Option<&str>,
 ) -> Option<v8::Local<'s, v8::Module>> {
+    use crate::state::{ImportDirective, resolve_directive};
+
     let state_rc = get_state(scope);
 
     // 1. Check cache.
@@ -1016,35 +998,73 @@ fn get_or_load_builtin<'s>(
         return Some(m);
     }
 
-    // 2. Check per-Realm provider configuration before falling back to BUILTINS.
-    //    Some(Some(config)) = use this source. Some(None) = blocked (already
-    //    checked in the resolve callback for user code; builtins can't reach here
-    //    for blocked specifiers either since they bypass the blocked check).
-    let provider_source = {
+    // 2. Evaluate the import rule list (last-match-wins).
+    //    The default rules in the root realm block `internal:*` from all
+    //    importers except those whose specifier starts with `fino:` or
+    //    `internal:`. Child realms inherit those rules automatically.
+    let directive = {
         let st = state_rc.borrow();
-        st.providers
-            .get(spec)
-            .and_then(|v| v.as_ref())
-            .map(|o| (o.code.clone(), o.source_map.clone()))
+        resolve_directive(&st.import_rules, from, spec).cloned()
     };
 
-    if let Some((code, source_map)) = provider_source {
-        register_source_map_from_json(scope, spec, &source_map);
-        let m = compile_source_module(scope, &code, spec, Some(&source_map))?;
-        if let Some(id) = m.script_id() {
-            // Register as a builtin script so internal: access checks pass.
-            state_rc.borrow_mut().builtin_script_ids.insert(id);
-            // Note: we do NOT insert into builtin_specifiers here because we
-            // have no &'static str for an override specifier. This means
-            // override modules cannot use relative imports to other builtins,
-            // which is intentional — they should use absolute specifiers.
+    match directive {
+        Some(ImportDirective::Block) => {
+            let msg = v8::String::new(
+                scope,
+                &format!("Import of '{spec}' is blocked in this Realm"),
+            )?;
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
         }
-        let global = v8::Global::new(scope, m);
-        state_rc
-            .borrow_mut()
-            .builtin_cache
-            .insert(spec.to_string(), global);
-        return Some(m);
+
+        Some(ImportDirective::Remap { target }) => {
+            return get_or_load_builtin(scope, &target, from);
+        }
+
+        Some(ImportDirective::Source { code, source_map }) => {
+            register_source_map_from_json(scope, spec, &source_map);
+            let m = compile_source_module(scope, &code, spec, Some(&source_map))?;
+            if let Some(id) = m.script_id() {
+                // Record the specifier so `from`-clause matching works when this
+                // module imports something else.
+                state_rc
+                    .borrow_mut()
+                    .builtin_specifiers
+                    .insert(id, spec.to_string());
+            }
+            let global = v8::Global::new(scope, m);
+            state_rc
+                .borrow_mut()
+                .builtin_cache
+                .insert(spec.to_string(), global);
+            return Some(m);
+        }
+
+        Some(ImportDirective::Facade(facade_spec)) => {
+            let (code, _) = crate::realm::facade::create_facade_source(&facade_spec);
+            // Compile with the replaced specifier so import-rule `from`-clause
+            // matching works. The specifier (e.g. "fino:file") falls under fino:*
+            // in the default rules, granting access to internal:* without needing
+            // explicit builtin_script_ids registration.
+            let m = compile_source_module(scope, &code, &facade_spec.specifier, None)?;
+            if let Some(id) = m.script_id() {
+                state_rc
+                    .borrow_mut()
+                    .builtin_specifiers
+                    .insert(id, facade_spec.specifier.clone());
+            }
+            let global = v8::Global::new(scope, m);
+            state_rc
+                .borrow_mut()
+                .builtin_cache
+                .insert(facade_spec.specifier.clone(), global);
+            return Some(m);
+        }
+
+        Some(ImportDirective::Inherit) | None => {
+            // Fall through to BUILTINS below.
+        }
     }
 
     // 3. Fall back to the static BUILTINS registry.
@@ -1056,9 +1076,10 @@ fn get_or_load_builtin<'s>(
             register_source_map_from_json(scope, spec, source_map);
             let m = compile_source_module(scope, code, spec, Some(source_map))?;
             if let Some(id) = m.script_id() {
-                let mut st = state_rc.borrow_mut();
-                st.builtin_script_ids.insert(id);
-                st.builtin_specifiers.insert(id, spec_key);
+                state_rc
+                    .borrow_mut()
+                    .builtin_specifiers
+                    .insert(id, spec_key.to_string());
             }
             m
         }
@@ -1184,16 +1205,12 @@ pub fn register_source_map_from_json(
 
 /// Register a module's script_id as a builtin so `internal:*` imports are
 /// allowed from it.
-pub fn register_as_builtin(
-    scope: &mut v8::HandleScope,
-    module: v8::Local<v8::Module>,
-    spec: &'static str,
-) {
+pub fn register_as_builtin(scope: &mut v8::HandleScope, module: v8::Local<v8::Module>, spec: &str) {
     if let Some(id) = module.script_id() {
-        let state_rc = get_state(scope);
-        let mut st = state_rc.borrow_mut();
-        st.builtin_script_ids.insert(id);
-        st.builtin_specifiers.insert(id, spec);
+        get_state(scope)
+            .borrow_mut()
+            .builtin_specifiers
+            .insert(id, spec.to_string());
     }
 }
 

@@ -1,15 +1,13 @@
 //! V8 runtime entry point.
 
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    rc::Rc,
-    sync::OnceLock,
-};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::OnceLock};
 
 use ::v8;
 
-use crate::{loader, realm, state::{FinoState, ProcessEnv}};
+use crate::{
+    loader, realm,
+    state::{FinoState, ProcessEnv},
+};
 
 static V8_INIT: OnceLock<()> = OnceLock::new();
 
@@ -47,9 +45,7 @@ pub(crate) fn init_v8() {
         v8::V8::initialize();
     });
     // Initialize the shared allocator once V8 is up.  Multiple calls are safe.
-    SHARED_ALLOCATOR.get_or_init(|| {
-        SharedAllocator(v8::new_default_allocator().into())
-    });
+    SHARED_ALLOCATOR.get_or_init(|| SharedAllocator(v8::new_default_allocator().into()));
 }
 
 pub fn run(process_env: ProcessEnv) -> Result<(), String> {
@@ -99,10 +95,9 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             process_env,
             package_map_json,
             root_queue,
-            providers: HashMap::new(),
+            import_rules: crate::state::default_import_rules(),
             builtin_cache: HashMap::new(),
             fs_cache: HashMap::new(),
-            builtin_script_ids: HashSet::new(),
             builtin_specifiers: HashMap::new(),
             module_paths: HashMap::new(),
             source_maps: HashMap::new(),
@@ -124,6 +119,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             wake_read_fd: None,
             wake_write_fd: None,
             thread_contexts: Vec::new(),
+            process_contexts: Vec::new(),
         };
 
         context.set_slot(Rc::new(RefCell::new(state)));
@@ -150,8 +146,10 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             }
         };
 
-        // Register _main.mjs as a builtin (allows it to import internal:* modules).
-        loader::register_as_builtin(scope, main_module, "_main.mjs");
+        // Register _main.mjs so its specifier is known for import-rule `from` matching.
+        // Using "internal:main" places it in the internal: namespace so the default
+        // rules allow it to import other internal: modules.
+        loader::register_as_builtin(scope, main_module, "internal:main");
 
         // Instantiate.
         {

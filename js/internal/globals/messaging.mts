@@ -26,6 +26,7 @@ import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
 import { threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { createTransitChannel, transitSend, transitRecv } from 'internal:transit-port';
 import { readable, removeRead } from 'fino:runtime/loop';
+import { resolveRpc, rejectRpc } from 'internal:parent-rpc';
 
 // ---------------------------------------------------------------------------
 // MessageEvent
@@ -466,6 +467,14 @@ export class ThreadPort extends EventTarget {
           buf,
           stores.length > 0 ? stores : undefined,
         );
+        // Intercept RPC responses — route to internal:parent-rpc instead of
+        // dispatching as a visible message event.
+        if (value !== null && typeof value === 'object' && (value as any).__rpc_res === true) {
+          const rpc = value as { reqId: number; result?: unknown; error?: string };
+          if (rpc.error !== undefined) { rejectRpc(rpc.reqId, rpc.error); }
+          else { resolveRpc(rpc.reqId, rpc.result); }
+          continue;
+        }
         const ports = (portArr as [number, number][]).map(
           ([h, wfd]) => MessagePort._fromTransit(h, wfd),
         );

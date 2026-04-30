@@ -66,7 +66,10 @@ fn create_pipe() -> Result<(RawFd, RawFd), String> {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if ret != 0 {
-        return Err(format!("pipe() failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "pipe() failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     // Set both ends non-blocking.
     unsafe {
@@ -92,7 +95,11 @@ pub fn subscribe(name: &str) -> Result<(u32, RawFd), String> {
     reg.by_name
         .entry(name.to_string())
         .or_default()
-        .push(FanoutEntry { handle, tx, wake_write_fd });
+        .push(FanoutEntry {
+            handle,
+            tx,
+            wake_write_fd,
+        });
 
     reg.by_handle.insert(
         handle,
@@ -111,7 +118,9 @@ pub fn subscribe(name: &str) -> Result<(u32, RawFd), String> {
 pub fn publish(name: &str, bytes: Vec<u8>, origin_handle: u32) {
     let mut reg = registry().lock().unwrap();
 
-    let Some(entries) = reg.by_name.get_mut(name) else { return };
+    let Some(entries) = reg.by_name.get_mut(name) else {
+        return;
+    };
 
     // Collect wake fds for dead senders so we can remove them afterward.
     let mut dead: Vec<u32> = Vec::new();
@@ -153,7 +162,13 @@ pub fn receive(handle: u32) -> Vec<Vec<u8>> {
     // Drain the wake pipe so the fd is clean for the next registration.
     let mut discard = [0u8; 256];
     // SAFETY: discard is valid; fd is a valid non-blocking pipe read end.
-    unsafe { libc::read(state.wake_read_fd, discard.as_mut_ptr() as *mut _, discard.len()) };
+    unsafe {
+        libc::read(
+            state.wake_read_fd,
+            discard.as_mut_ptr() as *mut _,
+            discard.len(),
+        )
+    };
 
     messages
 }
@@ -174,7 +189,9 @@ pub fn wake_subscriber(handle: u32) {
 pub fn unsubscribe(handle: u32) {
     let mut reg = registry().lock().unwrap();
 
-    let Some(state) = reg.by_handle.remove(&handle) else { return };
+    let Some(state) = reg.by_handle.remove(&handle) else {
+        return;
+    };
 
     // Remove from fan-out list.
     if let Some(entries) = reg.by_name.get_mut(&state.name) {
@@ -196,11 +213,16 @@ pub fn unsubscribe(handle: u32) {
 // ---------------------------------------------------------------------------
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> =
-        ["subscribe", "publish", "receive", "unsubscribe", "wakeSubscriber"]
-            .iter()
-            .map(|n| v8::String::new(scope, n).unwrap())
-            .collect();
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "subscribe",
+        "publish",
+        "receive",
+        "unsubscribe",
+        "wakeSubscriber",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
     let module_name = v8::String::new(scope, "internal:broadcast").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
 }
@@ -323,7 +345,9 @@ fn native_receive(
     for (i, msg) in messages.into_iter().enumerate() {
         let len = msg.len();
         let bs = v8::ArrayBuffer::new_backing_store(scope, len);
-        if !msg.is_empty() && let Some(ptr) = bs.data() {
+        if !msg.is_empty()
+            && let Some(ptr) = bs.data()
+        {
             let dst = ptr.as_ptr() as *mut u8;
             // SAFETY: freshly allocated backing store with exclusive access.
             unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), dst, len) };
@@ -381,7 +405,10 @@ mod tests {
 
         // h1 should NOT receive its own message.
         let msgs1 = receive(h1);
-        assert!(msgs1.is_empty(), "originator should not receive its own message");
+        assert!(
+            msgs1.is_empty(),
+            "originator should not receive its own message"
+        );
 
         // h2 should receive the message.
         let msgs2 = receive(h2);

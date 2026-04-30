@@ -3,13 +3,11 @@
 //! Exposes the JS API used by the parent context to create, step, and terminate
 //! child Realms (both same-Isolate and thread-based).
 
-use ::v8;
 use ::libc;
+use ::v8;
 
-use crate::{
-    state::{ChildRealmSlot, ProviderConfig, get_state},
-};
-use super::{thread, transit};
+use super::{process, thread, transit};
+use crate::state::{ChildRealmSlot, ImportRule, get_state, resolve_directive};
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
@@ -21,6 +19,12 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "threadPortSend",
         "threadPortRecv",
         "getThreadPortWakeReadFd",
+        // Process realm
+        "createProcessContext",
+        "stepProcessContext",
+        "processPortSend",
+        "processPortRecv",
+        "getProcessSocketFd",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -53,15 +57,83 @@ fn eval_steps<'a>(
     set_fn!("threadPortSend", thread_port_send);
     set_fn!("threadPortRecv", thread_port_recv);
     set_fn!("getThreadPortWakeReadFd", get_thread_port_wake_read_fd);
+    set_fn!("createProcessContext", create_process_context);
+    set_fn!("stepProcessContext", step_process_context);
+    set_fn!("processPortSend", process_port_send);
+    set_fn!("processPortRecv", process_port_recv);
+    set_fn!("getProcessSocketFd", get_process_socket_fd);
 
     Some(v8::undefined(scope).into())
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper: parse and merge import rules from JSON
+// ---------------------------------------------------------------------------
+
+/// Parse `serializedRules` (a JS string containing a JSON array of ImportRule
+/// objects) and merge with the parent's import rules.
+///
+/// The child's rules are appended after the parent's so that last-match-wins
+/// semantics mean the child overrides the parent for any pattern it specifies.
+///
+/// `Inherit` directives from the child-specific rules are dropped — the parent's
+/// rule already covers those specifiers via the merged list.
+///
+/// At merge time, child rules are validated for capability narrowing: a child
+/// rule that would grant access to a specifier the parent has blocked is rejected.
+fn parse_and_merge_rules(
+    scope: &mut v8::HandleScope,
+    rules_arg: v8::Local<v8::Value>,
+) -> Result<Vec<ImportRule>, String> {
+    use crate::state::ImportDirective;
+
+    // Get the parent's rules.
+    let parent_rules = get_state(scope).borrow().import_rules.clone();
+
+    // Parse the child-specific JSON rules.
+    let json_str = rules_arg
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+
+    if json_str.is_empty() || json_str == "null" || json_str == "[]" {
+        return Ok(parent_rules);
+    }
+
+    let child_specific: Vec<ImportRule> =
+        serde_json::from_str(&json_str).map_err(|e| format!("invalid import rules JSON: {e}"))?;
+
+    let mut merged = parent_rules.clone();
+    for rule in child_specific {
+        // Drop Inherit rules — the parent's rule is already in the merged list.
+        if matches!(rule.directive, ImportDirective::Inherit) {
+            continue;
+        }
+
+        // Capability narrowing: for non-blocking directives on exact patterns,
+        // verify the parent hasn't blocked that specifier.
+        if !matches!(rule.directive, ImportDirective::Block) {
+            if let crate::state::ImportPattern::Exact(ref spec) = rule.pattern {
+                let parent_dir = resolve_directive(&parent_rules, None, spec);
+                if matches!(parent_dir, Some(ImportDirective::Block)) {
+                    return Err(format!(
+                        "child rule for '{spec}' escalates past parent's block"
+                    ));
+                }
+            }
+        }
+
+        merged.push(rule);
+    }
+
+    Ok(merged)
 }
 
 // ---------------------------------------------------------------------------
 // Same-Isolate child realm callbacks
 // ---------------------------------------------------------------------------
 
-/// JS: `createContext(root, entryPath, overrideEntries, blockedSpecifiers[, port]) -> number`
+/// JS: `createContext(root, entryPath, serializedRules[, port]) -> number`
 ///
 /// Queues a pending child-context creation and returns the pre-allocated
 /// handle index. Actual context construction is deferred to
@@ -71,10 +143,8 @@ fn eval_steps<'a>(
 /// Arguments:
 /// - `root` — filesystem root for the child (inherits from parent if empty).
 /// - `entryPath` — absolute path to the entry module to import in the child.
-/// - `overrideEntries` — `[specifier, code, sourceMap][]` triples that
-///   supplement the inherited `providers` map. Empty code = remove entry (use BUILTINS).
-/// - `blockedSpecifiers` — `string[]` of module specifiers that user code in
-///   the child Realm may not import. Builtins can still import them freely.
+/// - `serializedRules` — JSON string: `ImportRule[]` (child-specific rules to
+///   merge with the parent's rules). Empty/null = inherit parent's rules as-is.
 /// - `port` (optional) — the child's MessagePort object (created in the parent
 ///   context). Stored in the child's FinoState and returned by `getPort()`.
 fn create_context(
@@ -86,9 +156,8 @@ fn create_context(
 
     let root_arg = args.get(0);
     let entry_arg = args.get(1);
-    let overrides_arg = args.get(2);
-    let blocked_arg = args.get(3);
-    let port_arg = args.get(4);
+    let rules_arg = args.get(2);
+    let port_arg = args.get(3);
 
     // --- Build process_env: inherit from parent, override root if provided ---
     let mut process_env = get_state(scope).borrow().process_env.clone();
@@ -108,68 +177,18 @@ fn create_context(
         .map(|s| s.to_rust_string_lossy(scope))
         .unwrap_or_default();
 
-    // --- Parse override entries: Array<[specifier, code, sourceMap]> ---
-    let mut extra_overrides: Vec<(String, String, String)> = Vec::new();
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(overrides_arg) {
-        for i in 0..arr.length() {
-            let idx = v8::Integer::new(scope, i as i32);
-            let entry = match arr.get(scope, idx.into()) {
-                Some(v) => v,
-                None => continue,
-            };
-            if let Ok(triple) = v8::Local::<v8::Array>::try_from(entry) {
-                let specifier = triple
-                    .get_index(scope, 0)
-                    .and_then(|v| v.to_string(scope))
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_default();
-                let code = triple
-                    .get_index(scope, 1)
-                    .and_then(|v| v.to_string(scope))
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_default();
-                let source_map = triple
-                    .get_index(scope, 2)
-                    .and_then(|v| v.to_string(scope))
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_default();
-                if !specifier.is_empty() {
-                    extra_overrides.push((specifier, code, source_map));
-                }
-            }
+    // --- Parse and merge import rules ---
+    let import_rules = match parse_and_merge_rules(scope, rules_arg) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = v8::String::new(scope, &format!("createContext: {e}")).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
         }
-    }
-
-    // --- Build providers: inherit from parent, apply child-specific entries ---
-    let mut child_providers = {
-        let parent_state = get_state(scope);
-        let st = parent_state.borrow();
-        st.providers.clone()
     };
-    for (specifier, code, source_map) in extra_overrides {
-        if code.is_empty() {
-            // Empty code signals "remove this provider entry" — specifier falls
-            // through to the compiled-in system default (BUILTINS).
-            child_providers.remove(&specifier);
-        } else {
-            child_providers.insert(specifier, Some(ProviderConfig { code, source_map }));
-        }
-    }
 
     let package_map_json = get_state(scope).borrow().package_map_json.clone();
-
-    // --- Parse blocked specifiers: Array<string> → None entries in providers ---
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(blocked_arg) {
-        for i in 0..arr.length() {
-            let idx = v8::Integer::new(scope, i as i32);
-            if let Some(s) = arr.get(scope, idx.into()).and_then(|v| v.to_string(scope)) {
-                let spec = s.to_rust_string_lossy(scope);
-                if !spec.is_empty() {
-                    child_providers.insert(spec, None);
-                }
-            }
-        }
-    }
 
     // --- Capture the optional port object as a Global before borrowing state ---
     let port_global: Option<v8::Global<v8::Value>> =
@@ -189,7 +208,7 @@ fn create_context(
             handle_idx: idx,
             process_env,
             entry_path,
-            providers: child_providers,
+            import_rules,
             package_map_json,
             port: port_global,
         });
@@ -266,7 +285,7 @@ fn terminate_child(
 // Thread realm callbacks
 // ---------------------------------------------------------------------------
 
-/// JS: `createThreadContext(root, entryPath, overrideEntries, blockedSpecifiers): number`
+/// JS: `createThreadContext(root, entryPath, serializedRules): number`
 ///
 /// Spawns a new OS thread with its own `v8::Isolate` running `_bootstrap.mjs`.
 /// Returns a handle index into the parent's `thread_contexts` Vec.
@@ -277,8 +296,7 @@ fn create_thread_context(
 ) {
     let root_arg = args.get(0);
     let entry_arg = args.get(1);
-    let overrides_arg = args.get(2);
-    let blocked_arg = args.get(3);
+    let rules_arg = args.get(2);
 
     // --- Build process_env: inherit from parent, override root if provided ---
     let mut process_env = get_state(scope).borrow().process_env.clone();
@@ -298,60 +316,16 @@ fn create_thread_context(
         .map(|s| s.to_rust_string_lossy(scope))
         .unwrap_or_default();
 
-    // --- Build providers map (same logic as create_context) ---
-    let mut providers = {
-        let state_rc = get_state(scope);
-        let st = state_rc.borrow();
-        st.providers.clone()
+    // --- Parse and merge import rules ---
+    let import_rules = match parse_and_merge_rules(scope, rules_arg) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = v8::String::new(scope, &format!("createThreadContext: {e}")).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
     };
-
-    // Apply override entries.
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(overrides_arg) {
-        for i in 0..arr.length() {
-            let idx = v8::Integer::new(scope, i as i32);
-            let entry = match arr.get(scope, idx.into()) {
-                Some(v) => v,
-                None => continue,
-            };
-            if let Ok(triple) = v8::Local::<v8::Array>::try_from(entry) {
-                let specifier = triple
-                    .get_index(scope, 0)
-                    .and_then(|v| v.to_string(scope))
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_default();
-                let code = triple
-                    .get_index(scope, 1)
-                    .and_then(|v| v.to_string(scope))
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_default();
-                let source_map = triple
-                    .get_index(scope, 2)
-                    .and_then(|v| v.to_string(scope))
-                    .map(|s| s.to_rust_string_lossy(scope))
-                    .unwrap_or_default();
-                if !specifier.is_empty() {
-                    if code.is_empty() {
-                        providers.remove(&specifier);
-                    } else {
-                        providers.insert(specifier, Some(ProviderConfig { code, source_map }));
-                    }
-                }
-            }
-        }
-    }
-
-    // Apply blocked specifiers as None entries.
-    if let Ok(arr) = v8::Local::<v8::Array>::try_from(blocked_arg) {
-        for i in 0..arr.length() {
-            let idx = v8::Integer::new(scope, i as i32);
-            if let Some(s) = arr.get(scope, idx.into()).and_then(|v| v.to_string(scope)) {
-                let spec = s.to_rust_string_lossy(scope);
-                if !spec.is_empty() {
-                    providers.insert(spec, None);
-                }
-            }
-        }
-    }
 
     let package_map_json = get_state(scope).borrow().package_map_json.clone();
 
@@ -359,7 +333,7 @@ fn create_thread_context(
     let spawn_config = thread::SpawnConfig {
         process_env,
         entry_path,
-        providers,
+        import_rules,
         package_map_json,
     };
 
@@ -396,7 +370,10 @@ fn step_thread_context(
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let state_rc = get_state(scope);
     let st = state_rc.borrow();
-    let h = st.thread_contexts.get(handle).and_then(|slot| slot.as_ref());
+    let h = st
+        .thread_contexts
+        .get(handle)
+        .and_then(|slot| slot.as_ref());
     let still_running = h
         .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
         .unwrap_or(false);
@@ -460,17 +437,16 @@ fn thread_port_send(
                 if let Some(elem) = arr.get(scope, idx.into())
                     && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
                 {
-                    let Some(sab) = su8a.buffer(scope) else { continue };
+                    let Some(sab) = su8a.buffer(scope) else {
+                        continue;
+                    };
                     let Some(sptr) = sab.data() else { continue };
                     let soff = su8a.byte_offset();
                     let slen = su8a.byte_length();
                     // SAFETY: same as above.
                     let raw = unsafe {
-                        std::slice::from_raw_parts(
-                            (sptr.as_ptr() as *const u8).add(soff),
-                            slen,
-                        )
-                        .to_vec()
+                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
+                            .to_vec()
                     };
                     stores.push(raw);
                 }
@@ -483,7 +459,11 @@ fn thread_port_send(
     // Port transfer infos (optional fourth arg — Array of [handle, wakeReadFd]).
     let transfer_ports = thread::extract_port_infos(scope, args.get(3));
 
-    let thread_msg = ThreadMessage { data, transfer_stores, transfer_ports };
+    let thread_msg = ThreadMessage {
+        data,
+        transfer_stores,
+        transfer_ports,
+    };
 
     let (maybe_tx, maybe_wake_write) = {
         let state_rc = get_state(scope);
@@ -555,6 +535,217 @@ fn get_thread_port_wake_read_fd(
     let st = state_rc.borrow();
     let fd = st
         .thread_contexts
+        .get(handle)
+        .and_then(|s| s.as_ref())
+        .map(|h| h.parent_wake_read)
+        .unwrap_or(-1);
+    rv.set(v8::Integer::new(scope, fd).into());
+}
+
+// ---------------------------------------------------------------------------
+// Process realm callbacks
+// ---------------------------------------------------------------------------
+
+/// JS: `createProcessContext(root, entryPath, serializedRules) -> number`
+fn create_process_context(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let root_arg = args.get(0);
+    let entry_arg = args.get(1);
+    let rules_arg = args.get(2);
+
+    let mut process_env = get_state(scope).borrow().process_env.clone();
+    let root_s = root_arg
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    if !root_s.is_empty() {
+        process_env.root = std::path::PathBuf::from(root_s);
+    }
+
+    let entry_path = entry_arg
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+
+    let import_rules = match parse_and_merge_rules(scope, rules_arg) {
+        Ok(r) => r,
+        Err(e) => {
+            let msg = v8::String::new(scope, &format!("createProcessContext: {e}")).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
+    };
+
+    let package_map_json = get_state(scope).borrow().package_map_json.clone();
+
+    let spawn_args = process::SpawnArgs {
+        process_env,
+        entry_path,
+        import_rules,
+        package_map_json,
+    };
+    let handle = match process::spawn_process_realm(spawn_args) {
+        Ok(h) => h,
+        Err(e) => {
+            let msg = v8::String::new(scope, &format!("createProcessContext: {e}")).unwrap();
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
+    };
+
+    let idx = {
+        let state_rc = get_state(scope);
+        let mut st = state_rc.borrow_mut();
+        let i = st.process_contexts.len();
+        st.process_contexts.push(Some(handle));
+        i
+    };
+    rv.set(v8::Integer::new(scope, idx as i32).into());
+}
+
+/// JS: `stepProcessContext(handle: number) -> boolean`
+fn step_process_context(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let state_rc = get_state(scope);
+    let st = state_rc.borrow();
+    let h = st.process_contexts.get(handle).and_then(|s| s.as_ref());
+    let still_running = h
+        .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
+        .unwrap_or(false);
+    if !still_running {
+        if let Some(err_msg) = h.and_then(|h| h.error.lock().ok()?.clone()) {
+            let msg = v8::String::new(scope, &err_msg)
+                .unwrap_or_else(|| v8::String::new(scope, "process realm error").unwrap());
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return;
+        }
+    }
+    rv.set(v8::Boolean::new(scope, still_running).into());
+}
+
+/// JS: `processPortSend(handle, bytes, stores?) -> void`
+fn process_port_send(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    use thread::ThreadMessage;
+
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let bytes_arg = args.get(1);
+    let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
+        return;
+    };
+
+    let data: Vec<u8> = {
+        let Some(ab) = u8a.buffer(scope) else { return };
+        let Some(ptr) = ab.data() else { return };
+        let off = u8a.byte_offset();
+        let len = u8a.byte_length();
+        unsafe { std::slice::from_raw_parts((ptr.as_ptr() as *const u8).add(off), len).to_vec() }
+    };
+
+    let transfer_stores: Vec<Vec<u8>> = if let Ok(arr) =
+        v8::Local::<v8::Array>::try_from(args.get(2))
+    {
+        let mut stores = Vec::with_capacity(arr.length() as usize);
+        for i in 0..arr.length() {
+            let idx = v8::Integer::new(scope, i as i32);
+            if let Some(elem) = arr.get(scope, idx.into())
+                && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
+            {
+                let Some(sab) = su8a.buffer(scope) else {
+                    continue;
+                };
+                let Some(sptr) = sab.data() else { continue };
+                let soff = su8a.byte_offset();
+                let slen = su8a.byte_length();
+                unsafe {
+                    stores.push(
+                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
+                            .to_vec(),
+                    );
+                }
+            }
+        }
+        stores
+    } else {
+        Vec::new()
+    };
+
+    let msg = ThreadMessage {
+        data,
+        transfer_stores,
+        transfer_ports: Vec::new(),
+    };
+
+    let maybe_tx = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        st.process_contexts
+            .get(handle)
+            .and_then(|s| s.as_ref())
+            .map(|h| h.tx.clone())
+    };
+    if let Some(tx) = maybe_tx {
+        let _ = tx.send(msg);
+    }
+}
+
+/// JS: `processPortRecv(handle: number) -> [Uint8Array, ...Uint8Array[]][]`
+fn process_port_recv(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    use thread::ThreadMessage;
+
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+
+    let (messages, maybe_wake_read) = {
+        let state_rc = get_state(scope);
+        let st = state_rc.borrow();
+        match st.process_contexts.get(handle).and_then(|s| s.as_ref()) {
+            Some(h) => {
+                let mut msgs: Vec<ThreadMessage> = Vec::new();
+                while let Ok(msg) = h.rx.try_recv() {
+                    msgs.push(msg);
+                }
+                (msgs, Some(h.parent_wake_read))
+            }
+            None => (Vec::new(), None),
+        }
+    };
+
+    if let Some(wake_read) = maybe_wake_read {
+        let mut discard = [0u8; 256];
+        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
+    }
+
+    rv.set(transit::build_message_array(scope, messages).into());
+}
+
+/// JS: `getProcessSocketFd(handle: number) -> number`
+fn get_process_socket_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
+    let state_rc = get_state(scope);
+    let st = state_rc.borrow();
+    let fd = st
+        .process_contexts
         .get(handle)
         .and_then(|s| s.as_ref())
         .map(|h| h.parent_wake_read)

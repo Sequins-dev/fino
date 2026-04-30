@@ -22,21 +22,17 @@
 //!    the receive half and parent wake-pipe read end for receiving.
 
 use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
     os::unix::io::RawFd,
-    rc::Rc,
-    sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}, mpsc},
-    time::Instant,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
 use ::v8;
 
-use crate::{
-    loader,
-    realm,
-    state::{FinoState, ProviderConfig, get_state, root_queue_ptr},
-};
+use crate::state::{ImportRule, get_state};
 
 /// Info shipped alongside a message for each transferred MessagePort.
 ///
@@ -69,7 +65,7 @@ pub struct ThreadMessage {
 pub struct SpawnConfig {
     pub process_env: crate::state::ProcessEnv,
     pub entry_path: String,
-    pub providers: HashMap<String, Option<ProviderConfig>>,
+    pub import_rules: Vec<ImportRule>,
     pub package_map_json: Option<String>,
 }
 
@@ -116,7 +112,7 @@ impl Drop for ThreadRealmHandle {
 struct IsolateConfig {
     process_env: crate::state::ProcessEnv,
     entry_path: String,
-    providers: HashMap<String, Option<ProviderConfig>>,
+    import_rules: Vec<ImportRule>,
     package_map_json: Option<String>,
     /// Receives messages sent from the parent.
     channel_rx: mpsc::Receiver<ThreadMessage>,
@@ -142,11 +138,6 @@ impl Drop for OwnedFd {
 // ---------------------------------------------------------------------------
 // Realm creation timing (FINO_REALM_TIMING=1)
 // ---------------------------------------------------------------------------
-
-fn realm_timing_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| std::env::var_os("FINO_REALM_TIMING").is_some())
-}
 
 // ---------------------------------------------------------------------------
 // Pipe creation
@@ -195,7 +186,7 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
     let iso_config = IsolateConfig {
         process_env: config.process_env,
         entry_path: config.entry_path,
-        providers: config.providers,
+        import_rules: config.import_rules,
         package_map_json: config.package_map_json,
         channel_rx: child_rx,
         channel_tx: child_tx,
@@ -242,262 +233,22 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
 // ---------------------------------------------------------------------------
 
 /// Bootstrap a V8 Isolate on the calling thread and run its event loop.
-///
-/// Mirrors `runtime::run()` but evaluates `_bootstrap.mjs` instead of
-/// `_main.mjs`, and seeds `FinoState` with the channel/wake-pipe endpoints
-/// for cross-thread messaging.
 fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
     // Close the pipe fds this thread owns when the function returns.
     let _wake_read_guard = OwnedFd(config.wake_read_fd);
     let _partner_write_guard = OwnedFd(config.partner_wake_write_fd);
 
-    // V8 is initialized once globally; safe to call from any thread.
-    crate::runtime::init_v8();
-
-    let total_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
-
-    let mut params = v8::CreateParams::default();
-    params = params.heap_limits(0, 1 << 30);
-    // Share the same allocator as the main Isolate so SAB backing stores are
-    // accessible across both Isolates.
-    params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
-
-    let isolate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
-    let isolate = &mut v8::Isolate::new(params);
-    if let Some(t) = isolate_start {
-        eprintln!("[fino:realm-timing] thread-realm  isolate-new: {:?}", t.elapsed());
-    }
-    isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
-    // Thread realms run on their own OS thread — Atomics.wait() is safe here.
-    isolate.set_allow_atomics_wait(true);
-    isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
-    isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
-
-    let isolate_scope = &mut v8::HandleScope::new(isolate);
-    let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
-    let context = v8::Context::new(isolate_scope, Default::default());
-    context.set_microtask_queue(&root_queue);
-
-    let bootstrap_module_global: v8::Global<v8::Module>;
-    let state_rc: Rc<RefCell<FinoState>>;
-
-    // -------------------------------------------------------------------
-    // Setup: init FinoState, compile+evaluate _bootstrap.mjs, first pump.
-    // -------------------------------------------------------------------
-    {
-        let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        let state = FinoState {
-            process_env: config.process_env,
-            package_map_json: config.package_map_json,
-            root_queue,
-            providers: config.providers,
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_script_ids: HashSet::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            loop_step_fn: None,
-            on_done_fn: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
-            entry_path: Some(config.entry_path),
-            terminated: false,
-            port: None,
-            channel_rx: Some(config.channel_rx),
-            channel_tx: Some(config.channel_tx),
-            wake_read_fd: Some(config.wake_read_fd),
-            wake_write_fd: Some(config.partner_wake_write_fd),
-            thread_contexts: Vec::new(),
-        };
-
-        context.set_slot(Rc::new(RefCell::new(state)));
-
-        // CPED: empty JS Array as the live async-context frame.
-        let initial_frame = v8::Array::new(scope, 0);
-        scope.set_continuation_preserved_embedder_data(initial_frame.into());
-
-        // Compile and evaluate _bootstrap.mjs.
-        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs"));
-        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs.map"));
-
-        let compile_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
-        let bootstrap_module = {
-            let tc = &mut v8::TryCatch::new(scope);
-            loader::register_source_map_from_json(tc, "_bootstrap.mjs", bootstrap_map);
-            match loader::compile_source_module(
-                tc,
-                bootstrap_src,
-                "_bootstrap.mjs",
-                Some(bootstrap_map),
-            ) {
-                Some(m) => m,
-                None => {
-                    let msg = catch_message(tc)
-                        .unwrap_or_else(|| "Failed to compile _bootstrap.mjs".to_string());
-                    return Err(msg);
-                }
-            }
-        };
-        if let Some(t) = compile_start {
-            eprintln!("[fino:realm-timing] thread-realm  compile:     {:?}", t.elapsed());
-        }
-
-        loader::register_as_builtin(scope, bootstrap_module, "internal:bootstrap");
-
-        let instantiate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            if bootstrap_module
-                .instantiate_module(tc, loader::resolve_module_callback)
-                .is_none()
-            {
-                let msg = catch_message(tc)
-                    .unwrap_or_else(|| "Failed to instantiate _bootstrap.mjs".to_string());
-                return Err(msg);
-            }
-        }
-        if let Some(t) = instantiate_start {
-            eprintln!("[fino:realm-timing] thread-realm  instantiate: {:?}", t.elapsed());
-        }
-
-        let evaluate_start = if realm_timing_enabled() { Some(Instant::now()) } else { None };
-        {
-            let tc = &mut v8::TryCatch::new(scope);
-            if bootstrap_module.evaluate(tc).is_none() {
-                let msg = catch_message(tc)
-                    .unwrap_or_else(|| "Failed to evaluate _bootstrap.mjs".to_string());
-                return Err(msg);
-            }
-        }
-        pump_and_checkpoint(scope);
-        if let Some(t) = evaluate_start {
-            eprintln!("[fino:realm-timing] thread-realm  evaluate:    {:?}", t.elapsed());
-        }
-
-        if bootstrap_module.get_status() == v8::ModuleStatus::Errored {
-            let exc = bootstrap_module.get_exception();
-            let msg = exc
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in _bootstrap.mjs".to_string());
-            return Err(msg);
-        }
-
-        state_rc = get_state(scope);
-        bootstrap_module_global = v8::Global::new(scope, bootstrap_module);
-
-        if let Some(t) = total_start {
-            eprintln!("[fino:realm-timing] thread-realm  total:       {:?}", t.elapsed());
-        }
-    } // ContextScope dropped — isolate_scope is free.
-
-    // -------------------------------------------------------------------
-    // Host loop (same structure as runtime::run).
-    // -------------------------------------------------------------------
-    'main: loop {
-        let should_continue = 'step: {
-            let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-            let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
-                Some(f) => f,
-                None => break 'main,
-            };
-
-            let should_continue = {
-                let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                v8::Local::new(scope, &loop_step_fn)
-                    .call(scope, undef, &[])
-                    .map(|v| v.boolean_value(scope))
-                    .unwrap_or(false)
-            };
-
-            if should_continue {
-                let (maybe_fn, maybe_resolver) = {
-                    let mut st = state_rc.borrow_mut();
-                    (st.sync_call_fn.take(), st.sync_call_resolver.take())
-                };
-
-                if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
-                    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-                        let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        let tc = &mut v8::TryCatch::new(scope);
-                        let fn_local = v8::Local::new(tc, &fn_ref);
-                        match fn_local.call(tc, undef, &[]) {
-                            Some(result) => Ok(v8::Global::new(tc, result)),
-                            None => {
-                                let exc =
-                                    tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                                Err(v8::Global::new(tc, exc))
-                            }
-                        }
-                    };
-
-                    match call_result {
-                        Ok(result_ref) => {
-                            let resolver_local = v8::Local::new(scope, &resolver_ref);
-                            let result_local = v8::Local::new(scope, &result_ref);
-                            let _ = resolver_local.resolve(scope, result_local);
-                        }
-                        Err(exc_ref) => {
-                            let resolver_local = v8::Local::new(scope, &resolver_ref);
-                            let exc_local = v8::Local::new(scope, &exc_ref);
-                            let _ = resolver_local.reject(scope, exc_local);
-                        }
-                    }
-
-                    pump_and_checkpoint(scope);
-                }
-            }
-
-            break 'step should_continue;
-        }; // ContextScope dropped — isolate_scope is free.
-
-        if !should_continue {
-            break 'main;
-        }
-
-        realm::process_pending_creates(isolate_scope, &state_rc);
-    }
-
-    // -------------------------------------------------------------------
-    // Teardown: terminate children, call onDone, dispose profiler.
-    // -------------------------------------------------------------------
-    {
-        let scope = &mut v8::ContextScope::new(isolate_scope, context);
-
-        realm::terminate_all_children(scope);
-
-        let on_done_fn = state_rc.borrow().on_done_fn.clone();
-        if let Some(f) = on_done_fn {
-            let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-            v8::Local::new(scope, &f).call(scope, undef, &[]);
-            pump_and_checkpoint(scope);
-        }
-
-        if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
-            unsafe { crate::profiler::dispose_profiler(ptr) };
-        }
-
-        let bootstrap_module = v8::Local::new(scope, &bootstrap_module_global);
-        if bootstrap_module.get_status() == v8::ModuleStatus::Errored {
-            let exc = bootstrap_module.get_exception();
-            let msg = exc
-                .to_string(scope)
-                .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in _bootstrap.mjs".to_string());
-            return Err(msg);
-        }
-    }
-
-    Ok(())
+    super::child::run_child_isolate(super::child::ChildConfig {
+        process_env: config.process_env,
+        package_map_json: config.package_map_json,
+        import_rules: config.import_rules,
+        entry_path: config.entry_path,
+        channel_rx: config.channel_rx,
+        channel_tx: config.channel_tx,
+        wake_read_fd: config.wake_read_fd,
+        wake_write_fd: Some(config.partner_wake_write_fd),
+        timing_label: "thread-realm",
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -513,22 +264,14 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
 ///   channel and returns them as an Array of Uint8Arrays.
 /// - `getWakeReadFd(): number` — returns the own wake-pipe read fd (or -1 if
 ///   this is not a thread realm), for registration with `loop.readable()`.
-pub fn create_thread_port_module<'s>(
-    scope: &mut v8::HandleScope<'s>,
-) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> =
-        ["nativeSend", "nativeRecv", "getWakeReadFd"]
-            .iter()
-            .map(|n| v8::String::new(scope, n).unwrap())
-            .collect();
+pub fn create_thread_port_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+    let export_names: Vec<v8::Local<v8::String>> = ["nativeSend", "nativeRecv", "getWakeReadFd"]
+        .iter()
+        .map(|n| v8::String::new(scope, n).unwrap())
+        .collect();
 
     let module_name = v8::String::new(scope, "internal:thread-port").unwrap();
-    v8::Module::create_synthetic_module(
-        scope,
-        module_name,
-        &export_names,
-        thread_port_eval_steps,
-    )
+    v8::Module::create_synthetic_module(scope, module_name, &export_names, thread_port_eval_steps)
 }
 
 fn thread_port_eval_steps<'a>(
@@ -564,7 +307,8 @@ fn native_send(
 ) {
     let bytes_arg = args.get(0);
     let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
-        let msg = v8::String::new(scope, "nativeSend: first argument must be a Uint8Array").unwrap();
+        let msg =
+            v8::String::new(scope, "nativeSend: first argument must be a Uint8Array").unwrap();
         let exc = v8::Exception::type_error(scope, msg);
         scope.throw_exception(exc);
         return;
@@ -592,17 +336,16 @@ fn native_send(
                 if let Some(elem) = arr.get(scope, idx.into())
                     && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
                 {
-                    let Some(sab) = su8a.buffer(scope) else { continue };
+                    let Some(sab) = su8a.buffer(scope) else {
+                        continue;
+                    };
                     let Some(sptr) = sab.data() else { continue };
                     let soff = su8a.byte_offset();
                     let slen = su8a.byte_length();
                     // SAFETY: same as above.
                     let raw = unsafe {
-                        std::slice::from_raw_parts(
-                            (sptr.as_ptr() as *const u8).add(soff),
-                            slen,
-                        )
-                        .to_vec()
+                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
+                            .to_vec()
                     };
                     stores.push(raw);
                 }
@@ -615,7 +358,11 @@ fn native_send(
     // Port transfer infos (optional third arg — Array of [handle, wakeReadFd]).
     let transfer_ports = extract_port_infos(scope, args.get(2));
 
-    let msg = ThreadMessage { data, transfer_stores, transfer_ports };
+    let msg = ThreadMessage {
+        data,
+        transfer_stores,
+        transfer_ports,
+    };
 
     // Extract tx and wake_write_fd without holding the borrow during send.
     let state_rc = get_state(scope);
@@ -624,12 +371,16 @@ fn native_send(
         (st.channel_tx.clone(), st.wake_write_fd)
     };
 
-    if let (Some(tx), Some(wake_write)) = (maybe_tx, maybe_wake_write) {
+    if let Some(tx) = maybe_tx {
         let _ = tx.send(msg);
-        // Write a single byte to the partner's wake pipe to unblock its wait.
-        let byte: [u8; 1] = [1];
-        // SAFETY: wake_write is a valid open fd owned by this runtime.
-        unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
+        // Thread realms write a wake byte so the partner's event loop unblocks.
+        // Process realms (wake_write_fd = None) wake the partner via the socket
+        // write in their bridge thread — no explicit wake byte needed here.
+        if let Some(wake_write) = maybe_wake_write {
+            let byte: [u8; 1] = [1];
+            // SAFETY: wake_write is a valid open fd owned by this runtime.
+            unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
+        }
     }
 }
 
@@ -701,38 +452,28 @@ pub(crate) fn extract_port_infos(
     let mut infos = Vec::with_capacity(count as usize);
     for i in 0..count {
         let idx = v8::Integer::new(scope, i as i32);
-        let Some(elem) = arr.get(scope, idx.into()) else { continue };
-        let Ok(pair) = v8::Local::<v8::Array>::try_from(elem) else { continue };
+        let Some(elem) = arr.get(scope, idx.into()) else {
+            continue;
+        };
+        let Ok(pair) = v8::Local::<v8::Array>::try_from(elem) else {
+            continue;
+        };
         let zero = v8::Integer::new(scope, 0);
-        let one  = v8::Integer::new(scope, 1);
-        let Some(h_val)  = pair.get(scope, zero.into()) else { continue };
-        let Some(fd_val) = pair.get(scope, one.into())  else { continue };
-        let handle       = h_val.integer_value(scope).unwrap_or(-1) as u32;
+        let one = v8::Integer::new(scope, 1);
+        let Some(h_val) = pair.get(scope, zero.into()) else {
+            continue;
+        };
+        let Some(fd_val) = pair.get(scope, one.into()) else {
+            continue;
+        };
+        let handle = h_val.integer_value(scope).unwrap_or(-1) as u32;
         let wake_read_fd = fd_val.integer_value(scope).unwrap_or(-1) as i32;
-        infos.push(TransferredPortInfo { handle, wake_read_fd });
+        infos.push(TransferredPortInfo {
+            handle,
+            wake_read_fd,
+        });
     }
     infos
-}
-
-fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
-    let platform = v8::V8::get_current_platform();
-    while v8::Platform::pump_message_loop(&platform, scope, false) {}
-    let state_rc = get_state(scope);
-    let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
-    let isolate: &mut v8::Isolate = scope.as_mut();
-    unsafe { &*queue_ptr }.perform_checkpoint(isolate);
-}
-
-fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
-    if !tc.has_caught() {
-        return None;
-    }
-    tc.exception().and_then(|exc| {
-        exc.to_object(tc)
-            .and_then(|obj| v8::String::new(tc, "stack").and_then(|key| obj.get(tc, key.into())))
-            .and_then(|stack| stack.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
-            .or_else(|| exc.to_string(tc).map(|s| s.to_rust_string_lossy(tc)))
-    })
 }
 
 #[cfg(test)]
@@ -794,9 +535,8 @@ mod tests {
         let error_clone = error.clone();
 
         let handle = std::thread::spawn(move || {
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                Ok::<(), String>(())
-            }));
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Ok::<(), String>(())));
             done_clone.store(true, Ordering::Release);
             let msg: Option<String> = match result {
                 Ok(Ok(())) => None,
@@ -809,7 +549,10 @@ mod tests {
         });
         handle.join().unwrap();
 
-        assert!(done.load(Ordering::Acquire), "done flag must be set on clean exit");
+        assert!(
+            done.load(Ordering::Acquire),
+            "done flag must be set on clean exit"
+        );
         assert!(
             error.lock().unwrap().is_none(),
             "error should be None on clean exit"

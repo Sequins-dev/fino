@@ -151,8 +151,12 @@ fn eval_steps<'a>(
 
 /// Copy raw bytes from a Uint8Array argument into a `Vec<u8>`.
 fn u8a_to_vec(scope: &mut v8::HandleScope, u8a: v8::Local<v8::Uint8Array>) -> Vec<u8> {
-    let Some(ab) = u8a.buffer(scope) else { return Vec::new() };
-    let Some(data_ptr) = ab.data() else { return Vec::new() };
+    let Some(ab) = u8a.buffer(scope) else {
+        return Vec::new();
+    };
+    let Some(data_ptr) = ab.data() else {
+        return Vec::new();
+    };
     let offset = u8a.byte_offset();
     let len = u8a.byte_length();
     // SAFETY: data_ptr into live V8 ArrayBuffer; slice doesn't outlive this frame.
@@ -287,8 +291,7 @@ fn native_deserialize(
 ) {
     let buf_arg = args.get(0);
     let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(buf_arg) else {
-        let msg =
-            v8::String::new(scope, "deserialize: argument must be a Uint8Array").unwrap();
+        let msg = v8::String::new(scope, "deserialize: argument must be a Uint8Array").unwrap();
         let exc = v8::Exception::error(scope, msg);
         scope.throw_exception(exc);
         return;
@@ -331,8 +334,7 @@ fn native_deserialize(
         return;
     };
     let Some(data_ptr) = ab.data() else {
-        let msg =
-            v8::String::new(scope, "deserialize: detached ArrayBuffer").unwrap();
+        let msg = v8::String::new(scope, "deserialize: detached ArrayBuffer").unwrap();
         let exc = v8::Exception::error(scope, msg);
         scope.throw_exception(exc);
         return;
@@ -342,9 +344,8 @@ fn native_deserialize(
     let len = u8a.byte_length();
     // SAFETY: data_ptr points into a live V8 ArrayBuffer we own for this scope;
     // the slice does not outlive this call frame.
-    let bytes = unsafe {
-        std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len)
-    };
+    let bytes =
+        unsafe { std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len) };
 
     let context = scope.get_current_context();
     let deser = v8::ValueDeserializer::new(scope, Box::new(FinoDeserializer), bytes);
@@ -364,8 +365,7 @@ fn native_deserialize(
     match deser.read_value(context) {
         Some(val) => rv.set(val),
         None => {
-            let msg =
-                v8::String::new(scope, "deserialize: failed to read value").unwrap();
+            let msg = v8::String::new(scope, "deserialize: failed to read value").unwrap();
             let exc = v8::Exception::error(scope, msg);
             scope.throw_exception(exc);
         }

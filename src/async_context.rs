@@ -164,4 +164,3 @@ fn run_loop(
         .ok()
         .map(|f| v8::Global::new(scope, f));
 }
-

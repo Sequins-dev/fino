@@ -68,7 +68,10 @@ fn create_pipe() -> Result<(RawFd, RawFd), String> {
     let mut fds = [0i32; 2];
     let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
     if ret != 0 {
-        return Err(format!("pipe() failed: {}", std::io::Error::last_os_error()));
+        return Err(format!(
+            "pipe() failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     unsafe {
         libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
@@ -203,7 +206,8 @@ fn native_transit_send(
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u32;
 
     let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(args.get(1)) else {
-        let msg = v8::String::new(scope, "transitSend: second argument must be a Uint8Array").unwrap();
+        let msg =
+            v8::String::new(scope, "transitSend: second argument must be a Uint8Array").unwrap();
         let exc = v8::Exception::type_error(scope, msg);
         scope.throw_exception(exc);
         return;
@@ -227,7 +231,9 @@ fn native_transit_send(
                 if let Some(elem) = arr.get(scope, idx.into())
                     && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
                 {
-                    let Some(sab) = su8a.buffer(scope) else { continue };
+                    let Some(sab) = su8a.buffer(scope) else {
+                        continue;
+                    };
                     let Some(sptr) = sab.data() else { continue };
                     let soff = su8a.byte_offset();
                     let slen = su8a.byte_length();

@@ -11,8 +11,8 @@ use ::v8;
 use libffi::middle::{Arg, Ret, arg};
 use smallvec::SmallVec;
 
-use super::pointer;
 use super::library::FfiSymbol;
+use super::pointer;
 use super::types::{NativeType, NativeValue};
 
 pub struct CallScratch {

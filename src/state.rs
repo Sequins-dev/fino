@@ -1,12 +1,8 @@
-use std::{
-    cell::RefCell,
-    collections::{HashMap, HashSet},
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
 use ::v8;
 use oxc_sourcemap::{SourceMap, Token};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub struct SourceMapCache {
     pub map: SourceMap,
@@ -69,6 +65,150 @@ pub struct ProcessEnv {
     pub exec_path: String,
 }
 
+// ---------------------------------------------------------------------------
+// Import rule system
+// ---------------------------------------------------------------------------
+
+/// A module specifier pattern used in import rules.
+///
+/// `"*"` → `CatchAll`, `"fino:*"` → `Prefix("fino:")`, anything else → `Exact`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImportPattern {
+    Exact(String),
+    /// Stored without the trailing `*`.
+    Prefix(String),
+    CatchAll,
+}
+
+impl ImportPattern {
+    pub fn parse(s: &str) -> Self {
+        if s == "*" {
+            Self::CatchAll
+        } else if let Some(prefix) = s.strip_suffix('*') {
+            Self::Prefix(prefix.to_string())
+        } else {
+            Self::Exact(s.to_string())
+        }
+    }
+
+    pub fn matches(&self, target: &str) -> bool {
+        match self {
+            Self::Exact(s) => s == target,
+            Self::Prefix(p) => target.starts_with(p.as_str()),
+            Self::CatchAll => true,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ImportPattern {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self::parse(&String::deserialize(d)?))
+    }
+}
+
+impl Serialize for ImportPattern {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Exact(v) => s.serialize_str(v),
+            Self::Prefix(p) => s.serialize_str(&format!("{p}*")),
+            Self::CatchAll => s.serialize_str("*"),
+        }
+    }
+}
+
+/// Interface description for a facade synthetic proxy module.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FacadeSpec {
+    pub specifier: String,
+    pub exports: Vec<String>,
+}
+
+/// What to do when a module import matches a rule.
+///
+/// Serialised as a JSON object with a `"type"` discriminator field.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum ImportDirective {
+    /// Use whatever the parent realm says for this specifier.
+    /// In a root realm, this falls through to the static BUILTINS.
+    Inherit,
+    /// Refuse to resolve — throws ImportError.
+    Block,
+    /// Resolve as if the import said `target` instead.
+    Remap { target: String },
+    /// Compile and use this JS source as the module implementation.
+    Source { code: String, source_map: String },
+    /// Generate a synthetic RPC-proxy module backed by the parent's handlers.
+    Facade(FacadeSpec),
+}
+
+/// A single rule in a Realm's import rule list.
+///
+/// Rules are evaluated in declaration order; the **last matching rule wins**.
+/// `from` restricts the rule to imports originating from a specific module.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImportRule {
+    /// Pattern matching the importing module's specifier. Absent = all modules.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<ImportPattern>,
+    /// Pattern matching the specifier being imported.
+    pub pattern: ImportPattern,
+    pub directive: ImportDirective,
+}
+
+/// Evaluate the import rule list and return the directive for `(from, spec)`.
+///
+/// Last-match-wins: iterates all rules, last matching one takes effect.
+/// Returns `None` (fall through to BUILTINS) if no rule matches.
+pub fn resolve_directive<'a>(
+    rules: &'a [ImportRule],
+    from: Option<&str>,
+    spec: &str,
+) -> Option<&'a ImportDirective> {
+    let mut last: Option<&ImportDirective> = None;
+    for rule in rules {
+        let from_ok = rule
+            .from
+            .as_ref()
+            .map_or(true, |p| p.matches(from.unwrap_or("")));
+        if from_ok && rule.pattern.matches(spec) {
+            last = Some(&rule.directive);
+        }
+    }
+    last
+}
+
+/// Default import rules installed in the root Realm.
+///
+/// `internal:*` is blocked from all importers; `fino:*` and `internal:*`
+/// modules are then explicitly re-allowed. This replaces the old
+/// `builtin_script_ids` allowlist entirely: any module whose specifier starts
+/// with `fino:` or `internal:` can import `internal:*`; everything else
+/// (user file-based modules, source overrides with arbitrary specifiers) cannot.
+pub fn default_import_rules() -> Vec<ImportRule> {
+    vec![
+        ImportRule {
+            from: None,
+            pattern: ImportPattern::Prefix("internal:".to_string()),
+            directive: ImportDirective::Block,
+        },
+        ImportRule {
+            from: Some(ImportPattern::Prefix("fino:".to_string())),
+            pattern: ImportPattern::Prefix("internal:".to_string()),
+            directive: ImportDirective::Inherit,
+        },
+        ImportRule {
+            from: Some(ImportPattern::Prefix("internal:".to_string())),
+            pattern: ImportPattern::Prefix("internal:".to_string()),
+            directive: ImportDirective::Inherit,
+        },
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Pending realm creation
+// ---------------------------------------------------------------------------
+
 /// A deferred request to create a child Realm.
 ///
 /// `native_create_context` queues one of these instead of calling
@@ -81,7 +221,7 @@ pub struct PendingRealm {
     pub handle_idx: usize,
     pub process_env: ProcessEnv,
     pub entry_path: String,
-    pub providers: HashMap<String, Option<ProviderConfig>>,
+    pub import_rules: Vec<ImportRule>,
     pub package_map_json: Option<String>,
     /// The child's MessagePort object (created in parent context).
     /// Stored here so it can be set into the child's FinoState after context
@@ -99,18 +239,6 @@ pub enum ChildRealmSlot {
     Failed,
 }
 
-/// The source code for a specific provider module in a Realm.
-///
-/// `FinoState::providers` maps specifiers to their configured provider.
-/// `Some(ProviderConfig)` means use this source for the specifier.
-/// `None` means the specifier is blocked for user code in this Realm.
-/// Specifiers not in the map fall through to the static `BUILTINS` array.
-#[derive(Clone)]
-pub struct ProviderConfig {
-    pub code: String,
-    pub source_map: String,
-}
-
 /// All per-run state, stored in the V8 context slot so every Rust callback can
 /// access it without passing extra arguments.
 pub struct FinoState {
@@ -124,15 +252,13 @@ pub struct FinoState {
     pub root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
 
     // ---------------------------------------------------------------------------
-    // Per-Realm provider configuration
+    // Per-Realm import rule list
     // ---------------------------------------------------------------------------
-    /// Authoritative provider map for this Realm. Each entry is the definitive
-    /// provider for that specifier:
-    ///   `Some(ProviderConfig)` — use this source as the module implementation.
-    ///   `None` — specifier is blocked for user code in this Realm.
-    /// Specifiers absent from the map fall through to the static BUILTINS array.
-    /// Children inherit the parent's full map and can override individual entries.
-    pub providers: HashMap<String, Option<ProviderConfig>>,
+    /// Ordered import rules for this Realm. Evaluated last-match-wins.
+    /// A child Realm's list is the parent's list with the child's overrides
+    /// appended, so parent rules are always the baseline and child rules layer
+    /// on top. An empty list means all imports fall through to BUILTINS.
+    pub import_rules: Vec<ImportRule>,
 
     // ---------------------------------------------------------------------------
     // Module caches
@@ -142,12 +268,11 @@ pub struct FinoState {
     /// also be cached alongside static BUILTINS entries.
     pub builtin_cache: HashMap<String, v8::Global<v8::Module>>,
     pub fs_cache: HashMap<PathBuf, v8::Global<v8::Module>>,
-    /// Script IDs of source builtin modules (for `internal:*` access restriction).
-    /// Synthetic modules return `None` from `module.script_id()` and are never
-    /// the referrer in a resolve callback.
-    pub builtin_script_ids: HashSet<i32>,
-    /// Reverse lookup from V8 script id to builtin specifier for source builtins.
-    pub builtin_specifiers: HashMap<i32, &'static str>,
+    /// Reverse lookup from V8 script id to builtin specifier.
+    /// Used for relative-import resolution from builtins (e.g. `./loop.mts`
+    /// from `fino:runtime/loop`) and as the `from` specifier for import-rule
+    /// matching. Static BUILTINS and dynamic `Source` overrides are both stored.
+    pub builtin_specifiers: HashMap<i32, String>,
 
     // ---------------------------------------------------------------------------
     // Module path tracking (script_id → filesystem path for source modules)
@@ -216,6 +341,11 @@ pub struct FinoState {
     // `allow(dead_code)`: used by `realm.rs` native functions via `crate::state`.
     #[allow(dead_code)]
     pub thread_contexts: Vec<Option<crate::realm::thread::ThreadRealmHandle>>,
+
+    /// Live process realm handles indexed by the JS handle returned from
+    /// `createProcessContext`.
+    #[allow(dead_code)]
+    pub process_contexts: Vec<Option<crate::realm::process::ProcessRealmHandle>>,
 
     /// Entry module path for child Realms. Set by `createContext` before
     /// evaluating `_bootstrap.mjs` in the child context. The child's bootstrap

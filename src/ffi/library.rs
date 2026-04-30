@@ -3,8 +3,8 @@ use std::ffi::c_void;
 use libffi::middle::{Cif, CodePtr};
 use libloading::Library;
 
-use crate::ffi::fast::{self, FastCallKind};
 use super::types::NativeType;
+use crate::ffi::fast::{self, FastCallKind};
 
 /// A loaded shared library. Kept alive by `Rc` in all symbol closures so
 /// the library is only unloaded when every reference is gone (or `close()` is

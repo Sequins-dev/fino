@@ -39,7 +39,9 @@
       "internal:opentelemetry/metrics": ["./js/opentelemetry/metrics.mts"],
       "internal:opentelemetry/sdk": ["./js/opentelemetry/sdk.mts"],
       "internal:opentelemetry/traces": ["./js/opentelemetry/traces.mts"],
-      "internal:opentelemetry/instrumentations/*": ["./js/opentelemetry/instrumentations/*.mts"]
+      "internal:opentelemetry/instrumentations/*": ["./js/opentelemetry/instrumentations/*.mts"],
+      "fino:cluster": ["./js/runtime/cluster.mts"],
+      "internal:cluster/*": ["./js/internal/cluster/*.mts"]
     },
     "target": "esnext",
     "ignoreDeprecations": "6.0",
