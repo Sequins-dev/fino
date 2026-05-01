@@ -23,6 +23,10 @@
 
 import { Realm, type RealmOptions, type RealmFn } from './realm.mts';
 import { Context } from 'fino:runtime/context';
+import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.mts';
+
+const _topicPoolCall    = topic(otelRuntimeTopic('realm_pool', 'call', 'start'));
+const _topicPoolCallEnd = topic(otelRuntimeTopic('realm_pool', 'call', 'end'));
 
 // ---------------------------------------------------------------------------
 // Correlation ID context slot
@@ -96,6 +100,12 @@ export interface PoolOptions {
   realm?: Omit<RealmOptions, 'entry' | 'thread'>;
   /** Per-task timeout in ms. 0 = no timeout. Default: 30 000. */
   timeout?: number;
+  /**
+   * Maximum ms to wait for in-flight tasks to settle during `close()`.
+   * If the drain does not complete within this window, all remaining workers
+   * are force-terminated. Default: 5 000.
+   */
+  closeTimeout?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +115,7 @@ export interface PoolOptions {
 export class RealmPool<F extends RealmFn = RealmFn> {
   #workers: PoolWorker[];
   #timeout: number;
+  #closeTimeout: number;
   #nextCorrelation = 0;
   #closed = false;
   #entry: string;
@@ -120,6 +131,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   constructor(opts: PoolOptions) {
     const size = opts.size ?? (navigator.hardwareConcurrency || 4);
     this.#timeout = opts.timeout ?? 30_000;
+    this.#closeTimeout = opts.closeTimeout ?? 5_000;
     this.#entry = opts.entry;
     this.#baseRealm = opts.realm ?? {};
 
@@ -264,6 +276,14 @@ export class RealmPool<F extends RealmFn = RealmFn> {
         });
 
         worker.realm.port.postMessage({ __pool_call: true, correlationId, args });
+
+        if (_topicPoolCall.hasSubscribers) {
+          _topicPoolCall.publish(otelRuntimeEvent('realm_pool', 'call', 'start', {
+            correlationId,
+            poolSize: this.size,
+            pendingTasks: this.#workers.reduce((n, w) => n + w.activeTasks, 0),
+          }));
+        }
       });
     });
   }
@@ -285,7 +305,24 @@ export class RealmPool<F extends RealmFn = RealmFn> {
         }));
       }
     }
-    await Promise.allSettled(drains);
+    // Wait for in-flight tasks to settle, but enforce a close timeout so a
+    // wedged worker cannot block shutdown indefinitely.
+    const drainResult = await Promise.race([
+      Promise.allSettled(drains).then(() => 'settled' as const),
+      new Promise<'timeout'>((res) =>
+        setTimeout(() => res('timeout'), this.#closeTimeout),
+      ),
+    ]);
+    if (drainResult === 'timeout') {
+      // Force-reject any calls still pending so callers don't hang.
+      for (const w of this.#workers) {
+        for (const [, call] of w.pending) {
+          if (call.timer !== null) clearTimeout(call.timer);
+          call.reject(new Error('RealmPool.close() timed out waiting for in-flight calls'));
+        }
+        w.pending.clear();
+      }
+    }
     for (const w of this.#workers) {
       w.realm.terminate();
       // Close the parent-side port so its wake-pipe watcher is removed from

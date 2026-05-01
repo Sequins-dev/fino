@@ -35,6 +35,13 @@ import { readable, removeRead } from 'fino:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
+import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.mts';
+
+// Pre-cache OTel topic instances for realm lifecycle events.
+// Gated on hasSubscribers so realms that don't use OTel pay no cost.
+const _topicRealmSpawn    = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
+const _topicRealmCall     = topic(otelRuntimeTopic('realm', 'call',  'start'));
+const _topicRealmCallEnd  = topic(otelRuntimeTopic('realm', 'call',  'end'));
 
 // ---------------------------------------------------------------------------
 // Import rule types
@@ -122,7 +129,7 @@ export class ImportMap {
 }
 
 // ---------------------------------------------------------------------------
-// Facade stub — implemented fully in Phase 3
+// Facade — RPC-backed virtual module interface
 // ---------------------------------------------------------------------------
 
 /**
@@ -131,8 +138,9 @@ export class ImportMap {
  * When a child Realm imports the named specifier, it gets a synthetic proxy
  * whose calls forward to the parent's registered handlers via `internal:parent-rpc`.
  *
- * Full implementation in Phase 3. Currently accepted by `ImportMap` but the
- * directive is silently treated as `inherit` until the facade machinery is wired up.
+ * Supported for thread and process realms. Handler dispatch is wired in the
+ * `Realm` constructor via `_bind()`, which registers a `message` listener on
+ * the realm's port that intercepts `__rpc_req` envelopes.
  */
 export class Facade {
   readonly #specifier: string;
@@ -551,6 +559,15 @@ export class Realm<F extends RealmFn = RealmFn> {
         }
       }
     }
+
+    // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
+    // the common case where no OTel subscriber is registered).
+    if (_topicRealmSpawn.hasSubscribers) {
+      _topicRealmSpawn.publish(otelRuntimeEvent('realm', 'spawn', 'start', {
+        kind: this.#kind,
+        entry: opts.entry,
+      }));
+    }
   }
 
   /** Run the child Realm to completion. */
@@ -585,6 +602,9 @@ export class Realm<F extends RealmFn = RealmFn> {
    * Call the child Realm's default-exported function with `args`.
    */
   call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
+    if (_topicRealmCall.hasSubscribers) {
+      _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start', { kind: this.#kind }));
+    }
     if (this.#kind === 'remote') {
       const clusterPort = this.port as ClusterPort;
       const cluster = getCluster()!;

@@ -29,7 +29,11 @@ export class SeedServer {
   #lastSeen = new Map<string, number>();
   // spawnReqId → { requesterNodeId, parentPortId }
   #pendingSpawns = new Map<string, { requesterNodeId: string; parentPortId: string }>();
-  // portId → nodeId (for PORT_MSG routing)
+  // portId → nodeId for PORT_MSG routing and death propagation.
+  // Maintained separately from the registry because nodeDown() removes entries
+  // from the registry before we can look up parent nodeIds for TERMINATE routing.
+  // Could be consolidated with registry.getNodeId() if registry exposed a
+  // "snapshot before remove" operation, but the parallel map is simpler.
   #portNodes = new Map<string, string>();
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 

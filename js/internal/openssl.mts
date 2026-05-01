@@ -125,6 +125,13 @@ const _sslSymbols = {
   SSL_CTX_use_certificate_file: { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_CTX_use_PrivateKey_file:  { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_CTX_check_private_key:    { parameters: ['pointer'], result: 'i32' },
+  // ALPN — Application Layer Protocol Negotiation (required for HTTP/2)
+  // SSL_CTX_set_alpn_protos(ctx, protos, protos_len) — client: set preference list
+  SSL_CTX_set_alpn_protos: { parameters: ['pointer', 'buffer', 'u32'], result: 'i32' },
+  // SSL_CTX_set_alpn_select_cb(ctx, cb, arg) — server: called during handshake
+  SSL_CTX_set_alpn_select_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
+  // SSL_get0_alpn_selected(ssl, data_out, len_out) — read negotiated protocol
+  SSL_get0_alpn_selected: { parameters: ['pointer', 'buffer', 'buffer'], result: 'void' },
 } satisfies NativeSymbolMap;
 
 // ---------------------------------------------------------------------------
@@ -665,27 +672,86 @@ export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
   const rc1 = lib.symbols.SSL_CTX_use_certificate_file(ctx, certBuf, 1);
   if (rc1 !== 1) {
     lib.symbols.SSL_CTX_free(ctx);
-    throw new Error('SSL_CTX_use_certificate_file failed: ' + getErrorString());
+    throw new Error(`TLS: failed to load certificate "${certPath}": ` + getErrorString());
   }
 
   const keyBuf = encodeUtf8(keyPath + '\0');
   const rc2 = lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1);
   if (rc2 !== 1) {
     lib.symbols.SSL_CTX_free(ctx);
-    throw new Error('SSL_CTX_use_PrivateKey_file failed: ' + getErrorString());
+    throw new Error(`TLS: failed to load private key "${keyPath}": ` + getErrorString());
   }
 
   const rc3 = lib.symbols.SSL_CTX_check_private_key(ctx);
   if (rc3 !== 1) {
     lib.symbols.SSL_CTX_free(ctx);
-    throw new Error('SSL_CTX_check_private_key failed: ' + getErrorString());
+    throw new Error(`TLS: certificate "${certPath}" and key "${keyPath}" do not match: ` + getErrorString());
   }
+
+  // Advertise HTTP/1.1 via ALPN so clients can negotiate the protocol during
+  // handshake. This is a prerequisite for future HTTP/2 (h2) support.
+  const alpnBuf = _encodeAlpnProtocols(['http/1.1']);
+  lib.symbols.SSL_CTX_set_alpn_protos(ctx, alpnBuf, alpnBuf.length);
 
   return ctx;
 }
 
 export function sslCtxFree(ctx: object): void {
   _requireSsl().symbols.SSL_CTX_free(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// ALPN (Application Layer Protocol Negotiation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode protocol names as a wire-format ALPN protocol list.
+ * Each name is length-prefixed: `[len, ...bytes, len, ...bytes, ...]`.
+ */
+function _encodeAlpnProtocols(protocols: string[]): Uint8Array {
+  let totalLen = 0;
+  const encoded = protocols.map(p => { const b = encodeUtf8(p); totalLen += 1 + b.length; return b; });
+  const buf = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const b of encoded) { buf[offset++] = b.length; buf.set(b, offset); offset += b.length; }
+  return buf;
+}
+
+/**
+ * Set the ALPN protocol list on an SSL_CTX (client side: preference list).
+ * Used to advertise supported protocols during TLS handshake.
+ *
+ * @param ctx — SSL_CTX* (from sslCtxNewClient / sslCtxLoadCertKey)
+ * @param protocols — ordered preference list, e.g. `['http/1.1']`
+ */
+export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
+  const lib = _requireSsl();
+  const buf = _encodeAlpnProtocols(protocols);
+  const rc = lib.symbols.SSL_CTX_set_alpn_protos(ctx, buf, buf.length);
+  if (rc !== 0) throw new Error('SSL_CTX_set_alpn_protos failed: ' + getErrorString());
+}
+
+/**
+ * Get the negotiated ALPN protocol for an established SSL connection.
+ * Returns `null` if no protocol was negotiated.
+ *
+ * @param ssl — SSL* (from an established TLS connection's internal handle)
+ */
+export function sslGetAlpnSelected(ssl: object): string | null {
+  const lib = _requireSsl();
+  const dataBuf = new ArrayBuffer(8);   // holds a pointer
+  const lenBuf  = new ArrayBuffer(4);   // holds u32 length
+  lib.symbols.SSL_get0_alpn_selected(ssl, dataBuf, lenBuf);
+  const len = new DataView(lenBuf).getUint32(0, true);
+  if (len === 0) return null;
+  // SSL_get0_alpn_selected returns a pointer to an internal buffer (not a copy).
+  // We need to read the bytes through the Pointer API.
+  const ptr = new DataView(dataBuf).getBigUint64(0, true);
+  if (ptr === 0n) return null;
+  const bytes = new Uint8Array(len);
+  const p = new (Pointer as any)(ptr);
+  for (let i = 0; i < len; i++) bytes[i] = (p as any).getByte(i);
+  return new TextDecoder().decode(bytes);
 }
 
 export function sslCtxSetDefaultVerifyPaths(ctx: object): void {

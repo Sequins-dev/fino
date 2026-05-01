@@ -549,7 +549,7 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
   // If TLS options are provided, load the certificate and private key once
   // for the lifetime of the server. The sslCtx is shared across all accepted
   // connections (TlsSocket.accept does not take ownership of it).
-  const sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
+  let sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
 
   const inFlight = new Set<Promise<void>>();
   let acceptLoopDone = false;
@@ -564,7 +564,7 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
 
   const boundAddress = tcpServer.address;
   if (boundAddress.family !== 'ipv4' && boundAddress.family !== 'ipv6') {
-    if (sslCtx) sslCtxFree(sslCtx);
+    if (sslCtx !== null) { sslCtxFree(sslCtx); sslCtx = null; }
     throw new TypeError('serve: expected an IP server address');
   }
 
@@ -589,8 +589,13 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
             function handleTlsConn(tlsConn) {
               return _handleConnection(tlsConn, handler);
             },
-            function tlsHandshakeError() {
+            function tlsHandshakeError(err: unknown) {
               tcpConn.close();
+              // Log so TLS errors are visible — a flood of bad-TLS clients would
+              // otherwise be completely invisible in production.
+              if (typeof console !== 'undefined') {
+                console.error('fino:serve TLS handshake failed:', err);
+              }
             },
           );
         } else {
@@ -618,7 +623,8 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
     close(): Promise<void> {
       if (closeSignalResolve) closeSignalResolve(); // wake the accept loop
       tcpServer.close();
-      if (sslCtx) sslCtxFree(sslCtx);
+      // Guard against double-free if close() is called more than once.
+      if (sslCtx !== null) { sslCtxFree(sslCtx); sslCtx = null; }
       return finished;
     },
   };

@@ -32,4 +32,14 @@ describe('Realm bootstrap errors', () => {
       t.ok(err instanceof Error, 'thread realm rejects with Error on bootstrap throw');
     }
   });
+
+  it('process realm: Realm.run() rejects on top-level throw', async (t) => {
+    const realm = new Realm({ process: true, entry: fixture });
+    try {
+      await realm.run();
+      t.fail('should have rejected');
+    } catch (err) {
+      t.ok(err instanceof Error, 'process realm rejects with Error on bootstrap throw');
+    }
+  });
 });

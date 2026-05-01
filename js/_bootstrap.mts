@@ -340,23 +340,34 @@ if (_childEntry !== undefined) {
             const _corrId = _pmsg.correlationId;
             const _args = _pmsg.args ?? [];
             // Lazily import fino:realm/pool so non-pool realms avoid the evaluation cost.
-            import('fino:realm/pool').then(function _poolImport({ correlationIdContext }) {
-              correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
-                new Promise<unknown>((res) => res(_fn(..._args))).then(
-                  function _poolCallOk(result: unknown) {
-                    _childPort!.postMessage({ __pool_result: true, correlationId: _corrId, result });
-                  },
-                  function _poolCallErr(err: unknown) {
-                    _childPort!.postMessage({
-                      __pool_error: true,
-                      correlationId: _corrId,
-                      message: String(err),
-                      stack: (err instanceof Error) ? err.stack : undefined,
-                    });
-                  },
-                );
-              });
-            });
+            import('fino:realm/pool').then(
+              function _poolImport({ correlationIdContext }) {
+                correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
+                  new Promise<unknown>((res) => res(_fn(..._args))).then(
+                    function _poolCallOk(result: unknown) {
+                      _childPort!.postMessage({ __pool_result: true, correlationId: _corrId, result });
+                    },
+                    function _poolCallErr(err: unknown) {
+                      _childPort!.postMessage({
+                        __pool_error: true,
+                        correlationId: _corrId,
+                        message: String(err),
+                        stack: (err instanceof Error) ? err.stack : undefined,
+                      });
+                    },
+                  );
+                });
+              },
+              // If the pool module itself fails to load, surface the error as __pool_error
+              // so the parent dispatcher rejects rather than hanging indefinitely.
+              function _poolImportFailed(err: unknown) {
+                _childPort!.postMessage({
+                  __pool_error: true,
+                  correlationId: _corrId,
+                  message: 'fino:realm/pool module failed to load: ' + String(err),
+                });
+              },
+            );
           }
           // Other messages (not __call / __pool_call / __terminate) pass through
           // to user-registered listeners unchanged.

@@ -12,6 +12,7 @@ import type sumFn from './fixtures/sum-fn.mts';
 import type echoFn from './fixtures/echo-fn.mts';
 import type errorFn from './fixtures/error-fn.mts';
 import type corrFn from './fixtures/corr-fn.mts';
+import type workerIdFn from './fixtures/worker-id-fn.mts';
 
 describe('RealmPool basics', () => {
   it('dispatches a call to a worker and returns the result', async (t) => {
@@ -149,5 +150,20 @@ describe('RealmPool — worker crash + respawn', () => {
     t.equal(result, 'after-respawn', 'pool accepts calls after worker crash+respawn');
     await pool.close();
     await pool2.close();
+  });
+});
+
+describe('RealmPool — dispatch fairness', () => {
+  it('concurrent calls are distributed across multiple workers', async (t) => {
+    const pool = new RealmPool<typeof workerIdFn>({
+      entry: new URL('./fixtures/worker-id-fn.mts', import.meta.url).pathname,
+      size: 2,
+    });
+    // Fire 6 concurrent calls; with 2 workers and EMA-based dispatch,
+    // both workers should be utilized.
+    const results = await Promise.all(Array.from({ length: 6 }, () => pool.call()));
+    const distinctWorkers = new Set(results);
+    t.ok(distinctWorkers.size >= 2, `calls distributed across ≥2 workers (got ${distinctWorkers.size})`);
+    await pool.close();
   });
 });

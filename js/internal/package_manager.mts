@@ -2,10 +2,60 @@ import { DiskFileSystem } from '../file/fs.mts';
 import { extractArchive } from '../archive.mts';
 import { cwd, env } from '../runtime/process.mts';
 import { compare, maxSatisfying } from '../semver.mts';
+import * as openssl from './openssl.mts';
 
 const fs = new DiskFileSystem();
 const DEFAULT_REGISTRY = env.FINO_NPM_REGISTRY ?? 'https://registry.npmjs.org';
 const PROBE_EXTENSIONS = ['.mjs', '.js', '.json', '.mts', '.ts'];
+
+/**
+ * Verify a tarball's integrity against the npm packument's `dist.integrity`
+ * or `dist.shasum` field. Throws if verification fails. No-ops if OpenSSL is
+ * not available or if neither field is present.
+ *
+ * `dist.integrity` is an SRI string like `sha512-<base64>`.
+ * `dist.shasum` is a hex-encoded SHA-1 (legacy, lower security).
+ */
+function _verifyTarballIntegrity(
+  bytes: Uint8Array,
+  integrity: string | undefined,
+  shasum: string | undefined,
+  packageId: string,
+): void {
+  if (!openssl.cryptoAvailable) return;
+  if (integrity) {
+    const dashIdx = integrity.indexOf('-');
+    if (dashIdx < 0) return;
+    const hashAlias = integrity.slice(0, dashIdx).toLowerCase();
+    const expectedB64 = integrity.slice(dashIdx + 1);
+    const algMap: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
+    const alg = algMap[hashAlias];
+    if (!alg) return; // unknown algorithm — skip
+    const actual = openssl.digest(alg, bytes);
+    let actualB64 = '';
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    for (let i = 0; i < actual.length; i += 3) {
+      const b0 = actual[i]!; const b1 = actual[i + 1] ?? 0; const b2 = actual[i + 2] ?? 0;
+      actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+      actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+      actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
+    }
+    if (actualB64 !== expectedB64) {
+      throw new Error(
+        `Integrity check failed for ${packageId}: expected ${integrity.slice(0, 20)}…`
+      );
+    }
+    return;
+  }
+  if (shasum) {
+    // SHA-1 hex (legacy) — verify with openssl
+    const actual = openssl.digest('sha-1', bytes);
+    const actualHex = Array.from(actual).map(b => b.toString(16).padStart(2, '0')).join('');
+    if (actualHex !== shasum.toLowerCase()) {
+      throw new Error(`Integrity check failed for ${packageId}: SHA-1 shasum mismatch`);
+    }
+  }
+}
 
 function splitPackageSpec(input: string): { name: string; range: string | null } {
   const text = String(input).trim();
@@ -259,7 +309,15 @@ async function resolveAndInstall(ctx: InstallContext, name: string, range: strin
     const versionMeta = packument.versions?.[version];
     const tarball = versionMeta?.dist?.tarball;
     if (!tarball) throw new Error(`Package '${packageId}' has no dist.tarball`);
-    await fs.writeFile(tmpArchivePath, await fetchBytes(tarball));
+    const tarballBytes = await fetchBytes(tarball);
+    // Verify tarball integrity before extracting to prevent supply-chain attacks.
+    _verifyTarballIntegrity(
+      tarballBytes,
+      versionMeta.dist.integrity as string | undefined,
+      versionMeta.dist.shasum as string | undefined,
+      packageId,
+    );
+    await fs.writeFile(tmpArchivePath, tarballBytes);
     await extractArchive(tmpArchivePath, tmpExtractDir);
     await fs.unlink(tmpArchivePath);
     if (await exists(packageBaseDir)) await removeTree(packageBaseDir);
