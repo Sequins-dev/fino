@@ -387,6 +387,35 @@ describe('WebSocket end-to-end via serve()', () => {
     }
   });
 
+  it('application-defined close codes (4000–4999) are accepted and propagated', async () => {
+    // RFC 6455 §7.4.2 reserves 4000–4999 for private use by applications.
+    // These must be accepted (not rejected as invalid) and the code+reason
+    // must arrive intact on the receiving side.
+    const APP_CODE   = 4042;
+    const APP_REASON = 'application session expired';
+
+    const server = serve({ port: 0 }, (req) => {
+      if (req.headers.get('upgrade') === 'websocket') {
+        const ws = WebSocketConnection.accept(req);
+        ws.addEventListener('open', async () => {
+          await ws.close(APP_CODE, APP_REASON);
+        });
+        return ws;
+      }
+      return new Response('', { status: 400 });
+    });
+
+    try {
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
+      const closeEvt = await waitForEvent<CloseEvent>(client, 'close');
+      ok(closeEvt.wasClean, 'close was clean');
+      equal(closeEvt.code,   APP_CODE,   'app-defined close code propagated');
+      equal(closeEvt.reason, APP_REASON, 'close reason preserved');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('close handshake completes cleanly (wasClean=true)', async () => {
     const server = serve({ port: 0 }, (req) => {
       if (req.headers.get('upgrade') === 'websocket') {

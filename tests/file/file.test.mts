@@ -284,6 +284,46 @@ describe('DiskFileSystem', () => {
       await fs.rmdir(subDir);
     });
 
+    it('DirEntry.entries — returns both files and subdirectories with correct types', async (t) => {
+      const mixedDir = TEST_DIR + '/mixed-entries-test';
+      await fs.mkdir(mixedDir);
+      await fs.writeFile(mixedDir + '/file1.txt', 'data');
+      await fs.writeFile(mixedDir + '/file2.txt', 'data');
+      await fs.mkdir(mixedDir + '/subdir');
+
+      const d    = await fs.dir(mixedDir);
+      const list = await d.entries();
+      t.equal(list.length, 3, 'three entries: 2 files + 1 subdirectory');
+
+      const names = list.map((e) => e.name).sort();
+      t.ok(names.includes('file1.txt'), 'file1.txt present');
+      t.ok(names.includes('file2.txt'), 'file2.txt present');
+      t.ok(names.includes('subdir'),    'subdir present');
+
+      const dirEntry = list.find((e) => e.name === 'subdir')!;
+      t.ok(dirEntry.isDirectory(), 'subdir entry isDirectory() === true');
+      t.ok(!dirEntry.isFile(),     'subdir entry isFile() === false');
+
+      const fileEntry = list.find((e) => e.name === 'file1.txt')!;
+      t.ok(fileEntry.isFile(),       'file entry isFile() === true');
+      t.ok(!fileEntry.isDirectory(), 'file entry isDirectory() === false');
+
+      await fs.unlink(mixedDir + '/file1.txt');
+      await fs.unlink(mixedDir + '/file2.txt');
+      await fs.rmdir(mixedDir + '/subdir');
+      await fs.rmdir(mixedDir);
+    });
+
+    it('fs.dir — throws ENOENT on non-existent path', async (t) => {
+      try {
+        await fs.dir(TEST_DIR + '/__nonexistent__' + Math.random());
+        t.fail('should have thrown ENOENT');
+      } catch (err) {
+        t.ok(err instanceof Error, 'throws Error');
+        t.equal((err as any).code, 'ENOENT', 'err.code is ENOENT');
+      }
+    });
+
     it('DirEntry for-await iteration', async (t) => {
       const subDir = TEST_DIR + '/forawait-test';
       await fs.mkdir(subDir);
