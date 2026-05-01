@@ -235,8 +235,10 @@ pub enum ChildRealmSlot {
     Pending,
     /// Created and running — step returns the child's loop bool.
     Active(ChildRealm),
-    /// Creation failed — `stepContext` immediately returns false.
-    Failed,
+    /// Creation or bootstrap failed. `stepContext` throws a JS Error with the
+    /// message (if any) and returns false so `Realm.run()` rejects rather than
+    /// silently resolving. `None` = no message available (legacy path).
+    Failed(Option<String>),
 }
 
 /// All per-run state, stored in the V8 context slot so every Rust callback can

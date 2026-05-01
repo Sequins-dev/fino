@@ -118,4 +118,15 @@ declare global {
 
   var cryptoAvailable: boolean | undefined;
   var tlsAvailable: boolean | undefined;
+
+  // Atomics.waitAsync — not yet in TypeScript's lib.esnext.atomics but supported in V8.
+  interface Atomics {
+    waitAsync(
+      typedArray: Int32Array | BigInt64Array,
+      index: number,
+      value: number | bigint,
+      timeout?: number,
+    ): { async: false; value: 'ok' | 'not-equal' | 'timed-out' }
+      | { async: true; value: Promise<'ok' | 'timed-out'> };
+  }
 }

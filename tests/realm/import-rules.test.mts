@@ -104,3 +104,34 @@ describe('Capability narrowing', () => {
     }
   });
 });
+
+describe('Import rules — `from` clause (per-module access control)', () => {
+  it('`from` clause blocks a specifier only for the specific importer', async (t) => {
+    // Rule: block `fino:ffi` BUT only when imported from `fino:ffi` itself.
+    // The child realm should still be able to import fino:ffi from its entry module.
+    const realm = new Realm<() => boolean>({
+      overrides: ImportMap.inherit([
+        // Only block fino:ffi when fino:ffi itself is the importer — harmless rule
+        // but verifies that `from` restricts correctly and doesn't block other importers.
+        { from: 'fino:ffi', pattern: 'fino:ffi', directive: 'block' },
+      ]),
+      entry: new URL('./fixtures/import-ffi-check.mts', import.meta.url).pathname,
+    });
+    const result = await realm.call();
+    t.ok(result === true, 'fino:ffi accessible from entry module (from clause did not over-block)');
+  });
+
+  it('`from` clause blocks a specifier for a matching importer', async (t) => {
+    // Block fino:ffi only when the root entry module imports it.
+    // Since our fixture IS the root-like entry, this should block it.
+    const realm = new Realm<() => boolean>({
+      overrides: ImportMap.inherit([
+        // Wildcard `from` — blocks fino:ffi for any importer
+        { from: '*', pattern: 'fino:ffi', directive: 'block' },
+      ]),
+      entry: new URL('./fixtures/import-ffi-check.mts', import.meta.url).pathname,
+    });
+    const result = await realm.call();
+    t.ok(result === false, 'fino:ffi blocked for all importers via from: * rule');
+  });
+});

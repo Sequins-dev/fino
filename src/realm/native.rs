@@ -132,6 +132,23 @@ fn narrowing_check(
     Ok(())
 }
 
+/// Resolve the package map JSON for a child realm.
+///
+/// If the child's root differs from the parent's, re-read `.fino/package-map.json`
+/// from the child's root. Otherwise inherit the parent's already-loaded value.
+fn resolve_child_package_map(
+    scope: &mut v8::HandleScope,
+    child_root: &std::path::Path,
+) -> Option<String> {
+    let parent_root = get_state(scope).borrow().process_env.root.clone();
+    if child_root != parent_root {
+        let map_path = child_root.join(".fino/package-map.json");
+        std::fs::read_to_string(&map_path).ok()
+    } else {
+        get_state(scope).borrow().package_map_json.clone()
+    }
+}
+
 /// Parse `serializedRules` (a JS string containing a JSON array of ImportRule
 /// objects) and merge with the parent's import rules.
 ///
@@ -243,7 +260,7 @@ fn create_context(
         }
     };
 
-    let package_map_json = get_state(scope).borrow().package_map_json.clone();
+    let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
     // --- Capture the optional port object as a Global before borrowing state ---
     let port_global: Option<v8::Global<v8::Value>> =
@@ -298,7 +315,19 @@ fn step_context(
                 rv.set(v8::Boolean::new(scope, true).into());
                 return;
             }
-            Some(ChildRealmSlot::Failed) | None => {
+            Some(ChildRealmSlot::Failed(maybe_msg)) => {
+                // Throw a JS Error so _stepChildren propagates it via child.reject().
+                if let Some(msg) = maybe_msg.as_deref() {
+                    let s = v8::String::new(scope, msg).unwrap_or_else(|| {
+                        v8::String::new(scope, "child realm creation failed").unwrap()
+                    });
+                    let exc = v8::Exception::error(scope, s);
+                    scope.throw_exception(exc);
+                }
+                rv.set(v8::Boolean::new(scope, false).into());
+                return;
+            }
+            None => {
                 rv.set(v8::Boolean::new(scope, false).into());
                 return;
             }
@@ -382,7 +411,7 @@ fn create_thread_context(
         }
     };
 
-    let package_map_json = get_state(scope).borrow().package_map_json.clone();
+    let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
     // --- Spawn the thread realm ---
     let spawn_config = thread::SpawnConfig {
@@ -424,17 +453,28 @@ fn step_thread_context(
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let state_rc = get_state(scope);
-    let st = state_rc.borrow();
-    let h = st
-        .thread_contexts
-        .get(handle)
-        .and_then(|slot| slot.as_ref());
-    let still_running = h
-        .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
-        .unwrap_or(false);
+
+    // Read done/error under a short immutable borrow.
+    let (still_running, maybe_err) = {
+        let st = state_rc.borrow();
+        let h = st.thread_contexts.get(handle).and_then(|s| s.as_ref());
+        let running = h
+            .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
+            .unwrap_or(false);
+        let err = if !running {
+            h.and_then(|h| h.error.lock().ok()?.clone())
+        } else {
+            None
+        };
+        (running, err)
+    };
+
     if !still_running {
-        // Check for a crash/error message and throw it as a JS exception.
-        if let Some(err_msg) = h.and_then(|h| h.error.lock().ok()?.clone()) {
+        // Release the handle slot so the ThreadRealmHandle is dropped (joins the thread).
+        if let Some(slot) = state_rc.borrow_mut().thread_contexts.get_mut(handle) {
+            *slot = None;
+        }
+        if let Some(err_msg) = maybe_err {
             let msg = v8::String::new(scope, &err_msg)
                 .unwrap_or_else(|| v8::String::new(scope, "thread realm error").unwrap());
             let exc = v8::Exception::error(scope, msg);
@@ -635,7 +675,7 @@ fn create_process_context(
         }
     };
 
-    let package_map_json = get_state(scope).borrow().package_map_json.clone();
+    let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
     let spawn_args = process::SpawnArgs {
         process_env,
@@ -671,13 +711,27 @@ fn step_process_context(
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let state_rc = get_state(scope);
-    let st = state_rc.borrow();
-    let h = st.process_contexts.get(handle).and_then(|s| s.as_ref());
-    let still_running = h
-        .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
-        .unwrap_or(false);
+
+    let (still_running, maybe_err) = {
+        let st = state_rc.borrow();
+        let h = st.process_contexts.get(handle).and_then(|s| s.as_ref());
+        let running = h
+            .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
+            .unwrap_or(false);
+        let err = if !running {
+            h.and_then(|h| h.error.lock().ok()?.clone())
+        } else {
+            None
+        };
+        (running, err)
+    };
+
     if !still_running {
-        if let Some(err_msg) = h.and_then(|h| h.error.lock().ok()?.clone()) {
+        // Release the handle slot so ProcessRealmHandle is dropped (closes socket, waitpid).
+        if let Some(slot) = state_rc.borrow_mut().process_contexts.get_mut(handle) {
+            *slot = None;
+        }
+        if let Some(err_msg) = maybe_err {
             let msg = v8::String::new(scope, &err_msg)
                 .unwrap_or_else(|| v8::String::new(scope, "process realm error").unwrap());
             let exc = v8::Exception::error(scope, msg);

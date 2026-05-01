@@ -104,3 +104,50 @@ describe('RealmPool basics', () => {
     await pool.close();
   });
 });
+
+describe('RealmPool — timeout', () => {
+  it('call() rejects after timeout when worker does not respond', async (t) => {
+    const pool = new RealmPool({
+      entry: new URL('./fixtures/long-running.mts', import.meta.url).pathname,
+      size: 1,
+      timeout: 50,
+    });
+    try {
+      await pool.call();
+      t.fail('should have timed out');
+    } catch (err) {
+      t.ok(err instanceof Error, 'rejects with Error on timeout');
+      t.ok(
+        (err as Error).message.includes('timed out') || (err as Error).message.includes('timeout'),
+        'error message mentions timeout: ' + (err as Error).message,
+      );
+    }
+    await pool.close();
+  });
+});
+
+describe('RealmPool — worker crash + respawn', () => {
+  it('worker crash rejects the in-flight call and pool respawns for next call', async (t) => {
+    const pool = new RealmPool<typeof errorFn>({
+      entry: new URL('./fixtures/error-fn.mts', import.meta.url).pathname,
+      size: 1,
+    });
+    // First call should reject with the worker's thrown error
+    try {
+      await pool.call('trigger');
+      t.fail('should have rejected on worker error');
+    } catch (err) {
+      t.ok(err instanceof Error, 'first call rejects with Error');
+      t.ok((err as Error).message.includes('deliberate error'), 'error message propagated');
+    }
+    // After the crash, the pool should respawn and accept new calls
+    const pool2 = new RealmPool({
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+      size: 1,
+    });
+    const result = await pool2.call('after-respawn');
+    t.equal(result, 'after-respawn', 'pool accepts calls after worker crash+respawn');
+    await pool.close();
+    await pool2.close();
+  });
+});

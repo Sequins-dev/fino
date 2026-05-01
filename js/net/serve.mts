@@ -65,6 +65,8 @@ const _encoder = new TextEncoder();
 let _cachedHeadStr  = '';
 let _cachedHeadBytes: Uint8Array | null = null;
 import { Socket } from './socket.mts';
+import { TlsSocket } from './tls.mts';
+import { sslCtxLoadCertKey, sslCtxFree } from '../internal/openssl.mts';
 import { topic } from '../util/topic.mts';
 import { consumeRequestContext, otelRuntimeEvent, otelRuntimeTopic, runWithActiveContext } from '../opentelemetry/common.mts';
 
@@ -79,6 +81,10 @@ import type { IPv4Address } from './socket.mts';
 interface ServeOptions {
   port:      number;
   hostname?: string;
+  tls?: {
+    cert: string;  // path to PEM certificate file
+    key:  string;  // path to PEM private key file
+  };
 }
 
 interface ServeServer {
@@ -540,6 +546,11 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
   const addr: IPv4Address = { family: 'ipv4', ip: hostname, port };
   const tcpServer = Socket.listen(addr);
 
+  // If TLS options are provided, load the certificate and private key once
+  // for the lifetime of the server. The sslCtx is shared across all accepted
+  // connections (TlsSocket.accept does not take ownership of it).
+  const sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
+
   const inFlight = new Set<Promise<void>>();
   let acceptLoopDone = false;
   let finishResolve: (() => void) | null = null;
@@ -553,6 +564,7 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
 
   const boundAddress = tcpServer.address;
   if (boundAddress.family !== 'ipv4' && boundAddress.family !== 'ipv6') {
+    if (sslCtx) sslCtxFree(sslCtx);
     throw new TypeError('serve: expected an IP server address');
   }
 
@@ -564,11 +576,29 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
   (async function acceptLoop() {
     try {
       while (true) {
-        const conn: Awaited<ReturnType<typeof tcpServer.accept>> | null = await Promise.race([tcpServer.accept(), closeSignal]);
-        if (conn === null || conn === undefined) break; // closed
-        const p = _handleConnection(conn, handler);
-        inFlight.add(p);
-        p.finally(function cleanupConnection() { inFlight.delete(p); _checkDone(); });
+        const tcpConn: Awaited<ReturnType<typeof tcpServer.accept>> | null = await Promise.race([tcpServer.accept(), closeSignal]);
+        if (tcpConn === null || tcpConn === undefined) break; // closed
+
+        let connPromise: Promise<void>;
+        if (sslCtx !== null) {
+          // Wrap the accepted TCP socket in a TlsSocket (server-side handshake).
+          // TlsSocket.accept takes ownership of the fd; the plain tcpConn object
+          // is abandoned (not closed) on success so the fd is not double-closed.
+          // On handshake failure, close the TCP socket to release the fd.
+          connPromise = TlsSocket.accept(tcpConn.fd, sslCtx).then(
+            function handleTlsConn(tlsConn) {
+              return _handleConnection(tlsConn, handler);
+            },
+            function tlsHandshakeError() {
+              tcpConn.close();
+            },
+          );
+        } else {
+          connPromise = _handleConnection(tcpConn, handler);
+        }
+
+        inFlight.add(connPromise);
+        connPromise.finally(function cleanupConnection() { inFlight.delete(connPromise); _checkDone(); });
       }
     } finally {
       acceptLoopDone = true;
@@ -576,7 +606,7 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
     }
   })().catch(function swallowAcceptError() {}); // swallow unhandled rejections from the accept loop
 
-    return {
+  return {
     /** The address the server is listening on. */
     address: boundAddress,
     /** Convenience shortcut for server.address.port. */
@@ -588,6 +618,7 @@ export function serve(options: ServeOptions, handler: (req: Request) => Response
     close(): Promise<void> {
       if (closeSignalResolve) closeSignalResolve(); // wake the accept loop
       tcpServer.close();
+      if (sslCtx) sslCtxFree(sslCtx);
       return finished;
     },
   };

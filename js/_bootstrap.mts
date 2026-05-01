@@ -17,7 +17,8 @@ import { drainMicrotasks, runLoop } from 'internal:async-context';
 import './internal/loader.mts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
 import { getEntryPath, isTerminated, getPort } from 'internal:realm-bridge';
-import { correlationIdContext as _poolCorrelationCtx } from 'fino:realm/pool';
+// fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
+// non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import {
   setTimeout,
   clearTimeout,
@@ -100,8 +101,8 @@ const runtimeError = Error as RuntimeErrorConstructor;
 // tasks (drained by drainMicrotasks/pump_message_loop), but
 // has_pending_background_tasks() does not cover futex waiters, so without this
 // shim the loop could exit before the notify fires.
-if (typeof Atomics !== 'undefined' && typeof (Atomics as any).waitAsync === 'function') {
-  const _origWaitAsync: typeof Atomics.waitAsync = (Atomics as any).waitAsync.bind(Atomics);
+if (typeof Atomics !== 'undefined' && typeof Atomics.waitAsync === 'function') {
+  const _origWaitAsync = Atomics.waitAsync.bind(Atomics);
   Object.defineProperty(Atomics, 'waitAsync', {
     value: function waitAsync(
       typedArray: Parameters<typeof Atomics.waitAsync>[0],
@@ -112,7 +113,7 @@ if (typeof Atomics !== 'undefined' && typeof (Atomics as any).waitAsync === 'fun
       const result = _origWaitAsync(typedArray, index, value, timeout);
       if (result.async) {
         _trackAtomicsWaiter();
-        (result.value as Promise<string>).then(
+        result.value.then(
           () => { _untrackAtomicsWaiter(); },
           () => { _untrackAtomicsWaiter(); },
         );
@@ -303,10 +304,18 @@ if (_childEntry !== undefined) {
         // Call mode: wait for { __call, args }, invoke default export, post result.
         // _childDone is set after the function returns; do NOT set it here.
         const _fn = mod.default as (...args: unknown[]) => unknown;
+        // Track which invocation mode this worker is in so the two modes cannot
+        // interfere with each other.
+        let _isPoolMode = false;
+
         _childPort.addEventListener('message', function _callHandler(ev) {
           const msg = (ev as MessageEvent).data;
-          if (msg && typeof msg === 'object' && (msg as { __call?: boolean }).__call) {
+          if (!msg || typeof msg !== 'object') return;
+
+          if ((msg as { __call?: boolean }).__call && !_isPoolMode) {
             // Single-invocation call() mode: invoke once, post result, terminate.
+            // Stop propagation so user code never sees internal __call envelopes.
+            (ev as MessageEvent).stopImmediatePropagation?.();
             const _args = (msg as { args?: unknown[] }).args ?? [];
             new Promise<unknown>((res) => res(_fn(..._args))).then(
               function _callOk(result: unknown) {
@@ -322,28 +331,35 @@ if (_childEntry !== undefined) {
                 _childDone = true;
               },
             );
-          } else if (msg && typeof msg === 'object' && (msg as { __pool_call?: boolean }).__pool_call) {
+          } else if ((msg as { __pool_call?: boolean }).__pool_call) {
             // Pool mode: multi-invocation with correlation ID. Worker stays alive.
+            // Stop propagation so user code never sees internal __pool_call envelopes.
+            (ev as MessageEvent).stopImmediatePropagation?.();
+            _isPoolMode = true;
             const _pmsg = msg as { __pool_call: boolean; correlationId: number; args?: unknown[] };
             const _corrId = _pmsg.correlationId;
             const _args = _pmsg.args ?? [];
-            _poolCorrelationCtx.runWithValue(String(_corrId), function _poolInvoke() {
-              new Promise<unknown>((res) => res(_fn(..._args))).then(
-                function _poolCallOk(result: unknown) {
-                  _childPort!.postMessage({ __pool_result: true, correlationId: _corrId, result });
-                },
-                function _poolCallErr(err: unknown) {
-                  _childPort!.postMessage({
-                    __pool_error: true,
-                    correlationId: _corrId,
-                    message: String(err),
-                    stack: (err instanceof Error) ? err.stack : undefined,
-                  });
-                },
-              );
+            // Lazily import fino:realm/pool so non-pool realms avoid the evaluation cost.
+            import('fino:realm/pool').then(function _poolImport({ correlationIdContext }) {
+              correlationIdContext.runWithValue(String(_corrId), function _poolInvoke() {
+                new Promise<unknown>((res) => res(_fn(..._args))).then(
+                  function _poolCallOk(result: unknown) {
+                    _childPort!.postMessage({ __pool_result: true, correlationId: _corrId, result });
+                  },
+                  function _poolCallErr(err: unknown) {
+                    _childPort!.postMessage({
+                      __pool_error: true,
+                      correlationId: _corrId,
+                      message: String(err),
+                      stack: (err instanceof Error) ? err.stack : undefined,
+                    });
+                  },
+                );
+              });
             });
           }
-          // Non-__call / non-__pool_call / non-__terminate messages are passed through.
+          // Other messages (not __call / __pool_call / __terminate) pass through
+          // to user-registered listeners unchanged.
         });
       } else {
         // Normal completion: entry module's top-level code (and any TLA) finished.

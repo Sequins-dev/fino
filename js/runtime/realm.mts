@@ -33,8 +33,8 @@ import {
 } from '../internal/globals/messaging.mts';
 import { readable, removeRead } from 'fino:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
-import { type ClusterClient, ClusterPort } from 'internal:cluster/client';
-import { getCluster } from 'fino:cluster';
+import type { ClusterClient } from 'internal:cluster/client';
+import { ClusterPort, getCluster } from 'fino:cluster';
 
 // ---------------------------------------------------------------------------
 // Import rule types

@@ -121,6 +121,10 @@ const _sslSymbols = {
   // larg is C `long` (64-bit on LP64); parg is a buffer (hostname string for SNI)
   SSL_ctrl:      { parameters: ['pointer', 'i32', 'i64', 'buffer'], result: 'i64' },
   SSL_set1_host: { parameters: ['pointer', 'buffer'], result: 'i32' },
+  // Server certificate and private key loading
+  SSL_CTX_use_certificate_file: { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
+  SSL_CTX_use_PrivateKey_file:  { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
+  SSL_CTX_check_private_key:    { parameters: ['pointer'], result: 'i32' },
 } satisfies NativeSymbolMap;
 
 // ---------------------------------------------------------------------------
@@ -641,6 +645,42 @@ export function sslCtxNewServer(): object {
   const method = lib.symbols.TLS_server_method();
   const ctx = lib.symbols.SSL_CTX_new(method);
   if (ctx === null) throw new Error('SSL_CTX_new failed: ' + getErrorString());
+  return ctx;
+}
+
+/**
+ * Create a server SSL context and load a PEM certificate + private key.
+ * Both paths must point to PEM-encoded files (SSL_FILETYPE_PEM = 1).
+ * Throws if the context cannot be created or either file fails to load.
+ *
+ * @param {string} certPath — path to PEM certificate file
+ * @param {string} keyPath  — path to PEM private key file
+ * @returns {object} SSL_CTX* configured with the cert/key pair
+ */
+export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
+  const lib = _requireSsl();
+  const ctx = sslCtxNewServer();
+
+  const certBuf = encodeUtf8(certPath + '\0');
+  const rc1 = lib.symbols.SSL_CTX_use_certificate_file(ctx, certBuf, 1);
+  if (rc1 !== 1) {
+    lib.symbols.SSL_CTX_free(ctx);
+    throw new Error('SSL_CTX_use_certificate_file failed: ' + getErrorString());
+  }
+
+  const keyBuf = encodeUtf8(keyPath + '\0');
+  const rc2 = lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1);
+  if (rc2 !== 1) {
+    lib.symbols.SSL_CTX_free(ctx);
+    throw new Error('SSL_CTX_use_PrivateKey_file failed: ' + getErrorString());
+  }
+
+  const rc3 = lib.symbols.SSL_CTX_check_private_key(ctx);
+  if (rc3 !== 1) {
+    lib.symbols.SSL_CTX_free(ctx);
+    throw new Error('SSL_CTX_check_private_key failed: ' + getErrorString());
+  }
+
   return ctx;
 }
 

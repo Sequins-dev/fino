@@ -733,7 +733,12 @@ fn tla_fulfill_callback(
     let state_rc = get_state(scope);
     let entry = {
         let mut st = state_rc.borrow_mut();
-        st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take())
+        let entry = st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take());
+        // Trim trailing None slots to prevent unbounded Vec growth.
+        while st.tla_resolvers.last().map_or(false, |e| e.is_none()) {
+            st.tla_resolvers.pop();
+        }
+        entry
     };
     if let Some((resolver_global, namespace_global)) = entry {
         let resolver = v8::Local::new(scope, &resolver_global);
@@ -753,7 +758,11 @@ fn tla_reject_callback(
     let state_rc = get_state(scope);
     let entry = {
         let mut st = state_rc.borrow_mut();
-        st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take())
+        let entry = st.tla_resolvers.get_mut(id as usize).and_then(|e| e.take());
+        while st.tla_resolvers.last().map_or(false, |e| e.is_none()) {
+            st.tla_resolvers.pop();
+        }
+        entry
     };
     if let Some((resolver_global, _namespace_global)) = entry {
         let resolver = v8::Local::new(scope, &resolver_global);

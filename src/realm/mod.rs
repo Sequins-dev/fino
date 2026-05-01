@@ -77,7 +77,7 @@ pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<Re
             Ok(child_realm) => ChildRealmSlot::Active(child_realm),
             Err(e) => {
                 eprintln!("fino: failed to create child realm: {e}");
-                ChildRealmSlot::Failed
+                ChildRealmSlot::Failed(Some(e))
             }
         };
         state_rc.borrow_mut().child_contexts[pending_realm.handle_idx] = slot;
@@ -205,7 +205,7 @@ pub fn terminate_all_children(scope: &mut v8::HandleScope) {
         // accumulate dead handles for the lifetime of its own isolate.
         let state_rc = get_state(scope);
         if let Some(slot) = state_rc.borrow_mut().child_contexts.get_mut(idx) {
-            *slot = ChildRealmSlot::Failed;
+            *slot = ChildRealmSlot::Failed(None);
         }
     }
 }

@@ -20,7 +20,11 @@
 
 import { WebSocketSeedTransport, WebSocketWorkerTransport } from 'internal:cluster/websocket-transport';
 import { SeedServer } from 'internal:cluster/seed';
-import { ClusterClient } from 'internal:cluster/client';
+import { ClusterClient, ClusterPort } from 'internal:cluster/client';
+
+// Re-export ClusterPort as a public type so fino:realm can import it from
+// fino:cluster rather than reaching into internal:cluster/client directly.
+export { ClusterPort };
 
 // ---------------------------------------------------------------------------
 // Module-level active cluster state
