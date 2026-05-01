@@ -602,13 +602,19 @@ export class Realm<F extends RealmFn = RealmFn> {
    * Call the child Realm's default-exported function with `args`.
    */
   call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
-    if (_topicRealmCall.hasSubscribers) {
-      _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start', { kind: this.#kind }));
+    const callStart = performance.now();
+    const kind = this.#kind;
+    // Capture at call time so the end event is always published when start was.
+    const startPublished = _topicRealmCall.hasSubscribers;
+    if (startPublished) {
+      _topicRealmCall.publish(otelRuntimeEvent('realm', 'call', 'start', { kind }));
     }
-    if (this.#kind === 'remote') {
+
+    let base: Promise<Awaited<ReturnType<F>>>;
+    if (kind === 'remote') {
       const clusterPort = this.port as ClusterPort;
       const cluster = getCluster()!;
-      return (this.#spawnPromise ?? Promise.resolve('')).then(
+      base = (this.#spawnPromise ?? Promise.resolve('')).then(
         (childPortId: string) => new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
           const entry: ActiveChild = {
             handle: -1,
@@ -634,24 +640,37 @@ export class Realm<F extends RealmFn = RealmFn> {
           clusterPort.postMessage({ __call: true, args });
         }),
       );
-    }
-    return new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-      _activeChildren.push({
-        handle: this.#handle,
-        kind: this.#kind,
-        resolve: () => {},
-        reject: (err: unknown) => reject(err),
+    } else {
+      base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
+        _activeChildren.push({
+          handle: this.#handle,
+          kind,
+          resolve: () => {},
+          reject: (err: unknown) => reject(err),
+        });
+        const handler = (ev: Event) => {
+          const data = (ev as MessageEvent).data;
+          this.port.removeEventListener('message', handler);
+          this.port.close();
+          _resolveCallResponse(data, resolve, reject);
+        };
+        this.port.addEventListener('message', handler);
+        this.port.start();
+        this.port.postMessage({ __call: true, args });
       });
-      const handler = (ev: Event) => {
-        const data = (ev as MessageEvent).data;
-        this.port.removeEventListener('message', handler);
-        this.port.close();
-        _resolveCallResponse(data, resolve, reject);
-      };
-      this.port.addEventListener('message', handler);
-      this.port.start();
-      this.port.postMessage({ __call: true, args });
-    });
+    }
+
+    if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return base;
+    return base.then(
+      (result) => {
+        _topicRealmCallEnd.publish(otelRuntimeEvent('realm', 'call', 'end', { kind, durationMs: performance.now() - callStart }));
+        return result;
+      },
+      (err: unknown) => {
+        _topicRealmCallEnd.publish(otelRuntimeEvent('realm', 'call', 'end', { kind, durationMs: performance.now() - callStart, error: true }));
+        throw err;
+      },
+    );
   }
 
   /** Signal the child Realm to stop. */

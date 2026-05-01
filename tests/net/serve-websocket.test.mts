@@ -68,6 +68,33 @@ describe('serve() WebSocket upgrade', () => {
     }
   });
 
+  it('server closes the connection first — client receives close event', async (t) => {
+    const server = serve({ port: 0 }, (req) => {
+      if (req.headers.get('upgrade') === 'websocket') {
+        const ws = WebSocketConnection.accept(req as any);
+        ws.addEventListener('open', async () => {
+          await ws.send('goodbye');
+          await ws.close(1000, 'server done');
+        });
+        return ws;
+      }
+      return new Response('not ws', { status: 400 });
+    });
+
+    try {
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/`);
+
+      const msgEvt = await waitForEvent<MessageEvent>(client as unknown as EventTarget, 'message');
+      t.equal((msgEvt as MessageEvent).data, 'goodbye', 'client received server message before close');
+
+      const closeEvt = await waitForEvent<CloseEvent>(client as unknown as EventTarget, 'close');
+      t.ok(closeEvt.wasClean, 'close was clean (code 1000)');
+      t.equal(closeEvt.code, 1000, 'close code is 1000');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('non-WebSocket request still works on same server', async (t) => {
     const server = serve({ port: 0 }, (req) => {
       if (req.headers.get('upgrade') === 'websocket') {

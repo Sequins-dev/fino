@@ -48,6 +48,10 @@ describe('Facade RPC — thread realm', () => {
       t.fail('should have rejected');
     } catch (err) {
       t.ok(err instanceof Error, 'rejects with Error');
+      t.ok(
+        (err as Error).message.includes('handler exploded'),
+        'error message propagated: ' + (err as Error).message,
+      );
     }
   });
 
@@ -69,6 +73,12 @@ describe('Facade RPC — thread realm', () => {
       t.fail('should have rejected for unknown method');
     } catch (err) {
       t.ok(err instanceof Error, 'rejects with Error');
+      t.ok(
+        (err as Error).message.toLowerCase().includes('unknown') ||
+        (err as Error).message.toLowerCase().includes('method') ||
+        (err as Error).message.toLowerCase().includes('handler'),
+        'error message indicates unknown/missing method: ' + (err as Error).message,
+      );
     }
   });
 

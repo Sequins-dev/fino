@@ -147,7 +147,12 @@ export class ClusterClient {
       clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
     }
-    for (const relay of this.#relays.values()) relay.closed = true;
+    for (const relay of this.#relays.values()) {
+      relay.closed = true;
+      // Cancel any pending readable() on the relay's wake-fd so the
+      // event-loop registration is released before the relay map is cleared.
+      removeRead(relay.wakeReadFd);
+    }
     this.#relays.clear();
     // Reject all pending realm-exit waiters so Realm.run() / Realm.call() settle.
     const err = new Error('fino:cluster — cluster connection closed');

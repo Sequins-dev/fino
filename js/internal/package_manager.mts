@@ -16,39 +16,54 @@ const PROBE_EXTENSIONS = ['.mjs', '.js', '.json', '.mts', '.ts'];
  * `dist.integrity` is an SRI string like `sha512-<base64>`.
  * `dist.shasum` is a hex-encoded SHA-1 (legacy, lower security).
  */
-function _verifyTarballIntegrity(
+export function verifyTarballIntegrity(
   bytes: Uint8Array,
   integrity: string | undefined,
   shasum: string | undefined,
   packageId: string,
 ): void {
   if (!openssl.cryptoAvailable) return;
+
   if (integrity) {
-    const dashIdx = integrity.indexOf('-');
-    if (dashIdx < 0) return;
-    const hashAlias = integrity.slice(0, dashIdx).toLowerCase();
-    const expectedB64 = integrity.slice(dashIdx + 1);
-    const algMap: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
-    const alg = algMap[hashAlias];
-    if (!alg) return; // unknown algorithm — skip
-    const actual = openssl.digest(alg, bytes);
-    let actualB64 = '';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-    for (let i = 0; i < actual.length; i += 3) {
-      const b0 = actual[i]!; const b1 = actual[i + 1] ?? 0; const b2 = actual[i + 2] ?? 0;
-      actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
-      actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
-      actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
+    // SRI may be multi-value (space-separated); use only the first token.
+    const token = (integrity.split(/\s+/)[0] ?? '');
+    const dashIdx = token.indexOf('-');
+    if (dashIdx >= 0) {
+      const hashAlias = token.slice(0, dashIdx).toLowerCase();
+      const algMap: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
+      const alg = algMap[hashAlias];
+      if (alg) {
+        // Known SRI algorithm — verify and return (don't fall through to shasum).
+        const expectedB64 = token.slice(dashIdx + 1);
+        const actual = openssl.digest(alg, bytes);
+        let actualB64 = '';
+        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+        for (let i = 0; i < actual.length; i += 3) {
+          const b0 = actual[i]!; const b1 = actual[i + 1] ?? 0; const b2 = actual[i + 2] ?? 0;
+          actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+          actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+          actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
+        }
+        if (actualB64 !== expectedB64) {
+          throw new Error(
+            `Integrity check failed for ${packageId}: expected ${integrity.slice(0, 20)}…`,
+          );
+        }
+        return;
+      }
+      // Unknown algorithm prefix (e.g. "md5-…") — fall through to shasum.
+      // If shasum is also absent, we throw below rather than silently passing.
     }
-    if (actualB64 !== expectedB64) {
+    // Malformed SRI (no "-") — fall through to shasum.
+    // If shasum is also absent, we throw below.
+    if (!shasum) {
       throw new Error(
-        `Integrity check failed for ${packageId}: expected ${integrity.slice(0, 20)}…`
+        `Integrity check failed for ${packageId}: unrecognised integrity string "${token.slice(0, 30)}"`,
       );
     }
-    return;
   }
+
   if (shasum) {
-    // SHA-1 hex (legacy) — verify with openssl
     const actual = openssl.digest('sha-1', bytes);
     const actualHex = Array.from(actual).map(b => b.toString(16).padStart(2, '0')).join('');
     if (actualHex !== shasum.toLowerCase()) {
@@ -311,7 +326,7 @@ async function resolveAndInstall(ctx: InstallContext, name: string, range: strin
     if (!tarball) throw new Error(`Package '${packageId}' has no dist.tarball`);
     const tarballBytes = await fetchBytes(tarball);
     // Verify tarball integrity before extracting to prevent supply-chain attacks.
-    _verifyTarballIntegrity(
+    verifyTarballIntegrity(
       tarballBytes,
       versionMeta.dist.integrity as string | undefined,
       versionMeta.dist.shasum as string | undefined,

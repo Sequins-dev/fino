@@ -118,7 +118,12 @@ export class TlsReader extends BufferedBytesReader {
         await loop.writable(this.#fd); // TLS renegotiation
         continue;
       }
-      return null; // fatal SSL error — treat as EOF
+      // Fatal protocol or syscall error — throw so callers can distinguish
+      // a truncation/MAC failure from a clean peer-initiated close.
+      if (err === openssl.SSL_ERROR_SSL || err === openssl.SSL_ERROR_SYSCALL) {
+        throw new Error('TLS read failed: ' + openssl.getErrorString());
+      }
+      return null; // unexpected code — treat as EOF
     }
   }
 }

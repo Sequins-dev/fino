@@ -684,8 +684,11 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   /** Flush the coalesce buffer, then close. */
   async close(): Promise<void> {
     if (this.closed) return;
-    await this.flush();
-    await super.close();
+    try {
+      await this.flush();
+    } finally {
+      await super.close();
+    }
   }
 }
 

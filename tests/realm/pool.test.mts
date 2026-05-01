@@ -7,12 +7,14 @@
 
 import { describe, it } from 'fino:test/test';
 import { RealmPool } from 'fino:realm/pool';
+import { ImportMap } from 'fino:realm';
 
 import type sumFn from './fixtures/sum-fn.mts';
 import type echoFn from './fixtures/echo-fn.mts';
 import type errorFn from './fixtures/error-fn.mts';
 import type corrFn from './fixtures/corr-fn.mts';
 import type workerIdFn from './fixtures/worker-id-fn.mts';
+import type neverFn from './fixtures/never-fn.mts';
 
 describe('RealmPool basics', () => {
   it('dispatches a call to a worker and returns the result', async (t) => {
@@ -150,6 +152,58 @@ describe('RealmPool — worker crash + respawn', () => {
     t.equal(result, 'after-respawn', 'pool accepts calls after worker crash+respawn');
     await pool.close();
     await pool2.close();
+  });
+});
+
+describe('RealmPool — close() drain timeout', () => {
+  it('close() force-rejects in-flight calls after closeTimeout expires', async (t) => {
+    const pool = new RealmPool<typeof neverFn>({
+      entry: new URL('./fixtures/never-fn.mts', import.meta.url).pathname,
+      size: 1,
+      timeout: 0,       // disable per-call timeout so only close() terminates it
+      closeTimeout: 50, // give close() 50 ms to drain
+    });
+    const inflight = pool.call();
+    const closeStart = performance.now();
+    await pool.close();
+    const closeMs = performance.now() - closeStart;
+    t.ok(closeMs < 500, `close() resolved in ${closeMs.toFixed(0)} ms (expected < 500)`);
+    try {
+      await inflight;
+      t.fail('in-flight call should have been rejected');
+    } catch (err) {
+      t.ok(err instanceof Error, 'rejects with Error');
+      t.ok(
+        (err as Error).message.includes('timed out') || (err as Error).message.includes('close'),
+        'error message references close/timeout: ' + (err as Error).message,
+      );
+    }
+  });
+});
+
+describe('RealmPool — pool module import failure', () => {
+  it('pool.call() rejects with descriptive message when fino:realm/pool is blocked for the worker', async (t) => {
+    // Block fino:realm/pool inside the worker realm so the lazy import in
+    // _bootstrap.mts triggers _poolImportFailed instead of hanging forever.
+    const pool = new RealmPool<typeof sumFn>({
+      entry: new URL('./fixtures/sum-fn.mts', import.meta.url).pathname,
+      size: 1,
+      realm: {
+        overrides: ImportMap.deny([{ pattern: 'fino:realm/pool', directive: 'block' }]),
+      },
+    });
+    try {
+      await pool.call(1, 2);
+      t.fail('should have rejected');
+    } catch (err) {
+      t.ok(err instanceof Error, 'rejects with Error');
+      t.ok(
+        (err as Error).message.includes('failed to load') ||
+        (err as Error).message.includes('blocked'),
+        'error message explains the import failure: ' + (err as Error).message,
+      );
+    }
+    await pool.close();
   });
 });
 

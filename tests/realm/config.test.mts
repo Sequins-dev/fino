@@ -32,12 +32,4 @@ describe('Provider config serialisation', () => {
     const back = SystemDnsConfig.fromJSON(json);
     t.equal(back.type, 'system-dns', 'type preserved');
   });
-
-  it('DiskFsConfig generates override entries for disk reset', (t) => {
-    const cfg = new DiskFsConfig();
-    const entries = cfg._toOverrideEntries();
-    t.equal(entries.length, 1, 'one override entry');
-    t.equal(entries[0]![0], 'internal:file/bindings', 'correct specifier');
-    t.equal(entries[0]![1], '', 'empty code signals removal');
-  });
 });

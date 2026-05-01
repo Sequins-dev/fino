@@ -62,6 +62,8 @@ interface PendingCall {
   reject: (err: unknown) => void;
   timer: ReturnType<typeof setTimeout> | null;
   submittedAt: number;
+  /** Whether the call.start OTel event was published; gates call.end emission. */
+  startPublished: boolean;
 }
 
 interface PoolWorker {
@@ -187,10 +189,23 @@ export class RealmPool<F extends RealmFn = RealmFn> {
       worker.completedCount++;
 
       if (msg.__pool_result) {
+        if (call.startPublished || _topicPoolCallEnd.hasSubscribers) {
+          _topicPoolCallEnd.publish(otelRuntimeEvent('realm_pool', 'call', 'end', {
+            correlationId,
+            durationMs: latencyMs,
+          }));
+        }
         call.resolve(msg.result);
       } else if (msg.__pool_error) {
         const err = new Error(msg.message ?? 'Pool worker error');
         if (msg.stack !== undefined) err.stack = msg.stack;
+        if (call.startPublished || _topicPoolCallEnd.hasSubscribers) {
+          _topicPoolCallEnd.publish(otelRuntimeEvent('realm_pool', 'call', 'end', {
+            correlationId,
+            durationMs: latencyMs,
+            error: true,
+          }));
+        }
         call.reject(err);
       }
     });
@@ -268,22 +283,25 @@ export class RealmPool<F extends RealmFn = RealmFn> {
           }, this.#timeout);
         }
 
-        worker.pending.set(correlationId, {
-          resolve: resolve as (v: unknown) => void,
-          reject,
-          timer,
-          submittedAt: now,
-        });
-
-        worker.realm.port.postMessage({ __pool_call: true, correlationId, args });
-
-        if (_topicPoolCall.hasSubscribers) {
+        // Capture whether start was published so end is always emitted when start was.
+        const startPublished = _topicPoolCall.hasSubscribers;
+        if (startPublished) {
           _topicPoolCall.publish(otelRuntimeEvent('realm_pool', 'call', 'start', {
             correlationId,
             poolSize: this.size,
             pendingTasks: this.#workers.reduce((n, w) => n + w.activeTasks, 0),
           }));
         }
+
+        worker.pending.set(correlationId, {
+          resolve: resolve as (v: unknown) => void,
+          reject,
+          timer,
+          submittedAt: now,
+          startPublished,
+        });
+
+        worker.realm.port.postMessage({ __pool_call: true, correlationId, args });
       });
     });
   }

@@ -66,18 +66,26 @@ export class WebSocketSeedTransport implements ClusterTransport {
 
   send(to: string, msg: ClusterMessage): void {
     const ws = this.#connections.get(to);
-    if (ws) asWS(ws).send(encode(msg));
+    if (!ws) return;
+    try { asWS(ws).send(encode(msg)); }
+    catch (_) { /* socket closed between lookup and send — ignore */ }
   }
 
   broadcast(msg: ClusterMessage): void {
     const data = encode(msg);
-    for (const ws of this.#connections.values()) asWS(ws).send(data);
+    for (const ws of this.#connections.values()) {
+      try { asWS(ws).send(data); }
+      catch (_) { /* closed socket — continue to remaining peers */ }
+    }
   }
 
   broadcastExcept(exceptNodeId: string, msg: ClusterMessage): void {
     const data = encode(msg);
     for (const [nodeId, ws] of this.#connections) {
-      if (nodeId !== exceptNodeId) asWS(ws).send(data);
+      if (nodeId !== exceptNodeId) {
+        try { asWS(ws).send(data); }
+        catch (_) { /* closed socket — continue */ }
+      }
     }
   }
 
@@ -161,6 +169,7 @@ export class WebSocketWorkerTransport implements ClusterTransport {
       });
 
       typed.addEventListener('close', () => {
+        this.#ws = null; // prevent send() on a closed socket
         const synth: ClusterMessage = { t: 'PEER_DOWN', nodeId: this.#seedNodeId };
         for (const h of this.#handlers) h(this.#seedNodeId, synth);
       });
@@ -173,7 +182,9 @@ export class WebSocketWorkerTransport implements ClusterTransport {
 
   send(_to: string, msg: ClusterMessage): void {
     // All outbound messages go through the seed; routing is done by the seed.
-    if (this.#ws) asWS(this.#ws).send(encode(msg));
+    if (!this.#ws) return;
+    try { asWS(this.#ws).send(encode(msg)); }
+    catch (_) { /* connection dropped — ignore; close handler will emit PEER_DOWN */ }
   }
 
   broadcast(_msg: ClusterMessage): void {

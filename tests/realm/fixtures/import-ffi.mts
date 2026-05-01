@@ -1,10 +1,12 @@
 /**
  * Fixture: child realm that attempts to import a blocked module.
- * The import should throw; we catch the error and exit cleanly.
+ * Throws if the import unexpectedly succeeds (regression guard).
  */
+class _ImportFfiSentinel extends Error {}
 try {
   await import('fino:ffi');
-  console.error('ERROR: blocked import should have thrown');
-} catch (_e) {
-  // Expected — fino:ffi is blocked in this realm.
+  throw new _ImportFfiSentinel('fino:ffi was accessible but should have been blocked');
+} catch (e) {
+  if (e instanceof _ImportFfiSentinel) throw e;
+  // Otherwise the import was blocked as expected — exit cleanly.
 }

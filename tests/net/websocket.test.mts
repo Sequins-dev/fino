@@ -410,6 +410,65 @@ describe('WebSocket end-to-end via serve()', () => {
     }
   });
 
+  it('client abrupt disconnect (no close frame) fires close with wasClean=false', async () => {
+    // RFC 6455 golden-vector key/accept pair (§1.3 of the spec).
+    const WS_KEY    = 'dGhlIHNhbXBsZSBub25jZQ==';
+    const WS_ACCEPT = 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=';
+
+    let resolveServerClose!: (e: CloseEvent) => void;
+    const serverClosedPromise = new Promise<CloseEvent>((res) => { resolveServerClose = res; });
+
+    const server = serve({ port: 0 }, (req) => {
+      if (req.headers.get('upgrade') === 'websocket') {
+        const ws = WebSocketConnection.accept(req);
+        ws.addEventListener('close', (e) => resolveServerClose(e as CloseEvent));
+        return ws;
+      }
+      return new Response('', { status: 400 });
+    });
+
+    try {
+      const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: server.port });
+      const [reader, writer] = sock.split();
+
+      // Send a valid WebSocket upgrade using the RFC 6455 golden-vector key.
+      const upgradeReq = [
+        `GET /ws HTTP/1.1`,
+        `Host: 127.0.0.1:${server.port}`,
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${WS_KEY}`,
+        'Sec-WebSocket-Version: 13',
+        '\r\n',
+      ].join('\r\n');
+      await writer.write(enc(upgradeReq));
+      await writer.flush();
+
+      // Read until we see the 101 Switching Protocols response.
+      let response = '';
+      const iter = reader[Symbol.asyncIterator]();
+      while (!response.includes('\r\n\r\n')) {
+        const { done, value } = await iter.next();
+        if (done) break;
+        response += dec(value instanceof ArrayBuffer ? new Uint8Array(value) : value);
+      }
+
+      ok(response.includes('101'), 'server returned 101 Switching Protocols');
+      ok(response.includes(WS_ACCEPT), 'server returned correct Sec-WebSocket-Accept');
+
+      // Abruptly close the TCP connection without sending a WebSocket close frame.
+      writer.close();
+      reader.close();
+
+      // The server-side WebSocket should fire 'close' with wasClean=false, code 1006.
+      const closeEvt = await serverClosedPromise;
+      ok(!closeEvt.wasClean, 'server close event has wasClean=false on abrupt disconnect');
+      equal(closeEvt.code, 1006, 'close code is 1006 (abnormal closure)');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('handles mixed HTTP and WebSocket on same serve()', async () => {
     const server = serve({ port: 0 }, (req) => {
       if (req.headers.get('upgrade') === 'websocket') {

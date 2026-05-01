@@ -366,7 +366,7 @@ pub struct FinoState {
     // ---------------------------------------------------------------------------
     // Thread Realm channels (populated only in thread-realm Isolates)
     // ---------------------------------------------------------------------------
-    // `allow(dead_code)`: used by Phase 3 native send/recv functions.
+    // `allow(dead_code)`: used by thread-realm native send/recv functions.
     #[allow(dead_code)]
     /// Receives serialized messages sent from the partner Isolate.
     pub channel_rx: Option<std::sync::mpsc::Receiver<crate::realm::thread::ThreadMessage>>,

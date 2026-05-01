@@ -352,6 +352,35 @@ describe('HKDF', { skip }, () => {
     const dt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ct);
     t.equal(new TextDecoder().decode(dt), 'hello hkdf', 'round-trip with HKDF-derived key');
   });
+
+  it('deriveKey — produces a usable AES-CBC key', async (t) => {
+    const enc = new TextEncoder();
+    const baseKey = await crypto.subtle.importKey('raw', enc.encode('aes-cbc-ikm'), { name: 'HKDF' }, false, ['deriveKey']);
+    const aesKey = await crypto.subtle.deriveKey(
+      { name: 'HKDF', hash: 'SHA-256', salt: enc.encode('salt'), info: enc.encode('cbc-context') },
+      baseKey, { name: 'AES-CBC', length: 256 }, false, ['encrypt', 'decrypt'],
+    );
+    t.equal(aesKey.algorithm.name, 'AES-CBC', 'derived key is AES-CBC');
+    const iv = new Uint8Array(16);
+    crypto.getRandomValues(iv);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, aesKey, enc.encode('hello cbc'));
+    const dt = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, aesKey, ct);
+    t.equal(new TextDecoder().decode(dt), 'hello cbc', 'round-trip with HKDF-derived AES-CBC key');
+  });
+
+  it('throws when requested key length exceeds 255 * hashLen (n > 255 guard)', async (t) => {
+    const ikm = new TextEncoder().encode('input');
+    const key = await crypto.subtle.importKey('raw', ikm, { name: 'HKDF' }, false, ['deriveBits']);
+    // SHA-256 hashLen = 32 bytes; 256 * 32 = 8192 bytes + 1 = just over the limit
+    const tooLarge = 256 * 32 + 1;
+    try {
+      await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new Uint8Array(0) }, key, tooLarge * 8);
+      t.fail('should have thrown');
+    } catch (err) {
+      t.ok(err instanceof Error, 'throws an Error for oversized derivation');
+      t.ok((err as Error).message.toLowerCase().includes('large') || (err as Error).message.includes('255'), 'error mentions the limit');
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -566,6 +595,17 @@ describe('wrapKey / unwrapKey', () => {
 
     const unwrapped = await crypto.subtle.unwrapKey('jwk', wrapped, wrappingKey, { name: 'AES-GCM', iv }, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
     t.ok(unwrapped instanceof CryptoKey, 'unwrapped is CryptoKey');
+
+    // Verify the unwrapped key produces the same ciphertext as the original — key material survived.
+    const testData = new TextEncoder().encode('verify-wrap-round-trip');
+    const iv2 = new Uint8Array(12);
+    crypto.getRandomValues(iv2);
+    const ct1 = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv2 }, targetKey, testData));
+    const ct2 = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv2 }, unwrapped, testData));
+    t.equal(ct1.length, ct2.length, 'ciphertext lengths match');
+    let same = true;
+    for (let i = 0; i < ct1.length; i++) if (ct1[i] !== ct2[i]) { same = false; break; }
+    t.ok(same, 'unwrapped JWK key produces identical ciphertext — key material intact');
   });
 });
 

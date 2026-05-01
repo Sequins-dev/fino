@@ -24,15 +24,14 @@ import * as openssl from '../openssl.mts';
 // ---------------------------------------------------------------------------
 // Deferred algorithms (planned, not yet implemented)
 //
-// The following Web Crypto algorithms require additional OpenSSL EVP_PKEY
-// FFI bindings and are deferred to a separate implementation task:
-//   - ECDSA (P-256, P-384): sign, verify, generateKey, importKey/exportKey
+// The following algorithms require additional OpenSSL FFI bindings:
+//   - ECDSA (P-384, P-521): currently only P-256 is supported
 //   - ECDH (P-256, P-384): deriveKey, deriveBits
 //   - RSA-OAEP: encrypt, decrypt, generateKey, importKey/exportKey
 //   - RSA-PSS, RSASSA-PKCS1-v1_5: sign, verify
 //   - Ed25519: sign, verify (requires OpenSSL 1.1.1+)
 //   - JWK EC and RSA key formats (kty: 'EC', 'RSA', 'OKP')
-//   - pkcs8 and spki key formats for asymmetric keys
+//   - pkcs8 format for private key import/export
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -69,9 +68,14 @@ interface CryptoKeyAlgorithm {
 // CryptoKey
 // ---------------------------------------------------------------------------
 
-// WeakMap keyed on CryptoKey instances — allows module-level functions to
-// access private key material without making #fields accessible outside the class.
+// WeakMap keyed on CryptoKey instances — symmetric key bytes.
 const _keyStore = new WeakMap<CryptoKey, Uint8Array>();
+// WeakMap keyed on asymmetric CryptoKey instances — EVP_PKEY* pointer.
+const _pkeyStore = new WeakMap<CryptoKey, object>();
+// Auto-free EVP_PKEY* when the CryptoKey is GC'd.
+const _pkeyRegistry = new FinalizationRegistry<object>((pkey) => {
+  openssl.evpPkeyFree(pkey);
+});
 
 class CryptoKey {
   #type:        KeyType;
@@ -81,12 +85,23 @@ class CryptoKey {
 
   get [Symbol.toStringTag]() { return 'CryptoKey'; }
 
-  constructor(type: KeyType, extractable: boolean, algorithm: CryptoKeyAlgorithm, usages: KeyUsage[], keyData: Uint8Array) {
+  constructor(
+    type: KeyType,
+    extractable: boolean,
+    algorithm: CryptoKeyAlgorithm,
+    usages: KeyUsage[],
+    keyData: Uint8Array | null,
+    pkeyPtr: object | null = null,
+  ) {
     this.#type        = type;
     this.#extractable = extractable;
     this.#algorithm   = algorithm;
     this.#usages      = usages;
-    _keyStore.set(this, keyData); // Uint8Array — the raw key bytes
+    if (keyData !== null) _keyStore.set(this, keyData);
+    if (pkeyPtr !== null) {
+      _pkeyStore.set(this, pkeyPtr);
+      _pkeyRegistry.register(this, pkeyPtr, this);
+    }
   }
 
   get type():        KeyType           { return this.#type; }
@@ -97,7 +112,16 @@ class CryptoKey {
 
 function _keyData(key: CryptoKey): Uint8Array {
   if (!(key instanceof CryptoKey)) throw new Error('Invalid CryptoKey');
-  return _keyStore.get(key)!;
+  const d = _keyStore.get(key);
+  if (!d) throw new Error('CryptoKey has no symmetric key material');
+  return d;
+}
+
+function _pkeyPtr(key: CryptoKey): object {
+  if (!(key instanceof CryptoKey)) throw new Error('Invalid CryptoKey');
+  const p = _pkeyStore.get(key);
+  if (!p) throw new Error('CryptoKey has no asymmetric key material');
+  return p;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +216,62 @@ function _base64urlDecode(s: string): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
+// ECDSA DER ↔ raw signature conversion helpers
+//
+// WebCrypto uses raw 64-byte signatures (32-byte big-endian r ‖ s).
+// OpenSSL ECDSA_sign/verify uses ASN.1 DER-encoded signatures.
+// ---------------------------------------------------------------------------
+
+function _derSigToRaw(der: Uint8Array): Uint8Array {
+  if (der[0] !== 0x30) throw new Error('Invalid ECDSA DER signature: expected SEQUENCE (0x30)');
+  let off = 2; // skip SEQUENCE tag + length
+  if (der[off] !== 0x02) throw new Error('Invalid ECDSA DER signature: expected INTEGER for r');
+  off++;
+  const rLen = der[off++]!;
+  if (off + rLen > der.length) throw new Error('Invalid ECDSA DER signature: r length overruns buffer');
+  const rBytes = der.subarray(off, off + rLen); off += rLen;
+  if (der[off] !== 0x02) throw new Error('Invalid ECDSA DER signature: expected INTEGER for s');
+  off++;
+  const sLen = der[off++]!;
+  if (off + sLen > der.length) throw new Error('Invalid ECDSA DER signature: s length overruns buffer');
+  const sBytes = der.subarray(off, off + sLen);
+
+  const raw = new Uint8Array(64);
+  const rStart = rBytes[0] === 0x00 ? 1 : 0;
+  const rSlice = rBytes.subarray(rStart);
+  if (rSlice.length > 32) throw new Error('Invalid ECDSA DER signature: r value too large');
+  raw.set(rSlice, 32 - rSlice.length);
+  const sStart = sBytes[0] === 0x00 ? 1 : 0;
+  const sSlice = sBytes.subarray(sStart);
+  if (sSlice.length > 32) throw new Error('Invalid ECDSA DER signature: s value too large');
+  raw.set(sSlice, 64 - sSlice.length);
+  return raw;
+}
+
+function _rawSigToDer(raw: Uint8Array): Uint8Array {
+  if (raw.length !== 64) throw new Error('Raw ECDSA signature must be 64 bytes');
+
+  function _encodeInt(b: Uint8Array): Uint8Array {
+    let start = 0;
+    while (start < b.length - 1 && b[start] === 0) start++;
+    const needsPad = (b[start]! & 0x80) !== 0;
+    const out = new Uint8Array(needsPad ? b.length - start + 1 : b.length - start);
+    if (needsPad) { out[0] = 0x00; out.set(b.subarray(start), 1); }
+    else           { out.set(b.subarray(start)); }
+    return out;
+  }
+
+  const r = _encodeInt(raw.subarray(0, 32));
+  const s = _encodeInt(raw.subarray(32, 64));
+  const inner = 2 + r.length + 2 + s.length;
+  const der = new Uint8Array(2 + inner);
+  der[0] = 0x30; der[1] = inner;
+  der[2] = 0x02; der[3] = r.length; der.set(r, 4);
+  der[4 + r.length] = 0x02; der[5 + r.length] = s.length; der.set(s, 6 + r.length);
+  return der;
+}
+
+// ---------------------------------------------------------------------------
 // SubtleCrypto
 // ---------------------------------------------------------------------------
 
@@ -211,15 +291,23 @@ const subtle = {
   },
 
   // -------------------------------------------------------------------------
-  // sign / verify — HMAC only for now
+  // sign / verify — HMAC and ECDSA
   // -------------------------------------------------------------------------
 
   async sign(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
-    if (alg.name !== 'HMAC') throw new Error('sign: only HMAC is supported');
-    if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
 
+    if (alg.name === 'ECDSA') {
+      if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+      const hashAlg = _digestAlgorithm(_hashName(_requiredHash(alg.hash, 'ECDSA hash')));
+      const hash    = openssl.digest(hashAlg, _toUint8Array(data));
+      const der     = openssl.ecdsaSign(hash, _pkeyPtr(key));
+      return _toArrayBuffer(_derSigToRaw(der));
+    }
+
+    if (alg.name !== 'HMAC') throw new Error('sign: unsupported algorithm "' + alg.name + '"');
+    if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
     const hash = _digestAlgorithm(_hashName(_requiredHash(key.algorithm.hash, 'HMAC hash')));
     const mac  = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
     return _toArrayBuffer(mac);
@@ -228,14 +316,26 @@ const subtle = {
   async verify(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, signature: BufferSource, data: BufferSource): Promise<boolean> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
-    if (alg.name !== 'HMAC') throw new Error('verify: only HMAC is supported');
-    if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
 
+    if (alg.name === 'ECDSA') {
+      if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+      const hashAlg = _digestAlgorithm(_hashName(_requiredHash(alg.hash, 'ECDSA hash')));
+      const hash    = openssl.digest(hashAlg, _toUint8Array(data));
+      let derSig: Uint8Array;
+      try {
+        derSig = _rawSigToDer(_toUint8Array(signature));
+      } catch {
+        return false; // malformed signature
+      }
+      return openssl.ecdsaVerify(hash, derSig, _pkeyPtr(key));
+    }
+
+    if (alg.name !== 'HMAC') throw new Error('verify: unsupported algorithm "' + alg.name + '"');
+    if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
     const hash     = _digestAlgorithm(_hashName(_requiredHash(key.algorithm.hash, 'HMAC hash')));
     const expected = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
     const actual   = _toUint8Array(signature);
 
-    // Constant-time comparison
     if (expected.length !== actual.length) return false;
     let diff = 0;
     for (let i = 0; i < expected.length; i++) diff |= expected[i]! ^ actual[i]!;
@@ -316,7 +416,22 @@ const subtle = {
       // Route through the same algorithm handling below using the decoded bytes
       return subtle.importKey('raw', bytes.buffer as ArrayBuffer, algorithm, extractable, keyUsages);
     }
-    if (format !== 'raw') throw new Error(`importKey: unsupported format "${format}"; supported: "raw", "jwk"`);
+    if (format === 'spki') {
+      // Only ECDSA public keys support SPKI import.
+      if (alg.name !== 'ECDSA') throw new Error('importKey: "spki" format only supported for ECDSA');
+      const derBytes = _toUint8Array(keyData);
+      const pkey = openssl.evpPkeyImportSpki(derBytes);
+      return new CryptoKey(
+        'public',
+        extractable,
+        { name: 'ECDSA' },
+        [...keyUsages],
+        null,
+        pkey,
+      );
+    }
+
+    if (format !== 'raw') throw new Error(`importKey: unsupported format "${format}"; supported: "raw", "spki", "jwk"`);
 
     const bytes = _toUint8Array(keyData);
 
@@ -395,14 +510,42 @@ const subtle = {
         ext: key.extractable,
       } as unknown as ArrayBuffer; // widen return type; callers handle object | ArrayBuffer
     }
-    if (format !== 'raw') throw new Error(`exportKey: unsupported format "${format}"; supported: "raw", "jwk"`);
+    if (format === 'spki') {
+      if (!key.extractable) throw new Error('CryptoKey is not extractable');
+      if (key.algorithm.name !== 'ECDSA') throw new Error('exportKey: "spki" format only supported for ECDSA');
+      return _toArrayBuffer(openssl.evpPkeyExportSpki(_pkeyPtr(key)));
+    }
+
+    if (format !== 'raw') throw new Error(`exportKey: unsupported format "${format}"; supported: "raw", "spki", "jwk"`);
     if (!key.extractable) throw new Error('CryptoKey is not extractable');
     return _toArrayBuffer(_keyData(key));
   },
 
-  async generateKey(algorithm: string | { name: string; [key: string]: unknown }, extractable: boolean, keyUsages: KeyUsage[]): Promise<CryptoKey> {
+  async generateKey(
+    algorithm: string | { name: string; [key: string]: unknown },
+    extractable: boolean,
+    keyUsages: KeyUsage[],
+  ): Promise<CryptoKey | { privateKey: CryptoKey; publicKey: CryptoKey }> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
+
+    if (alg.name === 'ECDSA') {
+      const pkeyFull = openssl.evpPkeyGenerateEcP256();
+      // Export public component and re-import as a separate public-only key so
+      // each CryptoKey has independent lifetime managed by FinalizationRegistry.
+      let pkeyPub: object;
+      try {
+        const spki = openssl.evpPkeyExportSpki(pkeyFull);
+        pkeyPub = openssl.evpPkeyImportSpki(spki);
+      } catch (err) {
+        openssl.evpPkeyFree(pkeyFull);
+        throw err;
+      }
+      const privateKey = new CryptoKey('private', extractable, { name: 'ECDSA' }, ['sign'], null, pkeyFull);
+      // pkeyPub is safely owned by publicKey's FinalizationRegistry from here on.
+      const publicKey  = new CryptoKey('public',  extractable, { name: 'ECDSA' }, ['verify'], null, pkeyPub);
+      return { privateKey, publicKey };
+    }
 
     if (alg.name === 'HMAC') {
       const hashName   = _hashName(alg.hash ?? 'SHA-256');

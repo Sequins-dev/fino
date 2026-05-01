@@ -209,6 +209,60 @@ describe('Connection management', () => {
     await server.close();
   });
 
+  it('keep-alive: second request succeeds after handler error on first', async (t) => {
+    // A handler that throws must drain the request body so the HTTP parser
+    // state is not corrupted for the next request on the same connection.
+    let callCount = 0;
+    const server = serve({ port: 0 }, async (req) => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: read nothing from the body, then throw.
+        throw new Error('deliberate handler error');
+      }
+      return new Response('second-ok');
+    });
+    const port = server.port;
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+    const [reader, writer] = sock.split();
+
+    // First request: has a body that the handler never reads, then throws.
+    const body1 = 'request-body-content';
+    await writer.write(encodeUtf8(
+      `POST / HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Length: ${body1.length}\r\n\r\n${body1}`,
+    ));
+    await writer.flush();
+
+    let buf = '';
+    const iter = reader[Symbol.asyncIterator]();
+    while (true) {
+      const { done, value } = await iter.next();
+      if (done) break;
+      buf += decodeUtf8(value);
+      if (buf.includes('\r\n\r\n')) break; // response headers received
+    }
+    t.ok(buf.includes('HTTP/1.1 500'), 'first request returned 500');
+
+    // Second request on same connection — parser must be in a clean state.
+    await writer.write(encodeUtf8(
+      `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`,
+    ));
+    await writer.flush();
+
+    let buf2 = '';
+    while (true) {
+      const { done, value } = await iter.next();
+      if (done) break;
+      buf2 += decodeUtf8(value);
+      if (buf2.includes('second-ok')) break;
+    }
+    t.ok(buf2.includes('HTTP/1.1 200'), 'second request returned 200');
+    t.ok(buf2.includes('second-ok'), 'second response body correct');
+
+    writer.close();
+    reader.close();
+    await server.close();
+  });
+
   it('concurrent connections', async (t) => {
     let inFlight = 0;
     let maxConcurrent = 0;

@@ -457,7 +457,9 @@ async function _handleConnection(conn: InstanceType<typeof Socket>, handler: (re
         if (entry.kind === 'upgrade') {
           try {
             await entry.conn._takeOver(reader, writer);
-          } catch (_) {}
+          } catch (err) {
+            console.error('fino:serve WebSocket upgrade failed:', err);
+          }
           // After the WebSocket closes, _handleConnection's finally will clean up.
           return;
         }

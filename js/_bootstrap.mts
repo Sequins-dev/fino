@@ -288,12 +288,21 @@ if (_childEntry !== undefined) {
 
   // Start the port early so messages (including __terminate) arrive during
   // module loading, before the entry module's own listener is added.
+  // __pool_call messages that arrive before the entry module finishes loading
+  // are queued here and replayed once the _callHandler is installed.
+  const _earlyPoolCalls: unknown[] = [];
+  let _callHandlerInstalled = false;
+
   if (_childPort !== undefined) {
     _childPort.start();
     _childPort.addEventListener('message', function _terminateHandler(ev) {
       const msg = (ev as MessageEvent).data;
-      if (msg && typeof msg === 'object' && (msg as { __terminate?: boolean }).__terminate === true) {
+      if (!msg || typeof msg !== 'object') return;
+      if ((msg as { __terminate?: boolean }).__terminate === true) {
         _childDone = true;
+      } else if (!_callHandlerInstalled && (msg as { __pool_call?: boolean }).__pool_call) {
+        // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
+        _earlyPoolCalls.push(msg);
       }
     });
   }
@@ -372,6 +381,17 @@ if (_childEntry !== undefined) {
           // Other messages (not __call / __pool_call / __terminate) pass through
           // to user-registered listeners unchanged.
         });
+
+        // Mark the handler as installed so _terminateHandler stops queuing pool calls.
+        // Replay any messages that arrived before installation via a microtask.
+        _callHandlerInstalled = true;
+        if (_earlyPoolCalls.length > 0) {
+          Promise.resolve().then(() => {
+            for (const m of _earlyPoolCalls.splice(0)) {
+              _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+            }
+          });
+        }
       } else {
         // Normal completion: entry module's top-level code (and any TLA) finished.
         // If an entry module wants to stay alive for multi-event messaging, it

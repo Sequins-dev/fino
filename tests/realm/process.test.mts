@@ -55,7 +55,7 @@ describe('Process Realm basics', () => {
     }
   });
 
-  it('terminate() stops a process realm', async (t) => {
+  it('terminate() stops a process realm and cleans up', async (t) => {
     const realm = new Realm({
       process: true,
       entry: new URL('./fixtures/long-running.mts', import.meta.url).pathname,
@@ -63,8 +63,19 @@ describe('Process Realm basics', () => {
     const runPromise = realm.run();
     await new Promise<void>((res) => setTimeout(res, 10));
     realm.terminate();
-    await runPromise;
-    t.ok(true, 'process realm terminated successfully');
+    // run() must settle (resolves or rejects) — confirms the child is reaped
+    try {
+      await runPromise;
+    } catch {
+      // Termination may cause a non-zero exit; either outcome is acceptable.
+    }
+    // Attempt a subsequent call on the terminated realm; must reject rather than hang.
+    try {
+      await realm.call();
+      t.fail('call() on terminated realm should have rejected');
+    } catch (err) {
+      t.ok(err instanceof Error, 'call() after terminate() rejects with Error');
+    }
   });
 
   it('child process exit(1) surfaces as run() rejection', async (t) => {
@@ -78,6 +89,48 @@ describe('Process Realm basics', () => {
     } catch (err) {
       t.ok(err instanceof Error, 'run() rejects with Error on non-zero exit');
     }
+  });
+});
+
+describe('Process Realm — serialization of complex types over IPC', () => {
+  it('call() round-trips a nested object', async (t) => {
+    type Obj = { x: number; nested: { arr: number[]; flag: boolean } };
+    const realm = new Realm<(o: Obj) => Obj>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    const input: Obj = { x: 42, nested: { arr: [1, 2, 3], flag: true } };
+    const result = await realm.call(input);
+    t.equal(result.x, 42, 'top-level number survives IPC');
+    t.equal(result.nested.arr[1], 2, 'nested array element survives IPC');
+    t.equal(result.nested.flag, true, 'nested boolean survives IPC');
+  });
+
+  it('call() round-trips an ArrayBuffer', async (t) => {
+    const realm = new Realm<(b: ArrayBuffer) => ArrayBuffer>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    const buf = new Uint8Array([0xde, 0xad, 0xbe, 0xef]).buffer;
+    const result = await realm.call(buf);
+    const view = new Uint8Array(result as ArrayBuffer);
+    t.equal(view[0], 0xde, 'first byte survives IPC');
+    t.equal(view[3], 0xef, 'last byte survives IPC');
+  });
+});
+
+describe('Process Realm call() + run() ordering', () => {
+  it('run() resolves after call() has completed', async (t) => {
+    const realm = new Realm<typeof echoFn>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    const runPromise = realm.run();
+    const result = await realm.call('ordering-check');
+    t.equal(result, 'ordering-check', 'call() returned the correct result');
+    // run() should settle once the realm exits (after call completes)
+    await runPromise;
+    t.ok(true, 'run() resolved cleanly after call() completed');
   });
 });
 

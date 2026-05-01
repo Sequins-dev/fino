@@ -292,7 +292,11 @@ async function _singleFetch(
       timeUnixNano: Date.now() * 1_000_000,
     }));
     try {
-      sock = await _raceAbort(signal, TlsSocket.connect(addr, { hostname }));
+      const tlsConnectP = TlsSocket.connect(addr, { hostname });
+      // If abort fires before the connect resolves, the socket still resolves
+      // later — close it immediately to prevent a fd leak.
+      tlsConnectP.then(s => { if (signal?.aborted) s.close(); }, () => {});
+      sock = await _raceAbort(signal, tlsConnectP);
       topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(otelRuntimeEvent('socket', 'connect', 'end', {
         connectId,
         requestId: runtime.requestId,
@@ -335,7 +339,9 @@ async function _singleFetch(
     }
   } else {
     try {
-      sock = await _raceAbort(signal, Socket.connect(addr));
+      const tcpConnectP = Socket.connect(addr);
+      tcpConnectP.then(s => { if (signal?.aborted) s.close(); }, () => {});
+      sock = await _raceAbort(signal, tcpConnectP);
       topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(otelRuntimeEvent('socket', 'connect', 'end', {
         connectId,
         requestId: runtime.requestId,
@@ -809,8 +815,19 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
         nextHeaders.delete('content-length');
         nextHeaders.delete('transfer-encoding');
       }
-      // 307, 308 → keep method; body must still be replayable
-      // (currentBody is the raw init value, so string/Uint8Array can be re-used)
+      // 307, 308 → keep method; body must still be replayable.
+      // ReadableStream and async iterables are one-shot — throw rather than
+      // silently sending an empty body on the redirected request.
+      if ((status === 307 || status === 308) && currentBody !== null) {
+        const b = currentBody as any;
+        if (typeof b[Symbol.asyncIterator] === 'function' ||
+            (typeof ReadableStream !== 'undefined' && b instanceof ReadableStream)) {
+          throw new TypeError(
+            'fetch: cannot follow 307/308 redirect with a streaming (non-replayable) request body',
+          );
+        }
+      }
+      // (currentBody is the raw init value — string/Uint8Array/Blob are replayable)
 
       currentUrl     = resolvedUrl;
       currentHeaders = nextHeaders;

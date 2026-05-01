@@ -97,6 +97,36 @@ const _cryptoSymbols = {
     parameters: ['buffer', 'i32', 'buffer', 'i32', 'i32', 'pointer', 'i32', 'buffer'],
     result: 'i32',
   },
+
+  // ECDSA / EC key operations
+  OBJ_txt2nid:            { parameters: ['buffer'], result: 'i32' },
+  EC_KEY_new_by_curve_name: { parameters: ['i32'], result: 'pointer' },
+  EC_KEY_generate_key:    { parameters: ['pointer'], result: 'i32' },
+  EC_KEY_free:            { parameters: ['pointer'], result: 'void' },
+  EC_KEY_get0_group:      { parameters: ['pointer'], result: 'pointer' },
+  EC_KEY_get0_public_key: { parameters: ['pointer'], result: 'pointer' },
+  EC_KEY_set_public_key:  { parameters: ['pointer', 'pointer'], result: 'i32' },
+  EC_POINT_new:           { parameters: ['pointer'], result: 'pointer' },
+  EC_POINT_free:          { parameters: ['pointer'], result: 'void' },
+  // Returns byte count written; buf must be pre-allocated.  ctx may be null.
+  EC_POINT_point2oct: {
+    parameters: ['pointer', 'pointer', 'i32', 'buffer', 'usize', 'pointer'],
+    result: 'usize',
+  },
+  // Returns 1 on success.  ctx may be null.
+  EC_POINT_oct2point: {
+    parameters: ['pointer', 'pointer', 'buffer', 'usize', 'pointer'],
+    result: 'i32',
+  },
+  EVP_PKEY_new:           { parameters: [], result: 'pointer' },
+  EVP_PKEY_free:          { parameters: ['pointer'], result: 'void' },
+  EVP_PKEY_assign_EC_KEY: { parameters: ['pointer', 'pointer'], result: 'i32' },
+  EVP_PKEY_get0_EC_KEY:   { parameters: ['pointer'], result: 'pointer' },
+  // ECDSA_sign(type=0, dgst, dgstlen, sig, siglen_buf, eckey) → 1 on success
+  // siglen_buf must be a 4-byte buffer; written with actual DER sig length.
+  ECDSA_sign:   { parameters: ['i32', 'buffer', 'i32', 'buffer', 'buffer', 'pointer'], result: 'i32' },
+  // ECDSA_verify(type=0, dgst, dgstlen, sig, siglen, eckey) → 1 if valid
+  ECDSA_verify: { parameters: ['i32', 'buffer', 'i32', 'buffer', 'i32', 'pointer'], result: 'i32' },
 } satisfies NativeSymbolMap;
 
 const _sslSymbols = {
@@ -125,13 +155,9 @@ const _sslSymbols = {
   SSL_CTX_use_certificate_file: { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_CTX_use_PrivateKey_file:  { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_CTX_check_private_key:    { parameters: ['pointer'], result: 'i32' },
-  // ALPN — Application Layer Protocol Negotiation (required for HTTP/2)
-  // SSL_CTX_set_alpn_protos(ctx, protos, protos_len) — client: set preference list
+  // ALPN — Application Layer Protocol Negotiation
+  // SSL_CTX_set_alpn_protos(ctx, protos, protos_len) — advertise protocol list
   SSL_CTX_set_alpn_protos: { parameters: ['pointer', 'buffer', 'u32'], result: 'i32' },
-  // SSL_CTX_set_alpn_select_cb(ctx, cb, arg) — server: called during handshake
-  SSL_CTX_set_alpn_select_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
-  // SSL_get0_alpn_selected(ssl, data_out, len_out) — read negotiated protocol
-  SSL_get0_alpn_selected: { parameters: ['pointer', 'buffer', 'buffer'], result: 'void' },
 } satisfies NativeSymbolMap;
 
 // ---------------------------------------------------------------------------
@@ -636,6 +662,164 @@ export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: U
 }
 
 // ---------------------------------------------------------------------------
+// ECDSA / EC — key generation, SPKI import/export, sign/verify
+// ---------------------------------------------------------------------------
+
+// NID for prime256v1, resolved once via OBJ_txt2nid and cached.
+let _p256Nid = 0;
+function _p256NID(): number {
+  if (_p256Nid === 0) {
+    const lib = _requireCrypto();
+    _p256Nid = lib.symbols.OBJ_txt2nid(encodeUtf8('prime256v1\0'));
+    if (_p256Nid === 0) throw new Error('OBJ_txt2nid: prime256v1 not recognised');
+  }
+  return _p256Nid;
+}
+
+// Fixed 26-byte SubjectPublicKeyInfo DER prefix for an uncompressed P-256 public key.
+// The full SPKI is: prefix (26 bytes) || 04 || X (32 bytes) || Y (32 bytes) = 91 bytes.
+const _P256_SPKI_PREFIX = new Uint8Array([
+  0x30, 0x59,                                     // SEQUENCE, 89 bytes
+  0x30, 0x13,                                     // SEQUENCE, 19 bytes (algorithm)
+  0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,        // OID ecPublicKey
+  0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,  // OID prime256v1
+  0x03, 0x42,                                     // BIT STRING, 66 bytes
+  0x00,                                           // 0 unused bits
+]);
+
+/**
+ * Generate an ECDSA P-256 key pair.
+ * Returns an EVP_PKEY* (8-byte ArrayBuffer) owning both private and public components.
+ * The caller must eventually call `evpPkeyFree()`.
+ */
+export function evpPkeyGenerateEcP256(): object {
+  const lib  = _requireCrypto();
+  const nid  = _p256NID();
+  const ecKey = lib.symbols.EC_KEY_new_by_curve_name(nid);
+  if (ecKey === null) throw new Error('EC_KEY_new_by_curve_name failed: ' + getErrorString());
+  if (lib.symbols.EC_KEY_generate_key(ecKey) !== 1) {
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EC_KEY_generate_key failed: ' + getErrorString());
+  }
+  const pkey = lib.symbols.EVP_PKEY_new();
+  if (pkey === null) {
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EVP_PKEY_new failed: ' + getErrorString());
+  }
+  if (lib.symbols.EVP_PKEY_assign_EC_KEY(pkey, ecKey) !== 1) {
+    lib.symbols.EVP_PKEY_free(pkey);
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
+  }
+  return pkey;
+}
+
+/** Free an EVP_PKEY* returned by evpPkeyGenerateEcP256 or evpPkeyImportSpki. */
+export function evpPkeyFree(pkey: object): void {
+  _requireCrypto().symbols.EVP_PKEY_free(pkey);
+}
+
+/**
+ * Export the public component of a P-256 key as 91-byte DER-encoded SPKI.
+ */
+export function evpPkeyExportSpki(pkey: object): Uint8Array {
+  const lib   = _requireCrypto();
+  const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
+  if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
+  const group  = lib.symbols.EC_KEY_get0_group(ecKey);
+  const point  = lib.symbols.EC_KEY_get0_public_key(ecKey);
+  const outBuf = new Uint8Array(65);
+  // POINT_CONVERSION_UNCOMPRESSED = 4
+  const written = lib.symbols.EC_POINT_point2oct(group, point, 4, outBuf, 65, null);
+  if (written !== 65) throw new Error('EC_POINT_point2oct failed: ' + getErrorString());
+  const spki = new Uint8Array(91);
+  spki.set(_P256_SPKI_PREFIX);
+  spki.set(outBuf, _P256_SPKI_PREFIX.length);
+  return spki;
+}
+
+/**
+ * Import a P-256 public key from 91-byte DER-encoded SPKI.
+ * Returns an EVP_PKEY* (public-only). The caller must call evpPkeyFree() when done.
+ */
+export function evpPkeyImportSpki(der: Uint8Array): object {
+  if (der.length !== 91) throw new Error('ECDSA P-256 SPKI must be 91 bytes');
+  for (let i = 0; i < _P256_SPKI_PREFIX.length; i++) {
+    if (der[i] !== _P256_SPKI_PREFIX[i]) {
+      throw new Error('SPKI header does not match P-256 / prime256v1');
+    }
+  }
+  if (der[26] !== 0x04) throw new Error('SPKI: expected uncompressed EC point (0x04 prefix)');
+  const pointBytes = der.subarray(26); // 65 bytes: 04 || X || Y
+
+  const lib   = _requireCrypto();
+  const nid   = _p256NID();
+  const ecKey = lib.symbols.EC_KEY_new_by_curve_name(nid);
+  if (ecKey === null) throw new Error('EC_KEY_new_by_curve_name failed: ' + getErrorString());
+
+  const group = lib.symbols.EC_KEY_get0_group(ecKey);
+  const point = lib.symbols.EC_POINT_new(group);
+  if (point === null) {
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EC_POINT_new failed: ' + getErrorString());
+  }
+
+  if (lib.symbols.EC_POINT_oct2point(group, point, pointBytes, 65, null) !== 1) {
+    lib.symbols.EC_POINT_free(point);
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EC_POINT_oct2point failed: ' + getErrorString());
+  }
+
+  const rc2 = lib.symbols.EC_KEY_set_public_key(ecKey, point);
+  lib.symbols.EC_POINT_free(point); // EC_KEY copied the point
+  if (rc2 !== 1) {
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EC_KEY_set_public_key failed: ' + getErrorString());
+  }
+
+  const pkey = lib.symbols.EVP_PKEY_new();
+  if (pkey === null) {
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EVP_PKEY_new failed: ' + getErrorString());
+  }
+  if (lib.symbols.EVP_PKEY_assign_EC_KEY(pkey, ecKey) !== 1) {
+    lib.symbols.EVP_PKEY_free(pkey);
+    lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
+  }
+  return pkey;
+}
+
+/**
+ * ECDSA sign: compute `ECDSA_sign(0, hash, hashLen, ...)` and return the
+ * DER-encoded signature.  `hash` must already be the SHA-256 digest (32 bytes).
+ */
+export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
+  const lib   = _requireCrypto();
+  const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
+  if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
+  // P-256 DER signature is at most 72 bytes (2 × (1-byte tag + 1-byte len + 33-byte int))
+  const sigBuf    = new Uint8Array(72);
+  const siglenBuf = new Uint8Array(4);
+  new DataView(siglenBuf.buffer).setUint32(0, 72, true);
+  if (lib.symbols.ECDSA_sign(0, hash, hash.length, sigBuf, siglenBuf, ecKey) !== 1) {
+    throw new Error('ECDSA_sign failed: ' + getErrorString());
+  }
+  return sigBuf.slice(0, new DataView(siglenBuf.buffer).getUint32(0, true));
+}
+
+/**
+ * ECDSA verify: return true if `derSig` is a valid DER-encoded ECDSA signature
+ * over `hash` (SHA-256 digest, 32 bytes) for the given public key.
+ */
+export function ecdsaVerify(hash: Uint8Array, derSig: Uint8Array, pkey: object): boolean {
+  const lib   = _requireCrypto();
+  const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
+  if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
+  return lib.symbols.ECDSA_verify(0, hash, hash.length, derSig, derSig.length, ecKey) === 1;
+}
+
+// ---------------------------------------------------------------------------
 // SSL — context management
 // ---------------------------------------------------------------------------
 
@@ -731,28 +915,6 @@ export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
   if (rc !== 0) throw new Error('SSL_CTX_set_alpn_protos failed: ' + getErrorString());
 }
 
-/**
- * Get the negotiated ALPN protocol for an established SSL connection.
- * Returns `null` if no protocol was negotiated.
- *
- * @param ssl — SSL* (from an established TLS connection's internal handle)
- */
-export function sslGetAlpnSelected(ssl: object): string | null {
-  const lib = _requireSsl();
-  const dataBuf = new ArrayBuffer(8);   // holds a pointer
-  const lenBuf  = new ArrayBuffer(4);   // holds u32 length
-  lib.symbols.SSL_get0_alpn_selected(ssl, dataBuf, lenBuf);
-  const len = new DataView(lenBuf).getUint32(0, true);
-  if (len === 0) return null;
-  // SSL_get0_alpn_selected returns a pointer to an internal buffer (not a copy).
-  // We need to read the bytes through the Pointer API.
-  const ptr = new DataView(dataBuf).getBigUint64(0, true);
-  if (ptr === 0n) return null;
-  const bytes = new Uint8Array(len);
-  const p = new (Pointer as any)(ptr);
-  for (let i = 0; i < len; i++) bytes[i] = (p as any).getByte(i);
-  return new TextDecoder().decode(bytes);
-}
 
 export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
   const rc = _requireSsl().symbols.SSL_CTX_set_default_verify_paths(ctx);
@@ -798,16 +960,21 @@ export function sslSetFd(ssl: object, fd: number): void {
 
 /**
  * Set SNI hostname and enable hostname verification.
+ * RFC 6066 forbids IP literals in the SNI extension — SNI is skipped for them.
+ * SSL_set1_host is always called so that IP SAN matching still works.
+ *
  * @param {object} ssl — SSL* pointer
- * @param {string} hostname
+ * @param {string} hostname — DNS name or IP address
  */
 export function sslSetHostname(ssl: object, hostname: string): void {
   const lib = _requireSsl();
-  // SSL_set_tlsext_host_name macro: SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME=55, 0, hostname)
-  const hostBuf = encodeUtf8(hostname + '\0');
-  lib.symbols.SSL_ctrl(ssl, 55, 0, hostBuf);
-
-  // Enable hostname verification (OpenSSL 1.1.0+, LibreSSL 2.9+)
+  // IP literals (IPv4: digits + dots; IPv6: hex + colons) must NOT appear in SNI.
+  const isIpLiteral = /^[\d.]+$/.test(hostname) || hostname.includes(':');
+  if (!isIpLiteral) {
+    // SSL_set_tlsext_host_name macro: SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME=55, 0, hostname)
+    lib.symbols.SSL_ctrl(ssl, 55, 0, encodeUtf8(hostname + '\0'));
+  }
+  // Enable hostname/IP verification (OpenSSL 1.1.0+, LibreSSL 2.9+)
   lib.symbols.SSL_set1_host(ssl, encodeUtf8(hostname + '\0'));
 }
 

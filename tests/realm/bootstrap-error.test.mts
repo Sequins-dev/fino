@@ -30,6 +30,10 @@ describe('Realm bootstrap errors', () => {
       t.fail('should have rejected');
     } catch (err) {
       t.ok(err instanceof Error, 'thread realm rejects with Error on bootstrap throw');
+      t.ok(
+        (err as Error).message.includes('deliberate top-level error'),
+        'error message propagated: ' + (err as Error).message,
+      );
     }
   });
 
@@ -40,6 +44,10 @@ describe('Realm bootstrap errors', () => {
       t.fail('should have rejected');
     } catch (err) {
       t.ok(err instanceof Error, 'process realm rejects with Error on bootstrap throw');
+      t.ok(
+        (err as Error).message.includes('deliberate top-level error'),
+        'error message propagated: ' + (err as Error).message,
+      );
     }
   });
 });

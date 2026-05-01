@@ -424,3 +424,49 @@ describe('DiskFileSystem — advanced operations', () => {
     await fs.unlink(path);
   });
 });
+
+describe('DiskFileSystem error codes', () => {
+  let fs: DiskFileSystem;
+  before(() => { fs = new DiskFileSystem(); });
+
+  it('stat on missing path rejects with ENOENT', async (t) => {
+    try {
+      await fs.stat('/tmp/__fino_no_such_file__' + Math.random());
+      t.fail('should have thrown');
+    } catch (err) {
+      t.ok(err instanceof Error, 'throws Error');
+      t.equal((err as any).code, 'ENOENT', 'error.code is ENOENT string');
+      t.ok((err as any).path !== undefined, 'error.path is set');
+    }
+  });
+
+  it('readFile on missing path rejects with ENOENT', async (t) => {
+    try {
+      await fs.readFile('/tmp/__fino_no_such_file__' + Math.random());
+      t.fail('should have thrown');
+    } catch (err) {
+      t.ok(err instanceof Error, 'throws Error');
+      t.equal((err as any).code, 'ENOENT', 'error.code is ENOENT string');
+    }
+  });
+
+  it('unlink on missing path rejects with ENOENT', async (t) => {
+    try {
+      await fs.unlink('/tmp/__fino_no_such_file__' + Math.random());
+      t.fail('should have thrown');
+    } catch (err) {
+      t.ok(err instanceof Error, 'throws Error');
+      t.equal((err as any).code, 'ENOENT', 'error.code is ENOENT string');
+    }
+  });
+
+  it('mkdir on existing path rejects with EEXIST', async (t) => {
+    try {
+      await fs.mkdir('/tmp'); // /tmp always exists
+      t.fail('should have thrown');
+    } catch (err) {
+      t.ok(err instanceof Error, 'throws Error');
+      t.equal((err as any).code, 'EEXIST', 'error.code is EEXIST string');
+    }
+  });
+});

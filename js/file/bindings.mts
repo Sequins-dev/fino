@@ -23,10 +23,33 @@ interface AsyncOpsModule {
 }
 
 interface ErrnoError extends Error {
-  code?: number;
+  code?: string | number;
   syscall?: string;
   path?: string;
 }
+
+// POSIX errno → string code. Values ≤34 are identical on Linux and macOS.
+// Platform-divergent values are listed separately.
+const _ERRNO_CODES: Record<number, string> = {
+  1: 'EPERM',   2: 'ENOENT',  3: 'ESRCH',   4: 'EINTR',   5: 'EIO',
+  6: 'ENXIO',   7: 'E2BIG',   8: 'ENOEXEC', 9: 'EBADF',  10: 'ECHILD',
+  11: isDarwin ? 'EDEADLK' : 'EAGAIN',
+  12: 'ENOMEM', 13: 'EACCES', 14: 'EFAULT', 16: 'EBUSY',  17: 'EEXIST',
+  18: 'EXDEV',  19: 'ENODEV', 20: 'ENOTDIR',21: 'EISDIR', 22: 'EINVAL',
+  23: 'ENFILE', 24: 'EMFILE', 25: 'ENOTTY', 27: 'EFBIG',  28: 'ENOSPC',
+  29: 'ESPIPE', 30: 'EROFS',  31: 'EMLINK', 32: 'EPIPE',  33: 'EDOM',
+  34: 'ERANGE',
+  // macOS-specific
+  ...(isDarwin ? {
+    35: 'EAGAIN', 36: 'EINPROGRESS', 37: 'EALREADY', 38: 'ENOTSOCK',
+    60: 'ETIMEDOUT', 61: 'ECONNREFUSED', 63: 'ECONNRESET', 66: 'ENOTEMPTY',
+  } : {
+    // Linux-specific
+    11: 'EAGAIN', 35: 'EDEADLK', 36: 'ENAMETOOLONG', 37: 'ENOLCK',
+    38: 'ENOSYS', 39: 'ENOTEMPTY', 98: 'EADDRINUSE', 99: 'EADDRNOTAVAIL',
+    110: 'ETIMEDOUT', 111: 'ECONNREFUSED', 104: 'ECONNRESET',
+  }),
+};
 
 export const isDarwin = os === 'darwin';
 const LIBC = isDarwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
@@ -131,11 +154,12 @@ export function cstr(s: string): Uint8Array {
 /** Throw an error annotated with the current errno value. */
 export function throwErrno(syscall: string, path: string): never {
   const getErrno = lib.symbols[errnoFn] as () => object;
-  const code = Pointer.readI32(getErrno(), 0);
-  const err: ErrnoError = new Error(`${syscall}('${path}'): errno ${code}`);
-  err.code = code;
+  const num  = Pointer.readI32(getErrno(), 0);
+  const code = _ERRNO_CODES[num] ?? `E${num}`;
+  const err: ErrnoError = new Error(`${syscall}('${path}'): ${code}`);
+  err.code    = code;
   err.syscall = syscall;
-  err.path = path;
+  err.path    = path;
   throw err;
 }
 

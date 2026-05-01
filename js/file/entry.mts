@@ -114,39 +114,41 @@ export class DirEntry extends Entry {
     if (dirPtr === null) throwErrno('opendir', s);
 
     const result: Entry[] = [];
-    while (true) {
-      const direntPtr = lib.symbols.readdir(dirPtr);
-      if (direntPtr === null) break;
+    try {
+      while (true) {
+        const direntPtr = lib.symbols.readdir(dirPtr);
+        if (direntPtr === null) break;
 
-      let dtype, name;
-      if (isDarwin) {
-        // macOS struct dirent: d_namlen at 18 (u16), d_type at 20 (u8), d_name at 21
-        const namlen = Pointer.readU16(direntPtr, 18);
-        dtype = Pointer.readU8(direntPtr, 20);
-        const nameBytes = new Uint8Array(namlen);
-        for (let i = 0; i < namlen; i++) {
-          nameBytes[i] = Pointer.readU8(direntPtr, 21 + i);
+        let dtype, name;
+        if (isDarwin) {
+          // macOS struct dirent: d_namlen at 18 (u16), d_type at 20 (u8), d_name at 21
+          const namlen = Pointer.readU16(direntPtr, 18);
+          dtype = Pointer.readU8(direntPtr, 20);
+          const nameBytes = new Uint8Array(namlen);
+          for (let i = 0; i < namlen; i++) {
+            nameBytes[i] = Pointer.readU8(direntPtr, 21 + i);
+          }
+          name = decodeUtf8(nameBytes);
+        } else {
+          // Linux struct dirent: d_type at 18 (u8), d_name at 19 (null-terminated)
+          dtype = Pointer.readU8(direntPtr, 18);
+          name = readCStr(direntPtr, 19);
         }
-        name = decodeUtf8(nameBytes);
-      } else {
-        // Linux struct dirent: d_type at 18 (u8), d_name at 19 (null-terminated)
-        dtype = Pointer.readU8(direntPtr, 18);
-        name = readCStr(direntPtr, 19);
-      }
 
-      if (name === '.' || name === '..') continue;
+        if (name === '.' || name === '..') continue;
 
-      const childPath = path.join(name);
-      if (dtype === DT_DIR) {
-        result.push(new DirEntry(name, childPath, fs, dtype));
-      } else if (dtype === DT_REG) {
-        result.push(new FileEntry(name, childPath, fs, dtype));
-      } else {
-        result.push(new Entry(name, childPath, fs, dtype));
+        const childPath = path.join(name);
+        if (dtype === DT_DIR) {
+          result.push(new DirEntry(name, childPath, fs, dtype));
+        } else if (dtype === DT_REG) {
+          result.push(new FileEntry(name, childPath, fs, dtype));
+        } else {
+          result.push(new Entry(name, childPath, fs, dtype));
+        }
       }
+    } finally {
+      lib.symbols.closedir(dirPtr);
     }
-
-    lib.symbols.closedir(dirPtr);
     return result;
   }
 
