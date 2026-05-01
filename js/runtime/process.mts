@@ -208,9 +208,16 @@ export const ppid = lib.symbols.getppid();
 
 /**
  * Terminate the current process immediately.
+ * Flushes buffered stdout/stderr before exiting so pending console output is
+ * not lost. Uses `_exit` (not `exit(3)`) after the flush to avoid running C
+ * atexit handlers.
  * @param {number} [code=0] exit status
  */
 export function exit(code: number = 0): never {
+  // Flush coalesce buffers so buffered output isn't silently discarded.
+  // flushSync() uses write(2) directly; errors are swallowed so _exit always runs.
+  try { _stdout?.flushSync(); } catch (_) {}
+  try { _stderr?.flushSync(); } catch (_) {}
   lib.symbols._exit(code);
   throw new Error('unreachable');
 }

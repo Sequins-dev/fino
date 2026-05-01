@@ -17,6 +17,8 @@ const ZIP_METHOD_DEFLATE = 8;
 
 const DEFAULT_MODE = 0o644;
 const DEFAULT_DIR_MODE = 0o755;
+// Max decompressed bytes per entry — guards against zip-bomb attacks.
+const MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024; // 512 MiB
 
 type ArchiveFormat = 'zip' | 'tar' | 'tar.gz';
 type ArchiveKind = 'file' | 'directory';
@@ -495,6 +497,14 @@ export class Archive {
         continue;
       }
       await ensureHostDir(hostDirname(outputPath));
+      // Guard against a pre-placed symlink at outputPath pointing outside the
+      // destination directory. Use lstat (not stat) to detect the symlink itself.
+      try {
+        const st = await fs.lstat(outputPath);
+        if (st.isSymlink()) await fs.unlink(outputPath);
+      } catch (_) {
+        // File doesn't exist yet — that's the normal case; continue.
+      }
       await fs.writeFile(outputPath, await this.read(entry.name));
       extracted++;
     }
@@ -580,7 +590,16 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
       loader: async () => {
         if (kind === 'directory') return new Uint8Array(0);
         if (method === ZIP_METHOD_STORE) return compressed;
-        if (method === ZIP_METHOD_DEFLATE) return inflateRaw(compressed);
+        if (method === ZIP_METHOD_DEFLATE) {
+          const decompressed = inflateRaw(compressed);
+          if (decompressed.byteLength > MAX_DECOMPRESSED_BYTES) {
+            throw new Error(
+              `Archive entry '${name}' decompressed to ${decompressed.byteLength} bytes, ` +
+              `exceeding the ${MAX_DECOMPRESSED_BYTES}-byte limit`,
+            );
+          }
+          return decompressed;
+        }
         throw new Error(`Unsupported zip compression method ${method}`);
       },
     });
@@ -672,7 +691,20 @@ function parseTar(bytes: Uint8Array): LoadedArchiveEntry[] {
     const fullName = normalizedArchivePath(prefix ? `${prefix}/${name}` : name);
     const dataStart = offset + 512;
     const dataEnd = dataStart + size;
+    // Typeflags: 48='0'/file, 49='1'/hardlink, 50='2'/symlink, 53='5'/dir.
+    // Reject symlinks and hardlinks — they can be used to escape the extraction
+    // root. Both are skipped silently so the rest of the archive still extracts.
+    if (typeFlag === 49 || typeFlag === 50) {
+      const padded2 = Math.ceil(size / 512) * 512;
+      offset = dataStart + padded2;
+      continue;
+    }
     const kind: ArchiveKind = typeFlag === 53 || fullName.endsWith('/') ? 'directory' : 'file';
+    if (kind === 'file' && size > MAX_DECOMPRESSED_BYTES) {
+      throw new Error(
+        `Tar entry '${fullName}' is ${size} bytes, exceeding the ${MAX_DECOMPRESSED_BYTES}-byte limit`,
+      );
+    }
     const payload = bytes.slice(dataStart, dataEnd);
     entries.push({
       name: kind === 'directory' ? fullName.replace(/\/$/, '') : fullName,

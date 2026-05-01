@@ -333,7 +333,14 @@ async function resolveAndInstall(ctx: InstallContext, name: string, range: strin
       packageId,
     );
     await fs.writeFile(tmpArchivePath, tarballBytes);
-    await extractArchive(tmpArchivePath, tmpExtractDir);
+    try {
+      await extractArchive(tmpArchivePath, tmpExtractDir);
+    } catch (err) {
+      // Clean up partial extraction so a retry doesn't see corrupt state.
+      await removeTree(tmpExtractDir).catch(() => {});
+      await fs.unlink(tmpArchivePath).catch(() => {});
+      throw err;
+    }
     await fs.unlink(tmpArchivePath);
     if (await exists(packageBaseDir)) await removeTree(packageBaseDir);
     await fs.rename(tmpExtractDir, packageBaseDir);

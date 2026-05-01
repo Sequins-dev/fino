@@ -681,6 +681,18 @@ export abstract class BufferedBytesWriter extends BytesWriter {
     await this.doFlush(slice);
   }
 
+  /**
+   * Return the buffered bytes (a copy) and reset the pending count.
+   * Used by subclasses that need to perform a synchronous flush (e.g. on
+   * process exit) without going through the async flush path.
+   */
+  protected _takePending(): Uint8Array | null {
+    if (this.#pending === 0) return null;
+    const out = this.#buf.slice(0, this.#pending);
+    this.#pending = 0;
+    return out;
+  }
+
   /** Flush the coalesce buffer, then close. */
   async close(): Promise<void> {
     if (this.closed) return;
@@ -723,6 +735,23 @@ export class FdWriter extends BufferedBytesWriter {
 
   /** Raw file descriptor. Available to subclasses and close callbacks. */
   get fd(): number { return this.#fd; }
+
+  /**
+   * Synchronous flush of the coalesce buffer via write(2). Used in contexts
+   * where async is not available (e.g. `process.exit()`). EAGAIN is ignored
+   * (partial writes are accepted on a best-effort basis).
+   */
+  flushSync(): void {
+    const pending = this._takePending();
+    if (pending === null) return;
+    let off = 0;
+    while (off < pending.byteLength) {
+      const slice = off === 0 ? pending : pending.subarray(off);
+      const n = lib.symbols.write(this.#fd, slice, slice.byteLength) as number;
+      if (n > 0) { off += n; continue; }
+      break; // EAGAIN or error — best-effort
+    }
+  }
 
   protected async doFlush(buf: Uint8Array): Promise<void> {
     let off = 0;

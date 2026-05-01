@@ -21,13 +21,19 @@ export function registerShutdownHook(fn: ShutdownHook) {
 }
 
 export async function runShutdownHooks() {
-  const hooks = shutdownHooks.splice(0, shutdownHooks.length);
   const errors: unknown[] = [];
-  for (let i = hooks.length - 1; i >= 0; i--) {
-    try {
-      await hooks[i]!();
-    } catch (error) {
-      errors.push(error);
+  // Run in reverse-registration order. Loop until the array is empty so that
+  // hooks registered *during* shutdown (e.g. by an async hook's cleanup) are
+  // also executed rather than silently dropped.
+  while (shutdownHooks.length > 0) {
+    // Pop a snapshot of what's registered now, then run in reverse order.
+    const batch = shutdownHooks.splice(0, shutdownHooks.length);
+    for (let i = batch.length - 1; i >= 0; i--) {
+      try {
+        await batch[i]!();
+      } catch (error) {
+        errors.push(error);
+      }
     }
   }
   if (errors.length === 1) throw errors[0];

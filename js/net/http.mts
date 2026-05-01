@@ -464,11 +464,13 @@ function _createReader(source: AsyncByteSource) {
         if (isNaN(chunkSize)) throw new Error('Invalid chunk size: ' + sizeStr);
 
         if (chunkSize === 0) {
-          // Terminal chunk — consume trailing CRLF.
-          const cr = await readByte();
-          const lf = await readByte();
-          if (cr !== CR || lf !== LF) {
-            throw new Error('Expected CRLF after terminal chunk');
+          // Terminal chunk — drain optional trailer headers then consume the
+          // final CRLF. Trailers look like headers: "Name: value\r\n" lines
+          // terminated by an empty "\r\n" line. Per RFC 9112 §7.1, the trailer
+          // section must be consumed to keep the keep-alive pipeline in sync.
+          while (true) {
+            const trailerLine = await readLine();
+            if (trailerLine.byteLength === 0) break; // empty line = end of trailers
           }
           finished = true;
           return { done: true, value: undefined };
@@ -770,8 +772,13 @@ function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number):
 
   const te = headers.get('transfer-encoding');
   if (te) {
-      const last = (te.split(',').pop() ?? '').trim().toLowerCase();
-    if (last === 'chunked') return { type: 'chunked' };
+    const last = (te.split(',').pop() ?? '').trim().toLowerCase();
+    if (last === 'chunked') {
+      // RFC 9112 §6.3.3: when chunked is present, Content-Length MUST be
+      // removed to prevent request-smuggling via the two-field ambiguity.
+      headers.delete('content-length');
+      return { type: 'chunked' };
+    }
   }
 
   const cl = headers.get('content-length');
