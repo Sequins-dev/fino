@@ -94,6 +94,7 @@ fn narrowing_check(
 ) -> Result<(), String> {
     use crate::state::ImportDirective;
 
+    // Check 1: pattern-based escalation (child pattern overlaps a blocked specifier).
     for parent_rule in parent_rules {
         if !matches!(parent_rule.directive, ImportDirective::Block) {
             continue;
@@ -116,6 +117,18 @@ fn narrowing_check(
             }
         }
     }
+
+    // Check 2: Remap target escalation — the target of a Remap must not itself
+    // resolve to a parent-blocked specifier.
+    if let ImportDirective::Remap { target } = &child_rule.directive {
+        let target_dir = resolve_directive(parent_rules, None, target);
+        if matches!(target_dir, Some(ImportDirective::Block)) {
+            return Err(format!(
+                "child Remap to '{target}' escalates past parent block on that specifier"
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -793,4 +806,86 @@ fn get_process_socket_fd(
         .map(|h| h.parent_wake_read)
         .unwrap_or(-1);
     rv.set(v8::Integer::new(scope, fd).into());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{ImportDirective, ImportPattern, ImportRule};
+
+    fn rule(pattern: &str, directive: ImportDirective) -> ImportRule {
+        ImportRule {
+            from: None,
+            pattern: ImportPattern::parse(pattern),
+            directive,
+        }
+    }
+
+    fn remap_rule(pattern: &str, target: &str) -> ImportRule {
+        rule(
+            pattern,
+            ImportDirective::Remap {
+                target: target.to_string(),
+            },
+        )
+    }
+
+    fn block_rule(pattern: &str) -> ImportRule {
+        rule(pattern, ImportDirective::Block)
+    }
+
+    #[test]
+    fn remap_to_blocked_exact_is_rejected() {
+        let parent = vec![block_rule("internal:realm-native")];
+        let child = remap_rule("fino:my-module", "internal:realm-native");
+        assert!(narrowing_check(&parent, &child).is_err());
+    }
+
+    #[test]
+    fn remap_to_blocked_prefix_target_is_rejected() {
+        let parent = vec![block_rule("internal:*")];
+        let child = remap_rule("fino:alias", "internal:foo");
+        assert!(narrowing_check(&parent, &child).is_err());
+    }
+
+    #[test]
+    fn remap_to_unblocked_target_is_allowed() {
+        let parent = vec![block_rule("internal:realm-native")];
+        let child = remap_rule("fino:alias", "fino:ffi");
+        assert!(narrowing_check(&parent, &child).is_ok());
+    }
+
+    #[test]
+    fn catchall_remap_to_blocked_target_is_rejected() {
+        let parent = vec![block_rule("internal:*")];
+        let child = ImportRule {
+            from: None,
+            pattern: ImportPattern::CatchAll,
+            directive: ImportDirective::Remap {
+                target: "internal:anything".to_string(),
+            },
+        };
+        assert!(narrowing_check(&parent, &child).is_err());
+    }
+
+    #[test]
+    fn catchall_covers_everything() {
+        assert!(child_covers(&ImportPattern::CatchAll, "fino:ffi"));
+        assert!(child_covers(&ImportPattern::CatchAll, "internal:x"));
+    }
+
+    #[test]
+    fn prefix_covers_matching_prefix() {
+        let p = ImportPattern::parse("fino:*");
+        assert!(child_covers(&p, "fino:ffi"));
+        assert!(!child_covers(&p, "internal:x"));
+    }
+
+    #[test]
+    fn exact_covers_only_itself() {
+        let p = ImportPattern::parse("fino:ffi");
+        assert!(child_covers(&p, "fino:ffi"));
+        assert!(!child_covers(&p, "fino:ffi/extra"));
+        assert!(!child_covers(&p, "internal:x"));
+    }
 }

@@ -466,39 +466,106 @@ describe('getRandomValues — integer typed arrays', { skip }, () => {
   });
 });
 
-describe('importKey / exportKey — unsupported format', { skip }, () => {
-  it('importKey with "jwk" format throws (not implemented)', async (t) => {
-    const keyBytes = new Uint8Array(32);
-    let threw = false;
-    try {
-      await crypto.subtle.importKey('jwk', { kty: 'oct' } as any, { name: 'AES-GCM', length: 256 }, true, ['encrypt']);
-    } catch (_) {
-      threw = true;
-    }
-    t.ok(threw, 'importKey with jwk format throws');
+describe('importKey / exportKey — JWK format (symmetric keys)', () => {
+  it('AES-GCM 256 key round-trips via JWK', async (t) => {
+    const keyBytes = new Uint8Array(32).fill(0x42);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    const jwk = await crypto.subtle.exportKey('jwk', key) as { kty: string; k: string; alg: string; key_ops: string[] };
+    t.equal(jwk.kty, 'oct', 'kty is oct');
+    t.equal(jwk.alg, 'A256GCM', 'alg is A256GCM');
+    t.ok(jwk.k.length > 0, 'k field present');
+    t.ok(Array.isArray(jwk.key_ops), 'key_ops is array');
+    // Re-import from JWK and confirm key material matches
+    const reimported = await crypto.subtle.importKey('jwk', jwk as any, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+    const reExported = await crypto.subtle.exportKey('raw', reimported);
+    t.equal(new Uint8Array(reExported).length, 32, 'round-trip key length correct');
   });
 
-  it('importKey with "spki" format throws (not implemented)', async (t) => {
+  it('AES-GCM 128 key exports with correct alg', async (t) => {
+    const keyBytes = new Uint8Array(16).fill(0x11);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM', length: 128 }, true, ['encrypt']);
+    const jwk = await crypto.subtle.exportKey('jwk', key) as { alg: string };
+    t.equal(jwk.alg, 'A128GCM', 'alg is A128GCM for 128-bit key');
+  });
+
+  it('HMAC SHA-256 key round-trips via JWK', async (t) => {
+    const keyBytes = new Uint8Array(32).fill(0xAB);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, true, ['sign', 'verify']);
+    const jwk = await crypto.subtle.exportKey('jwk', key) as { kty: string; alg: string };
+    t.equal(jwk.kty, 'oct', 'kty is oct');
+    t.equal(jwk.alg, 'HS256', 'alg is HS256');
+  });
+
+  it('importKey with "spki" format still throws (not yet implemented)', async (t) => {
     const keyBytes = new Uint8Array(32);
     let threw = false;
     try {
       await crypto.subtle.importKey('spki' as any, keyBytes, { name: 'AES-GCM', length: 256 }, true, ['encrypt']);
-    } catch (_) {
-      threw = true;
-    }
-    t.ok(threw, 'importKey with spki format throws');
+    } catch (_) { threw = true; }
+    t.ok(threw, 'spki format not yet supported');
   });
 
-  it('exportKey with "jwk" format throws (not implemented)', async (t) => {
-    const keyBytes = new Uint8Array(32).fill(0x42);
-    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM', length: 256 }, true, ['encrypt']);
+  it('exportKey with "pkcs8" format throws (not yet implemented)', async (t) => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
     let threw = false;
     try {
-      await crypto.subtle.exportKey('jwk' as any, key);
-    } catch (_) {
-      threw = true;
-    }
-    t.ok(threw, 'exportKey with jwk format throws');
+      await crypto.subtle.exportKey('pkcs8' as any, key as CryptoKey);
+    } catch (_) { threw = true; }
+    t.ok(threw, 'pkcs8 format not yet supported');
+  });
+});
+
+describe('wrapKey / unwrapKey', () => {
+  it('wraps and unwraps a raw AES key with AES-GCM', async (t) => {
+    const wrappingKeyBytes = new Uint8Array(32);
+    crypto.getRandomValues(wrappingKeyBytes);
+    const wrappingKey = await crypto.subtle.importKey('raw', wrappingKeyBytes, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey']);
+
+    const targetKeyBytes = new Uint8Array(32).fill(0x55);
+    const targetKey = await crypto.subtle.importKey('raw', targetKeyBytes, { name: 'AES-GCM', length: 256 }, true, ['encrypt']);
+
+    const iv = new Uint8Array(12);
+    crypto.getRandomValues(iv);
+    const wrapAlg = { name: 'AES-GCM', iv };
+
+    const wrapped = await crypto.subtle.wrapKey('raw', targetKey, wrappingKey, wrapAlg);
+    t.ok(wrapped instanceof ArrayBuffer, 'wrapped is ArrayBuffer');
+    t.ok(wrapped.byteLength > 32, 'wrapped is larger than key (includes tag)');
+
+    const unwrapped = await crypto.subtle.unwrapKey('raw', wrapped, wrappingKey, wrapAlg, { name: 'AES-GCM' }, true, ['encrypt']);
+    const unwrappedBytes = new Uint8Array(await crypto.subtle.exportKey('raw', unwrapped));
+    t.equal(unwrappedBytes.length, 32, 'unwrapped key length correct');
+    let same = true;
+    for (let i = 0; i < 32; i++) if (unwrappedBytes[i] !== 0x55) { same = false; break; }
+    t.ok(same, 'unwrapped key material matches original');
+  });
+
+  it('wrapKey throws if key is not extractable', async (t) => {
+    const wrappingKeyBytes = new Uint8Array(32);
+    const wrappingKey = await crypto.subtle.importKey('raw', wrappingKeyBytes, { name: 'AES-GCM', length: 256 }, false, ['wrapKey']);
+    const nonExtractable = await crypto.subtle.importKey('raw', new Uint8Array(32), { name: 'AES-GCM' }, false, ['encrypt']);
+    const iv = new Uint8Array(12);
+    let threw = false;
+    try {
+      await crypto.subtle.wrapKey('raw', nonExtractable, wrappingKey, { name: 'AES-GCM', iv });
+    } catch (_) { threw = true; }
+    t.ok(threw, 'wrapKey throws for non-extractable key');
+  });
+
+  it('wraps and unwraps via JWK format', async (t) => {
+    const wrappingKeyBytes = new Uint8Array(32);
+    crypto.getRandomValues(wrappingKeyBytes);
+    const wrappingKey = await crypto.subtle.importKey('raw', wrappingKeyBytes, { name: 'AES-GCM', length: 256 }, false, ['wrapKey', 'unwrapKey']);
+
+    const targetKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']) as CryptoKey;
+    const iv = new Uint8Array(12);
+    crypto.getRandomValues(iv);
+
+    const wrapped = await crypto.subtle.wrapKey('jwk', targetKey, wrappingKey, { name: 'AES-GCM', iv });
+    t.ok(wrapped.byteLength > 0, 'jwk-wrapped key has bytes');
+
+    const unwrapped = await crypto.subtle.unwrapKey('jwk', wrapped, wrappingKey, { name: 'AES-GCM', iv }, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
+    t.ok(unwrapped instanceof CryptoKey, 'unwrapped is CryptoKey');
   });
 });
 

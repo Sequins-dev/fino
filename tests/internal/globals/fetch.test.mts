@@ -598,3 +598,85 @@ describe('fetch() method normalization', () => {
     t.equal(req.method, 'CUSTOM', 'custom method preserved');
   });
 });
+
+describe('Integrity + referrerPolicy', () => {
+  it('integrity check passes for matching SHA-256 hash', async (t) => {
+    const body = 'hello integrity';
+    const bodyBytes = new TextEncoder().encode(body);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', bodyBytes);
+    const hashBytes = new Uint8Array(hashBuffer);
+
+    // Base64-encode the hash
+    let b64 = '';
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    for (let i = 0; i < hashBytes.length; i += 3) {
+      const b0 = hashBytes[i]!;
+      const b1 = hashBytes[i + 1] ?? 0;
+      const b2 = hashBytes[i + 2] ?? 0;
+      b64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+      b64 += i + 1 < hashBytes.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+      b64 += i + 2 < hashBytes.length ? chars[b2 & 63]! : '=';
+    }
+
+    const srv = serve({ port: 0, hostname: '127.0.0.1' }, () => new Response(body));
+    const url = `http://127.0.0.1:${srv.port}`;
+    try {
+      const res = await fetch(url, { integrity: `sha256-${b64}` });
+      t.equal(await res.text(), body, 'body text matches after integrity check');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('integrity check fails for wrong hash', async (t) => {
+    const srv = serve({ port: 0, hostname: '127.0.0.1' }, () => new Response('hello integrity'));
+    const url = `http://127.0.0.1:${srv.port}`;
+    try {
+      await t.rejects(
+        () => fetch(url, { integrity: 'sha256-wronghash=' }),
+        /integrity/i,
+        'fetch rejects with TypeError when integrity does not match',
+      );
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("referrerPolicy: 'no-referrer' — no Referer header sent", async (t) => {
+    let receivedReferer: string | null | undefined;
+    const srv = serve({ port: 0, hostname: '127.0.0.1' }, (req) => {
+      receivedReferer = req.headers.get('referer');
+      return new Response(receivedReferer ?? '');
+    });
+    const url = `http://127.0.0.1:${srv.port}`;
+    try {
+      const res = await fetch(url, {
+        referrer: 'https://example.com/',
+        referrerPolicy: 'no-referrer',
+      });
+      const text = await res.text();
+      t.equal(text, '', 'no Referer header was sent (no-referrer policy)');
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it("referrerPolicy: 'origin' — Referer header is origin only", async (t) => {
+    let receivedReferer: string | null | undefined;
+    const srv = serve({ port: 0, hostname: '127.0.0.1' }, (req) => {
+      receivedReferer = req.headers.get('referer');
+      return new Response(receivedReferer ?? '');
+    });
+    const url = `http://127.0.0.1:${srv.port}`;
+    try {
+      const res = await fetch(url, {
+        referrer: 'https://example.com/some/page',
+        referrerPolicy: 'origin',
+      });
+      const text = await res.text();
+      t.equal(text, 'https://example.com/', 'Referer is origin only');
+    } finally {
+      await srv.close();
+    }
+  });
+});

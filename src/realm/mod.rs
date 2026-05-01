@@ -171,15 +171,17 @@ pub fn step_child_context(
 /// flag and exits its loop. Called from the host loop in `runtime.rs` after the
 /// main loop exits. `Pending` and `Failed` slots are skipped.
 pub fn terminate_all_children(scope: &mut v8::HandleScope) {
-    let child_contexts: Vec<v8::Global<v8::Context>> = {
+    // Collect (index, context) for all Active slots.
+    let active: Vec<(usize, v8::Global<v8::Context>)> = {
         let state_rc = get_state(scope);
         state_rc
             .borrow()
             .child_contexts
             .iter()
-            .filter_map(|slot| {
+            .enumerate()
+            .filter_map(|(i, slot)| {
                 if let ChildRealmSlot::Active(r) = slot {
-                    Some(r.context.clone())
+                    Some((i, r.context.clone()))
                 } else {
                     None
                 }
@@ -187,8 +189,8 @@ pub fn terminate_all_children(scope: &mut v8::HandleScope) {
             .collect()
     };
 
-    for child_global in child_contexts {
-        // Set terminated flag.
+    for (idx, child_global) in active {
+        // Set terminated flag inside the child context.
         {
             let child_ctx = v8::Local::new(scope, &child_global);
             let child_scope = &mut v8::ContextScope::new(scope, child_ctx);
@@ -197,6 +199,14 @@ pub fn terminate_all_children(scope: &mut v8::HandleScope) {
         // Step once so the child observes the flag and calls on_done_fn if any.
         let child_ctx = v8::Local::new(scope, &child_global);
         step_child_context(scope, child_ctx);
+
+        // Mark slot as Failed so the v8::Global<Context> handle is released.
+        // A long-lived parent that spawns many embedded children would otherwise
+        // accumulate dead handles for the lifetime of its own isolate.
+        let state_rc = get_state(scope);
+        if let Some(slot) = state_rc.borrow_mut().child_contexts.get_mut(idx) {
+            *slot = ChildRealmSlot::Failed;
+        }
     }
 }
 

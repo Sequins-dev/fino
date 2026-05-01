@@ -1,0 +1,220 @@
+/**
+ * Tests for internal:cluster/seed — routing logic using an in-memory transport.
+ *
+ * SeedServer is tested against a TestSeedTransport that captures all sent
+ * messages so we can assert routing decisions without network I/O.
+ */
+
+import { describe, it } from 'fino:test/test';
+import { SeedServer } from 'internal:cluster/seed';
+import { RealmRegistry } from 'internal:cluster/registry';
+import type { ClusterMessage } from 'internal:cluster/protocol';
+
+// ---------------------------------------------------------------------------
+// TestSeedTransport — in-memory mock
+// ---------------------------------------------------------------------------
+
+type SentMessage = { to: string | '__broadcast__'; msg: ClusterMessage };
+
+class TestSeedTransport {
+  readonly nodeId: string;
+  #handlers: ((from: string, msg: ClusterMessage) => void)[] = [];
+  sent: SentMessage[] = [];
+  listenCalled = false;
+
+  constructor(nodeId: string) { this.nodeId = nodeId; }
+
+  /** Inject a message as if it arrived from `from`. */
+  inject(from: string, msg: ClusterMessage): void {
+    for (const h of this.#handlers) h(from, msg);
+  }
+
+  /** Filter sent messages by type. */
+  sentOfType<T extends ClusterMessage['t']>(t: T): Extract<ClusterMessage, { t: T }>[] {
+    return this.sent.filter(s => s.msg.t === t).map(s => s.msg as Extract<ClusterMessage, { t: T }>);
+  }
+
+  // ClusterTransport + SeedTransport interface
+  send(to: string, msg: ClusterMessage): void { this.sent.push({ to, msg }); }
+  broadcast(msg: ClusterMessage): void { this.sent.push({ to: '__broadcast__', msg }); }
+  broadcastExcept(_except: string, msg: ClusterMessage): void { this.sent.push({ to: '__broadcast__', msg }); }
+  on(handler: (from: string, msg: ClusterMessage) => void): void { this.#handlers.push(handler); }
+  listen(): void { this.listenCalled = true; }
+  close(): void { this.#handlers = []; }
+}
+
+function makeSeed(nodeId = 'seed-node'): { seed: SeedServer; transport: TestSeedTransport } {
+  const transport = new TestSeedTransport(nodeId);
+  const seed = new SeedServer(transport as any);
+  seed.start();
+  return { seed, transport };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('SeedServer — HELLO / WELCOME', () => {
+  it('start() calls listen() on the transport', (t) => {
+    const { transport } = makeSeed();
+    t.ok(transport.listenCalled, 'listen() was called on start');
+  });
+
+  it('HELLO from a new node triggers WELCOME sent back to that node', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 100 } });
+    const welcomes = transport.sentOfType('WELCOME');
+    t.equal(welcomes.length, 1, 'one WELCOME sent');
+    const w = welcomes[0]!;
+    t.equal(transport.sent.find(s => s.msg.t === 'WELCOME')!.to, 'worker-1', 'WELCOME sent to worker-1');
+    t.ok(Array.isArray(w.peers), 'peers is array');
+  });
+
+  it('second node gets PEER_UP for existing nodes in broadcast', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.sent = []; // clear
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+    const peerUps = transport.sentOfType('PEER_UP');
+    t.ok(peerUps.length > 0, 'PEER_UP broadcast sent for new node');
+  });
+});
+
+describe('SeedServer — SPAWN routing', () => {
+  it('SPAWN with no eligible peer → SPAWN_ACK { ok: false }', (t) => {
+    const { transport } = makeSeed();
+    // Only one node — no other peers
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.sent = [];
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-1',
+      parentPortId: 'worker-1/p-0',
+      config: { entry: './fn.mts', root: '/app', rules: [] },
+    });
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'one SPAWN_ACK sent');
+    t.ok(!acks[0]!.ok, 'SPAWN_ACK ok=false when no eligible worker');
+    t.ok(typeof acks[0]!.error === 'string', 'SPAWN_ACK error message set');
+  });
+
+  it('SPAWN with two peers → forwarded to peer, SPAWN_ACK routed back to requester', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.8, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.1, memory: 0 } });
+    transport.sent = [];
+
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-2',
+      parentPortId: 'worker-1/p-0',
+      config: { entry: './fn.mts', root: '/app', rules: [] },
+    });
+
+    // Seed should forward SPAWN to the lower-load worker (worker-2)
+    const spawns = transport.sent.filter(s => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 1, 'SPAWN forwarded once');
+    t.equal(spawns[0]!.to, 'worker-2', 'SPAWN forwarded to worker-2 (lower load)');
+
+    // Simulate SPAWN_ACK from worker-2
+    transport.sent = [];
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'req-2',
+      childPortId: 'worker-2/0',
+      ok: true,
+    });
+
+    const acks = transport.sent.filter(s => s.msg.t === 'SPAWN_ACK');
+    t.equal(acks.length, 1, 'SPAWN_ACK forwarded');
+    t.equal(acks[0]!.to, 'worker-1', 'SPAWN_ACK routed back to original requester');
+    t.ok((acks[0]!.msg as any).ok, 'ok=true preserved');
+  });
+});
+
+describe('SeedServer — PORT_MSG routing', () => {
+  it('PORT_MSG is forwarded to the node hosting toPort', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.5, memory: 0 } });
+
+    // Register ports via a spawn cycle
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'req-3', parentPortId: 'worker-1/p-1',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'req-3', childPortId: 'worker-2/1', ok: true,
+    });
+    transport.sent = [];
+
+    // worker-2 sends PORT_MSG to worker-1's parent port
+    transport.inject('worker-2', {
+      t: 'PORT_MSG', fromPort: 'worker-2/1', toPort: 'worker-1/p-1',
+      payload: JSON.stringify([btoa('hello')]),
+    });
+
+    const portMsgs = transport.sent.filter(s => s.msg.t === 'PORT_MSG');
+    t.equal(portMsgs.length, 1, 'PORT_MSG forwarded');
+    t.equal(portMsgs[0]!.to, 'worker-1', 'PORT_MSG routed to worker-1');
+  });
+
+  it('PORT_MSG to unknown port is silently dropped', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.sent = [];
+    transport.inject('worker-1', {
+      t: 'PORT_MSG', fromPort: 'worker-1/0', toPort: 'worker-99/999',
+      payload: '["aGVsbG8="]',
+    });
+    t.equal(transport.sent.length, 0, 'no messages forwarded for unknown toPort');
+  });
+});
+
+describe('SeedServer — nodeDown cascade', () => {
+  it('PEER_DOWN sends TERMINATE for orphaned child ports to surviving parents', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+
+    // Spawn child from worker-1 onto worker-2
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'req-4', parentPortId: 'worker-1/p-2',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'req-4', childPortId: 'worker-2/2', ok: true,
+    });
+    transport.sent = [];
+
+    // worker-2 goes down — seed should TERMINATE the child on worker-1's parent port
+    transport.inject('worker-2', { t: 'PEER_DOWN', nodeId: 'worker-2' });
+
+    const terminates = transport.sentOfType('TERMINATE');
+    t.ok(terminates.length > 0, 'TERMINATE sent after nodeDown');
+    const sentToWorker1 = transport.sent.filter(s => s.to === 'worker-1' && s.msg.t === 'TERMINATE');
+    t.ok(sentToWorker1.length > 0, 'TERMINATE sent to surviving worker-1');
+  });
+
+  it('dead node does NOT receive TERMINATE for its own ports', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'req-5', parentPortId: 'worker-1/p-3',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'req-5', childPortId: 'worker-2/3', ok: true,
+    });
+    transport.sent = [];
+
+    // worker-2 (host of child) goes down
+    transport.inject('worker-2', { t: 'PEER_DOWN', nodeId: 'worker-2' });
+
+    // TERMINATE should NOT be sent to worker-2 (it's dead)
+    const toWorker2 = transport.sent.filter(s => s.to === 'worker-2' && s.msg.t === 'TERMINATE');
+    t.equal(toWorker2.length, 0, 'dead node does not receive TERMINATE');
+  });
+});

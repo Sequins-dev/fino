@@ -3,7 +3,7 @@
  */
 
 import { describe, it, before, after } from 'fino:test/test';
-import { DiskFileSystem } from 'fino:file';
+import { DiskFileSystem, F_OK, R_OK } from 'fino:file';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
 
@@ -316,5 +316,111 @@ describe('DiskFileSystem', () => {
 
       await fs.unlink(filePath);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Advanced file operations (chmod, chown, utimes, truncate, link, access, copyFile)
+// ---------------------------------------------------------------------------
+
+const ADV_DIR = '/tmp/fino-file-adv-test-' + Math.floor(Math.random() * 1_000_000);
+
+describe('DiskFileSystem — advanced operations', () => {
+  let fs: DiskFileSystem;
+
+  before(async () => {
+    fs = new DiskFileSystem();
+    await fs.mkdir(ADV_DIR);
+  });
+
+  after(async () => {
+    // Best-effort cleanup
+    try { await fs.rmdir(ADV_DIR); } catch { /* ignore */ }
+  });
+
+  it('chmod changes file permissions', async (t) => {
+    const path = ADV_DIR + '/chmod-test.txt';
+    await fs.writeFile(path, 'data');
+    await fs.chmod(path, 0o600);
+    const st = await fs.stat(path);
+    t.equal(st.mode & 0o777, 0o600, 'mode bits changed to 600');
+    await fs.unlink(path);
+  });
+
+  it('chown with -1/-1 is a no-op (does not throw)', async (t) => {
+    const path = ADV_DIR + '/chown-test.txt';
+    await fs.writeFile(path, 'data');
+    await fs.chown(path, -1, -1);
+    t.ok(true, 'chown(-1, -1) succeeded');
+    await fs.unlink(path);
+  });
+
+  it('access resolves for an existing file with F_OK', async (t) => {
+    const path = ADV_DIR + '/access-test.txt';
+    await fs.writeFile(path, 'data');
+    await fs.access(path, F_OK);
+    t.ok(true, 'access(F_OK) resolved');
+    await fs.unlink(path);
+  });
+
+  it('access rejects for a nonexistent path', async (t) => {
+    let threw = false;
+    try { await fs.access(ADV_DIR + '/does-not-exist.txt', F_OK); } catch { threw = true; }
+    t.ok(threw, 'access rejects for missing path');
+  });
+
+  it('access resolves with R_OK for a readable file', async (t) => {
+    const path = ADV_DIR + '/readable.txt';
+    await fs.writeFile(path, 'hi');
+    await fs.access(path, R_OK);
+    t.ok(true, 'access(R_OK) resolved');
+    await fs.unlink(path);
+  });
+
+  it('copyFile copies content and preserves mode bits', async (t) => {
+    const src  = ADV_DIR + '/copy-src.txt';
+    const dest = ADV_DIR + '/copy-dest.txt';
+    await fs.writeFile(src, 'hello from src');
+    await fs.chmod(src, 0o644);
+    await fs.copyFile(src, dest);
+    const content = await fs.readFile(dest);
+    t.equal(content, 'hello from src', 'dest has same content as src');
+    const srcMode  = (await fs.stat(src)).mode & 0o777;
+    const destMode = (await fs.stat(dest)).mode & 0o777;
+    t.equal(destMode, srcMode, 'dest has same mode as src');
+    await fs.unlink(src);
+    await fs.unlink(dest);
+  });
+
+  it('link creates a hard link with the same inode', async (t) => {
+    const src  = ADV_DIR + '/link-src.txt';
+    const hard = ADV_DIR + '/link-hard.txt';
+    await fs.writeFile(src, 'linked');
+    await fs.link(src, hard);
+    const stSrc  = await fs.stat(src);
+    const stHard = await fs.stat(hard);
+    t.equal(stSrc.ino, stHard.ino, 'hard link has same inode');
+    await fs.unlink(src);
+    await fs.unlink(hard);
+  });
+
+  it('utimes updates modification time', async (t) => {
+    const path = ADV_DIR + '/utimes-test.txt';
+    await fs.writeFile(path, 'data');
+    const before = (await fs.stat(path)).mtimeMs;
+    const fixedDate = new Date('2020-01-01T00:00:00Z');
+    await fs.utimes(path, fixedDate, fixedDate);
+    const after = (await fs.stat(path)).mtimeMs;
+    t.ok(after < before, 'mtime was set to a past date');
+    await fs.unlink(path);
+  });
+
+  it('truncate reduces file size to zero', async (t) => {
+    const path = ADV_DIR + '/truncate-test.txt';
+    await fs.writeFile(path, 'some content here');
+    await fs.truncate(path, 0);
+    const st = await fs.stat(path);
+    t.equal(st.size, 0, 'file size is 0 after truncate');
+    await fs.unlink(path);
   });
 });

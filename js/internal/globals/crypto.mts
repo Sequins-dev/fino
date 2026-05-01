@@ -22,6 +22,20 @@
 import * as openssl from '../openssl.mts';
 
 // ---------------------------------------------------------------------------
+// Deferred algorithms (planned, not yet implemented)
+//
+// The following Web Crypto algorithms require additional OpenSSL EVP_PKEY
+// FFI bindings and are deferred to a separate implementation task:
+//   - ECDSA (P-256, P-384): sign, verify, generateKey, importKey/exportKey
+//   - ECDH (P-256, P-384): deriveKey, deriveBits
+//   - RSA-OAEP: encrypt, decrypt, generateKey, importKey/exportKey
+//   - RSA-PSS, RSASSA-PKCS1-v1_5: sign, verify
+//   - Ed25519: sign, verify (requires OpenSSL 1.1.1+)
+//   - JWK EC and RSA key formats (kty: 'EC', 'RSA', 'OKP')
+//   - pkcs8 and spki key formats for asymmetric keys
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 

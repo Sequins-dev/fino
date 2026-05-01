@@ -16,6 +16,11 @@ enum BuiltinKind {
     Source {
         code: &'static str,
         source_map: &'static str,
+        /// Virtual source path (without extension) used for relative-import
+        /// resolution and import.meta.filename. Stored here so the separate
+        /// `builtin_source_path` lookup can be derived from BUILTINS directly,
+        /// eliminating the duplicate match expression.
+        path: &'static str,
     },
     Synthetic(for<'s> fn(&mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module>),
 }
@@ -48,6 +53,7 @@ macro_rules! source_builtin {
             BuiltinKind::Source {
                 code: include_str!(concat!(env!("OUT_DIR"), "/js/", $path, ".mjs")),
                 source_map: include_str!(concat!(env!("OUT_DIR"), "/js/", $path, ".mjs.map")),
+                path: $path,
             },
         )
     };
@@ -158,6 +164,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Source {
             code: LOOP_BACKEND_SRC,
             source_map: LOOP_BACKEND_MAP,
+            path: "internal/runtime/loop-backend",
         },
     ),
     source_builtin!("fino:runtime/loop", "runtime/loop"),
@@ -255,117 +262,27 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
 ];
 
+/// Specifier → virtual source path lookup, derived from the BUILTINS table.
+///
+/// Previously maintained as a parallel `match` expression; now built once at
+/// startup from the `path` field on `BuiltinKind::Source` entries. A handful
+/// of specifiers registered outside the BUILTINS slice are handled explicitly.
 fn builtin_source_path(spec: &str) -> Option<&'static str> {
-    match spec {
-        "internal:main" => Some(""),
-        "internal:loader" => Some("internal/loader"),
-        "internal:bootstrap" => Some("_bootstrap"),
-        "fino:realm" => Some("runtime/realm"),
-        "fino:realm/pool" => Some("runtime/realm-pool"),
-        "fino:realm/self" => Some("runtime/realm-self"),
-        "fino:messaging" => Some("runtime/messaging"),
-        "internal:globals/messaging" => Some("internal/globals/messaging"),
-        "internal:commands/root" => Some("commands/root"),
-        "internal:commands/test" => Some("commands/test"),
-        "internal:commands/bench" => Some("commands/bench"),
-        "internal:commands/install" => Some("commands/install"),
-        "internal:commands/init" => Some("commands/init"),
-        "internal:commands/doc" => Some("commands/doc"),
-        "internal:shutdown" => Some("internal/shutdown"),
-        "internal:package_manager" => Some("internal/package_manager"),
-        "internal:globals/encoding" => Some("internal/globals/encoding"),
-        "internal:globals/console" => Some("internal/globals/console"),
-        "internal:globals/eventtarget" => Some("internal/globals/eventtarget"),
-        "internal:globals/abort" => Some("internal/globals/abort"),
-        "internal:globals/blob" => Some("internal/globals/blob"),
-        "internal:globals/url" => Some("internal/globals/url"),
-        "internal:globals/urlpattern" => Some("internal/globals/urlpattern"),
-        "internal:globals/webstreams" => Some("internal/globals/webstreams"),
-        "internal:globals/formdata" => Some("internal/globals/formdata"),
-        "internal:globals/crypto" => Some("internal/globals/crypto"),
-        "internal:globals/time" => Some("internal/globals/time"),
-        "internal:globals/fetch" => Some("internal/globals/fetch"),
-        "internal:globals/compression-streams" => Some("internal/globals/compression-streams"),
-        "internal:globals/broadcast-channel" => Some("internal/globals/broadcast-channel"),
-        "internal:globals/global" => Some("internal/globals/global"),
-        "internal:stream" => Some("internal/stream"),
-        "internal:openssl" => Some("internal/openssl"),
-        "internal:file/provider" => Some("file/provider"),
-        "internal:file/bindings" => Some("file/bindings"),
-        "internal:file/stat" => Some("file/stat"),
-        "internal:file/handle" => Some("file/handle"),
-        "internal:file/entry" => Some("file/entry"),
-        "internal:file/glob" => Some("file/glob"),
-        "internal:file/watch-bindings" => Some("file/watch-bindings"),
-        "internal:runtime/libc" => Some("internal/runtime/libc"),
-        "internal:parent-rpc" => Some("internal/runtime/parent-rpc"),
-        "internal:runtime/kqueue" => Some("internal/runtime/kqueue"),
-        "internal:runtime/io_uring" => Some("internal/runtime/io_uring"),
-        "internal:runtime/loop-backend" => Some("internal/runtime/loop-backend"),
-        "fino:runtime/loop" => Some("runtime/loop"),
-        "fino:runtime/process" => Some("runtime/process"),
-        "fino:runtime/context" => Some("runtime/context"),
-        "fino:tty" => Some("tty"),
-        "internal:net/provider" => Some("net/provider"),
-        "internal:net/dns-provider" => Some("net/dns-provider"),
-        "fino:net/socket" => Some("net/socket"),
-        "fino:net/http" => Some("net/http"),
-        "fino:net/tls" => Some("net/tls"),
-        "fino:net/dns" => Some("net/dns"),
-        "fino:net/serve" => Some("net/serve"),
-        "fino:net/eventsource" => Some("net/eventsource"),
-        "fino:net/websocket" => Some("net/websocket"),
-        "fino:file" => Some("file/fs"),
-        "fino:file/path" => Some("file/path"),
-        "fino:file/watch" => Some("file/watch"),
-        "fino:archive" => Some("archive"),
-        "internal:cluster/protocol" => Some("internal/cluster/protocol"),
-        "internal:cluster/transport" => Some("internal/cluster/transport"),
-        "internal:cluster/websocket-transport" => Some("internal/cluster/websocket-transport"),
-        "internal:cluster/registry" => Some("internal/cluster/registry"),
-        "internal:cluster/seed" => Some("internal/cluster/seed"),
-        "internal:cluster/client" => Some("internal/cluster/client"),
-        "fino:cluster" => Some("runtime/cluster"),
-        "internal:opentelemetry/core" => Some("opentelemetry/core"),
-        "internal:opentelemetry/common" => Some("opentelemetry/common"),
-        "internal:opentelemetry/traces" => Some("opentelemetry/traces"),
-        "internal:opentelemetry/logs" => Some("opentelemetry/logs"),
-        "internal:opentelemetry/metrics" => Some("opentelemetry/metrics"),
-        "internal:opentelemetry/exporters" => Some("opentelemetry/exporters"),
-        "internal:opentelemetry/bootstrap" => Some("opentelemetry/bootstrap"),
-        "internal:opentelemetry/instrumentations/index" => {
-            Some("opentelemetry/instrumentations/index")
+    use std::sync::OnceLock;
+    static MAP: OnceLock<std::collections::HashMap<&'static str, &'static str>> = OnceLock::new();
+    let map = MAP.get_or_init(|| {
+        let mut m = std::collections::HashMap::new();
+        // Entries registered outside the BUILTINS slice (e.g. _main.mjs
+        // compiled inline in runtime.rs and re-registered as "internal:main").
+        m.insert("internal:main", "");
+        for (specifier, kind) in BUILTINS {
+            if let BuiltinKind::Source { path, .. } = kind {
+                m.insert(specifier, path);
+            }
         }
-        "internal:opentelemetry/instrumentations/http-server" => {
-            Some("opentelemetry/instrumentations/http-server")
-        }
-        "internal:opentelemetry/instrumentations/fetch" => {
-            Some("opentelemetry/instrumentations/fetch")
-        }
-        "internal:opentelemetry/instrumentations/trace-topic" => {
-            Some("opentelemetry/instrumentations/trace-topic")
-        }
-        "internal:opentelemetry/instrumentations/_runtime-client" => {
-            Some("opentelemetry/instrumentations/_runtime-client")
-        }
-        "internal:opentelemetry/instrumentations/dns" => Some("opentelemetry/instrumentations/dns"),
-        "internal:opentelemetry/instrumentations/socket" => {
-            Some("opentelemetry/instrumentations/socket")
-        }
-        "internal:opentelemetry/instrumentations/tls" => Some("opentelemetry/instrumentations/tls"),
-        "internal:opentelemetry/sdk" => Some("opentelemetry/sdk"),
-        "fino:opentelemetry" => Some("opentelemetry"),
-        "fino:semver" => Some("semver"),
-        "fino:test/assert" => Some("test/assert"),
-        "fino:test/test" => Some("test/test"),
-        "fino:test/bench" => Some("test/bench"),
-        "fino:test/mock" => Some("test/mock"),
-        "fino:util/argv" => Some("util/argv"),
-        "fino:util/compression" => Some("util/compression"),
-        "fino:util/prompt" => Some("util/prompt"),
-        "fino:util/topic" => Some("util/topic"),
-        _ => None,
-    }
+        m
+    });
+    map.get(spec).copied()
 }
 
 fn strip_builtin_extension(path: &str) -> &str {
@@ -985,6 +902,15 @@ fn get_or_load_builtin<'s>(
     spec: &str,
     from: Option<&str>,
 ) -> Option<v8::Local<'s, v8::Module>> {
+    get_or_load_builtin_inner(scope, spec, from, &mut std::collections::HashSet::new())
+}
+
+fn get_or_load_builtin_inner<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    spec: &str,
+    from: Option<&str>,
+    visited: &mut std::collections::HashSet<String>,
+) -> Option<v8::Local<'s, v8::Module>> {
     use crate::state::{ImportDirective, resolve_directive};
 
     let state_rc = get_state(scope);
@@ -1019,7 +945,17 @@ fn get_or_load_builtin<'s>(
         }
 
         Some(ImportDirective::Remap { target }) => {
-            return get_or_load_builtin(scope, &target, from);
+            if !visited.insert(spec.to_string()) {
+                // Already in the resolution chain — circular Remap detected.
+                let msg = v8::String::new(
+                    scope,
+                    &format!("Import of '{spec}' has a circular Remap rule"),
+                )?;
+                let exc = v8::Exception::error(scope, msg);
+                scope.throw_exception(exc);
+                return None;
+            }
+            return get_or_load_builtin_inner(scope, &target, from, visited);
         }
 
         Some(ImportDirective::Source { code, source_map }) => {
@@ -1072,7 +1008,11 @@ fn get_or_load_builtin<'s>(
     let (spec_key, kind) = entry;
 
     let module = match kind {
-        BuiltinKind::Source { code, source_map } => {
+        BuiltinKind::Source {
+            code,
+            source_map,
+            path: _,
+        } => {
             register_source_map_from_json(scope, spec, source_map);
             let m = compile_source_module(scope, code, spec, Some(source_map))?;
             if let Some(id) = m.script_id() {
