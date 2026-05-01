@@ -783,6 +783,17 @@ function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number):
 
   const cl = headers.get('content-length');
   if (cl !== null) {
+    // headers.get() joins multiple values with ", " when duplicates exist.
+    // RFC 7230 §3.3.2: conflicting Content-Length values are a framing error.
+    if (cl.includes(',')) {
+      const parts = cl.split(',').map(s => s.trim());
+      const first = parseInt(parts[0] ?? '', 10);
+      if (parts.some(p => parseInt(p, 10) !== first)) {
+        throw new Error(`Conflicting Content-Length values: "${cl}"`);
+      }
+      // All values are equal — use the common value.
+      if (!isNaN(first)) return { type: 'fixed', length: first };
+    }
     const len = parseInt(cl, 10);
     if (!isNaN(len)) return { type: 'fixed', length: len };
   }

@@ -148,6 +148,9 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
   const alreadyFramed = res.headers.has('content-length') ||
                         res.headers.has('transfer-encoding');
 
+  // RFC 7230 §3.3: 1xx and 204 responses MUST NOT carry a body or Content-Length.
+  const noBodyStatus = res.status === 204 || (res.status >= 100 && res.status < 200);
+
   // Fast path: pre-buffered byte body with no framing header (new Response('...') or
   // new Response(bytes) without Transfer-Encoding). Avoids ReadableStream.from() + async
   // iteration just to recover bytes we already have. Cannot be used when alreadyFramed
@@ -156,11 +159,11 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
     const bodyBytes = res._extractBytes();
     if (bodyBytes !== null) {
       const headers = new Headers(res.headers);
-      headers.set('content-length', String(bodyBytes.byteLength));
+      if (!noBodyStatus) headers.set('content-length', String(bodyBytes.byteLength));
       headers.set('connection', connHeader);
       return {
         wire: buildWireResponse({ version, status: res.status, statusText: res.statusText, headers, body: null }),
-        rawBytes: bodyBytes,
+        rawBytes: noBodyStatus ? EMPTY_BYTES : bodyBytes,
       };
     }
   }
@@ -187,7 +190,7 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
   }
   const bytes = total === 0 ? EMPTY_BYTES : _concat(parts, total);
   const headers = new Headers(res.headers);
-  headers.set('content-length', String(bytes.byteLength));
+  if (!noBodyStatus) headers.set('content-length', String(bytes.byteLength));
   headers.set('connection', connHeader);
   return {
     wire: buildWireResponse({ version, status: res.status, statusText: res.statusText, headers, body: null }),

@@ -162,6 +162,137 @@ describe('fino:archive', () => {
     t.equal(await fs.readFile(outputDir + '/added.txt'), 'three', 'tar.gz extract added file');
   });
 
+  // ---------------------------------------------------------------------------
+  // Security regression tests (A1, A2, A3 fixes)
+  // ---------------------------------------------------------------------------
+
+  it('A1: tar extraction silently skips symlink/hardlink entries (typeflag 1 and 2)', async (t) => {
+    // Craft a raw tar archive with a symlink entry (typeflag=50='2') followed by
+    // a normal file entry. The symlink entry must be skipped; the file must extract.
+    const enc = new TextEncoder();
+
+    function tarHeader(name: string, size: number, typeflag: number): Uint8Array {
+      const hdr = new Uint8Array(512);
+      const nameBytes = enc.encode(name.slice(0, 99));
+      hdr.set(nameBytes, 0);
+      // mode
+      const modeStr = '0000644\0';
+      hdr.set(enc.encode(modeStr), 100);
+      // size (octal)
+      const sizeOctal = size.toString(8).padStart(11, '0') + '\0';
+      hdr.set(enc.encode(sizeOctal), 124);
+      // mtime
+      const mtimeOctal = '00000000000\0';
+      hdr.set(enc.encode(mtimeOctal), 136);
+      // typeflag
+      hdr[156] = typeflag;
+      // checksum placeholder
+      hdr.fill(0x20, 148, 156);
+      let sum = 0;
+      for (let i = 0; i < 512; i++) sum += hdr[i]!;
+      const chk = sum.toString(8).padStart(6, '0') + '\0 ';
+      hdr.set(enc.encode(chk), 148);
+      return hdr;
+    }
+
+    const fileContent = enc.encode('safe file content');
+    const fileSize = fileContent.length;
+    const filePadded = Math.ceil(fileSize / 512) * 512;
+
+    // Entry 1: symlink (typeflag=50='2'), size 0
+    const symlinkHdr = tarHeader('link-target.txt', 0, 50);
+    // Entry 2: regular file (typeflag=48='0')
+    const fileHdr = tarHeader('safe.txt', fileSize, 48);
+    const filePaddedBytes = new Uint8Array(filePadded);
+    filePaddedBytes.set(fileContent);
+    // Terminal: two zero blocks
+    const terminal = new Uint8Array(1024);
+
+    const totalLen = 512 + 512 + filePadded + 1024;
+    const tarBytes = new Uint8Array(totalLen);
+    let off = 0;
+    tarBytes.set(symlinkHdr, off); off += 512;          // symlink header (no data block)
+    tarBytes.set(fileHdr, off); off += 512;             // file header
+    tarBytes.set(filePaddedBytes, off); off += filePadded; // file data
+    tarBytes.set(terminal, off);                         // terminal blocks
+
+    const archivePath = TEST_DIR + '/symlink-tar.tar';
+    const outputDir   = TEST_DIR + '/symlink-tar-out';
+    await fs.mkdir(outputDir);
+    await fs.writeFile(archivePath, tarBytes);
+
+    await extractArchive(archivePath, outputDir);
+
+    // The safe file should be extracted
+    t.equal(await fs.readFile(outputDir + '/safe.txt'), 'safe file content', 'regular file extracted');
+    // The symlink entry must NOT have created a file
+    let symlinkFileExists = false;
+    try { await fs.stat(outputDir + '/link-target.txt'); symlinkFileExists = true; } catch (_) {}
+    t.ok(!symlinkFileExists, 'symlink entry was skipped — no file created');
+  });
+
+  it('A2: tar extraction throws when an entry exceeds MAX_DECOMPRESSED_BYTES', async (t) => {
+    // Craft a tar header claiming a file of 600 MiB (> 512 MiB limit).
+    // parseTar checks size before slicing so this throws without OOM.
+    const enc = new TextEncoder();
+    const hdr = new Uint8Array(512);
+    const nameBytes = enc.encode('huge.bin');
+    hdr.set(nameBytes, 0);
+    hdr.set(enc.encode('0000644\0'), 100);
+    // 600 MiB in octal
+    const hugeSizeOctal = (600 * 1024 * 1024).toString(8).padStart(11, '0') + '\0';
+    hdr.set(enc.encode(hugeSizeOctal), 124);
+    hdr.set(enc.encode('00000000000\0'), 136);
+    hdr[156] = 48; // regular file
+    hdr.fill(0x20, 148, 156);
+    let sum = 0; for (let i = 0; i < 512; i++) sum += hdr[i]!;
+    hdr.set(enc.encode(sum.toString(8).padStart(6, '0') + '\0 '), 148);
+
+    // The archive consists of just this header (the data block would be huge,
+    // but parseTar checks size before reading data, so we can omit the data blocks
+    // and just add the terminal blocks).
+    const terminal = new Uint8Array(1024);
+    const tarBytes = new Uint8Array(512 + 1024);
+    tarBytes.set(hdr, 0);
+    tarBytes.set(terminal, 512);
+
+    const archivePath = TEST_DIR + '/huge-tar.tar';
+    const outputDir   = TEST_DIR + '/huge-tar-out';
+    await fs.mkdir(outputDir);
+    await fs.writeFile(archivePath, tarBytes);
+
+    await t.rejects(
+      () => extractArchive(archivePath, outputDir),
+      /limit|exceeding|512|bytes/i,
+      'extract throws for entries exceeding the decompressed-size limit',
+    );
+  });
+
+  it('A3: extract() unlinks pre-placed symlinks before writing', async (t) => {
+    const archivePath = TEST_DIR + '/overwrite.zip';
+    const outputDir   = TEST_DIR + '/overwrite-out';
+    await fs.mkdir(outputDir);
+
+    // Archive contains a single file 'data.txt' with known content.
+    const archive = await createArchive(archivePath);
+    await archive.write('data.txt', 'real content from archive');
+    await archive.close();
+
+    // Place a symlink at the expected output path pointing to a different file.
+    const victim = TEST_DIR + '/victim.txt';
+    await fs.writeFile(victim, 'original victim');
+    await fs.symlink(victim, outputDir + '/data.txt');
+
+    await extractArchive(archivePath, outputDir);
+
+    // The symlink should have been replaced with the real file.
+    const content = await fs.readFile(outputDir + '/data.txt');
+    t.equal(content, 'real content from archive', 'archive content written to output path');
+    // Victim file must not have been overwritten.
+    const victimContent = await fs.readFile(victim);
+    t.equal(victimContent, 'original victim', 'victim file was NOT modified (symlink was unlinked)');
+  });
+
   it('rejects traversal entries during extract', async (t) => {
     const archivePath = TEST_DIR + '/unsafe.zip';
     const outputDir = TEST_DIR + '/unsafe-out';

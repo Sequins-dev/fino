@@ -157,3 +157,40 @@ describe('Process class', () => {
     t.ok(signal !== null, 'child was signalled');
   });
 });
+
+describe('exit() propagates non-zero code to parent', () => {
+  it('exit(42) results in wait().code === 42', async (t) => {
+    const proc = new Process(execPath, [
+      'run',
+      new URL('../fixtures/exit-with-code.mts', import.meta.url).pathname,
+    ], { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string> });
+    proc.stdin.close();
+    for await (const _ of proc.stdout) { /* drain */ }
+    const { code, signal } = await proc.wait();
+    t.equal(code, 42, 'exit(42) produces wait().code === 42');
+    t.equal(signal, null, 'process exited normally (no signal)');
+  });
+});
+
+describe('B1 regression: exit() flushes stdout before terminating', () => {
+  it('output written to stdout before exit(0) is captured by the parent', async (t) => {
+    // Spawn a child process that writes to stdout then calls exit(0).
+    // If exit() does not flush the coalesce buffer, the output is lost and
+    // the test fails.
+    const proc = new Process(execPath, [
+      'run',
+      new URL('../fixtures/exit-with-output.mts', import.meta.url).pathname,
+    ], { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string> });
+    proc.stdin.close();
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    const { code } = await proc.wait();
+    const captured = decodeUtf8(chunks.reduce((acc, c) => {
+      const m = new Uint8Array(acc.byteLength + c.byteLength);
+      m.set(acc); m.set(c, acc.byteLength);
+      return m;
+    }, new Uint8Array(0)));
+    t.equal(code, 0, 'child exited with code 0');
+    t.ok(captured.includes('exit-flush-test-output'), 'stdout was flushed before exit: ' + JSON.stringify(captured));
+  });
+});

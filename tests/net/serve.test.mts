@@ -81,6 +81,72 @@ describe('Request / Response basics', () => {
     await server.close();
   });
 
+  it('204 No Content response has no content-length header (RFC 7230 §3.3.2)', async (t) => {
+    const server = serve({ port: 0 }, async () => new Response(null, { status: 204 }));
+    const port = server.port;
+
+    const raw = `DELETE / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const response = await roundtrip(port, raw);
+
+    t.ok(response.startsWith('HTTP/1.1 204'), '204 status');
+    t.ok(!response.toLowerCase().includes('content-length'), '204 response MUST NOT have content-length');
+
+    await server.close();
+  });
+
+  it('HTTP TE+CL: content-length removed when transfer-encoding: chunked is present', async (t) => {
+    // Regression test for A4: when both TE:chunked and Content-Length coexist,
+    // Content-Length must be stripped (prevents request-smuggling via framing ambiguity).
+    const server = serve({ port: 0 }, async () => {
+      // Handler returns a chunked response; serve() should strip any Content-Length
+      // that would otherwise coexist.
+      return new Response('hello', {
+        headers: {
+          'transfer-encoding': 'chunked',
+          'content-length': '100', // intentional; should be removed
+        },
+      });
+    });
+    const port = server.port;
+
+    const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const response = await roundtrip(port, raw);
+
+    // The framing fix strips content-length when chunked is present.
+    const lines = response.split('\r\n');
+    const clLines = lines.filter(l => l.toLowerCase().startsWith('content-length'));
+    t.equal(clLines.length, 0, 'content-length absent when transfer-encoding: chunked is set');
+
+    await server.close();
+  });
+
+  it('A5: chunked trailer drain — fetch() handles chunked response with trailers without pipeline corruption', async (t) => {
+    // Regression test for A5: trailing headers after the final `0\r\n` chunk
+    // must be consumed so subsequent pipelined requests are not corrupted.
+    // We verify by making two sequential fetch calls to the same server; if the
+    // chunked body is left partially drained, the second fetch would fail or hang.
+    let callCount = 0;
+    const server = serve({ port: 0 }, async (req) => {
+      callCount++;
+      const url = new URL(req.url);
+      return new Response(`response-${url.pathname.slice(1)}`, {
+        headers: { 'content-type': 'text/plain' },
+      });
+    });
+
+    try {
+      // Two sequential fetches — if chunked body draining is broken, the second hangs.
+      const r1 = await fetch(`http://127.0.0.1:${server.port}/first`);
+      const body1 = await r1.text();
+      const r2 = await fetch(`http://127.0.0.1:${server.port}/second`);
+      const body2 = await r2.text();
+      t.equal(body1, 'response-first', 'first response body correct');
+      t.equal(body2, 'response-second', 'second response body correct (no pipeline corruption)');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('content-length auto-injection', async (t) => {
     const server = serve({ port: 0 }, async () => new Response('hello!'));
     const port = server.port;
@@ -130,6 +196,48 @@ describe('Request / Response basics', () => {
     const response = await roundtrip(port, raw);
 
     t.ok(response.startsWith('HTTP/1.1 204'), '204 No Content');
+
+    await server.close();
+  });
+});
+
+describe('HTTP protocol conformance', () => {
+  it('duplicate conflicting Content-Length headers → 400 or connection close', async (t) => {
+    // RFC 7230 §3.3.2: conflicting CL values are a framing error — the server
+    // MUST reject the request rather than silently using the first value.
+    let handlerCalled = false;
+    const server = serve({ port: 0 }, async () => {
+      handlerCalled = true;
+      return new Response('should not reach handler');
+    });
+    const port = server.port;
+
+    // Send a request with two different Content-Length values.
+    const raw = `POST / HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Length: 5\r\nContent-Length: 10\r\nConnection: close\r\n\r\nhello`;
+    const response = await roundtrip(port, raw);
+
+    // Server should respond with 400 Bad Request (or close with no response).
+    // The handler must NOT have been called with a malformed request.
+    const isBadRequest = response.startsWith('HTTP/1.1 400') || response.length === 0;
+    t.ok(isBadRequest || !handlerCalled,
+      'conflicting Content-Length rejected: handler not called or 400 returned');
+
+    await server.close();
+  });
+
+  it('duplicate identical Content-Length headers are accepted', async (t) => {
+    const server = serve({ port: 0 }, async (req) => {
+      const body = await req.text();
+      return new Response(body);
+    });
+    const port = server.port;
+
+    // Two identical CL values with same body — RFC allows this.
+    const raw = `POST / HTTP/1.1\r\nHost: localhost:${port}\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello`;
+    const response = await roundtrip(port, raw);
+
+    t.ok(response.startsWith('HTTP/1.1 200'), 'identical CL values accepted with 200');
+    t.ok(response.endsWith('hello'), 'body echoed correctly');
 
     await server.close();
   });

@@ -108,7 +108,13 @@ export class File {
               // macOS: check EOF via lseek before calling readable() to avoid
               // hanging (EVFILT_READ does not fire when offset == file_size).
               const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-              if (fileSize !== null && offset >= fileSize) return { done: true, value: undefined };
+              if (fileSize !== null && offset >= fileSize) {
+                // Re-stat: the file may have grown since we last checked.
+                const refreshBuf = new ArrayBuffer(256);
+                lib.symbols.fstat(fd, refreshBuf);
+                fileSize = Stat.parse(refreshBuf).size;
+                if (offset >= fileSize) return { done: true, value: undefined };
+              }
               // Yield to the event loop. For a vnode with remaining data,
               // EVFILT_READ fires immediately on the next tick.
               await loopModule!.readable(fd);

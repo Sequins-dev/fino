@@ -179,6 +179,25 @@ describe('verifyTarballIntegrity — malformed / unrecognised SRI (B3)', () => {
   });
 });
 
+describe('B3 regression: verifyTarballIntegrity throws on mismatch (cleanup guard)', () => {
+  it('verifyTarballIntegrity throws for sha256 mismatch with a multi-value SRI', (t) => {
+    if (!openssl.cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available — skipping');
+      return;
+    }
+    // This test locks in the behavior after the multi-value SRI fix: the first
+    // token is verified, and a mismatch still throws (not silently passes).
+    const wrongHash = toBase64(new Uint8Array(32)); // all-zero hash
+    try {
+      verifyTarballIntegrity(PAYLOAD, `sha256-${wrongHash} sha512-ignored`, undefined, 'mismatch-pkg@1.0.0');
+      t.fail('should have thrown on wrong first-token hash');
+    } catch (err) {
+      t.ok(err instanceof Error, 'throws Error on mismatch');
+      t.ok((err as Error).message.includes('mismatch-pkg'), 'error names the package');
+    }
+  });
+});
+
 describe('verifyTarballIntegrity — multi-value SRI (space-separated)', () => {
   it('uses only the first token from a multi-value SRI string', (t) => {
     if (!openssl.cryptoAvailable) {

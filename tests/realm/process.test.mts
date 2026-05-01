@@ -134,6 +134,26 @@ describe('Process Realm call() + run() ordering', () => {
   });
 });
 
+describe('Process Realm call() after realm has exited', () => {
+  it('call() on an already-exited realm rejects rather than hanging', async (t) => {
+    const realm = new Realm<typeof echoFn>({
+      process: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    // Complete one call so the realm runs and exits cleanly.
+    const runPromise = realm.run();
+    await realm.call('before-exit');
+    await runPromise;
+
+    // Now the realm has exited. A subsequent call should reject promptly.
+    const settled = await Promise.race([
+      realm.call('after-exit').then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((res) => setTimeout(() => res('timeout'), 2000)),
+    ]);
+    t.equal(settled, 'rejected', 'call() after realm exit rejects (does not hang)');
+  });
+});
+
 describe('Process Realm import rules', () => {
   it('import rules are respected in the child process', async (t) => {
     const realm = new Realm({

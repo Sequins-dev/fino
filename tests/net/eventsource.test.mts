@@ -527,4 +527,35 @@ describe('EventSource integration', () => {
 
     await server.close();
   });
+
+  it('empty id: field sends Last-Event-ID with empty value on reconnect', async (t) => {
+    // Regression for the lastEventId null-vs-empty-string fix.
+    // An `id:` line with no value sets lastEventId to '' and must be sent as
+    // `Last-Event-ID: ` (empty) on reconnect — not omitted as if no id was seen.
+    const seenIds: Array<string | null> = [];
+    let connectionCount = 0;
+    let resolveReconnect!: () => void;
+    const reconnected = new Promise<void>((r) => { resolveReconnect = r; });
+
+    const server = serve({ port: 19971 }, async (req) => {
+      connectionCount++;
+      seenIds.push(req.headers.get('last-event-id'));
+      if (connectionCount === 1) {
+        // Send an event with an empty id: field, then close.
+        return sseResponse(sseBody({ retry: 50, id: '', data: 'empty-id-event' }));
+      }
+      resolveReconnect();
+      return new Response(null, { status: 204 });
+    });
+
+    new EventSource('http://127.0.0.1:19971/events');
+    await reconnected;
+    await loop.timeout(50);
+
+    t.equal(seenIds[0], null, 'no Last-Event-ID on first connection');
+    // After receiving an empty id:, the reconnect MUST include Last-Event-ID: ''
+    t.equal(seenIds[1], '', 'Last-Event-ID with empty value sent on reconnect');
+
+    await server.close();
+  });
 });

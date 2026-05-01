@@ -123,3 +123,39 @@ describe('runShutdownHooks — async hooks', () => {
     t.ok(resolved, 'async hook was awaited to completion');
   });
 });
+
+describe('B2 regression: hooks registered during shutdown are also executed', () => {
+  it('a hook registered inside another hook still runs', async (t) => {
+    const ran: string[] = [];
+
+    registerShutdownHook(() => {
+      ran.push('outer');
+      // Register a new hook while shutdown is already in progress.
+      registerShutdownHook(() => { ran.push('inner'); });
+    });
+
+    await runShutdownHooks();
+
+    t.ok(ran.includes('outer'), 'outer hook ran');
+    t.ok(ran.includes('inner'), 'inner hook registered during shutdown also ran');
+  });
+
+  it('inner hooks run after the outer hook that registered them (LIFO within batch)', async (t) => {
+    const order: string[] = [];
+
+    registerShutdownHook(() => {
+      order.push('A');
+      registerShutdownHook(() => { order.push('C'); });
+      registerShutdownHook(() => { order.push('B'); });
+    });
+
+    await runShutdownHooks();
+
+    // A runs first (it was the only hook in the original batch).
+    // B and C are registered during A's run and execute in reverse order in the next batch.
+    t.equal(order[0], 'A', 'outer hook ran first');
+    t.ok(order.includes('B') && order.includes('C'), 'both inner hooks ran');
+    t.ok(order.indexOf('A') < order.indexOf('B'), 'A before B');
+    t.ok(order.indexOf('A') < order.indexOf('C'), 'A before C');
+  });
+});

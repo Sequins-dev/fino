@@ -52,6 +52,38 @@ describe('fino:semver satisfies', () => {
   });
 });
 
+describe('fino:semver — OR range branch coverage', () => {
+  it('version matching only the SECOND OR branch is satisfied', (t) => {
+    t.equal(satisfies('2.5.0', '^1.0.0 || ^2.1.0'), true,
+      '2.5.0 satisfies second branch ^2.1.0');
+    t.equal(satisfies('0.9.0', '^1.0.0 || ^2.1.0'), false,
+      '0.9.0 satisfies neither branch');
+    t.equal(satisfies('1.0.0', '^1.0.0 || ^2.1.0'), true,
+      '1.0.0 satisfies first branch ^1.0.0');
+  });
+});
+
+describe('fino:semver — prerelease identifier ordering (numeric vs string)', () => {
+  it('numeric prerelease identifiers sort before string identifiers', (t) => {
+    // semver spec §11.4.1: numeric identifiers always have lower precedence
+    // than alphanumeric identifiers.
+    t.ok(compare('1.0.0-1', '1.0.0-alpha') < 0,
+      'numeric prerelease 1 sorts before alpha');
+    t.ok(compare('1.0.0-9', '1.0.0-rc.1') < 0,
+      'numeric prerelease 9 sorts before rc.1');
+    t.ok(compare('1.0.0-alpha', '1.0.0-beta') < 0,
+      'alpha sorts before beta lexically');
+    t.ok(compare('1.0.0-rc.2', '1.0.0-rc.10') < 0,
+      'numeric sub-identifiers compare numerically (2 < 10)');
+  });
+
+  it('longer prerelease has higher precedence when shared prefix is equal', (t) => {
+    // semver spec §11.4.4: larger set of prerelease fields has higher precedence
+    t.ok(compare('1.0.0-alpha.1', '1.0.0-alpha') > 0,
+      'alpha.1 has higher precedence than alpha');
+  });
+});
+
 describe('fino:semver maxSatisfying', () => {
   it('returns the highest matching stable version and skips prereleases unless admitted', (t) => {
     const versions = [

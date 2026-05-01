@@ -386,7 +386,10 @@ export class EventSource extends EventTarget {
 
   #url: string;
   #readyState: number;
-  #lastEventId: string;
+  // null = no id: field ever received; '' = empty id: field received.
+  // The distinction matters for Last-Event-ID: an empty id should still be
+  // sent on reconnect (with an empty value) per the WHATWG EventSource spec.
+  #lastEventId: string | null;
   #retryInterval: number;
   #extraHeaders: Headers;
   #currentReader: { close(): void } | null;   // FdReader — set during an active connection; used to abort reads on close()
@@ -402,7 +405,7 @@ export class EventSource extends EventTarget {
     super();
     this.#url           = String(url);
     this.#readyState    = CONNECTING;
-    this.#lastEventId   = '';
+    this.#lastEventId   = null;
     this.#retryInterval = DEFAULT_RETRY_MS;
     this.#extraHeaders  = init?.headers ? new Headers(init.headers) : new Headers();
     this.#currentReader = null;
@@ -420,8 +423,8 @@ export class EventSource extends EventTarget {
   /** The URL passed to the constructor. */
   get url() { return this.#url; }
 
-  /** The last event ID received from the server. Sent as Last-Event-ID on reconnect. */
-  get lastEventId() { return this.#lastEventId; }
+  /** The last event ID received from the server. Sent as Last-Event-ID on reconnect. Empty string before any id: field is received. */
+  get lastEventId() { return this.#lastEventId ?? ''; }
 
   /** Callback for `open` events (connection established). */
   get onopen()    { return this.#onopen; }
@@ -496,7 +499,7 @@ export class EventSource extends EventTarget {
         const headers = new Headers(this.#extraHeaders);
         headers.set('accept', 'text/event-stream');
         headers.set('cache-control', 'no-store');
-        if (this.#lastEventId !== '') {
+        if (this.#lastEventId !== null) {
           headers.set('last-event-id', this.#lastEventId);
         }
         const hostHeader = parsed.port
