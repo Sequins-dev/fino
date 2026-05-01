@@ -1,0 +1,97 @@
+/**
+ * Tests for internal:cluster/protocol — encode/decode + helpers.
+ */
+
+import { describe, it } from 'fino:test/test';
+import { encode, decode, nodeIdFromId, type ClusterMessage } from 'internal:cluster/protocol';
+
+describe('ClusterMessage encode/decode', () => {
+  const roundTrip = (msg: ClusterMessage): ClusterMessage => decode(encode(msg));
+
+  it('HELLO round-trips', (t) => {
+    const msg: ClusterMessage = { t: 'HELLO', nodeId: 'node1', load: { cpu: 0.5, memory: 1024 } };
+    const got = roundTrip(msg);
+    t.equal(got.t, 'HELLO');
+    if (got.t === 'HELLO') {
+      t.equal(got.nodeId, 'node1');
+      t.equal(got.load.cpu, 0.5);
+    }
+  });
+
+  it('WELCOME round-trips with peer list', (t) => {
+    const msg: ClusterMessage = {
+      t: 'WELCOME',
+      nodeId: 'seed',
+      peers: [{ nodeId: 'worker1', load: { cpu: 0, memory: 512 } }],
+    };
+    const got = roundTrip(msg);
+    t.equal(got.t, 'WELCOME');
+    if (got.t === 'WELCOME') {
+      t.equal(got.peers.length, 1);
+      t.equal(got.peers[0]?.nodeId, 'worker1');
+    }
+  });
+
+  it('SPAWN round-trips', (t) => {
+    const msg: ClusterMessage = {
+      t: 'SPAWN',
+      spawnReqId: 'req-1',
+      parentPortId: 'nodeA/p-0',
+      config: { entry: './fn.mts', root: '/app', rules: [] },
+    };
+    const got = roundTrip(msg);
+    t.equal(got.t, 'SPAWN');
+    if (got.t === 'SPAWN') {
+      t.equal(got.spawnReqId, 'req-1');
+      t.equal(got.parentPortId, 'nodeA/p-0');
+      t.equal(got.config.entry, './fn.mts');
+    }
+  });
+
+  it('SPAWN_ACK round-trips', (t) => {
+    const ok: ClusterMessage = { t: 'SPAWN_ACK', spawnReqId: 'req-1', childPortId: 'nodeB/0', ok: true };
+    const fail: ClusterMessage = { t: 'SPAWN_ACK', spawnReqId: 'req-2', childPortId: '', ok: false, error: 'no worker' };
+    const gotOk = roundTrip(ok);
+    const gotFail = roundTrip(fail);
+    t.equal(gotOk.t, 'SPAWN_ACK');
+    if (gotOk.t === 'SPAWN_ACK') t.ok(gotOk.ok, 'ok=true preserved');
+    if (gotFail.t === 'SPAWN_ACK') {
+      t.ok(!gotFail.ok, 'ok=false preserved');
+      t.equal(gotFail.error, 'no worker', 'error message preserved');
+    }
+  });
+
+  it('PORT_MSG round-trips', (t) => {
+    const msg: ClusterMessage = {
+      t: 'PORT_MSG',
+      fromPort: 'nodeA/p-0',
+      toPort: 'nodeB/0',
+      payload: btoa('hello'),
+    };
+    const got = roundTrip(msg);
+    t.equal(got.t, 'PORT_MSG');
+    if (got.t === 'PORT_MSG') {
+      t.equal(got.fromPort, 'nodeA/p-0');
+      t.equal(got.toPort, 'nodeB/0');
+      t.equal(got.payload, btoa('hello'));
+    }
+  });
+
+  it('TERMINATE round-trips', (t) => {
+    const msg: ClusterMessage = { t: 'TERMINATE', realmId: 'nodeB/5' };
+    const got = roundTrip(msg);
+    t.equal(got.t, 'TERMINATE');
+    if (got.t === 'TERMINATE') t.equal(got.realmId, 'nodeB/5');
+  });
+});
+
+describe('nodeIdFromId helper', () => {
+  it('extracts prefix before first slash', (t) => {
+    t.equal(nodeIdFromId('nodeA/p-0'), 'nodeA');
+    t.equal(nodeIdFromId('worker-123/42'), 'worker-123');
+  });
+
+  it('returns the whole string if no slash', (t) => {
+    t.equal(nodeIdFromId('nodeA'), 'nodeA');
+  });
+});

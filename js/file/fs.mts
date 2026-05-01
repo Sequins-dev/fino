@@ -46,6 +46,7 @@ import {
   S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
   SEEK_SET, SEEK_CUR, SEEK_END,
   DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
+  F_OK, R_OK, W_OK, X_OK,
   modeToFlags, encodeUtf8, decodeUtf8,
 } from './bindings.mts';
 import { Stat } from './stat.mts';
@@ -195,6 +196,122 @@ export class DiskFileSystem extends FileSystem {
   }
 
   /**
+   * Change the permissions of a file.
+   * @param {string|Path} path
+   * @param {number} mode
+   */
+  async chmod(path: Path | string, mode: number): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.chmod(cstr(s), mode);
+    if (rc !== 0) throwErrno('chmod', s);
+  }
+
+  /**
+   * Change the owner and group of a file, following symlinks.
+   * @param {string|Path} path
+   * @param {number} uid
+   * @param {number} gid
+   */
+  async chown(path: Path | string, uid: number, gid: number): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.chown(cstr(s), uid, gid);
+    if (rc !== 0) throwErrno('chown', s);
+  }
+
+  /**
+   * Change the owner and group of a file without following symlinks.
+   * @param {string|Path} path
+   * @param {number} uid
+   * @param {number} gid
+   */
+  async lchown(path: Path | string, uid: number, gid: number): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.lchown(cstr(s), uid, gid);
+    if (rc !== 0) throwErrno('lchown', s);
+  }
+
+  /**
+   * Set the access and modification times of a file.
+   * @param {string|Path} path
+   * @param {Date|number} atime  Access time (Date or seconds since epoch).
+   * @param {Date|number} mtime  Modification time (Date or seconds since epoch).
+   */
+  async utimes(path: Path | string, atime: Date | number, mtime: Date | number): Promise<void> {
+    const s = _toStr(path);
+    const atimeSec = atime instanceof Date ? atime.getTime() / 1000 : atime;
+    const mtimeSec = mtime instanceof Date ? mtime.getTime() / 1000 : mtime;
+    // struct timeval[2]: each is { i64 tv_sec, i64 tv_usec }
+    const buf = new ArrayBuffer(32);
+    const view = new DataView(buf);
+    view.setBigInt64(0,  BigInt(Math.trunc(atimeSec)), true);
+    view.setBigInt64(8,  BigInt(Math.trunc((atimeSec % 1) * 1e6)), true);
+    view.setBigInt64(16, BigInt(Math.trunc(mtimeSec)), true);
+    view.setBigInt64(24, BigInt(Math.trunc((mtimeSec % 1) * 1e6)), true);
+    const rc = lib.symbols.utimes(cstr(s), buf);
+    if (rc !== 0) throwErrno('utimes', s);
+  }
+
+  /**
+   * Truncate a file to a specified length.
+   * @param {string|Path} path
+   * @param {number} [size=0]
+   */
+  async truncate(path: Path | string, size = 0): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.truncate(cstr(s), BigInt(size));
+    if (rc !== 0) throwErrno('truncate', s);
+  }
+
+  /**
+   * Create a hard link.
+   * @param {string|Path} existingPath  Path of the existing file.
+   * @param {string|Path} newPath       Path of the new hard link to create.
+   */
+  async link(existingPath: Path | string, newPath: Path | string): Promise<void> {
+    const existS = _toStr(existingPath);
+    const newS   = _toStr(newPath);
+    const rc = lib.symbols.link(cstr(existS), cstr(newS));
+    if (rc !== 0) throwErrno('link', existS);
+  }
+
+  /**
+   * Test access to a path.
+   * @param {string|Path} path
+   * @param {number} [mode=F_OK]  Bitwise-OR of F_OK, R_OK, W_OK, X_OK.
+   */
+  async access(path: Path | string, mode = F_OK): Promise<void> {
+    const s = _toStr(path);
+    const rc = lib.symbols.access(cstr(s), mode);
+    if (rc !== 0) throwErrno('access', s);
+  }
+
+  /**
+   * Copy a file, preserving permissions.
+   * @param {string|Path} src   Source path.
+   * @param {string|Path} dest  Destination path.
+   */
+  async copyFile(src: Path | string, dest: Path | string): Promise<void> {
+    const srcFile = await this.open(src, 'r');
+    let data: Uint8Array;
+    let srcMode: number;
+    try {
+      data = await srcFile.bytes();
+      const st = await srcFile.stat();
+      srcMode = st.mode & 0o7777;
+    } finally {
+      await srcFile.close();
+    }
+    const destFile = await this.open(dest, 'w');
+    try {
+      const writer = destFile.writer();
+      await writer.write(data!);
+    } finally {
+      await destFile.close();
+    }
+    await this.chmod(dest, srcMode!);
+  }
+
+  /**
    * Rename or move a file or directory.
    * @param {string|Path} oldPath
    * @param {string|Path} newPath
@@ -304,3 +421,5 @@ export class DiskFileSystem extends FileSystem {
     return globWalk(listDir, pattern, options) as AsyncGenerator<Entry>;
   }
 }
+
+export { F_OK, R_OK, W_OK, X_OK };

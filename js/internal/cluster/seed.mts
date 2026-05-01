@@ -20,7 +20,7 @@ import { RealmRegistry } from './registry.mts';
 import { WebSocketSeedTransport } from './websocket-transport.mts';
 
 const HEARTBEAT_INTERVAL_MS = 2500;
-const HEARTBEAT_TIMEOUT_MS  = 5000;
+const HEARTBEAT_TIMEOUT_MS  = 7500; // 3× interval — tolerate one missed beat
 
 export class SeedServer {
   #transport: WebSocketSeedTransport;
@@ -90,10 +90,21 @@ export class SeedServer {
       }
 
       case 'SPAWN': {
+        const target = this.#selectTarget(from);
+        if (target === null) {
+          // No eligible worker — reject immediately.
+          this.#transport.send(from, {
+            t: 'SPAWN_ACK',
+            spawnReqId: msg.spawnReqId,
+            childPortId: '',
+            ok: false,
+            error: 'no available worker node',
+          });
+          break;
+        }
         this.#pendingSpawns.set(msg.spawnReqId, { requesterNodeId: from, parentPortId: msg.parentPortId });
         this.#portNodes.set(msg.parentPortId, from);
         this.#registry.register(msg.parentPortId, null, from);
-        const target = this.#selectTarget(from);
         this.#transport.send(target, msg);
         break;
       }
@@ -135,24 +146,25 @@ export class SeedServer {
   #handleNodeDown(nodeId: string): void {
     const affected = this.#registry.nodeDown(nodeId);
     for (const portId of affected) {
+      // Capture the host node BEFORE deleting so we can route TERMINATE.
+      const hostNodeId = this.#portNodes.get(portId);
       this.#portNodes.delete(portId);
-      // Notify the node that owns the parent port
-      const parentNodeId = this.#portNodes.get(portId);
-      if (parentNodeId) {
-        this.#transport.send(parentNodeId, { t: 'TERMINATE', realmId: portId });
+      // Send TERMINATE only to live nodes (the dead node cannot receive messages).
+      if (hostNodeId && hostNodeId !== nodeId) {
+        this.#transport.send(hostNodeId, { t: 'TERMINATE', realmId: portId });
       }
     }
   }
 
-  #selectTarget(excludeNodeId: string): string {
-    // Pick the peer with the lowest CPU load; fall back to the seed itself.
+  #selectTarget(excludeNodeId: string): string | null {
+    // Pick the peer with the lowest CPU load; return null if no eligible peer.
     let best: string | null = null;
     let bestLoad = Infinity;
-    for (const [nodeId, peer] of this.#peers) {
-      if (nodeId === excludeNodeId) continue;
-      if (peer.load.cpu < bestLoad) { best = nodeId; bestLoad = peer.load.cpu; }
+    for (const [nId, peer] of this.#peers) {
+      if (nId === excludeNodeId) continue;
+      if (peer.load.cpu < bestLoad) { best = nId; bestLoad = peer.load.cpu; }
     }
-    return best ?? excludeNodeId;
+    return best;
   }
 
   #checkHeartbeats(): void {

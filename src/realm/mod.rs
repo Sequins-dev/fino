@@ -260,36 +260,18 @@ fn create_child_context(
         let child_ctx_local = v8::Local::new(scope, &child_context);
         let child_scope = &mut v8::ContextScope::new(scope, child_ctx_local);
 
-        let state = FinoState {
+        let state = FinoState::new_child(
             process_env,
             package_map_json,
-            root_queue: child_queue,
+            child_queue,
             import_rules,
-            builtin_cache: std::collections::HashMap::new(),
-            fs_cache: std::collections::HashMap::new(),
-            builtin_specifiers: std::collections::HashMap::new(),
-            module_paths: std::collections::HashMap::new(),
-            source_maps: std::collections::HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            loop_step_fn: None,
-            on_done_fn: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
-            entry_path: Some(entry_path),
-            terminated: false,
+            Some(entry_path),
             port,
-            channel_rx: None,
-            channel_tx: None,
-            wake_read_fd: None,
-            wake_write_fd: None,
-            thread_contexts: Vec::new(),
-            process_contexts: Vec::new(),
-        };
+            None,
+            None,
+            None,
+            None,
+        );
 
         child_ctx_local.set_slot(Rc::new(RefCell::new(state)));
 

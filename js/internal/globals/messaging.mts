@@ -326,6 +326,88 @@ export class MessageChannel {
 }
 
 // ---------------------------------------------------------------------------
+// BaseTransportPort — shared base for ThreadPort, ProcessPort, ClusterPort
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared lifecycle and dispatch logic for transport-backed ports.
+ *
+ * Manages: started/closed state, the `onmessage` setter, `start()`/`close()`
+ * delegation, and the `__rpc_res` interception + `MessageEvent` dispatch that
+ * all three port types duplicate.
+ *
+ * Subclasses implement `postMessage()`, override `_onStart()`/`_onClose()`,
+ * and call `_dispatchMessage(buf, stores?, ports?)` from their drain logic.
+ */
+export abstract class BaseTransportPort extends EventTarget {
+  protected _started = false;
+  protected _closed  = false;
+  #onmessage: ((ev: Event) => void) | null = null;
+
+  start(): void {
+    if (this._started) return;
+    this._started = true;
+    this._onStart();
+  }
+
+  close(): void {
+    this._closed  = true;
+    this._started = false;
+    this._onClose();
+  }
+
+  protected _onStart(): void {}
+  protected _onClose(): void {}
+
+  /**
+   * Deserialize `buf`+`stores`, intercept `__rpc_res`, and dispatch a
+   * MessageEvent. Subclasses call this from their per-message drain loop.
+   */
+  protected _dispatchMessage(buf: Uint8Array, stores?: Uint8Array[], ports: MessagePort[] = []): void {
+    if (!this._started) return;
+    let value: unknown;
+    try {
+      value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+        buf, stores && stores.length > 0 ? stores : undefined,
+      );
+    } catch (err) {
+      this.dispatchEvent(new MessageEvent('messageerror', { data: err }));
+      return;
+    }
+    if (value !== null && typeof value === 'object' && (value as any).__rpc_res === true) {
+      const rpc = value as { reqId: number; result?: unknown; error?: string };
+      if (rpc.error !== undefined) { rejectRpc(rpc.reqId, rpc.error); }
+      else { resolveRpc(rpc.reqId, rpc.result); }
+      return;
+    }
+    this.dispatchEvent(new MessageEvent('message', { data: value, ports }));
+  }
+
+  get onmessage() { return this.#onmessage; }
+  set onmessage(fn: ((ev: Event) => void) | null) {
+    if (this.#onmessage !== null) this.removeEventListener('message', this.#onmessage);
+    this.#onmessage = typeof fn === 'function' ? fn : null;
+    if (this.#onmessage !== null) { this.addEventListener('message', this.#onmessage); this.start(); }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Native bridge helpers — typed wrappers for untyped Rust receive functions
+// ---------------------------------------------------------------------------
+
+/**
+ * Drain one batch of messages from a thread-port receive queue.
+ * Each item is `[byteArrays, portInfos]` where byteArrays = `[main, ...stores]`
+ * and portInfos = `[[qHandle, qWakeReadFd], ...]`.
+ */
+function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, number][]][] {
+  const raw = handle !== null
+    ? (threadPortRecv as (h: number) => unknown)(handle)
+    : (nativeRecv as () => unknown)();
+  return raw as [Uint8Array[], [number, number][]][];
+}
+
+// ---------------------------------------------------------------------------
 // ThreadPort — cross-Isolate (cross-thread) MessagePort transport
 // ---------------------------------------------------------------------------
 
@@ -344,14 +426,11 @@ export class MessageChannel {
  * Mirrors the public MessagePort API so existing realm bootstrap code
  * (`_bootstrap.mts`) works with both IntraPort and ThreadPort.
  */
-export class ThreadPort extends EventTarget {
+export class ThreadPort extends BaseTransportPort {
   #wakeReadFd: number;
   /** Non-null on the parent side — use handle-indexed native ops. */
   #handle: number | null;
-  #started = false;
-  #closed  = false;
-  #onmessage: ((ev: MessageEvent) => void) | null = null;
-  #onmessageerror: ((ev: MessageEvent) => void) | null = null;
+  #onmessageerror: ((ev: Event) => void) | null = null;
 
   /**
    * @internal
@@ -365,7 +444,7 @@ export class ThreadPort extends EventTarget {
   }
 
   postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this.#closed) return;
+    if (this._closed) return;
     // Extract ArrayBuffer elements from the transfer list.
     const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
       ? (transferOrOpts as Transferable[])
@@ -408,80 +487,35 @@ export class ThreadPort extends EventTarget {
     }
   }
 
-  start(): void {
-    if (this.#started) return;
-    this.#started = true;
-    this.#watchLoop();
-  }
-
-  close(): void {
-    this.#closed  = true;
-    this.#started = false;
-    // Cancel any pending readable() so alive() can return false.
-    removeRead(this.#wakeReadFd);
-  }
-
-  get onmessage() { return this.#onmessage; }
-  set onmessage(fn: ((ev: MessageEvent) => void) | null) {
-    if (this.#onmessage !== null) {
-      this.removeEventListener('message', this.#onmessage as EventListener);
-    }
-    this.#onmessage = typeof fn === 'function' ? fn : null;
-    if (this.#onmessage !== null) {
-      this.addEventListener('message', this.#onmessage as EventListener);
-      this.start();
-    }
-  }
+  protected override _onStart(): void { this.#watchLoop(); }
+  protected override _onClose(): void { removeRead(this.#wakeReadFd); }
 
   get onmessageerror() { return this.#onmessageerror; }
-  set onmessageerror(fn: ((ev: MessageEvent) => void) | null) {
-    if (this.#onmessageerror !== null) {
-      this.removeEventListener('messageerror', this.#onmessageerror as EventListener);
-    }
+  set onmessageerror(fn: ((ev: Event) => void) | null) {
+    if (this.#onmessageerror !== null) this.removeEventListener('messageerror', this.#onmessageerror);
     this.#onmessageerror = typeof fn === 'function' ? fn : null;
-    if (this.#onmessageerror !== null) {
-      this.addEventListener('messageerror', this.#onmessageerror as EventListener);
-    }
+    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
   }
 
-  /** @internal — continuously watches the wake pipe and dispatches messages */
   async #watchLoop(): Promise<void> {
-    while (!this.#closed) {
+    while (!this._closed) {
       await readable(this.#wakeReadFd);
-      if (this.#closed) break;
+      if (this._closed) break;
       this._drain();
     }
   }
 
   /** @internal — drain the mpsc channel and dispatch all buffered messages */
   _drain(): void {
-    // Each message is [[Uint8Array[], [handle, wakeReadFd][]], ...].
-    const messages = (this.#handle !== null
-      ? (threadPortRecv as (h: number) => unknown)(this.#handle)
-      : (nativeRecv as () => unknown)()) as [[Uint8Array[], [number, number][]]];
+    const messages = _recvThreadMessages(this.#handle);
 
     for (const [byteArr, portArr] of (messages as any[])) {
-      try {
-        const [buf, ...stores] = byteArr as Uint8Array[];
-        const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
-          buf,
-          stores.length > 0 ? stores : undefined,
-        );
-        // Intercept RPC responses — route to internal:parent-rpc instead of
-        // dispatching as a visible message event.
-        if (value !== null && typeof value === 'object' && (value as any).__rpc_res === true) {
-          const rpc = value as { reqId: number; result?: unknown; error?: string };
-          if (rpc.error !== undefined) { rejectRpc(rpc.reqId, rpc.error); }
-          else { resolveRpc(rpc.reqId, rpc.result); }
-          continue;
-        }
-        const ports = (portArr as [number, number][]).map(
-          ([h, wfd]) => MessagePort._fromTransit(h, wfd),
-        );
-        this.dispatchEvent(new MessageEvent('message', { data: value, ports }));
-      } catch (err) {
-        this.dispatchEvent(new MessageEvent('messageerror', { data: err }));
-      }
+      const [buf, ...stores] = byteArr as Uint8Array[];
+      if (!buf) continue;
+      const ports = (portArr as [number, number][]).map(
+        ([h, wfd]) => MessagePort._fromTransit(h, wfd),
+      );
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
     }
   }
 }

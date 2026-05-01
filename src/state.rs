@@ -381,6 +381,95 @@ pub struct FinoState {
     pub wake_write_fd: Option<std::os::unix::io::RawFd>,
 }
 
+impl FinoState {
+    /// Create the root-Realm state (no entry_path, no channels, default import rules).
+    pub fn new_root(
+        process_env: ProcessEnv,
+        package_map_json: Option<String>,
+        root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+        import_rules: Vec<ImportRule>,
+    ) -> Self {
+        Self {
+            process_env,
+            package_map_json,
+            root_queue,
+            import_rules,
+            builtin_cache: HashMap::new(),
+            fs_cache: HashMap::new(),
+            builtin_specifiers: HashMap::new(),
+            module_paths: HashMap::new(),
+            source_maps: HashMap::new(),
+            resolve_fn: None,
+            init_meta_fn: None,
+            loop_step_fn: None,
+            on_done_fn: None,
+            sync_call_fn: None,
+            sync_call_resolver: None,
+            tla_resolvers: Vec::new(),
+            cpu_profiler: None,
+            child_contexts: Vec::new(),
+            pending_creates: Vec::new(),
+            entry_path: None,
+            terminated: false,
+            port: None,
+            channel_rx: None,
+            channel_tx: None,
+            wake_read_fd: None,
+            wake_write_fd: None,
+            thread_contexts: Vec::new(),
+            process_contexts: Vec::new(),
+        }
+    }
+
+    /// Create a child-Realm state (embedded, thread, or process).
+    ///
+    /// Fields that differ from `new_root` are taken as parameters; all
+    /// module-cache and callback fields start empty/None.
+    pub fn new_child(
+        process_env: ProcessEnv,
+        package_map_json: Option<String>,
+        root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+        import_rules: Vec<ImportRule>,
+        entry_path: Option<String>,
+        port: Option<v8::Global<v8::Value>>,
+        channel_rx: Option<std::sync::mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
+        channel_tx: Option<std::sync::mpsc::Sender<crate::realm::thread::ThreadMessage>>,
+        wake_read_fd: Option<std::os::unix::io::RawFd>,
+        wake_write_fd: Option<std::os::unix::io::RawFd>,
+    ) -> Self {
+        Self {
+            process_env,
+            package_map_json,
+            root_queue,
+            import_rules,
+            builtin_cache: HashMap::new(),
+            fs_cache: HashMap::new(),
+            builtin_specifiers: HashMap::new(),
+            module_paths: HashMap::new(),
+            source_maps: HashMap::new(),
+            resolve_fn: None,
+            init_meta_fn: None,
+            loop_step_fn: None,
+            on_done_fn: None,
+            sync_call_fn: None,
+            sync_call_resolver: None,
+            tla_resolvers: Vec::new(),
+            cpu_profiler: None,
+            child_contexts: Vec::new(),
+            pending_creates: Vec::new(),
+            entry_path,
+            terminated: false,
+            port,
+            channel_rx,
+            channel_tx,
+            wake_read_fd,
+            wake_write_fd,
+            thread_contexts: Vec::new(),
+            process_contexts: Vec::new(),
+        }
+    }
+}
+
 /// Retrieve the state `Rc` from the current V8 context's slot.
 ///
 /// # Panics
@@ -400,4 +489,166 @@ pub fn get_state(scope: &mut v8::HandleScope) -> Rc<RefCell<FinoState>> {
 pub unsafe fn root_queue_ptr(state_rc: &Rc<RefCell<FinoState>>) -> *const v8::MicrotaskQueue {
     let st = state_rc.borrow();
     &*st.root_queue as *const v8::MicrotaskQueue
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule(pattern: &str, directive: ImportDirective) -> ImportRule {
+        ImportRule {
+            from: None,
+            pattern: ImportPattern::parse(pattern),
+            directive,
+        }
+    }
+
+    fn rule_from(from: &str, pattern: &str, directive: ImportDirective) -> ImportRule {
+        ImportRule {
+            from: Some(ImportPattern::parse(from)),
+            pattern: ImportPattern::parse(pattern),
+            directive,
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // ImportPattern::matches
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn pattern_exact_matches_only_that_string() {
+        let p = ImportPattern::parse("fino:ffi");
+        assert!(p.matches("fino:ffi"));
+        assert!(!p.matches("fino:ffi/extra"));
+        assert!(!p.matches("fino:"));
+    }
+
+    #[test]
+    fn pattern_prefix_matches_all_with_prefix() {
+        let p = ImportPattern::parse("fino:*");
+        assert!(p.matches("fino:ffi"));
+        assert!(p.matches("fino:net/socket"));
+        assert!(p.matches("fino:"));
+        assert!(!p.matches("internal:ffi"));
+    }
+
+    #[test]
+    fn pattern_catchall_matches_everything() {
+        let p = ImportPattern::parse("*");
+        assert!(p.matches("fino:ffi"));
+        assert!(p.matches("internal:x"));
+        assert!(p.matches(""));
+    }
+
+    // ---------------------------------------------------------------------------
+    // resolve_directive — last-match-wins semantics
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn resolve_returns_none_for_empty_rules() {
+        assert!(resolve_directive(&[], None, "fino:ffi").is_none());
+    }
+
+    #[test]
+    fn resolve_last_match_wins_over_earlier() {
+        let rules = vec![
+            rule("*", ImportDirective::Block),
+            rule("fino:ffi", ImportDirective::Inherit),
+        ];
+        // Last rule (Exact allow) beats first (wildcard block)
+        assert!(matches!(
+            resolve_directive(&rules, None, "fino:ffi"),
+            Some(ImportDirective::Inherit)
+        ));
+        // Wildcard applies for unmentioned specifier
+        assert!(matches!(
+            resolve_directive(&rules, None, "fino:net"),
+            Some(ImportDirective::Block)
+        ));
+    }
+
+    #[test]
+    fn resolve_exact_wins_over_prefix_when_later() {
+        let rules = vec![
+            rule("fino:*", ImportDirective::Inherit),
+            rule("fino:ffi", ImportDirective::Block),
+        ];
+        assert!(matches!(
+            resolve_directive(&rules, None, "fino:ffi"),
+            Some(ImportDirective::Block)
+        ));
+        assert!(matches!(
+            resolve_directive(&rules, None, "fino:other"),
+            Some(ImportDirective::Inherit)
+        ));
+    }
+
+    #[test]
+    fn resolve_from_clause_restricts_to_matching_importer() {
+        let rules = vec![
+            rule("internal:*", ImportDirective::Block),
+            rule_from("fino:*", "internal:*", ImportDirective::Inherit),
+        ];
+        // fino:* importer — allowed
+        assert!(matches!(
+            resolve_directive(&rules, Some("fino:realm"), "internal:ffi"),
+            Some(ImportDirective::Inherit)
+        ));
+        // user code importer — still blocked
+        assert!(matches!(
+            resolve_directive(&rules, Some("/app/main.mts"), "internal:ffi"),
+            Some(ImportDirective::Block)
+        ));
+    }
+
+    #[test]
+    fn resolve_from_absent_matches_all_importers() {
+        let rules = vec![rule("fino:ffi", ImportDirective::Block)];
+        assert!(matches!(
+            resolve_directive(&rules, Some("anything"), "fino:ffi"),
+            Some(ImportDirective::Block)
+        ));
+        assert!(matches!(
+            resolve_directive(&rules, None, "fino:ffi"),
+            Some(ImportDirective::Block)
+        ));
+    }
+
+    // ---------------------------------------------------------------------------
+    // default_import_rules
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn default_rules_block_internal_for_user_code() {
+        let rules = default_import_rules();
+        assert!(matches!(
+            resolve_directive(&rules, Some("/app/main.mts"), "internal:realm-native"),
+            Some(ImportDirective::Block)
+        ));
+    }
+
+    #[test]
+    fn default_rules_allow_internal_for_fino_modules() {
+        let rules = default_import_rules();
+        assert!(matches!(
+            resolve_directive(&rules, Some("fino:realm"), "internal:realm-native"),
+            Some(ImportDirective::Inherit)
+        ));
+    }
+
+    #[test]
+    fn default_rules_allow_internal_for_internal_modules() {
+        let rules = default_import_rules();
+        assert!(matches!(
+            resolve_directive(&rules, Some("internal:globals/global"), "internal:stream"),
+            Some(ImportDirective::Inherit)
+        ));
+    }
+
+    #[test]
+    fn default_rules_do_not_restrict_fino_specifiers() {
+        let rules = default_import_rules();
+        // fino:* specifiers are not explicitly covered → fall through to BUILTINS
+        assert!(resolve_directive(&rules, Some("/app/main.mts"), "fino:file").is_none());
+    }
 }

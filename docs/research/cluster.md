@@ -199,7 +199,9 @@ All nodes are peers. One node acts as the **seed** (coordinator); the others are
 
 ### Topology
 
-The seed is used exclusively for **discovery and cataloging** (membership, realm ownership tree, spawn routing). All realm-to-realm data — RPC payloads, port messages — flows **directly** between nodes via peer connections established at first contact. The seed never sees data-plane traffic.
+The seed handles **discovery, cataloging, and data-plane routing** in v1. All messages (control plane: SPAWN/ACK/TERMINATE, and data plane: PORT_MSG) are routed through the seed. This keeps the implementation simple and correct.
+
+**Planned optimization (deferred):** once a peer connection is established via `PEER_UP`, nodes will open a direct WebSocket connection to each other and route PORT_MSG directly without going through the seed. This removes the seed as a bottleneck and SPOF for data-plane traffic.
 
 A single seed suffices for now; election/promotion is deferred.
 
@@ -220,7 +222,7 @@ class WebSocketTransport implements ClusterTransport { ... }   // initial implem
 class QuicTransport        implements ClusterTransport { ... } // future
 ```
 
-### Cluster protocol (JSON control plane)
+### Cluster protocol (JSON)
 
 ```ts
 type ClusterMessage =
@@ -231,21 +233,21 @@ type ClusterMessage =
   | { t: 'PEER_DOWN';  nodeId: string }
   | { t: 'HEARTBEAT';  ts: number }
   // realm lifecycle
-  | { t: 'SPAWN';      realmId: string; parentId: string; config: SerializedSpawnConfig }
-  | { t: 'SPAWN_ACK';  realmId: string; ok: boolean; error?: string }
+  | { t: 'SPAWN';     spawnReqId: string; parentPortId: string; config: SerializedSpawnConfig }
+  | { t: 'SPAWN_ACK'; spawnReqId: string; childPortId: string; ok: boolean; error?: string }
   | { t: 'REALM_EXIT'; realmId: string; error?: string }
   | { t: 'TERMINATE';  realmId: string }
-  // data plane
-  | { t: 'RPC_REQ';    reqId: number; toRealm: string; payload: string }   // base64 V8 bytes
-  | { t: 'RPC_RES';    reqId: number; payload?: string; error?: string }
-  | { t: 'PORT_MSG';   fromRealm: string; toRealm: string; payload: string };
+  // data plane — RPC is tunneled inside PORT_MSG payloads (no separate RPC_REQ/RPC_RES)
+  | { t: 'PORT_MSG'; fromPort: string; toPort: string; payload: string }; // base64 V8 bytes
 ```
 
 `SerializedSpawnConfig` carries the entry path and the full import rule list, including any `FacadeSpec` entries and inlined `source` modules, so the receiving node has everything it needs to start the realm without reaching back to the spawning node.
 
-### Realm IDs
+**Port IDs** use the format `{nodeId}/p-{handle}` (parent side) or `{nodeId}/{handle}` (child side) and are used for PORT_MSG routing. The seed maintains a `portId → nodeId` map for routing. RPC_REQ/RPC_RES from earlier designs are tunneled inside PORT_MSG payloads — the `__rpc_req`/`__rpc_res` objects are embedded in the base64 payload and handled at the endpoints, keeping the routing layer transparent.
 
-`{nodeId}/{localHandle}` — globally unique, encodes location for routing.
+### Port IDs
+
+`{nodeId}/{suffix}` — globally unique, encodes the host node for O(1) seed routing.
 
 ### Public cluster API
 

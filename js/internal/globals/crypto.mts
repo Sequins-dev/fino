@@ -155,6 +155,28 @@ function _toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+function _base64urlEncode(bytes: Uint8Array): string {
+  let b64 = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b0 = bytes[i]!; const b1 = bytes[i + 1] ?? 0; const b2 = bytes[i + 2] ?? 0;
+    b64 += chars[b0 >> 2]!;
+    b64 += chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+    b64 += i + 1 < bytes.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+    b64 += i + 2 < bytes.length ? chars[b2 & 63]! : '=';
+  }
+  return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function _base64urlDecode(s: string): Uint8Array {
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/');
+  const padded = b64 + '='.repeat((4 - b64.length % 4) % 4);
+  const raw = atob(padded);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // SubtleCrypto
 // ---------------------------------------------------------------------------
@@ -271,7 +293,16 @@ const subtle = {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
 
-    if (format !== 'raw') throw new Error('importKey: only "raw" format is supported');
+    if (format === 'jwk') {
+      // JWK symmetric key import — kty must be 'oct'
+      const jwk = keyData as unknown as { kty?: string; k?: string; alg?: string };
+      if (jwk.kty !== 'oct') throw new Error('importKey: JWK kty must be "oct" for symmetric keys');
+      if (typeof jwk.k !== 'string') throw new Error('importKey: JWK missing "k" field');
+      const bytes = _base64urlDecode(jwk.k);
+      // Route through the same algorithm handling below using the decoded bytes
+      return subtle.importKey('raw', bytes.buffer as ArrayBuffer, algorithm, extractable, keyUsages);
+    }
+    if (format !== 'raw') throw new Error(`importKey: unsupported format "${format}"; supported: "raw", "jwk"`);
 
     const bytes = _toUint8Array(keyData);
 
@@ -323,9 +354,34 @@ const subtle = {
     throw new Error('importKey: unsupported algorithm: ' + alg.name);
   },
 
-  async exportKey(format: KeyFormat, key: CryptoKey): Promise<ArrayBuffer> {
+  async exportKey(format: KeyFormat, key: CryptoKey): Promise<ArrayBuffer | object> {
     _checkCryptoAvailable();
-    if (format !== 'raw') throw new Error('exportKey: only "raw" format is supported');
+    if (format === 'jwk') {
+      if (!key.extractable) throw new Error('CryptoKey is not extractable');
+      const keyBytes = _keyData(key);
+      const algName  = key.algorithm.name;
+      const algLen   = key.algorithm.length;
+      // Map to JWK alg field
+      let jwkAlg: string;
+      if (algName === 'HMAC') {
+        const hash = (key.algorithm as { hash?: { name: string } }).hash?.name ?? 'SHA-256';
+        jwkAlg = hash === 'SHA-384' ? 'HS384' : hash === 'SHA-512' ? 'HS512' : 'HS256';
+      } else if (algName === 'AES-GCM') {
+        jwkAlg = algLen === 128 ? 'A128GCM' : 'A256GCM';
+      } else if (algName === 'AES-CBC') {
+        jwkAlg = algLen === 128 ? 'A128CBC' : 'A256CBC';
+      } else {
+        throw new Error(`exportKey: JWK not supported for algorithm ${algName}`);
+      }
+      return {
+        kty: 'oct',
+        k: _base64urlEncode(keyBytes),
+        alg: jwkAlg,
+        key_ops: [...key.usages],
+        ext: key.extractable,
+      } as unknown as ArrayBuffer; // widen return type; callers handle object | ArrayBuffer
+    }
+    if (format !== 'raw') throw new Error(`exportKey: unsupported format "${format}"; supported: "raw", "jwk"`);
     if (!key.extractable) throw new Error('CryptoKey is not extractable');
     return _toArrayBuffer(_keyData(key));
   },
@@ -435,12 +491,43 @@ const subtle = {
     return subtle.importKey('raw', bits, derivedKeyType, extractable, keyUsages);
   },
 
-  async wrapKey(): Promise<ArrayBuffer> {
-    throw new Error('wrapKey is not supported');
+  async wrapKey(
+    format: KeyFormat,
+    key: CryptoKey,
+    wrappingKey: CryptoKey,
+    wrapAlgorithm: string | { name: string; [k: string]: unknown },
+  ): Promise<ArrayBuffer> {
+    _checkCryptoAvailable();
+    if (!key.extractable) throw new Error('wrapKey: key is not extractable');
+    if (!wrappingKey.usages.includes('wrapKey')) throw new Error('wrappingKey does not allow wrapKey');
+    const exported = await subtle.exportKey(format, key);
+    const keyBytes = format === 'jwk'
+      ? new TextEncoder().encode(JSON.stringify(exported))
+      : new Uint8Array(exported as ArrayBuffer);
+    return subtle.encrypt(wrapAlgorithm, wrappingKey, keyBytes);
   },
 
-  async unwrapKey(): Promise<CryptoKey> {
-    throw new Error('unwrapKey is not supported');
+  async unwrapKey(
+    format: KeyFormat,
+    wrappedKey: BufferSource,
+    unwrappingKey: CryptoKey,
+    unwrapAlgorithm: string | { name: string; [k: string]: unknown },
+    unwrappedKeyAlgorithm: string | { name: string; [k: string]: unknown },
+    extractable: boolean,
+    keyUsages: KeyUsage[],
+  ): Promise<CryptoKey> {
+    _checkCryptoAvailable();
+    if (!unwrappingKey.usages.includes('unwrapKey')) throw new Error('unwrappingKey does not allow unwrapKey');
+    const decrypted = await subtle.decrypt(unwrapAlgorithm, unwrappingKey, wrappedKey);
+    if (format === 'raw') {
+      return subtle.importKey('raw', decrypted, unwrappedKeyAlgorithm, extractable, keyUsages);
+    }
+    if (format === 'jwk') {
+      const text = new TextDecoder().decode(decrypted);
+      const jwk = JSON.parse(text) as unknown;
+      return subtle.importKey('jwk', jwk as BufferSource, unwrappedKeyAlgorithm, extractable, keyUsages);
+    }
+    throw new Error(`unwrapKey: unsupported format "${format}"`);
   },
 };
 

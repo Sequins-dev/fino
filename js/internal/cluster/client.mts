@@ -25,9 +25,7 @@ import {
 import { serialize, deserialize } from 'internal:serializer';
 import { createThreadContext, stepThreadContext, getThreadPortWakeReadFd, threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { readable, removeRead } from 'fino:runtime/loop';
-import { resolveRpc, rejectRpc } from '../runtime/parent-rpc.mts';
-import { MessageEvent } from '../globals/messaging.mts';
-import { Event as FiEvent, EventTarget } from '../globals/eventtarget.mts';
+import { BaseTransportPort } from '../globals/messaging.mts';
 
 const HEARTBEAT_MS = 2500;
 
@@ -46,6 +44,16 @@ function base64ToUint8(s: string): Uint8Array {
   const out = new Uint8Array(raw.length);
   for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
   return out;
+}
+
+// PORT_MSG payload is a JSON array of base64 strings: [main, ...stores].
+// Encoding all parts preserves ArrayBuffer transfer stores end-to-end.
+function encodePayload(parts: Uint8Array[]): string {
+  return JSON.stringify(parts.map(uint8ToBase64));
+}
+
+function decodePayload(payload: string): Uint8Array[] {
+  return (JSON.parse(payload) as string[]).map(base64ToUint8);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +112,9 @@ export class ClusterClient {
   }
 
   /** @internal — called by ClusterPort.postMessage */
-  sendPortMsg(fromPort: string, toPort: string, payload: string): void {
+  sendPortMsg(fromPort: string, toPort: string, parts: Uint8Array[]): void {
     const targetNodeId = nodeIdFromId(toPort);
+    const payload = encodePayload(parts);
     this.#transport.send(targetNodeId, { t: 'PORT_MSG', fromPort, toPort, payload });
   }
 
@@ -140,6 +149,16 @@ export class ClusterClient {
     }
     for (const relay of this.#relays.values()) relay.closed = true;
     this.#relays.clear();
+    // Reject all pending realm-exit waiters so Realm.run() / Realm.call() settle.
+    const err = new Error('fino:cluster — cluster connection closed');
+    for (const handler of this.#exitHandlers.values()) {
+      try { handler(err.message); } catch { /* ignore */ }
+    }
+    this.#exitHandlers.clear();
+    for (const pending of this.#pendingSpawns.values()) {
+      pending.reject(err);
+    }
+    this.#pendingSpawns.clear();
     this.#transport.close();
   }
 
@@ -207,22 +226,30 @@ export class ClusterClient {
       case 'PORT_MSG': {
         const localPort = this.#portHandlers.get(msg.toPort);
         if (localPort) {
-          // Deliver to parent-side ClusterPort
-          const payload = base64ToUint8(msg.payload);
+          // Deliver to parent-side ClusterPort — pass raw parts so stores are preserved.
           try {
-            const value = (deserialize as (b: Uint8Array) => unknown)(payload);
-            localPort._deliver(value);
-          } catch { /* malformed payload */ }
+            localPort._deliver(decodePayload(msg.payload));
+          } catch (err: unknown) {
+            console.error(`fino:cluster PORT_MSG decode error (parent port): ${err}`);
+          }
           break;
         }
         const relay = this.#relays.get(msg.toPort);
         if (relay && !relay.closed) {
-          // Deliver to child thread realm via thread port
-          const payload = base64ToUint8(msg.payload);
+          // Deliver to child thread realm. Deserialize with stores so transferred
+          // ArrayBuffers are reconstructed before being forwarded.
           try {
-            const value = (deserialize as (b: Uint8Array) => unknown)(payload);
-            this.#sendToThread(relay.threadHandle, value);
-          } catch { /* malformed payload */ }
+            const parts = decodePayload(msg.payload);
+            const [mainBuf, ...stores] = parts;
+            if (mainBuf) {
+              const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+                mainBuf, stores.length > 0 ? stores : undefined,
+              );
+              this.#sendToThread(relay.threadHandle, value);
+            }
+          } catch (err: unknown) {
+            console.error(`fino:cluster PORT_MSG decode error (relay): ${err}`);
+          }
         }
         break;
       }
@@ -266,63 +293,73 @@ export class ClusterClient {
 
   async #runRelayLoop(relay: RealmRelay): Promise<void> {
     const { wakeReadFd, threadHandle } = relay;
+    let stepError: string | undefined;
 
+    const finalize = () => {
+      if (relay.closed) return;
+      relay.closed = true;
+      removeRead(wakeReadFd);
+      this.#relays.delete(relay.childPortId);
+      const msg: ClusterMessage = stepError !== undefined
+        ? { t: 'REALM_EXIT', realmId: relay.childPortId, error: stepError }
+        : { t: 'REALM_EXIT', realmId: relay.childPortId };
+      this.#transport.send('__seed__', msg);
+    };
+
+    // Drive the child realm on every event-loop tick so that timers, microtasks,
+    // and outbound port writes advance even when no inbound message arrives.
+    // This mirrors how _stepChildren() works for embedded/thread realms.
+    const stepInterval = setInterval(() => {
+      if (relay.closed) { clearInterval(stepInterval); return; }
+      try {
+        const alive = (stepThreadContext(threadHandle) as boolean) !== false;
+        if (!alive) finalize();
+      } catch (err: unknown) {
+        stepError = String(err);
+        finalize();
+      }
+    }, 0);
+
+    // Drain inbound messages from the parent whenever the wake-fd fires.
     while (!relay.closed) {
       await readable(wakeReadFd);
       if (relay.closed) break;
-
-      const messages = (threadPortRecv as (h: number) => unknown)(threadHandle) as [[Uint8Array[]]];
-      let alive = true;
-
-      for (const [byteArr] of (messages as any[])) {
-        try {
-          const [buf, ...stores] = byteArr as Uint8Array[];
-          if (!buf) continue;
-          const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
-            buf, stores.length > 0 ? stores : undefined,
-          );
-
-          // Check for __terminate signal from the realm itself
-          if (
-            value !== null && typeof value === 'object' &&
-            (value as any).__terminate === true
-          ) {
-            alive = false;
-            break;
-          }
-
-          // Forward to parent via PORT_MSG
-          const serialized = (serialize as (v: unknown) => Uint8Array[])(value)[0]!;
-          const payload = uint8ToBase64(serialized);
-          this.#transport.send('__seed__', {
-            t: 'PORT_MSG',
-            fromPort: relay.childPortId,
-            toPort: relay.parentPortId,
-            payload,
-          });
-        } catch { /* skip malformed */ }
-      }
-
-      if (!alive) break;
-
-      // Step the thread context to advance its event loop
-      try {
-        alive = (stepThreadContext(threadHandle) as boolean) !== false;
-      } catch {
-        alive = false;
-      }
-
-      if (!alive) break;
+      this.#drainInbound(relay, finalize);
     }
 
-    // Realm exited — notify seed and clean up
-    relay.closed = true;
-    removeRead(wakeReadFd);
-    this.#relays.delete(relay.childPortId);
-    this.#transport.send('__seed__', {
-      t: 'REALM_EXIT',
-      realmId: relay.childPortId,
-    });
+    clearInterval(stepInterval);
+  }
+
+  #drainInbound(relay: RealmRelay, finalize: () => void): void {
+    // threadPortRecv returns [[Uint8Array[], portInfos[]], ...]
+    const messages = (threadPortRecv as (h: number) => unknown)(relay.threadHandle) as any[];
+    for (const [byteArr] of messages) {
+      try {
+        const parts = byteArr as Uint8Array[];
+        const mainBuf = parts[0];
+        if (!mainBuf) continue;
+
+        // Quick peek to detect __terminate without a full deserialize+reserialize cycle.
+        let isTerminate = false;
+        try {
+          const peeked = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
+          isTerminate = peeked !== null && typeof peeked === 'object' && (peeked as any).__terminate === true;
+        } catch { /* not a terminate signal — forward as normal */ }
+
+        if (isTerminate) { finalize(); return; }
+
+        // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
+        const payload = encodePayload(parts);
+        this.#transport.send('__seed__', {
+          t: 'PORT_MSG',
+          fromPort: relay.childPortId,
+          toPort: relay.parentPortId,
+          payload,
+        });
+      } catch (err: unknown) {
+        console.error(`fino:cluster relay drain error: ${err}`);
+      }
+    }
   }
 
   #sendToThread(handle: number, value: unknown): void {
@@ -345,14 +382,11 @@ export class ClusterClient {
  * __rpc_res messages are intercepted and routed to internal:parent-rpc,
  * matching the pattern used by ThreadPort and ProcessPort.
  */
-export class ClusterPort extends EventTarget {
+export class ClusterPort extends BaseTransportPort {
   readonly portId: string;
 
   #client: ClusterClient;
   #childPortId: string | null = null;
-  #started = false;
-  #closed  = false;
-  #onmessage: ((ev: FiEvent) => void) | null = null;
 
   constructor(portId: string, client: ClusterClient) {
     super();
@@ -366,37 +400,22 @@ export class ClusterPort extends EventTarget {
     this.#childPortId = childPortId;
   }
 
-  postMessage(message: unknown): void {
-    if (this.#closed || this.#childPortId === null) return;
-    const bytes = (serialize as (v: unknown) => Uint8Array[])(message)[0]!;
-    const payload = uint8ToBase64(bytes);
-    this.#client.sendPortMsg(this.portId, this.#childPortId, payload);
+  postMessage(message: unknown, transfer?: ArrayBuffer[]): void {
+    if (this._closed || this.#childPortId === null) return;
+    const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+      message, transfer && transfer.length > 0 ? transfer : undefined,
+    );
+    this.#client.sendPortMsg(this.portId, this.#childPortId, parts);
   }
 
-  start(): void { this.#started = true; }
-
-  close(): void {
-    this.#closed  = true;
-    this.#started = false;
+  protected override _onClose(): void {
     this.#client.unregisterPort(this.portId);
   }
 
-  get onmessage() { return this.#onmessage; }
-  set onmessage(fn: ((ev: FiEvent) => void) | null) {
-    if (this.#onmessage) this.removeEventListener('message', this.#onmessage);
-    this.#onmessage = typeof fn === 'function' ? fn : null;
-    if (this.#onmessage) { this.addEventListener('message', this.#onmessage); this.start(); }
-  }
-
   /** @internal — called by ClusterClient when a PORT_MSG arrives for this port. */
-  _deliver(value: unknown): void {
-    if (!this.#started) return;
-    if (value !== null && typeof value === 'object' && (value as any).__rpc_res === true) {
-      const rpc = value as { reqId: number; result?: unknown; error?: string };
-      if (rpc.error !== undefined) { rejectRpc(rpc.reqId, rpc.error); }
-      else { resolveRpc(rpc.reqId, rpc.result); }
-      return;
-    }
-    this.dispatchEvent(new MessageEvent('message', { data: value }));
+  _deliver(parts: Uint8Array[]): void {
+    const [mainBuf, ...stores] = parts;
+    if (!mainBuf) return;
+    this._dispatchMessage(mainBuf, stores.length > 0 ? stores : undefined);
   }
 }

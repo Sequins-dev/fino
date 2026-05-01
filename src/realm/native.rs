@@ -70,6 +70,55 @@ fn eval_steps<'a>(
 // Shared helper: parse and merge import rules from JSON
 // ---------------------------------------------------------------------------
 
+/// Returns true if `child_pattern` could match `spec`.
+fn child_covers(child_pattern: &crate::state::ImportPattern, spec: &str) -> bool {
+    use crate::state::ImportPattern;
+    match child_pattern {
+        ImportPattern::CatchAll => true,
+        ImportPattern::Prefix(p) => spec.starts_with(p.as_str()),
+        ImportPattern::Exact(e) => e == spec,
+    }
+}
+
+/// Capability-narrowing check for a single child rule.
+///
+/// For every parent `Block` rule, derive a representative specifier and test
+/// whether the child's pattern would cover it. If the parent's last-match-wins
+/// resolution is still `Block` for that specifier, the child is attempting to
+/// escalate — return an error.
+///
+/// Covers all three pattern shapes (Exact, Prefix, CatchAll) in the child.
+fn narrowing_check(
+    parent_rules: &[crate::state::ImportRule],
+    child_rule: &crate::state::ImportRule,
+) -> Result<(), String> {
+    use crate::state::ImportDirective;
+
+    for parent_rule in parent_rules {
+        if !matches!(parent_rule.directive, ImportDirective::Block) {
+            continue;
+        }
+        // Choose a representative specifier for this blocked parent pattern.
+        let repr: &str = match &parent_rule.pattern {
+            crate::state::ImportPattern::Exact(s) => s.as_str(),
+            crate::state::ImportPattern::Prefix(p) => p.as_str(),
+            // CatchAll blocks everything; any literal works as representative.
+            crate::state::ImportPattern::CatchAll => "internal:__cap_check__",
+        };
+        if child_covers(&child_rule.pattern, repr) {
+            // Confirm the parent's effective (last-match-wins) resolution is Block.
+            let parent_dir = resolve_directive(parent_rules, None, repr);
+            if matches!(parent_dir, Some(ImportDirective::Block)) {
+                return Err(format!(
+                    "child import rule ({:?}) escalates past parent block on '{repr}'",
+                    child_rule.pattern
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Parse `serializedRules` (a JS string containing a JSON array of ImportRule
 /// objects) and merge with the parent's import rules.
 ///
@@ -110,17 +159,10 @@ fn parse_and_merge_rules(
             continue;
         }
 
-        // Capability narrowing: for non-blocking directives on exact patterns,
-        // verify the parent hasn't blocked that specifier.
+        // Capability narrowing: reject any child rule that would grant access to a
+        // specifier the parent has blocked, regardless of pattern shape.
         if !matches!(rule.directive, ImportDirective::Block) {
-            if let crate::state::ImportPattern::Exact(ref spec) = rule.pattern {
-                let parent_dir = resolve_directive(&parent_rules, None, spec);
-                if matches!(parent_dir, Some(ImportDirective::Block)) {
-                    return Err(format!(
-                        "child rule for '{spec}' escalates past parent's block"
-                    ));
-                }
-            }
+            narrowing_check(&parent_rules, &rule)?;
         }
 
         merged.push(rule);

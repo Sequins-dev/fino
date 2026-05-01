@@ -44,3 +44,64 @@ pub fn create_facade_source(spec: &FacadeSpec) -> (String, String) {
 
     (lines.join("\n"), String::new())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::FacadeSpec;
+
+    #[test]
+    fn no_exports_emits_only_header() {
+        let spec = FacadeSpec {
+            specifier: "fino:empty".to_string(),
+            exports: vec![],
+        };
+        let (src, map) = create_facade_source(&spec);
+        assert!(src.contains("import { call as __rpc } from 'internal:parent-rpc';"));
+        assert!(src.contains(r#"const __s = "fino:empty";"#));
+        assert!(!src.contains("export const"));
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn single_export_generates_forwarding_function() {
+        let spec = FacadeSpec {
+            specifier: "fino:file".to_string(),
+            exports: vec!["readFile".to_string()],
+        };
+        let (src, _) = create_facade_source(&spec);
+        assert!(
+            src.contains(r#"export const readFile = (...args) => __rpc(__s, "readFile", args);"#)
+        );
+    }
+
+    #[test]
+    fn multiple_exports_each_get_a_line() {
+        let spec = FacadeSpec {
+            specifier: "svc:auth".to_string(),
+            exports: vec![
+                "login".to_string(),
+                "logout".to_string(),
+                "refresh".to_string(),
+            ],
+        };
+        let (src, _) = create_facade_source(&spec);
+        assert!(src.contains(r#"export const login = "#));
+        assert!(src.contains(r#"export const logout = "#));
+        assert!(src.contains(r#"export const refresh = "#));
+        // Specifier string in header
+        assert!(src.contains(r#"const __s = "svc:auth";"#));
+    }
+
+    #[test]
+    fn specifier_with_special_chars_is_json_escaped() {
+        let spec = FacadeSpec {
+            // Contains a quote — must be JSON-escaped
+            specifier: r#"fino:has"quote"#.to_string(),
+            exports: vec!["fn".to_string()],
+        };
+        let (src, _) = create_facade_source(&spec);
+        // The specifier must be JSON-encoded, so the quote becomes \"
+        assert!(src.contains(r#"const __s = "fino:has\"quote";"#));
+    }
+}

@@ -79,6 +79,7 @@ import {
 } from '../../util/compression.mts';
 import { topic } from '../../util/topic.mts';
 import { otelRuntimeEvent, otelRuntimeTopic } from '../../opentelemetry/common.mts';
+import * as openssl from '../openssl.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -106,6 +107,13 @@ interface FetchInit {
   body?: FetchBody;
   signal?: MinimalAbortSignal | null;
   redirect?: 'follow' | 'error' | 'manual';
+  integrity?: string;
+  referrerPolicy?: 'no-referrer' | 'no-referrer-when-downgrade' | 'origin' | 'origin-when-cross-origin' | 'same-origin' | 'strict-origin' | 'strict-origin-when-cross-origin' | 'unsafe-url' | '';
+  referrer?: string;
+  mode?: 'cors' | 'no-cors' | 'same-origin' | 'navigate';
+  credentials?: 'omit' | 'same-origin' | 'include';
+  cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
+  keepalive?: boolean;
 }
 
 interface TraceRuntime {
@@ -473,6 +481,118 @@ function _buildFinalResponse(
   });
 }
 
+/**
+ * Collect all chunks of an async iterable body into a single Uint8Array.
+ */
+async function _collectBody(body: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let totalLen = 0;
+  for await (const chunk of body) {
+    chunks.push(chunk);
+    totalLen += chunk.byteLength;
+  }
+  if (chunks.length === 0) return new Uint8Array(0);
+  if (chunks.length === 1) return chunks[0]!;
+  const out = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+/**
+ * Wrap a Uint8Array as a single-chunk async iterable (for buildWireResponse).
+ */
+function _bytesToIterable(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+      let done = false;
+      return {
+        async next(): Promise<IteratorResult<Uint8Array>> {
+          if (done) return { done: true, value: undefined };
+          done = true;
+          return { done: false, value: bytes };
+        },
+      };
+    },
+  };
+}
+
+/**
+ * Verify SRI integrity of a response body.
+ * Supports sha256, sha384, sha512 hash algorithms.
+ * Throws TypeError if the hash does not match.
+ */
+function _checkIntegrity(bytes: Uint8Array, integrity: string): void {
+  if (!integrity || !openssl.cryptoAvailable) return;
+  // Support space-separated list of tokens (take the first)
+  const token = integrity.trim().split(/\s+/)[0]!;
+  const dashIdx = token.indexOf('-');
+  if (dashIdx < 0) return;
+  const hashAlias = token.slice(0, dashIdx).toLowerCase();
+  const expectedB64 = token.slice(dashIdx + 1);
+  const algMap: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
+  const alg = algMap[hashAlias];
+  if (!alg) throw new TypeError(`integrity: unsupported hash algorithm "${hashAlias}"`);
+  const actual = openssl.digest(alg, bytes);
+  // base64-encode actual
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let actualB64 = '';
+  for (let i = 0; i < actual.length; i += 3) {
+    const b0 = actual[i]!; const b1 = actual[i + 1] ?? 0; const b2 = actual[i + 2] ?? 0;
+    actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+    actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+    actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
+  }
+  if (actualB64 !== expectedB64) {
+    throw new TypeError(`integrity check failed: expected ${token}`);
+  }
+}
+
+/**
+ * Like _buildFinalResponse but additionally enforces SRI integrity when
+ * `integrity` is a non-empty string. Collects the full body eagerly so the
+ * hash can be verified before the Response is handed to the caller.
+ *
+ * For bodyless responses (204, 304, etc.) the check is skipped.
+ */
+async function _buildFinalResponseWithIntegrity(
+  response: Response,
+  sock: Socket | TlsSocket,
+  url: string,
+  redirected: boolean,
+  signal: MinimalAbortSignal | null,
+  method: string | undefined,
+  integrity: string | undefined,
+): Promise<Response> {
+  const built = _buildFinalResponse(response, sock, url, redirected, signal, method);
+
+  if (!integrity || !_hasBody(response.status, method)) {
+    return built;
+  }
+
+  // Collect body for integrity verification.
+  const rawBody = built.body;
+  if (rawBody === null) return built;
+
+  const bytes = await _collectBody(rawBody as unknown as AsyncIterable<Uint8Array>);
+  _checkIntegrity(bytes, integrity);
+
+  // Re-wrap bytes as a streaming response so the caller gets a normal Response.
+  const finalHeaders = new Headers(built.headers);
+  return buildWireResponse({
+    version:    response.version,
+    status:     built.status,
+    statusText: built.statusText,
+    headers:    finalHeaders,
+    body:       _bytesToIterable(bytes),
+    url,
+    redirected,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -533,6 +653,38 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   // ---- Initial abort check ---------------------------------------------------
 
   if (signal?.aborted) throw signal.reason;
+
+  // ---- Referrer policy (applied once, before redirect loop) -----------------
+
+  if (init?.referrer !== 'no-referrer') {
+    const policy = init?.referrerPolicy ?? 'strict-origin-when-cross-origin';
+    const referrer = typeof init?.referrer === 'string' && init.referrer !== 'about:client'
+      ? init.referrer : undefined;
+    if (referrer && policy !== 'no-referrer') {
+      try {
+        const refUrl  = new URL(referrer);
+        const reqUrl  = new URL(typeof input === 'string' ? input : (input as Request).url);
+        const sameOrigin = refUrl.origin === reqUrl.origin;
+        const isHttps    = reqUrl.protocol === 'https:';
+        const refIsHttps = refUrl.protocol === 'https:';
+        let refValue: string | null = null;
+        if (policy === 'unsafe-url') {
+          refValue = referrer;
+        } else if (policy === 'origin') {
+          refValue = refUrl.origin + '/';
+        } else if (policy === 'origin-when-cross-origin') {
+          refValue = sameOrigin ? referrer : refUrl.origin + '/';
+        } else if (policy === 'same-origin') {
+          if (sameOrigin) refValue = referrer;
+        } else if (policy === 'strict-origin') {
+          if (!isHttps || refIsHttps) refValue = refUrl.origin + '/';
+        } else if (policy === 'no-referrer-when-downgrade' || policy === 'strict-origin-when-cross-origin') {
+          if (!isHttps || refIsHttps) refValue = sameOrigin ? referrer : refUrl.origin + '/';
+        }
+        if (refValue !== null) baseHeaders.set('referer', refValue);
+      } catch { /* invalid URL — skip referrer */ }
+    }
+  }
 
   // ---- Redirect loop ---------------------------------------------------------
 
@@ -624,7 +776,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
       const location = response.headers.get('location');
       if (!location) {
         // No Location header — treat as a normal (non-redirect) response.
-        return _buildFinalResponse(response, sock, currentUrl, redirected, signal, currentMethod);
+        return _buildFinalResponseWithIntegrity(response, sock, currentUrl, redirected, signal, currentMethod, init?.integrity);
       }
 
       // Have a Location — consume/discard the redirect response body.
@@ -676,7 +828,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
       statusCode: status,
       timeUnixNano: Date.now() * 1_000_000,
     }));
-    return _buildFinalResponse(response, sock, currentUrl, redirected, signal, currentMethod);
+    return _buildFinalResponseWithIntegrity(response, sock, currentUrl, redirected, signal, currentMethod, init?.integrity);
   }
 
   // Unreachable (the loop always returns or throws), but satisfies the linter.

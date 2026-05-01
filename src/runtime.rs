@@ -91,36 +91,12 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
 
         let package_map_json =
             std::fs::read_to_string(process_env.root.join(".fino/package-map.json")).ok();
-        let state = FinoState {
+        let state = FinoState::new_root(
             process_env,
             package_map_json,
             root_queue,
-            import_rules: crate::state::default_import_rules(),
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            loop_step_fn: None,
-            on_done_fn: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
-            entry_path: None,
-            terminated: false,
-            port: None,
-            channel_rx: None,
-            channel_tx: None,
-            wake_read_fd: None,
-            wake_write_fd: None,
-            thread_contexts: Vec::new(),
-            process_contexts: Vec::new(),
-        };
+            crate::state::default_import_rules(),
+        );
 
         context.set_slot(Rc::new(RefCell::new(state)));
 

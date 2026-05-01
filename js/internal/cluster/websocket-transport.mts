@@ -18,6 +18,19 @@ import { serve } from 'fino:net/serve';
 import { WebSocketConnection } from 'fino:net/websocket';
 import type { Request } from 'fino:net/http';
 import { Response } from 'fino:net/http';
+
+// Minimal typed interface for WebSocket event handling that avoids the DOM/fino
+// EventTarget mismatch. WebSocketConnection extends fino's EventTarget, but
+// TypeScript resolves addEventListener's callback type against the DOM ambient
+// lib. Casting to this interface suppresses the mismatch without losing safety.
+interface WSEventTarget {
+  addEventListener(type: string, listener: (ev: { data?: unknown; code?: unknown }) => void): void;
+  send(data: string): void;
+  close(): void;
+}
+function asWS(ws: WebSocketConnection): WSEventTarget {
+  return ws as unknown as WSEventTarget;
+}
 import type { ClusterTransport } from './transport.mts';
 import { encode, decode, type ClusterMessage } from './protocol.mts';
 
@@ -52,18 +65,19 @@ export class WebSocketSeedTransport implements ClusterTransport {
   }
 
   send(to: string, msg: ClusterMessage): void {
-    this.#connections.get(to)?.send(encode(msg));
+    const ws = this.#connections.get(to);
+    if (ws) asWS(ws).send(encode(msg));
   }
 
   broadcast(msg: ClusterMessage): void {
     const data = encode(msg);
-    for (const ws of this.#connections.values()) ws.send(data);
+    for (const ws of this.#connections.values()) asWS(ws).send(data);
   }
 
   broadcastExcept(exceptNodeId: string, msg: ClusterMessage): void {
     const data = encode(msg);
     for (const [nodeId, ws] of this.#connections) {
-      if (nodeId !== exceptNodeId) ws.send(data);
+      if (nodeId !== exceptNodeId) asWS(ws).send(data);
     }
   }
 
@@ -72,15 +86,18 @@ export class WebSocketSeedTransport implements ClusterTransport {
   }
 
   close(): void {
-    for (const ws of this.#connections.values()) ws.close();
+    for (const ws of this.#connections.values()) asWS(ws).close();
     this.#connections.clear();
-    this.#server?.close().catch(() => {});
+    this.#server?.close().catch((err: unknown) => {
+      console.error(`fino:cluster seed server close error: ${err}`);
+    });
   }
 
   #handleConnection(ws: WebSocketConnection): void {
     let peerNodeId: string | null = null;
+    const typed = asWS(ws);
 
-    (ws as any).addEventListener('message', (ev: { data: unknown }) => {
+    typed.addEventListener('message', (ev) => {
       try {
         const msg = decode(ev.data as string);
         if (msg.t === 'HELLO') {
@@ -89,10 +106,12 @@ export class WebSocketSeedTransport implements ClusterTransport {
         }
         const from = peerNodeId ?? '__unknown__';
         for (const h of this.#handlers) h(from, msg);
-      } catch { /* malformed message — ignore */ }
+      } catch (err: unknown) {
+        console.error(`fino:cluster seed received malformed message: ${err}`);
+      }
     });
 
-    (ws as any).addEventListener('close', () => {
+    typed.addEventListener('close', () => {
       if (peerNodeId) {
         this.#connections.delete(peerNodeId);
         const synth: ClusterMessage = { t: 'PEER_DOWN', nodeId: peerNodeId };
@@ -122,28 +141,31 @@ export class WebSocketWorkerTransport implements ClusterTransport {
     return new Promise<void>((resolve, reject) => {
       const ws = WebSocketConnection.connect(url);
       this.#ws = ws;
+      const typed = asWS(ws);
 
-      (ws as any).addEventListener('open', () => {
-        ws.send(encode({ t: 'HELLO', nodeId: this.nodeId, load }));
+      typed.addEventListener('open', () => {
+        asWS(ws).send(encode({ t: 'HELLO', nodeId: this.nodeId, load }));
         resolve();
       });
 
-      (ws as any).addEventListener('message', (ev: { data: unknown }) => {
+      typed.addEventListener('message', (ev) => {
         try {
           const msg = decode(ev.data as string);
           if (msg.t === 'WELCOME') {
             this.#seedNodeId = msg.nodeId;
           }
           for (const h of this.#handlers) h(this.#seedNodeId, msg);
-        } catch { /* malformed message — ignore */ }
+        } catch (err: unknown) {
+          console.error(`fino:cluster worker received malformed message: ${err}`);
+        }
       });
 
-      (ws as any).addEventListener('close', () => {
+      typed.addEventListener('close', () => {
         const synth: ClusterMessage = { t: 'PEER_DOWN', nodeId: this.#seedNodeId };
         for (const h of this.#handlers) h(this.#seedNodeId, synth);
       });
 
-      (ws as any).addEventListener('error', () => {
+      typed.addEventListener('error', () => {
         reject(new Error(`fino:cluster — failed to connect to seed at ${url}`));
       });
     });
@@ -151,7 +173,7 @@ export class WebSocketWorkerTransport implements ClusterTransport {
 
   send(_to: string, msg: ClusterMessage): void {
     // All outbound messages go through the seed; routing is done by the seed.
-    this.#ws?.send(encode(msg));
+    if (this.#ws) asWS(this.#ws).send(encode(msg));
   }
 
   broadcast(_msg: ClusterMessage): void {
@@ -163,7 +185,7 @@ export class WebSocketWorkerTransport implements ClusterTransport {
   }
 
   close(): void {
-    this.#ws?.close();
+    if (this.#ws) asWS(this.#ws).close();
     this.#ws = null;
   }
 }

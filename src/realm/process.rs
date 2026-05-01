@@ -391,3 +391,102 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         timing_label: "process-realm",
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn socketpair_fds() -> (RawFd, RawFd) {
+        let mut fds = [0i32; 2];
+        let rc = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(rc, 0, "socketpair failed");
+        (fds[0], fds[1])
+    }
+
+    fn make_msg(data: &[u8]) -> ThreadMessage {
+        ThreadMessage {
+            data: data.to_vec(),
+            transfer_stores: Vec::new(),
+            transfer_ports: Vec::new(),
+        }
+    }
+
+    fn make_msg_with_stores(data: &[u8], stores: Vec<Vec<u8>>) -> ThreadMessage {
+        ThreadMessage {
+            data: data.to_vec(),
+            transfer_stores: stores,
+            transfer_ports: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn round_trip_empty_data() {
+        let (a, b) = socketpair_fds();
+        let msg = make_msg(&[]);
+        write_message(a, &msg).unwrap();
+        let got = read_message(b).unwrap();
+        assert_eq!(got.data, msg.data);
+        assert!(got.transfer_stores.is_empty());
+        unsafe {
+            libc::close(a);
+            libc::close(b);
+        }
+    }
+
+    #[test]
+    fn round_trip_small_payload() {
+        let (a, b) = socketpair_fds();
+        let payload = b"hello world from fino process realm";
+        write_message(a, &make_msg(payload)).unwrap();
+        let got = read_message(b).unwrap();
+        assert_eq!(got.data, payload);
+        unsafe {
+            libc::close(a);
+            libc::close(b);
+        }
+    }
+
+    #[test]
+    fn round_trip_with_transfer_stores() {
+        let (a, b) = socketpair_fds();
+        let stores = vec![b"store-0".to_vec(), b"store-1-longer".to_vec()];
+        let msg = make_msg_with_stores(b"main-data", stores.clone());
+        write_message(a, &msg).unwrap();
+        let got = read_message(b).unwrap();
+        assert_eq!(got.data, b"main-data");
+        assert_eq!(got.transfer_stores, stores);
+        unsafe {
+            libc::close(a);
+            libc::close(b);
+        }
+    }
+
+    #[test]
+    fn multiple_messages_in_sequence() {
+        let (a, b) = socketpair_fds();
+        for i in 0u8..5 {
+            write_message(a, &make_msg(&[i, i, i])).unwrap();
+        }
+        for i in 0u8..5 {
+            let got = read_message(b).unwrap();
+            assert_eq!(got.data, vec![i, i, i]);
+        }
+        unsafe {
+            libc::close(a);
+            libc::close(b);
+        }
+    }
+
+    #[test]
+    fn read_on_closed_fd_returns_error() {
+        let (a, b) = socketpair_fds();
+        unsafe {
+            libc::close(a);
+        }
+        let result = read_message(b);
+        assert!(result.is_err());
+        unsafe {
+            libc::close(b);
+        }
+    }
+}

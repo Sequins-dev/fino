@@ -28,11 +28,11 @@ import {
   MessagePort,
   MessageChannel,
   ThreadPort,
+  BaseTransportPort,
   type MessageEvent,
 } from '../internal/globals/messaging.mts';
 import { readable, removeRead } from 'fino:runtime/loop';
-import { serialize as _ser, deserialize as _deser } from 'internal:serializer';
-import { resolveRpc, rejectRpc } from 'internal:parent-rpc';
+import { serialize as _ser } from 'internal:serializer';
 import { type ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { getCluster } from 'fino:cluster';
 
@@ -345,12 +345,9 @@ export type RealmFn = (...args: any[]) => any;
  * integration as ThreadPort: register the wake-fd with loop.readable(), drain
  * messages on each wake, dispatch as MessageEvents.
  */
-export class ProcessPort extends EventTarget {
+export class ProcessPort extends BaseTransportPort {
   #wakeReadFd: number;
   #handle: number;
-  #started = false;
-  #closed  = false;
-  #onmessage: ((ev: MessageEvent) => void) | null = null;
 
   constructor(wakeReadFd: number, handle: number) {
     super();
@@ -359,7 +356,7 @@ export class ProcessPort extends EventTarget {
   }
 
   postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this.#closed) return;
+    if (this._closed) return;
     const rawTransfer = Array.isArray(transferOrOpts)
       ? (transferOrOpts as Transferable[])
       : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
@@ -372,52 +369,22 @@ export class ProcessPort extends EventTarget {
     (processPortSend as (h: number, b: Uint8Array, s: Uint8Array[]) => void)(this.#handle, data, stores);
   }
 
-  start(): void {
-    if (this.#started) return;
-    this.#started = true;
-    this.#watchLoop();
-  }
-
-  close(): void {
-    this.#closed  = true;
-    this.#started = false;
-    removeRead(this.#wakeReadFd);
-  }
-
-  get onmessage() { return this.#onmessage; }
-  set onmessage(fn: ((ev: MessageEvent) => void) | null) {
-    if (this.#onmessage) this.removeEventListener('message', this.#onmessage as EventListener);
-    this.#onmessage = typeof fn === 'function' ? fn : null;
-    if (this.#onmessage) { this.addEventListener('message', this.#onmessage as EventListener); this.start(); }
-  }
+  protected override _onStart(): void { this.#watchLoop(); }
+  protected override _onClose(): void { removeRead(this.#wakeReadFd); }
 
   async #watchLoop(): Promise<void> {
-    while (!this.#closed) {
+    while (!this._closed) {
       await readable(this.#wakeReadFd);
-      if (this.#closed) break;
+      if (this._closed) break;
       this._drain();
     }
   }
 
   _drain(): void {
-    const messages = (processPortRecv as (h: number) => unknown)(this.#handle) as [[Uint8Array[]]];
-    for (const [byteArr] of (messages as any[])) {
-      try {
-        const [buf, ...stores] = byteArr as Uint8Array[];
-        const value = (_deser as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
-          buf, stores.length > 0 ? stores : undefined,
-        );
-        // Intercept RPC responses from the child process realm.
-        if (value !== null && typeof value === 'object' && (value as any).__rpc_res === true) {
-          const rpc = value as { reqId: number; result?: unknown; error?: string };
-          if (rpc.error !== undefined) { rejectRpc(rpc.reqId, rpc.error); }
-          else { resolveRpc(rpc.reqId, rpc.result); }
-          continue;
-        }
-        this.dispatchEvent(new MessageEvent('message', { data: value }));
-      } catch (err) {
-        this.dispatchEvent(new MessageEvent('messageerror', { data: err }));
-      }
+    for (const byteArr of _recvProcessMessages(this.#handle)) {
+      const [buf, ...stores] = byteArr;
+      if (!buf) continue;
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined);
     }
   }
 }
@@ -466,6 +433,39 @@ export function _stepChildren(): void {
 /** Returns true if any child Realms are still running. @internal */
 export function _childrenAlive(): boolean {
   return _activeChildren.length > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Native bridge helpers
+// ---------------------------------------------------------------------------
+
+/** Drain one batch from a process-port receive queue: `[[mainBytes, ...stores], ...]`. */
+function _recvProcessMessages(handle: number): Uint8Array[][] {
+  return (processPortRecv as (h: number) => unknown)(handle) as Uint8Array[][];
+}
+
+// ---------------------------------------------------------------------------
+// call() response helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Decode a `{ __call_error, message?, stack? }` response or resolve with
+ * the raw data value. Centralised to avoid duplicating the error-extraction
+ * block across the remote and non-remote `call()` branches.
+ */
+function _resolveCallResponse<R>(
+  data: unknown,
+  resolve: (v: R) => void,
+  reject: (err: unknown) => void,
+): void {
+  if (data && typeof data === 'object' && (data as { __call_error?: boolean }).__call_error) {
+    const d = data as { message?: string; stack?: string };
+    const err = new Error(d.message ?? 'Realm call failed');
+    if (d.stack !== undefined) err.stack = d.stack;
+    reject(err);
+  } else {
+    resolve(data as R);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -607,14 +607,7 @@ export class Realm<F extends RealmFn = RealmFn> {
             const data = (ev as { data?: unknown }).data;
             clusterPort.removeEventListener('message', handler as any);
             clusterPort.close();
-            if (data && typeof data === 'object' && (data as { __call_error?: boolean }).__call_error) {
-              const d = data as { message?: string; stack?: string };
-              const err = new Error(d.message ?? 'Realm call failed');
-              if (d.stack !== undefined) err.stack = d.stack;
-              reject(err);
-            } else {
-              resolve(data as Awaited<ReturnType<F>>);
-            }
+            _resolveCallResponse(data, resolve, reject);
           };
           clusterPort.addEventListener('message', handler as any);
           clusterPort.start();
@@ -633,14 +626,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         const data = (ev as MessageEvent).data;
         this.port.removeEventListener('message', handler);
         this.port.close();
-        if (data && typeof data === 'object' && (data as { __call_error?: boolean }).__call_error) {
-          const d = data as { message?: string; stack?: string };
-          const err = new Error(d.message ?? 'Realm call failed');
-          if (d.stack !== undefined) err.stack = d.stack;
-          reject(err);
-        } else {
-          resolve(data as Awaited<ReturnType<F>>);
-        }
+        _resolveCallResponse(data, resolve, reject);
       };
       this.port.addEventListener('message', handler);
       this.port.start();

@@ -68,6 +68,13 @@ export const lib = dlopen(LIBC, {
   write:      { parameters: ['i32', 'buffer', 'usize'],         result: 'isize'   },
   lseek:      { parameters: ['i32', 'i64', 'i32'],              result: 'i64'     },
   [errnoFn]:  { parameters: [],                                 result: 'pointer' },
+  chmod:     { parameters: ['buffer', 'u32'],                   result: 'i32'     },
+  chown:     { parameters: ['buffer', 'i32', 'i32'],            result: 'i32'     },
+  lchown:    { parameters: ['buffer', 'i32', 'i32'],            result: 'i32'     },
+  utimes:    { parameters: ['buffer', 'buffer'],                result: 'i32'     },
+  truncate:  { parameters: ['buffer', 'i64'],                   result: 'i32'     },
+  link:      { parameters: ['buffer', 'buffer'],                result: 'i32'     },
+  access:    { parameters: ['buffer', 'i32'],                   result: 'i32'     },
 });
 
 // ---------------------------------------------------------------------------
@@ -94,6 +101,11 @@ export const S_IFCHR  = 0x2000;
 export const SEEK_SET = 0;
 export const SEEK_CUR = 1;
 export const SEEK_END = 2;
+
+export const F_OK = 0;
+export const R_OK = 4;
+export const W_OK = 2;
+export const X_OK = 1;
 
 export const DT_UNKNOWN = 0;
 export const DT_FIFO    = 1;

@@ -94,36 +94,18 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
 
-        let state = FinoState {
-            process_env: config.process_env,
-            package_map_json: config.package_map_json,
+        let state = FinoState::new_child(
+            config.process_env,
+            config.package_map_json,
             root_queue,
-            import_rules: config.import_rules,
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            loop_step_fn: None,
-            on_done_fn: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            child_contexts: Vec::new(),
-            pending_creates: Vec::new(),
-            entry_path: Some(config.entry_path),
-            terminated: false,
-            port: None,
-            channel_rx: Some(config.channel_rx),
-            channel_tx: Some(config.channel_tx),
-            wake_read_fd: Some(config.wake_read_fd),
-            wake_write_fd: config.wake_write_fd,
-            thread_contexts: Vec::new(),
-            process_contexts: Vec::new(),
-        };
+            config.import_rules,
+            Some(config.entry_path),
+            None,
+            Some(config.channel_rx),
+            Some(config.channel_tx),
+            Some(config.wake_read_fd),
+            config.wake_write_fd,
+        );
         context.set_slot(Rc::new(RefCell::new(state)));
 
         let initial_frame = v8::Array::new(scope, 0);
