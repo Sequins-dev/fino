@@ -147,14 +147,20 @@ describe('Integration', () => {
     }
   });
 
-  it('resolver — NXDOMAIN throws', async (t) => {
-    await t.rejects(
-      () => new Resolver().resolve4('this-domain-definitely-does-not-exist-xyzzy123456.com'),
-      (err) => {
-        const e = err as DnsErrorLike;
-        return /NXDOMAIN|not found|ENOTFOUND/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
-      },
-      'NXDOMAIN throws with expected message/code',
+  it('resolver — NXDOMAIN throws with err.code === ENOTFOUND', async (t) => {
+    let caughtErr: unknown;
+    try {
+      await new Resolver().resolve4('this-domain-definitely-does-not-exist-xyzzy123456.com');
+      t.fail('expected NXDOMAIN to throw');
+    } catch (err) {
+      caughtErr = err;
+    }
+    t.ok(caughtErr instanceof Error, 'NXDOMAIN throws an Error instance');
+    const e = caughtErr as { code?: string; message?: string };
+    t.equal(e.code, 'ENOTFOUND', 'err.code is exactly "ENOTFOUND" (not just in the message)');
+    t.ok(
+      (e.message ?? '').length > 0,
+      'error message is non-empty: ' + e.message,
     );
   });
 

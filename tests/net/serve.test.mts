@@ -147,6 +147,41 @@ describe('Request / Response basics', () => {
     }
   });
 
+  it('streaming response body (async generator) is transmitted correctly', async (t) => {
+    const server = serve({ port: 0 }, async () => {
+      async function* stream() {
+        yield new TextEncoder().encode('chunk-one-');
+        yield new TextEncoder().encode('chunk-two-');
+        yield new TextEncoder().encode('chunk-three');
+      }
+      return new Response(stream() as any);
+    });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/`);
+      t.equal(res.status, 200, 'status 200');
+      const body = await res.text();
+      t.equal(body, 'chunk-one-chunk-two-chunk-three', 'all chunks received in order');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('HEAD request receives no body even when Content-Length is set', async (t) => {
+    // Regression for the HEAD framing bug: parseResponse must treat HEAD
+    // responses as bodyless regardless of Content-Length.
+    const server = serve({ port: 0 }, async () => new Response('full body here'));
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/`, { method: 'HEAD' });
+      t.equal(res.status, 200, 'HEAD returns 200');
+      // text() should complete immediately with '' (not hang reading Content-Length bytes)
+      const body = await res.text();
+      t.equal(body, '', 'HEAD response body is empty');
+      t.ok(res.headers.get('content-length') !== null, 'Content-Length header still present');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('content-length auto-injection', async (t) => {
     const server = serve({ port: 0 }, async () => new Response('hello!'));
     const port = server.port;

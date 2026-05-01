@@ -401,7 +401,7 @@ async function _singleFetch(
 
     // ---- Parse response headers ----------------------------------------------
 
-    const response = await _raceAbort(signal, parseResponse(reader));
+    const response = await _raceAbort(signal, parseResponse(reader, method));
     return { response, sock };
 
   } catch (e) {
@@ -794,6 +794,14 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
         resolvedUrl = new URL(location, currentUrl).href;
       } catch (_) {
         throw new TypeError(`fetch: invalid Location header: '${location}'`);
+      }
+      // Validate that the redirect target uses http: or https: — silently
+      // following javascript:, file:, data:, or other schemes is a security risk.
+      const redirectProtocol = new URL(resolvedUrl).protocol;
+      if (redirectProtocol !== 'http:' && redirectProtocol !== 'https:') {
+        throw new TypeError(
+          `fetch: redirect to non-HTTP/S URL is not allowed: '${resolvedUrl}'`,
+        );
       }
 
       // Compute new origin for cross-origin header stripping

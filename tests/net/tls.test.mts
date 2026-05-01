@@ -106,4 +106,24 @@ describe('TlsSocket', () => {
     t.ok(!tls.closed, 'connected with rejectUnauthorized=false');
     tls.close();
   });
+
+  it('rejectUnauthorized:false succeeds even with wrong hostname (proves bypass works)', { skip }, async (t) => {
+    // Connects to 1.1.1.1 but claims it's google.com — cert mismatch.
+    // With rejectUnauthorized:true this fails (tested above).
+    // With rejectUnauthorized:false it MUST succeed, proving the flag
+    // actually bypasses verification rather than just being a no-op when
+    // the cert is valid anyway.
+    let threw = false;
+    let tls;
+    try {
+      tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '1.1.1.1', port: 443 },
+        { hostname: 'google.com', rejectUnauthorized: false },
+      );
+    } catch (_) {
+      threw = true;
+    }
+    t.ok(!threw, 'rejectUnauthorized:false bypasses hostname mismatch');
+    if (tls) tls.close();
+  });
 });

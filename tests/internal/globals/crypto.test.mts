@@ -131,6 +131,26 @@ describe('HMAC', { skip }, () => {
     const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
     t.equal(toHex(sig), 'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7', 'HMAC-SHA256 RFC4231 case 1');
   });
+
+  it('HMAC-SHA256 known vector (RFC 4231 case 2 — "Jefe" key)', async (t) => {
+    const keyBytes = new TextEncoder().encode('Jefe');
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const data = new TextEncoder().encode('what do ya want for nothing?');
+    const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
+    t.equal(toHex(sig), '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964a2925', 'HMAC-SHA256 RFC4231 case 2');
+  });
+
+  it('HMAC-SHA384 known vector (RFC 4231 case 1)', async (t) => {
+    const keyBytes = new Uint8Array(20).fill(0x0b);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-384' }, false, ['sign']);
+    const data = new TextEncoder().encode('Hi There');
+    const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
+    t.equal(
+      toHex(sig),
+      'afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb88',
+      'HMAC-SHA384 RFC4231 case 1',
+    );
+  });
 });
 
 describe('AES-GCM', { skip }, () => {
@@ -199,6 +219,27 @@ describe('AES-CBC', { skip }, () => {
 
     const dt = await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, key, ct);
     t.equal(new TextDecoder().decode(dt), 'AES-CBC test', 'round-trip');
+  });
+
+  it('AES-128-CBC known-answer vector (NIST CAVP)', async (t) => {
+    // NIST CAVP AES-CBC 128-bit vector (first vector from CBCGFSbox128.rsp):
+    //   Key:   00000000000000000000000000000000
+    //   IV:    00000000000000000000000000000000
+    //   PT:    f34481ec3cc627bacd5dc3fb08f273e6
+    //   CT:    0336763e966d92595a567cc9ce537f5e
+    const key = await crypto.subtle.importKey(
+      'raw',
+      new Uint8Array(16).fill(0),
+      { name: 'AES-CBC', length: 128 },
+      false,
+      ['encrypt'],
+    );
+    const iv = new Uint8Array(16).fill(0);
+    const pt = new Uint8Array([0xf3,0x44,0x81,0xec,0x3c,0xc6,0x27,0xba,0xcd,0x5d,0xc3,0xfb,0x08,0xf2,0x73,0xe6]);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-CBC', iv }, key, pt);
+    // PKCS#7 padded output is 32 bytes; first 16 are the actual ciphertext.
+    const ctHex = toHex(ct).slice(0, 32);
+    t.equal(ctHex, '0336763e966d92595a567cc9ce537f5e', 'AES-128-CBC NIST known-answer');
   });
 });
 

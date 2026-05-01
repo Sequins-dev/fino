@@ -243,6 +243,60 @@ describe('Redirects', () => {
   });
 });
 
+describe('Redirects — Authorization header security', () => {
+  it('Authorization header is stripped on cross-origin redirect', async (t) => {
+    // Simulate a cross-origin redirect: origin1 → origin2 (different port = different origin).
+    let secondRequestHeaders: Headers | null = null;
+    const origin2 = serve({ port: 0 }, (req) => {
+      secondRequestHeaders = req.headers;
+      return new Response('final');
+    });
+
+    const origin1 = serve({ port: 0 }, (_req) =>
+      new Response(null, {
+        status: 302,
+        headers: { location: `http://127.0.0.1:${origin2.port}/` },
+      }),
+    );
+
+    try {
+      await fetch(`http://127.0.0.1:${origin1.port}/`, {
+        headers: { authorization: 'Bearer secret-token' },
+      });
+      t.equal(secondRequestHeaders!.get('authorization'), null,
+        'Authorization header stripped on cross-origin redirect');
+    } finally {
+      await origin1.close();
+      await origin2.close();
+    }
+  });
+
+  it('Authorization header is preserved on same-origin redirect', async (t) => {
+    let secondRequestAuth: string | null = null;
+    const server = serve({ port: 0 }, (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/first') {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://127.0.0.1:${server.port}/second` },
+        });
+      }
+      secondRequestAuth = req.headers.get('authorization');
+      return new Response('ok');
+    });
+
+    try {
+      await fetch(`http://127.0.0.1:${server.port}/first`, {
+        headers: { authorization: 'Bearer secret-token' },
+      });
+      t.equal(secondRequestAuth, 'Bearer secret-token',
+        'Authorization header preserved on same-origin redirect');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 describe('AbortSignal', () => {
   it('pre-aborted signal rejects immediately', async (t) => {
     const signal = AbortSignal.abort();
@@ -273,6 +327,46 @@ describe('AbortSignal', () => {
         );
       },
     );
+  });
+
+  it('AbortSignal fires after headers arrive but during body streaming', async (t) => {
+    // The signal is created AFTER fetch starts, triggered mid-body so the
+    // connection is already open. This tests that body streaming respects
+    // cancellation and the connection is properly released.
+    let controller!: AbortController;
+    const server = serve({ port: 0 }, async () => {
+      // Slow chunked body: send first chunk, then stall.
+      async function* slowBody() {
+        yield new TextEncoder().encode('first-chunk');
+        // Wait long enough that the abort fires mid-stream.
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+        yield new TextEncoder().encode('never-arrives');
+      }
+      return new Response(slowBody() as any);
+    });
+
+    try {
+      controller = new AbortController();
+      const fetchPromise = fetch(`http://127.0.0.1:${server.port}/`, {
+        signal: controller.signal,
+      });
+
+      const res = await fetchPromise;
+      t.equal(res.status, 200, 'response headers received before abort');
+
+      // Fire abort while reading the body.
+      setTimeout(() => controller.abort(), 20);
+
+      let threw = false;
+      try {
+        for await (const _ of res.body as unknown as AsyncIterable<Uint8Array>) { /* drain */ }
+      } catch (_) {
+        threw = true;
+      }
+      t.ok(threw, 'body reading throws when signal aborts mid-stream');
+    } finally {
+      await server.close();
+    }
   });
 });
 
@@ -675,6 +769,60 @@ describe('Integrity + referrerPolicy', () => {
       });
       const text = await res.text();
       t.equal(text, 'https://example.com/', 'Referer is origin only');
+    } finally {
+      await srv.close();
+    }
+  });
+});
+
+describe('fetch() — redirect safety', () => {
+  it('redirect to javascript: URL throws TypeError', async (t) => {
+    // A server returning Location: javascript:... must NOT be followed.
+    // Regression for the unsafe-redirect-protocol fix.
+    const srv = serve({ port: 0 }, () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: 'javascript:alert(1)' },
+      }),
+    );
+    try {
+      await t.rejects(
+        () => fetch(`http://127.0.0.1:${srv.port}/`),
+        /non-HTTP|javascript|redirect/i,
+        'fetch throws when redirected to javascript: URL',
+      );
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('redirect to file: URL throws TypeError', async (t) => {
+    const srv = serve({ port: 0 }, () =>
+      new Response(null, {
+        status: 301,
+        headers: { location: 'file:///etc/passwd' },
+      }),
+    );
+    try {
+      await t.rejects(
+        () => fetch(`http://127.0.0.1:${srv.port}/`),
+        /non-HTTP|file:|redirect/i,
+        'fetch throws when redirected to file: URL',
+      );
+    } finally {
+      await srv.close();
+    }
+  });
+
+  it('HEAD request body is empty even when Content-Length is present', async (t) => {
+    // Regression for the HEAD framing bug: parseResponse must honor the
+    // request method and never attempt to read a body for HEAD responses.
+    const srv = serve({ port: 0 }, () => new Response('should-not-be-read'));
+    try {
+      const res = await fetch(`http://127.0.0.1:${srv.port}/`, { method: 'HEAD' });
+      t.equal(res.status, 200, 'HEAD returns 200');
+      const body = await res.text();
+      t.equal(body, '', 'HEAD response body is empty (no hang)');
     } finally {
       await srv.close();
     }

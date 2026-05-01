@@ -326,13 +326,18 @@ export class ClusterClient {
     }, 0);
 
     // Drain inbound messages from the parent whenever the wake-fd fires.
-    while (!relay.closed) {
-      await readable(wakeReadFd);
-      if (relay.closed) break;
-      this.#drainInbound(relay, finalize);
+    // Use try-finally so finalize() always runs even if readable() throws
+    // (e.g., fd closed externally), ensuring REALM_EXIT is always sent.
+    try {
+      while (!relay.closed) {
+        await readable(wakeReadFd);
+        if (relay.closed) break;
+        this.#drainInbound(relay, finalize);
+      }
+    } finally {
+      finalize();
+      clearInterval(stepInterval);
     }
-
-    clearInterval(stepInterval);
   }
 
   #drainInbound(relay: RealmRelay, finalize: () => void): void {

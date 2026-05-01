@@ -85,6 +85,38 @@ describe('DiskFileSystem', () => {
       await fs.unlink(path);
     });
 
+    it('fs.open — reader() yields multiple chunks for files larger than the read buffer', async (t) => {
+      // The read buffer is 65536 bytes. A 200 KB file must produce >1 chunk
+      // AND the reassembled content must match exactly.
+      const path = TEST_DIR + '/large-file.bin';
+      const SIZE = 200 * 1024; // 200 KiB
+      const original = new Uint8Array(SIZE);
+      // Fill with a deterministic pattern so accidental truncation is visible.
+      for (let i = 0; i < SIZE; i++) original[i] = i & 0xff;
+      await fs.writeFile(path, original);
+
+      const file = await fs.open(path, 'r');
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of file.reader()) chunks.push(chunk);
+      await file.close();
+
+      t.ok(chunks.length > 1, `file yields ${chunks.length} chunks (expected >1 for 200 KiB)`);
+      const totalLen = chunks.reduce((n, c) => n + c.byteLength, 0);
+      t.equal(totalLen, SIZE, 'total bytes received equals file size');
+
+      // Verify content byte-by-byte to catch truncation or corruption.
+      const reassembled = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const c of chunks) { reassembled.set(c, pos); pos += c.byteLength; }
+      let match = true;
+      for (let i = 0; i < SIZE; i++) {
+        if (reassembled[i] !== (i & 0xff)) { match = false; break; }
+      }
+      t.ok(match, 'reassembled content matches the original large file byte-for-byte');
+
+      await fs.unlink(path);
+    });
+
     it('fs.open — write mode, writer().write()', async (t) => {
       const path = TEST_DIR + '/write-test.txt';
       const file = await fs.open(path, 'w');

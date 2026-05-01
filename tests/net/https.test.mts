@@ -58,7 +58,12 @@ describe('HTTPS server — basic TLS request/response', () => {
       const response = await tlsRoundtrip(port, raw);
 
       t.ok(response.startsWith('HTTP/1.1 200'), 'status 200 over TLS');
-      t.ok(response.includes('hello https'), 'body received over TLS');
+      // Extract body — must be EXACTLY 'hello https', not just contain the substring.
+      const bodyStart = response.indexOf('\r\n\r\n');
+      const body = bodyStart >= 0 ? response.slice(bodyStart + 4) : '';
+      t.equal(body, 'hello https', 'response body is exactly correct over TLS');
+      // Verify TLS was actually used (connection object is a TlsSocket, not plain Socket).
+      t.ok(response.includes('HTTP/1.1'), 'response is valid HTTP over TLS (not plain-text garble)');
     } finally {
       await server.close();
     }

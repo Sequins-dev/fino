@@ -1242,7 +1242,17 @@ export async function parseRequest(source: AsyncIterable<Uint8Array | ArrayBuffe
  * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
  * @returns {Promise<Response>}
  */
-export async function parseResponse(source: AsyncIterable<Uint8Array | ArrayBuffer>): Promise<Response> {
+/**
+ * Parse an HTTP response from a byte stream.
+ *
+ * @param source   — byte stream from the server
+ * @param method   — the original request method (e.g. 'HEAD'). HEAD responses
+ *                   must never have a body even when Content-Length is present.
+ */
+export async function parseResponse(
+  source: AsyncIterable<Uint8Array | ArrayBuffer>,
+  method?: string,
+): Promise<Response> {
   const reader = _createReader(source);
   const raw = await reader.readUntilDoubleCRLF();
   const { firstLine, headers } = _parseHeaders(raw);
@@ -1253,7 +1263,11 @@ export async function parseResponse(source: AsyncIterable<Uint8Array | ArrayBuff
   const status     = parseInt(parts[1] ?? '0', 10) || 0;
   const statusText = parts.slice(2).join(' ') || '';
 
-  const framing = _bodyFraming(headers, false, status);
+  // RFC 7230 §3.3: HEAD responses MUST NOT include a body even when
+  // Content-Length or Transfer-Encoding is present.
+  const isHead = method?.toUpperCase() === 'HEAD';
+  const framing = isHead ? { type: 'none' as const } : _bodyFraming(headers, false, status);
+
   let body;
   if (framing.type === 'fixed')        body = reader.bodyIterator(framing.length);
   else if (framing.type === 'chunked') body = reader.chunkedBodyIterator();

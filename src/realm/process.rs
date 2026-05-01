@@ -49,17 +49,31 @@ use crate::state::ImportRule;
 
 /// Write one length-prefixed `ThreadMessage` to a file descriptor (blocking).
 pub fn write_message(fd: RawFd, msg: &ThreadMessage) -> std::io::Result<()> {
+    // Guard against u32 truncation: individual fields and total payload must
+    // fit in u32 (4 GiB). Messages this large are pathological but the cast
+    // would silently corrupt the framing on the reader side.
+    let check_u32 = |n: usize, label: &'static str| -> std::io::Result<u32> {
+        u32::try_from(n).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{label} exceeds 4 GiB limit"),
+            )
+        })
+    };
+
     let mut payload = Vec::new();
-    let dl = msg.data.len() as u32;
+    let dl = check_u32(msg.data.len(), "process realm IPC data length")?;
     payload.extend_from_slice(&dl.to_be_bytes());
     payload.extend_from_slice(&msg.data);
-    let ns = msg.transfer_stores.len() as u32;
+    let ns = check_u32(msg.transfer_stores.len(), "transfer store count")?;
     payload.extend_from_slice(&ns.to_be_bytes());
     for s in &msg.transfer_stores {
-        payload.extend_from_slice(&(s.len() as u32).to_be_bytes());
+        let sl = check_u32(s.len(), "transfer store length")?;
+        payload.extend_from_slice(&sl.to_be_bytes());
         payload.extend_from_slice(s);
     }
-    write_all(fd, &(payload.len() as u32).to_be_bytes())?;
+    let total = check_u32(payload.len(), "total IPC payload length")?;
+    write_all(fd, &total.to_be_bytes())?;
     write_all(fd, &payload)
 }
 
