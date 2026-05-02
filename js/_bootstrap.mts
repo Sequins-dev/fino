@@ -283,6 +283,50 @@ const _childPort: MessagePort | ThreadPort | undefined =
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
 
+// Embedded realms (MessagePort) need an RPC-response interceptor on _childPort so
+// that __rpc_res / __rpc_chunk / __rpc_end / __rpc_err envelopes from the parent
+// reach the pending-call registry in internal:parent-rpc.
+// Thread/process realms get this for free from BaseTransportPort._dispatchMessage.
+// We use a dynamic import so this is a no-op for realms that have no facades
+// (import will fail → catch handler, which is fine).
+if (_threadWakeReadFd < 0 && _childPort !== undefined) {
+  const _embeddedPort = _childPort as MessagePort;
+  import('internal:parent-rpc').then(
+    function _rpcInterceptorSetup(rpcMod: Record<string, unknown>) {
+      const resolveRpc = rpcMod['resolveRpc'] as (id: number, v: unknown) => boolean;
+      const rejectRpc  = rpcMod['rejectRpc']  as (id: number, e: string) => boolean;
+      const pushChunk  = rpcMod['pushChunk']  as (id: number, c: unknown) => void;
+      const endStream  = rpcMod['endStream']  as (id: number) => void;
+      const errStream  = rpcMod['errStream']  as (id: number, e: string) => void;
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (_embeddedPort as any).addEventListener('message', function _rpcResponseHandler(ev: Event) {
+        const msg = (ev as MessageEvent).data;
+        if (!msg || typeof msg !== 'object') return;
+        const obj = msg as Record<string, unknown>;
+        if (obj['__rpc_res'] === true) {
+          (ev as MessageEvent).stopImmediatePropagation?.();
+          const rpc = obj as { reqId: number; result?: unknown; error?: string };
+          if (rpc.error !== undefined) {
+            if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
+          } else { resolveRpc(rpc.reqId, rpc.result); }
+        } else if (obj['__rpc_chunk'] === true) {
+          (ev as MessageEvent).stopImmediatePropagation?.();
+          pushChunk((obj as { reqId: number }).reqId, (obj as { chunk: unknown }).chunk);
+        } else if (obj['__rpc_end'] === true) {
+          (ev as MessageEvent).stopImmediatePropagation?.();
+          endStream((obj as { reqId: number }).reqId);
+        } else if (obj['__rpc_err'] === true) {
+          (ev as MessageEvent).stopImmediatePropagation?.();
+          errStream((obj as { reqId: number; error: string }).reqId,
+                    (obj as { reqId: number; error: string }).error);
+        }
+      });
+    },
+    function _noFacades() { /* realm has no facades — silently skip */ },
+  );
+}
+
 if (_childEntry !== undefined) {
   let _childDone = false;
 

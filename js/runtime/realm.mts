@@ -55,7 +55,7 @@ export type ImportDirectiveSer =
   | { type: 'block' }
   | { type: 'remap'; target: string }
   | { type: 'source'; code: string; source_map: string }
-  | { type: 'facade'; specifier: string; exports: string[] };
+  | { type: 'facade'; specifier: string; exports: string[]; streams?: string[]; sinks?: string[] };
 
 export interface ImportRule {
   /** Pattern matching the importing module's specifier. Absent = all modules. */
@@ -137,19 +137,255 @@ export class ImportMap {
  *
  * When a child Realm imports the named specifier, it gets a synthetic proxy
  * whose calls forward to the parent's registered handlers via `internal:parent-rpc`.
- *
- * Supported for thread and process realms. Handler dispatch is wired in the
- * `Realm` constructor via `_bind()`, which registers a `message` listener on
- * the realm's port that intercepts `__rpc_req` envelopes.
  */
+function _isAsyncIterable(v: unknown): v is AsyncIterable<unknown> {
+  return v != null && typeof v === 'object' && Symbol.asyncIterator in (v as object);
+}
+
+// ---------------------------------------------------------------------------
+// FacadeHandle — stateful handle returned from Facade handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * A stateful object handle returned from a Facade handler.
+ *
+ * When a scalar handler returns a `FacadeHandle`, the parent registers its
+ * methods under a unique ID and sends `{ __handle: id, streams?: [...] }` to
+ * the child.  The child receives a Proxy that routes subsequent method calls
+ * back through `internal:parent-rpc` using the handle ID as the specifier.
+ *
+ * ```ts
+ * facade.handle('open', async (path) => {
+ *   const fh = await realFs.open(path, 'r');
+ *   return new FacadeHandle(
+ *     { stat: () => fh.stat(), close: () => fh.close() },
+ *     { read: (_size) => fh.reader() },   // streaming method
+ *   );
+ * });
+ * ```
+ */
+export class FacadeHandle {
+  readonly #scalar:  Map<string, (...args: unknown[]) => unknown>;
+  readonly #streams: Map<string, (...args: unknown[]) => AsyncIterable<unknown>>;
+  readonly #sinks:   Map<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>;
+
+  constructor(
+    scalar:  Record<string, (...args: unknown[]) => unknown>                                         = {},
+    streams: Record<string, (...args: unknown[]) => AsyncIterable<unknown>>                          = {},
+    sinks:   Record<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>   = {},
+  ) {
+    this.#scalar  = new Map(Object.entries(scalar));
+    this.#streams = new Map(Object.entries(streams));
+    this.#sinks   = new Map(Object.entries(sinks));
+  }
+
+  /** @internal */ _scalar()     { return this.#scalar;  }
+  /** @internal */ _streams()    { return this.#streams; }
+  /** @internal */ _sinks()      { return this.#sinks;   }
+  /** @internal */ _streamNames() { return [...this.#streams.keys()]; }
+  /** @internal */ _sinkNames()   { return [...this.#sinks.keys()]; }
+}
+
+// ---------------------------------------------------------------------------
+// Per-port write-stream (sink) source queues
+//
+// When the child calls callSink(), it sends __rpc_send_start.  The parent
+// creates a _WriteSource that acts as the `source: AsyncIterable` argument to
+// the handler.  Subsequent __rpc_send_chunk messages push into the queue;
+// __rpc_send_end / __rpc_send_err close or fail it.
+//
+// This is the symmetric counterpart to _StreamQueue in parent-rpc.mts (which
+// buffers chunks flowing parent→child).  The pairing maps directly onto QUIC:
+//   _WriteSource  ←  QUIC client-initiated unidirectional stream (child sends)
+//   _StreamQueue  ←  QUIC server-initiated unidirectional stream (parent sends)
+// ---------------------------------------------------------------------------
+
+class _WriteSource {
+  #queue:   unknown[] = [];
+  #waiters: Array<() => void> = [];
+  #done  = false;
+  #error: string | null = null;
+
+  push(chunk: unknown): void {
+    this.#queue.push(chunk);
+    this.#waiters.shift()?.();
+  }
+
+  end(): void {
+    this.#done = true;
+    const ws = this.#waiters.splice(0);
+    for (const w of ws) w();
+  }
+
+  fail(msg: string): void {
+    this.#error = msg;
+    this.#done  = true;
+    const ws = this.#waiters.splice(0);
+    for (const w of ws) w();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<unknown> {
+    const self = this;
+    return {
+      async next(): Promise<IteratorResult<unknown>> {
+        while (self.#queue.length === 0 && !self.#done) {
+          await new Promise<void>(resolve => self.#waiters.push(resolve));
+        }
+        if (self.#queue.length > 0) return { value: self.#queue.shift()!, done: false };
+        if (self.#error !== null) throw new Error(self.#error);
+        return { value: undefined as unknown, done: true };
+      },
+    };
+  }
+}
+
+// portObj → (reqId → _WriteSource) for active write streams on this port.
+const _portWriteSources = new WeakMap<object, Map<number, _WriteSource>>();
+
+function _getOrCreateWriteSourceRegistry(
+  port: MessagePort | ThreadPort | ProcessPort | ClusterPort,
+): Map<number, _WriteSource> {
+  const key = port as object;
+  let reg = _portWriteSources.get(key);
+  if (!reg) { reg = new Map(); _portWriteSources.set(key, reg); }
+  return reg;
+}
+
+// ---------------------------------------------------------------------------
+// Per-port handle registry
+// ---------------------------------------------------------------------------
+
+interface _HandleEntry {
+  scalar:  Map<string, (...args: unknown[]) => unknown>;
+  streams: Map<string, (...args: unknown[]) => AsyncIterable<unknown>>;
+  sinks:   Map<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>;
+}
+
+// WeakMap: port → (handleId → HandleEntry). GC'd when the port is collected.
+const _portHandleRegistries = new WeakMap<object, Map<string, _HandleEntry>>();
+let _nextHandleSeq = 0;
+
+function _getOrCreateHandleRegistry(
+  port: MessagePort | ThreadPort | ProcessPort | ClusterPort,
+): Map<string, _HandleEntry> {
+  const key = port as object;
+  let reg = _portHandleRegistries.get(key);
+  if (reg) return reg;
+
+  reg = new Map<string, _HandleEntry>();
+  _portHandleRegistries.set(key, reg);
+  const registry = reg;
+  const wsSources = _getOrCreateWriteSourceRegistry(port);
+
+  // One shared dispatcher per port handles all handle method calls.
+  port.addEventListener('message', function _handleDispatcher(ev: Event) {
+    const msg = (ev as MessageEvent).data;
+    if (!msg || typeof msg !== 'object') return;
+    const obj = msg as Record<string, unknown>;
+
+    // Write-stream envelopes for handle sink methods
+    if (obj['__rpc_send_start'] === true) {
+      const entry = registry.get(obj['specifier'] as string ?? '');
+      if (!entry) return;
+      (ev as MessageEvent).stopImmediatePropagation?.();
+      const method = obj['method'] as string ?? '';
+      const reqId  = obj['reqId']  as number ?? 0;
+      const args   = obj['args']   as unknown[] ?? [];
+      const sinkFn = entry.sinks.get(method);
+      if (!sinkFn) {
+        port.postMessage({ __rpc_res: true, reqId, error: `No sendStream method '${method}' on handle '${obj['specifier']}'` });
+        return;
+      }
+      const source = new _WriteSource();
+      wsSources.set(reqId, source);
+      sinkFn(args, source).then(
+        (result) => { wsSources.delete(reqId); _sendResult(port, registry, reqId, result); },
+        (err: unknown) => { wsSources.delete(reqId); port.postMessage({ __rpc_res: true, reqId, error: String(err) }); },
+      );
+      return;
+    }
+
+    if (obj['__rpc_req'] !== true) return;
+
+    const entry = registry.get(obj['specifier'] as string ?? '');
+    if (!entry) return;
+
+    (ev as MessageEvent).stopImmediatePropagation?.();
+    const method = obj['method'] as string ?? '';
+    const reqId  = obj['reqId']  as number ?? 0;
+    const args   = obj['args']   as unknown[] ?? [];
+
+    const streamFn = entry.streams.get(method);
+    if (streamFn) {
+      let iter: AsyncIterable<unknown>;
+      try { iter = streamFn(...args); } catch (err: unknown) {
+        port.postMessage({ __rpc_res: true, reqId, error: String(err) });
+        return;
+      }
+      (async () => {
+        try {
+          for await (const chunk of iter) port.postMessage({ __rpc_chunk: true, reqId, chunk });
+          port.postMessage({ __rpc_end: true, reqId });
+        } catch (err: unknown) { port.postMessage({ __rpc_err: true, reqId, error: String(err) }); }
+      })().catch(() => {});
+      return;
+    }
+
+    const scalarFn = entry.scalar.get(method);
+    if (!scalarFn) {
+      port.postMessage({ __rpc_res: true, reqId, error: `No method '${method}' on handle '${obj['specifier']}'` });
+      return;
+    }
+    (new Promise<unknown>(res => res(scalarFn(...args)))).then(
+      (result) => _sendResult(port, registry, reqId, result),
+      (err: unknown) => port.postMessage({ __rpc_res: true, reqId, error: String(err) }),
+    );
+  } as EventListener);
+
+  return reg;
+}
+
+function _registerHandle(
+  reg: Map<string, _HandleEntry>, h: FacadeHandle,
+): { __handle: string; streams?: string[]; sinks?: string[] } {
+  const id = `__h${_nextHandleSeq++}`;
+  reg.set(id, { scalar: h._scalar(), streams: h._streams(), sinks: h._sinks() });
+  const sn = h._streamNames();
+  const sk = h._sinkNames();
+  return {
+    __handle: id,
+    ...(sn.length > 0 ? { streams: sn } : {}),
+    ...(sk.length > 0 ? { sinks: sk }   : {}),
+  };
+}
+
+function _sendResult(
+  port: { postMessage(m: unknown): void },
+  reg: Map<string, _HandleEntry>,
+  reqId: number,
+  result: unknown,
+): void {
+  if (result instanceof FacadeHandle) {
+    port.postMessage({ __rpc_res: true, reqId, result: _registerHandle(reg, result) });
+  } else {
+    port.postMessage({ __rpc_res: true, reqId, result });
+  }
+}
+
 export class Facade {
   readonly #specifier: string;
   readonly #exports: string[];
-  readonly #handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  readonly #streams: string[];
+  readonly #sinks: string[];
+  readonly #handlers       = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+  readonly #streamHandlers = new Map<string, (...args: unknown[]) => AsyncIterable<unknown>>();
+  readonly #sinkHandlers   = new Map<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>();
 
   constructor(specifier: string, exports: string[]) {
     this.#specifier = specifier;
     this.#exports = exports;
+    this.#streams = [];
+    this.#sinks = [];
   }
 
   static from(obj: object, opts: { specifier: string }): Facade {
@@ -162,41 +398,119 @@ export class Facade {
     return f;
   }
 
+  /** Register a scalar handler — result is returned as a single `__rpc_res`. */
   handle(method: string, fn: (...args: unknown[]) => Promise<unknown>): this {
     this.#handlers.set(method, fn);
     return this;
   }
 
+  /**
+   * Register a read-stream handler — the AsyncIterable it returns is pumped
+   * as `__rpc_chunk` / `__rpc_end` / `__rpc_err` envelopes (parent→child).
+   */
+  stream(method: string, fn: (...args: unknown[]) => AsyncIterable<unknown>): this {
+    if (!this.#streams.includes(method)) this.#streams.push(method);
+    this.#streamHandlers.set(method, fn);
+    return this;
+  }
+
+  /**
+   * Register a write-stream (sink) handler — the child sends chunks to the
+   * parent via `__rpc_send_chunk` envelopes (child→parent, no per-chunk ack).
+   *
+   * The handler receives `(args, source: AsyncIterable<unknown>)` and should
+   * drain `source` to completion before returning the final result.
+   *
+   * Maps directly onto a QUIC client-initiated unidirectional stream when the
+   * cluster transport is later upgraded to QUIC.
+   *
+   * ```ts
+   * facade.sendStream('write', async (_args, source) => {
+   *   let total = 0;
+   *   for await (const chunk of source) total += (chunk as Uint8Array).byteLength;
+   *   return { bytesWritten: total };
+   * });
+   * ```
+   */
+  sendStream(method: string, fn: (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>): this {
+    if (!this.#sinks.includes(method)) this.#sinks.push(method);
+    this.#sinkHandlers.set(method, fn);
+    return this;
+  }
+
   /** @internal */
   toDirective(): ImportDirectiveSer {
-    return { type: 'facade', specifier: this.#specifier, exports: this.#exports };
+    return {
+      type: 'facade',
+      specifier: this.#specifier,
+      exports: this.#exports,
+      streams: this.#streams,
+      sinks: this.#sinks,
+    };
   }
 
   /**
    * Wire up the parent-side RPC dispatcher on the given port.
-   *
-   * Registers a `message` listener that intercepts `__rpc_req` messages from
-   * the child and dispatches them to the registered handlers.  The response
-   * (`__rpc_res`) is sent back via `port.postMessage`.
-   *
    * @internal
    */
   _bind(port: MessagePort | ThreadPort | ProcessPort | ClusterPort): void {
-    const specifier = this.#specifier;
-    const handlers  = this.#handlers;
+    const specifier      = this.#specifier;
+    const handlers       = this.#handlers;
+    const streamHandlers = this.#streamHandlers;
+    const sinkHandlers   = this.#sinkHandlers;
+    const reg            = _getOrCreateHandleRegistry(port);
+    const wsSources      = _getOrCreateWriteSourceRegistry(port);
 
     port.addEventListener('message', function onRpcRequest(ev: Event) {
       const msg = (ev as MessageEvent).data;
+      if (msg === null || typeof msg !== 'object') return;
+      const obj = msg as Record<string, unknown>;
+
+      // --- write-stream chunk envelopes (child→parent) ---
+      if (obj['__rpc_send_start'] === true && obj['specifier'] === specifier) {
+        (ev as MessageEvent).stopImmediatePropagation?.();
+        const { method, reqId, args } = obj as { method: string; reqId: number; args: unknown[] };
+        const fn = sinkHandlers.get(method);
+        if (!fn) {
+          port.postMessage({ __rpc_res: true, reqId, error: `No sendStream handler for ${specifier}#${method}` });
+          return;
+        }
+        const source = new _WriteSource();
+        wsSources.set(reqId, source);
+        fn(args, source).then(
+          (result) => { wsSources.delete(reqId); _sendResult(port, reg, reqId, result); },
+          (err: unknown) => { wsSources.delete(reqId); port.postMessage({ __rpc_res: true, reqId, error: String(err) }); },
+        );
+        return;
+      }
+      if (obj['__rpc_send_chunk'] === true) {
+        const src = wsSources.get(obj['reqId'] as number);
+        if (src) { (ev as MessageEvent).stopImmediatePropagation?.(); src.push(obj['chunk']); }
+        return;
+      }
+      if (obj['__rpc_send_end'] === true) {
+        const src = wsSources.get(obj['reqId'] as number);
+        if (src) { (ev as MessageEvent).stopImmediatePropagation?.(); wsSources.delete(obj['reqId'] as number); src.end(); }
+        return;
+      }
+      if (obj['__rpc_send_err'] === true) {
+        const src = wsSources.get(obj['reqId'] as number);
+        if (src) {
+          (ev as MessageEvent).stopImmediatePropagation?.();
+          wsSources.delete(obj['reqId'] as number);
+          src.fail(String(obj['error'] ?? 'sink aborted'));
+        }
+        return;
+      }
+
+      // --- standard request dispatch (__rpc_req) ---
       if (
-        msg === null ||
-        typeof msg !== 'object' ||
-        (msg as any).__rpc_req !== true ||
-        (msg as any).specifier !== specifier
+        obj['__rpc_req'] !== true ||
+        obj['specifier'] !== specifier
       ) {
         return;
       }
 
-      // Prevent other listeners from seeing this RPC message.
       (ev as MessageEvent).stopImmediatePropagation?.();
 
       const { method, reqId, args } = msg as {
@@ -205,6 +519,30 @@ export class Facade {
         args: unknown[];
       };
 
+      // --- streaming handler ---
+      const streamFn = streamHandlers.get(method);
+      if (streamFn) {
+        let iterable: AsyncIterable<unknown>;
+        try {
+          iterable = streamFn(...args);
+        } catch (err: unknown) {
+          port.postMessage({ __rpc_res: true, reqId, error: String(err) });
+          return;
+        }
+        (async () => {
+          try {
+            for await (const chunk of iterable) {
+              port.postMessage({ __rpc_chunk: true, reqId, chunk });
+            }
+            port.postMessage({ __rpc_end: true, reqId });
+          } catch (err: unknown) {
+            port.postMessage({ __rpc_err: true, reqId, error: String(err) });
+          }
+        })().catch(() => {});
+        return;
+      }
+
+      // --- scalar handler ---
       const handler = handlers.get(method);
       if (!handler) {
         port.postMessage({ __rpc_res: true, reqId, error: `No handler for ${specifier}#${method}` });
@@ -212,7 +550,25 @@ export class Facade {
       }
 
       (new Promise<unknown>((res) => res(handler(...args)))).then(
-        (result) => port.postMessage({ __rpc_res: true, reqId, result }),
+        (result) => {
+          if (result instanceof FacadeHandle) {
+            // Register the handle and send its ID + stream-method list to the child.
+            port.postMessage({ __rpc_res: true, reqId, result: _registerHandle(reg, result) });
+          } else if (_isAsyncIterable(result)) {
+            (async () => {
+              try {
+                for await (const chunk of result) {
+                  port.postMessage({ __rpc_chunk: true, reqId, chunk });
+                }
+                port.postMessage({ __rpc_end: true, reqId });
+              } catch (err: unknown) {
+                port.postMessage({ __rpc_err: true, reqId, error: String(err) });
+              }
+            })().catch(() => {});
+          } else {
+            port.postMessage({ __rpc_res: true, reqId, result });
+          }
+        },
         (err: unknown) => port.postMessage({ __rpc_res: true, reqId, error: String(err) }),
       );
     } as EventListener);

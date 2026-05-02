@@ -171,6 +171,140 @@ describe('SeedServer — PORT_MSG routing', () => {
   });
 });
 
+describe('SeedServer — REALM_EXIT graceful cascade', () => {
+  it('REALM_EXIT sends TERMINATE to nodes hosting direct children', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+
+    // Spawn child from worker-1 (parent) onto worker-2 (child)
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'r1', parentPortId: 'worker-1/p-10',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'r1', childPortId: 'worker-2/10', ok: true,
+    });
+    transport.sent = [];
+
+    // Child on worker-2 exits gracefully
+    transport.inject('worker-2', { t: 'REALM_EXIT', realmId: 'worker-2/10' });
+
+    // The parent port on worker-1 is the PARENT, not the child — the child was
+    // on worker-2 and exited itself, so no TERMINATE needed for worker-2/10.
+    const terminates = transport.sentOfType('TERMINATE');
+    t.equal(terminates.length, 0, 'no TERMINATE sent — exiting realm had no descendants');
+  });
+
+  it('REALM_EXIT sends TERMINATE to nodes hosting grandchildren', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-3', { t: 'HELLO', nodeId: 'worker-3', load: { cpu: 0, memory: 0 } });
+
+    // worker-1 spawns child onto worker-2
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'r2', parentPortId: 'worker-1/p-20',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'r2', childPortId: 'worker-2/20', ok: true,
+    });
+
+    // worker-2's realm spawns grandchild onto worker-3
+    transport.inject('worker-2', {
+      t: 'SPAWN', spawnReqId: 'r3', parentPortId: 'worker-2/20',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-3', {
+      t: 'SPAWN_ACK', spawnReqId: 'r3', childPortId: 'worker-3/20', ok: true,
+    });
+    transport.sent = [];
+
+    // Child on worker-2 exits gracefully — grandchild on worker-3 must be terminated
+    transport.inject('worker-2', { t: 'REALM_EXIT', realmId: 'worker-2/20' });
+
+    const terminates = transport.sentOfType('TERMINATE');
+    t.ok(terminates.length >= 1, 'at least one TERMINATE sent for grandchild');
+
+    const toWorker3 = transport.sent.filter(s => s.to === 'worker-3' && s.msg.t === 'TERMINATE');
+    t.ok(toWorker3.length >= 1, 'TERMINATE sent to worker-3 (grandchild host)');
+
+    const terminateIds = terminates.map(m => m.realmId);
+    t.ok(terminateIds.includes('worker-3/20'), 'grandchild portId in TERMINATE');
+  });
+
+  it('exiting realm itself does NOT receive a redundant TERMINATE', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'r4', parentPortId: 'worker-1/p-30',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'r4', childPortId: 'worker-2/30', ok: true,
+    });
+    transport.sent = [];
+
+    // worker-2's realm exits
+    transport.inject('worker-2', { t: 'REALM_EXIT', realmId: 'worker-2/30' });
+
+    // No TERMINATE should go back to worker-2 for the realm that just exited
+    const toWorker2 = transport.sent.filter(s =>
+      s.to === 'worker-2' && s.msg.t === 'TERMINATE' &&
+      (s.msg as { realmId?: string }).realmId === 'worker-2/30',
+    );
+    t.equal(toWorker2.length, 0, 'exiting realm does not receive TERMINATE for itself');
+  });
+
+  it('multi-level exit: all descendants across 3 nodes get TERMINATE', (t) => {
+    const { transport } = makeSeed();
+    for (const w of ['worker-1', 'worker-2', 'worker-3', 'worker-4']) {
+      transport.inject(w, { t: 'HELLO', nodeId: w, load: { cpu: 0, memory: 0 } });
+    }
+
+    // worker-1 spawns onto worker-2 (child)
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'rA', parentPortId: 'worker-1/p-40',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'rA', childPortId: 'worker-2/40', ok: true,
+    });
+
+    // worker-2 spawns onto worker-3 (grandchild)
+    transport.inject('worker-2', {
+      t: 'SPAWN', spawnReqId: 'rB', parentPortId: 'worker-2/40',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-3', {
+      t: 'SPAWN_ACK', spawnReqId: 'rB', childPortId: 'worker-3/40', ok: true,
+    });
+
+    // worker-3 spawns onto worker-4 (great-grandchild)
+    transport.inject('worker-3', {
+      t: 'SPAWN', spawnReqId: 'rC', parentPortId: 'worker-3/40',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-4', {
+      t: 'SPAWN_ACK', spawnReqId: 'rC', childPortId: 'worker-4/40', ok: true,
+    });
+
+    transport.sent = [];
+
+    // worker-2 exits gracefully — grandchild and great-grandchild must be terminated
+    transport.inject('worker-2', { t: 'REALM_EXIT', realmId: 'worker-2/40' });
+
+    const terminates = transport.sentOfType('TERMINATE');
+    const terminateIds = new Set(terminates.map(m => m.realmId));
+    t.ok(terminateIds.has('worker-3/40'), 'grandchild TERMINATE sent');
+    t.ok(terminateIds.has('worker-4/40'), 'great-grandchild TERMINATE sent');
+    t.ok(!terminateIds.has('worker-2/40'), 'exiting realm not in TERMINATE list');
+  });
+});
+
 describe('SeedServer — nodeDown cascade', () => {
   it('PEER_DOWN sends TERMINATE for orphaned child ports to surviving parents', (t) => {
     const { transport } = makeSeed();

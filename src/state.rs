@@ -120,7 +120,19 @@ impl Serialize for ImportPattern {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FacadeSpec {
     pub specifier: String,
+    /// Scalar exports — each becomes `export const fn = (...args) => __rpc(...)`.
     pub exports: Vec<String>,
+    /// Read-stream exports — each becomes `export const fn = (...args) => __rpcStream(...)`.
+    /// The parent handler returns an `AsyncIterable`; chunks flow parent→child via
+    /// `__rpc_chunk` / `__rpc_end` / `__rpc_err`.
+    #[serde(default)]
+    pub streams: Vec<String>,
+    /// Write-stream (sink) exports — each becomes `export const fn = (...args) => __rpcSink(...)`.
+    /// The parent handler receives `(args, source: AsyncIterable)` and chunks flow
+    /// child→parent via `__rpc_send_start` / `__rpc_send_chunk` / `__rpc_send_end`.
+    /// Maps directly onto a QUIC client-initiated unidirectional stream.
+    #[serde(default)]
+    pub sinks: Vec<String>,
 }
 
 /// What to do when a module import matches a rule.

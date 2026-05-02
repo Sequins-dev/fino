@@ -126,12 +126,17 @@ export class SeedServer {
 
       case 'REALM_EXIT': {
         const portId = msg.realmId; // realmId doubles as the child's portId
-        const nodeId = this.#portNodes.get(portId);
         const removed = this.#registry.exit(portId);
-        for (const p of removed) this.#portNodes.delete(p);
-        // Propagate TERMINATE to all nodes that hosted descendants
-        if (nodeId) {
-          this.#transport.send(nodeId, { t: 'TERMINATE', realmId: portId });
+        // Propagate TERMINATE to every node hosting a descendant of the exiting
+        // realm, mirroring the crash path in #handleNodeDown.  The exiting realm
+        // itself has already left — skip it (p !== portId) to avoid redundant
+        // TERMINATE delivery to a relay that is already closed.
+        for (const p of removed) {
+          const hostNodeId = this.#portNodes.get(p);
+          this.#portNodes.delete(p);
+          if (hostNodeId && p !== portId) {
+            this.#transport.send(hostNodeId, { t: 'TERMINATE', realmId: p });
+          }
         }
         break;
       }

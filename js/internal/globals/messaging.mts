@@ -26,7 +26,7 @@ import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
 import { threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { createTransitChannel, transitSend, transitRecv } from 'internal:transit-port';
 import { readable, removeRead } from 'fino:runtime/loop';
-import { resolveRpc, rejectRpc } from 'internal:parent-rpc';
+import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 
 // ---------------------------------------------------------------------------
 // MessageEvent
@@ -374,11 +374,32 @@ export abstract class BaseTransportPort extends EventTarget {
       this.dispatchEvent(new MessageEvent('messageerror', { data: err }));
       return;
     }
-    if (value !== null && typeof value === 'object' && (value as any).__rpc_res === true) {
-      const rpc = value as { reqId: number; result?: unknown; error?: string };
-      if (rpc.error !== undefined) { rejectRpc(rpc.reqId, rpc.error); }
-      else { resolveRpc(rpc.reqId, rpc.result); }
-      return;
+    if (value !== null && typeof value === 'object') {
+      const obj = value as Record<string, unknown>;
+      if (obj['__rpc_res'] === true) {
+        const rpc = obj as { reqId: number; result?: unknown; error?: string };
+        if (rpc.error !== undefined) {
+          // Try scalar pending first; if not found, try stream (handler threw before yielding).
+          if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
+        } else {
+          resolveRpc(rpc.reqId, rpc.result);
+        }
+        return;
+      }
+      if (obj['__rpc_chunk'] === true) {
+        const m = obj as { reqId: number; chunk: unknown };
+        pushChunk(m.reqId, m.chunk);
+        return;
+      }
+      if (obj['__rpc_end'] === true) {
+        endStream((obj as { reqId: number }).reqId);
+        return;
+      }
+      if (obj['__rpc_err'] === true) {
+        const m = obj as { reqId: number; error: string };
+        errStream(m.reqId, m.error);
+        return;
+      }
     }
     this.dispatchEvent(new MessageEvent('message', { data: value, ports }));
   }
