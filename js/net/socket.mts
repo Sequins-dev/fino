@@ -487,7 +487,12 @@ export function accept(serverFd: number, setNonblock: boolean = true): { fd: num
   }
 
   if (setNonblock && !isLinux) {
-    setNonblocking(clientFd);
+    try {
+      setNonblocking(clientFd);
+    } catch (err) {
+      lib.symbols.close(clientFd);
+      throw err;
+    }
   }
 
   const addrLen = new DataView(lenBuf).getUint32(0, true);
@@ -627,21 +632,25 @@ export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Prom
                : addr.family === 'unix' ? AF_UNIX
                : AF_INET;
   const fd = socket(family, SOCK_STREAM, 0);
-  setNonblocking(fd);
-  if (opts.noDelay && family !== AF_UNIX) {
-    setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
-  }
-  // Non-blocking connect returns immediately (EINPROGRESS).
-  // Wait for writable, then check SO_ERROR for the actual result.
-  connect(fd, addr);
-  await loop.writable(fd);
-  const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
-  const errno = new DataView(errBuf).getInt32(0, true);
-  if (errno !== 0) {
+  try {
+    setNonblocking(fd);
+    if (opts.noDelay && family !== AF_UNIX) {
+      setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
+    }
+    // Non-blocking connect returns immediately (EINPROGRESS).
+    // Wait for writable, then check SO_ERROR for the actual result.
+    connect(fd, addr);
+    await loop.writable(fd);
+    const errBuf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
+    const errno = new DataView(errBuf).getInt32(0, true);
+    if (errno !== 0) {
+      throw new Error('connect() failed: errno=' + errno);
+    }
+    return fd;
+  } catch (err) {
     close(fd);
-    throw new Error('connect() failed: errno=' + errno);
+    throw err;
   }
-  return fd;
 }
 
 // ---------------------------------------------------------------------------

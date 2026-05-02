@@ -369,6 +369,15 @@ describe('URL additional construction', () => {
     t.equal(u.pathname, '/path');
   });
 
+  it('IPv6 URL with custom port — port is preserved', (t) => {
+    const u = new URL('http://[::1]:9000/path');
+    t.equal(u.hostname, '[::1]', 'hostname is bracketed IPv6');
+    t.equal(u.port, '9000', 'port is preserved');
+    t.equal(u.pathname, '/path', 'pathname correct');
+    t.equal(u.origin, 'http://[::1]:9000', 'origin includes port');
+    t.equal(u.host, '[::1]:9000', 'host includes brackets and port');
+  });
+
   it('file: URL — protocol and pathname', (t) => {
     const u = new URL('file:///etc/hosts');
     t.equal(u.protocol, 'file:');

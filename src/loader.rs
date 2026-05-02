@@ -954,6 +954,16 @@ fn get_or_load_builtin_inner<'s>(
         }
 
         Some(ImportDirective::Remap { target }) => {
+            const MAX_REMAP_DEPTH: usize = 64;
+            if visited.len() >= MAX_REMAP_DEPTH {
+                let msg = v8::String::new(
+                    scope,
+                    &format!("Remap chain for '{spec}' exceeds maximum depth ({MAX_REMAP_DEPTH})"),
+                )?;
+                let exc = v8::Exception::error(scope, msg);
+                scope.throw_exception(exc);
+                return None;
+            }
             if !visited.insert(spec.to_string()) {
                 // Already in the resolution chain — circular Remap detected.
                 let msg = v8::String::new(

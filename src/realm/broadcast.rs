@@ -137,7 +137,17 @@ pub fn publish(name: &str, bytes: Vec<u8>, origin_handle: u32) {
         }
         let byte: [u8; 1] = [1];
         // SAFETY: wake_write_fd is a valid open pipe write end.
-        unsafe { libc::write(entry.wake_write_fd, byte.as_ptr() as *const _, 1) };
+        let ret = unsafe { libc::write(entry.wake_write_fd, byte.as_ptr() as *const _, 1) };
+        if ret < 0 {
+            let raw = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            // EAGAIN/EWOULDBLOCK means the pipe buffer is full — the subscriber
+            // already has a pending wakeup, so this is fine.  Any other error
+            // (EPIPE, EBADF, …) means the subscriber's wake pipe is broken; mark
+            // as dead so the fanout entry is cleaned up.
+            if raw != libc::EAGAIN && raw != libc::EWOULDBLOCK {
+                dead.push(entry.handle);
+            }
+        }
     }
 
     if !dead.is_empty() {

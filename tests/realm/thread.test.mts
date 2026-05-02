@@ -71,6 +71,48 @@ describe('Thread Realm basics', () => {
     t.equal(result.z, true, 'z correct');
   });
 
+  it('Map is preserved as Map through realm.call() (not converted to plain object)', async (t) => {
+    type MapFn = (m: Map<string, number>) => Map<string, number>;
+    const realm = new Realm<MapFn>({
+      thread: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    const input = new Map<string, number>([['alpha', 1], ['beta', 2]]);
+    const result = await realm.call(input);
+    t.ok(result instanceof Map, 'result is a Map (not a plain object)');
+    t.equal(result.get('alpha'), 1, 'Map entry alpha preserved');
+    t.equal(result.get('beta'),  2, 'Map entry beta preserved');
+    t.equal(result.size, 2, 'Map size correct');
+  });
+
+  it('Set is preserved as Set through realm.call()', async (t) => {
+    type SetFn = (s: Set<string>) => Set<string>;
+    const realm = new Realm<SetFn>({
+      thread: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    const input = new Set(['x', 'y', 'z']);
+    const result = await realm.call(input);
+    t.ok(result instanceof Set, 'result is a Set (not a plain object)');
+    t.ok(result.has('x') && result.has('y') && result.has('z'), 'all Set entries present');
+    t.equal(result.size, 3, 'Set size correct');
+  });
+
+  it('Error subclass name and message are preserved through realm.call()', async (t) => {
+    const realm = new Realm({
+      thread: true,
+      entry: new URL('./fixtures/type-error-fn.mts', import.meta.url).pathname,
+    });
+    try {
+      await realm.call('anything');
+      t.fail('should have thrown');
+    } catch (err) {
+      t.ok(err instanceof Error, 'error is an Error');
+      t.equal((err as Error).name, 'TypeError', 'error name (TypeError) is preserved');
+      t.ok((err as Error).message.includes('expected a string'), 'message content preserved');
+    }
+  });
+
   it('terminate() stops a thread realm', async (t) => {
     const realm = new Realm({
       thread: true,

@@ -340,10 +340,14 @@ async function _handleConnection(conn: InstanceType<typeof Socket>, handler: (re
         inFlight++;
 
         if (_topicRequestStart.hasSubscribers) {
+          // Guard URL construction: non-standard request targets (e.g. OPTIONS *)
+          // produce synthetic URLs that `new URL()` can parse, but be defensive.
+          let route = '/';
+          try { route = new URL(req.url).pathname; } catch (_) {}
           _topicRequestStart.publish(otelRuntimeEvent('http.server', 'request', 'start', {
             requestId,
             method: req.method,
-            route: new URL(req.url).pathname,
+            route,
             url: req.url,
             headers: Object.fromEntries(req.headers.entries()),
             timeUnixNano: Date.now() * 1_000_000,
@@ -364,7 +368,7 @@ async function _handleConnection(conn: InstanceType<typeof Socket>, handler: (re
               _topicRequestError.publish(otelRuntimeEvent('http.server', 'request', 'error', {
                 requestId,
                 method: req.method,
-                route: new URL(req.url).pathname,
+                route: (() => { try { return new URL(req.url).pathname; } catch (_) { return '/'; } })(),
                 url: req.url,
                 error: e,
                 timeUnixNano: Date.now() * 1_000_000,
@@ -400,7 +404,7 @@ async function _handleConnection(conn: InstanceType<typeof Socket>, handler: (re
               _topicRequestEnd.publish(otelRuntimeEvent('http.server', 'request', 'end', {
                 requestId,
                 method: req.method,
-                route: new URL(req.url).pathname,
+                route: (() => { try { return new URL(req.url).pathname; } catch (_) { return '/'; } })(),
                 url: req.url,
                 statusCode: res.status,
                 timeUnixNano: Date.now() * 1_000_000,
@@ -423,7 +427,7 @@ async function _handleConnection(conn: InstanceType<typeof Socket>, handler: (re
               _topicRequestError.publish(otelRuntimeEvent('http.server', 'request', 'error', {
                 requestId,
                 method: req.method,
-                route: new URL(req.url).pathname,
+                route: (() => { try { return new URL(req.url).pathname; } catch (_) { return '/'; } })(),
                 url: req.url,
                 error: e,
                 timeUnixNano: Date.now() * 1_000_000,

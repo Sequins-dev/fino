@@ -193,7 +193,9 @@ function readPipeFds(buf: ArrayBuffer | { buffer: ArrayBuffer }): [number, numbe
 /** Set a file descriptor to non-blocking mode. */
 function setNonblocking(fd: number): void {
   const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed on fd ${fd}`);
+  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  if (rc < 0) throw new Error(`fcntl(F_SETFL) failed on fd ${fd}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -395,9 +397,19 @@ export class Process {
     const stdoutBuf = new ArrayBuffer(8);
     const stderrBuf = new ArrayBuffer(8);
 
-    if (Number(lib.symbols.pipe(stdinBuf))  < 0) throw new Error('pipe() failed for stdin');
-    if (Number(lib.symbols.pipe(stdoutBuf)) < 0) throw new Error('pipe() failed for stdout');
-    if (Number(lib.symbols.pipe(stderrBuf)) < 0) throw new Error('pipe() failed for stderr');
+    if (Number(lib.symbols.pipe(stdinBuf)) < 0) throw new Error('pipe() failed for stdin');
+    if (Number(lib.symbols.pipe(stdoutBuf)) < 0) {
+      const [stdinR, stdinW] = readPipeFds(stdinBuf);
+      lib.symbols.close(stdinR); lib.symbols.close(stdinW);
+      throw new Error('pipe() failed for stdout');
+    }
+    if (Number(lib.symbols.pipe(stderrBuf)) < 0) {
+      const [stdinR, stdinW] = readPipeFds(stdinBuf);
+      const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
+      lib.symbols.close(stdinR);  lib.symbols.close(stdinW);
+      lib.symbols.close(stdoutR); lib.symbols.close(stdoutW);
+      throw new Error('pipe() failed for stderr');
+    }
 
     const [stdinR,  stdinW]  = readPipeFds(stdinBuf);
     const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);

@@ -1225,7 +1225,15 @@ export async function parseRequest(source: AsyncIterable<Uint8Array | ArrayBuffe
   const version = parts.slice(2).join(' ') || 'HTTP/1.1';
 
   const host = headers.get('host');
-  const url  = host ? 'http://' + host + path : path;
+  // RFC 7230 §5.3.4: asterisk-form ('*') is used by OPTIONS and must not be
+  // combined with a host to form a URL. Use a synthetic absolute URL so the
+  // Request object is always parseable, but expose the raw target via pathname.
+  let url: string;
+  if (path === '*') {
+    url = host ? 'http://' + host + '/*' : 'http://unknown/*';
+  } else {
+    url = host ? 'http://' + host + path : path;
+  }
 
   const framing = _bodyFraming(headers, true, 0);
   let body;

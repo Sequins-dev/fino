@@ -171,6 +171,45 @@ describe('Watcher', () => {
     t.ok(events.length >= 1, 'got at least one event');
   });
 
+  it('watch() on a non-existent path either throws or emits no events', async (t) => {
+    const watcher = new Watcher();
+    const nonExistent = TEST_DIR + '/does-not-exist-' + Date.now() + '.txt';
+    let threw = false;
+    try {
+      watcher.watch(nonExistent);
+    } catch (_) {
+      threw = true;
+    }
+
+    if (!threw) {
+      // If watch() did not throw, ensure no spurious events arrive in a short window
+      const events = await collectEvents(watcher, 1, 150);
+      watcher.close();
+      t.equal(events.length, 0, 'no events emitted for non-existent path');
+    } else {
+      watcher.close();
+      t.ok(true, 'watch() throws for non-existent path (acceptable behavior)');
+    }
+  });
+
+  it('close() suppresses events for modifications made after close', async (t) => {
+    const path = TEST_DIR + '/post-close-test.txt';
+    await fs.writeFile(path, 'initial');
+
+    const watcher = new Watcher();
+    watcher.watch(path);
+    watcher.close();
+
+    // Modify the file after the watcher was closed — should not receive events
+    await fs.writeFile(path, 'modified after close');
+
+    const iter = watcher[Symbol.asyncIterator]();
+    const result = await iter.next();
+    t.ok(result.done === true, 'iterator is done immediately after close (no post-close events)');
+
+    await fs.unlink(path);
+  });
+
   it('recursive: true watches subdirectories', async (t) => {
     const dir = TEST_DIR + '/recursive-dir';
     const sub = dir + '/sub';

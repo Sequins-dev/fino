@@ -300,6 +300,42 @@ describe('Response parsing', () => {
   });
 });
 
+describe('Response parsing — edge cases', () => {
+  it('headers only (no body, connection close) produces empty body', async (t) => {
+    // An HTTP/1.0-style response with no Content-Length and no body —
+    // just headers then the connection closes. The parser should return
+    // an empty body, not hang waiting for bytes.
+    const res = await parseResponse(source(
+      'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n'
+    ));
+    t.equal(res.status, 200, 'status 200');
+    const data = await collectBody(res.body);
+    // EOF body: 0 bytes since the source ended after the headers.
+    t.equal(data.byteLength, 0, 'empty body on headers-only response');
+  });
+
+  it('OPTIONS * request is parsed with pathname /*, not malformed URL', async (t) => {
+    // RFC 7230 §5.3.4: asterisk-form is valid for OPTIONS.
+    // The parser should construct a parseable URL (not throw).
+    const req = await parseRequest(source(
+      'OPTIONS * HTTP/1.1\r\nHost: example.com\r\n\r\n'
+    ));
+    t.equal(req.method, 'OPTIONS', 'method is OPTIONS');
+    // The URL must be parseable (not throw on new URL(req.url))
+    const url = new URL(req.url);
+    t.equal(url.host, 'example.com', 'host preserved');
+    t.ok(url.pathname.includes('*'), 'asterisk preserved in URL');
+  });
+
+  it('duplicate identical Content-Length values produce correct body length', async (t) => {
+    const res = await parseResponse(source(
+      'HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello'
+    ));
+    const data = await collectBody(res.body);
+    t.equal(new TextDecoder().decode(data), 'hello', 'body correct with duplicate identical CL');
+  });
+});
+
 describe('Response multi-chunk', () => {
   it('response headers split across chunks', async (t) => {
     const raw = 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi';
