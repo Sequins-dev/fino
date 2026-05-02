@@ -1,19 +1,35 @@
 # Distribution — Remaining Work
 
-## Remote Workers
+## Status
 
-`RealmPool` for local thread workers is implemented. Remote distribution is not:
+The original design (`RealmPoolServer`, `pool.addRemote()`, `NetPort`) was
+written before cluster Realms existed.  It is now obsolete.
 
-- **RealmPoolServer**: Server that hosts remote Realm workers and routes messages via WebSockets, enabling `pool.addRemote(url)` to dispatch work to workers on other machines.
-- **NetPort Integration**: The transport connecting a local `RealmPool` to a remote `RealmPoolServer`. Needs to integrate with the existing wake-pipe + mpsc channel pattern used by thread Realms.
+The cluster already provides `new Realm({ remote: true })` for spawning onto
+a remote node.  The open question is how `RealmPool` should participate in
+this — should a pool be able to dispatch across cluster nodes, and if so,
+what does that look like?
 
-## Advanced Routing
+## Design questions before any code
 
-- **Content-Based Routing**: Routing based on message content (e.g. tenant ID, request type) to enable sticky sessions or specialized worker pools.
-- **Dynamic Topology**: Ability to update the routing table at runtime for hot-swapping worker code without dropping in-flight requests.
+**Q1. Pool-vs-cluster shape.**  
+Should `RealmPool` gain a "remote slot" mode that uses cluster spawn under
+the hood (`new Realm({ thread: true })` vs `new Realm({ remote: true })`)?
+Or is distributed dispatch a separate top-level abstraction built on top of
+the cluster, not on top of `RealmPool`?
 
-## Open Questions
+**Q2. Worker discovery.**  
+How does a pool find cluster nodes willing to host workers?  Options: a
+static address list, DNS-SD, or the seed broadcasting available capacity.
 
-- **Q-DIST-1**: Should `pool.addRemote()` authenticate the connection? If so, what mechanism (token, mTLS)?
-- **Q-DIST-3**: How to handle persistently slow workers beyond simple per-call timeouts? Options: backpressure signalling, worker replacement, circuit breaking.
-- **Q-DIST-5**: Should the pool support priority queues for different traffic classes?
+**Q3. Slow-worker handling.**  
+The current per-call timeout terminates a worker.  For remote workers,
+killing the node may be too blunt.  What is the right policy — backpressure,
+circuit-breaking, or replacement?
+
+**Q4. Authentication.**  
+Remote pool connections are inter-process.  Should they reuse the cluster
+auth mechanism (Q3 in `cluster.md`), or have their own token/mTLS model?
+
+Do not start implementation without a design pass that answers at least Q1
+and Q2.

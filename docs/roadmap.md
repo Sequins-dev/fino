@@ -33,31 +33,15 @@ The single largest practical barrier to adoption is the inability to use npm pac
   - Type mapping: NULL → `null`, INTEGER → `number` / `BigInt`, REAL → `number`, TEXT → `string`, BLOB → `Uint8Array`
 - **Complexity**: Medium (1 week). The sqlite3 C API is clean. Main work is value marshaling via `sqlite3_bind_*` / `sqlite3_column_*`.
 
-### 2.7 Extended SubtleCrypto Algorithms
+### 2.7 Extended SubtleCrypto Algorithms ✓ Done
 
-- **Why**: Real-world cryptography — JWT signing, TLS key exchange, OAuth PKCE, end-to-end encryption — requires asymmetric algorithms. The current implementation covers only symmetric (AES) and hashing (SHA, HMAC).
-- **Approach**: Extend `js/internal/globals/crypto.mts` via the existing `internal:openssl` FFI bindings. Add:
-  - **ECDSA** (P-256, P-384, P-521) — `sign` / `verify` / `generateKey` / `importKey` / `exportKey`
-  - **ECDH** (P-256, P-384, P-521) — `generateKey` / `deriveBits` / `deriveKey`
-  - **RSA-OAEP** — `encrypt` / `decrypt` / `generateKey` / `importKey` / `exportKey`
-  - **RSA-PSS** — `sign` / `verify` / `generateKey` / `importKey` / `exportKey`
-  - Key serialization: SPKI (public), PKCS8 (private), JWK
-- **Complexity**: Medium-large (1–2 weeks). OpenSSL EVP APIs handle the heavy lifting; the work is key serialization/deserialization and JWK format handling.
+SubtleCrypto now covers AES-GCM, AES-CBC, SHA-*, HMAC, PBKDF2, HKDF, wrapKey/unwrapKey, ECDSA (P-256/P-384/P-521), ECDH (P-256/P-384/P-521, deriveBits/deriveKey), RSA-OAEP, RSA-PSS, RSASSA-PKCS1-v1_5, PKCS8 private-key import/export, and JWK for EC and RSA key types. All backed by OpenSSL FFI.
 
 ---
 
 ## Tier 3 — Broader Compatibility
 
 Larger investments that extend reach to the long tail of the npm ecosystem and improve developer experience.
-
-### 3.2 VM / Module Evaluation
-
-- **Why**: Enables sandboxed code execution, server-side rendering, plugin systems, REPLs, and test isolation. Equivalent to the Node.js `vm` module.
-- **Approach**: Requires Rust-side support — create additional V8 `Context` objects within the existing `Isolate`, each with its own global template. V8 natively supports multiple contexts with isolated globals. The loader already manages context-scoped state via `FinoState` in context slots (`src/loader.rs`, `src/state.rs`). Expose as `fino:vm`:
-  - `createContext(sandbox?)` — creates an isolated evaluation context with a fresh global
-  - `runInContext(code, context)` — evaluate a JS string in the context via `v8::Script::compile()`
-  - `Script` class for compiled-once, run-many patterns
-- **Complexity**: Medium. V8 contexts are first-class and well-documented. The main challenge is defining what leaks between contexts and integrating the microtask queue.
 
 ### 3.3 Watch Mode
 
@@ -83,12 +67,6 @@ Long-term, strategic investments. High value but very large effort.
 - **Why**: Performance and compatibility with modern infrastructure. Required for gRPC.
 - **Depends on**: TLS (done, ALPN negotiation for `h2`).
 - **Complexity**: Very large. HTTP/2 framing, HPACK header compression, stream multiplexing, and flow control are each substantial projects.
-
-### 4.2 Workers / Multi-threading
-
-- **Why**: CPU-bound tasks block the single-threaded event loop. Workers allow parallelism for compute-intensive work.
-- **Approach**: Spawn OS threads, each with their own V8 `Isolate`. V8 is single-threaded per isolate but supports multiple isolates in the same process (the standard pattern used by Node.js, Deno, and Bun). Communication via `postMessage` + structured clone. `SharedArrayBuffer` and `Atomics` are built into V8 and do not require custom implementation.
-- **Complexity**: Very large. Thread-safe message passing, structured clone, and the overall Worker API surface require substantial work — though `SharedArrayBuffer`/`Atomics` come for free from V8.
 
 ### 4.4 Synthetic Module Building from JS
 

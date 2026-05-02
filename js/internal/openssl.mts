@@ -98,6 +98,100 @@ const _cryptoSymbols = {
     result: 'i32',
   },
 
+  // ECDH key derivation via EVP_PKEY_CTX (also reused for RSA in Phase 5).
+  // EVP_PKEY_CTX_new(pkey, engine) — create context from an existing EVP_PKEY
+  // EVP_PKEY_CTX_free(ctx)
+  // EVP_PKEY_derive_init(ctx) → 1 on success
+  // EVP_PKEY_derive_set_peer(ctx, peer_pkey) → 1 on success
+  // EVP_PKEY_derive(ctx, key_out_or_null, keylen_buf) → 1 on success
+  EVP_PKEY_CTX_new:          { parameters: ['pointer', 'pointer'], result: 'pointer' },
+  EVP_PKEY_CTX_free:         { parameters: ['pointer'], result: 'void' },
+  EVP_PKEY_derive_init:      { parameters: ['pointer'], result: 'i32' },
+  EVP_PKEY_derive_set_peer:  { parameters: ['pointer', 'pointer'], result: 'i32' },
+  // EVP_PKEY_derive(ctx, key, keylen): key=null → writes required length into keylen;
+  //                                    key!=null → writes shared secret into key.
+  // keylen is a usize* (native pointer size), passed as a buffer holding 8 bytes.
+  EVP_PKEY_derive:           { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
+
+  // EC private key scalar extraction (ECDH raw export, EC JWK 'd').
+  EC_KEY_get0_private_key:   { parameters: ['pointer'], result: 'pointer' }, // → BIGNUM* (borrowed)
+  BN_num_bytes:              { parameters: ['pointer'], result: 'i32' },
+  BN_bn2bin:                 { parameters: ['pointer', 'buffer'], result: 'i32' },
+  // EC JWK private import: construct EC_KEY from raw (x, y, d) coordinates.
+  BN_bin2bn:                 { parameters: ['buffer', 'i32', 'pointer'], result: 'pointer' }, // → BIGNUM*
+  BN_free:                   { parameters: ['pointer'], result: 'void' },
+  EC_KEY_set_private_key:    { parameters: ['pointer', 'pointer'], result: 'i32' },
+  // EC_POINT_mul(group, r, n, q, m, ctx): compute r = n*G + m*q; n=scalar for base-point multiply.
+  EC_POINT_mul:              { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
+
+  // RSA key generation.
+  // RSA_new() → RSA*;  RSA_free(rsa);  RSA_generate_key_ex(rsa, bits, exponent_bn, cb) → 1
+  RSA_new:             { parameters: [], result: 'pointer' },
+  RSA_free:            { parameters: ['pointer'], result: 'void' },
+  RSA_generate_key_ex: { parameters: ['pointer', 'i32', 'pointer', 'pointer'], result: 'i32' },
+  RSA_size:            { parameters: ['pointer'], result: 'i32' }, // max ciphertext/signature size
+  // RSA_get0_key(rsa, n, e, d): borrow BIGNUMs; any may be null if not wanted.
+  RSA_get0_key:        { parameters: ['pointer', 'pointer', 'pointer', 'pointer'], result: 'void' },
+  RSA_get0_factors:    { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
+  RSA_get0_crt_params: { parameters: ['pointer', 'pointer', 'pointer', 'pointer'], result: 'void' },
+  // RSA_set0_key owns the BIGNUMs passed in (do not free them separately).
+  RSA_set0_key:        { parameters: ['pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
+  RSA_set0_factors:    { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
+  RSA_set0_crt_params: { parameters: ['pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
+
+  // BIGNUM operations — used for RSA public exponent and JWK component encoding/decoding.
+  // (BN_free, BN_bin2bn, BN_num_bytes, BN_bn2bin are already declared in the EC section above.)
+  BN_new:           { parameters: [], result: 'pointer' },
+  BN_set_word:      { parameters: ['pointer', 'u64'], result: 'i32' },
+  BN_num_bits:      { parameters: ['pointer'], result: 'i32' },
+  // BN_bn2binpad(a, to, tolen) → tolen bytes, left-zero-padded (requires OpenSSL 1.1+)
+  BN_bn2binpad:     { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
+
+  // EVP_PKEY assignment / extraction for RSA.
+  EVP_PKEY_assign_RSA: { parameters: ['pointer', 'pointer'], result: 'i32' },
+  EVP_PKEY_get1_RSA:   { parameters: ['pointer'], result: 'pointer' }, // increments refcount
+
+  // Generic SPKI: i2d_PUBKEY / d2i_PUBKEY work for any EVP_PKEY type (EC and RSA),
+  // unlike the hand-rolled SPKI used for EC.  Same pointer-to-pointer convention.
+  i2d_PUBKEY: { parameters: ['pointer', 'buffer'], result: 'i32' },
+  d2i_PUBKEY: { parameters: ['pointer', 'buffer', 'i32'], result: 'pointer' },
+
+  // RSA-OAEP encrypt / decrypt via EVP_PKEY_CTX.
+  // EVP_PKEY_CTX_new is already declared above (ECDH section).
+  EVP_PKEY_encrypt_init:          { parameters: ['pointer'], result: 'i32' },
+  EVP_PKEY_encrypt:               { parameters: ['pointer', 'buffer', 'buffer', 'buffer', 'usize'], result: 'i32' },
+  EVP_PKEY_decrypt_init:          { parameters: ['pointer'], result: 'i32' },
+  EVP_PKEY_decrypt:               { parameters: ['pointer', 'buffer', 'buffer', 'buffer', 'usize'], result: 'i32' },
+  EVP_PKEY_CTX_set_rsa_padding:   { parameters: ['pointer', 'i32'], result: 'i32' },
+  EVP_PKEY_CTX_set_rsa_oaep_md:   { parameters: ['pointer', 'pointer'], result: 'i32' },
+  EVP_PKEY_CTX_set_rsa_mgf1_md:   { parameters: ['pointer', 'pointer'], result: 'i32' },
+
+  // RSA-PSS / PKCS1-v1_5 sign and verify.
+  // Use the EVP_PKEY_sign* family (hash-then-sign) to avoid the EVP_DigestSignInit
+  // pctx pointer-to-pointer output parameter.  Pre-compute the digest with
+  // openssl.digest() and pass it directly.
+  EVP_PKEY_sign_init:    { parameters: ['pointer'], result: 'i32' },
+  // EVP_PKEY_sign(ctx, sig, siglen_buf, tbs, tbslen): sig=null → get length
+  EVP_PKEY_sign:         { parameters: ['pointer', 'buffer', 'buffer', 'buffer', 'usize'], result: 'i32' },
+  EVP_PKEY_verify_init:  { parameters: ['pointer'], result: 'i32' },
+  // EVP_PKEY_verify(ctx, sig, siglen, tbs, tbslen) → 1=valid, 0=invalid, <0=error
+  EVP_PKEY_verify:       { parameters: ['pointer', 'buffer', 'usize', 'buffer', 'usize'], result: 'i32' },
+  EVP_PKEY_CTX_set_rsa_pss_saltlen: { parameters: ['pointer', 'i32'], result: 'i32' },
+  // EVP_PKEY_CTX_set_signature_md sets the digest used for RSA-PSS / PKCS1-v1_5 signature.
+  EVP_PKEY_CTX_set_signature_md:    { parameters: ['pointer', 'pointer'], result: 'i32' },
+
+  // PKCS8 PrivateKeyInfo (unencrypted) — used for EC and RSA private key DER export/import.
+  // EVP_PKEY2PKCS8 wraps an EVP_PKEY in a PKCS8_PRIV_KEY_INFO structure (no password).
+  // i2d_PKCS8_PRIV_KEY_INFO(key, pp): pp==null → returns required length; pp!=null → writes DER.
+  // d2i_PKCS8_PRIV_KEY_INFO(a, pp, length): parses DER → PKCS8_PRIV_KEY_INFO*.
+  // EVP_PKCS82PKEY(p8) → EVP_PKEY*.
+  // PKCS8_PRIV_KEY_INFO_free frees the temporary PKCS8 structure.
+  EVP_PKEY2PKCS8:              { parameters: ['pointer'], result: 'pointer' },
+  i2d_PKCS8_PRIV_KEY_INFO:     { parameters: ['pointer', 'buffer'], result: 'i32' },
+  d2i_PKCS8_PRIV_KEY_INFO:     { parameters: ['pointer', 'buffer', 'i32'], result: 'pointer' },
+  EVP_PKCS82PKEY:              { parameters: ['pointer'], result: 'pointer' },
+  PKCS8_PRIV_KEY_INFO_free:    { parameters: ['pointer'], result: 'void' },
+
   // ECDSA / EC key operations
   OBJ_txt2nid:            { parameters: ['buffer'], result: 'i32' },
   EC_KEY_new_by_curve_name: { parameters: ['i32'], result: 'pointer' },
@@ -662,39 +756,98 @@ export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: U
 }
 
 // ---------------------------------------------------------------------------
-// ECDSA / EC — key generation, SPKI import/export, sign/verify
+// ECDSA / EC — multi-curve key generation, SPKI import/export, sign/verify
+//
+// Supports P-256 (prime256v1), P-384 (secp384r1), and P-521 (secp521r1).
 // ---------------------------------------------------------------------------
 
-// NID for prime256v1, resolved once via OBJ_txt2nid and cached.
-let _p256Nid = 0;
-function _p256NID(): number {
-  if (_p256Nid === 0) {
-    const lib = _requireCrypto();
-    _p256Nid = lib.symbols.OBJ_txt2nid(encodeUtf8('prime256v1\0'));
-    if (_p256Nid === 0) throw new Error('OBJ_txt2nid: prime256v1 not recognised');
-  }
-  return _p256Nid;
+// NID cache: 'P-256' | 'P-384' | 'P-521' → OpenSSL NID integer
+const _curveNidCache = new Map<string, number>();
+
+function _curveNID(namedCurve: string): number {
+  const cached = _curveNidCache.get(namedCurve);
+  if (cached !== undefined) return cached;
+  const lib = _requireCrypto();
+  const oidNames: Record<string, string> = {
+    'P-256': 'prime256v1',
+    'P-384': 'secp384r1',
+    'P-521': 'secp521r1',
+  };
+  const oidName = oidNames[namedCurve] ?? namedCurve;
+  const nid = lib.symbols.OBJ_txt2nid(encodeUtf8(oidName + '\0'));
+  if (nid === 0) throw new Error(`OBJ_txt2nid: ${oidName} not recognised`);
+  _curveNidCache.set(namedCurve, nid);
+  return nid;
 }
 
-// Fixed 26-byte SubjectPublicKeyInfo DER prefix for an uncompressed P-256 public key.
-// The full SPKI is: prefix (26 bytes) || 04 || X (32 bytes) || Y (32 bytes) = 91 bytes.
-const _P256_SPKI_PREFIX = new Uint8Array([
-  0x30, 0x59,                                     // SEQUENCE, 89 bytes
-  0x30, 0x13,                                     // SEQUENCE, 19 bytes (algorithm)
-  0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,        // OID ecPublicKey
-  0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,  // OID prime256v1
-  0x03, 0x42,                                     // BIT STRING, 66 bytes
-  0x00,                                           // 0 unused bits
-]);
+// Per-curve SPKI prefix bytes and geometry constants.
+//
+// SubjectPublicKeyInfo structure:
+//   SEQUENCE {
+//     SEQUENCE { OID id-ecPublicKey; OID <curve> }
+//     BIT STRING { 0x00 04 X Y }   (uncompressed point, POINT_CONVERSION=4)
+//   }
+//
+// Sizes:
+//   P-256: prefix 26 B, point 65 B (04+32+32),   total SPKI 91 B
+//   P-384: prefix 23 B, point 97 B (04+48+48),   total SPKI 120 B
+//   P-521: prefix 25 B, point 133 B (04+66+66),  total SPKI 158 B
+interface _CurveInfo {
+  prefix:    Uint8Array;
+  coordSize: number; // bytes per coordinate
+  pointSize: number; // full uncompressed point = 1 + 2 × coordSize
+  spkiSize:  number; // prefix.length + pointSize
+}
+
+const _CURVE_INFO: Record<string, _CurveInfo> = {
+  'P-256': {
+    prefix: new Uint8Array([
+      0x30, 0x59,                                                        // SEQUENCE(89)
+      0x30, 0x13,                                                        // SEQUENCE(19)
+      0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,            // OID ecPublicKey
+      0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07,      // OID prime256v1
+      0x03, 0x42, 0x00,                                                  // BIT STRING(66), 0 unused
+    ]),
+    coordSize: 32, pointSize: 65, spkiSize: 91,
+  },
+  'P-384': {
+    prefix: new Uint8Array([
+      0x30, 0x76,                                                        // SEQUENCE(118)
+      0x30, 0x10,                                                        // SEQUENCE(16)
+      0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,            // OID ecPublicKey
+      0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x22,                        // OID secp384r1
+      0x03, 0x62, 0x00,                                                  // BIT STRING(98), 0 unused
+    ]),
+    coordSize: 48, pointSize: 97, spkiSize: 120,
+  },
+  'P-521': {
+    prefix: new Uint8Array([
+      0x30, 0x81, 0x9b,                                                  // SEQUENCE(155) long-form
+      0x30, 0x10,                                                        // SEQUENCE(16)
+      0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01,            // OID ecPublicKey
+      0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x23,                        // OID secp521r1
+      0x03, 0x81, 0x86, 0x00,                                            // BIT STRING(134) long-form, 0 unused
+    ]),
+    coordSize: 66, pointSize: 133, spkiSize: 158,
+  },
+};
+
+/** Return the byte size of each coordinate for the given named curve (32/48/66). */
+export function ecdsaCoordSize(namedCurve: string): number {
+  const info = _CURVE_INFO[namedCurve];
+  if (!info) throw new Error(`Unsupported EC curve: ${namedCurve}`);
+  return info.coordSize;
+}
 
 /**
- * Generate an ECDSA P-256 key pair.
- * Returns an EVP_PKEY* (8-byte ArrayBuffer) owning both private and public components.
+ * Generate an EC key pair for the given named curve.
+ * Returns an EVP_PKEY* owning both private and public components.
  * The caller must eventually call `evpPkeyFree()`.
  */
-export function evpPkeyGenerateEcP256(): object {
-  const lib  = _requireCrypto();
-  const nid  = _p256NID();
+export function evpPkeyGenerateEc(namedCurve: string): object {
+  if (!_CURVE_INFO[namedCurve]) throw new Error(`Unsupported EC curve: ${namedCurve}`);
+  const lib   = _requireCrypto();
+  const nid   = _curveNID(namedCurve);
   const ecKey = lib.symbols.EC_KEY_new_by_curve_name(nid);
   if (ecKey === null) throw new Error('EC_KEY_new_by_curve_name failed: ' + getErrorString());
   if (lib.symbols.EC_KEY_generate_key(ecKey) !== 1) {
@@ -714,46 +867,72 @@ export function evpPkeyGenerateEcP256(): object {
   return pkey;
 }
 
-/** Free an EVP_PKEY* returned by evpPkeyGenerateEcP256 or evpPkeyImportSpki. */
+/** @deprecated Use evpPkeyGenerateEc('P-256') instead. */
+export function evpPkeyGenerateEcP256(): object { return evpPkeyGenerateEc('P-256'); }
+
+/** Free an EVP_PKEY* returned by evpPkeyGenerateEc or evpPkeyImportSpki. */
 export function evpPkeyFree(pkey: object): void {
   _requireCrypto().symbols.EVP_PKEY_free(pkey);
 }
 
 /**
- * Export the public component of a P-256 key as 91-byte DER-encoded SPKI.
+ * Export the public component of an EC key as DER-encoded SPKI.
+ * `namedCurve` must match the curve used when the key was generated.
  */
-export function evpPkeyExportSpki(pkey: object): Uint8Array {
+export function evpPkeyExportSpki(pkey: object, namedCurve: string): Uint8Array {
+  const info = _CURVE_INFO[namedCurve];
+  if (!info) throw new Error(`Unsupported EC curve: ${namedCurve}`);
   const lib   = _requireCrypto();
   const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
   if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
   const group  = lib.symbols.EC_KEY_get0_group(ecKey);
   const point  = lib.symbols.EC_KEY_get0_public_key(ecKey);
-  const outBuf = new Uint8Array(65);
+  const outBuf = new Uint8Array(info.pointSize);
   // POINT_CONVERSION_UNCOMPRESSED = 4
-  const written = lib.symbols.EC_POINT_point2oct(group, point, 4, outBuf, 65, null);
-  if (written !== 65) throw new Error('EC_POINT_point2oct failed: ' + getErrorString());
-  const spki = new Uint8Array(91);
-  spki.set(_P256_SPKI_PREFIX);
-  spki.set(outBuf, _P256_SPKI_PREFIX.length);
+  const written = lib.symbols.EC_POINT_point2oct(group, point, 4, outBuf, info.pointSize, null);
+  if (Number(written) !== info.pointSize) {
+    throw new Error('EC_POINT_point2oct failed: ' + getErrorString());
+  }
+  const spki = new Uint8Array(info.spkiSize);
+  spki.set(info.prefix);
+  spki.set(outBuf, info.prefix.length);
   return spki;
 }
 
 /**
- * Import a P-256 public key from 91-byte DER-encoded SPKI.
- * Returns an EVP_PKEY* (public-only). The caller must call evpPkeyFree() when done.
+ * Import an EC public key from DER-encoded SPKI.
+ * Auto-detects the curve from the SPKI header bytes.
+ * Returns `{ pkey, namedCurve }`. The caller must call evpPkeyFree(pkey) when done.
  */
-export function evpPkeyImportSpki(der: Uint8Array): object {
-  if (der.length !== 91) throw new Error('ECDSA P-256 SPKI must be 91 bytes');
-  for (let i = 0; i < _P256_SPKI_PREFIX.length; i++) {
-    if (der[i] !== _P256_SPKI_PREFIX[i]) {
-      throw new Error('SPKI header does not match P-256 / prime256v1');
+export function evpPkeyImportSpki(der: Uint8Array): { pkey: object; namedCurve: string } {
+  let namedCurve: string | undefined;
+  let info: _CurveInfo | undefined;
+
+  for (const [curve, curveInfo] of Object.entries(_CURVE_INFO)) {
+    if (der.length !== curveInfo.spkiSize) continue;
+    let match = true;
+    for (let i = 0; i < curveInfo.prefix.length; i++) {
+      if (der[i] !== curveInfo.prefix[i]) { match = false; break; }
     }
+    if (match) { namedCurve = curve; info = curveInfo; break; }
   }
-  if (der[26] !== 0x04) throw new Error('SPKI: expected uncompressed EC point (0x04 prefix)');
-  const pointBytes = der.subarray(26); // 65 bytes: 04 || X || Y
+
+  if (!info || !namedCurve) {
+    const knownSizes = Object.values(_CURVE_INFO).map(c => c.spkiSize).join('/');
+    throw new Error(
+      `SPKI header does not match any supported EC curve (P-256/P-384/P-521). ` +
+      `Expected ${knownSizes} bytes, got ${der.length}.`,
+    );
+  }
+
+  const prefixLen = info.prefix.length;
+  if (der[prefixLen] !== 0x04) {
+    throw new Error(`SPKI: expected uncompressed EC point (0x04) at byte ${prefixLen}`);
+  }
+  const pointBytes = der.subarray(prefixLen); // 04 || X || Y
 
   const lib   = _requireCrypto();
-  const nid   = _p256NID();
+  const nid   = _curveNID(namedCurve);
   const ecKey = lib.symbols.EC_KEY_new_by_curve_name(nid);
   if (ecKey === null) throw new Error('EC_KEY_new_by_curve_name failed: ' + getErrorString());
 
@@ -764,14 +943,14 @@ export function evpPkeyImportSpki(der: Uint8Array): object {
     throw new Error('EC_POINT_new failed: ' + getErrorString());
   }
 
-  if (lib.symbols.EC_POINT_oct2point(group, point, pointBytes, 65, null) !== 1) {
+  if (lib.symbols.EC_POINT_oct2point(group, point, pointBytes, info.pointSize, null) !== 1) {
     lib.symbols.EC_POINT_free(point);
     lib.symbols.EC_KEY_free(ecKey);
     throw new Error('EC_POINT_oct2point failed: ' + getErrorString());
   }
 
   const rc2 = lib.symbols.EC_KEY_set_public_key(ecKey, point);
-  lib.symbols.EC_POINT_free(point); // EC_KEY copied the point
+  lib.symbols.EC_POINT_free(point);
   if (rc2 !== 1) {
     lib.symbols.EC_KEY_free(ecKey);
     throw new Error('EC_KEY_set_public_key failed: ' + getErrorString());
@@ -787,21 +966,21 @@ export function evpPkeyImportSpki(der: Uint8Array): object {
     lib.symbols.EC_KEY_free(ecKey);
     throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
   }
-  return pkey;
+  return { pkey, namedCurve };
 }
 
 /**
- * ECDSA sign: compute `ECDSA_sign(0, hash, hashLen, ...)` and return the
- * DER-encoded signature.  `hash` must already be the SHA-256 digest (32 bytes).
+ * ECDSA sign: compute ECDSA_sign(0, hash, hashLen, ...) and return the
+ * DER-encoded signature.  `hash` must already be the digest bytes.
  */
 export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
   const lib   = _requireCrypto();
   const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
   if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
-  // P-256 DER signature is at most 72 bytes (2 × (1-byte tag + 1-byte len + 33-byte int))
-  const sigBuf    = new Uint8Array(72);
+  // 150 bytes is enough for all supported curves (P-521 max DER is ~141 bytes).
+  const sigBuf    = new Uint8Array(150);
   const siglenBuf = new Uint8Array(4);
-  new DataView(siglenBuf.buffer).setUint32(0, 72, true);
+  new DataView(siglenBuf.buffer).setUint32(0, 150, true);
   if (lib.symbols.ECDSA_sign(0, hash, hash.length, sigBuf, siglenBuf, ecKey) !== 1) {
     throw new Error('ECDSA_sign failed: ' + getErrorString());
   }
@@ -810,13 +989,559 @@ export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
 
 /**
  * ECDSA verify: return true if `derSig` is a valid DER-encoded ECDSA signature
- * over `hash` (SHA-256 digest, 32 bytes) for the given public key.
+ * over `hash` for the given public key.
  */
 export function ecdsaVerify(hash: Uint8Array, derSig: Uint8Array, pkey: object): boolean {
   const lib   = _requireCrypto();
   const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
   if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
   return lib.symbols.ECDSA_verify(0, hash, hash.length, derSig, derSig.length, ecKey) === 1;
+}
+
+// ---------------------------------------------------------------------------
+// RSA key generation and operations
+// ---------------------------------------------------------------------------
+
+const RSA_PKCS1_PADDING      = 1;
+const RSA_PKCS1_OAEP_PADDING = 4;
+const RSA_PKCS1_PSS_PADDING  = 6;
+const RSA_PSS_SALTLEN_AUTO   = -2; // use digest length for verify, set from signature for verify
+
+/**
+ * Generate an RSA key pair and return an EVP_PKEY* owning it.
+ * `publicExponent` is typically 65537.  The caller must call evpPkeyFree().
+ */
+export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number): object {
+  const lib = _requireCrypto();
+  const rsa = lib.symbols.RSA_new();
+  if (rsa === null) throw new Error('RSA_new failed: ' + getErrorString());
+
+  const bn = lib.symbols.BN_new();
+  if (bn === null) { lib.symbols.RSA_free(rsa); throw new Error('BN_new failed'); }
+
+  if (lib.symbols.BN_set_word(bn, BigInt(publicExponent)) !== 1) {
+    lib.symbols.BN_free(bn); lib.symbols.RSA_free(rsa);
+    throw new Error('BN_set_word failed: ' + getErrorString());
+  }
+  if (lib.symbols.RSA_generate_key_ex(rsa, modulusBits, bn, null) !== 1) {
+    lib.symbols.BN_free(bn); lib.symbols.RSA_free(rsa);
+    throw new Error('RSA_generate_key_ex failed: ' + getErrorString());
+  }
+  lib.symbols.BN_free(bn);
+
+  const pkey = lib.symbols.EVP_PKEY_new();
+  if (pkey === null) { lib.symbols.RSA_free(rsa); throw new Error('EVP_PKEY_new failed'); }
+  if (lib.symbols.EVP_PKEY_assign_RSA(pkey, rsa) !== 1) {
+    lib.symbols.EVP_PKEY_free(pkey); lib.symbols.RSA_free(rsa);
+    throw new Error('EVP_PKEY_assign_RSA failed: ' + getErrorString());
+  }
+  return pkey;
+}
+
+/**
+ * Export the public component of an RSA EVP_PKEY as DER-encoded SPKI.
+ * Uses i2d_PUBKEY (works for any EVP_PKEY type).
+ */
+export function evpPkeyExportSpkiRsa(pkey: object): Uint8Array {
+  const lib = _requireCrypto();
+  const len = lib.symbols.i2d_PUBKEY(pkey, null);
+  if (len <= 0) throw new Error('i2d_PUBKEY (length) failed: ' + getErrorString());
+  const der = new Uint8Array(len);
+  const pp  = _ptrPtrBuf(der);
+  const written = lib.symbols.i2d_PUBKEY(pkey, pp);
+  if (written <= 0) throw new Error('i2d_PUBKEY (write) failed: ' + getErrorString());
+  return der;
+}
+
+/**
+ * Import an RSA public key from DER-encoded SPKI.
+ * Uses d2i_PUBKEY (works for any EVP_PKEY type).
+ * The caller must call evpPkeyFree().
+ */
+export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
+  const lib  = _requireCrypto();
+  const pp   = _ptrPtrBuf(der);
+  const pkey = lib.symbols.d2i_PUBKEY(null, pp, der.length);
+  if (pkey === null) throw new Error('d2i_PUBKEY failed: ' + getErrorString());
+  return pkey;
+}
+
+/**
+ * RSA-OAEP encrypt.  Returns ciphertext.
+ * `hashMd` is the EVP_MD* for the OAEP hash and the MGF1 hash.
+ * `label` may be empty; most callers pass an empty Uint8Array.
+ */
+export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array | null, data: Uint8Array): Uint8Array {
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_encrypt_init(ctx) !== 1) throw new Error('EVP_PKEY_encrypt_init failed');
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+      throw new Error('set_rsa_padding(OAEP) failed: ' + getErrorString());
+    }
+    const md = _getMd(_normalizeDigestAlgorithm(hashAlg));
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_oaep_md(ctx, md) <= 0) {
+      throw new Error('set_rsa_oaep_md failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, md) <= 0) {
+      throw new Error('set_rsa_mgf1_md failed: ' + getErrorString());
+    }
+    // Note: setting label is omitted (label must be null or empty per Web Crypto default).
+    void label;
+
+    // Get output length.
+    const outlenBuf = new Uint8Array(8);
+    if (lib.symbols.EVP_PKEY_encrypt(ctx, null, outlenBuf, data, data.length) !== 1) {
+      throw new Error('EVP_PKEY_encrypt (length) failed: ' + getErrorString());
+    }
+    const outLen = Number(new DataView(outlenBuf.buffer).getBigUint64(0, true));
+    const outBuf = new Uint8Array(outLen);
+    const outlenBuf2 = new Uint8Array(8);
+    new DataView(outlenBuf2.buffer).setBigUint64(0, BigInt(outLen), true);
+    if (lib.symbols.EVP_PKEY_encrypt(ctx, outBuf, outlenBuf2, data, data.length) !== 1) {
+      throw new Error('EVP_PKEY_encrypt (write) failed: ' + getErrorString());
+    }
+    return outBuf;
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+/**
+ * RSA-OAEP decrypt.  Returns plaintext.
+ */
+export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array | null, data: Uint8Array): Uint8Array {
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_decrypt_init(ctx) !== 1) throw new Error('EVP_PKEY_decrypt_init failed');
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_OAEP_PADDING) <= 0) {
+      throw new Error('set_rsa_padding(OAEP) failed: ' + getErrorString());
+    }
+    const md = _getMd(_normalizeDigestAlgorithm(hashAlg));
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_oaep_md(ctx, md) <= 0) {
+      throw new Error('set_rsa_oaep_md failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, md) <= 0) {
+      throw new Error('set_rsa_mgf1_md failed: ' + getErrorString());
+    }
+    void label;
+
+    const outlenBuf = new Uint8Array(8);
+    if (lib.symbols.EVP_PKEY_decrypt(ctx, null, outlenBuf, data, data.length) !== 1) {
+      throw new Error('EVP_PKEY_decrypt (length) failed: ' + getErrorString());
+    }
+    const outLen = Number(new DataView(outlenBuf.buffer).getBigUint64(0, true));
+    const outBuf = new Uint8Array(outLen);
+    const outlenBuf2 = new Uint8Array(8);
+    new DataView(outlenBuf2.buffer).setBigUint64(0, BigInt(outLen), true);
+    if (lib.symbols.EVP_PKEY_decrypt(ctx, outBuf, outlenBuf2, data, data.length) !== 1) {
+      throw new Error('EVP_PKEY_decrypt failed (bad padding or wrong key): ' + getErrorString());
+    }
+    const actualLen = Number(new DataView(outlenBuf2.buffer).getBigUint64(0, true));
+    return outBuf.subarray(0, actualLen);
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+/**
+ * RSA-PSS sign: pre-hash `data` and sign the digest.
+ * `saltLength = -1` means "auto" (use hash size); -2 = "max".
+ */
+export function rsaPssSign(pkey: object, hashAlg: string, saltLength: number, data: Uint8Array): Uint8Array {
+  const lib  = _requireCrypto();
+  const norm = _normalizeDigestAlgorithm(hashAlg);
+  const hash = digest(hashAlg, data);
+  const ctx  = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_sign_init(ctx) !== 1) throw new Error('EVP_PKEY_sign_init failed');
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PSS_PADDING) <= 0) {
+      throw new Error('set_rsa_padding(PSS) failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_signature_md(ctx, _getMd(norm)) <= 0) {
+      throw new Error('set_signature_md failed: ' + getErrorString());
+    }
+    const sl = saltLength === -1 ? _digestSize[norm] : saltLength;
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx, sl) <= 0) {
+      throw new Error('set_rsa_pss_saltlen failed: ' + getErrorString());
+    }
+    const siglenBuf = new Uint8Array(8);
+    if (lib.symbols.EVP_PKEY_sign(ctx, null, siglenBuf, hash, hash.length) !== 1) {
+      throw new Error('EVP_PKEY_sign (length) failed: ' + getErrorString());
+    }
+    const sigLen = Number(new DataView(siglenBuf.buffer).getBigUint64(0, true));
+    const sig    = new Uint8Array(sigLen);
+    const siglenBuf2 = new Uint8Array(8);
+    new DataView(siglenBuf2.buffer).setBigUint64(0, BigInt(sigLen), true);
+    if (lib.symbols.EVP_PKEY_sign(ctx, sig, siglenBuf2, hash, hash.length) !== 1) {
+      throw new Error('EVP_PKEY_sign (write) failed: ' + getErrorString());
+    }
+    return sig;
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+/**
+ * RSA-PSS verify: return true if the signature is valid.
+ */
+export function rsaPssVerify(pkey: object, hashAlg: string, sig: Uint8Array, data: Uint8Array): boolean {
+  const lib  = _requireCrypto();
+  const norm = _normalizeDigestAlgorithm(hashAlg);
+  const hash = digest(hashAlg, data);
+  const ctx  = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_verify_init(ctx) !== 1) throw new Error('EVP_PKEY_verify_init failed');
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PSS_PADDING) <= 0) {
+      throw new Error('set_rsa_padding(PSS) failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_signature_md(ctx, _getMd(norm)) <= 0) {
+      throw new Error('set_signature_md failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx, RSA_PSS_SALTLEN_AUTO) <= 0) {
+      throw new Error('set_rsa_pss_saltlen failed: ' + getErrorString());
+    }
+    const rc = lib.symbols.EVP_PKEY_verify(ctx, sig, sig.length, hash, hash.length);
+    return rc === 1;
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+/**
+ * RSASSA-PKCS1-v1_5 sign.
+ */
+export function rsaPkcs1Sign(pkey: object, hashAlg: string, data: Uint8Array): Uint8Array {
+  const lib  = _requireCrypto();
+  const norm = _normalizeDigestAlgorithm(hashAlg);
+  const hash = digest(hashAlg, data);
+  const ctx  = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_sign_init(ctx) !== 1) throw new Error('EVP_PKEY_sign_init failed');
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0) {
+      throw new Error('set_rsa_padding(PKCS1) failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_signature_md(ctx, _getMd(norm)) <= 0) {
+      throw new Error('set_signature_md failed: ' + getErrorString());
+    }
+    const siglenBuf = new Uint8Array(8);
+    if (lib.symbols.EVP_PKEY_sign(ctx, null, siglenBuf, hash, hash.length) !== 1) {
+      throw new Error('EVP_PKEY_sign (length) failed: ' + getErrorString());
+    }
+    const sigLen = Number(new DataView(siglenBuf.buffer).getBigUint64(0, true));
+    const sig    = new Uint8Array(sigLen);
+    const siglenBuf2 = new Uint8Array(8);
+    new DataView(siglenBuf2.buffer).setBigUint64(0, BigInt(sigLen), true);
+    if (lib.symbols.EVP_PKEY_sign(ctx, sig, siglenBuf2, hash, hash.length) !== 1) {
+      throw new Error('EVP_PKEY_sign (write) failed: ' + getErrorString());
+    }
+    return sig;
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+/**
+ * RSASSA-PKCS1-v1_5 verify.
+ */
+export function rsaPkcs1Verify(pkey: object, hashAlg: string, sig: Uint8Array, data: Uint8Array): boolean {
+  const lib  = _requireCrypto();
+  const norm = _normalizeDigestAlgorithm(hashAlg);
+  const hash = digest(hashAlg, data);
+  const ctx  = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_verify_init(ctx) !== 1) throw new Error('EVP_PKEY_verify_init failed');
+    if (lib.symbols.EVP_PKEY_CTX_set_rsa_padding(ctx, RSA_PKCS1_PADDING) <= 0) {
+      throw new Error('set_rsa_padding(PKCS1) failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_CTX_set_signature_md(ctx, _getMd(norm)) <= 0) {
+      throw new Error('set_signature_md failed: ' + getErrorString());
+    }
+    const rc = lib.symbols.EVP_PKEY_verify(ctx, sig, sig.length, hash, hash.length);
+    return rc === 1;
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RSA JWK component import via raw BIGNUM construction
+//
+// Export: done by parsing the DER output of evpPkeyExportSpkiRsa /
+//         evpPkeyExportPkcs8 in JavaScript (no FFI pointer re-reading needed).
+//
+// Import: construct an RSA key from raw byte-array components using the
+//         RSA_set0_* family.  BIGNUMs are created via BN_bin2bn.
+// ---------------------------------------------------------------------------
+
+/** Convert a byte array to a new BN (caller must free via BN_free). */
+function _bytesToBn(lib: ReturnType<typeof _requireCrypto>, bytes: Uint8Array): object {
+  const bn = lib.symbols.BN_bin2bn(bytes, bytes.length, null);
+  if (bn === null) throw new Error('BN_bin2bn failed: ' + getErrorString());
+  return bn;
+}
+
+/**
+ * Import an RSA key from raw component byte arrays.
+ * Provide `d` and friends for a private key; omit them for a public key.
+ * The caller must call evpPkeyFree().
+ */
+export function rsaImportComponents(components: {
+  n: Uint8Array; e: Uint8Array;
+  d?: Uint8Array; p?: Uint8Array; q?: Uint8Array;
+  dp?: Uint8Array; dq?: Uint8Array; qi?: Uint8Array;
+}): object {
+  const lib = _requireCrypto();
+  const rsa = lib.symbols.RSA_new();
+  if (rsa === null) throw new Error('RSA_new failed');
+
+  const nBn = _bytesToBn(lib, components.n);
+  const eBn = _bytesToBn(lib, components.e);
+  const dBn = components.d ? _bytesToBn(lib, components.d) : null;
+
+  // RSA_set0_key takes ownership of the BIGNUMs.
+  if (lib.symbols.RSA_set0_key(rsa, nBn, eBn, dBn) !== 1) {
+    lib.symbols.RSA_free(rsa);
+    throw new Error('RSA_set0_key failed: ' + getErrorString());
+  }
+
+  if (components.p && components.q) {
+    const pBn = _bytesToBn(lib, components.p);
+    const qBn = _bytesToBn(lib, components.q);
+    if (lib.symbols.RSA_set0_factors(rsa, pBn, qBn) !== 1) {
+      lib.symbols.RSA_free(rsa);
+      throw new Error('RSA_set0_factors failed: ' + getErrorString());
+    }
+    if (components.dp && components.dq && components.qi) {
+      const dpBn = _bytesToBn(lib, components.dp);
+      const dqBn = _bytesToBn(lib, components.dq);
+      const qiBn = _bytesToBn(lib, components.qi);
+      if (lib.symbols.RSA_set0_crt_params(rsa, dpBn, dqBn, qiBn) !== 1) {
+        lib.symbols.RSA_free(rsa);
+        throw new Error('RSA_set0_crt_params failed: ' + getErrorString());
+      }
+    }
+  }
+
+  const pkey = lib.symbols.EVP_PKEY_new();
+  if (pkey === null) { lib.symbols.RSA_free(rsa); throw new Error('EVP_PKEY_new failed'); }
+  if (lib.symbols.EVP_PKEY_assign_RSA(pkey, rsa) !== 1) {
+    lib.symbols.EVP_PKEY_free(pkey); lib.symbols.RSA_free(rsa);
+    throw new Error('EVP_PKEY_assign_RSA failed: ' + getErrorString());
+  }
+  return pkey;
+}
+
+// ---------------------------------------------------------------------------
+// EC JWK coordinate helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the uncompressed public key point (04 || X || Y) from an EC EVP_PKEY,
+ * then split into separate X and Y Uint8Arrays of `coordSize` bytes each.
+ */
+export function ecPublicKeyCoords(pkey: object, namedCurve: string): { x: Uint8Array; y: Uint8Array } {
+  const info = _CURVE_INFO[namedCurve];
+  if (!info) throw new Error(`Unsupported EC curve: ${namedCurve}`);
+  const lib   = _requireCrypto();
+  const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
+  if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
+  const group  = lib.symbols.EC_KEY_get0_group(ecKey);
+  const point  = lib.symbols.EC_KEY_get0_public_key(ecKey);
+  const outBuf = new Uint8Array(info.pointSize);
+  const written = lib.symbols.EC_POINT_point2oct(group, point, 4, outBuf, info.pointSize, null);
+  if (Number(written) !== info.pointSize) throw new Error('EC_POINT_point2oct failed: ' + getErrorString());
+  // outBuf = 04 || X(coordSize) || Y(coordSize) — skip the 04 prefix byte.
+  const x = outBuf.slice(1, 1 + info.coordSize);
+  const y = outBuf.slice(1 + info.coordSize);
+  return { x, y };
+}
+
+/**
+ * Build an EVP_PKEY from raw EC JWK coordinates (x, y required; d optional for private).
+ * All coordinate arrays must be `coordSize` bytes (big-endian, zero-padded).
+ */
+export function evpPkeyImportEcJwk(
+  namedCurve: string,
+  x: Uint8Array,
+  y: Uint8Array,
+  d?: Uint8Array,
+): object {
+  const info = _CURVE_INFO[namedCurve];
+  if (!info) throw new Error(`Unsupported EC curve: ${namedCurve}`);
+  const lib = _requireCrypto();
+  const nid = _curveNID(namedCurve);
+
+  const ecKey = lib.symbols.EC_KEY_new_by_curve_name(nid);
+  if (ecKey === null) throw new Error('EC_KEY_new_by_curve_name failed: ' + getErrorString());
+
+  // Reconstruct the uncompressed point from x, y and import it.
+  const pointBytes = new Uint8Array(info.pointSize);
+  pointBytes[0] = 0x04;
+  pointBytes.set(x, 1);
+  pointBytes.set(y, 1 + info.coordSize);
+
+  const group = lib.symbols.EC_KEY_get0_group(ecKey);
+  const point = lib.symbols.EC_POINT_new(group);
+  if (point === null) { lib.symbols.EC_KEY_free(ecKey); throw new Error('EC_POINT_new failed: ' + getErrorString()); }
+
+  if (lib.symbols.EC_POINT_oct2point(group, point, pointBytes, info.pointSize, null) !== 1) {
+    lib.symbols.EC_POINT_free(point); lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EC_POINT_oct2point failed: ' + getErrorString());
+  }
+  if (lib.symbols.EC_KEY_set_public_key(ecKey, point) !== 1) {
+    lib.symbols.EC_POINT_free(point); lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EC_KEY_set_public_key failed: ' + getErrorString());
+  }
+  lib.symbols.EC_POINT_free(point);
+
+  // If private scalar `d` was provided, set it.
+  if (d !== undefined) {
+    const dBn = lib.symbols.BN_bin2bn(d, d.length, null);
+    if (dBn === null) { lib.symbols.EC_KEY_free(ecKey); throw new Error('BN_bin2bn(d) failed: ' + getErrorString()); }
+    if (lib.symbols.EC_KEY_set_private_key(ecKey, dBn) !== 1) {
+      lib.symbols.BN_free(dBn); lib.symbols.EC_KEY_free(ecKey);
+      throw new Error('EC_KEY_set_private_key failed: ' + getErrorString());
+    }
+    lib.symbols.BN_free(dBn);
+  }
+
+  const pkey = lib.symbols.EVP_PKEY_new();
+  if (pkey === null) { lib.symbols.EC_KEY_free(ecKey); throw new Error('EVP_PKEY_new failed: ' + getErrorString()); }
+  if (lib.symbols.EVP_PKEY_assign_EC_KEY(pkey, ecKey) !== 1) {
+    lib.symbols.EVP_PKEY_free(pkey); lib.symbols.EC_KEY_free(ecKey);
+    throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
+  }
+  return pkey;
+}
+
+// ---------------------------------------------------------------------------
+// PKCS8 PrivateKeyInfo — DER import/export for EC and RSA private keys
+//
+// The OpenSSL `i2d_*` and `d2i_*` APIs use an `unsigned char **pp` argument.
+// The FFI binding declares this as `buffer`, so we pass a Uint8Array whose
+// first 8 bytes (platform pointer size) hold the native address of our
+// actual data buffer.  Pointer.addr() gives us that address as a bigint.
+// ---------------------------------------------------------------------------
+
+/** Build an 8-byte little-endian buffer containing the native address of `buf`. */
+function _ptrPtrBuf(buf: Uint8Array): Uint8Array {
+  const addr = Pointer.addr(buf);
+  const pp   = new Uint8Array(8);
+  new DataView(pp.buffer).setBigUint64(0, addr, true /* little-endian */);
+  return pp;
+}
+
+/**
+ * Export an EVP_PKEY private key as an unencrypted PKCS8 PrivateKeyInfo DER blob.
+ * Works for EC keys (all curves) and RSA keys.
+ */
+export function evpPkeyExportPkcs8(pkey: object): Uint8Array {
+  const lib = _requireCrypto();
+  const p8  = lib.symbols.EVP_PKEY2PKCS8(pkey);
+  if (p8 === null) throw new Error('EVP_PKEY2PKCS8 failed: ' + getErrorString());
+  try {
+    // Pass null to get the required DER length (OpenSSL: pp==null → no write).
+    const len = lib.symbols.i2d_PKCS8_PRIV_KEY_INFO(p8, null);
+    if (len <= 0) throw new Error('i2d_PKCS8_PRIV_KEY_INFO (length query) failed: ' + getErrorString());
+
+    // Allocate the output DER buffer and build a pointer-to-pointer (pp) that
+    // points to its first byte.  OpenSSL reads *pp, writes DER there, advances *pp.
+    const der = new Uint8Array(len);
+    const pp  = _ptrPtrBuf(der);
+    const written = lib.symbols.i2d_PKCS8_PRIV_KEY_INFO(p8, pp);
+    if (written <= 0) throw new Error('i2d_PKCS8_PRIV_KEY_INFO (write) failed: ' + getErrorString());
+    return der;
+  } finally {
+    lib.symbols.PKCS8_PRIV_KEY_INFO_free(p8);
+  }
+}
+
+/**
+ * Import an EVP_PKEY from an unencrypted PKCS8 PrivateKeyInfo DER blob.
+ * Works for EC keys (all curves) and RSA keys.
+ * The caller must call evpPkeyFree() when done.
+ */
+export function evpPkeyImportPkcs8(der: Uint8Array): object {
+  const lib  = _requireCrypto();
+  // d2i_PKCS8_PRIV_KEY_INFO also takes unsigned char **pp.
+  // Build a pp pointing to our input DER buffer.
+  const pp  = _ptrPtrBuf(der);
+  const p8  = lib.symbols.d2i_PKCS8_PRIV_KEY_INFO(null, pp, der.length);
+  if (p8 === null) throw new Error('d2i_PKCS8_PRIV_KEY_INFO failed: ' + getErrorString());
+  try {
+    const pkey = lib.symbols.EVP_PKCS82PKEY(p8);
+    if (pkey === null) throw new Error('EVP_PKCS82PKEY failed: ' + getErrorString());
+    return pkey;
+  } finally {
+    lib.symbols.PKCS8_PRIV_KEY_INFO_free(p8);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ECDH shared-secret derivation
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the ECDH shared secret between a private key and a peer public key.
+ * Both keys must be on the same named curve.
+ * Returns the raw shared secret bytes (X coordinate of the shared point).
+ */
+export function evpPkeyDeriveEcdh(privateKey: object, publicKey: object): Uint8Array {
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_PKEY_CTX_new(privateKey, null);
+  if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
+  try {
+    if (lib.symbols.EVP_PKEY_derive_init(ctx) !== 1) {
+      throw new Error('EVP_PKEY_derive_init failed: ' + getErrorString());
+    }
+    if (lib.symbols.EVP_PKEY_derive_set_peer(ctx, publicKey) !== 1) {
+      throw new Error('EVP_PKEY_derive_set_peer failed: ' + getErrorString());
+    }
+    // First pass: key=null → determine length.
+    const lenBuf = new Uint8Array(8);
+    if (lib.symbols.EVP_PKEY_derive(ctx, null, lenBuf) !== 1) {
+      throw new Error('EVP_PKEY_derive (length query) failed: ' + getErrorString());
+    }
+    const secretLen = Number(new DataView(lenBuf.buffer).getBigUint64(0, true));
+    // Second pass: write shared secret.
+    const secret = new Uint8Array(secretLen);
+    const len2   = new Uint8Array(8);
+    new DataView(len2.buffer).setBigUint64(0, BigInt(secretLen), true);
+    if (lib.symbols.EVP_PKEY_derive(ctx, secret, len2) !== 1) {
+      throw new Error('EVP_PKEY_derive (write) failed: ' + getErrorString());
+    }
+    return secret;
+  } finally {
+    lib.symbols.EVP_PKEY_CTX_free(ctx);
+  }
+}
+
+/**
+ * Extract the private scalar `d` from an EC private key as big-endian bytes.
+ * The result is zero-padded to `coordSize` bytes.
+ */
+export function ecPrivateKeyD(pkey: object, coordSize: number): Uint8Array {
+  const lib   = _requireCrypto();
+  const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
+  if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
+  const bn = lib.symbols.EC_KEY_get0_private_key(ecKey);
+  if (bn === null) throw new Error('EC_KEY_get0_private_key returned null (key has no private component)');
+  const numBytes = lib.symbols.BN_num_bytes(bn);
+  const raw = new Uint8Array(numBytes);
+  lib.symbols.BN_bn2bin(bn, raw);
+  // Zero-pad on the left to fill coordSize bytes.
+  if (numBytes === coordSize) return raw;
+  const padded = new Uint8Array(coordSize);
+  padded.set(raw, coordSize - numBytes);
+  return padded;
 }
 
 // ---------------------------------------------------------------------------
