@@ -303,10 +303,10 @@ pub fn ffi_call_async<'s>(
         owned_args,
     };
 
-    // Submit to blocking pool. JoinHandle is deliberately dropped (detached).
+    // Submit to the shared blocking pool (see src/async_rt/blocking.rs).
     // The closure captures `work: AsyncFfiWork` (not its individual fields) so
     // the closure type is Send despite Cif/CodePtr not being Send.
-    let _ = std::thread::spawn(move || {
+    crate::async_rt::blocking::spawn(move || {
         let result = work.execute();
         completions.lock().unwrap().push(crate::async_rt::FfiCompletion {
             resolver_id,

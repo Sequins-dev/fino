@@ -406,9 +406,17 @@ fn pump_and_checkpoint_in(scope: &mut v8::HandleScope) {
     let platform = v8::V8::get_current_platform();
     while v8::Platform::pump_message_loop(&platform, scope, false) {}
     let state_rc = get_state(scope);
-    let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
-    let isolate: &mut v8::Isolate = scope.as_mut();
-    unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+    loop {
+        let mut progress = false;
+        while crate::async_rt::try_tick() { progress = true; }
+        progress |= crate::async_rt::drain_all(scope, &state_rc);
+        {
+            let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
+            let isolate: &mut v8::Isolate = scope.as_mut();
+            unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+        }
+        if !progress { break; }
+    }
 }
 
 fn catch_js_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {

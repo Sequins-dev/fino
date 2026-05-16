@@ -1,5 +1,6 @@
 import { Context } from '../runtime/context.mts';
 import { topic } from '../util/topic.mts';
+export { topic } from '../util/topic.mts';
 
 export type Attributes = Record<string, unknown>;
 export type ScopeInfo = {

@@ -366,6 +366,16 @@ export function addWrite(loop: KqueueLoop, fd: number, userData: number): void {
 }
 
 /**
+ * Watch `fd` for read readiness persistently (EV_CLEAR — not oneshot).
+ * Fires each time data arrives; does not auto-remove after delivery.
+ * Used for background wake sources that must not be counted as live I/O
+ * for the loop's `alive()` check.
+ */
+export function addPersistentRead(loop: KqueueLoop, fd: number, userData: number): void {
+  queueChange(loop, fd, EVFILT_READ, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, userData);
+}
+
+/**
  * Explicitly cancel a read watch for `fd` (e.g. on connection close before event fires).
  * Queued as a pending change so it batches with the next wait().
  */

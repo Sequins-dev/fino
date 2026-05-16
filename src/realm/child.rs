@@ -217,6 +217,9 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             };
 
             if should_continue {
+                // Drain async FFI completions on every iteration (mirrors runtime.rs).
+                pump_and_checkpoint(scope);
+
                 let (maybe_fn, maybe_resolver) = {
                     let mut st = state_rc.borrow_mut();
                     (st.sync_call_fn.take(), st.sync_call_resolver.take())

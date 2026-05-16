@@ -12,6 +12,7 @@
 //!   `JsValueRepr` + resolver here; `drain_pending` converts + resolves them
 //!   with a live scope.
 
+pub mod blocking;
 pub mod bridge;
 
 use std::{

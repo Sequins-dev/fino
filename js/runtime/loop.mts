@@ -87,6 +87,7 @@ const _removeTimer = backend.removeTimer as ((raw: object, id: number) => void) 
 const _addProc = backend.addProc as ((raw: object, pid: number, ident?: number) => boolean) | undefined;
 const _addVnode = backend.addVnode as ((raw: object, fd: number, fflags: number, ident?: number) => void) | undefined;
 const _addSignal = backend.addSignal as ((raw: object, signo: number, ident?: number) => void) | undefined;
+const _addPersistentRead = backend.addPersistentRead as ((raw: object, fd: number, ident?: number) => void) | undefined;
 const _wait = backend.wait as (raw: object, timeoutMs: number) => LoopEvent[];
 
 // ---------------------------------------------------------------------------
@@ -101,6 +102,9 @@ const _procs:       Map<number, () => void>                              = new M
 const _completions: Map<number, (result: { res: number }) => void>       = new Map();
 const _vnodes:      Map<number, (event: { fflags: number }) => void>     = new Map();
 const _signals:     Map<number, () => void>                              = new Map();
+// Wake sources: persistent-read fds that fire when written to, used to
+// interrupt the kqueue sleep without counting as live I/O for alive().
+const _wakeSources: Set<number>                                          = new Set();
 let _nextTimerId      = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters   = 0;
@@ -111,6 +115,10 @@ let _atomicsWaiters   = 0;
 
 function _dispatch(ev: LoopEvent): void {
   if (ev.filter === EVFILT_READ) {
+    // Wake sources use persistent EV_CLEAR reads — just let them fire to
+    // interrupt the kqueue sleep; the Rust layer drains completions on
+    // the next pump_and_checkpoint without needing a JS resolver.
+    if (_wakeSources.has(ev.ident)) return;
     const resolve = _reads.get(ev.ident);
     if (resolve) {
       _reads.delete(ev.ident);
@@ -283,6 +291,20 @@ export function submit(submitter: (raw: object, id: number) => void): Promise<{ 
     _completions.set(id, resolve);
     submitter(_raw, id);
   });
+}
+
+/**
+ * Register `fd` as a persistent wake source. When background threads write to
+ * `fd`, kqueue fires and interrupts any sleeping `tick()` call. The fd does NOT
+ * count toward `alive()` — the loop can exit while a wake source is registered.
+ * On platforms that don't support persistent reads the call is a no-op; the
+ * Rust layer falls back to the per-iteration drain path with ≤50ms latency.
+ */
+export function registerWakeSource(fd: number): void {
+  _wakeSources.add(fd);
+  if (_addPersistentRead) {
+    _addPersistentRead(_raw, fd, fd);
+  }
 }
 
 /**

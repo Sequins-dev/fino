@@ -12,8 +12,13 @@
  * own isDone/onDone callbacks.
  */
 
-import { tick, alive, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.mts';
+import { tick, alive, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.mts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
+import { wakeFd } from 'internal:async-runtime';
+
+// Register the async-runtime wake pipe with kqueue so background FFI threads
+// can interrupt the event loop sleep immediately. Does not affect alive().
+registerWakeSource(wakeFd);
 import './internal/loader.mts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
 import { getEntryPath, isTerminated, getPort } from 'internal:realm-bridge';
