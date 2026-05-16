@@ -142,6 +142,33 @@ fn dlopen_callback(
             }
         };
 
+        // Parse optional `async: true` flag.
+        let nonblocking = {
+            let async_key = v8::String::new(scope, "async").unwrap();
+            def_obj
+                .get(scope, async_key.into())
+                .map(|v| v.boolean_value(scope))
+                .unwrap_or(false)
+        };
+
+        // Validate: async symbols may not use pointer/buffer params (GC safety).
+        if nonblocking {
+            use types::NativeType;
+            for ty in &param_types {
+                if matches!(ty, NativeType::Pointer | NativeType::Buffer) {
+                    throw_error(
+                        scope,
+                        &format!(
+                            "dlopen: '{key_str}': async symbols cannot use 'pointer' or \
+                             'buffer' parameters (GC may collect ArrayBuffers before the \
+                             background thread reads them)"
+                        ),
+                    );
+                    return;
+                }
+            }
+        }
+
         // Get the code pointer from the library.
         let code_ptr = {
             let borrow = lib_rc.borrow();
@@ -160,7 +187,7 @@ fn dlopen_callback(
             }
         };
 
-        let sym = match FfiSymbol::new(code_ptr, param_types, result_type) {
+        let sym = match FfiSymbol::new(code_ptr, param_types, result_type, nonblocking) {
             Ok(s) => s,
             Err(e) => {
                 throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
@@ -244,9 +271,18 @@ fn symbol_call_callback<'a>(
     let sym_data = unsafe { &*(ext.value() as *const SymbolData) };
     let count = args.length() as usize;
     let js_args: Vec<v8::Local<v8::Value>> = (0..count).map(|i| args.get(i as i32)).collect();
-    let mut scratch = sym_data.scratch.borrow_mut();
-    if let Some(result) = ffi_call(scope, &sym_data.symbol, &js_args, &mut scratch) {
-        rv.set(result);
+
+    if sym_data.symbol.nonblocking {
+        // Async path: offload to blocking pool, return a Promise.
+        if let Some(promise) = call::ffi_call_async(scope, &sym_data.symbol, &js_args) {
+            rv.set(promise.into());
+        }
+    } else {
+        // Sync path (unchanged).
+        let mut scratch = sym_data.scratch.borrow_mut();
+        if let Some(result) = ffi_call(scope, &sym_data.symbol, &js_args, &mut scratch) {
+            rv.set(result);
+        }
     }
 }
 

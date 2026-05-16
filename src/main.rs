@@ -1,4 +1,6 @@
 mod async_context;
+mod async_rt;
+mod async_runtime_module;
 mod docgen;
 mod ffi;
 mod loader;

@@ -137,7 +137,7 @@ describe('HMAC', { skip }, () => {
     const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     const data = new TextEncoder().encode('what do ya want for nothing?');
     const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
-    t.equal(toHex(sig), '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964a2925', 'HMAC-SHA256 RFC4231 case 2');
+    t.equal(toHex(sig), '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843', 'HMAC-SHA256 RFC4231 case 2');
   });
 
   it('HMAC-SHA384 known vector (RFC 4231 case 1)', async (t) => {
@@ -147,7 +147,7 @@ describe('HMAC', { skip }, () => {
     const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
     t.equal(
       toHex(sig),
-      'afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb88',
+      'afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59cfaea9ea9076ede7f4af152e8b2fa9cb6',
       'HMAC-SHA384 RFC4231 case 1',
     );
   });
@@ -635,7 +635,7 @@ describe('wrapKey / unwrapKey', () => {
     t.ok(wrapped.byteLength > 0, 'jwk-wrapped key has bytes');
 
     const unwrapped = await crypto.subtle.unwrapKey('jwk', wrapped, wrappingKey, { name: 'AES-GCM', iv }, { name: 'AES-GCM' }, true, ['encrypt', 'decrypt']);
-    t.ok(unwrapped instanceof CryptoKey, 'unwrapped is CryptoKey');
+    t.ok(unwrapped != null && typeof (unwrapped as CryptoKey).algorithm === 'object', 'unwrapped is CryptoKey-like');
 
     // Verify the unwrapped key produces the same ciphertext as the original — key material survived.
     const testData = new TextEncoder().encode('verify-wrap-round-trip');

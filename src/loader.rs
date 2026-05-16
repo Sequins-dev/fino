@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use ::v8;
 use oxc_sourcemap::SourceMap;
 
-use crate::{async_context, docgen, ffi, platform, profiler, realm, state::get_state};
+use crate::{async_context, async_runtime_module, docgen, ffi, platform, profiler, realm, state::get_state};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
@@ -93,6 +93,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     (
         "internal:async-context",
         BuiltinKind::Synthetic(async_context::create_module),
+    ),
+    (
+        "internal:async-runtime",
+        BuiltinKind::Synthetic(async_runtime_module::create_module),
     ),
     (
         "internal:docgen",

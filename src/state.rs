@@ -1,5 +1,7 @@
 use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 
+pub use crate::async_rt::bridge::PendingResolution;
+
 use ::v8;
 use oxc_sourcemap::{SourceMap, Token};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -320,6 +322,16 @@ pub struct FinoState {
     pub sync_call_resolver: Option<v8::Global<v8::PromiseResolver>>,
 
     // ---------------------------------------------------------------------------
+    // Pending resolutions from Rust async futures (future_to_promise)
+    // ---------------------------------------------------------------------------
+    /// Futures spawned via `async_rt::bridge::future_to_promise` push
+    /// `PendingResolution` entries here when they complete. Drained by
+    /// `async_rt::drain_pending_for` with a live scope during each
+    /// `pump_and_checkpoint`. Stored as `Rc<RefCell<…>>` so futures can
+    /// capture a clone without needing a V8 scope.
+    pub pending_resolutions: Rc<RefCell<Vec<PendingResolution>>>,
+
+    // ---------------------------------------------------------------------------
     // Pending TLA (top-level await) dynamic imports
     // ---------------------------------------------------------------------------
     /// Indexed by a u32 id stored as the data value of the fulfill/reject
@@ -419,6 +431,7 @@ impl FinoState {
             on_done_fn: None,
             sync_call_fn: None,
             sync_call_resolver: None,
+            pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
             child_contexts: Vec::new(),
@@ -467,6 +480,7 @@ impl FinoState {
             on_done_fn: None,
             sync_call_fn: None,
             sync_call_resolver: None,
+            pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
             child_contexts: Vec::new(),

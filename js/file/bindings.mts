@@ -28,6 +28,9 @@ interface ErrnoError extends Error {
   path?: string;
 }
 
+export const isDarwin = os === 'darwin';
+const LIBC = isDarwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
+
 // POSIX errno → string code. Values ≤34 are identical on Linux and macOS.
 // Platform-divergent values are listed separately.
 const _ERRNO_CODES: Record<number, string> = {
@@ -50,9 +53,6 @@ const _ERRNO_CODES: Record<number, string> = {
     110: 'ETIMEDOUT', 111: 'ECONNREFUSED', 104: 'ECONNRESET',
   }),
 };
-
-export const isDarwin = os === 'darwin';
-const LIBC = isDarwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
 // Both platforms need fino:loop for async reads.
 // Linux additionally uses fino:io_uring for IORING_OP_READ / IORING_OP_OPENAT.

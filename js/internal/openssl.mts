@@ -36,12 +36,28 @@ const isDarwin = os === 'darwin';
 // Library search paths
 // ---------------------------------------------------------------------------
 
+// On macOS 26+ loading the bare unversioned 'libcrypto.dylib' / 'libssl.dylib'
+// resolves to the system library that no longer has a stable ABI — dyld now
+// aborts instead of warning. Use explicit versioned paths (Homebrew OpenSSL 3
+// or legacy 1.1) and never fall back to the bare name on macOS.
 const _cryptoPaths = isDarwin
-  ? ['/opt/homebrew/lib/libcrypto.dylib', '/usr/local/lib/libcrypto.dylib', 'libcrypto.dylib']
+  ? [
+      '/opt/homebrew/lib/libcrypto.3.dylib',
+      '/opt/homebrew/lib/libcrypto.dylib',
+      '/usr/local/lib/libcrypto.3.dylib',
+      '/usr/local/lib/libcrypto.1.1.dylib',
+      '/usr/local/lib/libcrypto.dylib',
+    ]
   : ['libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
 
 const _sslPaths = isDarwin
-  ? ['/opt/homebrew/lib/libssl.dylib', '/usr/local/lib/libssl.dylib', 'libssl.dylib']
+  ? [
+      '/opt/homebrew/lib/libssl.3.dylib',
+      '/opt/homebrew/lib/libssl.dylib',
+      '/usr/local/lib/libssl.3.dylib',
+      '/usr/local/lib/libssl.1.1.dylib',
+      '/usr/local/lib/libssl.dylib',
+    ]
   : ['libssl.so.3', 'libssl.so.1.1', 'libssl.so'];
 
 // ---------------------------------------------------------------------------
@@ -115,7 +131,8 @@ const _cryptoSymbols = {
 
   // EC private key scalar extraction (ECDH raw export, EC JWK 'd').
   EC_KEY_get0_private_key:   { parameters: ['pointer'], result: 'pointer' }, // → BIGNUM* (borrowed)
-  BN_num_bytes:              { parameters: ['pointer'], result: 'i32' },
+  // BN_num_bytes is a macro in OpenSSL 3 (not exported); use BN_num_bits and compute ceil(bits/8) in JS.
+  BN_num_bits:               { parameters: ['pointer'], result: 'i32' },
   BN_bn2bin:                 { parameters: ['pointer', 'buffer'], result: 'i32' },
   // EC JWK private import: construct EC_KEY from raw (x, y, d) coordinates.
   BN_bin2bn:                 { parameters: ['buffer', 'i32', 'pointer'], result: 'pointer' }, // → BIGNUM*
@@ -140,7 +157,7 @@ const _cryptoSymbols = {
   RSA_set0_crt_params: { parameters: ['pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
 
   // BIGNUM operations — used for RSA public exponent and JWK component encoding/decoding.
-  // (BN_free, BN_bin2bn, BN_num_bytes, BN_bn2bin are already declared in the EC section above.)
+  // (BN_free, BN_bin2bn, BN_num_bits, BN_bn2bin are already declared in the EC section above.)
   BN_new:           { parameters: [], result: 'pointer' },
   BN_set_word:      { parameters: ['pointer', 'u64'], result: 'i32' },
   BN_num_bits:      { parameters: ['pointer'], result: 'i32' },
@@ -148,7 +165,8 @@ const _cryptoSymbols = {
   BN_bn2binpad:     { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
 
   // EVP_PKEY assignment / extraction for RSA.
-  EVP_PKEY_assign_RSA: { parameters: ['pointer', 'pointer'], result: 'i32' },
+  // EVP_PKEY_set1_RSA was removed in OpenSSL 3; use set1 (increments refcount).
+  EVP_PKEY_set1_RSA: { parameters: ['pointer', 'pointer'], result: 'i32' },
   EVP_PKEY_get1_RSA:   { parameters: ['pointer'], result: 'pointer' }, // increments refcount
 
   // Generic SPKI: i2d_PUBKEY / d2i_PUBKEY work for any EVP_PKEY type (EC and RSA),
@@ -214,7 +232,8 @@ const _cryptoSymbols = {
   },
   EVP_PKEY_new:           { parameters: [], result: 'pointer' },
   EVP_PKEY_free:          { parameters: ['pointer'], result: 'void' },
-  EVP_PKEY_assign_EC_KEY: { parameters: ['pointer', 'pointer'], result: 'i32' },
+  // EVP_PKEY_set1_EC_KEY removed in OpenSSL 3; use set1 (increments refcount).
+  EVP_PKEY_set1_EC_KEY: { parameters: ['pointer', 'pointer'], result: 'i32' },
   EVP_PKEY_get0_EC_KEY:   { parameters: ['pointer'], result: 'pointer' },
   // ECDSA_sign(type=0, dgst, dgstlen, sig, siglen_buf, eckey) → 1 on success
   // siglen_buf must be a 4-byte buffer; written with actual DER sig length.
@@ -859,10 +878,10 @@ export function evpPkeyGenerateEc(namedCurve: string): object {
     lib.symbols.EC_KEY_free(ecKey);
     throw new Error('EVP_PKEY_new failed: ' + getErrorString());
   }
-  if (lib.symbols.EVP_PKEY_assign_EC_KEY(pkey, ecKey) !== 1) {
+  if (lib.symbols.EVP_PKEY_set1_EC_KEY(pkey, ecKey) !== 1) {
     lib.symbols.EVP_PKEY_free(pkey);
     lib.symbols.EC_KEY_free(ecKey);
-    throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
+    throw new Error('EVP_PKEY_set1_EC_KEY failed: ' + getErrorString());
   }
   return pkey;
 }
@@ -961,10 +980,10 @@ export function evpPkeyImportSpki(der: Uint8Array): { pkey: object; namedCurve: 
     lib.symbols.EC_KEY_free(ecKey);
     throw new Error('EVP_PKEY_new failed: ' + getErrorString());
   }
-  if (lib.symbols.EVP_PKEY_assign_EC_KEY(pkey, ecKey) !== 1) {
+  if (lib.symbols.EVP_PKEY_set1_EC_KEY(pkey, ecKey) !== 1) {
     lib.symbols.EVP_PKEY_free(pkey);
     lib.symbols.EC_KEY_free(ecKey);
-    throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
+    throw new Error('EVP_PKEY_set1_EC_KEY failed: ' + getErrorString());
   }
   return { pkey, namedCurve };
 }
@@ -1031,9 +1050,9 @@ export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number):
 
   const pkey = lib.symbols.EVP_PKEY_new();
   if (pkey === null) { lib.symbols.RSA_free(rsa); throw new Error('EVP_PKEY_new failed'); }
-  if (lib.symbols.EVP_PKEY_assign_RSA(pkey, rsa) !== 1) {
+  if (lib.symbols.EVP_PKEY_set1_RSA(pkey, rsa) !== 1) {
     lib.symbols.EVP_PKEY_free(pkey); lib.symbols.RSA_free(rsa);
-    throw new Error('EVP_PKEY_assign_RSA failed: ' + getErrorString());
+    throw new Error('EVP_PKEY_set1_RSA failed: ' + getErrorString());
   }
   return pkey;
 }
@@ -1332,9 +1351,9 @@ export function rsaImportComponents(components: {
 
   const pkey = lib.symbols.EVP_PKEY_new();
   if (pkey === null) { lib.symbols.RSA_free(rsa); throw new Error('EVP_PKEY_new failed'); }
-  if (lib.symbols.EVP_PKEY_assign_RSA(pkey, rsa) !== 1) {
+  if (lib.symbols.EVP_PKEY_set1_RSA(pkey, rsa) !== 1) {
     lib.symbols.EVP_PKEY_free(pkey); lib.symbols.RSA_free(rsa);
-    throw new Error('EVP_PKEY_assign_RSA failed: ' + getErrorString());
+    throw new Error('EVP_PKEY_set1_RSA failed: ' + getErrorString());
   }
   return pkey;
 }
@@ -1415,9 +1434,9 @@ export function evpPkeyImportEcJwk(
 
   const pkey = lib.symbols.EVP_PKEY_new();
   if (pkey === null) { lib.symbols.EC_KEY_free(ecKey); throw new Error('EVP_PKEY_new failed: ' + getErrorString()); }
-  if (lib.symbols.EVP_PKEY_assign_EC_KEY(pkey, ecKey) !== 1) {
+  if (lib.symbols.EVP_PKEY_set1_EC_KEY(pkey, ecKey) !== 1) {
     lib.symbols.EVP_PKEY_free(pkey); lib.symbols.EC_KEY_free(ecKey);
-    throw new Error('EVP_PKEY_assign_EC_KEY failed: ' + getErrorString());
+    throw new Error('EVP_PKEY_set1_EC_KEY failed: ' + getErrorString());
   }
   return pkey;
 }
@@ -1534,7 +1553,8 @@ export function ecPrivateKeyD(pkey: object, coordSize: number): Uint8Array {
   if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
   const bn = lib.symbols.EC_KEY_get0_private_key(ecKey);
   if (bn === null) throw new Error('EC_KEY_get0_private_key returned null (key has no private component)');
-  const numBytes = lib.symbols.BN_num_bytes(bn);
+  // BN_num_bytes is a macro in OpenSSL 3; compute ceil(bits/8) using BN_num_bits.
+  const numBytes = Math.ceil(lib.symbols.BN_num_bits(bn) / 8);
   const raw = new Uint8Array(numBytes);
   lib.symbols.BN_bn2bin(bn, raw);
   // Zero-pad on the left to fill coordSize bytes.

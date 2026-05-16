@@ -77,6 +77,9 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         );
     }
 
+    // Initialise per-isolate async state for this child isolate's thread.
+    crate::async_rt::init();
+
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     // Child isolates run on their own OS thread/process — Atomics.wait() is safe.
     isolate.set_allow_atomics_wait(true);
@@ -296,9 +299,21 @@ pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
     let platform = v8::V8::get_current_platform();
     while v8::Platform::pump_message_loop(&platform, scope, false) {}
     let state_rc = get_state(scope);
-    let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
-    let isolate: &mut v8::Isolate = scope.as_mut();
-    unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+    loop {
+        let mut progress = false;
+        while crate::async_rt::try_tick() {
+            progress = true;
+        }
+        progress |= crate::async_rt::drain_all(scope, &state_rc);
+        {
+            let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
+            let isolate: &mut v8::Isolate = scope.as_mut();
+            unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+        }
+        if !progress {
+            break;
+        }
+    }
 }
 
 pub fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {

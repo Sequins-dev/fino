@@ -48,6 +48,11 @@ pub struct FfiSymbol {
     pub param_types: Vec<NativeType>,
     pub result_type: NativeType,
     pub fast_call_kind: FastCallKind,
+    /// When `true`, calls are dispatched to the blocking thread pool and
+    /// return a JS `Promise`. Only scalar param/return types are supported
+    /// (no `pointer` or `buffer`) — the GC may collect ArrayBuffers before
+    /// the background thread reads them.
+    pub nonblocking: bool,
 }
 
 impl FfiSymbol {
@@ -55,6 +60,7 @@ impl FfiSymbol {
         code_ptr: CodePtr,
         param_types: Vec<NativeType>,
         result_type: NativeType,
+        nonblocking: bool,
     ) -> Result<Self, String> {
         // Validate: void may only appear as the return type.
         for ty in &param_types {
@@ -70,9 +76,16 @@ impl FfiSymbol {
         Ok(Self {
             code_ptr,
             cif,
-            fast_call_kind: fast::classify_fast_call(&param_types, &result_type),
+            fast_call_kind: if nonblocking {
+                // Async symbols skip the Fast API path — the Promise return
+                // type can't be expressed as a scalar fast-call return.
+                fast::FastCallKind::None
+            } else {
+                fast::classify_fast_call(&param_types, &result_type)
+            },
             param_types,
             result_type,
+            nonblocking,
         })
     }
 }
@@ -87,6 +100,7 @@ mod tests {
             CodePtr::from_ptr(std::ptr::null()),
             vec![NativeType::I32, NativeType::U32, NativeType::USize],
             NativeType::I32,
+            false,
         )
         .unwrap();
 
@@ -102,6 +116,7 @@ mod tests {
             CodePtr::from_ptr(std::ptr::null()),
             vec![NativeType::I32, NativeType::Buffer],
             NativeType::I32,
+            false,
         )
         .unwrap();
 
@@ -117,6 +132,7 @@ mod tests {
             CodePtr::from_ptr(std::ptr::null()),
             vec![NativeType::F64],
             NativeType::I32,
+            false,
         )
         .unwrap();
 

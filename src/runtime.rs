@@ -56,6 +56,10 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     params = params.array_buffer_allocator(shared_allocator());
 
     let isolate = &mut v8::Isolate::new(params);
+
+    // Initialise per-isolate async state (executor + blocking pool wake pipe).
+    crate::async_rt::init();
+
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     // Atomics.wait() blocks the thread — not safe on the main event-loop thread.
     isolate.set_allow_atomics_wait(false);
@@ -202,6 +206,11 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             };
 
             if should_continue {
+                // Drain any completed async FFI calls on every loop iteration.
+                // The wake pipe wakes kqueue, but we drain here (not via a
+                // JS-level readable() handler) to avoid keeping the loop alive.
+                pump_and_checkpoint(scope);
+
                 // Handle any pending synchronous call scheduled by JS via
                 // scheduleSync() (internal:async-context). We call the function
                 // here (outside perform_checkpoint) so that
@@ -302,16 +311,24 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
 
 /// Pump V8 platform foreground tasks then drain the microtask queue.
 ///
-/// Foreground tasks are callbacks posted by V8 background threads (e.g. WASM
-/// compilation) that must run on the main thread. They resolve JS Promises,
-/// which enqueue microtasks, so foreground tasks must be drained first.
+/// Fixed-point loop: Rust executor → drain completions/pending → microtask
+/// checkpoint. Repeats until quiescent so Rust futures awaiting JS Promises
+/// (and vice-versa) always converge in one call.
 fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
     let platform = v8::V8::get_current_platform();
     while v8::Platform::pump_message_loop(&platform, scope, false) {}
     let state_rc = crate::state::get_state(scope);
-    let queue_ptr = unsafe { crate::state::root_queue_ptr(&state_rc) };
-    let isolate: &mut v8::Isolate = scope.as_mut();
-    unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+    loop {
+        let mut progress = false;
+        while crate::async_rt::try_tick() { progress = true; }
+        progress |= crate::async_rt::drain_all(scope, &state_rc);
+        {
+            let queue_ptr = unsafe { crate::state::root_queue_ptr(&state_rc) };
+            let isolate: &mut v8::Isolate = scope.as_mut();
+            unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+        }
+        if !progress { break; }
+    }
 }
 
 fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {

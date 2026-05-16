@@ -1017,7 +1017,23 @@ const subtle = {
     const keyBytes = format === 'jwk'
       ? new TextEncoder().encode(JSON.stringify(exported))
       : new Uint8Array(exported as ArrayBuffer);
-    return subtle.encrypt(wrapAlgorithm, wrappingKey, keyBytes);
+    // Call encrypt bypassing the 'encrypt' usage check — wrapKey's own 'wrapKey'
+    // usage check above is the authoritative gate for this operation.
+    const alg = _normalizeAlgorithm(wrapAlgorithm);
+    const wrappingKeyBytes = _keyData(wrappingKey);
+    const cipherAlg = _cipherAlgorithm(alg.name, wrappingKeyBytes.byteLength);
+    const iv  = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
+    const aad = alg.additionalData ? _toUint8Array(alg.additionalData as BufferSource) : null;
+    const { ciphertext, tag } = openssl.cipherEncrypt(cipherAlg, wrappingKeyBytes, iv, keyBytes, aad);
+    if (tag) {
+      const requestedTagBytes = ((alg.tagLength as number | undefined) ?? 128) / 8;
+      const truncatedTag = tag.subarray(0, requestedTagBytes);
+      const out = new Uint8Array(ciphertext.byteLength + truncatedTag.byteLength);
+      out.set(ciphertext);
+      out.set(truncatedTag, ciphertext.byteLength);
+      return _toArrayBuffer(out);
+    }
+    return _toArrayBuffer(ciphertext);
   },
 
   async unwrapKey(
@@ -1031,7 +1047,18 @@ const subtle = {
   ): Promise<CryptoKey> {
     _checkCryptoAvailable();
     if (!unwrappingKey.usages.includes('unwrapKey')) throw new Error('unwrappingKey does not allow unwrapKey');
-    const decrypted = await subtle.decrypt(unwrapAlgorithm, unwrappingKey, wrappedKey);
+    // Bypass the 'decrypt' usage check in subtle.decrypt — unwrapKey's own
+    // 'unwrapKey' usage check above is the authoritative gate.
+    const alg = _normalizeAlgorithm(unwrapAlgorithm);
+    const unwrappingKeyBytes = _keyData(unwrappingKey);
+    const cipherAlg = _cipherAlgorithm(alg.name, unwrappingKeyBytes.byteLength);
+    const iv = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
+    const aad = alg.additionalData ? _toUint8Array(alg.additionalData as BufferSource) : null;
+    const wrappedBytes = _toUint8Array(wrappedKey);
+    const tagLen = ((alg.tagLength as number | undefined) ?? 128) / 8;
+    const ct = wrappedBytes.subarray(0, wrappedBytes.byteLength - tagLen);
+    const tag = wrappedBytes.subarray(wrappedBytes.byteLength - tagLen);
+    const decrypted = _toArrayBuffer(openssl.cipherDecrypt(cipherAlg, unwrappingKeyBytes, iv, ct, tag, aad));
     if (format === 'raw') {
       return subtle.importKey('raw', decrypted, unwrappedKeyAlgorithm, extractable, keyUsages);
     }
