@@ -33,21 +33,11 @@ The single largest practical barrier to adoption is the inability to use npm pac
   - Type mapping: NULL → `null`, INTEGER → `number` / `BigInt`, REAL → `number`, TEXT → `string`, BLOB → `Uint8Array`
 - **Complexity**: Medium (1 week). The sqlite3 C API is clean. Main work is value marshaling via `sqlite3_bind_*` / `sqlite3_column_*`.
 
-### 2.7 Extended SubtleCrypto Algorithms ✓ Done
-
-SubtleCrypto now covers AES-GCM, AES-CBC, SHA-*, HMAC, PBKDF2, HKDF, wrapKey/unwrapKey, ECDSA (P-256/P-384/P-521), ECDH (P-256/P-384/P-521, deriveBits/deriveKey), RSA-OAEP, RSA-PSS, RSASSA-PKCS1-v1_5, PKCS8 private-key import/export, and JWK for EC and RSA key types. All backed by OpenSSL FFI.
-
 ---
 
 ## Tier 3 — Broader Compatibility
 
 Larger investments that extend reach to the long tail of the npm ecosystem and improve developer experience.
-
-### 3.3 Watch Mode
-
-- **Why**: Automatic restart on file changes is a table-stakes developer experience feature. Currently users must reach for an external tool like `watchexec`.
-- **Approach**: A `--watch` CLI flag. Hook the module loader to record all resolved paths as they are imported. Use `fino:file/watch` (already implemented via kqueue EVFILT_VNODE / inotify) to watch the import graph. On change, re-exec the process via `execve`. Watch newly imported files as the module graph grows at runtime.
-- **Complexity**: Medium. The file watcher already exists; the work is tracking the import graph and wiring re-exec.
 
 ### 3.5 REPL
 
@@ -68,8 +58,3 @@ Long-term, strategic investments. High value but very large effort.
 - **Depends on**: TLS (done, ALPN negotiation for `h2`).
 - **Complexity**: Very large. HTTP/2 framing, HPACK header compression, stream multiplexing, and flow control are each substantial projects.
 
-### 4.4 Synthetic Module Building from JS
-
-- **Why**: Enables dynamically creating modules at runtime. Useful for loaders, bundlers, hot module replacement, and test mocking.
-- **Approach**: `v8::Module::create_synthetic_module()` is already used in `src/loader.rs` for all built-in synthetic modules (`fino:ffi`, `internal:process`, `internal:async-context`, etc.). The remaining work is exposing this to userland JS: a `fino:vm` (or `fino:module`) API where user code provides an export name list and an initializer callback, and Rust creates and registers the module through the existing loader cache.
-- **Complexity**: Medium. The core infrastructure is in place and tested. The remaining work is the JS-facing API surface and module cache integration.

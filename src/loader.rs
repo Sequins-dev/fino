@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use ::v8;
 use oxc_sourcemap::SourceMap;
 
-use crate::{async_context, async_runtime_module, docgen, ffi, platform, profiler, realm, state::get_state};
+use crate::{async_context, async_runtime_module, docgen, ffi, platform, profiler, realm, state::get_state, state::ImportDirective};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
@@ -87,6 +87,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(realm::create_realm_native_module),
     ),
     (
+        "internal:synthetic-install",
+        BuiltinKind::Synthetic(realm::synthetic::create_install_module),
+    ),
+    (
         "internal:process",
         BuiltinKind::Synthetic(platform::create_module),
     ),
@@ -109,6 +113,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "_bootstrap"),
     source_builtin!("fino:realm", "runtime/realm"),
+    source_builtin!("fino:module", "runtime/module"),
     source_builtin!("fino:realm/pool", "runtime/realm-pool"),
     source_builtin!("fino:realm/self", "runtime/realm-self"),
     source_builtin!("fino:messaging", "runtime/messaging"),
@@ -161,6 +166,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
     source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
+    source_builtin!(
+        "internal:synthetic-direct",
+        "internal/runtime/synthetic-direct"
+    ),
     source_builtin!("internal:runtime/kqueue", "internal/runtime/kqueue"),
     source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
     (
@@ -519,9 +528,10 @@ pub fn resolve_module_callback<'s>(
     let has_directive = {
         let st = state_rc.borrow();
         let d = crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec);
-        matches!(d, Some(crate::state::ImportDirective::Remap { .. })
-                   | Some(crate::state::ImportDirective::Source { .. })
-                   | Some(crate::state::ImportDirective::Facade(..)))
+        matches!(d, Some(ImportDirective::Remap { .. })
+                   | Some(ImportDirective::Source { .. })
+                   | Some(ImportDirective::Facade(..))
+                   | Some(ImportDirective::Installed { .. }))
     };
     if has_directive {
         return get_or_load_builtin(scope, &spec, from_spec.as_deref());
@@ -768,9 +778,10 @@ pub fn dynamic_import_callback<'s>(
                 let state_rc = crate::state::get_state(tc);
                 let st = state_rc.borrow();
                 let d = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
-                matches!(d, Some(crate::state::ImportDirective::Remap { .. })
-                           | Some(crate::state::ImportDirective::Source { .. })
-                           | Some(crate::state::ImportDirective::Facade(..)))
+                matches!(d, Some(ImportDirective::Remap { .. })
+                           | Some(ImportDirective::Source { .. })
+                           | Some(ImportDirective::Facade(..))
+                           | Some(ImportDirective::Installed { .. }))
             };
             if has_directive {
                 get_or_load_builtin(tc, &spec, Some(&referrer_url))
@@ -982,7 +993,7 @@ fn get_or_load_builtin_inner<'s>(
     from: Option<&str>,
     visited: &mut std::collections::HashSet<String>,
 ) -> Option<v8::Local<'s, v8::Module>> {
-    use crate::state::{ImportDirective, resolve_directive};
+    use crate::state::resolve_directive;
 
     let state_rc = get_state(scope);
 
@@ -1068,25 +1079,38 @@ fn get_or_load_builtin_inner<'s>(
             return Some(m);
         }
 
-        Some(ImportDirective::Facade(facade_spec)) => {
-            let (code, _) = crate::realm::facade::create_facade_source(&facade_spec);
-            // Compile with the replaced specifier so import-rule `from`-clause
-            // matching works. The specifier (e.g. "fino:file") falls under fino:*
-            // in the default rules, granting access to internal:* without needing
-            // explicit builtin_script_ids registration.
-            let m = compile_source_module(scope, &code, &facade_spec.specifier, None)?;
+        Some(ImportDirective::Facade(synthetic_spec)) => {
+            let code = crate::realm::synthetic::create_module_source(&synthetic_spec);
+            // Compile with the facade specifier so import-rule `from`-clause
+            // matching works. Facade specifiers (e.g. "fino:file") fall under
+            // fino:* in the default rules, granting access to internal:* without
+            // explicit builtin_specifiers registration.
+            let m = compile_source_module(scope, &code, &synthetic_spec.specifier, None)?;
             if let Some(id) = m.script_id() {
                 state_rc
                     .borrow_mut()
                     .builtin_specifiers
-                    .insert(id, facade_spec.specifier.clone());
+                    .insert(id, synthetic_spec.specifier.clone());
             }
             let global = v8::Global::new(scope, m);
             state_rc
                 .borrow_mut()
                 .builtin_cache
-                .insert(facade_spec.specifier.clone(), global);
+                .insert(synthetic_spec.specifier.clone(), global);
             return Some(m);
+        }
+
+        Some(ImportDirective::Installed { specifier: installed_spec }) => {
+            // Module should be in cache (installed via SyntheticModule.install()).
+            // Reaching here means the cache check at step 1 missed — the module
+            // was uninstalled without removing the directive (shouldn't happen).
+            let msg = v8::String::new(
+                scope,
+                &format!("SyntheticModule '{installed_spec}' is not installed"),
+            )?;
+            let exc = v8::Exception::error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
         }
 
         Some(ImportDirective::Inherit) | None => {

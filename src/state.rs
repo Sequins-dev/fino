@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    path::PathBuf,
+    rc::Rc,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 pub use crate::async_rt::bridge::PendingResolution;
 
@@ -118,23 +124,37 @@ impl Serialize for ImportPattern {
     }
 }
 
-/// Interface description for a facade synthetic proxy module.
+/// Selects the generated stub template for a `SyntheticSpec`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SyntheticMode {
+    /// Same-realm direct binding: `export const X = __direct(spec, "X")`.
+    Direct,
+    /// Cross-realm RPC proxy: `export const X = (...args) => __rpc(spec, "X", args)`.
+    #[default]
+    Rpc,
+}
+
+/// Interface description for a synthetic proxy module.
+///
+/// `mode == Rpc` is the cross-realm Facade path (original behaviour).
+/// `mode == Direct` is the same-realm `SyntheticModule` path (values by identity).
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FacadeSpec {
+pub struct SyntheticSpec {
     pub specifier: String,
-    /// Scalar exports — each becomes `export const fn = (...args) => __rpc(...)`.
+    /// Scalar exports.
+    /// RPC: `export const fn = (...args) => __rpc(...)`.
+    /// Direct: `export const X = __direct(spec, "X")`.
     pub exports: Vec<String>,
-    /// Read-stream exports — each becomes `export const fn = (...args) => __rpcStream(...)`.
-    /// The parent handler returns an `AsyncIterable`; chunks flow parent→child via
-    /// `__rpc_chunk` / `__rpc_end` / `__rpc_err`.
+    /// Read-stream exports (RPC mode only).
     #[serde(default)]
     pub streams: Vec<String>,
-    /// Write-stream (sink) exports — each becomes `export const fn = (...args) => __rpcSink(...)`.
-    /// The parent handler receives `(args, source: AsyncIterable)` and chunks flow
-    /// child→parent via `__rpc_send_start` / `__rpc_send_chunk` / `__rpc_send_end`.
-    /// Maps directly onto a QUIC client-initiated unidirectional stream.
+    /// Write-stream (sink) exports (RPC mode only).
     #[serde(default)]
     pub sinks: Vec<String>,
+    /// Stub generation mode. Defaults to `Rpc` for backward-compat deserialization.
+    #[serde(default)]
+    pub mode: SyntheticMode,
 }
 
 /// What to do when a module import matches a rule.
@@ -152,8 +172,10 @@ pub enum ImportDirective {
     Remap { target: String },
     /// Compile and use this JS source as the module implementation.
     Source { code: String, source_map: String },
-    /// Generate a synthetic RPC-proxy module backed by the parent's handlers.
-    Facade(FacadeSpec),
+    /// Generate a synthetic proxy module (RPC or direct-binding).
+    Facade(SyntheticSpec),
+    /// The module is already compiled and cached; route resolution to the cache.
+    Installed { specifier: String },
 }
 
 /// A single rule in a Realm's import rule list.
@@ -241,6 +263,8 @@ pub struct PendingRealm {
     /// Stored here so it can be set into the child's FinoState after context
     /// creation, and later read via `internal:realm-bridge.getPort()`.
     pub port: Option<v8::Global<v8::Value>>,
+    /// Whether this embedded child realm runs with watch mode enabled.
+    pub watch_mode: bool,
 }
 
 /// Slot in the parent's `child_contexts` Vec.
@@ -383,6 +407,21 @@ pub struct FinoState {
     /// callback checks this via `internal:realm-bridge.isTerminated()`.
     pub terminated: bool,
 
+    /// Set by `internal:realm-bridge.requestReload()` before `terminated` is
+    /// set. The parent observes this to distinguish a reload-exit from a clean
+    /// exit and respawns the same child configuration.
+    pub reload_requested: bool,
+
+    /// `true` when this realm was started with `watch: true`. Exposed to JS
+    /// via `internal:realm-bridge.getWatchMode()` so `_bootstrap.mts` can
+    /// start the file-watch loop.
+    pub watch_mode: bool,
+
+    /// Shared atomic for thread realms: `requestReload()` writes `true` here
+    /// so the parent's `ThreadRealmHandle` can observe the reload intent
+    /// without entering the child's V8 context. `None` for embedded/process.
+    pub reload_requested_signal: Option<Arc<AtomicBool>>,
+
     /// Error recorded by the child's entry module if it threw at top level.
     /// Set via `internal:realm-bridge.setEntryError()`; read by the parent
     /// in `step_context` to reject `Realm.run()` instead of resolving silently.
@@ -443,6 +482,9 @@ impl FinoState {
             pending_creates: Vec::new(),
             entry_path: None,
             terminated: false,
+            reload_requested: false,
+            watch_mode: false,
+            reload_requested_signal: None,
             entry_error: None,
             port: None,
             channel_rx: None,
@@ -469,6 +511,8 @@ impl FinoState {
         channel_tx: Option<std::sync::mpsc::Sender<crate::realm::thread::ThreadMessage>>,
         wake_read_fd: Option<std::os::unix::io::RawFd>,
         wake_write_fd: Option<std::os::unix::io::RawFd>,
+        watch_mode: bool,
+        reload_requested_signal: Option<Arc<AtomicBool>>,
     ) -> Self {
         Self {
             process_env,
@@ -493,6 +537,9 @@ impl FinoState {
             pending_creates: Vec::new(),
             entry_path,
             terminated: false,
+            reload_requested: false,
+            watch_mode,
+            reload_requested_signal,
             entry_error: None,
             port,
             channel_rx,

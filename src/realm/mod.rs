@@ -30,10 +30,10 @@
 pub mod bridge;
 pub mod broadcast;
 pub mod child;
-pub mod facade;
 pub mod native;
 pub mod process;
 pub mod serializer;
+pub mod synthetic;
 pub mod thread;
 pub mod transit;
 
@@ -73,6 +73,7 @@ pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<Re
             pending_realm.import_rules,
             pending_realm.package_map_json,
             pending_realm.port,
+            pending_realm.watch_mode,
         ) {
             Ok(child_realm) => ChildRealmSlot::Active(child_realm),
             Err(e) => {
@@ -236,6 +237,7 @@ fn create_child_context(
     import_rules: Vec<ImportRule>,
     package_map_json: Option<String>,
     port: Option<v8::Global<v8::Value>>,
+    watch_mode: bool,
 ) -> Result<ChildRealm, String> {
     let total_start = if realm_timing_enabled() {
         Some(Instant::now())
@@ -281,6 +283,8 @@ fn create_child_context(
             None,
             None,
             None,
+            watch_mode,
+            None, // embedded: parent reads reload_requested directly via context-scope
         );
 
         child_ctx_local.set_slot(Rc::new(RefCell::new(state)));

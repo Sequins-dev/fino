@@ -268,6 +268,9 @@ fn create_context(
             Some(v8::Global::new(scope, port_arg))
         };
 
+    // --- Parse optional watch flag (5th arg) ---
+    let watch_mode = args.get(4).boolean_value(scope);
+
     // --- Queue the pending create; pre-allocate a Pending slot ---
     let handle_idx = {
         let state_rc = get_state(scope);
@@ -281,6 +284,7 @@ fn create_context(
             import_rules,
             package_map_json,
             port: port_global,
+            watch_mode,
         });
         idx
     };
@@ -334,12 +338,16 @@ fn step_context(
 
     let should_continue = super::step_child_context(scope, child_context);
 
-    // When the child exits normally, check if it recorded an entry-module error.
-    // If so, throw it in the parent scope so _stepChildren can reject Realm.run().
+    // When the child exits, check entry error and reload flag.
+    // - entry_error present → throw (Realm.run() rejects)
+    // - reload_requested → return null (signals JS to respawn)
+    // - otherwise → return false (clean exit)
     if !should_continue {
-        let entry_error = {
+        let (entry_error, reload_requested) = {
             let child_scope = &mut v8::ContextScope::new(scope, child_context);
-            get_state(child_scope).borrow().entry_error.clone()
+            let st = get_state(child_scope);
+            let st = st.borrow();
+            (st.entry_error.clone(), st.reload_requested)
         };
         if let Some(msg) = entry_error {
             if let Some(s) = v8::String::new(scope, &msg) {
@@ -347,6 +355,10 @@ fn step_context(
                 scope.throw_exception(exc);
                 return;
             }
+        }
+        if reload_requested {
+            rv.set(v8::null(scope).into());
+            return;
         }
     }
 
@@ -428,12 +440,16 @@ fn create_thread_context(
 
     let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
+    // --- Parse optional watch flag (4th arg) ---
+    let watch_mode = args.get(3).boolean_value(scope);
+
     // --- Spawn the thread realm ---
     let spawn_config = thread::SpawnConfig {
         process_env,
         entry_path,
         import_rules,
         package_map_json,
+        watch_mode,
     };
 
     let handle = match thread::spawn_thread_realm(spawn_config) {
@@ -469,19 +485,25 @@ fn step_thread_context(
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let state_rc = get_state(scope);
 
-    // Read done/error under a short immutable borrow.
-    let (still_running, maybe_err) = {
+    // Read done/reload/error under a short immutable borrow.
+    let (still_running, reload_requested, maybe_err) = {
         let st = state_rc.borrow();
         let h = st.thread_contexts.get(handle).and_then(|s| s.as_ref());
         let running = h
             .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
             .unwrap_or(false);
+        let reload = if !running {
+            h.map(|h| h.reload_requested.load(std::sync::atomic::Ordering::Acquire))
+                .unwrap_or(false)
+        } else {
+            false
+        };
         let err = if !running {
             h.and_then(|h| h.error.lock().ok()?.clone())
         } else {
             None
         };
-        (running, err)
+        (running, reload, err)
     };
 
     if !still_running {
@@ -494,6 +516,10 @@ fn step_thread_context(
                 .unwrap_or_else(|| v8::String::new(scope, "thread realm error").unwrap());
             let exc = v8::Exception::error(scope, msg);
             scope.throw_exception(exc);
+            return;
+        }
+        if reload_requested {
+            rv.set(v8::null(scope).into());
             return;
         }
     }
@@ -692,11 +718,15 @@ fn create_process_context(
 
     let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
+    // Optional watch flag (4th arg)
+    let watch_mode = args.get(3).boolean_value(scope);
+
     let spawn_args = process::SpawnArgs {
         process_env,
         entry_path,
         import_rules,
         package_map_json,
+        watch_mode,
     };
     let handle = match process::spawn_process_realm(spawn_args) {
         Ok(h) => h,
@@ -727,18 +757,24 @@ fn step_process_context(
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
     let state_rc = get_state(scope);
 
-    let (still_running, maybe_err) = {
+    let (still_running, reload_requested, maybe_err) = {
         let st = state_rc.borrow();
         let h = st.process_contexts.get(handle).and_then(|s| s.as_ref());
         let running = h
             .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
             .unwrap_or(false);
+        let reload = if !running {
+            h.map(|h| h.reload_requested.load(std::sync::atomic::Ordering::Acquire))
+                .unwrap_or(false)
+        } else {
+            false
+        };
         let err = if !running {
             h.and_then(|h| h.error.lock().ok()?.clone())
         } else {
             None
         };
-        (running, err)
+        (running, reload, err)
     };
 
     if !still_running {
@@ -751,6 +787,10 @@ fn step_process_context(
                 .unwrap_or_else(|| v8::String::new(scope, "process realm error").unwrap());
             let exc = v8::Exception::error(scope, msg);
             scope.throw_exception(exc);
+            return;
+        }
+        if reload_requested {
+            rv.set(v8::null(scope).into());
             return;
         }
     }

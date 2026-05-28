@@ -3,16 +3,25 @@
 //! Readable from within a child Realm context; provides the entry path,
 //! termination flag, and MessagePort stored in the child's FinoState.
 
+use std::sync::atomic::Ordering;
+
 use ::v8;
 
 use crate::state::get_state;
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> =
-        ["getEntryPath", "isTerminated", "getPort", "setEntryError"]
-            .iter()
-            .map(|n| v8::String::new(scope, n).unwrap())
-            .collect();
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "getEntryPath",
+        "isTerminated",
+        "getPort",
+        "setEntryError",
+        "getLoadedFsPaths",
+        "requestReload",
+        "getWatchMode",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
 
     let module_name = v8::String::new(scope, "internal:realm-bridge").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
@@ -37,6 +46,9 @@ fn eval_steps<'a>(
     set_fn!("isTerminated", is_terminated);
     set_fn!("getPort", get_port);
     set_fn!("setEntryError", set_entry_error);
+    set_fn!("getLoadedFsPaths", get_loaded_fs_paths);
+    set_fn!("requestReload", request_reload);
+    set_fn!("getWatchMode", get_watch_mode);
 
     Some(v8::undefined(scope).into())
 }
@@ -99,4 +111,61 @@ fn is_terminated(
     let state_rc = get_state(scope);
     let terminated = state_rc.borrow().terminated;
     rv.set(v8::Boolean::new(scope, terminated).into());
+}
+
+/// Returns an Array of absolute path strings for every filesystem module this
+/// Realm has imported so far (the keys of `state.fs_cache`).
+fn get_loaded_fs_paths(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let paths: Vec<String> = state_rc
+        .borrow()
+        .fs_cache
+        .keys()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    let arr = v8::Array::new(scope, paths.len() as i32);
+    for (i, p) in paths.iter().enumerate() {
+        if let Some(s) = v8::String::new(scope, p) {
+            let idx = v8::Integer::new(scope, i as i32);
+            arr.set(scope, idx.into(), s.into());
+        }
+    }
+    rv.set(arr.into());
+}
+
+/// Signals that this Realm wants to reload: sets `reload_requested` and
+/// `terminated` on the local FinoState, writes the shared atomic for thread
+/// realms, and sets the process-global flag for process realms so the parent
+/// process exits with code 75.
+fn request_reload(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let mut st = state_rc.borrow_mut();
+    st.reload_requested = true;
+    st.terminated = true;
+    if let Some(ref signal) = st.reload_requested_signal {
+        signal.store(true, Ordering::Release);
+    }
+    // For process realm children: set the process-wide flag so run_process_child
+    // exits with code 75.  This is a no-op in the parent process.
+    crate::realm::process::CHILD_RELOAD_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Returns `true` if this Realm was started with `watch: true`.
+fn get_watch_mode(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let watch_mode = state_rc.borrow().watch_mode;
+    rv.set(v8::Boolean::new(scope, watch_mode).into());
 }

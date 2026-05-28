@@ -14,6 +14,7 @@ import {
   runWithTracerProvider,
 } from '../opentelemetry.mts';
 import { createCliOtelRuntime } from '../opentelemetry/bootstrap.mts';
+import { Realm } from '../runtime/realm.mts';
 
 function normalizeScriptSpecifier(script: string): string {
   if (script.startsWith('file://')) return script;
@@ -42,10 +43,23 @@ export function createRootCommand(): Command {
         type: 'string',
         description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint',
       },
+      {
+        flags: '--watch',
+        type: 'boolean',
+        description: 'Re-run the script whenever any imported file changes',
+      },
     ],
     run: async function runRootCommand(ctx) {
       const script = ctx.args.script;
       if (script === undefined) return ctx.command.help();
+      const watchMode = ctx.options['watch'] === true;
+      if (watchMode) {
+        const entry = normalizeScriptSpecifier(String(script));
+        const realm = new Realm({ entry, watch: true });
+        // Let SIGINT / Ctrl-C terminate the watch loop cleanly.
+        (globalThis as Record<string, unknown>).addEventListener?.('beforeunload', () => realm.terminate());
+        return realm.run();
+      }
       const load = () => import(normalizeScriptSpecifier(String(script)));
       const endpoint = typeof ctx.options['otlp-endpoint'] === 'string' ? ctx.options['otlp-endpoint'].trim() : '';
       if (!endpoint) return load();

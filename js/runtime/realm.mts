@@ -691,6 +691,13 @@ export interface RealmOptions {
    */
   remote?: boolean;
   /**
+   * If true, automatically restart the child Realm whenever any file it
+   * imported changes on disk. The JS `Realm` instance is stable across
+   * reloads; only the underlying V8 context / thread / process is replaced.
+   * Not supported with `remote: true`.
+   */
+  watch?: boolean;
+  /**
    * Parent-side MessagePort for communication with the child.
    * Ignored when `thread: true` or `process: true`.
    */
@@ -776,6 +783,9 @@ interface ActiveChild {
   resolve: () => void;
   reject: (err: unknown) => void;
   clusterPort?: ClusterPort;
+  /** Called when the child exits with reload_requested. Returns the new handle
+   *  to keep running, or null to stop watching (after terminate()). */
+  onReload?: () => number | null;
 }
 
 const _activeChildren: ActiveChild[] = [];
@@ -785,21 +795,35 @@ export function _stepChildren(): void {
   for (let i = _activeChildren.length - 1; i >= 0; i--) {
     const child = _activeChildren[i]!;
     if (child.kind === 'remote') continue; // driven by cluster transport, not stepped
-    let alive: boolean;
+    // Step returns: true = alive, false = clean exit, null = reload requested
+    let stepResult: boolean | null;
     let stepError: unknown = undefined;
     if (child.kind === 'thread') {
-      try { alive = stepThreadContext(child.handle) as boolean; }
-      catch (err) { alive = false; stepError = err; }
+      try { stepResult = stepThreadContext(child.handle) as boolean | null; }
+      catch (err) { stepResult = false; stepError = err; }
     } else if (child.kind === 'process') {
-      try { alive = stepProcessContext(child.handle) as boolean; }
-      catch (err) { alive = false; stepError = err; }
+      try { stepResult = stepProcessContext(child.handle) as boolean | null; }
+      catch (err) { stepResult = false; stepError = err; }
     } else {
-      try { alive = stepContext(child.handle) as boolean; }
-      catch (err) { alive = false; stepError = err; }
+      try { stepResult = stepContext(child.handle) as boolean | null; }
+      catch (err) { stepResult = false; stepError = err; }
     }
-    if (!alive) {
-      if (stepError !== undefined) { child.reject(stepError); } else { child.resolve(); }
-      _activeChildren.splice(i, 1);
+    if (stepResult !== true) {
+      if (stepError !== undefined) {
+        child.reject(stepError);
+        _activeChildren.splice(i, 1);
+      } else if (stepResult === null && child.onReload !== undefined) {
+        const newHandle = child.onReload();
+        if (newHandle !== null) {
+          child.handle = newHandle;
+        } else {
+          child.resolve();
+          _activeChildren.splice(i, 1);
+        }
+      } else {
+        child.resolve();
+        _activeChildren.splice(i, 1);
+      }
     }
   }
 }
@@ -848,14 +872,26 @@ function _resolveCallResponse<R>(
 // ---------------------------------------------------------------------------
 
 export class Realm<F extends RealmFn = RealmFn> {
-  readonly #handle: number;
+  #handle: number;
   readonly #kind: RealmKind;
   /** Parent-side port for general communication with the child Realm. */
   readonly port: MessagePort | ThreadPort | ProcessPort | ClusterPort;
   /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
   #spawnPromise: Promise<string> | null = null;
 
+  // Watch mode state
+  #watchOpts: RealmOptions | null = null;
+  #watchSerializedRules = '[]';
+  #watchTerminated = false;
+  // For thread/process watch mode: tracks the current child's port so that
+  // terminate() reaches the most-recently-spawned child, not the original one.
+  #activeChildPort: ThreadPort | ProcessPort | null = null;
+
   constructor(opts: RealmOptions) {
+    if (opts.watch && opts.remote) {
+      throw new Error('fino:realm — watch: true is not supported with remote: true');
+    }
+
     // Build the child-specific rule list from overrides / legacy providers+blocked.
     const rules: ImportRule[] = [];
     if (opts.overrides) {
@@ -874,6 +910,13 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
 
+    if (opts.watch) {
+      this.#watchOpts = opts;
+      this.#watchSerializedRules = serializedRules;
+    }
+
+    const watch = opts.watch ?? false;
+
     if (opts.remote) {
       const cluster = getCluster();
       if (!cluster) {
@@ -891,13 +934,13 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     } else if (opts.process) {
       this.#kind = 'process';
-      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules) as number;
+      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules, watch) as number;
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
     } else if (opts.thread) {
       this.#kind = 'thread';
-      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules) as number;
+      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch) as number;
       this.#handle = handle;
       const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
       this.port = new ThreadPort(wakeReadFd, handle);
@@ -914,7 +957,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         childPort  = channel.port2;
       }
       this.port = parentPort;
-      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort) as number;
+      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch) as number;
     }
 
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
@@ -934,6 +977,24 @@ export class Realm<F extends RealmFn = RealmFn> {
         kind: this.#kind,
         entry: opts.entry,
       }));
+    }
+  }
+
+  /** Spawn a fresh child handle using the stored watch opts. @internal */
+  #spawnChild(): number {
+    const opts = this.#watchOpts!;
+    const rules = this.#watchSerializedRules;
+    if (opts.process) {
+      const h = createProcessContext(opts.root ?? '', opts.entry, rules, true) as number;
+      this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
+      return h;
+    } else if (opts.thread) {
+      const h = createThreadContext(opts.root ?? '', opts.entry, rules, true) as number;
+      this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
+      return h;
+    } else {
+      const { port2: childPort } = new MessageChannel();
+      return createContext(opts.root ?? '', opts.entry, rules, childPort, true) as number;
     }
   }
 
@@ -960,6 +1021,26 @@ export class Realm<F extends RealmFn = RealmFn> {
         }),
       );
     }
+
+    if (this.#watchOpts !== null) {
+      return new Promise<void>((resolve, reject) => {
+        const self = this;
+        const entry: ActiveChild = {
+          handle: this.#handle,
+          kind: this.#kind,
+          resolve,
+          reject,
+          onReload(): number | null {
+            if (self.#watchTerminated) return null;
+            const newHandle = self.#spawnChild();
+            self.#handle = newHandle;
+            return newHandle;
+          },
+        };
+        _activeChildren.push(entry);
+      });
+    }
+
     return new Promise<void>((resolve, reject) => {
       _activeChildren.push({ handle: this.#handle, kind: this.#kind, resolve, reject });
     });
@@ -1042,12 +1123,17 @@ export class Realm<F extends RealmFn = RealmFn> {
 
   /** Signal the child Realm to stop. */
   terminate(): void {
+    this.#watchTerminated = true;
     if (this.#kind === 'remote') {
       this.port.postMessage({ __terminate: true });
       this.port.close();
     } else if (this.#kind === 'thread' || this.#kind === 'process') {
-      this.port.postMessage({ __terminate: true });
-      this.port.close();
+      // After a watch-mode reload, this.port still points to the first child's
+      // port.  Use #activeChildPort when set (updated by #spawnChild on reload)
+      // so the terminate message reaches the currently-running child.
+      const activePort = this.#activeChildPort ?? (this.port as ThreadPort | ProcessPort);
+      activePort.postMessage({ __terminate: true });
+      activePort.close();
     } else {
       terminateChild(this.#handle);
     }

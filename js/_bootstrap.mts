@@ -21,7 +21,7 @@ import { wakeFd } from 'internal:async-runtime';
 registerWakeSource(wakeFd);
 import './internal/loader.mts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode } from 'internal:realm-bridge';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import {
@@ -334,6 +334,11 @@ if (_threadWakeReadFd < 0 && _childPort !== undefined) {
 
 if (_childEntry !== undefined) {
   let _childDone = false;
+  // Set when the parent sends { __terminate: true } via the port.  Used in
+  // watch mode (where _childDone is not checked) so thread/process realm
+  // terminate() unblocks _childIsDone() the same way terminateChild() does
+  // for embedded realms.
+  let _externalTerminate = false;
 
   // Start the port early so messages (including __terminate) arrive during
   // module loading, before the entry module's own listener is added.
@@ -350,6 +355,7 @@ if (_childEntry !== undefined) {
       if (!msg || typeof msg !== 'object') return;
       if ((msg as { __terminate?: boolean }).__terminate === true) {
         _childDone = true;
+        _externalTerminate = true;
       } else if (!_callHandlerInstalled && (msg as { __call?: boolean }).__call) {
         // Queue early __call until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyCall = msg;
@@ -467,19 +473,88 @@ if (_childEntry !== undefined) {
     },
   );
 
+  const _watchMode = (getWatchMode as () => boolean)();
+
+  // References held so _childIsDone() can tear them down on external terminate().
+  let _watcherRef: { close(): void } | null = null;
+  let _watchPollRef: ReturnType<typeof setInterval> | null = null;
+
   let _portClosed = false;
   driveLoop(
     function _childIsDone() {
-      const done = _childDone || (isTerminated() as boolean);
-      if (done && !_portClosed && _childPort !== undefined) {
-        // Close the port to cancel any pending loop.readable() so that
-        // alive() can return false and the loop can exit cleanly.
-        _portClosed = true;
-        (_childPort as MessagePort | ThreadPort).close();
+      // In watch mode the realm stays alive after the entry completes so the
+      // file-watcher loop can keep driving kqueue/inotify events.  Exit is
+      // triggered by: requestReload() (sets state.terminated), terminateChild()
+      // for embedded realms (same), or { __terminate: true } over the port for
+      // thread/process realms (sets _externalTerminate).
+      const done = _watchMode
+        ? (_externalTerminate || (isTerminated() as boolean))
+        : (_childDone || (isTerminated() as boolean));
+      if (done) {
+        // Tear down the watcher and poll interval so alive() drains to false
+        // and the child's step loop can exit cleanly.  This handles both the
+        // external-terminate path (parent called terminate()) and the
+        // watcher-initiated reload path (watcher already cleared these itself).
+        if (_watchPollRef !== null) { clearInterval(_watchPollRef); _watchPollRef = null; }
+        if (_watcherRef !== null) { _watcherRef.close(); _watcherRef = null; }
+        if (!_portClosed && _childPort !== undefined) {
+          // Close the port to cancel any pending loop.readable() so that
+          // alive() can return false and the loop can exit cleanly.
+          _portClosed = true;
+          (_childPort as MessagePort | ThreadPort).close();
+        }
       }
       return done;
     },
     function _childOnDone() {},
     { nonBlocking: true },
   );
+
+  // ---------------------------------------------------------------------------
+  // Watch mode — file-change reload loop
+  // ---------------------------------------------------------------------------
+  // Started as a fire-and-forget task when the child realm has watch_mode=true.
+  // The Watcher import is dynamic so non-watch realms never pay the module cost.
+  // Lives inside if (_childEntry !== undefined) so it shares scope with
+  // _watcherRef / _watchPollRef that _childIsDone() uses for teardown.
+
+  if (_watchMode) {
+    void (async function _watchLoop() {
+      const { Watcher } = await import('fino:file/watch') as { Watcher: new () => {
+        watch(p: string): void;
+        close(): void;
+        [Symbol.asyncIterator](): AsyncIterator<{ path: string; type: string }>;
+      }};
+
+      const watcher = new Watcher();
+      const watched = new Set<string>();
+
+      function _refreshWatchPaths() {
+        for (const p of (getLoadedFsPaths as () => string[])()) {
+          if (!watched.has(p)) {
+            watched.add(p);
+            watcher.watch(p);
+          }
+        }
+      }
+
+      _refreshWatchPaths();
+      const _poll = setInterval(_refreshWatchPaths, 200);
+      // Expose to _childIsDone() for external-terminate cleanup.
+      _watcherRef = watcher;
+      _watchPollRef = _poll;
+
+      let _pending: ReturnType<typeof setTimeout> | null = null;
+      for await (const ev of watcher) {
+        if (!watched.has(ev.path)) continue;
+        if (_pending !== null) clearTimeout(_pending);
+        _pending = setTimeout(function _doReload() {
+          _pending = null;
+          _watchPollRef = null; clearInterval(_poll);
+          _watcherRef = null; watcher.close();
+          (requestReload as () => void)();
+        }, 50);
+      }
+    })();
+  }
 }

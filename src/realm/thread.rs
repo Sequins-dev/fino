@@ -67,6 +67,7 @@ pub struct SpawnConfig {
     pub entry_path: String,
     pub import_rules: Vec<ImportRule>,
     pub package_map_json: Option<String>,
+    pub watch_mode: bool,
 }
 
 /// Returned to the parent after a thread realm is spawned.
@@ -87,6 +88,9 @@ pub struct ThreadRealmHandle {
     pub done: Arc<AtomicBool>,
     /// Error message if the thread exited due to an error or panic. `None` = clean exit.
     pub error: Arc<Mutex<Option<String>>>,
+    /// Set to `true` by the child thread via `requestReload()` before it exits.
+    /// The parent reads this in `step_thread_context` to distinguish reload from clean exit.
+    pub reload_requested: Arc<AtomicBool>,
     /// Thread join handle — resolves when the child loop exits.
     pub join: std::thread::JoinHandle<()>,
 }
@@ -122,6 +126,9 @@ struct IsolateConfig {
     wake_read_fd: RawFd,
     /// Parent's wake-pipe write end — write here after each send.
     partner_wake_write_fd: RawFd,
+    watch_mode: bool,
+    /// Shared with `ThreadRealmHandle.reload_requested`; child writes it on reload.
+    reload_requested: Arc<AtomicBool>,
 }
 
 /// RAII wrapper that closes a file descriptor on drop.
@@ -182,6 +189,8 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
     let done_for_thread = done_flag.clone();
     let error_flag: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let error_for_thread = error_flag.clone();
+    let reload_flag = Arc::new(AtomicBool::new(false));
+    let reload_for_thread = reload_flag.clone();
 
     let iso_config = IsolateConfig {
         process_env: config.process_env,
@@ -192,6 +201,8 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
         channel_tx: child_tx,
         wake_read_fd: child_wake_read,
         partner_wake_write_fd: parent_wake_write,
+        watch_mode: config.watch_mode,
+        reload_requested: reload_for_thread,
     };
 
     let join = std::thread::spawn(move || {
@@ -224,6 +235,7 @@ pub fn spawn_thread_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Stri
         parent_wake_read,
         done: done_flag,
         error: error_flag,
+        reload_requested: reload_flag,
         join,
     })
 }
@@ -248,6 +260,8 @@ fn run_thread_isolate(config: IsolateConfig) -> Result<(), String> {
         wake_read_fd: config.wake_read_fd,
         wake_write_fd: Some(config.partner_wake_write_fd),
         timing_label: "thread-realm",
+        watch_mode: config.watch_mode,
+        reload_requested_signal: Some(config.reload_requested),
     })
 }
 

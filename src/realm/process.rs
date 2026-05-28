@@ -48,6 +48,13 @@ use crate::state::ImportRule;
 /// error message without forwarding the frame to JS.
 const ENTRY_ERROR_PREFIX: &[u8] = b"\x00FINO_ENTRY_ERROR\x00";
 
+/// Process-global flag set by `requestReload()` inside a child process.
+/// When set, `run_process_child` exits with code 75 (EX_TEMPFAIL) instead
+/// of 0, and the parent's reader thread maps that to `reload_requested`.
+/// Safe as a static because each child process runs exactly one realm.
+pub static CHILD_RELOAD_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ---------------------------------------------------------------------------
 // Wire format
 // ---------------------------------------------------------------------------
@@ -169,6 +176,8 @@ pub struct SpawnConfig {
     pub env_vars: std::collections::HashMap<String, String>,
     pub exec_path: String,
     pub package_map_json: Option<String>,
+    #[serde(default)]
+    pub watch_mode: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +191,8 @@ pub struct ProcessRealmHandle {
     pub done: Arc<AtomicBool>,
     /// Populated if the child exited with an error.
     pub error: Arc<Mutex<Option<String>>>,
+    /// Set `true` when the child exited with code 75 (reload requested).
+    pub reload_requested: Arc<AtomicBool>,
     /// Receives messages from the child.
     pub rx: mpsc::Receiver<ThreadMessage>,
     /// Sends messages to the child (queued for the writer bridge thread).
@@ -208,6 +219,7 @@ pub struct SpawnArgs {
     pub entry_path: String,
     pub import_rules: Vec<ImportRule>,
     pub package_map_json: Option<String>,
+    pub watch_mode: bool,
 }
 
 /// Spawn a new process realm and return the parent-side handle.
@@ -247,6 +259,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         import_rules: args.import_rules,
         root: args.process_env.root.to_string_lossy().into_owned(),
         args: args.process_env.args.clone(),
+        watch_mode: args.watch_mode,
         env_vars: args.process_env.env_vars.clone(),
         exec_path: args.process_env.exec_path.clone(),
         package_map_json: args.package_map_json,
@@ -294,11 +307,13 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     let (parent_tx, writer_rx) = mpsc::channel::<ThreadMessage>();
     let done = Arc::new(AtomicBool::new(false));
     let error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let reload_requested = Arc::new(AtomicBool::new(false));
 
     // Reader: socket → mpsc + wake pipe; also reaps the child process.
     {
         let done = done.clone();
         let error = error.clone();
+        let reload_requested = reload_requested.clone();
         std::thread::spawn(move || {
             loop {
                 match read_message(parent_fd) {
@@ -330,11 +345,14 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
             {
                 let mut guard = error.lock().unwrap();
                 if guard.is_none() {
-                    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) != 0 {
-                        *guard = Some(format!(
-                            "process realm exited: code {}",
-                            libc::WEXITSTATUS(status)
-                        ));
+                    if libc::WIFEXITED(status) {
+                        let code = libc::WEXITSTATUS(status);
+                        if code == 75 {
+                            // Child requested reload; not an error.
+                            reload_requested.store(true, Ordering::Release);
+                        } else if code != 0 {
+                            *guard = Some(format!("process realm exited: code {}", code));
+                        }
                     } else if libc::WIFSIGNALED(status) {
                         *guard = Some(format!(
                             "process realm killed: signal {}",
@@ -367,6 +385,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         socket_fd: parent_fd,
         done,
         error,
+        reload_requested,
         rx: parent_rx,
         tx: parent_tx,
         parent_wake_read,
@@ -435,12 +454,20 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         wake_read_fd: wake_read,
         wake_write_fd: None, // parent wakes via the socket; bridge handles it
         timing_label: "process-realm",
+        watch_mode: config.watch_mode,
+        reload_requested_signal: None, // process realm uses exit code 75
     });
 
     // channel_tx dropped (inside FinoState) when run_child_isolate returned.
     // Join the writer bridge so all queued outbound messages (e.g. the call
     // result) are fully written to the socket before the process exits.
     let _ = writer_handle.join();
+
+    // If the child called requestReload(), exit with EX_TEMPFAIL (75) so the
+    // parent's reader thread maps this back to reload_requested.
+    if CHILD_RELOAD_REQUESTED.load(std::sync::atomic::Ordering::Acquire) {
+        std::process::exit(75);
+    }
 
     // If the entry module threw, send the error to the parent before exiting.
     if let Err(ref msg) = result {
