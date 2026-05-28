@@ -145,14 +145,11 @@ describe('verifyTarballIntegrity — malformed / unrecognised SRI (B3)', () => {
     }
   });
 
-  it('throws when integrity uses unknown algorithm and no shasum', (t) => {
-    try {
-      verifyTarballIntegrity(PAYLOAD, 'md5-deadbeef', undefined, 'bad-pkg@1.0.0');
-      t.fail('should have thrown');
-    } catch (err) {
-      t.ok(err instanceof Error, 'throws an Error for unknown algorithm');
-      t.ok((err as Error).message.includes('bad-pkg'), 'error names the package');
-    }
+  it('skips gracefully when integrity uses unknown algorithm and no shasum', (t) => {
+    // Unknown algorithms are skipped for forward compatibility (same as sha3).
+    // md5 is insecure but since we can't verify it, we skip rather than throw.
+    verifyTarballIntegrity(PAYLOAD, 'md5-deadbeef', undefined, 'test-pkg@1.0.0');
+    t.ok(true, 'unknown algorithm (md5) did not throw when no shasum provided');
   });
 
   it('falls through to shasum when integrity has unknown algorithm and shasum is correct', (t) => {

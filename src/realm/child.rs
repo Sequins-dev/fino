@@ -281,6 +281,12 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             unsafe { crate::profiler::dispose_profiler(ptr) };
         }
 
+        // Explicitly release channel_tx before the isolate is disposed. V8 does
+        // not run GC on dispose, so the context slot (Rc<FinoState>) — and
+        // channel_tx inside it — would otherwise leak.  Dropping it here signals
+        // the writer bridge thread (process realm) to exit after flushing.
+        state_rc.borrow_mut().channel_tx.take();
+
         let bm = v8::Local::new(scope, &bootstrap_module_global);
         if bm.get_status() == v8::ModuleStatus::Errored {
             let exc = bm.get_exception();
@@ -288,6 +294,12 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 .to_string(scope)
                 .map(|s| s.to_rust_string_lossy(scope))
                 .unwrap_or_else(|| "Unknown error in _bootstrap.mjs".to_string()));
+        }
+
+        // If the entry module threw at top-level, propagate the error so the
+        // parent can reject Realm.run() instead of resolving it silently.
+        if let Some(err) = get_state(scope).borrow().entry_error.clone() {
+            return Err(err);
         }
     }
 

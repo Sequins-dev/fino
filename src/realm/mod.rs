@@ -303,11 +303,11 @@ fn create_child_context(
         };
         let bootstrap_module = {
             let tc = &mut v8::TryCatch::new(child_scope);
-            loader::register_source_map_from_json(tc, "_bootstrap.mjs", bootstrap_map);
+            loader::register_source_map_from_json(tc, "internal:bootstrap", bootstrap_map);
             match loader::compile_source_module(
                 tc,
                 bootstrap_src,
-                "_bootstrap.mjs",
+                "internal:bootstrap",
                 Some(bootstrap_map),
             ) {
                 Some(m) => m,

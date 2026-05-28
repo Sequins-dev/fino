@@ -503,13 +503,27 @@ pub fn resolve_module_callback<'s>(
         raw_spec
     };
 
+    let from_spec = builtin_referrer.clone().or_else(|| {
+        referrer
+            .script_id()
+            .and_then(|id| state_rc.borrow().module_paths.get(&id).cloned())
+            .map(|p| format!("file://{}", p.to_string_lossy()))
+    });
+
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
-        let from_spec = builtin_referrer.clone().or_else(|| {
-            referrer
-                .script_id()
-                .and_then(|id| state_rc.borrow().module_paths.get(&id).cloned())
-                .map(|p| format!("file://{}", p.to_string_lossy()))
-        });
+        return get_or_load_builtin(scope, &spec, from_spec.as_deref());
+    }
+
+    // For non-builtin specifiers, check if an import directive (e.g. Remap)
+    // routes this spec through the builtin resolver.
+    let has_directive = {
+        let st = state_rc.borrow();
+        let d = crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec);
+        matches!(d, Some(crate::state::ImportDirective::Remap { .. })
+                   | Some(crate::state::ImportDirective::Source { .. })
+                   | Some(crate::state::ImportDirective::Facade(..)))
+    };
+    if has_directive {
         return get_or_load_builtin(scope, &spec, from_spec.as_deref());
     }
 
@@ -712,14 +726,58 @@ pub fn dynamic_import_callback<'s>(
         None
     };
 
+    // Pre-check for blocked builtins WITHOUT creating a TryCatch.
+    // Using scope.throw_exception() inside a TryCatch and then calling
+    // tc.reset() can leave the isolate in an unexpected state when called
+    // from within module evaluation (e.g. during TLA). By checking the
+    // directive here and rejecting via a plain error value, we avoid the
+    // exception/TryCatch machinery entirely for blocked imports.
+    if spec.starts_with("fino:") || spec.starts_with("internal:") {
+        let state_rc = crate::state::get_state(scope);
+        let is_blocked = {
+            let st = state_rc.borrow();
+            let is_builtin_ref = referrer_url.starts_with("fino:")
+                || referrer_url.starts_with("internal:")
+                || st.builtin_specifiers.values().any(|v| v.as_str() == referrer_url.as_str());
+            if is_builtin_ref {
+                false
+            } else {
+                let dir = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
+                matches!(dir, Some(crate::state::ImportDirective::Block))
+            }
+        };
+        if is_blocked {
+            let msg_str = format!("Import of '{}' is blocked in this Realm", spec);
+            if let Some(msg) = v8::String::new(scope, &msg_str) {
+                let exc = v8::Exception::error(scope, msg);
+                resolver.reject(scope, exc);
+            }
+            return Some(promise);
+        }
+    }
+
     let tc = &mut v8::TryCatch::new(scope);
 
     let module: Option<v8::Local<v8::Module>> =
         if spec.starts_with("fino:") || spec.starts_with("internal:") {
             get_or_load_builtin(tc, &spec, Some(&referrer_url))
         } else {
-            resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
-                .and_then(|p| get_or_load_fs_module(tc, &p))
+            // For non-builtin specifiers, check if there's an import directive
+            // (e.g. Remap) that routes this spec through the builtin resolver.
+            let has_directive = {
+                let state_rc = crate::state::get_state(tc);
+                let st = state_rc.borrow();
+                let d = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
+                matches!(d, Some(crate::state::ImportDirective::Remap { .. })
+                           | Some(crate::state::ImportDirective::Source { .. })
+                           | Some(crate::state::ImportDirective::Facade(..)))
+            };
+            if has_directive {
+                get_or_load_builtin(tc, &spec, Some(&referrer_url))
+            } else {
+                resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
+                    .and_then(|p| get_or_load_fs_module(tc, &p))
+            }
         };
 
     settle_dynamic_import(tc, module, resolver);
@@ -941,9 +999,19 @@ fn get_or_load_builtin_inner<'s>(
     //    The default rules in the root realm block `internal:*` from all
     //    importers except those whose specifier starts with `fino:` or
     //    `internal:`. Child realms inherit those rules automatically.
+    //    Bypass Block rules when the referrer is a builtin (internal:* / fino:*)
+    //    because builtins must always be able to import other builtins regardless
+    //    of user-specified realm restrictions.
     let directive = {
         let st = state_rc.borrow();
-        resolve_directive(&st.import_rules, from, spec).cloned()
+        let d = resolve_directive(&st.import_rules, from, spec).cloned();
+        if matches!(d, Some(ImportDirective::Block)) {
+            let is_builtin_from = from.map_or(false, |f| {
+                f.starts_with("fino:") || f.starts_with("internal:")
+                    || st.builtin_specifiers.values().any(|v| v == f)
+            });
+            if is_builtin_from { None } else { d }
+        } else { d }
     };
 
     match directive {

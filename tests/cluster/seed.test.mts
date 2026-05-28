@@ -5,7 +5,7 @@
  * messages so we can assert routing decisions without network I/O.
  */
 
-import { describe, it } from 'fino:test/test';
+import { describe, it, afterEach } from 'fino:test/test';
 import { SeedServer } from 'internal:cluster/seed';
 import { RealmRegistry } from 'internal:cluster/registry';
 import type { ClusterMessage } from 'internal:cluster/protocol';
@@ -43,11 +43,19 @@ class TestSeedTransport {
   close(): void { this.#handlers = []; }
 }
 
+let _activeSeed: SeedServer | null = null;
+
 function makeSeed(nodeId = 'seed-node'): { seed: SeedServer; transport: TestSeedTransport } {
   const transport = new TestSeedTransport(nodeId);
   const seed = new SeedServer(transport as any);
   seed.start();
+  _activeSeed = seed;
   return { seed, transport };
+}
+
+function stopActiveSeed(): void {
+  _activeSeed?.stop();
+  _activeSeed = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +63,8 @@ function makeSeed(nodeId = 'seed-node'): { seed: SeedServer; transport: TestSeed
 // ---------------------------------------------------------------------------
 
 describe('SeedServer — HELLO / WELCOME', () => {
+  afterEach(stopActiveSeed);
+
   it('start() calls listen() on the transport', (t) => {
     const { transport } = makeSeed();
     t.ok(transport.listenCalled, 'listen() was called on start');
@@ -81,6 +91,8 @@ describe('SeedServer — HELLO / WELCOME', () => {
 });
 
 describe('SeedServer — SPAWN routing', () => {
+  afterEach(stopActiveSeed);
+
   it('SPAWN with no eligible peer → SPAWN_ACK { ok: false }', (t) => {
     const { transport } = makeSeed();
     // Only one node — no other peers
@@ -133,6 +145,8 @@ describe('SeedServer — SPAWN routing', () => {
 });
 
 describe('SeedServer — PORT_MSG routing', () => {
+  afterEach(stopActiveSeed);
+
   it('PORT_MSG is forwarded to the node hosting toPort', (t) => {
     const { transport } = makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
@@ -172,6 +186,8 @@ describe('SeedServer — PORT_MSG routing', () => {
 });
 
 describe('SeedServer — REALM_EXIT graceful cascade', () => {
+  afterEach(stopActiveSeed);
+
   it('REALM_EXIT sends TERMINATE to nodes hosting direct children', (t) => {
     const { transport } = makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
@@ -306,6 +322,8 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
 });
 
 describe('SeedServer — nodeDown cascade', () => {
+  afterEach(stopActiveSeed);
+
   it('PEER_DOWN sends TERMINATE for orphaned child ports to surviving parents', (t) => {
     const { transport } = makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });

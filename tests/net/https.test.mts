@@ -32,11 +32,11 @@ async function tlsRoundtrip(port: number, rawRequest: string): Promise<string> {
   );
   const [reader, writer] = tls.split();
   await writer.write(encodeUtf8(rawRequest));
-  writer.close();
+  await writer.close();
 
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);
-  reader.close();
+  await reader.close();
 
   const totalLen = chunks.reduce((n, c) => n + c.byteLength, 0);
   const all = new Uint8Array(totalLen);

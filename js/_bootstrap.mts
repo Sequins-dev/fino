@@ -21,7 +21,7 @@ import { wakeFd } from 'internal:async-runtime';
 registerWakeSource(wakeFd);
 import './internal/loader.mts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError } from 'internal:realm-bridge';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import {
@@ -337,9 +337,10 @@ if (_childEntry !== undefined) {
 
   // Start the port early so messages (including __terminate) arrive during
   // module loading, before the entry module's own listener is added.
-  // __pool_call messages that arrive before the entry module finishes loading
-  // are queued here and replayed once the _callHandler is installed.
+  // __call and __pool_call messages that arrive before the entry module finishes
+  // loading are queued here and replayed once the _callHandler is installed.
   const _earlyPoolCalls: unknown[] = [];
+  let _earlyCall: unknown = null;
   let _callHandlerInstalled = false;
 
   if (_childPort !== undefined) {
@@ -349,6 +350,9 @@ if (_childEntry !== undefined) {
       if (!msg || typeof msg !== 'object') return;
       if ((msg as { __terminate?: boolean }).__terminate === true) {
         _childDone = true;
+      } else if (!_callHandlerInstalled && (msg as { __call?: boolean }).__call) {
+        // Queue early __call until _callHandler is ready; flag prevents re-queuing during replay.
+        _earlyCall = msg;
       } else if (!_callHandlerInstalled && (msg as { __pool_call?: boolean }).__pool_call) {
         // Queue early pool calls until _callHandler is ready; flag prevents re-queuing during replay.
         _earlyPoolCalls.push(msg);
@@ -384,6 +388,7 @@ if (_childEntry !== undefined) {
                 _childPort!.postMessage({
                   __call_error: true,
                   message: String(err),
+                  name: (err instanceof Error) ? err.name : undefined,
                   stack: (err instanceof Error) ? err.stack : undefined,
                 });
                 _childDone = true;
@@ -431,12 +436,15 @@ if (_childEntry !== undefined) {
           // to user-registered listeners unchanged.
         });
 
-        // Mark the handler as installed so _terminateHandler stops queuing pool calls.
+        // Mark the handler as installed so _terminateHandler stops queuing early messages.
         // Replay any messages that arrived before installation via a microtask.
         _callHandlerInstalled = true;
-        if (_earlyPoolCalls.length > 0) {
+        const _toReplay: unknown[] = [];
+        if (_earlyCall !== null) { _toReplay.push(_earlyCall); _earlyCall = null; }
+        _toReplay.push(..._earlyPoolCalls.splice(0));
+        if (_toReplay.length > 0) {
           Promise.resolve().then(() => {
-            for (const m of _earlyPoolCalls.splice(0)) {
+            for (const m of _toReplay) {
               _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
             }
           });
@@ -449,7 +457,12 @@ if (_childEntry !== undefined) {
       }
     },
     function _onChildEntryError(err: unknown) {
-      runtimeGlobalThis.console?.error('Realm entry error:', err);
+      try {
+        const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        (setEntryError as (m: string) => void)(msg);
+      } catch (e) {
+        runtimeGlobalThis.console?.error('[_onChildEntryError] setEntryError threw:', e);
+      }
       _childDone = true;
     },
   );

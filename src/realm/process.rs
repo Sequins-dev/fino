@@ -43,6 +43,11 @@ use serde::{Deserialize, Serialize};
 use super::thread::ThreadMessage;
 use crate::state::ImportRule;
 
+/// Magic prefix that marks an entry-error sentinel IPC message sent by the
+/// child before it exits. The parent reader strips this and stores the real
+/// error message without forwarding the frame to JS.
+const ENTRY_ERROR_PREFIX: &[u8] = b"\x00FINO_ENTRY_ERROR\x00";
+
 // ---------------------------------------------------------------------------
 // Wire format
 // ---------------------------------------------------------------------------
@@ -135,10 +140,16 @@ fn read_exact(fd: RawFd, buf: &mut [u8]) -> std::io::Result<()> {
         }
         if n < 0 {
             let e = std::io::Error::last_os_error();
-            if e.kind() != std::io::ErrorKind::Interrupted {
-                return Err(e);
+            match e.kind() {
+                std::io::ErrorKind::Interrupted => continue,
+                std::io::ErrorKind::WouldBlock => {
+                    // fd is O_NONBLOCK; wait for it to become readable.
+                    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                    unsafe { libc::poll(&mut pfd, 1, -1) };
+                    continue;
+                }
+                _ => return Err(e),
             }
-            continue;
         }
         r += n as usize;
     }
@@ -210,8 +221,9 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     }
     let (parent_fd, child_fd) = (fds[0], fds[1]);
     unsafe {
-        libc::fcntl(parent_fd, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(child_fd, libc::F_SETFD, 0); // clear FD_CLOEXEC so child inherits it
+        // child_fd: clear FD_CLOEXEC so child inherits it. parent_fd stays blocking
+        // until after the config write (set non-blocking below, after write).
+        libc::fcntl(child_fd, libc::F_SETFD, 0);
     }
 
     // Wake-pipe for the parent (reader bridge writes here on each message).
@@ -270,8 +282,12 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     // Parent closes the child's fd.
     unsafe { libc::close(child_fd) };
 
-    // Write spawn config (child reads this first before its event loop).
+    // Write spawn config while parent_fd is still blocking — the child may not
+    // be reading yet and a non-blocking write could EAGAIN on a fresh socket.
     write_message(parent_fd, &config_msg).map_err(|e| format!("write config: {e}"))?;
+
+    // Now switch parent_fd to non-blocking for the async event-loop phase.
+    unsafe { libc::fcntl(parent_fd, libc::F_SETFL, libc::O_NONBLOCK); };
 
     // Bridge threads.
     let (reader_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
@@ -287,6 +303,14 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
             loop {
                 match read_message(parent_fd) {
                     Ok(msg) => {
+                        // Check for a child-side entry-error sentinel.
+                        if msg.data.starts_with(ENTRY_ERROR_PREFIX) {
+                            let err_msg = String::from_utf8_lossy(
+                                &msg.data[ENTRY_ERROR_PREFIX.len()..],
+                            ).into_owned();
+                            *error.lock().unwrap() = Some(err_msg);
+                            continue;
+                        }
                         let _ = reader_tx.send(msg);
                         let b = [1u8];
                         unsafe { libc::write(parent_wake_write, b.as_ptr() as _, 1) };
@@ -302,16 +326,22 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
             // Reap child.
             let mut status = 0i32;
             unsafe { libc::waitpid(child_pid, &mut status, 0) };
-            if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) != 0 {
-                *error.lock().unwrap() = Some(format!(
-                    "process realm exited: code {}",
-                    libc::WEXITSTATUS(status)
-                ));
-            } else if libc::WIFSIGNALED(status) {
-                *error.lock().unwrap() = Some(format!(
-                    "process realm killed: signal {}",
-                    libc::WTERMSIG(status)
-                ));
+            // Only set the exit-code error if no specific error was already captured.
+            {
+                let mut guard = error.lock().unwrap();
+                if guard.is_none() {
+                    if libc::WIFEXITED(status) && libc::WEXITSTATUS(status) != 0 {
+                        *guard = Some(format!(
+                            "process realm exited: code {}",
+                            libc::WEXITSTATUS(status)
+                        ));
+                    } else if libc::WIFSIGNALED(status) {
+                        *guard = Some(format!(
+                            "process realm killed: signal {}",
+                            libc::WTERMSIG(status)
+                        ));
+                    }
+                }
             }
             done.store(true, Ordering::Release);
             // Final wake so the parent notices exit on the next step.
@@ -382,13 +412,15 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         }
     });
 
-    std::thread::spawn(move || {
+    let writer_handle = std::thread::spawn(move || {
         while let Ok(msg) = writer_rx.recv() {
-            let _ = write_message(socket_fd, &msg);
+            if write_message(socket_fd, &msg).is_err() {
+                break;
+            }
         }
     });
 
-    super::child::run_child_isolate(super::child::ChildConfig {
+    let result = super::child::run_child_isolate(super::child::ChildConfig {
         process_env: crate::state::ProcessEnv {
             root: std::path::PathBuf::from(&config.root),
             args: config.args,
@@ -403,7 +435,26 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         wake_read_fd: wake_read,
         wake_write_fd: None, // parent wakes via the socket; bridge handles it
         timing_label: "process-realm",
-    })
+    });
+
+    // channel_tx dropped (inside FinoState) when run_child_isolate returned.
+    // Join the writer bridge so all queued outbound messages (e.g. the call
+    // result) are fully written to the socket before the process exits.
+    let _ = writer_handle.join();
+
+    // If the entry module threw, send the error to the parent before exiting.
+    if let Err(ref msg) = result {
+        let mut data = ENTRY_ERROR_PREFIX.to_vec();
+        data.extend_from_slice(msg.as_bytes());
+        let sentinel = ThreadMessage {
+            data,
+            transfer_stores: Vec::new(),
+            transfer_ports: Vec::new(),
+        };
+        let _ = write_message(socket_fd, &sentinel);
+    }
+
+    result
 }
 
 #[cfg(test)]

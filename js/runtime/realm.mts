@@ -69,6 +69,7 @@ export interface ImportRule {
 function normaliseDirective(d: ImportDirectiveSer): { type: string; [k: string]: unknown } {
   if (d === 'inherit') return { type: 'inherit' };
   if (d === 'block')   return { type: 'block' };
+  if (d instanceof Facade) return d.toDirective() as { type: string; [k: string]: unknown };
   if (typeof d === 'object' && 'type' in d) return d as { type: string; [k: string]: unknown };
   return { type: 'inherit' };
 }
@@ -389,8 +390,16 @@ export class Facade {
   }
 
   static from(obj: object, opts: { specifier: string }): Facade {
-    const exports = Object.getOwnPropertyNames(Object.getPrototypeOf(obj))
-      .filter(k => k !== 'constructor' && typeof (obj as Record<string, unknown>)[k] === 'function');
+    // Collect callable methods from both own properties (plain objects) and
+    // prototype (class instances), excluding Object.prototype built-ins.
+    const proto = Object.getPrototypeOf(obj);
+    const protoNames = (proto && proto !== Object.prototype)
+      ? Object.getOwnPropertyNames(proto).filter(k => k !== 'constructor')
+      : [];
+    const ownNames = Object.getOwnPropertyNames(obj);
+    const allNames = [...new Set([...protoNames, ...ownNames])];
+    const exports = allNames
+      .filter(k => typeof (obj as Record<string, unknown>)[k] === 'function');
     const f = new Facade(opts.specifier, exports);
     for (const name of exports) {
       f.handle(name, (...args) => (obj as Record<string, unknown>)[name](...args) as Promise<unknown>);
@@ -479,7 +488,7 @@ export class Facade {
         wsSources.set(reqId, source);
         fn(args, source).then(
           (result) => { wsSources.delete(reqId); _sendResult(port, reg, reqId, result); },
-          (err: unknown) => { wsSources.delete(reqId); port.postMessage({ __rpc_res: true, reqId, error: String(err) }); },
+          (err: unknown) => { port.postMessage({ __rpc_res: true, reqId, error: String(err) }); },
         );
         return;
       }
@@ -745,8 +754,8 @@ export class ProcessPort extends BaseTransportPort {
   }
 
   _drain(): void {
-    for (const byteArr of _recvProcessMessages(this.#handle)) {
-      const [buf, ...stores] = byteArr;
+    for (const [byteArr] of (_recvProcessMessages(this.#handle) as any[])) {
+      const [buf, ...stores] = byteArr as Uint8Array[];
       if (!buf) continue;
       this._dispatchMessage(buf, stores.length > 0 ? stores : undefined);
     }
@@ -785,7 +794,8 @@ export function _stepChildren(): void {
       try { alive = stepProcessContext(child.handle) as boolean; }
       catch (err) { alive = false; stepError = err; }
     } else {
-      alive = stepContext(child.handle) as boolean;
+      try { alive = stepContext(child.handle) as boolean; }
+      catch (err) { alive = false; stepError = err; }
     }
     if (!alive) {
       if (stepError !== undefined) { child.reject(stepError); } else { child.resolve(); }
@@ -823,8 +833,9 @@ function _resolveCallResponse<R>(
   reject: (err: unknown) => void,
 ): void {
   if (data && typeof data === 'object' && (data as { __call_error?: boolean }).__call_error) {
-    const d = data as { message?: string; stack?: string };
+    const d = data as { message?: string; name?: string; stack?: string };
     const err = new Error(d.message ?? 'Realm call failed');
+    if (d.name !== undefined) err.name = d.name;
     if (d.stack !== undefined) err.stack = d.stack;
     reject(err);
   } else {
@@ -907,8 +918,8 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
 
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
-    if (this.#kind !== 'embedded' && rules.length > 0) {
-      const port = this.port as ThreadPort | ProcessPort | ClusterPort;
+    if (rules.length > 0) {
+      const port = this.port as MessagePort | ThreadPort | ProcessPort | ClusterPort;
       for (const rule of rules) {
         if (rule.directive instanceof Facade) {
           (rule.directive as Facade)._bind(port);
@@ -1001,7 +1012,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         _activeChildren.push({
           handle: this.#handle,
           kind,
-          resolve: () => {},
+          resolve: () => reject(new Error('Realm exited before returning a call result')),
           reject: (err: unknown) => reject(err),
         });
         const handler = (ev: Event) => {

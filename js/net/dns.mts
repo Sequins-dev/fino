@@ -112,7 +112,7 @@ import { os } from 'internal:process';
 type DnsServerFamily = 'ipv4' | 'ipv6';
 type RecordTypeName = keyof typeof RECORD_TYPES;
 
-interface DnsServer { ip: string; family: DnsServerFamily; }
+interface DnsServer { ip: string; family: DnsServerFamily; port: number; }
 interface DnsError extends Error { code?: string; hostname?: string; }
 
 export interface MxRecord   { priority: number; exchange: string; }
@@ -174,8 +174,8 @@ const RCODE_ERRORS: Partial<Record<number, { code: string; msg: string }>> = {
 };
 
 const DEFAULT_SERVERS = [
-  { ip: '8.8.8.8', family: 'ipv4' },
-  { ip: '8.8.4.4', family: 'ipv4' },
+  { ip: '8.8.8.8', family: 'ipv4', port: 53 },
+  { ip: '8.8.4.4', family: 'ipv4', port: 53 },
 ] satisfies DnsServer[];
 
 // ---------------------------------------------------------------------------
@@ -570,21 +570,41 @@ export class Resolver {
    * @returns {string[]}
    */
   getServers(): string[] {
-    return (this.#servers ?? DEFAULT_SERVERS).map(s => s.ip);
+    return (this.#servers ?? DEFAULT_SERVERS).map(s =>
+      s.port !== 53 ? `${s.ip}:${s.port}` : s.ip
+    );
   }
 
   /**
-   * Override the nameserver list. Each entry is an IPv4 or IPv6 address string.
+   * Override the nameserver list. Each entry is an IPv4 or IPv6 address string,
+   * optionally with a port: '1.1.1.1', '1.1.1.1:5353', '[::1]:5353'.
    * @param {string[]} servers
    */
   setServers(servers: string[]): void {
     if (!Array.isArray(servers) || servers.length === 0) {
       throw new Error('dns.setServers: expected a non-empty array of IP addresses');
     }
-    this.#servers = servers.map(ip => ({
-      ip:     String(ip),
-      family: String(ip).includes(':') ? 'ipv6' : 'ipv4',
-    }));
+    this.#servers = servers.map(entry => {
+      const s = String(entry);
+      let ip = s;
+      let port = 53;
+      if (s.startsWith('[')) {
+        // IPv6 with optional port: [2001:...]:port or [2001:...]
+        const closeBracket = s.indexOf(']');
+        ip = s.slice(1, closeBracket >= 0 ? closeBracket : s.length);
+        if (closeBracket >= 0 && s[closeBracket + 1] === ':') {
+          port = parseInt(s.slice(closeBracket + 2), 10) || 53;
+        }
+      } else {
+        // IPv4 with optional port: ip or ip:port
+        const potentialIp = s.slice(0, s.lastIndexOf(':') > 0 ? s.lastIndexOf(':') : s.length);
+        if (s.lastIndexOf(':') > 0 && !potentialIp.includes(':')) {
+          ip = potentialIp;
+          port = parseInt(s.slice(s.lastIndexOf(':') + 1), 10) || 53;
+        }
+      }
+      return { ip, port, family: ip.includes(':') ? ('ipv6' as const) : ('ipv4' as const) };
+    });
     // Mark as loaded so #ensureServers does not overwrite
     if (!this.#serversLoaded) {
       this.#serversLoaded = Promise.resolve();
@@ -683,7 +703,7 @@ export class Resolver {
         const parts = trimmed.split(/\s+/);
         if (parts.length >= 2 && parts[1]) {
           const ip = parts[1];
-          servers.push({ ip, family: ip.includes(':') ? 'ipv6' : 'ipv4' });
+          servers.push({ ip, family: ip.includes(':') ? 'ipv6' : 'ipv4', port: 53 });
         }
       }
       this.#servers = servers.length > 0 ? servers : DEFAULT_SERVERS;
@@ -726,7 +746,7 @@ export class Resolver {
         const bytesSent = sock.sendto(fd, packet, {
           family: server.family,
           ip:     server.ip,
-          port:   53,
+          port:   server.port,
         });
         if (bytesSent < 0) {
           sock.close(fd);

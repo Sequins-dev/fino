@@ -20,14 +20,14 @@ import type facadeSinkFn from './fixtures/facade-sink-fn.mts';
 
 describe('Facade RPC — thread realm', () => {
   it('basic call-response round-trip', async (t) => {
-    const facade = new Facade('test:facade', ['greet'])
+    const facade = new Facade('fino:test-facade', ['greet'])
       .handle('greet', async (name) => `hello ${name}`);
 
     const realm = new Realm<typeof facadeCallFn>({
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
     });
@@ -36,14 +36,14 @@ describe('Facade RPC — thread realm', () => {
   });
 
   it('handler that throws causes call() to reject', async (t) => {
-    const facade = new Facade('test:facade', ['greet'])
+    const facade = new Facade('fino:test-facade', ['greet'])
       .handle('greet', async () => { throw new Error('handler exploded'); });
 
     const realm = new Realm<typeof facadeCallFn>({
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
     });
@@ -60,7 +60,7 @@ describe('Facade RPC — thread realm', () => {
   });
 
   it('calling an unknown method rejects', async (t) => {
-    const facade = new Facade('test:facade', ['greet', 'unknownMethod'])
+    const facade = new Facade('fino:test-facade', ['greet', 'unknownMethod'])
       .handle('greet', async () => 'hi');
     // Note: 'unknownMethod' is in exports but has no handler registered
 
@@ -68,7 +68,7 @@ describe('Facade RPC — thread realm', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-unknown-method.mts', import.meta.url).pathname,
     });
@@ -87,7 +87,7 @@ describe('Facade RPC — thread realm', () => {
   });
 
   it('streaming handler delivers chunks in order', async (t) => {
-    const facade = new Facade('test:facade', [])
+    const facade = new Facade('fino:test-facade', [])
       .stream('chunks', async function* () {
         yield 'alpha';
         yield 'beta';
@@ -98,7 +98,7 @@ describe('Facade RPC — thread realm', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-fn.mts', import.meta.url).pathname,
     });
@@ -107,7 +107,7 @@ describe('Facade RPC — thread realm', () => {
   });
 
   it('streaming handler that throws propagates the error', async (t) => {
-    const facade = new Facade('test:facade', [])
+    const facade = new Facade('fino:test-facade', [])
       .stream('failingChunks', async function* () {
         yield 'first';
         throw new Error('stream exploded');
@@ -117,7 +117,7 @@ describe('Facade RPC — thread realm', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-error-fn.mts', import.meta.url).pathname,
     });
@@ -128,7 +128,7 @@ describe('Facade RPC — thread realm', () => {
   });
 
   it('empty streaming handler ends immediately', async (t) => {
-    const facade = new Facade('test:facade', [])
+    const facade = new Facade('fino:test-facade', [])
       .stream('chunks', async function* () {
         // yield nothing
       });
@@ -137,7 +137,7 @@ describe('Facade RPC — thread realm', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-fn.mts', import.meta.url).pathname,
     });
@@ -149,13 +149,13 @@ describe('Facade RPC — thread realm', () => {
     const service = {
       async greet(name: unknown) { return `greetings ${name}`; },
     };
-    const facade = Facade.from(service, { specifier: 'test:facade' });
+    const facade = Facade.from(service, { specifier: 'fino:test-facade' });
 
     const realm = new Realm<typeof facadeCallFn>({
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
     });
@@ -170,13 +170,13 @@ describe('Facade RPC — thread realm', () => {
 
 describe('Facade RPC — embedded realm', () => {
   it('basic call-response round-trip via IntraPort', async (t) => {
-    const facade = new Facade('test:facade', ['greet'])
+    const facade = new Facade('fino:test-facade', ['greet'])
       .handle('greet', async (name) => `hello ${name}`);
 
     const realm = new Realm<typeof facadeCallFn>({
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
     });
@@ -185,13 +185,13 @@ describe('Facade RPC — embedded realm', () => {
   });
 
   it('handler error propagates through embedded realm facade', async (t) => {
-    const facade = new Facade('test:facade', ['greet'])
+    const facade = new Facade('fino:test-facade', ['greet'])
       .handle('greet', async () => { throw new Error('embedded boom'); });
 
     const realm = new Realm<typeof facadeCallFn>({
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
     });
@@ -205,7 +205,7 @@ describe('Facade RPC — embedded realm', () => {
   });
 
   it('streaming handler delivers chunks via IntraPort', async (t) => {
-    const facade = new Facade('test:facade', [])
+    const facade = new Facade('fino:test-facade', [])
       .stream('chunks', async function* () {
         yield 'one';
         yield 'two';
@@ -215,7 +215,7 @@ describe('Facade RPC — embedded realm', () => {
     const realm = new Realm<typeof facadeStreamFn>({
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-fn.mts', import.meta.url).pathname,
     });
@@ -230,7 +230,7 @@ describe('Facade RPC — embedded realm', () => {
 
 describe('Facade RPC — FacadeHandle (thread realm)', () => {
   it('handle with scalar and streaming methods round-trips correctly', async (t) => {
-    const facade = new Facade('test:facade', ['openHandle'])
+    const facade = new Facade('fino:test-facade', ['openHandle'])
       .handle('openHandle', async (key: unknown) => {
         return new FacadeHandle(
           {
@@ -249,7 +249,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-handle-fn.mts', import.meta.url).pathname,
     });
@@ -259,7 +259,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
   });
 
   it('handle scalar method error propagates', async (t) => {
-    const facade = new Facade('test:facade', ['openHandle'])
+    const facade = new Facade('fino:test-facade', ['openHandle'])
       .handle('openHandle', async () => {
         return new FacadeHandle({
           getValue: async () => { throw new Error('handle getValue failed'); },
@@ -273,7 +273,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-handle-fn.mts', import.meta.url).pathname,
     });
@@ -288,7 +288,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
 
   it('handle method error propagates if called on non-existent method', async (t) => {
     // The handle has no getValue method — calling it should reject.
-    const facade = new Facade('test:facade', ['openHandle'])
+    const facade = new Facade('fino:test-facade', ['openHandle'])
       .handle('openHandle', async () => {
         return new FacadeHandle({
           // no getValue, no close — fixture will get errors
@@ -301,7 +301,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-handle-fn.mts', import.meta.url).pathname,
     });
@@ -326,7 +326,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
 describe('Facade RPC — callSink / sendStream (thread realm)', () => {
   it('sink delivers all chunks to the parent handler without per-chunk ack', async (t) => {
     const received: string[] = [];
-    const facade = new Facade('test:facade', [])
+    const facade = new Facade('fino:test-facade', [])
       .sendStream('writeChunks', async (_args, source) => {
         for await (const chunk of source) received.push(chunk as string);
         return { chunks: received.length, joined: received.join('') };
@@ -336,7 +336,7 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-sink-fn.mts', import.meta.url).pathname,
     });
@@ -346,7 +346,7 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
   });
 
   it('sink handler error rejects sink.result', async (t) => {
-    const facade = new Facade('test:facade', [])
+    const facade = new Facade('fino:test-facade', [])
       .sendStream('writeChunks', async (_args, _source) => {
         throw new Error('sink handler failed');
       });
@@ -355,7 +355,7 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
       thread: true,
       overrides: ImportMap.deny([
         { pattern: 'fino:runtime/loop', directive: 'inherit' },
-        { pattern: 'test:facade', directive: facade.toDirective() },
+        { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-sink-fn.mts', import.meta.url).pathname,
     });

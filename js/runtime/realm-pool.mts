@@ -81,7 +81,7 @@ interface PoolWorker {
 }
 
 function estimatedCompletionMs(w: PoolWorker): number {
-  if (w.completedCount === 0) return 0; // cold worker — prefer it
+  if (w.completedCount === 0) return w.activeTasks; // cold: queue depth as proxy
   const queuePressure =
     w.submissionRate > 0
       ? w.submissionRate / Math.max(w.completionRate, 0.001)

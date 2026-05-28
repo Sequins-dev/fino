@@ -196,15 +196,48 @@ describe('Integration', () => {
   });
 
   it('resolver — timeout with unreachable server', async (t) => {
-    const resolver = new Resolver({ timeout: 500, retries: 1 });
-    resolver.setServers(['192.0.2.1']);
-    await t.rejects(
-      () => resolver.resolve4('example.com'),
-      (err) => {
-        const e = err as DnsErrorLike;
-        return /timeout|ETIMEOUT/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
-      },
-      'throws timeout error for unreachable server',
-    );
+    // Bind a local UDP socket that receives queries but never responds.
+    // Using 192.0.2.1:53 fails on macOS where mDNSResponder intercepts all
+    // port-53 traffic and returns real DNS answers.
+    const { dlopen } = await import('fino:ffi');
+    const { os } = await import('fino:runtime/process');
+    const libc = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
+    const ffi = dlopen(libc, {
+      socket:      { parameters: ['i32', 'i32', 'i32'], result: 'i32' },
+      bind:        { parameters: ['i32', 'buffer', 'u32'], result: 'i32' },
+      close:       { parameters: ['i32'], result: 'i32' },
+      getsockname: { parameters: ['i32', 'buffer', 'buffer'], result: 'i32' },
+    });
+    const AF_INET = 2, SOCK_DGRAM = 2;
+    const sinkFd = ffi.symbols.socket(AF_INET, SOCK_DGRAM, 0) as number;
+    t.ok(sinkFd >= 0, 'sink socket created');
+
+    const sockaddr = new Uint8Array(16);
+    const dv = new DataView(sockaddr.buffer);
+    dv.setUint8(0, 16); dv.setUint8(1, AF_INET);
+    dv.setUint16(2, 0, false); dv.setUint32(4, 0x7f000001, false);
+    ffi.symbols.bind(sinkFd, sockaddr, 16);
+
+    const addrOut = new Uint8Array(16);
+    const lenBuf = new Uint8Array(4);
+    new DataView(lenBuf.buffer).setUint32(0, 16, true);
+    ffi.symbols.getsockname(sinkFd, addrOut, lenBuf);
+    const port = new DataView(addrOut.buffer).getUint16(2, false);
+
+    const resolver = new Resolver({ timeout: 300, retries: 0 });
+    resolver.setServers([`127.0.0.1:${port}`]);
+
+    try {
+      await t.rejects(
+        () => resolver.resolve4('example.com'),
+        (err) => {
+          const e = err as DnsErrorLike;
+          return /timeout|ETIMEOUT/i.test((e.message ?? '') + ' ' + (e.code ?? ''));
+        },
+        'throws timeout error for unreachable server',
+      );
+    } finally {
+      ffi.symbols.close(sinkFd);
+    }
   });
 });

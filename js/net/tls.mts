@@ -32,7 +32,7 @@
 import * as openssl from '../internal/openssl.mts';
 import * as loop from '../runtime/loop.mts';
 import { BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.mts';
-import { Socket, connectTcp, close as closeFd } from './socket.mts';
+import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.mts';
 import type { Address } from './socket.mts';
 import type { ConnectOptions } from './socket.mts';
 
@@ -56,6 +56,10 @@ function _checkTlsAvailable() {
 // ---------------------------------------------------------------------------
 
 async function _doHandshake(ssl: object, fd: number, handshakeFn: (ssl: object) => number): Promise<void> {
+  // Ensure fd is non-blocking — required for the non-blocking SSL_connect/SSL_accept loop.
+  // connectTcp and accept already set non-blocking mode, but upgrade() may receive an
+  // externally-created socket that hasn't been set yet.
+  setNonblocking(fd);
   while (true) {
     const ret = handshakeFn(ssl);
     if (ret === 1) return; // success

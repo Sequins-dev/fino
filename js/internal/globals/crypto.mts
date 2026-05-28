@@ -366,7 +366,7 @@ function _rawSigToDer(raw: Uint8Array, coordSize: number): Uint8Array {
   // Use long-form SEQUENCE length when inner > 127 (P-521 signatures).
   let der: Uint8Array;
   if (inner > 127) {
-    der = new Uint8Array(4 + inner); // 30 81 <len> ...
+    der = new Uint8Array(3 + inner); // 30 81 <len> ...
     der[0] = 0x30; der[1] = 0x81; der[2] = inner;
     der[3] = 0x02; der[4] = r.length; der.set(r, 5);
     der[5 + r.length] = 0x02; der[6 + r.length] = s.length; der.set(s, 7 + r.length);
@@ -1133,6 +1133,7 @@ export const crypto = {
 
 // Register on globalThis
 globalThis.crypto = crypto as unknown as typeof globalThis.crypto;
+(globalThis as Record<string, unknown>).CryptoKey = CryptoKey;
 
 /** Whether the OpenSSL (libcrypto) backend loaded successfully. */
 export const cryptoAvailable = openssl.cryptoAvailable;

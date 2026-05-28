@@ -173,6 +173,8 @@ async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: s
 
   if (rawBody === null || alreadyFramed) {
     const headers = new Headers(res.headers);
+    // RFC 7230 §3.3.2: remove Content-Length when Transfer-Encoding is present.
+    if (headers.has('transfer-encoding')) headers.delete('content-length');
     headers.set('connection', connHeader);
     return {
       wire: buildWireResponse({ version, status: res.status, statusText: res.statusText, headers, body: rawBody }),
@@ -220,9 +222,10 @@ function _getHeadBuf(headStr: string): Uint8Array {
  * ASCII header string and the body into one contiguous arena buffer and issues
  * a single write(2) syscall instead of two.
  *
- * Slow path: streaming/chunked body — falls back to writer.pipe(serializeResponse(...)).
+ * Slow path: streaming/chunked body — flushes after each chunk so the client
+ * receives data as it becomes available (critical for chunked responses).
  */
-async function _writeResponse(writer: { writev(vecs: Uint8Array[], count: number): Promise<void>; pipe(source: AsyncIterable<Uint8Array | ArrayBuffer>): Promise<void> }, prepared: PreparedResponse, arena: Arena, vecs: Uint8Array[]): Promise<void> {
+async function _writeResponse(writer: { writev(vecs: Uint8Array[], count: number): Promise<void>; pipe(source: AsyncIterable<Uint8Array | ArrayBuffer>): Promise<void>; write(data: Uint8Array): Promise<void>; flush(): Promise<void> }, prepared: PreparedResponse, arena: Arena, vecs: Uint8Array[]): Promise<void> {
   const { wire, rawBytes } = prepared;
   if (rawBytes !== null) {
     const headBuf = _getHeadBuf(_buildResponseHead(wire));
@@ -230,12 +233,16 @@ async function _writeResponse(writer: { writev(vecs: Uint8Array[], count: number
     vecs[1] = rawBytes;
     await writer.writev(vecs, rawBytes.byteLength === 0 ? 1 : 2);
   } else {
-    // Slow path: streaming or null body.
-    await writer.pipe(serializeResponse(wire, arena));
+    // Slow path: streaming or null body. Flush after each chunk so the client
+    // receives data as it becomes available (critical for chunked responses).
+    for await (const chunk of serializeResponse(wire, arena)) {
+      await writer.write(chunk as Uint8Array);
+      await writer.flush();
+    }
   }
 }
 
-async function _writeResponseBatch(writer: { writev(vecs: Uint8Array[], count: number): Promise<void>; pipe(source: AsyncIterable<Uint8Array | ArrayBuffer>): Promise<void> }, batch: PreparedResponse[], arena: Arena, vecs: Uint8Array[]): Promise<void> {
+async function _writeResponseBatch(writer: { writev(vecs: Uint8Array[], count: number): Promise<void>; pipe(source: AsyncIterable<Uint8Array | ArrayBuffer>): Promise<void>; write(data: Uint8Array): Promise<void>; flush(): Promise<void> }, batch: PreparedResponse[], arena: Arena, vecs: Uint8Array[]): Promise<void> {
   let vecCount = 0;
   let totalBytes = 0;
 

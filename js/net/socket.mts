@@ -166,7 +166,7 @@ const _defs = {
   shutdown:   { parameters: ['i32', 'i32'],                     result: 'i32' },
   close:      { parameters: ['i32'],                            result: 'i32' },
   unlink:     { parameters: ['buffer'],                         result: 'i32' },
-  fcntl:      { parameters: ['i32', 'i32', 'i32'],              result: 'i32' },
+  fcntl:      { parameters: ['i32', 'i32', 'i32'],              result: 'i32', variadic: 2 },
   inet_pton:  { parameters: ['i32', 'buffer', 'buffer'],        result: 'i32' },
   inet_ntop:  { parameters: ['i32', 'buffer', 'buffer', 'u32'], result: 'pointer' },
   [errnoFn]:  { parameters: [],                                 result: 'pointer' },
@@ -383,6 +383,16 @@ export function socket(family: number = AF_INET, type: number = SOCK_STREAM, pro
 }
 
 /**
+ * Set a socket to non-blocking mode via fcntl(F_SETFL, O_NONBLOCK).
+ */
+export function setNonblocking(fd: number): void {
+  const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
+  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed: errno=${getErrno()}`);
+  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  if (rc < 0) throw new Error(`fcntl(F_SETFL, O_NONBLOCK) failed: errno=${getErrno()}`);
+}
+
+/**
  * Set socket option. Value can be a boolean/number (written as 4-byte int)
  * or an ArrayBuffer for raw option data.
  */
@@ -420,15 +430,6 @@ export function getsockname(fd: number): Address | UnknownAddress {
   return decodeAddr(addrBuf.slice(0, addrLen));
 }
 
-/**
- * Set a socket to non-blocking mode via fcntl(F_SETFL, O_NONBLOCK).
- */
-export function setNonblocking(fd: number): void {
-  const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed: errno=${getErrno()}`);
-  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (rc < 0) throw new Error(`fcntl(F_SETFL, O_NONBLOCK) failed: errno=${getErrno()}`);
-}
 
 /**
  * Bind a socket to an address.

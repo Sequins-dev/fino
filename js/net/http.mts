@@ -1024,6 +1024,10 @@ export class Response {
           const { body: bytes } = await _serializeFormData(fd, boundary);
           yield bytes;
         } };
+      } else if (typeof (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function' ||
+                 (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream)) {
+        // Accept async iterables and ReadableStreams as streaming bodies.
+        this.#rawBody = body as unknown as AsyncIterable<Uint8Array>;
       } else {
         // Store bytes directly — avoids _iterableFromBytes wrapper allocation.
         // body getter wraps lazily in ReadableStream only when accessed.

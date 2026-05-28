@@ -151,6 +151,18 @@ fn dlopen_callback(
                 .unwrap_or(false)
         };
 
+        // Parse optional `variadic: N` — number of fixed named parameters for
+        // variadic C functions (e.g. fcntl has 2 fixed params: fd, cmd).
+        // Using the correct variadic CIF (ffi_prep_cif_var) is required on
+        // ARM64 macOS to pass the trailing arguments with the right ABI.
+        let variadic: Option<usize> = {
+            let var_key = v8::String::new(scope, "variadic").unwrap();
+            def_obj
+                .get(scope, var_key.into())
+                .and_then(|v| if v.is_number() { v.integer_value(scope) } else { None })
+                .map(|n| n as usize)
+        };
+
         // Validate: async symbols may not use pointer/buffer params (GC safety).
         if nonblocking {
             use types::NativeType;
@@ -187,7 +199,7 @@ fn dlopen_callback(
             }
         };
 
-        let sym = match FfiSymbol::new(code_ptr, param_types, result_type, nonblocking) {
+        let sym = match FfiSymbol::new(code_ptr, param_types, result_type, nonblocking, variadic) {
             Ok(s) => s,
             Err(e) => {
                 throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));

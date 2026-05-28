@@ -115,16 +115,19 @@ let _atomicsWaiters   = 0;
 
 function _dispatch(ev: LoopEvent): void {
   if (ev.filter === EVFILT_READ) {
-    // Wake sources use persistent EV_CLEAR reads — just let them fire to
-    // interrupt the kqueue sleep; the Rust layer drains completions on
-    // the next pump_and_checkpoint without needing a JS resolver.
-    if (_wakeSources.has(ev.ident)) return;
+    // Check _reads first: a specific resolver takes priority over a generic
+    // wake source even if the fd numbers happen to collide (e.g. due to OS
+    // fd recycling between tests).
     const resolve = _reads.get(ev.ident);
     if (resolve) {
       _reads.delete(ev.ident);
       // EV_ONESHOT: kernel already removed the filter after delivery.
       // Pass ev.data (bytes available on kqueue; 0 on io_uring) to the resolver.
       resolve(ev.data ?? 0);
+    } else if (_wakeSources.has(ev.ident)) {
+      // Pure wake source — fires to interrupt the kqueue sleep so the Rust
+      // layer can drain async completions on the next pump_and_checkpoint.
+      return;
     }
   } else if (ev.filter === EVFILT_WRITE) {
     const resolve = _writes.get(ev.ident);

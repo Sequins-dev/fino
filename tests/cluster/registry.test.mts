@@ -52,9 +52,10 @@ describe('RealmRegistry', () => {
     reg.register('grandchildPort', 'childPort', 'nodeC');
     // nodeB goes down
     const removed = reg.nodeDown('nodeB');
-    t.ok(removed.includes('childPort'), 'childPort on dead node removed');
-    t.ok(removed.includes('grandchildPort'), 'grandchild removed too');
-    t.ok(!removed.includes('parentPort'), 'parentPort on nodeA is unaffected');
+    const removedIds = removed.map(r => r.portId);
+    t.ok(removedIds.includes('childPort'), 'childPort on dead node removed');
+    t.ok(removedIds.includes('grandchildPort'), 'grandchild removed too');
+    t.ok(!removedIds.includes('parentPort'), 'parentPort on nodeA is unaffected');
     t.equal(reg.getNodeId('parentPort'), 'nodeA', 'parentPort still registered');
   });
 

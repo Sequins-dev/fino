@@ -154,13 +154,15 @@ export class SeedServer {
 
   #handleNodeDown(nodeId: string): void {
     const affected = this.#registry.nodeDown(nodeId);
-    for (const portId of affected) {
-      // Capture the host node BEFORE deleting so we can route TERMINATE.
-      const hostNodeId = this.#portNodes.get(portId);
+    for (const { portId, parentPortId } of affected) {
       this.#portNodes.delete(portId);
-      // Send TERMINATE only to live nodes (the dead node cannot receive messages).
-      if (hostNodeId && hostNodeId !== nodeId) {
-        this.#transport.send(hostNodeId, { t: 'TERMINATE', realmId: portId });
+      // Notify the HOST OF THE PARENT PORT that its child is gone.
+      // The dead node itself cannot receive messages.
+      if (parentPortId) {
+        const parentHostId = this.#portNodes.get(parentPortId);
+        if (parentHostId && parentHostId !== nodeId) {
+          this.#transport.send(parentHostId, { t: 'TERMINATE', realmId: portId });
+        }
       }
     }
   }

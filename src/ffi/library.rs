@@ -61,6 +61,7 @@ impl FfiSymbol {
         param_types: Vec<NativeType>,
         result_type: NativeType,
         nonblocking: bool,
+        variadic: Option<usize>,
     ) -> Result<Self, String> {
         // Validate: void may only appear as the return type.
         for ty in &param_types {
@@ -69,16 +70,30 @@ impl FfiSymbol {
             }
         }
 
+        if let Some(n) = variadic {
+            if n >= param_types.len() {
+                return Err(format!(
+                    "'variadic' count ({n}) must be less than total param count ({})",
+                    param_types.len()
+                ));
+            }
+        }
+
         let ffi_params: Vec<_> = param_types.iter().map(|t| t.to_ffi_type()).collect();
         let ffi_result = result_type.to_ffi_type();
-        let cif = Cif::new(ffi_params, ffi_result);
+        let cif = if let Some(n) = variadic {
+            Cif::new_variadic(ffi_params, n, ffi_result)
+        } else {
+            Cif::new(ffi_params, ffi_result)
+        };
 
         Ok(Self {
             code_ptr,
             cif,
-            fast_call_kind: if nonblocking {
-                // Async symbols skip the Fast API path — the Promise return
-                // type can't be expressed as a scalar fast-call return.
+            fast_call_kind: if nonblocking || variadic.is_some() {
+                // Async symbols: Promise return can't be a scalar fast-call return.
+                // Variadic symbols: call_direct uses non-variadic extern-C fn types
+                // which misplace variadic args on ARM64 and other platforms.
                 fast::FastCallKind::None
             } else {
                 fast::classify_fast_call(&param_types, &result_type)
@@ -101,6 +116,7 @@ mod tests {
             vec![NativeType::I32, NativeType::U32, NativeType::USize],
             NativeType::I32,
             false,
+            None,
         )
         .unwrap();
 
@@ -117,6 +133,7 @@ mod tests {
             vec![NativeType::I32, NativeType::Buffer],
             NativeType::I32,
             false,
+            None,
         )
         .unwrap();
 
@@ -133,6 +150,24 @@ mod tests {
             vec![NativeType::F64],
             NativeType::I32,
             false,
+            None,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            sym.fast_call_kind,
+            crate::ffi::fast::FastCallKind::None
+        ));
+    }
+
+    #[test]
+    fn variadic_forces_no_fast_call() {
+        let sym = FfiSymbol::new(
+            CodePtr::from_ptr(std::ptr::null()),
+            vec![NativeType::I32, NativeType::I32, NativeType::I32],
+            NativeType::I32,
+            false,
+            Some(2),
         )
         .unwrap();
 

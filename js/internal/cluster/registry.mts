@@ -48,14 +48,15 @@ export class RealmRegistry {
 
   /**
    * Remove all ports hosted on a node and all their descendants.
-   * Returns the flat list of portIds that need TERMINATE messages sent.
+   * Returns the flat list of { portId, parentPortId } pairs removed,
+   * so callers can notify the parent's host of orphaned children.
    */
-  nodeDown(nodeId: string): string[] {
+  nodeDown(nodeId: string): { portId: string; parentPortId: string | null }[] {
     const hosted = this.#byNode.get(nodeId);
     if (!hosted) return [];
-    const removed: string[] = [];
+    const removed: { portId: string; parentPortId: string | null }[] = [];
     for (const portId of [...hosted]) {
-      this.#removeRecursive(portId, removed);
+      this.#removeRecursiveWithParent(portId, removed);
     }
     return removed;
   }
@@ -81,5 +82,19 @@ export class RealmRegistry {
     this.#byNode.get(entry.nodeId)?.delete(portId);
     this.#ports.delete(portId);
     acc.push(portId);
+  }
+
+  #removeRecursiveWithParent(portId: string, acc: { portId: string; parentPortId: string | null }[]): void {
+    const entry = this.#ports.get(portId);
+    if (!entry) return;
+    for (const childId of [...entry.children]) {
+      this.#removeRecursiveWithParent(childId, acc);
+    }
+    if (entry.parentPortId) {
+      this.#ports.get(entry.parentPortId)?.children.delete(portId);
+    }
+    this.#byNode.get(entry.nodeId)?.delete(portId);
+    this.#ports.delete(portId);
+    acc.push({ portId, parentPortId: entry.parentPortId });
   }
 }

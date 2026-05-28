@@ -171,6 +171,9 @@ function _makeHandleProxy(handleId: string, streams: string[], sinks: string[]):
   return new Proxy(Object.create(null) as object, {
     get(_target, prop: string | symbol) {
       if (typeof prop !== 'string') return undefined;
+      // Prevent the proxy from appearing thenable — if 'then' returns a function,
+      // V8 treats the object as a Promise and calls .then(), causing infinite chains.
+      if (prop === 'then' || prop === 'catch' || prop === 'finally') return undefined;
       if (streamSet.has(prop)) return (...args: unknown[]) => callStream(handleId, prop, args);
       if (sinkSet.has(prop))   return (...args: unknown[]) => callSink(handleId, prop, args);
       return (...args: unknown[]) => call(handleId, prop, args);

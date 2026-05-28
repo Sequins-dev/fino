@@ -345,7 +345,7 @@ export abstract class BaseTransportPort extends EventTarget {
   #onmessage: ((ev: Event) => void) | null = null;
 
   start(): void {
-    if (this._started) return;
+    if (this._started || this._closed) return;
     this._started = true;
     this._onStart();
   }

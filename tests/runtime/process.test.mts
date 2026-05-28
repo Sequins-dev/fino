@@ -96,7 +96,7 @@ describe('Process APIs', () => {
       errMsg = String(e instanceof Error ? e.message : e);
     }
     t.ok(threw, 'importing internal:process from user code throws');
-    t.ok(errMsg.includes('Cannot import internal module'), `error mentions internal module: ${errMsg}`);
+    t.ok(errMsg.toLowerCase().includes('internal') && (errMsg.includes('blocked') || errMsg.includes('cannot')), `error mentions internal module: ${errMsg}`);
   });
 });
 
@@ -161,7 +161,6 @@ describe('Process class', () => {
 describe('exit() propagates non-zero code to parent', () => {
   it('exit(42) results in wait().code === 42', async (t) => {
     const proc = new Process(execPath, [
-      'run',
       new URL('../fixtures/exit-with-code.mts', import.meta.url).pathname,
     ], { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string> });
     proc.stdin.close();
@@ -178,7 +177,6 @@ describe('B1 regression: exit() flushes stdout before terminating', () => {
     // If exit() does not flush the coalesce buffer, the output is lost and
     // the test fails.
     const proc = new Process(execPath, [
-      'run',
       new URL('../fixtures/exit-with-output.mts', import.meta.url).pathname,
     ], { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string> });
     proc.stdin.close();

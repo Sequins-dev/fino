@@ -383,6 +383,11 @@ pub struct FinoState {
     /// callback checks this via `internal:realm-bridge.isTerminated()`.
     pub terminated: bool,
 
+    /// Error recorded by the child's entry module if it threw at top level.
+    /// Set via `internal:realm-bridge.setEntryError()`; read by the parent
+    /// in `step_context` to reject `Realm.run()` instead of resolving silently.
+    pub entry_error: Option<String>,
+
     /// The child's MessagePort object, passed by the parent at creation time.
     /// Read-only after bootstrap; accessed via `internal:realm-bridge.getPort()`.
     pub port: Option<v8::Global<v8::Value>>,
@@ -438,6 +443,7 @@ impl FinoState {
             pending_creates: Vec::new(),
             entry_path: None,
             terminated: false,
+            entry_error: None,
             port: None,
             channel_rx: None,
             channel_tx: None,
@@ -487,6 +493,7 @@ impl FinoState {
             pending_creates: Vec::new(),
             entry_path,
             terminated: false,
+            entry_error: None,
             port,
             channel_rx,
             channel_tx,

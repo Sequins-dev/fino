@@ -8,10 +8,11 @@ use ::v8;
 use crate::state::get_state;
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["getEntryPath", "isTerminated", "getPort"]
-        .iter()
-        .map(|n| v8::String::new(scope, n).unwrap())
-        .collect();
+    let export_names: Vec<v8::Local<v8::String>> =
+        ["getEntryPath", "isTerminated", "getPort", "setEntryError"]
+            .iter()
+            .map(|n| v8::String::new(scope, n).unwrap())
+            .collect();
 
     let module_name = v8::String::new(scope, "internal:realm-bridge").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
@@ -35,6 +36,7 @@ fn eval_steps<'a>(
     set_fn!("getEntryPath", get_entry_path);
     set_fn!("isTerminated", is_terminated);
     set_fn!("getPort", get_port);
+    set_fn!("setEntryError", set_entry_error);
 
     Some(v8::undefined(scope).into())
 }
@@ -70,6 +72,22 @@ fn get_port(
         Some(p) => rv.set(v8::Local::new(scope, p)),
         None => rv.set(v8::undefined(scope).into()),
     }
+}
+
+/// Records an entry-module error string in the realm's FinoState.
+/// Called from `_onChildEntryError` in `_bootstrap.mts` so that the parent
+/// can retrieve the error and reject `Realm.run()` instead of resolving it.
+fn set_entry_error(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let msg = args
+        .get(0)
+        .to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default();
+    get_state(scope).borrow_mut().entry_error = Some(msg);
 }
 
 /// Returns `true` if the parent has requested this Realm to terminate.

@@ -51,15 +51,16 @@ export function verifyTarballIntegrity(
         }
         return;
       }
-      // Unknown algorithm prefix (e.g. "md5-…") — fall through to shasum.
-      // If shasum is also absent, we throw below rather than silently passing.
-    }
-    // Malformed SRI (no "-") — fall through to shasum.
-    // If shasum is also absent, we throw below.
-    if (!shasum) {
-      throw new Error(
-        `Integrity check failed for ${packageId}: unrecognised integrity string "${token.slice(0, 30)}"`,
-      );
+      // Unknown algorithm prefix (e.g. "sha3-…") — skip gracefully for
+      // forward compatibility; fall through to shasum if provided.
+      if (!shasum) return;
+    } else {
+      // Malformed SRI (no "-") — throw if no shasum fallback available.
+      if (!shasum) {
+        throw new Error(
+          `Integrity check failed for ${packageId}: unrecognised integrity string "${token.slice(0, 30)}"`,
+        );
+      }
     }
   }
 

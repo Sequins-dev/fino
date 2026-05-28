@@ -8,7 +8,7 @@
  *
  * This fixture calls all three and returns a summary object.
  */
-import { openHandle } from 'test:facade';
+import { openHandle } from 'fino:test-facade';
 
 export default async function (): Promise<{ value: unknown; chunks: unknown[] }> {
   const handle = await openHandle('my-key');

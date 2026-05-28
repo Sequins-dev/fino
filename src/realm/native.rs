@@ -184,17 +184,15 @@ fn parse_and_merge_rules(
 
     let mut merged = parent_rules.clone();
     for rule in child_specific {
-        // Drop Inherit rules — the parent's rule is already in the merged list.
-        if matches!(rule.directive, ImportDirective::Inherit) {
-            continue;
-        }
-
-        // Capability narrowing: reject any child rule that would grant access to a
-        // specifier the parent has blocked, regardless of pattern shape.
-        if !matches!(rule.directive, ImportDirective::Block) {
+        // Capability narrowing: reject non-Block, non-Inherit rules that would
+        // grant access to a specifier the parent has blocked.
+        // Inherit is exempted: it defers to the parent's rule and cannot escalate.
+        if !matches!(rule.directive, ImportDirective::Block | ImportDirective::Inherit) {
             narrowing_check(&parent_rules, &rule)?;
         }
-
+        // Include ALL child rules — even Inherit ones. An explicit Inherit
+        // rule from the child is an intentional "re-allow" that must override
+        // any preceding Block rule (last-match-wins semantics).
         merged.push(rule);
     }
 
@@ -335,6 +333,23 @@ fn step_context(
     };
 
     let should_continue = super::step_child_context(scope, child_context);
+
+    // When the child exits normally, check if it recorded an entry-module error.
+    // If so, throw it in the parent scope so _stepChildren can reject Realm.run().
+    if !should_continue {
+        let entry_error = {
+            let child_scope = &mut v8::ContextScope::new(scope, child_context);
+            get_state(child_scope).borrow().entry_error.clone()
+        };
+        if let Some(msg) = entry_error {
+            if let Some(s) = v8::String::new(scope, &msg) {
+                let exc = v8::Exception::error(scope, s);
+                scope.throw_exception(exc);
+                return;
+            }
+        }
+    }
+
     rv.set(v8::Boolean::new(scope, should_continue).into());
 }
 

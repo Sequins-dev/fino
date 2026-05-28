@@ -171,7 +171,9 @@ function _wrapBody(rawBody: AsyncIterable<Uint8Array>, sock: ClosableSocket, sig
             throw signal.reason;
           }
           try {
-            const result = await iter.next();
+            // Race iter.next() against the abort signal so that mid-stream
+            // cancellation interrupts a blocking network read immediately.
+            const result = await _raceAbort(signal, iter.next());
             if (result.done) _closeSocket(sock);
             return result;
           } catch (e) {

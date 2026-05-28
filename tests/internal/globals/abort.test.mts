@@ -371,7 +371,7 @@ describe('AbortSignal.any() — input validation', () => {
 
 describe('AbortSignal.timeout() — input validation', () => {
   it('creates a non-aborted signal initially', (t) => {
-    const sig = AbortSignal.timeout(100);
+    const sig = AbortSignal.timeout(5);
     t.equal(sig.aborted, false, 'freshly created timeout signal is not aborted');
   });
 

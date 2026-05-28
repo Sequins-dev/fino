@@ -342,7 +342,11 @@ describe('AbortSignal', () => {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         yield new TextEncoder().encode('never-arrives');
       }
-      return new Response(slowBody() as any);
+      // Transfer-Encoding: chunked enables true streaming (without it, serve()
+      // buffers the whole body to inject Content-Length, defeating the test).
+      return new Response(slowBody() as any, {
+        headers: { 'transfer-encoding': 'chunked' },
+      });
     });
 
     try {
