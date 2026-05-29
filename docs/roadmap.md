@@ -22,29 +22,11 @@ The single largest practical barrier to adoption is the inability to use npm pac
 - **Approach**: In `js/_main.mts`, construct a `globalThis.process` object mapping to existing `fino:runtime/process` exports: `env`, `argv`, `platform`, `version` (static string matching a recent Node.js version for compat), `exit()`, `cwd()`, `chdir()`, `pid`, `ppid`, `stdin`, `stdout`, `stderr`. The signal handlers also hang off this object.
 - **Complexity**: Small (1 day). Pure wiring of already-implemented capabilities.
 
-### 2.6 SQLite
-
-- **Why**: The most common embedded database for application data, caches, session stores, and analytics. Built-in in Bun and Node.js v22.5+. High value for standalone apps with no external dependencies.
-- **Approach**: FFI to system SQLite (`libsqlite3.dylib` / `libsqlite3.so`). Expose as `fino:sqlite`:
-  - `Database` class: `open(path, options?)`, `close()`, `exec(sql)`, `prepare(sql)` → `Statement`
-  - `Statement` class: `run(params)`, `get(params)`, `all(params)`, `iterate(params)` (async-iterable)
-  - `db.transaction(fn)` for atomic multi-statement execution
-  - Named (`:name`, `$name`) and positional (`?`) parameters
-  - Type mapping: NULL → `null`, INTEGER → `number` / `BigInt`, REAL → `number`, TEXT → `string`, BLOB → `Uint8Array`
-- **Complexity**: Medium (1 week). The sqlite3 C API is clean. Main work is value marshaling via `sqlite3_bind_*` / `sqlite3_column_*`.
-
 ---
 
 ## Tier 3 — Broader Compatibility
 
 Larger investments that extend reach to the long tail of the npm ecosystem and improve developer experience.
-
-### 3.5 REPL
-
-- **Why**: An interactive REPL is useful for exploration, debugging, and learning. Expected by anyone familiar with `node` or `deno`.
-- **Depends on**: VM / Module Evaluation (3.2) for a persistent evaluation context with incremental input.
-- **Approach**: A `--repl` CLI flag (or bare `fino` with no arguments). Use `readline` via libc FFI for line editing and history. Each input is compiled and evaluated via `v8::Script::compile()` in a persistent VM context. Stack traces automatically remap to source positions via the existing `Error.prepareStackTrace` override. Multi-line continuation detection (unclosed brackets/strings) via a simple heuristic.
-- **Complexity**: Medium. Readline FFI is straightforward; the REPL loop is simple once VM (3.2) exists.
 
 ---
 

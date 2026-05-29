@@ -114,8 +114,70 @@ pub fn namespace<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Objec
     set_method!("writeF32", write_f32);
     set_method!("writeF64", write_f64);
     set_method!("writePointer", write_pointer);
+    set_method!("copyFrom", copy_from);
+    set_method!("copyTo", copy_to);
 
     obj
+}
+
+// ---------------------------------------------------------------------------
+// Bulk copy helpers for VFS / large buffer transfers
+// ---------------------------------------------------------------------------
+
+/// `Pointer.copyFrom(ptr, len)` — copy `len` bytes from the address in `ptr`
+/// into a new `Uint8Array` and return it.
+fn copy_from(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(ptr) = from_js(scope, args.get(0)) else { return };
+    let len = args.get(1).integer_value(scope).unwrap_or(0) as usize;
+    if len == 0 {
+        let ab = v8::ArrayBuffer::new(scope, 0);
+        if let Some(ta) = v8::Uint8Array::new(scope, ab, 0, 0) {
+            rv.set(ta.into());
+        }
+        return;
+    }
+    let ab = v8::ArrayBuffer::new(scope, len);
+    let bs = ab.get_backing_store();
+    if let Some(dst) = bs.data() {
+        // SAFETY: ptr is a valid C pointer, dst points to freshly-allocated
+        // ArrayBuffer backing store. No aliasing.
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr as *const u8, dst.as_ptr() as *mut u8, len);
+        }
+    }
+    if let Some(ta) = v8::Uint8Array::new(scope, ab, 0, len) {
+        rv.set(ta.into());
+    }
+}
+
+/// `Pointer.copyTo(ptr, src)` — copy bytes from `src` (Uint8Array or
+/// ArrayBuffer) into the C buffer at the address stored in `ptr`.
+fn copy_to(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Some(ptr) = from_js(scope, args.get(0)) else { return };
+    let src_val = args.get(1);
+    let (src_ptr, len): (*const u8, usize) =
+        if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(src_val) {
+            (ta.data() as *const u8, ta.byte_length())
+        } else if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(src_val) {
+            let bs = ab.get_backing_store();
+            let p = bs.data().map(|d| d.as_ptr() as *const u8).unwrap_or(std::ptr::null());
+            (p, bs.byte_length())
+        } else {
+            throw_type_error(scope, "Pointer.copyTo: expected Uint8Array or ArrayBuffer as second argument");
+            return;
+        };
+    if len > 0 && !src_ptr.is_null() && !ptr.is_null() {
+        // SAFETY: caller guarantees ptr is a valid C buffer of at least `len` bytes.
+        unsafe { std::ptr::copy_nonoverlapping(src_ptr, ptr as *mut u8, len) };
+    }
 }
 
 // ---------------------------------------------------------------------------

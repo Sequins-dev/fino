@@ -9,6 +9,7 @@ import {
   lib, isDarwin, loopModule, asyncOps,
   throwErrno, _toPath, modeIsReadable, modeIsWritable,
   SEEK_CUR, O_CREAT, decodeUtf8,
+  Pointer,
 } from './bindings.mts';
 import { Stat } from './stat.mts';
 import { FdWriter } from '../internal/stream.mts';
@@ -204,6 +205,42 @@ export class File {
    */
   async text(): Promise<string> {
     return decodeUtf8(await this.bytes());
+  }
+
+  async pread(pos: number | bigint, len: number): Promise<Uint8Array> {
+    if (this.#closed) throw new Error('File is closed');
+    if (len === 0) return new Uint8Array(0);
+    const buf = new ArrayBuffer(len);
+    const n = Number(lib.symbols.pread(this.#fd, buf, len, BigInt(pos)));
+    if (n < 0) throwErrno('pread', this.#path.toString());
+    return new Uint8Array(buf, 0, n);
+  }
+
+  async pwrite(pos: number | bigint, data: Uint8Array): Promise<number> {
+    if (this.#closed) throw new Error('File is closed');
+    const n = Number(lib.symbols.pwrite(this.#fd, data, data.byteLength, BigInt(pos)));
+    if (n < 0) throwErrno('pwrite', this.#path.toString());
+    return n;
+  }
+
+  async sync(): Promise<void> {
+    if (this.#closed) throw new Error('File is closed');
+    const rc = lib.symbols.fsync(this.#fd);
+    if (rc !== 0) throwErrno('fsync', this.#path.toString());
+  }
+
+  async truncate(len: number | bigint): Promise<void> {
+    if (this.#closed) throw new Error('File is closed');
+    const rc = lib.symbols.ftruncate(this.#fd, BigInt(len));
+    if (rc !== 0) throwErrno('ftruncate', this.#path.toString());
+  }
+
+  async size(): Promise<bigint> {
+    if (this.#closed) throw new Error('File is closed');
+    const buf = new ArrayBuffer(256);
+    const rc = lib.symbols.fstat(this.#fd, buf);
+    if (rc !== 0) throwErrno('fstat', this.#path.toString());
+    return BigInt(Stat.parse(buf).size);
   }
 
   /**

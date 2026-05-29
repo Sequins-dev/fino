@@ -48,6 +48,16 @@ export interface FileHandle {
   bytes(): Promise<Uint8Array>;
   /** Read the entire file contents as a UTF-8 string. */
   text(): Promise<string>;
+  /** Read exactly `len` bytes at byte position `pos` without moving the file offset. */
+  pread(pos: number | bigint, len: number): Promise<Uint8Array>;
+  /** Write `data` at byte position `pos` without moving the file offset. Returns bytes written. */
+  pwrite(pos: number | bigint, data: Uint8Array): Promise<number>;
+  /** Flush OS write buffers to disk. */
+  sync(): Promise<void>;
+  /** Set the file size (truncate or extend with zeros). */
+  truncate(len: number | bigint): Promise<void>;
+  /** Return the current file size in bytes. */
+  size(): Promise<bigint>;
   /** Close the handle and release its underlying resource. */
   close(): Promise<void>;
 }

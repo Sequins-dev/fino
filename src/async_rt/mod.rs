@@ -14,6 +14,7 @@
 
 pub mod blocking;
 pub mod bridge;
+pub mod js_calls;
 
 use std::{
     cell::RefCell,
@@ -85,6 +86,8 @@ pub struct IsolateAsyncState {
     pub executor: async_executor::LocalExecutor<'static>,
     /// Completed async FFI calls waiting to be resolved into JS promises.
     pub completions: Arc<Mutex<Vec<FfiCompletion>>>,
+    /// Pending cross-thread JS callback invocations (from `FfiCallback` trampolines).
+    pub js_call_requests: Arc<Mutex<Vec<js_calls::JsCallRequest>>>,
     /// Read end of the self-pipe. JS registers this with `loop.readable(fd)`
     /// so kqueue/io_uring wakes when an async FFI call completes.
     pub wake_read: RawFd,
@@ -125,6 +128,7 @@ pub fn init() -> RawFd {
         *s.borrow_mut() = Some(IsolateAsyncState {
             executor: async_executor::LocalExecutor::new(),
             completions: Arc::new(Mutex::new(Vec::new())),
+            js_call_requests: Arc::new(Mutex::new(Vec::new())),
             wake_read,
             wake_write,
         });
@@ -140,6 +144,12 @@ pub fn shutdown() {
     });
 }
 
+/// Returns true when called from the V8 isolate thread (i.e. `init()` has been called here).
+/// Used by `FfiCallback` trampolines to detect same-thread calls that would deadlock.
+pub fn is_v8_thread() -> bool {
+    STATE.with(|s| s.borrow().is_some())
+}
+
 /// Get the wake-pipe read fd (for `internal:async-runtime` to export as `wakeFd`).
 pub fn get_wake_read_fd() -> i32 {
     STATE.with(|s| s.borrow().as_ref().map(|st| st.wake_read).unwrap_or(-1))
@@ -150,6 +160,14 @@ pub fn get_wake_read_fd() -> i32 {
 pub fn completion_handle() -> Option<(Arc<Mutex<Vec<FfiCompletion>>>, RawFd)> {
     STATE.with(|s| {
         s.borrow().as_ref().map(|st| (Arc::clone(&st.completions), st.wake_write))
+    })
+}
+
+/// Get the JS-call-request queue + write fd (for `FfiCallback` trampolines).
+/// Returns None if `init()` hasn't been called on this thread.
+pub fn js_call_handle() -> Option<(Arc<Mutex<Vec<js_calls::JsCallRequest>>>, RawFd)> {
+    STATE.with(|s| {
+        s.borrow().as_ref().map(|st| (Arc::clone(&st.js_call_requests), st.wake_write))
     })
 }
 
@@ -176,16 +194,31 @@ where
 // Drain loop — called from pump_and_checkpoint
 // ---------------------------------------------------------------------------
 
-/// Drain all async FFI completions for the given scope and all per-realm
-/// pending resolutions. Returns true if anything was drained.
+/// Drain all async FFI completions, JS call requests, and per-realm pending
+/// resolutions for the given scope. Returns true if anything was drained.
 pub fn drain_all(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
     let mut progress = false;
     progress |= drain_ffi_completions(scope);
+    progress |= drain_js_call_requests(scope);
     progress |= drain_pending_resolutions(scope, state_rc);
     progress
+}
+
+/// Take all pending JS call requests from the queue and process them.
+fn drain_js_call_requests(scope: &mut v8::HandleScope) -> bool {
+    let requests: Vec<js_calls::JsCallRequest> = STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| {
+                let mut q = st.js_call_requests.lock().unwrap();
+                std::mem::take(&mut *q)
+            })
+            .unwrap_or_default()
+    });
+    js_calls::process_requests(scope, requests)
 }
 
 /// Read all bytes from the wake pipe (non-blocking) and drain the FfiCompletion

@@ -1,6 +1,7 @@
 //! V8 `fino:ffi` synthetic module.
 
 pub mod call;
+pub mod closure;
 pub mod fast;
 pub mod library;
 pub mod pointer;
@@ -17,7 +18,7 @@ use types::NativeType;
 use call::{CallScratch, ffi_call};
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["dlopen", "Pointer"]
+    let export_names: Vec<v8::Local<v8::String>> = ["dlopen", "Pointer", "FfiCallback"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
         .collect();
@@ -39,6 +40,11 @@ fn ffi_eval<'a>(
     let ptr_ns = pointer::namespace(scope);
     let ptr_key = v8::String::new(scope, "Pointer")?;
     module.set_synthetic_module_export(scope, ptr_key, ptr_ns.into())?;
+
+    let cb_tmpl = v8::FunctionTemplate::new(scope, ffi_callback_constructor);
+    let cb_fn = cb_tmpl.get_function(scope)?;
+    let cb_key = v8::String::new(scope, "FfiCallback")?;
+    module.set_synthetic_module_export(scope, cb_key, cb_fn.into())?;
 
     Some(v8::undefined(scope).into())
 }
@@ -167,13 +173,13 @@ fn dlopen_callback(
         if nonblocking {
             use types::NativeType;
             for ty in &param_types {
-                if matches!(ty, NativeType::Pointer | NativeType::Buffer) {
+                if matches!(ty, NativeType::Buffer) {
                     throw_error(
                         scope,
                         &format!(
-                            "dlopen: '{key_str}': async symbols cannot use 'pointer' or \
-                             'buffer' parameters (GC may collect ArrayBuffers before the \
-                             background thread reads them)"
+                            "dlopen: '{key_str}': async symbols cannot use 'buffer' \
+                             parameters (GC may collect the ArrayBuffer before the \
+                             background thread reads it); use 'pointer' instead"
                         ),
                     );
                     return;
@@ -309,6 +315,100 @@ fn close_callback(
     };
     let close_data = unsafe { &*(ext.value() as *const CloseData) };
     *close_data.lib_rc.borrow_mut() = None;
+}
+
+// ---------------------------------------------------------------------------
+// FfiCallback
+// ---------------------------------------------------------------------------
+
+fn ffi_callback_constructor(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let def_obj = match v8::Local::<v8::Object>::try_from(args.get(0)) {
+        Ok(o) => o,
+        Err(_) => {
+            throw_error(scope, "FfiCallback: expected descriptor object as first argument");
+            return;
+        }
+    };
+
+    let params_key = v8::String::new(scope, "parameters").unwrap();
+    let params_val = def_obj
+        .get(scope, params_key.into())
+        .unwrap_or_else(|| v8::undefined(scope).into());
+    let param_types = match parse_type_array(scope, params_val) {
+        Ok(t) => t,
+        Err(e) => {
+            throw_error(scope, &format!("FfiCallback: parameters: {e}"));
+            return;
+        }
+    };
+
+    let result_key = v8::String::new(scope, "result").unwrap();
+    let result_val = def_obj
+        .get(scope, result_key.into())
+        .unwrap_or_else(|| v8::undefined(scope).into());
+    let result_type = match parse_native_type(scope, result_val) {
+        Ok(t) => t,
+        Err(e) => {
+            throw_error(scope, &format!("FfiCallback: result: {e}"));
+            return;
+        }
+    };
+
+    let func_local = match v8::Local::<v8::Function>::try_from(args.get(1)) {
+        Ok(f) => f,
+        Err(_) => {
+            throw_error(scope, "FfiCallback: expected function as second argument");
+            return;
+        }
+    };
+    let func_global = v8::Global::new(scope, func_local);
+
+    let (handle_ptr, code_ptr) =
+        match closure::new_callback(param_types, result_type, func_global) {
+            Ok(pair) => pair,
+            Err(e) => {
+                throw_error(scope, &format!("FfiCallback: {e}"));
+                return;
+            }
+        };
+
+    let ext = v8::External::new(scope, handle_ptr as *mut std::ffi::c_void);
+    let close_tmpl = v8::FunctionTemplate::builder(ffi_callback_close)
+        .data(ext.into())
+        .build(scope);
+    let close_fn = match close_tmpl.get_function(scope) {
+        Some(f) => f,
+        None => return,
+    };
+
+    let ptr_val = pointer::into_js(scope, code_ptr);
+    let result_obj = v8::Object::new(scope);
+    let ptr_key = v8::String::new(scope, "pointer").unwrap();
+    let close_key = v8::String::new(scope, "close").unwrap();
+    result_obj.set(scope, ptr_key.into(), ptr_val);
+    result_obj.set(scope, close_key.into(), close_fn.into());
+
+    rv.set(result_obj.into());
+}
+
+fn ffi_callback_close(
+    _scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let ext = match v8::Local::<v8::External>::try_from(args.data()) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let handle = unsafe { &mut *(ext.value() as *mut closure::CallbackHandle) };
+    if let Some(_inner) = handle.inner.take() {
+        crate::async_rt::js_calls::unregister_callback(handle.id);
+        // _inner drops here, freeing the Closure and CallbackData
+    }
 }
 
 // ---------------------------------------------------------------------------

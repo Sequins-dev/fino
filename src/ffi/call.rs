@@ -189,7 +189,8 @@ fn js_to_native<'s>(
 // ---------------------------------------------------------------------------
 
 /// Owned scalar argument value (Send + 'static so it can be sent to a thread).
-/// Pointer/buffer params are forbidden for async symbols.
+/// Buffer params are forbidden for async symbols; pointer params are allowed
+/// because the address is just an integer that's safe to copy across threads.
 #[derive(Clone)]
 pub(crate) struct OwnedScalarArg {
     bytes: [u8; 8],
@@ -214,8 +215,11 @@ impl OwnedScalarArg {
                 NativeType::ISize => bytes.copy_from_slice(&val.isize_val.to_le_bytes()),
                 NativeType::F32 => bytes[..4].copy_from_slice(&val.f32_val.to_le_bytes()),
                 NativeType::F64 => bytes.copy_from_slice(&val.f64_val.to_le_bytes()),
-                // Pointer/Buffer are rejected at dlopen time for nonblocking symbols.
-                NativeType::Pointer | NativeType::Buffer => {}
+                // Pointer: store the address as a usize. Buffer is rejected at dlopen time.
+                NativeType::Pointer => {
+                    bytes.copy_from_slice(&(val.ptr_val as usize).to_le_bytes());
+                }
+                NativeType::Buffer => {}
             }
         }
         Self { bytes, ty: ty.clone() }
@@ -225,7 +229,10 @@ impl OwnedScalarArg {
         let b = self.bytes;
         unsafe {
             match self.ty {
-                NativeType::Void | NativeType::Pointer | NativeType::Buffer => NativeValue { u8_val: 0 },
+                NativeType::Void | NativeType::Buffer => NativeValue { u8_val: 0 },
+                NativeType::Pointer => NativeValue {
+                    ptr_val: usize::from_le_bytes(b) as *mut c_void,
+                },
                 NativeType::Bool | NativeType::U8 => NativeValue { u8_val: b[0] },
                 NativeType::I8 => NativeValue { i8_val: b[0] as i8 },
                 NativeType::U16 => NativeValue { u16_val: u16::from_le_bytes([b[0], b[1]]) },
@@ -348,8 +355,9 @@ fn call_scalar_sync(
                 NativeType::F64 => arg(&val.f64_val),
                 NativeType::USize => arg(&val.usize_val),
                 NativeType::ISize => arg(&val.isize_val),
-                NativeType::Pointer | NativeType::Buffer | NativeType::Void => {
-                    arg(&val.u8_val) // unreachable for nonblocking symbols
+                NativeType::Pointer => arg(&val.ptr_val),
+                NativeType::Buffer | NativeType::Void => {
+                    arg(&val.u8_val) // unreachable: buffer blocked at dlopen, void not a param
                 }
             }
         })

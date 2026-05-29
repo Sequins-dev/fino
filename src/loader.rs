@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use ::v8;
 use oxc_sourcemap::SourceMap;
 
-use crate::{async_context, async_runtime_module, docgen, ffi, platform, profiler, realm, state::get_state, state::ImportDirective};
+use crate::{async_context, async_runtime_module, docgen, ffi, inspector_module, platform, profiler, realm, state::get_state, state::ImportDirective};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
@@ -103,6 +103,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(async_runtime_module::create_module),
     ),
     (
+        "internal:inspector",
+        BuiltinKind::Synthetic(inspector_module::create_module),
+    ),
+    (
         "internal:docgen",
         BuiltinKind::Synthetic(docgen::create_module),
     ),
@@ -127,6 +131,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:commands/doc", "commands/doc"),
     source_builtin!("internal:shutdown", "internal/shutdown"),
     source_builtin!("internal:package_manager", "internal/package_manager"),
+    source_builtin!("internal:repl-handler", "internal/repl/handler"),
+    source_builtin!("internal:commands/repl", "commands/repl"),
     // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "internal/globals/encoding"),
     source_builtin!("internal:globals/console", "internal/globals/console"),
@@ -155,6 +161,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     // internal: stream and openssl
     source_builtin!("internal:stream", "internal/stream"),
     source_builtin!("internal:openssl", "internal/openssl"),
+    // sqlite
+    source_builtin!("internal:sqlite/bindings", "sqlite/bindings"),
+    source_builtin!("internal:sqlite/vfs",      "sqlite/vfs"),
+    source_builtin!("fino:sqlite",              "sqlite"),
     // internal: file sub-modules
     source_builtin!("internal:file/provider", "file/provider"),
     source_builtin!("internal:file/bindings", "file/bindings"),
