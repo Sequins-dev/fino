@@ -3,11 +3,15 @@
 <head>
 <meta charset="utf-8">
 <title>Fino JS API - js/format/typescript/index</title>
-<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
 </head>
 <body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../../file/fs.html">fs</a></li><li><a href="../../file/path.html">path</a></li><li><a href="../../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="index.html" aria-current="page">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../../net/dns.html">dns</a></li><li><a href="../../net/eventsource.html">eventsource</a></li><li><a href="../../net/http.html">http</a></li><li><a href="../../net/http1.html">http1</a></li><li><a href="../../net/http2.html">http2</a></li><li><a href="../../net/protocol.html">protocol</a></li><li><a href="../../net/serve.html">serve</a></li><li><a href="../../net/socket.html">socket</a></li><li><a href="../../net/tls.html">tls</a></li><li><a href="../../net/websocket.html">websocket</a></li></ul></li><li><a href="../../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../../runtime/cluster.html">cluster</a></li><li><a href="../../runtime/context.html">context</a></li><li><a href="../../runtime/loop.html">loop</a></li><li><a href="../../runtime/messaging.html">messaging</a></li><li><a href="../../runtime/module.html">module</a></li><li><a href="../../runtime/process.html">process</a></li><li><a href="../../runtime/realm.html">realm</a></li><li><a href="../../runtime/realm-pool.html">realm-pool</a></li><li><a href="../../runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="../../scanner.html">scanner</a></li><li><a href="../../semver.html">semver</a></li><li><a href="../../sqlite.html">sqlite</a></li><li><a href="../../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../../test/assert.html">assert</a></li><li><a href="../../test/bench.html">bench</a></li><li><a href="../../test/mock.html">mock</a></li><li><a href="../../test/test.html">test</a></li></ul></li><li><a href="../../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../../util/argv.html">argv</a></li><li><a href="../../util/compression.html">compression</a></li><li><a href="../../util/prompt.html">prompt</a></li><li><a href="../../util/topic.html">topic</a></li></ul></li><li><a href="../../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
 <main>
-<p><a href="../../../index.html">API Modules</a></p>
 <h1 id="module:js-format-typescript-index">js/format/typescript/index</h1>
 <p class="muted">js/format/typescript/index.mts</p>
 <p>fino:format/typescript — OXC-backed TypeScript and JavaScript parser.</p>
@@ -17,37 +21,37 @@
 <h2>Interfaces</h2>
 
 <section id="js-format-typescript-index.ParseOptions">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> {</code></h3>
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> {</code></h3>
 
-
+<p>Options controlling source grammar detection and parser output.</p>
 
 <h4>Properties</h4>
 
 <section class="member" id="js-format-typescript-index.ParseOptions.filename">
 <h5><code>filename?: <span class="tok-keyword">string</span></code></h5>
 
-
+<p>Filename used for syntax-mode inference and diagnostics.</p>
 </section>
 
 <section class="member" id="js-format-typescript-index.ParseOptions.sourceType">
 <h5><code>sourceType?: <span class="tok-string">&#39;js&#39;</span> | <span class="tok-string">&#39;javascript&#39;</span> | <span class="tok-string">&#39;script&#39;</span> | <span class="tok-string">&#39;jsx&#39;</span> | <span class="tok-string">&#39;ts&#39;</span> | <span class="tok-string">&#39;typescript&#39;</span> | <span class="tok-string">&#39;tsx&#39;</span> | <span class="tok-string">&#39;dts&#39;</span> | <span class="tok-string">&#39;definition&#39;</span></code></h5>
 
-
+<p>Explicit source grammar. Defaults are inferred from filename when possible.</p>
 </section>
 
 <section class="member" id="js-format-typescript-index.ParseOptions.tokens">
 <h5><code>tokens?: <span class="tok-keyword">boolean</span></code></h5>
 
-
+<p>Include lexer tokens in the parse result.</p>
 </section>
 
 
 </section>
 
 <section id="js-format-typescript-index.ParseToken">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseToken">ParseToken</a> {</code></h3>
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.ParseToken">ParseToken</a> {</code></h3>
 
-
+<p>Token returned when ParseOptions.tokens is enabled.</p>
 
 <h4>Properties</h4>
 
@@ -85,9 +89,9 @@
 </section>
 
 <section id="js-format-typescript-index.ParseComment">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseComment">ParseComment</a> {</code></h3>
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.ParseComment">ParseComment</a> {</code></h3>
 
-
+<p>Source comment with attachment metadata from OXC.</p>
 
 <h4>Properties</h4>
 
@@ -143,9 +147,9 @@
 </section>
 
 <section id="js-format-typescript-index.ParseDiagnostic">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a> {</code></h3>
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a> {</code></h3>
 
-
+<p>Parser or transpiler diagnostic.</p>
 
 <h4>Properties</h4>
 
@@ -159,9 +163,9 @@
 </section>
 
 <section id="js-format-typescript-index.ParseResult">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseResult">ParseResult</a> {</code></h3>
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.ParseResult">ParseResult</a> {</code></h3>
 
-
+<p>Complete parse result, including AST, comments, tokens, and diagnostics.</p>
 
 <h4>Properties</h4>
 
@@ -178,19 +182,19 @@
 </section>
 
 <section class="member" id="js-format-typescript-index.ParseResult.comments">
-<h5><code>comments: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseComment">ParseComment</a>[]</code></h5>
+<h5><code>comments: <a class="tok-type" href="index.html#js-format-typescript-index.ParseComment">ParseComment</a>[]</code></h5>
 
 
 </section>
 
 <section class="member" id="js-format-typescript-index.ParseResult.tokens">
-<h5><code>tokens: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseToken">ParseToken</a>[]</code></h5>
+<h5><code>tokens: <a class="tok-type" href="index.html#js-format-typescript-index.ParseToken">ParseToken</a>[]</code></h5>
 
 
 </section>
 
 <section class="member" id="js-format-typescript-index.ParseResult.errors">
-<h5><code>errors: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a>[]</code></h5>
+<h5><code>errors: <a class="tok-type" href="index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a>[]</code></h5>
 
 
 </section>
@@ -204,18 +208,89 @@
 
 </section>
 
+<section id="js-format-typescript-index.TranspileOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.TranspileOptions">TranspileOptions</a> {</code></h3>
+
+<p>Options controlling TypeScript-to-JavaScript transpilation.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.TranspileOptions.filename">
+<h5><code>filename?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Filename used for syntax-mode inference and source map metadata.</p>
+</section>
+
+<section class="member" id="js-format-typescript-index.TranspileOptions.sourceType">
+<h5><code>sourceType?: <a class="tok-type" href="index.html#js-format-typescript-index.ParseOptions">ParseOptions</a>[<span class="tok-string">&#39;sourceType&#39;</span>]</code></h5>
+
+<p>Explicit source grammar. Defaults are inferred from filename when possible.</p>
+</section>
+
+
+</section>
+
+<section id="js-format-typescript-index.TranspileResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="index.html#js-format-typescript-index.TranspileResult">TranspileResult</a> {</code></h3>
+
+<p>JavaScript output, source map text, and diagnostics from transpilation.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.TranspileResult.ok">
+<h5><code>ok: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.TranspileResult.code">
+<h5><code>code: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.TranspileResult.map">
+<h5><code>map: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.TranspileResult.errors">
+<h5><code>errors: <a class="tok-type" href="index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
 
 <h2>Functions</h2>
 
 <section id="js-format-typescript-index.parse">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> = {}): <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseResult">ParseResult</a></code></h3>
+<h3><code><span class="tok-keyword">function</span> parse(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> = {}): <a class="tok-type" href="index.html#js-format-typescript-index.ParseResult">ParseResult</a></code></h3>
 
+<p>Parse JavaScript or TypeScript source with OXC.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse } from <span class="tok-string">&#39;fino:format/typescript&#39;</span>;
 
+<span class="tok-keyword">const</span> result = parse(<span class="tok-string">&#39;export const answer: number = 42;&#39;</span>, { sourceType: <span class="tok-string">&#39;ts&#39;</span> });
+<span class="tok-keyword">if</span> (!result.ok) <span class="tok-keyword">throw</span> <span class="tok-keyword">new</span> Error(result.errors[<span class="tok-number">0</span>]?.message);</code></pre>
+
+</section>
+
+<section id="js-format-typescript-index.transpile">
+<h3><code><span class="tok-keyword">function</span> transpile(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="index.html#js-format-typescript-index.TranspileOptions">TranspileOptions</a> = {}): <a class="tok-type" href="index.html#js-format-typescript-index.TranspileResult">TranspileResult</a></code></h3>
+
+<p>Transpile TypeScript or JSX syntax to JavaScript.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { transpile } from <span class="tok-string">&#39;fino:format/typescript&#39;</span>;
+
+<span class="tok-keyword">const</span> { code } = transpile(<span class="tok-string">&#39;const x: number = 1;&#39;</span>, { sourceType: <span class="tok-string">&#39;ts&#39;</span> });</code></pre>
 
 </section>
 
 
 
 </main>
+</div>
 </body>
 </html>

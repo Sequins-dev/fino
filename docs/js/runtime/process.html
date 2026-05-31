@@ -1,0 +1,340 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - process</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="cluster.html">cluster</a></li><li><a href="context.html">context</a></li><li><a href="loop.html">loop</a></li><li><a href="messaging.html">messaging</a></li><li><a href="module.html">module</a></li><li><a href="process.html" aria-current="page">process</a></li><li><a href="realm.html">realm</a></li><li><a href="realm-pool.html">realm-pool</a></li><li><a href="realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../test/assert.html">assert</a></li><li><a href="../test/bench.html">bench</a></li><li><a href="../test/mock.html">mock</a></li><li><a href="../test/test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:process">process</h1>
+<p class="muted">js/runtime/process.mts</p>
+<p>fino:process — process information and child process spawning.</p>
+<p>This module combines two concerns: static process metadata (pid, cwd, argv, env, etc.) and the <code>Process</code> class for spawning child processes with piped stdio. The static metadata comes from <code>internal:process</code>, which is a Rust synthetic module injected at compile time with values that would be awkward to retrieve from JS (e.g. <code>execPath</code> needs the Rust binary&#39;s own path, and <code>env</code> needs to snapshot the environ at startup).</p>
+<p><strong>Why fork+execve instead of posix_spawn?</strong> <code>fork(2)</code> + <code>execve(2)</code> is the classic UNIX child-process primitive. We use it here rather than <code>posix_spawn</code> because it gives us full control over the child&#39;s environment between fork and exec: we can call <code>dup2</code> to wire up pipes, <code>chdir</code> to set the working directory, and close file descriptors — all without the <code>posix_spawn</code> attribute machinery. The child side of the fork runs between the <code>childPid === 0</code> branch and the <code>execve</code> call; any failure in that branch causes <code>_exit(127)</code> (the shell convention for &quot;command not found&quot;).</p>
+<h3>Pipe lifecycle</h3>
+<p>Three <code>pipe(2)</code> calls create six file descriptors before the fork:</p>
+<p>stdin:  [stdinR  → child stdin,  stdinW  → parent Writer stdout: [stdoutR → parent Reader, stdoutW → child stdout stderr: [stderrR → parent Reader, stderrW → child stderr</p>
+<p>After the fork, each process immediately closes the ends it doesn&#39;t own. The parent-side fds are set to O_NONBLOCK so they can be used with the event loop. The child-side fds are left blocking — they run inside <code>execve</code>&#39;d code that doesn&#39;t know about fino&#39;s event loop.</p>
+<h3>buildCStringArray and GC lifetime</h3>
+<p><code>execve(2)</code> takes a <code>char**</code> argv and a <code>char**</code> envp. We build these from JS strings by encoding each string to a null-terminated UTF-8 buffer and placing pointers to those buffers into a pointer array. The tricky part is GC lifetime: if the individual string buffers (<code>bufs</code>) are collected before <code>execve</code> runs, the pointer array will contain dangling pointers. To prevent this, <code>buildCStringArray</code> returns both the pointer array and the <code>bufs</code> array; callers keep <code>bufs</code> as a local variable so it remains in scope (and therefore kept alive by the GC) through the <code>execve</code> call.</p>
+<h3>Waiting for the child process</h3>
+<p><code>Process.wait()</code> uses kernel-native mechanisms to avoid polling:</p>
+<ul>
+<li><strong>macOS</strong>: <code>loop.proc(lp, pid)</code> registers an EVFILT_PROC kevent. kqueue</li>
+</ul>
+<p>delivers a NOTE_EXIT event the instant the child changes state, with zero CPU overhead between fork and exit.</p>
+<ul>
+<li><strong>Linux</strong>: <code>pidfd_open(2)</code> (syscall 434) returns a file descriptor that</li>
+</ul>
+<p>becomes readable when the child exits. We poll it with <code>loop.readable()</code> just like any other fd, then close the pidfd. This is the modern alternative to <code>waitpid(WNOHANG)</code> polling loops.</p>
+<p>In both cases, after the kernel signals exit, a single <code>waitpid(pid, 0)</code> is called to reap the zombie and retrieve the exit status. The status integer is decoded using the POSIX WIFEXITED / WIFSIGNALED macros inlined as bit operations.</p>
+<h3>Exit status decoding</h3>
+<p><code>waitpid</code> fills an <code>int</code> status word with the following encoding:</p>
+<ul>
+<li>bits [6:0 = 0x00 → exited normally; exit code is bits [15:8</li>
+<li>bits [6:0 ≠ 0x00 and ≠ 0x7f → killed by signal; signal is bits [6:0</li>
+<li>bits [6:0 = 0x7f → stopped (WIFSTOPPED) — we ignore this case</li>
+</ul>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { pid, cwd, argv } from <span class="tok-string">&#39;./process.mts&#39;</span>;
+console.log(<span class="tok-string">`PID ${</span>pid}, CWD ${cwd()}, args: ${argv.join(<span class="tok-string">&#39; &#39;</span>)}`);</code></pre>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { Process } from <span class="tok-string">&#39;./process.mts&#39;</span>;
+<span class="tok-keyword">import</span> { decodeUtf8 } from <span class="tok-string">&#39;../internal/globals/encoding.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> proc = <span class="tok-keyword">new</span> Process(<span class="tok-string">&#39;/bin/echo&#39;</span>, [<span class="tok-string">&#39;hello world&#39;</span>]);
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> chunk <span class="tok-keyword">of</span> proc.stdout) {
+  console.log(decodeUtf8(chunk));
+}
+<span class="tok-keyword">const</span> { code } = <span class="tok-keyword">await</span> proc.wait();</code></pre>
+
+
+<h2>Interfaces</h2>
+
+<section id="process.ProcessOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="process.html#process.ProcessOptions">ProcessOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="process.ProcessOptions.cwd">
+<h5><code>cwd?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="process.ProcessOptions.env">
+<h5><code>env?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="process.WaitResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="process.html#process.WaitResult">WaitResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="process.WaitResult.code">
+<h5><code>code: <span class="tok-keyword">number</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="process.WaitResult.signal">
+<h5><code>signal: <span class="tok-keyword">number</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="process.pid">
+<h3><code><span class="tok-keyword">const</span> pid</code></h3>
+
+<p>Current process ID.</p>
+
+</section>
+
+<section id="process.ppid">
+<h3><code><span class="tok-keyword">const</span> ppid</code></h3>
+
+<p>Parent process ID.</p>
+
+</section>
+
+<section id="process.SIGHUP">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGHUP">SIGHUP</a></code></h3>
+
+<p>Signal numbers (POSIX, platform-aware for platform-divergent signals).</p>
+
+</section>
+
+<section id="process.SIGINT">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGINT">SIGINT</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGQUIT">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGQUIT">SIGQUIT</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGKILL">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGKILL">SIGKILL</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGUSR1">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGUSR1">SIGUSR1</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGUSR2">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGUSR2">SIGUSR2</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGPIPE">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGPIPE">SIGPIPE</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGALRM">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGALRM">SIGALRM</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGTERM">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGTERM">SIGTERM</a></code></h3>
+
+
+
+</section>
+
+<section id="process.SIGCHLD">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="process.html#process.SIGCHLD">SIGCHLD</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="process.exit">
+<h3><code><span class="tok-keyword">function</span> exit(code: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>): <span class="tok-keyword">never</span></code></h3>
+
+<p>Terminate the current process immediately. Flushes buffered stdout/stderr before exiting so pending console output is not lost. Uses <code>_exit</code> (not <code>exit(3)</code>) after the flush to avoid running C atexit handlers.</p>
+
+</section>
+
+<section id="process.cwd">
+<h3><code><span class="tok-keyword">function</span> cwd(): <span class="tok-keyword">string</span></code></h3>
+
+<p>Return the current working directory.</p>
+
+</section>
+
+<section id="process.chdir">
+<h3><code><span class="tok-keyword">function</span> chdir(path: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Change the current working directory. Throws on failure.</p>
+
+</section>
+
+<section id="process.kill">
+<h3><code><span class="tok-keyword">function</span> kill(targetPid: <span class="tok-keyword">number</span>, signal: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Send a signal to a process. Throws if the syscall fails.</p>
+
+</section>
+
+<section id="process.stdin">
+<h3><code><span class="tok-keyword">function</span> stdin(): FdReader</code></h3>
+
+<p>Returns a Reader for the current process&#39;s stdin (fd 0). Sets the fd to non-blocking mode on first call.</p>
+
+</section>
+
+<section id="process.stdout">
+<h3><code><span class="tok-keyword">function</span> stdout(): FdWriter</code></h3>
+
+<p>Returns a Writer for the current process&#39;s stdout (fd 1). Sets the fd to non-blocking mode on first call.</p>
+
+</section>
+
+<section id="process.stderr">
+<h3><code><span class="tok-keyword">function</span> stderr(): FdWriter</code></h3>
+
+<p>Returns a Writer for the current process&#39;s stderr (fd 2). Sets the fd to non-blocking mode on first call.</p>
+
+</section>
+
+<section id="process.signal">
+<h3><code><span class="tok-keyword">function</span> signal(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="../util/topic.html#topic.Topic">Topic</a></code></h3>
+
+<p>Subscribe to a POSIX signal via a Topic.</p>
+<p>Returns a named Topic (<code>&#39;process:&lt;NAME&gt;&#39;</code>) that publishes <code>{ signal, signo }</code> each time the signal is delivered. On the first call for a given signal name, the signal is registered with the event loop so that delivery does not kill the process. Subsequent calls return the same topic without re-registering.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { signal } from <span class="tok-string">&#39;./process.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> handle = signal(<span class="tok-string">&#39;SIGTERM&#39;</span>).subscribe(({ signal }) =&gt; {
+  console.log(<span class="tok-string">`Received ${</span>signal}, shutting down...`);
+  process.exit(<span class="tok-number">0</span>);
+});
+
+<span class="tok-comment">// Later: handle.dispose() to unsubscribe</span></code></pre>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="process.Process">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="process.html#process.Process">Process</a> {</code></h3>
+
+<p>Spawn a child process with piped stdin, stdout, and stderr.</p>
+<p>The child is launched via fork()+execve(). The parent receives:</p>
+<ul>
+<li><code>stdin</code>  — a Writer to send bytes to the child&#39;s stdin</li>
+<li><code>stdout</code> — a Reader to receive bytes from the child&#39;s stdout</li>
+<li><code>stderr</code> — a Reader to receive bytes from the child&#39;s stderr</li>
+</ul>
+<pre><code class="language-ts">const proc = new Process(&#39;/usr/bin/cat&#39;, []);
+await proc.stdin.write(encodeUtf8(&#39;hello\n&#39;));
+proc.stdin.close();
+for await (const chunk of proc.stdout) { ... }
+const { code } = await proc.wait();</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="process.Process.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(command: <span class="tok-keyword">string</span>, cmdArgs: <span class="tok-keyword">string</span>[], opts?: <a class="tok-type" href="process.html#process.ProcessOptions">ProcessOptions</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="process.Process.stdin">
+<h5><code><span class="tok-keyword">get</span> stdin()</code></h5>
+
+<p>Write bytes to the child&#39;s stdin.</p>
+</section>
+
+<section class="member" id="process.Process.stdout">
+<h5><code><span class="tok-keyword">get</span> stdout()</code></h5>
+
+<p>Read bytes from the child&#39;s stdout.</p>
+</section>
+
+<section class="member" id="process.Process.stderr">
+<h5><code><span class="tok-keyword">get</span> stderr()</code></h5>
+
+<p>Read bytes from the child&#39;s stderr.</p>
+</section>
+
+<section class="member" id="process.Process.pid">
+<h5><code><span class="tok-keyword">get</span> pid()</code></h5>
+
+<p>The child process ID.</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="process.Process.wait">
+<h5><code><span class="tok-keyword">async</span> wait(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="process.html#process.WaitResult">WaitResult</a>&gt;</code></h5>
+
+<p>Wait for the child process to exit using kernel notifications.</p>
+<ul>
+<li>macOS: registers EVFILT_PROC via kqueue — zero-latency, zero-CPU wait.</li>
+<li>Linux: opens a pidfd via pidfd_open(2) and polls it with loop.readable()</li>
+</ul>
+<p>— the pidfd becomes readable the moment the child exits.</p>
+<p>After the kernel signals exit, a single waitpid(pid, 0) reaps the zombie.</p>
+</section>
+
+<section class="member" id="process.Process.kill">
+<h5><code>kill(signal: <span class="tok-keyword">number</span> = _SIGTERM): <span class="tok-keyword">void</span></code></h5>
+
+<p>Send a signal to the child process.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

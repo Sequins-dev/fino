@@ -8,11 +8,13 @@
  *
  * Child Realms do NOT evaluate this module — they evaluate `_bootstrap.mts`
  * directly and then import their own entry module.
+ *
+ * @internal
  */
 
 import { argv, exit } from './runtime/process.mts';
 import { driveLoop } from 'internal:bootstrap';
-import { createRootCommand } from './commands/root.mts';
+import { createRootCommand } from './internal/commands/root.mts';
 import { runShutdownHooks } from './internal/shutdown.mts';
 
 // Imported lazily to avoid a hard dependency that breaks when fino:realm is

@@ -58,6 +58,8 @@
  * - `writeBytes` and `writeLine` are synchronous — they call `write(2)`
  *   directly without going through the event loop. This is intentional for
  *   console output, where you want deterministic, in-order output.
+ *
+ * @internal
  */
 
 import { dlopen } from 'fino:ffi';

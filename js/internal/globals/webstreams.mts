@@ -37,6 +37,8 @@
  * WritableStream, WritableStreamDefaultWriter, WritableStreamDefaultController
  * TransformStream, TransformStreamDefaultController
  * CountQueuingStrategy, ByteLengthQueuingStrategy
+ *
+ * @internal
  */
 
 import { Writer } from '../stream.mts';

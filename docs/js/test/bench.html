@@ -2,13 +2,17 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Fino JS API - js/test/bench</title>
-<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+<title>Fino JS API - bench</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
 </head>
 <body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/context.html">context</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><a href="../runtime/realm.html">realm</a></li><li><a href="../runtime/realm-pool.html">realm-pool</a></li><li><a href="../runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="assert.html">assert</a></li><li><a href="bench.html" aria-current="page">bench</a></li><li><a href="mock.html">mock</a></li><li><a href="test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
 <main>
-<p><a href="../../index.html">API Modules</a></p>
-<h1 id="module:js-test-bench">js/test/bench</h1>
+<h1 id="module:bench">bench</h1>
 <p class="muted">js/test/bench.mts</p>
 <p>fino:bench — benchmark suite, a JS port of benc.h.</p>
 <p>Mirrors the structure of <code>fino:test</code>: register suites with <code>bench()</code>, then call <code>run()</code> to execute them all and print results. Each suite receives a <code>Group</code> object for registering measurements and nested sub-groups. Output format matches benc.h v1.0.0 so results are comparable with C benchmarks.</p>
@@ -74,26 +78,26 @@ bench(<span class="tok-string">&#39;with sub-groups&#39;</span>, (b) =&gt; {
 
 <h2>Interfaces</h2>
 
-<section id="js-test-bench.MeasureOptions">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/test/bench.html#js-test-bench.MeasureOptions">MeasureOptions</a>&lt;T = <span class="tok-keyword">unknown</span>&gt; {</code></h3>
+<section id="bench.MeasureOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="bench.html#bench.MeasureOptions">MeasureOptions</a>&lt;T = <span class="tok-keyword">unknown</span>&gt; {</code></h3>
 
 
 
 <h4>Properties</h4>
 
-<section class="member" id="js-test-bench.MeasureOptions.setup">
+<section class="member" id="bench.MeasureOptions.setup">
 <h5><code>setup?: () =&gt; T</code></h5>
 
 
 </section>
 
-<section class="member" id="js-test-bench.MeasureOptions.fn">
+<section class="member" id="bench.MeasureOptions.fn">
 <h5><code>fn: (ctx: T) =&gt; <span class="tok-keyword">unknown</span></code></h5>
 
 
 </section>
 
-<section class="member" id="js-test-bench.MeasureOptions.teardown">
+<section class="member" id="bench.MeasureOptions.teardown">
 <h5><code>teardown?: (ctx: T) =&gt; <span class="tok-keyword">void</span></code></h5>
 
 
@@ -105,14 +109,14 @@ bench(<span class="tok-string">&#39;with sub-groups&#39;</span>, (b) =&gt; {
 
 <h2>Classes</h2>
 
-<section id="js-test-bench.Group">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/test/bench.html#js-test-bench.Group">Group</a> {</code></h3>
+<section id="bench.Group">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="bench.html#bench.Group">Group</a> {</code></h3>
 
 
 
 <h4>Constructors</h4>
 
-<section class="member" id="js-test-bench.Group.constructor">
+<section class="member" id="bench.Group.constructor">
 <h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>, indent: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>, filter: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span> = <span class="tok-keyword">null</span>, path: <span class="tok-keyword">string</span>[] = [name])</code></h5>
 
 
@@ -121,8 +125,8 @@ bench(<span class="tok-string">&#39;with sub-groups&#39;</span>, (b) =&gt; {
 
 <h4>Methods</h4>
 
-<section class="member" id="js-test-bench.Group.measure">
-<h5><code>measure&lt;T&gt;(name: <span class="tok-keyword">string</span>, fnOrOpts: ((ctx?: <span class="tok-keyword">unknown</span>) =&gt; <span class="tok-keyword">unknown</span>) | <a class="tok-type" href="js/test/bench.html#js-test-bench.MeasureOptions">MeasureOptions</a>&lt;T&gt;): <span class="tok-keyword">void</span></code></h5>
+<section class="member" id="bench.Group.measure">
+<h5><code>measure&lt;T&gt;(name: <span class="tok-keyword">string</span>, fnOrOpts: ((ctx?: <span class="tok-keyword">unknown</span>) =&gt; <span class="tok-keyword">unknown</span>) | <a class="tok-type" href="bench.html#bench.MeasureOptions">MeasureOptions</a>&lt;T&gt;): <span class="tok-keyword">void</span></code></h5>
 
 <p>Register a measurement. Execution is deferred until <code>finalize()</code>.</p>
 <p>Accepts either a function or an options object:</p>
@@ -132,19 +136,19 @@ b.measure(<span class="tok-string">&#39;name&#39;</span>, { setup, fn, teardown 
 <p><code>setup()</code> and <code>teardown()</code> are synchronous and are not included in timing. The return value of <code>setup()</code> is passed as the first argument to <code>fn(ctx)</code>.</p>
 </section>
 
-<section class="member" id="js-test-bench.Group.group">
-<h5><code>group(name: <span class="tok-keyword">string</span>, fn: (g: <a class="tok-type" href="js/test/bench.html#js-test-bench.Group">Group</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h5>
+<section class="member" id="bench.Group.group">
+<h5><code>group(name: <span class="tok-keyword">string</span>, fn: (g: <a class="tok-type" href="bench.html#bench.Group">Group</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h5>
 
 <p>Add a named sub-group. Registration is deferred until <code>finalize()</code>.</p>
 </section>
 
-<section class="member" id="js-test-bench.Group.finalize">
+<section class="member" id="bench.Group.finalize">
 <h5><code>finalize()</code></h5>
 
 <p>Execute all pending measurements and sub-groups, then print the comparison. Called by run() after the suite body returns.</p>
 </section>
 
-<section class="member" id="js-test-bench.Group.shouldRun">
+<section class="member" id="bench.Group.shouldRun">
 <h5><code>shouldRun(): <span class="tok-keyword">boolean</span></code></h5>
 
 
@@ -156,15 +160,15 @@ b.measure(<span class="tok-string">&#39;name&#39;</span>, { setup, fn, teardown 
 
 <h2>Functions</h2>
 
-<section id="js-test-bench.bench">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> bench(name: <span class="tok-keyword">string</span>, fn: (b: <a class="tok-type" href="js/test/bench.html#js-test-bench.Group">Group</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h3>
+<section id="bench.bench">
+<h3><code><span class="tok-keyword">function</span> bench(name: <span class="tok-keyword">string</span>, fn: (b: <a class="tok-type" href="bench.html#bench.Group">Group</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h3>
 
 <p>Register a benchmark suite.</p>
 
 </section>
 
-<section id="js-test-bench.run">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: { filter?: <span class="tok-keyword">string</span> } = {})</code></h3>
+<section id="bench.run">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: { filter?: <span class="tok-keyword">string</span> } = {})</code></h3>
 
 <p>Run all registered benchmark suites and print results.</p>
 <p>Prints the benc.h v1.0.0 header, then each suite in registration order.</p>
@@ -174,5 +178,6 @@ b.measure(<span class="tok-string">&#39;name&#39;</span>, { setup, fn, teardown 
 
 
 </main>
+</div>
 </body>
 </html>

@@ -2,21 +2,28 @@
  * fino:crypto — Web Crypto API.
  *
  * Implements a useful subset of the W3C Web Cryptography API:
- *   crypto.getRandomValues(typedArray)
- *   crypto.randomUUID()
- *   crypto.subtle.digest(algorithm, data)
- *   crypto.subtle.sign(algorithm, key, data)
- *   crypto.subtle.verify(algorithm, key, signature, data)
- *   crypto.subtle.encrypt(algorithm, key, data)
- *   crypto.subtle.decrypt(algorithm, key, data)
- *   crypto.subtle.importKey(format, keyData, algorithm, extractable, keyUsages)
- *   crypto.subtle.exportKey(format, key)
- *   crypto.subtle.generateKey(algorithm, extractable, keyUsages)
+ *
+ * - `crypto.getRandomValues(typedArray)`
+ * - `crypto.randomUUID()`
+ * - `crypto.subtle.digest(algorithm, data)`
+ * - `crypto.subtle.sign(algorithm, key, data)`
+ * - `crypto.subtle.verify(algorithm, key, signature, data)`
+ * - `crypto.subtle.encrypt(algorithm, key, data)`
+ * - `crypto.subtle.decrypt(algorithm, key, data)`
+ * - `crypto.subtle.importKey(format, keyData, algorithm, extractable, keyUsages)`
+ * - `crypto.subtle.exportKey(format, key)`
+ * - `crypto.subtle.generateKey(algorithm, extractable, keyUsages)`
+ * - `crypto.subtle.deriveBits(algorithm, baseKey, length)`
+ * - `crypto.subtle.deriveKey(algorithm, baseKey, derivedKeyAlgorithm, extractable, keyUsages)`
+ * - `crypto.subtle.wrapKey(format, key, wrappingKey, wrapAlgorithm)`
+ * - `crypto.subtle.unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, keyUsages)`
  *
  * Backed by internal:openssl (libcrypto via FFI). If OpenSSL is not installed,
  * every method throws an informative error rather than crashing the process.
  *
  * Registers `globalThis.crypto` at import time.
+ *
+ * @internal
  */
 
 import * as openssl from '../openssl.mts';
@@ -396,6 +403,9 @@ const subtle = {
   // digest
   // -------------------------------------------------------------------------
 
+  /**
+   * Compute a hash digest for `data`.
+   */
   async digest(algorithm: string | { name: string; [key: string]: unknown }, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg  = _normalizeAlgorithm(algorithm);
@@ -408,6 +418,9 @@ const subtle = {
   // sign / verify — HMAC and ECDSA
   // -------------------------------------------------------------------------
 
+  /**
+   * Sign `data` with an HMAC, ECDSA, RSA-PSS, or RSASSA-PKCS1-v1_5 key.
+   */
   async sign(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
@@ -442,6 +455,9 @@ const subtle = {
     return _toArrayBuffer(mac);
   },
 
+  /**
+   * Verify a signature produced by `sign`.
+   */
   async verify(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, signature: BufferSource, data: BufferSource): Promise<boolean> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
@@ -489,6 +505,9 @@ const subtle = {
   // encrypt / decrypt — AES-GCM and AES-CBC
   // -------------------------------------------------------------------------
 
+  /**
+   * Encrypt data with AES-GCM, AES-CBC, or RSA-OAEP.
+   */
   async encrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
@@ -522,6 +541,9 @@ const subtle = {
     return _toArrayBuffer(ciphertext);
   },
 
+  /**
+   * Decrypt data produced by `encrypt`.
+   */
   async decrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
@@ -560,6 +582,9 @@ const subtle = {
   // Key management
   // -------------------------------------------------------------------------
 
+  /**
+   * Import raw, PKCS#8, SPKI, or JWK key material as a CryptoKey.
+   */
   async importKey(format: KeyFormat, keyData: BufferSource, algorithm: string | { name: string; [key: string]: unknown }, extractable: boolean, keyUsages: KeyUsage[]): Promise<CryptoKey> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
@@ -710,6 +735,9 @@ const subtle = {
     throw new Error('importKey: unsupported algorithm: ' + alg.name);
   },
 
+  /**
+   * Export a CryptoKey as raw bytes, SPKI, PKCS#8, or JWK data.
+   */
   async exportKey(format: KeyFormat, key: CryptoKey): Promise<ArrayBuffer | object> {
     _checkCryptoAvailable();
     if (format === 'jwk') {
@@ -804,6 +832,9 @@ const subtle = {
     return _toArrayBuffer(_keyData(key));
   },
 
+  /**
+   * Generate a new secret key or asymmetric key pair.
+   */
   async generateKey(
     algorithm: string | { name: string; [key: string]: unknown },
     extractable: boolean,
@@ -922,6 +953,9 @@ const subtle = {
   // deriveBits — PBKDF2 and HKDF
   // -------------------------------------------------------------------------
 
+  /**
+   * Derive raw key bits with PBKDF2, HKDF, or ECDH.
+   */
   async deriveBits(algorithm: string | { name: string; [key: string]: unknown }, baseKey: CryptoKey, length: number): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
@@ -979,6 +1013,9 @@ const subtle = {
   // deriveKey — derives a CryptoKey from a base key
   // -------------------------------------------------------------------------
 
+  /**
+   * Derive a CryptoKey from another key.
+   */
   async deriveKey(
     algorithm: string | { name: string; [key: string]: unknown },
     baseKey: CryptoKey,
@@ -1005,6 +1042,9 @@ const subtle = {
     return subtle.importKey('raw', bits, derivedKeyType, extractable, keyUsages);
   },
 
+  /**
+   * Export and encrypt a key with another key.
+   */
   async wrapKey(
     format: KeyFormat,
     key: CryptoKey,
@@ -1037,6 +1077,9 @@ const subtle = {
     return _toArrayBuffer(ciphertext);
   },
 
+  /**
+   * Decrypt wrapped key material and import it as a CryptoKey.
+   */
   async unwrapKey(
     format: KeyFormat,
     wrappedKey: BufferSource,
@@ -1112,11 +1155,17 @@ export const crypto = {
     return typedArray;
   },
 
+  /**
+   * Generate a random RFC 9562 UUID string.
+   */
   randomUUID(): string {
     _checkCryptoAvailable();
     return _uuidV4().toString();
   },
 
+  /**
+   * SubtleCrypto-compatible cryptographic operations.
+   */
   subtle,
 };
 

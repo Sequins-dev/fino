@@ -16,9 +16,9 @@
  * NOTE_DELETE, etc.) but not which specific file changed within a directory —
  * a NOTE_WRITE on a directory only means "something changed in this directory".
  *
- * **Linux** — uses inotify (via `internal:file/watch-bindings`). A single
- * inotify fd handles all watches. Events include the specific filename that
- * changed, providing finer-grained information than the macOS backend.
+ * **Linux** — uses inotify through the runtime watch backend. A single inotify
+ * fd handles all watches. Events include the specific filename that changed,
+ * providing finer-grained information than the macOS backend.
  *
  *
  * ## Known limitations
@@ -48,8 +48,8 @@
  * ```
  */
 
-import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from './bindings.mts';
-import { DirEntry } from './entry.mts';
+import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from '../internal/file/bindings.mts';
+import { DirEntry } from '../internal/file/entry.mts';
 import * as loopMod from '../runtime/loop.mts';
 import {
   isDarwin as _watchIsDarwin,
@@ -58,7 +58,7 @@ import {
   IN_MODIFY, IN_ATTRIB, IN_CREATE, IN_DELETE, IN_DELETE_SELF,
   IN_MOVED_FROM, IN_MOVED_TO, IN_MOVE_SELF, IN_ISDIR, IN_IGNORED,
   IN_ALL_CHANGES,
-} from './watch-bindings.mts';
+} from '../internal/file/watch-bindings.mts';
 
 // ---------------------------------------------------------------------------
 // macOS NOTE_* constants (kqueue EVFILT_VNODE fflags)

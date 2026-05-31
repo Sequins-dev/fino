@@ -26,18 +26,27 @@ type ZipCompression = 'store' | 'deflate';
 type ArchiveInput = string | Uint8Array | ArrayBuffer;
 type ArchiveLoader = () => Promise<Uint8Array>;
 
+/** Options for opening or creating an archive. */
 export interface ArchiveOpenOptions {
+  /** Override format detection from the archive file extension. */
   format?: ArchiveFormat;
+  /** Prevent write operations on the opened archive. */
   readOnly?: boolean;
 }
 
+/** Metadata used when creating or replacing an archive entry. */
 export interface ArchiveWriteOptions {
+  /** Whether the entry should be stored as a file or directory. */
   kind?: ArchiveKind;
+  /** Zip compression mode. Tar archives ignore this option. */
   compression?: ZipCompression;
+  /** Modification timestamp stored in the archive entry. */
   mtime?: Date | number;
+  /** POSIX file mode stored in tar/zip metadata. */
   mode?: number;
 }
 
+/** Normalized metadata for one archive entry. */
 export interface ArchiveEntryInfo {
   name: string;
   kind: ArchiveKind;
@@ -47,7 +56,9 @@ export interface ArchiveEntryInfo {
   mode: number | null;
 }
 
+/** Result returned by extraction helpers. */
 export interface ExtractResult {
+  /** Number of file entries written to disk. Directory entries are not counted. */
   entries: number;
 }
 
@@ -301,6 +312,20 @@ class ArchiveEntryHandle {
   async remove(): Promise<void> { return this.#archive.remove(this.#name); }
 }
 
+/**
+ * Mutable archive reader/writer for zip, tar, and tar.gz files.
+ *
+ * Archives created with `Archive.create()` are written when `save()` or
+ * `close()` is called. Archives opened read-only reject mutating operations.
+ *
+ * ```ts
+ * import { Archive } from 'fino:archive';
+ *
+ * const archive = await Archive.create('bundle.zip');
+ * await archive.write('README.md', '# Project\n');
+ * await archive.close();
+ * ```
+ */
 export class Archive {
   #path: string;
   #format: ArchiveFormat;
@@ -318,15 +343,20 @@ export class Archive {
     this.#entries = new Map();
   }
 
+  /** Filesystem path backing this archive. */
   get path(): string { return this.#path; }
+  /** Archive format in use after extension or option detection. */
   get format(): ArchiveFormat { return this.#format; }
+  /** Whether the archive handle has been closed. */
   get closed(): boolean { return this.#closed; }
 
+  /** Create a new empty archive handle without reading an existing file. */
   static async create(path: string, options: ArchiveOpenOptions = {}): Promise<Archive> {
     const archive = new Archive(path, inferFormat(path, options), { readOnly: false });
     return archive;
   }
 
+  /** Open and parse an existing archive from disk. */
   static async open(path: string, options: ArchiveOpenOptions = {}): Promise<Archive> {
     const format = inferFormat(path, options);
     const archive = new Archive(path, format, options);
@@ -385,11 +415,13 @@ export class Archive {
     for (const entry of parseTar(tarBytes)) this.#setEntry(entry);
   }
 
+  /** List archive entries in normalized path order. */
   async entries(): Promise<ArchiveEntryInfo[]> {
     this.#assertOpen();
     return this.#entryNames().map((name: string) => this.#toInfo(this.#entries.get(name)!));
   }
 
+  /** Return a handle for an entry, or `null` if no entry exists at that path. */
   async entry(name: string): Promise<ArchiveEntryHandle | null> {
     this.#assertOpen();
     const key = normalizedArchivePath(name);
@@ -397,6 +429,7 @@ export class Archive {
     return new ArchiveEntryHandle(this, key);
   }
 
+  /** Read one file entry as bytes. Directory entries return an empty byte array. */
   async read(name: string): Promise<Uint8Array> {
     this.#assertOpen();
     const key = normalizedArchivePath(name);
@@ -413,10 +446,12 @@ export class Archive {
     return new Uint8Array(0);
   }
 
+  /** Read one file entry as UTF-8 text. */
   async readText(name: string): Promise<string> {
     return decodeUtf8(await this.read(name));
   }
 
+  /** Create or replace one archive entry. */
   async write(name: string, data: ArchiveInput, options: ArchiveWriteOptions = {}): Promise<void> {
     this.#assertWritable();
     const key = normalizedArchivePath(name);
@@ -437,6 +472,7 @@ export class Archive {
     this.#markDirty();
   }
 
+  /** Add a host filesystem file to the archive. */
   async addFile(srcPath: string, archivePath: string | null = null, options: ArchiveWriteOptions = {}): Promise<void> {
     this.#assertWritable();
     const data = await readFileBytes(srcPath);
@@ -449,6 +485,7 @@ export class Archive {
     });
   }
 
+  /** Recursively add the contents of a host directory to the archive. */
   async addDirectory(srcPath: string, archivePath: string = ''): Promise<void> {
     this.#assertWritable();
     const dir = await fs.dir(srcPath);
@@ -462,6 +499,7 @@ export class Archive {
     }
   }
 
+  /** Remove an entry if it exists. */
   async remove(name: string): Promise<void> {
     this.#assertWritable();
     const key = normalizedArchivePath(name);
@@ -469,6 +507,7 @@ export class Archive {
     if (existed) this.#markDirty();
   }
 
+  /** Rename an existing entry, failing if the target name already exists. */
   async rename(oldName: string, newName: string): Promise<void> {
     this.#assertWritable();
     const sourceKey = normalizedArchivePath(oldName);
@@ -482,6 +521,7 @@ export class Archive {
     this.#markDirty();
   }
 
+  /** Extract all entries to `destination`, rejecting unsafe absolute or parent paths. */
   async extract(destination: string, _options: object = {}): Promise<ExtractResult> {
     this.#assertOpen();
     await ensureHostDir(destination);
@@ -511,6 +551,7 @@ export class Archive {
     return { entries: extracted };
   }
 
+  /** Serialize the archive to disk atomically through a temporary file. */
   async save(): Promise<void> {
     this.#assertWritable();
     const bytes = await this.#serialize();
@@ -521,6 +562,7 @@ export class Archive {
     this.#dirty = false;
   }
 
+  /** Save pending changes when writable, then mark the handle closed. */
   async close(): Promise<void> {
     if (this.#closed) return;
     if (!this.#readOnly && this.#dirty) await this.save();
@@ -755,14 +797,17 @@ async function serializeTar(entries: LoadedArchiveEntry[]): Promise<Uint8Array> 
   return concatBytes(parts);
 }
 
+/** Open an existing archive from disk. */
 export async function openArchive(path: string, options: ArchiveOpenOptions = {}): Promise<Archive> {
   return Archive.open(path, options);
 }
 
+/** Create a new archive handle for `path`. */
 export async function createArchive(path: string, options: ArchiveOpenOptions = {}): Promise<Archive> {
   return Archive.create(path, options);
 }
 
+/** Open an archive, return its entry list, and close it. */
 export async function listArchive(path: string, options: ArchiveOpenOptions = {}): Promise<ArchiveEntryInfo[]> {
   const archive = await openArchive(path, { ...options, readOnly: true });
   try {
@@ -772,6 +817,7 @@ export async function listArchive(path: string, options: ArchiveOpenOptions = {}
   }
 }
 
+/** Open an archive, extract it to a destination directory, and close it. */
 export async function extractArchive(path: string, destination: string, options: ArchiveOpenOptions = {}): Promise<ExtractResult> {
   const archive = await openArchive(path, { ...options, readOnly: true });
   try {

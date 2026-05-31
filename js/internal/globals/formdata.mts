@@ -56,6 +56,8 @@
  * for (const [key, value] of fd) { ... }
  * fd.forEach((value, key, fd) => { ... });
  * ```
+ *
+ * @internal
  */
 
 import { Blob, File } from './blob.mts';

@@ -18,6 +18,8 @@
  *
  * Only available in thread and process child Realms (where `nativeSend` has a live
  * channel_tx). Embedded child Realms are not a primary facade target.
+ *
+ * @internal
  */
 
 import { nativeSend } from 'internal:thread-port';

@@ -15,6 +15,8 @@
  *   - `passive` listeners cannot cancel the event via preventDefault()
  *   - dispatchEvent throws if the event is currently being dispatched
  *   - Listener errors do not prevent subsequent listeners from firing
+ *
+ * @internal
  */
 
 // ---------------------------------------------------------------------------

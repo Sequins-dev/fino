@@ -1,0 +1,146 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - watch</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="fs.html">fs</a></li><li><a href="path.html">path</a></li><li><a href="watch.html" aria-current="page">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/context.html">context</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><a href="../runtime/realm.html">realm</a></li><li><a href="../runtime/realm-pool.html">realm-pool</a></li><li><a href="../runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../test/assert.html">assert</a></li><li><a href="../test/bench.html">bench</a></li><li><a href="../test/mock.html">mock</a></li><li><a href="../test/test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:watch">watch</h1>
+<p class="muted">js/file/watch.mts</p>
+<p>fino:file/watch — Cross-platform filesystem event watcher.</p>
+<p>Watches files and directories for changes and exposes a unified async iterator interface. Platform implementations differ, but the event model is the same on both:</p>
+<p>{ type: &#39;create&#39; | &#39;modify&#39; | &#39;delete&#39; | &#39;rename&#39;, path: string }</p>
+<h3>Platform details</h3>
+<p><strong>macOS</strong> — uses kqueue EVFILT_VNODE (via <code>fino:runtime/loop</code>&#39;s <code>vnode()</code> API). One open fd is required per watched path. EV_CLEAR auto-re-arms the filter after each delivery. Events report which flags fired (NOTE_WRITE, NOTE_DELETE, etc.) but not which specific file changed within a directory — a NOTE_WRITE on a directory only means &quot;something changed in this directory&quot;.</p>
+<p><strong>Linux</strong> — uses inotify through the runtime watch backend. A single inotify fd handles all watches. Events include the specific filename that changed, providing finer-grained information than the macOS backend.</p>
+<h3>Known limitations</h3>
+<ul>
+<li>macOS: each watched path requires an open fd. Deep recursive watches may</li>
+</ul>
+<p>approach per-process fd limits (default 256; raise with <code>ulimit -n</code>).</p>
+<ul>
+<li>macOS: directory watches only know that something changed, not which entry.</li>
+</ul>
+<p>Callers that need the specific changed file must re-scan the directory.</p>
+<ul>
+<li>macOS: renames report only the old path (NOTE_RENAME on the source).</li>
+<li>Recursive watching: there is a brief race window between a new subdirectory</li>
+</ul>
+<p>being created and its watch being registered — a few events may be missed.</p>
+<h3>Usage</h3>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { Watcher } from <span class="tok-string">&#39;./watch.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> watcher = <span class="tok-keyword">new</span> Watcher();
+watcher.watch(<span class="tok-string">&#39;/tmp/mydir&#39;</span>);
+
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> event <span class="tok-keyword">of</span> watcher) {
+  console.log(event.<span class="tok-keyword">type</span>, event.path);
+}
+
+watcher.close();</code></pre>
+
+
+<h2>Types</h2>
+
+<section id="watch.WatchEventType">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="watch.html#watch.WatchEventType">WatchEventType</a> = <span class="tok-string">&#39;create&#39;</span> | <span class="tok-string">&#39;modify&#39;</span> | <span class="tok-string">&#39;delete&#39;</span> | <span class="tok-string">&#39;rename&#39;</span></code></h3>
+
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="watch.WatchEvent">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="watch.html#watch.WatchEvent">WatchEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="watch.WatchEvent.type">
+<h5><code><span class="tok-keyword">type</span>: <a class="tok-type" href="watch.html#watch.WatchEventType">WatchEventType</a></code></h5>
+
+<p>Type of filesystem event.</p>
+</section>
+
+<section class="member" id="watch.WatchEvent.path">
+<h5><code>path: <span class="tok-keyword">string</span></code></h5>
+
+<p>Absolute or relative path of the affected file or directory.</p>
+</section>
+
+
+</section>
+
+<section id="watch.WatchOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="watch.html#watch.WatchOptions">WatchOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="watch.WatchOptions.recursive">
+<h5><code>recursive?: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Watch subdirectories recursively. On macOS, this opens one fd per subdirectory. On Linux, it adds one inotify watch per subdirectory. Default: false.</p>
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="watch.Watcher">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="watch.html#watch.Watcher">Watcher</a> {</code></h3>
+
+<p>Async-iterable filesystem watcher. Construct, call <code>watch()</code> for each path, then iterate events with <code>for await</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> watcher = <span class="tok-keyword">new</span> Watcher(lp, { recursive: <span class="tok-keyword">true</span> });
+watcher.watch(<span class="tok-string">&#39;/tmp/mydir&#39;</span>);
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> { <span class="tok-keyword">type</span>, path } <span class="tok-keyword">of</span> watcher) {
+  console.log(<span class="tok-keyword">type</span>, path);
+}</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="watch.Watcher.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: <a class="tok-type" href="watch.html#watch.WatchOptions">WatchOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="watch.Watcher.watch">
+<h5><code>watch(path: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Start watching <code>path</code> for changes.</p>
+<p>On macOS, opens an fd for each watched path (and each subdirectory if <code>recursive: true</code>). On Linux, adds an inotify watch.</p>
+<p>May be called multiple times to watch multiple paths.</p>
+</section>
+
+<section class="member" id="watch.Watcher.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Stop watching all paths and release all resources. Resolves any pending iterator .next() calls with <code>{ done: true }</code>.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

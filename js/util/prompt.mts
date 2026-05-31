@@ -1,3 +1,12 @@
+/**
+ * fino:util/prompt — interactive command-line prompts with non-interactive
+ * defaults.
+ *
+ * PromptSession wraps the low-level `fino:tty` helpers and centralizes the
+ * policy for CI or redirected input: prompts either return explicit defaults
+ * or throw instead of blocking forever.
+ */
+
 import { readLine, stdinIsTTY, stdoutIsTTY, writeStdout, writeStderr } from '../tty.mts';
 
 interface TextPromptOptions {
@@ -28,6 +37,17 @@ function normalizeOptions(options: Array<{ label: string; value: string } | stri
   return options.map((option) => typeof option === 'string' ? { label: option, value: option } : option);
 }
 
+/**
+ * Stateful prompt runner for text, confirm, and select questions.
+ *
+ * ```ts
+ * import { PromptSession } from 'fino:util/prompt';
+ *
+ * const prompt = new PromptSession();
+ * const name = await prompt.text({ label: 'Project name', defaultValue: 'app' });
+ * const install = await prompt.confirm({ label: 'Install dependencies', defaultValue: true });
+ * ```
+ */
 export class PromptSession {
   isInteractive: boolean;
   #readLine: (prompt: string) => Promise<string | null>;
@@ -41,6 +61,7 @@ export class PromptSession {
     this.#writeError = options.writeError ?? writeStderr;
   }
 
+  /** Ask for a text value, repeating until optional validation passes. */
   async text(options: TextPromptOptions): Promise<string> {
     if (!this.isInteractive) {
       if (options.defaultValue !== undefined) return options.defaultValue;
@@ -59,6 +80,7 @@ export class PromptSession {
     }
   }
 
+  /** Ask a yes/no question and return the selected boolean value. */
   async confirm(options: ConfirmPromptOptions): Promise<boolean> {
     if (!this.isInteractive) {
       if (options.defaultValue !== undefined) return options.defaultValue;
@@ -76,6 +98,7 @@ export class PromptSession {
     }
   }
 
+  /** Ask the user to choose one labeled option and return its value. */
   async select(options: SelectPromptOptions): Promise<string> {
     const items = normalizeOptions(options.options);
     if (!this.isInteractive) {
@@ -107,6 +130,7 @@ export class PromptSession {
   }
 }
 
+/** Create a PromptSession using the process standard input and output. */
 export function createDefaultPrompt(): PromptSession {
   return new PromptSession();
 }

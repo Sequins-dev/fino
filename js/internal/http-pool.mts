@@ -23,13 +23,15 @@
  *
  * If no streams are active for IDLE_MS milliseconds, the entry sends GOAWAY
  * and is evicted. The timer is reset on every new send().
+ *
+ * @internal
  */
 
-import { Headers } from '../net/http.mts';
-import { Response } from '../net/http.mts';
-import { Request } from '../net/http.mts';
-import { Nghttp2Session } from '../net/http2/session.mts';
-import type { H2StreamCallbacks } from '../net/http2/session.mts';
+import { Headers } from 'fino:net/http';
+import { Response } from 'fino:net/http';
+import { Request } from 'fino:net/http';
+import { Nghttp2Session } from './net/http2/session.mts';
+import type { H2StreamCallbacks } from './net/http2/session.mts';
 import type { BufferedBytesReader, BytesWriter } from './stream.mts';
 
 const IDLE_MS = 60_000;

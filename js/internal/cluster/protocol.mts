@@ -13,6 +13,8 @@
  * routing. Each ClusterPort on the parent side has a unique portId; the
  * SPAWN message carries `parentPortId` so the child relay knows where to
  * address PORT_MSG.
+ *
+ * @internal
  */
 
 // ---------------------------------------------------------------------------

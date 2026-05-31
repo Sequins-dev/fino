@@ -30,6 +30,8 @@
  *   this module, because they're wired to a specific loop handle.
  * - `process` — available as `fino:process` but not on globalThis (fino is
  *   not Node.js; prefer explicit imports for process-level APIs).
+ *
+ * @internal
  */
 
 export { Event, CustomEvent, EventTarget } from './eventtarget.mts';
@@ -57,8 +59,8 @@ export { URLPattern } from './urlpattern.mts';
 export { default as console } from './console.mts';
 export { crypto, cryptoAvailable, tlsAvailable } from './crypto.mts';
 export { fetch } from './fetch.mts';
-export { Headers, Request, Response } from '../../net/http.mts';
+export { Headers, Request, Response } from 'fino:net/http';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
-export { WebSocket, CloseEvent, ErrorEvent } from '../../net/websocket.mts';
+export { WebSocket, CloseEvent, ErrorEvent } from 'fino:net/websocket';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.mts';
 export { BroadcastChannel } from './broadcast-channel.mts';

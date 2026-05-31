@@ -45,8 +45,10 @@ const CORE_TAGS = new Set(['str', 'int', 'float', 'bool', 'null', 'seq', 'map', 
 // Types
 // ---------------------------------------------------------------------------
 
+/** Error thrown when YAML input is malformed. */
 export class YamlParseError extends ParseError { name = 'YamlParseError'; }
 
+/** Value types produced by the YAML core schema parser. */
 export type YamlValue =
   | null
   | boolean
@@ -57,16 +59,24 @@ export type YamlValue =
   | YamlValue[]
   | YamlMapping
   | Map<unknown, YamlValue>;
+/** Plain-object YAML mapping with string keys. Complex keys are returned as Map. */
 export type YamlMapping = { [k: string]: YamlValue };
 
+/** Options controlling YAML parsing limits and duplicate-key behavior. */
 export interface YamlParseOptions {
+  /** Permit later duplicate keys to replace earlier values. */
   allowDuplicateKeys?: boolean;
+  /** Maximum expanded character count from aliases. */
   maxAliasExpansion?: number;
+  /** Maximum nested alias expansion depth. */
   maxAliasDepth?: number;
 }
 
+/** Options controlling YAML serialization style. */
 export interface YamlStringifyOptions {
+  /** Spaces per nesting level. Defaults to 2. */
   indent?: number;
+  /** Preferred scalar wrapping width. */
   lineWidth?: number;
 }
 
@@ -74,7 +84,15 @@ export interface YamlStringifyOptions {
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Parse a YAML document (first document if there are multiple). */
+/**
+ * Parse one YAML document, returning the first document from a stream.
+ *
+ * ```ts
+ * import { parse } from 'fino:format/yaml';
+ *
+ * parse('server:\n  port: 8080\n');
+ * ```
+ */
 export function parse(input: string | Uint8Array, options: YamlParseOptions = {}): YamlValue {
   const src = typeof input === 'string' ? input : decodeUtf8(input, true, true);
   const docs = new YamlParser(src, options).parseAll();
@@ -87,7 +105,15 @@ export function parseAll(input: string | Uint8Array, options: YamlParseOptions =
   return new YamlParser(src, options).parseAll();
 }
 
-/** Serialize a value to YAML. */
+/**
+ * Serialize a YAML-compatible value.
+ *
+ * ```ts
+ * import { stringify } from 'fino:format/yaml';
+ *
+ * stringify({ hosts: ['a', 'b'] });
+ * ```
+ */
 export function stringify(value: YamlValue, options: YamlStringifyOptions = {}): string {
   const indent = options.indent ?? 2;
   return new YamlStringifier(indent).stringify(value);

@@ -126,16 +126,16 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:messaging", "runtime/messaging"),
     source_builtin!("internal:globals/messaging", "internal/globals/messaging"),
     // internal: CLI commands
-    source_builtin!("internal:commands/root", "commands/root"),
-    source_builtin!("internal:commands/test", "commands/test"),
-    source_builtin!("internal:commands/bench", "commands/bench"),
-    source_builtin!("internal:commands/install", "commands/install"),
-    source_builtin!("internal:commands/init", "commands/init"),
-    source_builtin!("internal:commands/doc", "commands/doc"),
+    source_builtin!("internal:commands/root", "internal/commands/root"),
+    source_builtin!("internal:commands/test", "internal/commands/test"),
+    source_builtin!("internal:commands/bench", "internal/commands/bench"),
+    source_builtin!("internal:commands/install", "internal/commands/install"),
+    source_builtin!("internal:commands/init", "internal/commands/init"),
+    source_builtin!("internal:commands/doc", "internal/commands/doc"),
     source_builtin!("internal:shutdown", "internal/shutdown"),
     source_builtin!("internal:package_manager", "internal/package_manager"),
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
-    source_builtin!("internal:commands/repl", "commands/repl"),
+    source_builtin!("internal:commands/repl", "internal/commands/repl"),
     // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "internal/globals/encoding"),
     source_builtin!("internal:globals/console", "internal/globals/console"),
@@ -165,17 +165,17 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:stream", "internal/stream"),
     source_builtin!("internal:openssl", "internal/openssl"),
     // sqlite
-    source_builtin!("internal:sqlite/bindings", "sqlite/bindings"),
-    source_builtin!("internal:sqlite/vfs", "sqlite/vfs"),
+    source_builtin!("internal:sqlite/bindings", "internal/sqlite/bindings"),
+    source_builtin!("internal:sqlite/vfs", "internal/sqlite/vfs"),
     source_builtin!("fino:sqlite", "sqlite"),
     // internal: file sub-modules
-    source_builtin!("internal:file/provider", "file/provider"),
-    source_builtin!("internal:file/bindings", "file/bindings"),
-    source_builtin!("internal:file/stat", "file/stat"),
-    source_builtin!("internal:file/handle", "file/handle"),
-    source_builtin!("internal:file/entry", "file/entry"),
-    source_builtin!("internal:file/glob", "file/glob"),
-    source_builtin!("internal:file/watch-bindings", "file/watch-bindings"),
+    source_builtin!("internal:file/provider", "internal/file/provider"),
+    source_builtin!("internal:file/bindings", "internal/file/bindings"),
+    source_builtin!("internal:file/stat", "internal/file/stat"),
+    source_builtin!("internal:file/handle", "internal/file/handle"),
+    source_builtin!("internal:file/entry", "internal/file/entry"),
+    source_builtin!("internal:file/glob", "internal/file/glob"),
+    source_builtin!("internal:file/watch-bindings", "internal/file/watch-bindings"),
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
     source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
@@ -198,8 +198,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:runtime/context", "runtime/context"),
     source_builtin!("fino:tty", "tty"),
     // net
-    source_builtin!("internal:net/provider", "net/provider"),
-    source_builtin!("internal:net/dns-provider", "net/dns-provider"),
+    source_builtin!("internal:net/provider", "internal/net/provider"),
+    source_builtin!("internal:net/dns-provider", "internal/net/dns-provider"),
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/http", "net/http"),
     source_builtin!("fino:net/tls", "net/tls"),
@@ -207,10 +207,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/protocol", "net/protocol"),
     source_builtin!("fino:net/http1", "net/http1"),
     source_builtin!("fino:net/serve", "net/serve"),
-    source_builtin!("internal:net/http2/bindings", "net/http2/bindings"),
-    source_builtin!("internal:net/http2/session", "net/http2/session"),
-    source_builtin!("internal:net/http2/server", "net/http2/server"),
-    source_builtin!("internal:net/http2/client", "net/http2/client"),
+    source_builtin!("internal:net/http2/bindings", "internal/net/http2/bindings"),
+    source_builtin!("internal:net/http2/session", "internal/net/http2/session"),
+    source_builtin!("internal:net/http2/server", "internal/net/http2/server"),
+    source_builtin!("internal:net/http2/client", "internal/net/http2/client"),
     source_builtin!("fino:net/http2", "net/http2"),
     source_builtin!("internal:http-pool", "internal/http-pool"),
     source_builtin!("fino:net/eventsource", "net/eventsource"),
@@ -231,52 +231,52 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
     source_builtin!("fino:cluster", "runtime/cluster"),
-    source_builtin!("internal:opentelemetry/core", "opentelemetry/core"),
-    source_builtin!("internal:opentelemetry/common", "opentelemetry/common"),
-    source_builtin!("internal:opentelemetry/traces", "opentelemetry/traces"),
-    source_builtin!("internal:opentelemetry/logs", "opentelemetry/logs"),
-    source_builtin!("internal:opentelemetry/metrics", "opentelemetry/metrics"),
+    source_builtin!("internal:opentelemetry/core", "internal/opentelemetry/core"),
+    source_builtin!("internal:opentelemetry/common", "internal/opentelemetry/common"),
+    source_builtin!("internal:opentelemetry/traces", "internal/opentelemetry/traces"),
+    source_builtin!("internal:opentelemetry/logs", "internal/opentelemetry/logs"),
+    source_builtin!("internal:opentelemetry/metrics", "internal/opentelemetry/metrics"),
     source_builtin!(
         "internal:opentelemetry/exporters",
-        "opentelemetry/exporters"
+        "internal/opentelemetry/exporters"
     ),
     source_builtin!(
         "internal:opentelemetry/bootstrap",
-        "opentelemetry/bootstrap"
+        "internal/opentelemetry/bootstrap"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/index",
-        "opentelemetry/instrumentations/index"
+        "internal/opentelemetry/instrumentations/index"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/http-server",
-        "opentelemetry/instrumentations/http-server"
+        "internal/opentelemetry/instrumentations/http-server"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/fetch",
-        "opentelemetry/instrumentations/fetch"
+        "internal/opentelemetry/instrumentations/fetch"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/trace-topic",
-        "opentelemetry/instrumentations/trace-topic"
+        "internal/opentelemetry/instrumentations/trace-topic"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/_runtime-client",
-        "opentelemetry/instrumentations/_runtime-client"
+        "internal/opentelemetry/instrumentations/_runtime-client"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/dns",
-        "opentelemetry/instrumentations/dns"
+        "internal/opentelemetry/instrumentations/dns"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/socket",
-        "opentelemetry/instrumentations/socket"
+        "internal/opentelemetry/instrumentations/socket"
     ),
     source_builtin!(
         "internal:opentelemetry/instrumentations/tls",
-        "opentelemetry/instrumentations/tls"
+        "internal/opentelemetry/instrumentations/tls"
     ),
-    source_builtin!("internal:opentelemetry/sdk", "opentelemetry/sdk"),
+    source_builtin!("internal:opentelemetry/sdk", "internal/opentelemetry/sdk"),
     source_builtin!("fino:opentelemetry", "opentelemetry"),
     source_builtin!("fino:scanner", "scanner"),
     source_builtin!("fino:semver", "semver"),

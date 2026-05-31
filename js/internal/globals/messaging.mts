@@ -17,6 +17,8 @@
  * port is re-entangled on delivery. For cross-Isolate transfers a transit
  * channel is created (internal:transit-port) and the partner port is upgraded
  * in-place to use cross-thread messaging.
+ *
+ * @internal
  */
 
 import { Event, EventTarget } from './eventtarget.mts';

@@ -1,5 +1,9 @@
 /**
  * fino:template — small Mustache-compatible template rendering.
+ *
+ * Supports escaped variables, triple-mustache/unescaped variables, truthy and
+ * inverted sections, list iteration, and dotted-name lookup. Partials are
+ * intentionally not implemented yet.
  */
 
 type Token =
@@ -7,7 +11,9 @@ type Token =
   | { type: 'variable'; name: string; escaped: boolean }
   | { type: 'section'; name: string; inverted: boolean; children: Token[] };
 
+/** Options accepted by one-shot template rendering. Reserved for future flags. */
 export interface RenderOptions {}
+/** Options accepted by template compilation. Reserved for future flags. */
 export interface CompileOptions extends RenderOptions {}
 
 interface ContextFrame {
@@ -15,6 +21,7 @@ interface ContextFrame {
   parent: ContextFrame | null;
 }
 
+/** Escape a value for safe insertion into HTML text or attributes. */
 export function escapeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -24,11 +31,30 @@ export function escapeHtml(value: unknown): string {
     .replace(/'/g, '&#39;');
 }
 
+/**
+ * Compile a template string into a reusable render function.
+ *
+ * ```ts
+ * import { compile } from 'fino:template';
+ *
+ * const renderUser = compile('Hello, {{name}}');
+ * renderUser({ name: '<Ada>' }); // 'Hello, &lt;Ada&gt;'
+ * ```
+ */
 export function compile(template: string, _options: CompileOptions = {}): (data?: unknown) => string {
   const tokens = parseTemplate(template);
   return (data: unknown = {}) => renderTokens(tokens, { value: data, parent: null });
 }
 
+/**
+ * Render a template once with the provided data.
+ *
+ * ```ts
+ * import { render } from 'fino:template';
+ *
+ * render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });
+ * ```
+ */
 export function render(template: string, data: unknown = {}, options: RenderOptions = {}): string {
   return compile(template, options)(data);
 }

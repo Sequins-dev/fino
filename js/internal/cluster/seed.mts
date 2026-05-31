@@ -12,6 +12,8 @@
  * The seed is NOT in the data-plane critical path once ports are established —
  * in future work nodes can establish direct peer connections. For now routing
  * through the seed is correct and sufficient.
+ *
+ * @internal
  */
 
 import type { ClusterTransport } from './transport.mts';

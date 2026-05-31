@@ -22,6 +22,8 @@
  *
  * This keeps all the actual compression work in the existing FFI-backed
  * generators and avoids duplicating the zlib/brotli logic here.
+ *
+ * @internal
  */
 
 import { ReadableStream, WritableStream } from './webstreams.mts';
@@ -29,7 +31,7 @@ import {
   createGzip, createGunzip,
   createDeflate, createInflate,
   createDeflateRaw, createInflateRaw,
-} from '../../util/compression.mts';
+} from 'fino:util/compression';
 
 // ---------------------------------------------------------------------------
 // Format maps

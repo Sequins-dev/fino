@@ -56,6 +56,8 @@
  * AbortSignal.timeout(ms)      // signal that aborts after ms milliseconds
  * AbortSignal.any(signals)     // signal that aborts when any input signal aborts
  * ```
+ *
+ * @internal
  */
 
 import { EventTarget, Event } from './eventtarget.mts';
@@ -138,7 +140,7 @@ export class AbortSignal extends EventTarget {
   static timeout(ms: number): AbortSignal {
     const signal = _createSignal();
     const fireAbort = _signalAbort.get(signal);
-    import('../../runtime/loop.mts').then(function (loop) {
+    import('fino:runtime/loop').then(function (loop) {
       loop.timeout(ms).then(function () {
         fireAbort?.(defaultAbortError('The operation timed out.', 'TimeoutError'));
       });

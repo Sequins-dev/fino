@@ -1,7 +1,13 @@
-import { DiskFileSystem } from '../file/fs.mts';
-import { extractArchive } from '../archive.mts';
-import { cwd, env } from '../runtime/process.mts';
-import { compare, maxSatisfying } from '../semver.mts';
+/**
+ * internal:package_manager — package installation helpers.
+ *
+ * @internal
+ */
+
+import { DiskFileSystem } from 'fino:file';
+import { extractArchive } from 'fino:archive';
+import { cwd, env } from 'fino:runtime/process';
+import { compare, maxSatisfying } from 'fino:semver';
 import * as openssl from './openssl.mts';
 
 const fs = new DiskFileSystem();

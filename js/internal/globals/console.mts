@@ -56,9 +56,11 @@
  *   Map if you need them.
  * - Do not switch output to process.stdout streams — the direct `writeLine`
  *   call is intentional (no buffering, works before the event loop starts).
+ *
+ * @internal
  */
 
-import { writeLine } from '../runtime/libc.mts';
+import { writeLine } from 'internal:runtime/libc';
 
 // ---------------------------------------------------------------------------
 // Value formatting

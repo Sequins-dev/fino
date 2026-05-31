@@ -1,0 +1,239 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - assert</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/context.html">context</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><a href="../runtime/realm.html">realm</a></li><li><a href="../runtime/realm-pool.html">realm-pool</a></li><li><a href="../runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="assert.html" aria-current="page">assert</a></li><li><a href="bench.html">bench</a></li><li><a href="mock.html">mock</a></li><li><a href="test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:assert">assert</h1>
+<p class="muted">js/test/assert.mts</p>
+<p>fino:assert — assertion library with configurable pass/fail callbacks.</p>
+<p>This module provides the assertion primitives used by <code>fino:test</code>. It is also usable as a standalone library for any code that needs structured assertions.</p>
+<p>The key design decision is that pass/fail behavior is injectable via constructor callbacks rather than hard-coded. This allows <code>fino:test</code> to use collect-then-throw semantics (all assertions run before any failure is reported) while standalone users get the default throw-immediately behavior.</p>
+<h3>The Assert class</h3>
+<p><code>new Assert({ onPass, onFail })</code> creates a configurable assertion instance.</p>
+<ul>
+<li><code>onPass</code>: called with no arguments on each passing assertion. Default is</li>
+</ul>
+<p>a no-op. <code>fino:test</code> uses this to count passing assertions.</p>
+<ul>
+<li><code>onFail</code>: called with an <code>AssertionError</code> on each failing assertion.</li>
+</ul>
+<p>Default throws the error immediately. <code>fino:test</code> overrides this to push errors into an array for later <code>AggregateError</code> reporting.</p>
+<p>Because both callbacks are injectable, a single <code>Assert</code> class handles all use cases without subclassing.</p>
+<h3>AssertionError</h3>
+<p>Extends <code>Error</code> with <code>actual</code>, <code>expected</code>, and <code>operator</code> fields, matching the shape of Node.js&#39;s <code>assert.AssertionError</code>. The <code>operator</code> field names the assertion that failed (e.g. <code>&quot;equal&quot;</code>, <code>&quot;throws&quot;</code>).</p>
+<h3>Deep equality</h3>
+<p><code>deepEqual(actual, expected)</code> uses <code>_deepEqual()</code>, which recursively compares own enumerable keys of plain objects and arrays. It uses strict equality (<code>===</code>) at the leaves and short-circuits on reference identity. It does NOT handle:</p>
+<ul>
+<li><code>Map</code>, <code>Set</code>, <code>Date</code>, <code>RegExp</code> — only plain <code>{}</code> and <code>[]</code></li>
+<li>Symbol keys</li>
+<li>Non-enumerable properties</li>
+</ul>
+<p>This covers the vast majority of test assertions. Add special cases if concrete tests require them.</p>
+<h3>throws / rejects</h3>
+<p>Both accept an optional <code>check</code> argument:</p>
+<ul>
+<li>If <code>check</code> is a function <code>(err) =&gt; boolean</code>, it must return true.</li>
+<li>If <code>check</code> is a RegExp, it is tested against <code>err.message</code>.</li>
+<li>If <code>check</code> is omitted, any throw/rejection passes.</li>
+</ul>
+<h3>Default instance and named exports</h3>
+<p>A module-level <code>_default = new Assert()</code> instance is exported as the default export and also as named free functions (<code>ok</code>, <code>equal</code>, <code>throws</code>, etc.). This lets callers choose between:</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> assert from <span class="tok-string">&#39;./assert.mts&#39;</span>;        <span class="tok-comment">// default instance</span>
+assert.ok(value);
+
+<span class="tok-keyword">import</span> { ok, equal } from <span class="tok-string">&#39;./assert.mts&#39;</span>; <span class="tok-comment">// named free functions</span>
+ok(value);
+equal(got, expected);</code></pre>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { Assert, AssertionError } from <span class="tok-string">&#39;./assert.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> assert = <span class="tok-keyword">new</span> Assert({
+  onFail(err) { myFailures.push(err); },
+});
+assert.ok(value, <span class="tok-string">&#39;must be truthy&#39;</span>);
+assert.equal(got, expected, <span class="tok-string">&#39;same value&#39;</span>);
+assert.deepEqual({ a: <span class="tok-number">1</span> }, { a: <span class="tok-number">1</span> }, <span class="tok-string">&#39;same shape&#39;</span>);
+<span class="tok-keyword">await</span> assert.rejects(<span class="tok-keyword">async</span> () =&gt; { <span class="tok-keyword">throw</span> <span class="tok-keyword">new</span> Error(<span class="tok-string">&#39;oops&#39;</span>); }, <span class="tok-regexp">/oops/</span>);</code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="assert.AssertionError">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="assert.html#assert.AssertionError">AssertionError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error">Error</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="assert.AssertionError.constructor">
+<h5><code><span class="tok-keyword">constructor</span>({ message, actual, expected, operator }: AssertionErrorOptions = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="assert.AssertionError.actual">
+<h5><code><span class="tok-keyword">get</span> actual()</code></h5>
+
+
+</section>
+
+<section class="member" id="assert.AssertionError.expected">
+<h5><code><span class="tok-keyword">get</span> expected()</code></h5>
+
+
+</section>
+
+<section class="member" id="assert.AssertionError.operator">
+<h5><code><span class="tok-keyword">get</span> operator()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="assert.Assert">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="assert.html#assert.Assert">Assert</a> {</code></h3>
+
+<p>Configurable assertion helper. Each method calls <code>onPass</code> on success or <code>onFail(AssertionError)</code> on failure.</p>
+<p>Default: no-op. Default: throws the error.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="assert.Assert.constructor">
+<h5><code><span class="tok-keyword">constructor</span>({ onPass, onFail }: AssertCallbacks = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="assert.Assert.ok">
+<h5><code>ok(value: <span class="tok-keyword">unknown</span>, msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Assert that <code>value</code> is truthy.</p>
+</section>
+
+<section class="member" id="assert.Assert.notOk">
+<h5><code>notOk(value: <span class="tok-keyword">unknown</span>, msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Assert that <code>value</code> is falsy.</p>
+</section>
+
+<section class="member" id="assert.Assert.equal">
+<h5><code>equal(actual: <span class="tok-keyword">unknown</span>, expected: <span class="tok-keyword">unknown</span>, msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Assert strict equality (===).</p>
+</section>
+
+<section class="member" id="assert.Assert.notEqual">
+<h5><code>notEqual(actual: <span class="tok-keyword">unknown</span>, expected: <span class="tok-keyword">unknown</span>, msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Assert strict inequality (!==).</p>
+</section>
+
+<section class="member" id="assert.Assert.deepEqual">
+<h5><code>deepEqual(actual: <span class="tok-keyword">unknown</span>, expected: <span class="tok-keyword">unknown</span>, msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Assert deep equality of two plain objects/arrays.</p>
+</section>
+
+<section class="member" id="assert.Assert.fail">
+<h5><code>fail(msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Unconditionally fail with a message.</p>
+</section>
+
+<section class="member" id="assert.Assert.throws">
+<h5><code>throws(fn: () =&gt; <span class="tok-keyword">void</span>, check?: ErrorCheck, msg?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Assert that <code>fn</code> throws synchronously. Optionally validate the thrown value with a <code>check</code> function <code>(err) =&gt; boolean</code> or a RegExp tested against <code>err.message</code>.</p>
+</section>
+
+<section class="member" id="assert.Assert.rejects">
+<h5><code><span class="tok-keyword">async</span> rejects(fn: () =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">unknown</span>&gt;, check?: ErrorCheck, msg?: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Assert that <code>fn</code> returns a promise that rejects. Optionally validate the rejection value with a <code>check</code> function or RegExp.</p>
+<p>Must be awaited: <code>await assert.rejects(async () =&gt; { ... })</code>.</p>
+</section>
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="assert.ok">
+<h3><code><span class="tok-keyword">const</span> ok</code></h3>
+
+
+
+</section>
+
+<section id="assert.notOk">
+<h3><code><span class="tok-keyword">const</span> notOk</code></h3>
+
+
+
+</section>
+
+<section id="assert.equal">
+<h3><code><span class="tok-keyword">const</span> equal</code></h3>
+
+
+
+</section>
+
+<section id="assert.notEqual">
+<h3><code><span class="tok-keyword">const</span> notEqual</code></h3>
+
+
+
+</section>
+
+<section id="assert.deepEqual">
+<h3><code><span class="tok-keyword">const</span> deepEqual</code></h3>
+
+
+
+</section>
+
+<section id="assert.fail">
+<h3><code><span class="tok-keyword">const</span> fail</code></h3>
+
+
+
+</section>
+
+<section id="assert.throws">
+<h3><code><span class="tok-keyword">const</span> throws</code></h3>
+
+
+
+</section>
+
+<section id="assert.rejects">
+<h3><code><span class="tok-keyword">const</span> rejects</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

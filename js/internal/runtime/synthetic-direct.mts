@@ -1,3 +1,9 @@
+/**
+ * internal:runtime/synthetic-direct — synthetic module registry.
+ *
+ * @internal
+ */
+
 const _registry = new Map<string, Record<string, unknown>>();
 
 export function _register(spec: string, exports: Record<string, unknown>): void {

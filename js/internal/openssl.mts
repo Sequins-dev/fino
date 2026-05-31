@@ -11,6 +11,8 @@
  * This module exports a well-defined interface. To add BoringSSL support,
  * create internal:boringssl with the same exports and change the import in
  * fino:crypto and fino:tls.
+ *
+ * @internal
  */
 
 import {

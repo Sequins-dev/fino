@@ -25,14 +25,17 @@ import { Scanner, ParseError } from 'fino:scanner';
 // Node types
 // ---------------------------------------------------------------------------
 
+/** Error thrown when XML input is not well-formed or violates parser limits. */
 export class XmlParseError extends ParseError { name = 'XmlParseError'; }
 
+/** Parsed XML document tree. */
 export interface XmlDocument {
   type: 'document';
   root: XmlElement;
   prolog: XmlNode[];   // PIs and comments before root
 }
 
+/** Element node with namespace metadata, attributes, and child nodes. */
 export interface XmlElement {
   type: 'element';
   name: string;
@@ -42,15 +45,21 @@ export interface XmlElement {
   children: XmlNode[];
 }
 
+/** Text node. */
 export interface XmlText      { type: 'text';   data: string; }
+/** CDATA node. */
 export interface XmlCData     { type: 'cdata';  data: string; }
+/** XML comment node. */
 export interface XmlComment   { type: 'comment'; data: string; }
+/** Processing instruction node. */
 export interface XmlPI        { type: 'pi';     target: string; data: string; }
+/** Doctype declaration node. */
 export interface XmlDoctype   { type: 'doctype'; data: string; }
 
+/** Any non-document XML node returned in the tree model. */
 export type XmlNode = XmlElement | XmlText | XmlCData | XmlComment | XmlPI | XmlDoctype;
 
-// SAX events
+/** SAX-style parse event emitted by parseStream(). */
 export type XmlEvent =
   | { type: 'startElement'; name: string; prefix: string | null; namespace: string | null; attributes: Record<string, string> }
   | { type: 'endElement';   name: string }
@@ -59,6 +68,7 @@ export type XmlEvent =
   | { type: 'comment';      data: string }
   | { type: 'pi';           target: string; data: string };
 
+/** Options controlling XML parsing, namespaces, and entity expansion limits. */
 export interface XmlParseOptions {
   namespaces?: boolean;            // default true
   trim?: boolean;                  // trim text nodes
@@ -67,6 +77,7 @@ export interface XmlParseOptions {
   resolveExternalEntities?: ((systemId: string) => string | null) | null;
 }
 
+/** Options controlling XML serialization. */
 export interface XmlStringifyOptions {
   indent?: string;
   xmlDeclaration?: boolean;
@@ -76,6 +87,15 @@ export interface XmlStringifyOptions {
 // Parse (tree)
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse XML input into a document tree.
+ *
+ * ```ts
+ * import { parse } from 'fino:format/xml';
+ *
+ * const doc = parse('<root><child /></root>');
+ * ```
+ */
 export function parse(input: string | Uint8Array, options: XmlParseOptions = {}): XmlDocument {
   return new XmlParser(input, options).parseDocument();
 }
@@ -84,6 +104,7 @@ export function parse(input: string | Uint8Array, options: XmlParseOptions = {})
 // Parse stream (SAX)
 // ---------------------------------------------------------------------------
 
+/** Parse XML bytes into SAX-style events. */
 export async function* parseStream(
   src: AsyncIterable<Uint8Array>,
   options: XmlParseOptions = {},
@@ -527,6 +548,7 @@ function _splitName(name: string): [string | null, string] {
 // Stringify
 // ---------------------------------------------------------------------------
 
+/** Serialize an XML document tree. */
 export function stringify(doc: XmlDocument, options: XmlStringifyOptions = {}): string {
   const indent = options.indent ?? '';
   let out = '';

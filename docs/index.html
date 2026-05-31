@@ -3,726 +3,81 @@
 <head>
 <meta charset="utf-8">
 <title>Fino JS API</title>
-<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
 </head>
 <body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="js/archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="js/file/fs.html">fs</a></li><li><a href="js/file/path.html">path</a></li><li><a href="js/file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="js/format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="js/format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="js/format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="js/format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="js/format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="js/markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="js/net/dns.html">dns</a></li><li><a href="js/net/eventsource.html">eventsource</a></li><li><a href="js/net/http.html">http</a></li><li><a href="js/net/http1.html">http1</a></li><li><a href="js/net/http2.html">http2</a></li><li><a href="js/net/protocol.html">protocol</a></li><li><a href="js/net/serve.html">serve</a></li><li><a href="js/net/socket.html">socket</a></li><li><a href="js/net/tls.html">tls</a></li><li><a href="js/net/websocket.html">websocket</a></li></ul></li><li><a href="js/opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="js/runtime/cluster.html">cluster</a></li><li><a href="js/runtime/context.html">context</a></li><li><a href="js/runtime/loop.html">loop</a></li><li><a href="js/runtime/messaging.html">messaging</a></li><li><a href="js/runtime/module.html">module</a></li><li><a href="js/runtime/process.html">process</a></li><li><a href="js/runtime/realm.html">realm</a></li><li><a href="js/runtime/realm-pool.html">realm-pool</a></li><li><a href="js/runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="js/scanner.html">scanner</a></li><li><a href="js/semver.html">semver</a></li><li><a href="js/sqlite.html">sqlite</a></li><li><a href="js/template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="js/test/assert.html">assert</a></li><li><a href="js/test/bench.html">bench</a></li><li><a href="js/test/mock.html">mock</a></li><li><a href="js/test/test.html">test</a></li></ul></li><li><a href="js/tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="js/util/argv.html">argv</a></li><li><a href="js/util/compression.html">compression</a></li><li><a href="js/util/prompt.html">prompt</a></li><li><a href="js/util/topic.html">topic</a></li></ul></li><li><a href="js/uuid.html">uuid</a></li></ul></li></ul>
+</nav>
 <main>
-<h1>API Modules</h1>
-<p class="muted">118 modules documented.</p>
-<ul class="module-list">
-
-<li class="module-card">
-<a href="_bootstrap.html"><strong>_bootstrap</strong></a>
-<p class="muted">1 exports</p>
-<p>_bootstrap.mts — Shared realm bootstrap.</p>
-</li>
-
-<li class="module-card">
-<a href="_main.html"><strong>_main</strong></a>
-<p class="muted">0 exports</p>
-<p>_main.mts — Root realm CLI entry point.</p>
-</li>
-
-<li class="module-card">
-<a href="_runtime-client.html"><strong>_runtime-client</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="abort.html"><strong>abort</strong></a>
-<p class="muted">2 exports</p>
-<p>fino:abort — AbortController and AbortSignal (WHATWG DOM spec)</p>
-</li>
-
-<li class="module-card">
-<a href="archive.html"><strong>archive</strong></a>
-<p class="muted">9 exports</p>
-<p>fino:archive — zip, tar, and tar.gz archive helpers implemented in JS.</p>
-</li>
-
-<li class="module-card">
-<a href="argv.html"><strong>argv</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:util/argv — config-based argv parser with nested command execution.</p>
-</li>
-
-<li class="module-card">
-<a href="assert.html"><strong>assert</strong></a>
-<p class="muted">10 exports</p>
-<p>fino:assert — assertion library with configurable pass/fail callbacks.</p>
-</li>
-
-<li class="module-card">
-<a href="blob.html"><strong>blob</strong></a>
-<p class="muted">3 exports</p>
-<p>fino:blob — Blob and File (WHATWG File API)</p>
-</li>
-
-<li class="module-card">
-<a href="bootstrap.html"><strong>bootstrap</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="broadcast-channel.html"><strong>broadcast-channel</strong></a>
-<p class="muted">1 exports</p>
-<p>BroadcastChannel — WHATWG-compatible one-to-many pub/sub across Realms.</p>
-</li>
-
-<li class="module-card">
-<a href="cluster.html"><strong>cluster</strong></a>
-<p class="muted">5 exports</p>
-<p>fino:cluster — public API for cluster participation.</p>
-</li>
-
-<li class="module-card">
-<a href="common.html"><strong>common</strong></a>
-<p class="muted">77 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="compression.html"><strong>compression</strong></a>
-<p class="muted">18 exports</p>
-<p>fino:compression — gzip, deflate, brotli</p>
-</li>
-
-<li class="module-card">
-<a href="compression-streams.html"><strong>compression-streams</strong></a>
-<p class="muted">2 exports</p>
-<p>internal:compression-streams — CompressionStream and DecompressionStream.</p>
-</li>
-
-<li class="module-card">
-<a href="console.html"><strong>console</strong></a>
-<p class="muted">1 exports</p>
-<p>fino:console — standard Console API implemented in JS via fino:libc.</p>
-</li>
-
-<li class="module-card">
-<a href="context.html"><strong>context</strong></a>
-<p class="muted">3 exports</p>
-<p>fino:context — Async context propagation.</p>
-</li>
-
-<li class="module-card">
-<a href="core.html"><strong>core</strong></a>
-<p class="muted">0 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="crypto.html"><strong>crypto</strong></a>
-<p class="muted">3 exports</p>
-<p>fino:crypto — Web Crypto API.</p>
-</li>
-
-<li class="module-card">
-<a href="dns-provider.html"><strong>dns-provider</strong></a>
-<p class="muted">7 exports</p>
-<p>internal:net/dns-provider — Abstract DnsProvider interface.</p>
-</li>
-
-<li class="module-card">
-<a href="doc.html"><strong>doc</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="encoding.html"><strong>encoding</strong></a>
-<p class="muted">8 exports</p>
-<p>fino:encoding — UTF-8 TextEncoder / TextDecoder (WHATWG Encoding Standard)</p>
-</li>
-
-<li class="module-card">
-<a href="entry.html"><strong>entry</strong></a>
-<p class="muted">3 exports</p>
-<p>internal:file-entry — Entry, FileEntry, DirEntry classes for fino:file.</p>
-</li>
-
-<li class="module-card">
-<a href="eventsource.html"><strong>eventsource</strong></a>
-<p class="muted">5 exports</p>
-<p>fino:eventsource — Server-Sent Events (SSE) client and server.</p>
-</li>
-
-<li class="module-card">
-<a href="eventtarget.html"><strong>eventtarget</strong></a>
-<p class="muted">3 exports</p>
-<p>fino:eventtarget — Event, CustomEvent, and EventTarget</p>
-</li>
-
-<li class="module-card">
-<a href="exporters.html"><strong>exporters</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="formdata.html"><strong>formdata</strong></a>
-<p class="muted">2 exports</p>
-<p>fino:formdata — FormData (WHATWG XHR / Fetch spec)</p>
-</li>
-
-<li class="module-card">
-<a href="fs.html"><strong>fs</strong></a>
-<p class="muted">1 exports</p>
-<p>fino:file — POSIX filesystem with async I/O and a virtualizable handle model.</p>
-</li>
-
-<li class="module-card">
-<a href="glob.html"><strong>glob</strong></a>
-<p class="muted">5 exports</p>
-<p>internal:file/glob — Glob pattern matching and async directory walker.</p>
-</li>
-
-<li class="module-card">
-<a href="global.html"><strong>global</strong></a>
-<p class="muted">0 exports</p>
-<p>fino:global — web-standard globals registry.</p>
-</li>
-
-<li class="module-card">
-<a href="handle.html"><strong>handle</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:file-handle — File class for fino:file.</p>
-</li>
-
-<li class="module-card">
-<a href="handler.html"><strong>handler</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="http.html"><strong>http</strong></a>
-<p class="muted">13 exports</p>
-<p>fino:http — incremental HTTP/1.1 parser and serializer.</p>
-</li>
-
-<li class="module-card">
-<a href="http-pool.html"><strong>http-pool</strong></a>
-<p class="muted">3 exports</p>
-<p>internal:http-pool — per-realm H2 connection pool.</p>
-</li>
-
-<li class="module-card">
-<a href="http-server.html"><strong>http-server</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="http1.html"><strong>http1</strong></a>
-<p class="muted">2 exports</p>
-<p>fino:net/http1 — HTTP/1.1 server and client drivers.</p>
-</li>
-
-<li class="module-card">
-<a href="http2.html"><strong>http2</strong></a>
-<p class="muted">2 exports</p>
-<p>fino:net/http2 — public HTTP/2 module.</p>
-</li>
-
-<li class="module-card">
-<a href="init.html"><strong>init</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="install.html"><strong>install</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="io_uring.html"><strong>io_uring</strong></a>
-<p class="muted">19 exports</p>
-<p>fino:io_uring — low-level io_uring backend via raw Linux syscalls.</p>
-</li>
-
-<li class="module-card">
-<a href="js/commands/bench.html"><strong>js/commands/bench</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/commands/test.html"><strong>js/commands/test</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/file/bindings.html"><strong>js/file/bindings</strong></a>
-<p class="muted">43 exports</p>
-<p>internal:file-bindings — shared libc FFI bindings, constants, and helpers
-for the fino:file sub-modules (stat, handle, entry, fs).</p>
-</li>
-
-<li class="module-card">
-<a href="js/file/provider.html"><strong>js/file/provider</strong></a>
-<p class="muted">3 exports</p>
-<p>internal:file/provider — Abstract FileSystem and FileHandle interfaces.</p>
-</li>
-
-<li class="module-card">
-<a href="js/format/csv/index.html"><strong>js/format/csv/index</strong></a>
-<p class="muted">8 exports</p>
-<p>fino:format/csv — CSV parsing and serialization (RFC 4180 + dialect options).</p>
-</li>
-
-<li class="module-card">
-<a href="js/format/toml/index.html"><strong>js/format/toml/index</strong></a>
-<p class="muted">9 exports</p>
-<p>fino:format/toml — TOML 1.0.0 parser and serializer.</p>
-</li>
-
-<li class="module-card">
-<a href="js/format/typescript/index.html"><strong>js/format/typescript/index</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:format/typescript — OXC-backed TypeScript and JavaScript parser.</p>
-</li>
-
-<li class="module-card">
-<a href="js/format/xml/index.html"><strong>js/format/xml/index</strong></a>
-<p class="muted">15 exports</p>
-<p>fino:format/xml — XML 1.0 + Namespaces parser and serializer.</p>
-</li>
-
-<li class="module-card">
-<a href="js/format/yaml/index.html"><strong>js/format/yaml/index</strong></a>
-<p class="muted">8 exports</p>
-<p>fino:format/yaml — YAML 1.2 core schema parser and serializer.</p>
-</li>
-
-<li class="module-card">
-<a href="js/internal/cluster/client.html"><strong>js/internal/cluster/client</strong></a>
-<p class="muted">2 exports</p>
-<p>internal:cluster/client — worker node cluster client.</p>
-</li>
-
-<li class="module-card">
-<a href="js/internal/cluster/protocol.html"><strong>js/internal/cluster/protocol</strong></a>
-<p class="muted">7 exports</p>
-<p>internal:cluster/protocol — cluster wire types and JSON codec.</p>
-</li>
-
-<li class="module-card">
-<a href="js/internal/globals/fetch.html"><strong>js/internal/globals/fetch</strong></a>
-<p class="muted">1 exports</p>
-<p>fino:fetch — spec-compliant Fetch API implementation.</p>
-</li>
-
-<li class="module-card">
-<a href="js/internal/globals/messaging.html"><strong>js/internal/globals/messaging</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:messaging internals — MessageEvent, MessagePort, MessageChannel,
-ThreadPort.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/dns.html"><strong>js/net/dns</strong></a>
-<p class="muted">17 exports</p>
-<p>fino:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/http2/bindings.html"><strong>js/net/http2/bindings</strong></a>
-<p class="muted">68 exports</p>
-<p>internal:net/http2/bindings — system libnghttp2 via dlopen.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/http2/client.html"><strong>js/net/http2/client</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:net/http2/client — H2ClientDriver.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/protocol.html"><strong>js/net/protocol</strong></a>
-<p class="muted">9 exports</p>
-<p>fino:net/protocol — shared interfaces for HTTP server and client drivers.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/provider.html"><strong>js/net/provider</strong></a>
-<p class="muted">10 exports</p>
-<p>internal:net/provider — Abstract NetworkProvider interface.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/socket.html"><strong>js/net/socket</strong></a>
-<p class="muted">51 exports</p>
-<p>fino:socket — POSIX socket API for TCP, UDP, and Unix domain sockets.</p>
-</li>
-
-<li class="module-card">
-<a href="js/net/tls.html"><strong>js/net/tls</strong></a>
-<p class="muted">4 exports</p>
-<p>fino:tls — TLS socket layer.</p>
-</li>
-
-<li class="module-card">
-<a href="js/opentelemetry/instrumentations/dns.html"><strong>js/opentelemetry/instrumentations/dns</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/opentelemetry/instrumentations/fetch.html"><strong>js/opentelemetry/instrumentations/fetch</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/opentelemetry/instrumentations/index.html"><strong>js/opentelemetry/instrumentations/index</strong></a>
-<p class="muted">0 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/opentelemetry/instrumentations/socket.html"><strong>js/opentelemetry/instrumentations/socket</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/opentelemetry/instrumentations/tls.html"><strong>js/opentelemetry/instrumentations/tls</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="js/runtime/messaging.html"><strong>js/runtime/messaging</strong></a>
-<p class="muted">0 exports</p>
-<p>fino:messaging — MessagePort, MessageChannel, MessageEvent.</p>
-</li>
-
-<li class="module-card">
-<a href="js/sqlite/bindings.html"><strong>js/sqlite/bindings</strong></a>
-<p class="muted">44 exports</p>
-<p>internal:sqlite/bindings — system libsqlite3 via dlopen.</p>
-</li>
-
-<li class="module-card">
-<a href="js/test/bench.html"><strong>js/test/bench</strong></a>
-<p class="muted">4 exports</p>
-<p>fino:bench — benchmark suite, a JS port of benc.h.</p>
-</li>
-
-<li class="module-card">
-<a href="js/test/test.html"><strong>js/test/test</strong></a>
-<p class="muted">9 exports</p>
-<p>fino:test — TAP-13 test framework with nesting and BDD-style describe/it.</p>
-</li>
-
-<li class="module-card">
-<a href="kqueue.html"><strong>kqueue</strong></a>
-<p class="muted">32 exports</p>
-<p>fino:kqueue — low-level kqueue bindings for macOS/BSD.</p>
-</li>
-
-<li class="module-card">
-<a href="libc.html"><strong>libc</strong></a>
-<p class="muted">5 exports</p>
-<p>fino:libc — low-level C library bindings used by the Fino standard library.</p>
-</li>
-
-<li class="module-card">
-<a href="loader.html"><strong>loader</strong></a>
-<p class="muted">0 exports</p>
-<p>internal:loader — JS-side module resolution and import.meta population.</p>
-</li>
-
-<li class="module-card">
-<a href="logs.html"><strong>logs</strong></a>
-<p class="muted">9 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="loop.html"><strong>loop</strong></a>
-<p class="muted">17 exports</p>
-<p>fino:runtime/loop — global event loop singleton.</p>
-</li>
-
-<li class="module-card">
-<a href="markdown.html"><strong>markdown</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:markdown - safe Markdown parser and HTML renderer for documentation and templates.</p>
-</li>
-
-<li class="module-card">
-<a href="metrics.html"><strong>metrics</strong></a>
-<p class="muted">22 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="mock.html"><strong>mock</strong></a>
-<p class="muted">4 exports</p>
-<p>fino:test/mock — scoped test doubles for runtime globals and builtins.</p>
-</li>
-
-<li class="module-card">
-<a href="module.html"><strong>module</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="openssl.html"><strong>openssl</strong></a>
-<p class="muted">63 exports</p>
-<p>internal:openssl — OpenSSL FFI bindings for libcrypto and libssl.</p>
-</li>
-
-<li class="module-card">
-<a href="opentelemetry.html"><strong>opentelemetry</strong></a>
-<p class="muted">0 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="package_manager.html"><strong>package_manager</strong></a>
-<p class="muted">2 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="parent-rpc.html"><strong>parent-rpc</strong></a>
-<p class="muted">9 exports</p>
-<p>internal:parent-rpc — RPC channel from a child Realm to its parent&#39;s Facade handlers.</p>
-</li>
-
-<li class="module-card">
-<a href="path.html"><strong>path</strong></a>
-<p class="muted">10 exports</p>
-<p>fino:path — POSIX path manipulation.</p>
-</li>
-
-<li class="module-card">
-<a href="process.html"><strong>process</strong></a>
-<p class="muted">23 exports</p>
-<p>fino:process — process information and child process spawning.</p>
-</li>
-
-<li class="module-card">
-<a href="prompt.html"><strong>prompt</strong></a>
-<p class="muted">2 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="realm.html"><strong>realm</strong></a>
-<p class="muted">16 exports</p>
-<p>fino:realm — Realm construction and management.</p>
-</li>
-
-<li class="module-card">
-<a href="realm-pool.html"><strong>realm-pool</strong></a>
-<p class="muted">3 exports</p>
-<p>fino:realm/pool — RealmPool with load-based dispatch.</p>
-</li>
-
-<li class="module-card">
-<a href="realm-self.html"><strong>realm-self</strong></a>
-<p class="muted">1 exports</p>
-<p>fino:realm/self — child Realm&#39;s own communication port.</p>
-</li>
-
-<li class="module-card">
-<a href="registry.html"><strong>registry</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:cluster/registry — realm ownership tree.</p>
-</li>
-
-<li class="module-card">
-<a href="repl.html"><strong>repl</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="root.html"><strong>root</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="scanner.html"><strong>scanner</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:scanner — General-purpose scanning infrastructure for binary and text formats.</p>
-</li>
-
-<li class="module-card">
-<a href="sdk.html"><strong>sdk</strong></a>
-<p class="muted">10 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="seed.html"><strong>seed</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:cluster/seed — seed server routing logic.</p>
-</li>
-
-<li class="module-card">
-<a href="semver.html"><strong>semver</strong></a>
-<p class="muted">6 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="serve.html"><strong>serve</strong></a>
-<p class="muted">1 exports</p>
-<p>fino:serve — HTTP server convenience.</p>
-</li>
-
-<li class="module-card">
-<a href="server.html"><strong>server</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:net/http2/server — H2ServerDriver.</p>
-</li>
-
-<li class="module-card">
-<a href="session.html"><strong>session</strong></a>
-<p class="muted">2 exports</p>
-<p>internal:net/http2/session — Nghttp2Session wrapper.</p>
-</li>
-
-<li class="module-card">
-<a href="shutdown.html"><strong>shutdown</strong></a>
-<p class="muted">2 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="sqlite.html"><strong>sqlite</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:sqlite — SQLite database access via system libsqlite3.</p>
-</li>
-
-<li class="module-card">
-<a href="stat.html"><strong>stat</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:file-stat — Stat class for fino:file.</p>
-</li>
-
-<li class="module-card">
-<a href="stream.html"><strong>stream</strong></a>
-<p class="muted">8 exports</p>
-<p>fino:stream — generic, byte-specialized, and buffered async I/O abstractions.</p>
-</li>
-
-<li class="module-card">
-<a href="synthetic-direct.html"><strong>synthetic-direct</strong></a>
-<p class="muted">3 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="template.html"><strong>template</strong></a>
-<p class="muted">5 exports</p>
-<p>fino:template — small Mustache-compatible template rendering.</p>
-</li>
-
-<li class="module-card">
-<a href="time.html"><strong>time</strong></a>
-<p class="muted">6 exports</p>
-<p>fino:time — Timer globals and performance.now().</p>
-</li>
-
-<li class="module-card">
-<a href="topic.html"><strong>topic</strong></a>
-<p class="muted">5 exports</p>
-<p>fino:topic — Named pub/sub channels with Context binding.</p>
-</li>
-
-<li class="module-card">
-<a href="trace-topic.html"><strong>trace-topic</strong></a>
-<p class="muted">1 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="traces.html"><strong>traces</strong></a>
-<p class="muted">15 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="transport.html"><strong>transport</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:cluster/transport — ClusterTransport interface.</p>
-</li>
-
-<li class="module-card">
-<a href="tty.html"><strong>tty</strong></a>
-<p class="muted">7 exports</p>
-
-</li>
-
-<li class="module-card">
-<a href="url.html"><strong>url</strong></a>
-<p class="muted">2 exports</p>
-<p>fino:url — WHATWG URL and URLSearchParams implementation.</p>
-</li>
-
-<li class="module-card">
-<a href="urlpattern.html"><strong>urlpattern</strong></a>
-<p class="muted">1 exports</p>
-<p>fino:urlpattern — URLPattern (WHATWG URL Pattern API)</p>
-</li>
-
-<li class="module-card">
-<a href="uuid.html"><strong>uuid</strong></a>
-<p class="muted">8 exports</p>
-<p>fino:uuid — UUID v4 and v7 generation, parsing, and validation.</p>
-</li>
-
-<li class="module-card">
-<a href="vfs.html"><strong>vfs</strong></a>
-<p class="muted">1 exports</p>
-<p>internal:sqlite/vfs — JS-implemented sqlite3_vfs backed by fino:file FileSystem.</p>
-</li>
-
-<li class="module-card">
-<a href="watch.html"><strong>watch</strong></a>
-<p class="muted">4 exports</p>
-<p>fino:file/watch — Cross-platform filesystem event watcher.</p>
-</li>
-
-<li class="module-card">
-<a href="watch-bindings.html"><strong>watch-bindings</strong></a>
-<p class="muted">20 exports</p>
-<p>internal:file/watch-bindings — Platform-specific bindings for file watching.</p>
-</li>
-
-<li class="module-card">
-<a href="websocket.html"><strong>websocket</strong></a>
-<p class="muted">7 exports</p>
-<p>fino:net/websocket — WebSocket client and server.</p>
-</li>
-
-<li class="module-card">
-<a href="websocket-transport.html"><strong>websocket-transport</strong></a>
-<p class="muted">2 exports</p>
-<p>internal:cluster/websocket-transport — WebSocket implementations of ClusterTransport.</p>
-</li>
-
-<li class="module-card">
-<a href="webstreams.html"><strong>webstreams</strong></a>
-<p class="muted">13 exports</p>
-<p>fino:webstreams — ReadableStream, WritableStream, TransformStream</p>
-</li>
-
+<p><img src="../logo.svg" alt="fino logo"></p>
+<h1>fino</h1>
+<p>Fino is an experimental JavaScript runtime built around a thin Rust host and a large JS standard library/runtime layer. The core design is simple: Rust provides V8 embedding, module loading, FFI plumbing, and low-level event-loop integration; most runtime behavior is implemented in JavaScript on top of that foundation.</p>
+<p>The project is focused on:</p>
+<ul>
+<li>web-standard APIs such as <code>fetch</code>, <code>Request</code>, <code>Response</code>, <code>URL</code>, streams, timers, and crypto</li>
+<li>low-level UNIX I/O through an FFI-first architecture</li>
+<li>a JS-owned runtime model, including HTTP serving, parsing, and stream handling</li>
+<li>performance work around FFI, batching, and event-loop efficiency</li>
 </ul>
+<h2>Current Status</h2>
+<p>Fino is usable for local scripts, tests, benchmarks, and simple servers. The runtime currently includes:</p>
+<ul>
+<li>module loading for local files and built-in <code>fino:*</code> / <code>internal:*</code> modules</li>
+<li>a Rust-driven event loop using <code>kqueue</code> on macOS and <code>io_uring</code> on Linux</li>
+<li>file, process, stream, DNS, socket, TLS, HTTP, and profiler modules</li>
+<li>a test runner and benchmark runner</li>
+<li>a built-in FFI layer designed for direct native interop</li>
+</ul>
+<p>This is still an actively changing project. Expect rough edges and incomplete ecosystem compatibility.</p>
+<h2>Building</h2>
+<p>Requirements:</p>
+<ul>
+<li>Rust toolchain</li>
+<li>a supported UNIX-like environment</li>
+</ul>
+<p>Build commands:</p>
+<pre><code class="language-sh">cargo build
+cargo build --release</code></pre>
+<p>The debug build is better for symbolized native profiling. The release build is what you want for throughput measurements.</p>
+<h2>Running Scripts</h2>
+<p>Run a script:</p>
+<pre><code class="language-sh">cargo run -- path/to/script.mts</code></pre>
+<p>Run tests:</p>
+<pre><code class="language-sh">./target/release/fino --test tests/net/serve.test.mts</code></pre>
+<p>Run benchmarks:</p>
+<pre><code class="language-sh">./target/release/fino --bench benchmarks/http.bench.mjs</code></pre>
+<h2>Example HTTP Server</h2>
+<p>The repository includes a minimal HTTP benchmark server:</p>
+<pre><code class="language-sh">PORT=3001 cargo run -- example.mts</code></pre>
+<p>Then benchmark it:</p>
+<pre><code class="language-sh">autocannon -c 100 -d 10 http://127.0.0.1:3001/
+curl http://127.0.0.1:3001/stop</code></pre>
+<p>There is also a profiling variant:</p>
+<pre><code class="language-sh">PORT=3002 cargo run -- example_profile.mts
+autocannon -c 100 -d 10 http://127.0.0.1:3002/
+curl http://127.0.0.1:3002/stop
+go tool pprof profile.pb</code></pre>
+<h2>Project Layout</h2>
+<ul>
+<li><code>src/</code>: Rust runtime, loader, profiler, and FFI implementation</li>
+<li><code>js/</code>: built-in JS runtime modules and platform APIs</li>
+<li><code>tests/</code>: <code>.test.mts</code> integration tests</li>
+<li><code>benchmarks/</code>: <code>.bench.mjs</code> performance microbenchmarks</li>
+<li><code>docs/roadmap.md</code>: planned compatibility and runtime work</li>
+</ul>
+<h2>Architecture Notes</h2>
+<p>Fino is intentionally not a “Rust implements everything” runtime. The low-level layer is small on purpose. Higher-level facilities such as HTTP parsing/serialization, serving, stream composition, and much of the platform API surface live in JavaScript. That makes performance work different from most runtimes: improvements often come from reducing FFI overhead, cutting allocations in JS hot paths, and batching I/O more effectively.</p>
+<h2>Development Notes</h2>
+<p>Useful commands:</p>
+<pre><code class="language-sh">cargo test --quiet
+./target/release/fino --test tests/net/socket-class.test.mts
+./target/release/fino --test tests/net/serve.test.mts</code></pre>
+<p>If you are working on performance-sensitive code, prefer benchmarking on a unique port and keep profiling runs separate from general local testing.</p>
 
 </main>
+</div>
 </body>
 </html>

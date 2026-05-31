@@ -27,12 +27,14 @@ import { Scanner, ParseError } from 'fino:scanner';
 // Per-format error class
 // ---------------------------------------------------------------------------
 
+/** Error thrown when TOML input is malformed. */
 export class TomlParseError extends ParseError { name = 'TomlParseError'; }
 
 // ---------------------------------------------------------------------------
 // Exported datetime wrapper types
 // ---------------------------------------------------------------------------
 
+/** TOML local date value without a time or offset. */
 export class TomlLocalDate {
   readonly year: number; readonly month: number; readonly day: number;
   constructor(y: number, mo: number, d: number) { this.year = y; this.month = mo; this.day = d; }
@@ -40,6 +42,7 @@ export class TomlLocalDate {
   toJSON() { return this.toString(); }
 }
 
+/** TOML local time value without a date or offset. */
 export class TomlLocalTime {
   readonly hour: number; readonly minute: number; readonly second: number; readonly ms: number;
   constructor(h: number, m: number, s: number, ms = 0) { this.hour = h; this.minute = m; this.second = s; this.ms = ms; }
@@ -47,6 +50,7 @@ export class TomlLocalTime {
   toJSON() { return this.toString(); }
 }
 
+/** TOML local date-time value without an offset. */
 export class TomlLocalDateTime {
   readonly date: TomlLocalDate; readonly time: TomlLocalTime;
   constructor(d: TomlLocalDate, t: TomlLocalTime) { this.date = d; this.time = t; }
@@ -61,19 +65,31 @@ function pad4(n: number) { return String(n).padStart(4, '0'); }
 // Types
 // ---------------------------------------------------------------------------
 
+/** Value types produced by the TOML parser and accepted by the stringifier. */
 export type TomlValue =
   | string | number | bigint | boolean
   | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime
   | TomlValue[]
   | { [k: string]: TomlValue };
 
+/** Options controlling TOML parsing. */
 export interface TomlParseOptions { bigint?: boolean; }
+/** Options controlling TOML output formatting. */
 export interface TomlStringifyOptions { indent?: string; }
 
 // ---------------------------------------------------------------------------
 // Parse
 // ---------------------------------------------------------------------------
 
+/**
+ * Parse a TOML document into a plain object.
+ *
+ * ```ts
+ * import { parse } from 'fino:format/toml';
+ *
+ * parse('title = "Fino"\n[server]\nport = 8080\n');
+ * ```
+ */
 export function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue> {
   return new TomlParser(input, options).parse();
 }
@@ -484,6 +500,15 @@ class TomlParser {
 // Stringify
 // ---------------------------------------------------------------------------
 
+/**
+ * Serialize a TOML-compatible object.
+ *
+ * ```ts
+ * import { stringify } from 'fino:format/toml';
+ *
+ * stringify({ server: { port: 8080 } });
+ * ```
+ */
 export function stringify(value: Record<string, TomlValue>, options: TomlStringifyOptions = {}): string {
   const indent = options.indent ?? '';
   return new TomlStringifier(indent).stringifyRoot(value);

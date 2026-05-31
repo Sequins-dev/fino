@@ -18,18 +18,27 @@ import { Scanner, ParseError } from 'fino:scanner';
 // Types
 // ---------------------------------------------------------------------------
 
+/** Error thrown when CSV input is malformed. */
 export class CsvParseError extends ParseError { name = 'CsvParseError'; }
 
+/** Positional CSV row with one string per field. */
 export type CsvRow = string[];
+/** Object row produced when headers or explicit columns are enabled. */
 export type CsvRecord = Record<string, string>;
 
 type CastFn = (value: string, ctx: { column: number; header: string | undefined }) => unknown;
 
+/** Options controlling CSV parsing dialect and row shape. */
 export interface CsvParseOptions {
+  /** One-character field delimiter. Defaults to comma. */
   delimiter?: string;
+  /** One-character quote delimiter. Defaults to double quote. */
   quote?: string;
+  /** Optional one-character line comment prefix. */
   comment?: string;
+  /** Use the first row as object keys. */
   header?: boolean;
+  /** Explicit object keys for each field. */
   columns?: string[];
   skipEmptyLines?: boolean;
   trim?: boolean;
@@ -37,10 +46,15 @@ export interface CsvParseOptions {
   cast?: boolean | CastFn;
 }
 
+/** Options controlling CSV output dialect and header emission. */
 export interface CsvStringifyOptions {
+  /** One-character field delimiter. Defaults to comma. */
   delimiter?: string;
+  /** One-character quote delimiter. Defaults to double quote. */
   quote?: string;
+  /** Row separator. Defaults to CRLF. */
   lineEnding?: string;
+  /** Emit a header row when stringifying records. */
   header?: boolean | string[];
 }
 
@@ -48,7 +62,15 @@ export interface CsvStringifyOptions {
 // Parse
 // ---------------------------------------------------------------------------
 
-/** Parse a CSV string or bytes into rows. */
+/**
+ * Parse a CSV string or bytes into positional rows or records.
+ *
+ * ```ts
+ * import { parse } from 'fino:format/csv';
+ *
+ * parse('a,b\n1,2\n', { header: true }); // [{ a: '1', b: '2' }]
+ * ```
+ */
 export function parse(input: string | Uint8Array, options?: CsvParseOptions & { header?: false; columns?: undefined }): string[][];
 export function parse(input: string | Uint8Array, options: CsvParseOptions & { header: true }): Record<string, string>[];
 export function parse(input: string | Uint8Array, options: CsvParseOptions & { columns: string[] }): Record<string, string>[];
@@ -365,6 +387,15 @@ function _emitStreamRow(
 // ---------------------------------------------------------------------------
 
 /** Serialize rows or records to a CSV string. */
+/**
+ * Serialize rows or records to CSV.
+ *
+ * ```ts
+ * import { stringify } from 'fino:format/csv';
+ *
+ * stringify([{ a: '1', b: '2' }]); // 'a,b\r\n1,2\r\n'
+ * ```
+ */
 export function stringify(
   rows: string[][] | Record<string, unknown>[],
   options: CsvStringifyOptions = {},

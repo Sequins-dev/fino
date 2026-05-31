@@ -8,6 +8,8 @@
  * Port IDs (not realmIds) are used as keys here because the parent communicates
  * with a child through a port, and a PORT_MSG routes by portId. The registry
  * answers: "which node hosts this port, and what ports does it own?"
+ *
+ * @internal
  */
 
 interface PortEntry {

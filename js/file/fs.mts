@@ -50,13 +50,13 @@ import {
   DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
   F_OK, R_OK, W_OK, X_OK,
   modeToFlags, encodeUtf8, decodeUtf8,
-} from './bindings.mts';
-import { Stat } from './stat.mts';
-import { File } from './handle.mts';
-import { Entry, FileEntry, DirEntry } from './entry.mts';
-import { Glob, glob as globWalk, type GlobOptions } from './glob.mts';
+} from '../internal/file/bindings.mts';
+import { Stat } from '../internal/file/stat.mts';
+import { File } from '../internal/file/handle.mts';
+import { Entry, FileEntry, DirEntry } from '../internal/file/entry.mts';
+import { Glob, glob as globWalk, type GlobOptions } from '../internal/file/glob.mts';
 import type { Path } from './path.mts';
-import { FileSystem } from './provider.mts';
+import { FileSystem } from '../internal/file/provider.mts';
 
 // Re-export the public API surface
 export { FileSystem };

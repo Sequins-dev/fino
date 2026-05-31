@@ -35,15 +35,15 @@ import type {
 } from './protocol.mts';
 import { isConnectionTakeover } from './protocol.mts';
 import type { ConnectionTakeover } from './protocol.mts';
-import { h2Available } from './http2/bindings.mts';
-import { H2ServerDriver } from './http2/server.mts';
+import { h2Available } from '../internal/net/http2/bindings.mts';
+import { H2ServerDriver } from '../internal/net/http2/server.mts';
 import { topic } from '../util/topic.mts';
 import {
   consumeRequestContext,
   otelRuntimeEvent,
   otelRuntimeTopic,
   runWithActiveContext,
-} from '../opentelemetry/common.mts';
+} from '../internal/opentelemetry/common.mts';
 
 // ---------------------------------------------------------------------------
 // Module-level shared state

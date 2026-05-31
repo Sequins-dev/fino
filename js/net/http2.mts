@@ -10,9 +10,9 @@
  * they need to check library availability.
  */
 
-import { h2Available as _h2Available, sym, readCStr, Pointer } from './http2/bindings.mts';
-export { H2ClientDriver } from './http2/client.mts';
-export { Nghttp2Session } from './http2/session.mts';
+import { h2Available as _h2Available, sym, readCStr, Pointer } from '../internal/net/http2/bindings.mts';
+export { H2ClientDriver } from '../internal/net/http2/client.mts';
+export { Nghttp2Session } from '../internal/net/http2/session.mts';
 export { createPoolEntry } from '../internal/http-pool.mts';
 
 export const h2Available: boolean = _h2Available;

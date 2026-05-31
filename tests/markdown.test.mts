@@ -24,6 +24,10 @@ const value = "<safe>";
     t.equal(renderMarkdownInline('Return the `value` as **HTML**.'), 'Return the <code>value</code> as <strong>HTML</strong>.');
   });
 
+  it('renders image spans', (t) => {
+    t.equal(renderMarkdownInline('![fino logo](./logo.svg)'), '<img src="./logo.svg" alt="fino logo">');
+  });
+
   it('renders reference links and autolinks through the scanner parser', (t) => {
     const doc = parseMarkdown(`See [ResourceBox][box] and https://example.test/docs.
 

@@ -102,6 +102,8 @@
  * //   ?  +  *       — modifiers after :name, (regex), {group}, or *
  * //   \x            — literal escape
  * ```
+ *
+ * @internal
  */
 
 import { URL } from './url.mts';

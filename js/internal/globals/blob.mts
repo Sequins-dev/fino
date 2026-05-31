@@ -69,6 +69,8 @@
  * file.name;                // 'hello.txt'
  * file.lastModified;        // number (ms since epoch)
  * ```
+ *
+ * @internal
  */
 
 import { encodeUtf8, decodeUtf8, _registerBlobCloneHelper } from './encoding.mts';

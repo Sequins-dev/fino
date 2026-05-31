@@ -1,3 +1,9 @@
+/**
+ * internal:shutdown — process shutdown hooks.
+ *
+ * @internal
+ */
+
 type ShutdownHook = () => void | Promise<void>;
 
 interface ShutdownError extends Error {

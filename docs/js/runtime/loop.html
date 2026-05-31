@@ -1,0 +1,194 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - loop</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="cluster.html">cluster</a></li><li><a href="context.html">context</a></li><li><a href="loop.html" aria-current="page">loop</a></li><li><a href="messaging.html">messaging</a></li><li><a href="module.html">module</a></li><li><a href="process.html">process</a></li><li><a href="realm.html">realm</a></li><li><a href="realm-pool.html">realm-pool</a></li><li><a href="realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../test/assert.html">assert</a></li><li><a href="../test/bench.html">bench</a></li><li><a href="../test/mock.html">mock</a></li><li><a href="../test/test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:loop">loop</h1>
+<p class="muted">js/runtime/loop.mts</p>
+<p>fino:runtime/loop — global event loop singleton.</p>
+<p>A single kqueue/io_uring backend handle is created when this module is loaded and lives for the process lifetime. All I/O and timer operations register on that single handle.</p>
+<h3>API</h3>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> * <span class="tok-keyword">as</span> loop from <span class="tok-string">&#39;./loop.mts&#39;</span>;
+
+<span class="tok-keyword">await</span> loop.readable(fd);   <span class="tok-comment">// resolves when fd is readable</span>
+<span class="tok-keyword">await</span> loop.writable(fd);   <span class="tok-comment">// resolves when fd is writable</span>
+<span class="tok-keyword">await</span> loop.timeout(<span class="tok-number">500</span>);   <span class="tok-comment">// resolves after 500 ms</span></code></pre>
+<h3>Synchronous spinning — spin() and run()</h3>
+<p><code>spin(promise)</code> blocks the current call stack, polling the loop until the promise settles:</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> result = loop.spin(someAsyncFn());</code></pre>
+<p><code>run(fn)</code> is a convenience that calls <code>fn</code>, and if it returns a promise, spins to completion:</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> result = loop.run(<span class="tok-keyword">async</span> () =&gt; {
+  <span class="tok-keyword">return</span> <span class="tok-keyword">await</span> fetch(<span class="tok-string">&#39;https://example.com&#39;</span>);
+});</code></pre>
+<h3>Platform abstraction</h3>
+<p>kqueue (macOS) and io_uring (Linux) share the same backend interface: <code>create()</code>, <code>addRead()</code>, <code>addWrite()</code>, <code>removeRead()</code>, <code>removeWrite()</code>, <code>addTimer()</code>, <code>wait()</code>, <code>destroy()</code></p>
+<h3>AbortSignal support</h3>
+<p><code>spin(promise, { signal })</code> and <code>run(fn, { signal })</code> both accept an AbortSignal. If the signal fires, the spin exits early with the signal&#39;s abort reason as the thrown value.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="loop.CancelablePromise">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="loop.html#loop.CancelablePromise">CancelablePromise</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt; {</code></h3>
+
+<p>A Promise&lt;void&gt; with an additional cancel() method to cancel the pending timer.</p>
+
+<h4>Methods</h4>
+
+<section class="member" id="loop.CancelablePromise.cancel">
+<h5><code>cancel(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="loop.tick">
+<h3><code><span class="tok-keyword">function</span> tick(timeoutMs: <span class="tok-keyword">number</span>): <span class="tok-keyword">number</span></code></h3>
+
+<p>Poll the event loop for I/O events and dispatch them. Called by <code>_main.mts</code> on every iteration of the outer run loop.</p>
+
+</section>
+
+<section id="loop.alive">
+<h3><code><span class="tok-keyword">function</span> alive(): <span class="tok-keyword">boolean</span></code></h3>
+
+<p>Returns true if the loop has any pending I/O work. <code>_main.mts</code> uses this to decide whether to exit the run loop.</p>
+
+</section>
+
+<section id="loop.readable">
+<h3><code><span class="tok-keyword">function</span> readable(fd: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">number</span>&gt;</code></h3>
+
+<p>Returns a Promise that resolves the next time <code>fd</code> becomes readable. Calling <code>readable()</code> for a fd that already has a pending read replaces the previous resolver.</p>
+<p>Resolves with the number of bytes available to read (from kqueue&#39;s ev.data on macOS; 0 on io_uring/Linux where the count is not available).</p>
+
+</section>
+
+<section id="loop.writable">
+<h3><code><span class="tok-keyword">function</span> writable(fd: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h3>
+
+<p>Returns a Promise that resolves the next time <code>fd</code> becomes writable.</p>
+
+</section>
+
+<section id="loop.timeout">
+<h3><code><span class="tok-keyword">function</span> timeout(ms: <span class="tok-keyword">number</span>): <a class="tok-type" href="loop.html#loop.CancelablePromise">CancelablePromise</a></code></h3>
+
+<p>Returns a Promise that resolves after <code>ms</code> milliseconds.</p>
+<p>The returned Promise has an additional <code>cancel()</code> method. Calling it before the timer fires removes the timer from the event loop immediately (so it no longer counts toward <code>alive()</code>) and cancels the kqueue/io_uring event if the backend supports it. The promise is left unsettled after cancellation.</p>
+
+</section>
+
+<section id="loop.proc">
+<h3><code><span class="tok-keyword">function</span> proc(pid: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h3>
+
+<p>Returns a Promise that resolves when <code>pid</code> exits (macOS only, via EVFILT_PROC). On Linux, obtain a pidfd via pidfd_open(2) and use readable() instead.</p>
+<p>Handles the race where the process exits before EVFILT_PROC is registered: addProc() returns false in that case, and we resolve immediately so the caller can proceed to waitpid().</p>
+
+</section>
+
+<section id="loop.submit">
+<h3><code><span class="tok-keyword">function</span> submit(submitter: (raw: <span class="tok-keyword">object</span>, id: <span class="tok-keyword">number</span>) =&gt; <span class="tok-keyword">void</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;{ res: <span class="tok-keyword">number</span> }&gt;</code></h3>
+
+<p>Submit a generic io_uring async operation (Linux only).</p>
+<p><code>submitter(raw, id)</code> is called synchronously to register the SQE with the given completion id. Returns a Promise that resolves with <code>{ res }</code> when the CQE fires (res is the syscall return value, negative on error).</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> { res } = <span class="tok-keyword">await</span> loop.submit((raw, id) =&gt; uring.asyncRead(raw, fd, buf, len, id));
+<span class="tok-keyword">if</span> (res &lt; <span class="tok-number">0</span>) <span class="tok-keyword">throw</span> <span class="tok-keyword">new</span> Error(<span class="tok-string">`read failed: errno ${</span>-res}`);</code></pre>
+
+</section>
+
+<section id="loop.registerWakeSource">
+<h3><code><span class="tok-keyword">function</span> registerWakeSource(fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register <code>fd</code> as a persistent wake source. When background threads write to <code>fd</code>, kqueue fires and interrupts any sleeping <code>tick()</code> call. The fd does NOT count toward <code>alive()</code> — the loop can exit while a wake source is registered. On platforms that don&#39;t support persistent reads the call is a no-op; the Rust layer falls back to the per-iteration drain path with ≤50ms latency.</p>
+
+</section>
+
+<section id="loop.removeRead">
+<h3><code><span class="tok-keyword">function</span> removeRead(fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Cancel a pending read watch for <code>fd</code> (rejects any pending promise silently).</p>
+
+</section>
+
+<section id="loop.removeWrite">
+<h3><code><span class="tok-keyword">function</span> removeWrite(fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Cancel a pending write watch for <code>fd</code>.</p>
+
+</section>
+
+<section id="loop.vnode">
+<h3><code><span class="tok-keyword">function</span> vnode(fd: <span class="tok-keyword">number</span>, fflags: <span class="tok-keyword">number</span>, callback: (event: { fflags: <span class="tok-keyword">number</span> }) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a persistent vnode watch on <code>fd</code> (macOS only, via EVFILT_VNODE).</p>
+<p><code>fflags</code> is a bitmask of NOTE_* constants (NOTE_DELETE | NOTE_WRITE | ...). `callback` is called with `{ fflags }` on every event — it may be called multiple times as events accumulate. Unlike readable()/writable(), this watch persists until `removeVnode()` is called; it does NOT auto-remove on delivery.</p>
+
+</section>
+
+<section id="loop.removeVnode">
+<h3><code><span class="tok-keyword">function</span> removeVnode(fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Remove a vnode watch for <code>fd</code>.</p>
+
+</section>
+
+<section id="loop.signal">
+<h3><code><span class="tok-keyword">function</span> signal(signo: <span class="tok-keyword">number</span>, callback: () =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a persistent signal watch for <code>signo</code>.</p>
+<p><code>callback</code> is called (with no arguments) each time the signal is delivered. Unlike readable()/writable(), the watch persists until <code>removeSignal()</code> is called; the callback may be invoked multiple times.</p>
+<p>Also suppresses the signal&#39;s default OS action (e.g. process termination for SIGTERM/SIGINT) so the process is not killed on delivery.</p>
+
+</section>
+
+<section id="loop.removeSignal">
+<h3><code><span class="tok-keyword">function</span> removeSignal(signo: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Remove a signal watch for <code>signo</code> and restore the default OS signal action.</p>
+
+</section>
+
+<section id="loop.spin">
+<h3><code><span class="tok-keyword">function</span> spin&lt;T&gt;(promise: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;T&gt;, options?: SpinOptions): T</code></h3>
+
+<p>Synchronously drive the event loop until <code>promise</code> settles, then return the resolved value (or re-throw the rejection reason).</p>
+<p>Each iteration:</p>
+<ol>
+<li>Drains all pending microtasks.</li>
+<li>Polls the loop&#39;s I/O (non-blocking on busy ticks, blocking up to</li>
+</ol>
+<p>50 ms after 3 consecutive idle ticks to avoid busy-spinning).</p>
+<ol>
+<li>Drains microtasks again after I/O dispatch.</li>
+</ol>
+
+</section>
+
+<section id="loop.run">
+<h3><code><span class="tok-keyword">function</span> run&lt;T&gt;(fn: () =&gt; T | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;T&gt;, options?: SpinOptions): T</code></h3>
+
+<p>Run <code>fn</code> and, if it returns a Promise, spin the event loop until it settles. Returns the settled value (or re-throws the rejection reason).</p>
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

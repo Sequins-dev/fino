@@ -4,6 +4,8 @@
  * All cluster logic depends only on this interface. Switching from WebSocket
  * to QUIC (or any other transport) requires only a new implementation, not
  * changes to the protocol or routing layers.
+ *
+ * @internal
  */
 
 import type { ClusterMessage } from './protocol.mts';

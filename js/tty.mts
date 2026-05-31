@@ -1,3 +1,11 @@
+/**
+ * fino:tty — small terminal helpers for TTY detection and line-oriented I/O.
+ *
+ * This module is intentionally low-level. It exposes the process standard
+ * streams as text helpers while leaving richer prompt behavior to
+ * `fino:util/prompt`.
+ */
+
 import { dlopen } from 'fino:ffi';
 import { encodeUtf8, decodeUtf8 } from './internal/globals/encoding.mts';
 import { os } from 'internal:process';
@@ -11,18 +19,27 @@ const lib = dlopen(LIBC, {
   read: { parameters: ['i32', 'buffer', 'usize'], result: 'isize' },
 });
 
+/** Return whether a numeric file descriptor is attached to a terminal. */
 export function isatty(fd: number): boolean {
   return Number(lib.symbols.isatty(fd)) === 1;
 }
 
+/** Whether standard input is attached to a terminal. */
 export const stdinIsTTY = isatty(0);
+/** Whether standard output is attached to a terminal. */
 export const stdoutIsTTY = isatty(1);
+/** Whether standard error is attached to a terminal. */
 export const stderrIsTTY = isatty(2);
 
 async function writeTo(writer: BytesWriter, text: string): Promise<void> {
   await writer.write(encodeUtf8(text));
 }
 
+/**
+ * Read one line from standard input, optionally writing a prompt first.
+ *
+ * Returns `null` when input closes before any bytes are read.
+ */
 export async function readLine(prompt: string = ''): Promise<string | null> {
   if (prompt.length > 0) await writeTo(processStdout(), prompt);
 
@@ -43,10 +60,12 @@ export async function readLine(prompt: string = ''): Promise<string | null> {
   return decodeUtf8(Uint8Array.from(chunks));
 }
 
+/** Write UTF-8 text to standard output. */
 export async function writeStdout(text: string): Promise<void> {
   await writeTo(processStdout(), text);
 }
 
+/** Write UTF-8 text to standard error. */
 export async function writeStderr(text: string): Promise<void> {
   await writeTo(processStderr(), text);
 }

@@ -99,6 +99,17 @@ describe('fino doc', () => {
     await ensureDir(fs, TEST_DIR);
     appDir = TEST_DIR + '/app';
     await ensureDir(fs, appDir);
+    await fs.writeFile(appDir + '/README.md', `# Fixture API
+
+This README becomes the documentation home page.
+
+![Fixture logo](./logo.svg)
+
+[Project guide](./guides/start.md)
+
+- It should render Markdown lists.
+- It should leave the module index to the sidebar.
+`);
     await fs.writeFile(appDir + '/api.mts', `/**
  * Example API module.
  *
@@ -170,6 +181,7 @@ export const VERSION: string = '1.0.0';
  * Advanced module docs.
  *
  * Use **advanced** resources with the \`ResourceBox\` helper.
+ * Read the [advanced guide](./guides/advanced.md).
  *
  * # Overview
  *
@@ -270,6 +282,104 @@ export function helper(): number {
  */
 export const pkgName: string = 'pkg';
 `);
+    await ensureDir(fs, appDir + '/alpha');
+    await ensureDir(fs, appDir + '/beta');
+    await fs.writeFile(appDir + '/alpha/client.mts', `/**
+ * Alpha client docs.
+ */
+export interface Client {
+  /**
+   * Alpha client name.
+   */
+  name: string;
+}
+`);
+    await fs.writeFile(appDir + '/beta/client.mts', `/**
+ * Beta client docs.
+ *
+ * See [AlphaClient](../alpha/client.mts#Client).
+ */
+export interface Client {
+  /**
+   * Beta client identifier.
+   */
+  id: string;
+}
+`);
+    await fs.writeFile(appDir + '/internal-only.mts', `/**
+ * Internal-only module docs.
+ *
+ * @internal
+ */
+export function hiddenApi(): string {
+  return 'hidden';
+}
+`);
+    await fs.writeFile(appDir + '/surface.mts', `/**
+ * Public surface module.
+ *
+ * Available calls:
+ *
+ * - surface.run(input)
+ * - surface.nested.ping(name)
+ */
+
+const nested = {
+  /**
+   * Ping a named target.
+   */
+  ping(name: string): string {
+    return 'pong:' + name;
+  },
+
+  /**
+   * Nested readiness flag.
+   */
+  ready: true,
+};
+
+function localHelper(): string {
+  return 'hidden';
+}
+
+export const surface = {
+  /**
+   * Run with a string input.
+   */
+  run(input: string): string {
+    return localHelper() + ':' + input;
+  },
+
+  /**
+   * Configure the surface.
+   */
+  configure(options: { enabled: boolean }): { enabled: boolean } {
+    return options;
+  },
+
+  /**
+   * Current surface version.
+   */
+  version: '1.0.0',
+
+  nested,
+};
+
+/**
+ * Available modes.
+ */
+export enum Mode {
+  Fast = 'fast',
+  Safe = 'safe',
+}
+
+/**
+ * Utility exported after an enum.
+ */
+export function afterEnum(): string {
+  return Mode.Fast;
+}
+`);
   });
 
   after(async () => {
@@ -290,7 +400,8 @@ export const pkgName: string = 'pkg';
     t.ok(markdown.includes('# api'), 'markdown includes module heading');
     t.ok(markdown.includes('Example API module.'), 'markdown includes module prelude');
     t.ok(markdown.includes('## add'), 'markdown includes function section');
-    t.ok(markdown.includes('```ts\nexport function add(a: number, b: number): number\n```'), 'markdown includes typed function signature');
+    t.ok(markdown.includes('```ts\nfunction add(a: number, b: number): number\n```'), 'markdown includes typed function signature without export prefix');
+    t.ok(!markdown.includes('```ts\nexport '), 'markdown omits redundant export prefixes');
     t.ok(!markdown.includes('@param'), 'markdown omits directive tags');
     t.ok(!markdown.includes('@returns'), 'markdown omits return directive tags');
     t.ok(markdown.includes('## ApiResponse'), 'markdown includes interface section');
@@ -311,7 +422,7 @@ export const pkgName: string = 'pkg';
     t.equal(firstModule.doc.text.includes('Example API module.'), true, 'json records module prelude');
     t.equal(firstModule.exports.length, 4, 'json includes exported declarations');
     t.equal(firstExport.name, 'add', 'json records function export');
-    t.equal(firstExport.signature, 'export function add(a: number, b: number): number', 'json records function signature');
+    t.equal(firstExport.signature, 'function add(a: number, b: number): number', 'json records function signature without export prefix');
     const secretBox = firstModule.exports.find((item: DocJsonExport) => item.name === 'SecretBox');
     t.ok(secretBox, 'json includes class export');
     t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === '#token'), false, 'json excludes private class property');
@@ -337,15 +448,19 @@ export const pkgName: string = 'pkg';
     t.ok(!html.includes(appDir), 'html does not include absolute project paths');
     t.ok(html.includes('id="advanced.open"'), 'html includes symbol anchors');
     t.ok(html.includes('<main'), 'html uses the shared docs template layout');
+    t.ok(html.includes('.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh'), 'layout uses fixed viewport height');
+    t.ok(html.includes('main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto'), 'content area scrolls independently');
     t.ok(html.includes('<h2>Overview</h2>'), 'module markdown headings are offset below module title');
     t.ok(html.includes('<h2>Functions</h2>'), 'html groups exports by kind');
-    t.ok(html.includes('<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> open(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>'), 'html uses highlighted signatures as item headings');
+    t.ok(html.includes('<h3><code><span class="tok-keyword">function</span> open(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>'), 'html uses highlighted signatures as item headings without export prefix');
+    t.ok(!html.includes('<span class="tok-keyword">export</span>'), 'html omits redundant export prefixes');
     t.ok(html.includes('<h4>Usage</h4>'), 'export markdown headings are offset below export title');
     t.ok(html.includes('<h4>Getters</h4>'), 'html groups members by kind');
     t.ok(html.includes('<h5><code><span class="tok-keyword">get</span> name(): <span class="tok-keyword">string</span></code></h5>'), 'html uses highlighted member signatures as headings');
     t.ok(html.includes('<h6>Details</h6>'), 'member markdown headings are offset below member title');
     t.ok(!html.includes('<p class="muted">function</p>'), 'html does not repeat per-symbol kind labels');
     t.ok(html.includes('Use <strong>advanced</strong> resources with the <code>ResourceBox</code> helper.'), 'html renders module markdown');
+    t.ok(html.includes('<a href="../guides/advanced.md">advanced guide</a>'), 'html rewrites source-relative module markdown links for generated output');
     t.ok(html.includes('Supports <a href="https://example.test/resources">resource names</a> and <strong>flags</strong>.'), 'html renders description markdown');
     t.ok(!html.includes('@returns'), 'html does not render directive tags');
     t.ok(!html.includes('@param'), 'html does not render param directive tags');
@@ -395,7 +510,8 @@ export const pkgName: string = 'pkg';
     const shown = await runCli(['doc', 'show', 'advanced.open'], appDir);
     t.equal(shown.result.code, 0, 'doc show exits successfully');
     t.ok(shown.stdout.includes('## open'), 'show renders symbol heading');
-    t.ok(shown.stdout.includes('export function open(name: string): string'), 'show renders overload signature');
+    t.ok(shown.stdout.includes('function open(name: string): string'), 'show renders overload signature without export prefix');
+    t.equal(shown.stdout.includes('export function open'), false, 'show omits redundant export prefix');
     t.ok(shown.stdout.includes('```ts\nconst value = open("primary");'), 'show renders examples');
 
     const member = await runCli(['doc', 'show', 'ResourceBox.name'], appDir);
@@ -421,24 +537,96 @@ export const pkgName: string = 'pkg';
     t.ok(ambiguous.stdout.includes('Multiple matches'), 'ambiguous show reports candidates');
   });
 
-  it('writes a root html index and keeps index modules at path-based locations', async (t) => {
+  it('writes README-backed root html index and mirrors source paths', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', './advanced.mts', './pkg/index.mts', '--format', 'html', '--title', 'Docs Site'], appDir);
+    const run = await runCli(['doc', 'build', './advanced.mts', './pkg/index.mts', './alpha/client.mts', './beta/client.mts', './internal-only.mts', '--format', 'html', '--title', 'Docs Site'], appDir);
 
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
 
     const index = await fs.readFile(docsDir + '/index.html');
     t.ok(index.includes('<title>Docs Site</title>'), 'root index has site title');
-    t.ok(index.includes('API Modules'), 'root index is a module landing page');
-    t.ok(index.includes('href="advanced.html"'), 'root index links regular modules');
-    t.ok(index.includes('href="pkg/index.html"'), 'root index links index modules at path-based locations');
+    t.ok(index.includes('<h1>Fixture API</h1>'), 'root index renders project README');
+    t.ok(index.includes('<img src="../logo.svg" alt="Fixture logo">'), 'root index rewrites README image URLs for generated output');
+    t.ok(index.includes('<a href="../guides/start.md">Project guide</a>'), 'root index rewrites README links for generated output');
+    t.ok(index.includes('<li>It should render Markdown lists.</li>'), 'root index renders README markdown blocks');
+    t.equal(index.includes('module-card'), false, 'root index no longer renders a flat module card list');
+    t.ok(index.includes('<nav class="docs-sidebar"'), 'root index includes sidebar navigation');
+    t.ok(index.includes('href="advanced.html"'), 'sidebar links regular root modules');
+    t.ok(index.includes('href="pkg/index.html"'), 'sidebar links index modules at path-based locations');
+    t.ok(index.includes('href="alpha/client.html"'), 'sidebar links first same-basename module by source path');
+    t.ok(index.includes('href="beta/client.html"'), 'sidebar links second same-basename module by source path');
+    t.equal(index.includes('internal-only.html'), false, 'sidebar excludes file-level internal modules by default');
     t.ok(!index.includes('<h1 id="module:index">index</h1>'), 'root index is not an index module page');
+    t.equal(await exists(fs, docsDir + '/internal-only.html'), false, 'build excludes file-level internal module pages by default');
 
     const indexModule = await fs.readFile(docsDir + '/pkg/index.html');
     t.ok(indexModule.includes('<title>Docs Site - pkg/index</title>'), 'index module gets path-based output page');
     t.ok(indexModule.includes('Package index docs.'), 'index module page renders docs');
+    t.ok(indexModule.includes('href="../index.html"'), 'nested module links back to root index');
+    t.ok(indexModule.includes('href="../alpha/client.html"'), 'nested sidebar uses relative links to sibling folders');
+
+    const alphaClient = await fs.readFile(docsDir + '/alpha/client.html');
+    const betaClient = await fs.readFile(docsDir + '/beta/client.html');
+    t.ok(alphaClient.includes('<title>Docs Site - alpha/client</title>'), 'first same-basename module writes mirrored page');
+    t.ok(betaClient.includes('<title>Docs Site - beta/client</title>'), 'second same-basename module writes mirrored page');
+    t.ok(betaClient.includes('<a href="../alpha/client.html#alpha-client.Client">AlphaClient</a>'), 'markdown source links resolve across mirrored paths');
+
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    t.equal(json.modules.some((moduleDoc) => moduleDoc.name === 'internal-only'), false, 'json excludes file-level internal modules by default');
+
+    const privateRun = await runCli(['doc', 'build', './internal-only.mts', '--format', 'html', '--include-private', '--title', 'Private Docs'], appDir);
+    t.equal(privateRun.result.code, 0, 'private doc build exits successfully');
+    t.equal(await exists(fs, docsDir + '/internal-only.html'), true, 'include-private includes file-level internal module pages');
+    const internalHtml = await fs.readFile(docsDir + '/internal-only.html');
+    t.ok(internalHtml.includes('Internal-only module docs.'), 'include-private renders file-level internal module docs');
+  });
+
+  it('documents exported object literal members and cleans stale output', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, docsDir);
+    await fs.writeFile(docsDir + '/stale.html', '<p>old docs</p>');
+
+    const run = await runCli(['doc', 'build', './surface.mts', '--format', 'both', '--title', 'Surface API'], appDir);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+    t.equal(await exists(fs, docsDir + '/stale.html'), false, 'doc build removes stale generated html');
+
+    const html = await fs.readFile(docsDir + '/surface.html');
+    t.ok(html.includes('<ul>'), 'html renders markdown list from module comment');
+    t.ok(html.includes('<li>surface.run(input)</li>'), 'html keeps module call list readable');
+    t.ok(html.includes('<h3><code><span class="tok-keyword">const</span> surface</code></h3>'), 'html renders exported object signature without export prefix');
+    t.ok(html.includes('id="surface.surface.run"'), 'html documents exported object method');
+    t.ok(html.includes('run(input: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span>'), 'html renders object method type signature');
+    t.ok(html.includes('configure(options: { enabled: <span class="tok-keyword">boolean</span> }): { enabled: <span class="tok-keyword">boolean</span> }'), 'html keeps object type annotations in object method signatures');
+    t.ok(html.includes('Run with a string input.'), 'html includes object method docs');
+    t.ok(html.includes('id="surface.surface.nested.ping"'), 'html follows exported object references to local object members');
+    t.ok(html.includes('Ping a named target.'), 'html includes nested object member docs');
+    t.equal(html.includes('localHelper'), false, 'html excludes unexported local helpers');
+    t.equal(html.includes('<span class="tok-keyword">export</span>'), false, 'html omits redundant export prefix');
+    t.equal(html.includes('Propertys'), false, 'html uses grammatical group labels');
+
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const moduleDoc = json.modules[0]!;
+    const surface = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'surface')!;
+    t.ok(surface, 'json includes exported object');
+    t.equal(moduleDoc.path, 'surface.mts', 'json stores project-relative module path');
+    t.equal(surface.signature, 'const surface', 'json signature omits export prefix');
+    t.equal(surface.members.some((member) => member.name === 'run' && member.kind === 'method'), true, 'json includes exported object method');
+    t.equal(surface.members.some((member) => member.name === 'configure' && member.signature === 'configure(options: { enabled: boolean }): { enabled: boolean }'), true, 'json keeps object type annotations in object method signature');
+    t.equal(surface.members.some((member) => member.name === 'nested.ping'), true, 'json includes nested referenced object method');
+    t.equal(moduleDoc.exports.some((item) => item.name === 'localHelper'), false, 'json excludes unexported local helper');
+    const mode = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'Mode')!;
+    t.ok(mode, 'json includes exported enum');
+    t.equal(mode.signature!.includes('export function afterEnum'), false, 'enum signature stops before following exports');
+
+    const found = await runCli(['doc', 'search', 'nested ping'], appDir);
+    t.equal(found.result.code, 0, 'doc search exits successfully');
+    t.ok(found.stdout.includes('surface.surface.nested.ping'), 'search finds nested exported object member');
+    t.equal(found.stdout.includes('export const'), false, 'search signatures omit export prefix');
   });
 
   it('runs examples from documentation comments', async (t) => {

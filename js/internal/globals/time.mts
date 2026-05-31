@@ -41,9 +41,11 @@
  * `fino:bench`:
  *   - macOS: `mach_continuous_time()` (advances during sleep)
  *   - Linux: `clock_gettime(CLOCK_MONOTONIC)`
+ *
+ * @internal
  */
 
-import * as loop from '../../runtime/loop.mts';
+import * as loop from 'fino:runtime/loop';
 import { os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
 
@@ -219,4 +221,3 @@ export function queueMicrotask(fn: () => void): void {
   if (typeof fn !== 'function') throw new TypeError('queueMicrotask: argument must be a function');
   Promise.resolve().then(fn);
 }
-

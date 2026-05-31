@@ -10,6 +10,8 @@
  * Child realms also evaluate this module as their first step; the child's entry
  * module is then dynamically imported and driveLoop is called with the child's
  * own isDone/onDone callbacks.
+ *
+ * @internal
  */
 
 import { tick, alive, registerWakeSource, _trackAtomicsWaiter, _untrackAtomicsWaiter } from './runtime/loop.mts';

@@ -1,3 +1,9 @@
+/**
+ * internal:repl/handler — REPL command handling.
+ *
+ * @internal
+ */
+
 import { evaluate } from 'internal:inspector';
 
 let _evalCount = 0;

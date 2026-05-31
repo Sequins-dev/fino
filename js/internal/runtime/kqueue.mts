@@ -83,6 +83,8 @@
  *   this — but `fino:loop` currently uses the fd itself as the map key.
  * - `MAX_EVENTS = 256` is a tunable. Higher values reduce syscall overhead for
  *   high-connection servers at the cost of a larger stack-allocated buffer.
+ *
+ * @internal
  */
 
 import { dlopen, Pointer } from 'fino:ffi';

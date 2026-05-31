@@ -1,0 +1,188 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - fs</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="fs.html" aria-current="page">fs</a></li><li><a href="path.html">path</a></li><li><a href="watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/context.html">context</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><a href="../runtime/realm.html">realm</a></li><li><a href="../runtime/realm-pool.html">realm-pool</a></li><li><a href="../runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../test/assert.html">assert</a></li><li><a href="../test/bench.html">bench</a></li><li><a href="../test/mock.html">mock</a></li><li><a href="../test/test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:fs">fs</h1>
+<p class="muted">js/file/fs.mts</p>
+<p>fino:file — POSIX filesystem with async I/O and a virtualizable handle model.</p>
+<p>This module provides file and directory access via <code>libc</code> FFI. It exposes a <code>DiskFileSystem</code> class that wraps every relevant POSIX syscall: <code>open(2)</code>, <code>read(2)</code>, <code>write(2)</code>, <code>stat(2)</code>, <code>readdir(3)</code>, <code>rename(2)</code>, <code>symlink(2)</code>, etc. The I/O is wired to the event loop so that reads and writes yield control to other async tasks while waiting for the kernel.</p>
+<h3>Design: explicit filesystem instance</h3>
+<p>Unlike Node.js&#39;s implicit global <code>fs</code> module, here callers construct a <code>DiskFileSystem</code> explicitly and pass their loop handle:</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> fs = <span class="tok-keyword">new</span> DiskFileSystem(lp);</code></pre>
+<p>This is intentional. It makes the event-loop dependency visible, enables future alternative backends (in-memory, zip archive, overlay), and avoids shared global state that makes testing harder.</p>
+<h3>Object hierarchy</h3>
+<p>DiskFileSystem          — the factory; owns no fds itself .open()   → File      — an open fd; owns the fd lifecycle .reader()  → async iterable of Uint8Array chunks .writer()  → Writer (from fino:stream) .bytes()   → Promise&lt;Uint8Array&gt;  (reads entire file) .text()    → Promise&lt;string&gt; .dir()    → DirEntry  — directory handle (uses opendir/readdir/closedir) .entries() → Promise&lt;Entry[&gt; [Symbol.asyncIterator  — iterates entries .entry()  → Entry / FileEntry / DirEntry</p>
+<p><code>File</code> owns its fd and closes it on <code>file.close()</code>. The Reader/Writer produced by <code>file.reader()</code> / <code>file.writer()</code> borrow the fd with a no-op <code>onClose</code> callback — do not close the Reader/Writer to release the fd; call <code>file.close()</code> instead.</p>
+
+
+<h2>Classes</h2>
+
+<section id="fs.DiskFileSystem">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="fs.html#fs.DiskFileSystem">DiskFileSystem</a> <span class="tok-keyword">extends</span> FileSystem {</code></h3>
+
+<p>A POSIX filesystem backend backed by libc syscalls via FFI.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> fs = <span class="tok-keyword">new</span> DiskFileSystem(lp);
+<span class="tok-keyword">const</span> text = <span class="tok-keyword">await</span> fs.readFile(<span class="tok-string">&#39;/etc/hosts&#39;</span>);</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="fs.DiskFileSystem.stat">
+<h5><code><span class="tok-keyword">async</span> stat(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;Stat&gt;</code></h5>
+
+<p>Stat a path, following symlinks.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.lstat">
+<h5><code><span class="tok-keyword">async</span> lstat(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;Stat&gt;</code></h5>
+
+<p>Stat a path without following symlinks.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.open">
+<h5><code><span class="tok-keyword">async</span> open(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, mode: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;r&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/API/File">File</a>&gt;</code></h5>
+
+<p>Open a file and return a File handle.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.dir">
+<h5><code><span class="tok-keyword">async</span> dir(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;DirEntry&gt;</code></h5>
+
+<p>Open a directory and return a DirEntry handle. Throws if the path does not refer to a directory.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.entry">
+<h5><code><span class="tok-keyword">async</span> entry(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;Entry&gt;</code></h5>
+
+<p>Construct an Entry (FileEntry / DirEntry / Entry) for any path using lstat.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.mkdir">
+<h5><code><span class="tok-keyword">async</span> mkdir(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, mode: <span class="tok-keyword">number</span> = <span class="tok-number">0o755</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Create a directory.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.rmdir">
+<h5><code><span class="tok-keyword">async</span> rmdir(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Remove an empty directory.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.unlink">
+<h5><code><span class="tok-keyword">async</span> unlink(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Delete a file.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.chmod">
+<h5><code><span class="tok-keyword">async</span> chmod(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, mode: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Change the permissions of a file.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.chown">
+<h5><code><span class="tok-keyword">async</span> chown(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, uid: <span class="tok-keyword">number</span>, gid: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Change the owner and group of a file, following symlinks.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.lchown">
+<h5><code><span class="tok-keyword">async</span> lchown(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, uid: <span class="tok-keyword">number</span>, gid: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Change the owner and group of a file without following symlinks.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.utimes">
+<h5><code><span class="tok-keyword">async</span> utimes(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, atime: Date | <span class="tok-keyword">number</span>, mtime: Date | <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Set the access and modification times of a file.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.truncate">
+<h5><code><span class="tok-keyword">async</span> truncate(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, size = <span class="tok-number">0</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Truncate a file to a specified length.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.link">
+<h5><code><span class="tok-keyword">async</span> link(existingPath: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, newPath: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Create a hard link.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.access">
+<h5><code><span class="tok-keyword">async</span> access(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, mode = F_OK): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Test access to a path.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.copyFile">
+<h5><code><span class="tok-keyword">async</span> copyFile(src: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, dest: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Copy a file, preserving permissions.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.rename">
+<h5><code><span class="tok-keyword">async</span> rename(oldPath: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, newPath: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Rename or move a file or directory.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.readlink">
+<h5><code><span class="tok-keyword">async</span> readlink(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+<p>Read the target of a symbolic link.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.symlink">
+<h5><code><span class="tok-keyword">async</span> symlink(target: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, linkpath: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Create a symbolic link.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.realpath">
+<h5><code><span class="tok-keyword">async</span> realpath(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+<p>Resolve the canonical absolute path, expanding symlinks.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.readFile">
+<h5><code><span class="tok-keyword">async</span> readFile(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+<p>Read an entire file and return its UTF-8 contents as a string.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.writeFile">
+<h5><code><span class="tok-keyword">async</span> writeFile(path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, data: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Write data to a file, creating or truncating it.</p>
+</section>
+
+<section class="member" id="fs.DiskFileSystem.glob">
+<h5><code>glob(pattern: <span class="tok-keyword">string</span>, options?: GlobOptions): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator">AsyncGenerator</a>&lt;Entry&gt;</code></h5>
+
+<p>Walk the filesystem matching entries against a glob pattern. Yields <code>Entry</code> / <code>FileEntry</code> / <code>DirEntry</code> objects for each match.</p>
+<pre><code class="language-ts"><span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> entry <span class="tok-keyword">of</span> fs.glob(<span class="tok-string">&#39;**\/*.mts&#39;</span>)) {
+  console.log(entry.path.toString());
+}</code></pre>
+</section>
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

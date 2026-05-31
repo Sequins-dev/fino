@@ -35,7 +35,7 @@ import { readable, removeRead } from 'fino:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
-import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.mts';
+import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.mts';
 
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.

@@ -2,13 +2,17 @@
 <html>
 <head>
 <meta charset="utf-8">
-<title>Fino JS API - js/test/test</title>
-<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+<title>Fino JS API - test</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
 </head>
 <body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><div class="docs-sidebar-directory">csv</div><ul><li><a href="../format/csv/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">toml</div><ul><li><a href="../format/toml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">typescript</div><ul><li><a href="../format/typescript/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">xml</div><ul><li><a href="../format/xml/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">yaml</div><ul><li><a href="../format/yaml/index.html">index</a></li></ul></li></ul></li><li><a href="../markdown.html">markdown</a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><a href="../net/eventsource.html">eventsource</a></li><li><a href="../net/http.html">http</a></li><li><a href="../net/http1.html">http1</a></li><li><a href="../net/http2.html">http2</a></li><li><a href="../net/protocol.html">protocol</a></li><li><a href="../net/serve.html">serve</a></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li><li><a href="../net/websocket.html">websocket</a></li></ul></li><li><a href="../opentelemetry.html">opentelemetry</a></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/context.html">context</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><a href="../runtime/realm.html">realm</a></li><li><a href="../runtime/realm-pool.html">realm-pool</a></li><li><a href="../runtime/realm-self.html">realm-self</a></li></ul></li><li><a href="../scanner.html">scanner</a></li><li><a href="../semver.html">semver</a></li><li><a href="../sqlite.html">sqlite</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="assert.html">assert</a></li><li><a href="bench.html">bench</a></li><li><a href="mock.html">mock</a></li><li><a href="test.html" aria-current="page">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li><li><a href="../util/topic.html">topic</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
 <main>
-<p><a href="../../index.html">API Modules</a></p>
-<h1 id="module:js-test-test">js/test/test</h1>
+<h1 id="module:test">test</h1>
 <p class="muted">js/test/test.mts</p>
 <p>fino:test — TAP-13 test framework with nesting and BDD-style describe/it.</p>
 <p>Two equivalent but non-mixable patterns:</p>
@@ -45,64 +49,64 @@ describe(&#39;math&#39;, () =&gt; {
 
 <h2>Functions</h2>
 
-<section id="js-test-test.test">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> test(name: <span class="tok-keyword">string</span>, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.test">
+<h3><code><span class="tok-keyword">function</span> test(name: <span class="tok-keyword">string</span>, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Register a test case. Can be top-level or inside <code>suite()</code>. Throws inside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.suite">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> suite(name: <span class="tok-keyword">string</span>, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.suite">
+<h3><code><span class="tok-keyword">function</span> suite(name: <span class="tok-keyword">string</span>, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Register a group of tests. Can be nested inside other <code>suite()</code> calls. Throws inside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.describe">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> describe(name: <span class="tok-keyword">string</span>, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.describe">
+<h3><code><span class="tok-keyword">function</span> describe(name: <span class="tok-keyword">string</span>, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Register a BDD-style test group with optional lifecycle hooks. Can be nested inside other <code>describe()</code> calls. Throws inside <code>suite()</code>.</p>
 
 </section>
 
-<section id="js-test-test.it">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> it(name: <span class="tok-keyword">string</span>, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.it">
+<h3><code><span class="tok-keyword">function</span> it(name: <span class="tok-keyword">string</span>, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Register a test case inside <code>describe()</code>. Throws outside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.before">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> before(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.before">
+<h3><code><span class="tok-keyword">function</span> before(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Run <code>fn</code> once before the first <code>it</code> in this <code>describe</code> block. Throws outside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.after">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> after(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.after">
+<h3><code><span class="tok-keyword">function</span> after(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Run <code>fn</code> once after the last <code>it</code> in this <code>describe</code> block. Always runs even if tests fail. Throws outside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.beforeEach">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> beforeEach(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.beforeEach">
+<h3><code><span class="tok-keyword">function</span> beforeEach(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Run <code>fn</code> before each <code>it</code> in this <code>describe</code> block. Throws outside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.afterEach">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> afterEach(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+<section id="test.afterEach">
+<h3><code><span class="tok-keyword">function</span> afterEach(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
 
 <p>Run <code>fn</code> after each <code>it</code> in this <code>describe</code> block. Always runs even if the test fails. Throws outside <code>describe()</code>.</p>
 
 </section>
 
-<section id="js-test-test.run">
-<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: RunOptions = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h3>
+<section id="test.run">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: RunOptions = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h3>
 
 <p>Run all registered tests and print TAP-13 output.</p>
 <p>Called automatically by the fino CLI in <code>--test</code> mode. User test files only need to call <code>test()</code> / <code>suite()</code> / <code>describe()</code> — never <code>run()</code>.</p>
@@ -112,5 +116,6 @@ describe(&#39;math&#39;, () =&gt; {
 
 
 </main>
+</div>
 </body>
 </html>

@@ -7,6 +7,8 @@
  *
  * Delivery is always asynchronous: a wake pipe registered with `loop.readable`
  * is used to defer delivery to the next event-loop turn.
+ *
+ * @internal
  */
 
 import { Event, EventTarget } from './eventtarget.mts';

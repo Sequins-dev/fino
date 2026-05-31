@@ -108,6 +108,8 @@
  *   the offsets we need (sq_entries, cq_entries, sq_off, cq_off).
  * - If you add a new io_uring opcode, add its user_data to `fileBufs` (or a
  *   new Map) so that `drainCqes()` can identify the completion type correctly.
+ *
+ * @internal
  */
 
 import { dlopen, Pointer } from 'fino:ffi';

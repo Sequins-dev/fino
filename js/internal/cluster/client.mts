@@ -11,6 +11,8 @@
  * - Exposes spawnRemote() so the cluster public API can spawn realms onto
  *   remote nodes by sending SPAWN through the seed.
  * - Exposes registerPort() so ClusterPort instances can receive PORT_MSG.
+ *
+ * @internal
  */
 
 import type { ClusterTransport } from './transport.mts';

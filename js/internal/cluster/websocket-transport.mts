@@ -12,6 +12,8 @@
  *
  * Both classes emit synthetic PEER_DOWN messages when a connection drops so
  * the routing and registry layers can react without understanding the transport.
+ *
+ * @internal
  */
 
 import { serve } from 'fino:net/serve';

@@ -57,11 +57,13 @@
  * To add a new I/O backend: extend BufferedBytesReader and implement doPull(),
  * or extend BufferedBytesWriter and implement doFlush(). The structural API,
  * coalescing, and async-iterator protocol are all inherited.
+ *
+ * @internal
  */
 
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import * as loop from '../runtime/loop.mts';
+import * as loop from 'fino:runtime/loop';
 
 const LIBC    = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';

@@ -177,6 +177,12 @@ function renderLink(label: string, href: string, options: MarkdownOptions): stri
   return `<a href="${escapeAttribute(resolved)}">${label}</a>`;
 }
 
+function renderImage(alt: string, href: string, options: MarkdownOptions): string {
+  const resolved = resolveHref(href, alt, options);
+  if (!resolved) return escapeHtml(alt);
+  return `<img src="${escapeAttribute(resolved)}" alt="${escapeAttribute(alt)}">`;
+}
+
 function trimUrlPunctuation(value: string): { href: string; suffix: string } {
   let href = value;
   let suffix = '';
@@ -214,6 +220,21 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
       const emphasis = scanner.eatUntil((value) => value === 0x2A);
       if (scanner.eatChar('*')) html += `<em>${renderMarkdownInline(emphasis, options)}</em>`;
       else html += '*' + escapeHtml(emphasis);
+      continue;
+    }
+
+    if (scanner.match('![')) {
+      const alt = scanner.eatUntil((value) => value === 0x5D);
+      if (scanner.eatChar(']') && scanner.eatChar('(')) {
+        const href = scanner.eatUntil((value) => value === 0x29).trim();
+        if (scanner.eatChar(')')) {
+          html += renderImage(alt, href, options);
+          continue;
+        }
+        html += `![${escapeHtml(alt)}](${escapeHtml(href)}`;
+        continue;
+      }
+      html += '![' + escapeHtml(alt);
       continue;
     }
 

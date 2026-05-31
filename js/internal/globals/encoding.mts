@@ -70,6 +70,8 @@
  * `read` is the number of JS code units consumed (note: a surrogate pair
  * counts as 2 code units), `written` is the number of bytes written. Stops
  * early if the destination would overflow.
+ *
+ * @internal
  */
 
 // ---------------------------------------------------------------------------

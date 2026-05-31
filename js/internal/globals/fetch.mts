@@ -58,30 +58,32 @@
  *     redirect: 'follow',
  *   });
  * ```
+ *
+ * @internal
  */
 
-import { lookup } from '../../net/dns.mts';
-import { Socket } from '../../net/socket.mts';
-import { TlsSocket } from '../../net/tls.mts';
+import { lookup } from 'fino:net/dns';
+import { Socket } from 'fino:net/socket';
+import { TlsSocket } from 'fino:net/tls';
 import {
   Request,
   Response,
   Headers,
   buildWireResponse,
-} from '../../net/http.mts';
-import { H1ClientDriver } from '../../net/http1.mts';
+} from 'fino:net/http';
+import { H1ClientDriver } from 'fino:net/http1';
 import { H2ConnectionPool, createPoolEntry } from '../http-pool.mts';
-import { h2Available } from '../../net/http2/bindings.mts';
-import type { Address } from '../../net/socket.mts';
+import { h2Available } from '../net/http2/bindings.mts';
+import type { Address } from 'fino:net/socket';
 import {
   brotliAvailable,
   createGunzip,
   createInflate,
   createInflateRaw,
   createBrotliDecompress,
-} from '../../util/compression.mts';
-import { topic } from '../../util/topic.mts';
-import { otelRuntimeEvent, otelRuntimeTopic } from '../../opentelemetry/common.mts';
+} from 'fino:util/compression';
+import { topic } from 'fino:util/topic';
+import { otelRuntimeEvent, otelRuntimeTopic } from '../opentelemetry/common.mts';
 import * as openssl from '../openssl.mts';
 
 // ---------------------------------------------------------------------------

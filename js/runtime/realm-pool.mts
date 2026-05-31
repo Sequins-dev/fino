@@ -23,7 +23,7 @@
 
 import { Realm, type RealmOptions, type RealmFn } from './realm.mts';
 import { Context } from 'fino:runtime/context';
-import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.mts';
+import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.mts';
 
 const _topicPoolCall    = topic(otelRuntimeTopic('realm_pool', 'call', 'start'));
 const _topicPoolCallEnd = topic(otelRuntimeTopic('realm_pool', 'call', 'end'));
