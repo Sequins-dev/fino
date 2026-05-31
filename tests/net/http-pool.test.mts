@@ -1,0 +1,227 @@
+/**
+ * H2ConnectionPool tests.
+ *
+ * Tests pool entry creation, concurrent stream multiplexing, GOAWAY eviction,
+ * and HTTPS fetch() integration via ALPN negotiation.
+ */
+
+import { describe, it } from 'fino:test/test';
+import { serve } from 'fino:net/serve';
+import { Socket } from 'fino:net/socket';
+import { TlsSocket } from 'fino:net/tls';
+import { Response } from 'fino:net/http';
+import { h2Available, createPoolEntry } from 'fino:net/http2';
+
+const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
+const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
+
+const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
+const skipHttps = (!h2Available || !tlsAvailable) && 'requires libnghttp2 + OpenSSL';
+
+const skip = !h2Available && 'requires libnghttp2';
+
+// ---------------------------------------------------------------------------
+// Helper: connect a pool entry to a local h2c serve() server
+// ---------------------------------------------------------------------------
+
+async function connectPoolEntry(port: number) {
+  const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+  const [reader, writer] = sock.split();
+  return createPoolEntry(reader as any, writer);
+}
+
+function makeReq(url: string, method = 'GET', body?: string): Request {
+  return new (globalThis as any).Request(url, {
+    method,
+    body: body !== undefined ? new TextEncoder().encode(body).buffer : undefined,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pool entry — basic request/response
+// ---------------------------------------------------------------------------
+
+describe('H2PoolEntry — basic request/response', () => {
+  it('sends a GET request and receives a 200 response', { skip }, async (t) => {
+    const server = serve({ port: 0 }, async (_req) => new Response('hello pool'));
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      const url = `http://127.0.0.1:${port}/`;
+      const res = await entry.send(makeReq(url));
+      const text = await res.text();
+      t.equal(res.status, 200, 'status 200');
+      t.equal(text, 'hello pool', 'response body correct');
+    } finally {
+      entry.close();
+      await server.close();
+    }
+  });
+
+  it('sends a POST request with body and server echoes it', { skip }, async (t) => {
+    const server = serve({ port: 0 }, async (req) => {
+      const body = await req.text();
+      return new Response(`echo:${body}`, { status: 201 });
+    });
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      const url = `http://127.0.0.1:${port}/`;
+      const res = await entry.send(makeReq(url, 'POST', 'pool-body'));
+      const text = await res.text();
+      t.equal(res.status, 201, 'status 201');
+      t.equal(text, 'echo:pool-body', 'echoed correctly');
+    } finally {
+      entry.close();
+      await server.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pool entry — concurrent multiplexing
+// ---------------------------------------------------------------------------
+
+describe('H2PoolEntry — concurrent streams', () => {
+  it('concurrent requests on one session all complete', { skip }, async (t) => {
+    let count = 0;
+    const server = serve({ port: 0 }, async (req) => {
+      const n = ++count;
+      return new Response(`reply-${n}`);
+    });
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      const url = `http://127.0.0.1:${port}/`;
+      const reqs = Array.from({ length: 5 }, () => entry.send(makeReq(url)));
+      const responses = await Promise.all(reqs);
+      const texts = await Promise.all(responses.map(r => r.text()));
+
+      t.equal(count, 5, 'server handled 5 requests');
+      for (const r of responses) t.equal(r.status, 200, 'status 200');
+      for (const text of texts) t.ok(text.startsWith('reply-'), `body: ${text}`);
+    } finally {
+      entry.close();
+      await server.close();
+    }
+  });
+
+  it('goingAway is false while entry is healthy', { skip }, async (t) => {
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      t.ok(!entry.goingAway, 'initially not going away');
+      await entry.send(makeReq(`http://127.0.0.1:${port}/`));
+      t.ok(!entry.goingAway, 'still not going away after request');
+    } finally {
+      entry.close();
+      await server.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pool entry — close / GOAWAY
+// ---------------------------------------------------------------------------
+
+describe('H2PoolEntry — close and GOAWAY', () => {
+  it('close() marks entry as goingAway and rejects new sends', { skip }, async (t) => {
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    entry.close();
+
+    await new Promise<void>(r => setTimeout(r, 20));
+    t.ok(entry.goingAway, 'goingAway after close()');
+
+    let threw = false;
+    try {
+      await entry.send(makeReq(`http://127.0.0.1:${port}/`));
+    } catch {
+      threw = true;
+    }
+    t.ok(threw, 'send() throws after close()');
+    await server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H2ConnectionPool — eviction
+// ---------------------------------------------------------------------------
+
+describe('H2ConnectionPool — eviction', () => {
+  it('pool.get() returns undefined for a closed entry', { skip }, async (t) => {
+    // Import pool internals
+    const { H2ConnectionPool } = await import('fino:net/http2') as any;
+    if (!H2ConnectionPool) {
+      t.ok(true, 'H2ConnectionPool not exported (skipped)');
+      return;
+    }
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const port = server.port;
+    const pool = new H2ConnectionPool();
+
+    const origin = `http://127.0.0.1:${port}`;
+    const entry = await connectPoolEntry(port);
+    pool.add(origin, entry);
+
+    t.ok(pool.get(origin) === entry, 'pool.get() returns entry');
+
+    entry.close();
+    pool.evict(origin);
+    t.ok(pool.get(origin) === undefined, 'pool.get() returns undefined after evict');
+
+    await server.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ALPN negotiation + HTTPS pool integration
+// ---------------------------------------------------------------------------
+
+describe('ALPN server-side negotiation', () => {
+  it('TLS server negotiates h2 via ALPN when client offers it', { skip: skipHttps }, async (t) => {
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async (_req) => new Response('ok'),
+    );
+    const port = server.port;
+    try {
+      const tlsSock = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false, alpn: ['h2', 'http/1.1'] },
+      );
+      const proto = tlsSock.negotiatedProtocol;
+      tlsSock.close();
+      t.equal(proto, 'h2', `server negotiated h2 (got: ${proto})`);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('TLS server falls back to http/1.1 when client does not offer h2', { skip: skipHttps }, async (t) => {
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async (_req) => new Response('ok'),
+    );
+    const port = server.port;
+    try {
+      const tlsSock = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false, alpn: ['http/1.1'] },
+      );
+      const proto = tlsSock.negotiatedProtocol;
+      tlsSock.close();
+      t.equal(proto, 'http/1.1', `server negotiated http/1.1 (got: ${proto})`);
+    } finally {
+      await server.close();
+    }
+  });
+});

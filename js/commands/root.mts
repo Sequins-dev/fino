@@ -5,6 +5,7 @@ import { createBenchCommand } from './bench.mts';
 import { createInstallCommand } from './install.mts';
 import { createInitCommand } from './init.mts';
 import { createDocCommand } from './doc.mts';
+import { createReplCommand } from './repl.mts';
 import {
   LoggerProvider,
   MeterProvider,
@@ -77,6 +78,7 @@ export function createRootCommand(): Command {
       createInstallCommand(),
       createInitCommand(),
       createDocCommand(),
+      createReplCommand(),
     ],
   });
 }

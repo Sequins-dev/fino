@@ -79,6 +79,7 @@ import { Blob }               from '../internal/globals/blob.mts';
 import { crypto }             from '../internal/globals/crypto.mts';
 import type { BytesReader, BytesWriter } from '../internal/stream.mts';
 import type { IPv4Address, IPv6Address } from './socket.mts';
+import { ConnectionTakeover } from './protocol.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -404,11 +405,13 @@ export interface WebSocketConnectOptions {
  *   - `WebSocketConnection.connect(url, opts)` — client (async via events)
  *   - `WebSocketConnection.accept(req, opts)` — server (from a serve() handler)
  */
-export class WebSocketConnection extends EventTarget {
+export class WebSocketConnection extends EventTarget implements ConnectionTakeover {
   static readonly CONNECTING = CONNECTING;
   static readonly OPEN       = OPEN;
   static readonly CLOSING    = CLOSING;
   static readonly CLOSED     = CLOSED;
+
+  readonly compatibleProtocols: ReadonlySet<string> = new Set(['http/1.1']);
 
   // ── State ──────────────────────────────────────────────────────────────────
 

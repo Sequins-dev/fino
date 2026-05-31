@@ -242,10 +242,15 @@ fn create_context(
     };
 
     // --- Parse entry path ---
-    let entry_path: String = entry_arg
-        .to_string(scope)
-        .map(|s| s.to_rust_string_lossy(scope))
-        .unwrap_or_default();
+    // V8's to_string() on undefined produces "undefined", so check first.
+    let entry_path: String = if entry_arg.is_undefined() || entry_arg.is_null() {
+        String::new()
+    } else {
+        entry_arg
+            .to_string(scope)
+            .map(|s| s.to_rust_string_lossy(scope))
+            .unwrap_or_default()
+    };
 
     // --- Parse and merge import rules ---
     let import_rules = match parse_and_merge_rules(scope, rules_arg) {
@@ -268,8 +273,9 @@ fn create_context(
             Some(v8::Global::new(scope, port_arg))
         };
 
-    // --- Parse optional watch flag (5th arg) ---
+    // --- Parse optional watch flag (5th arg) and repl flag (6th arg) ---
     let watch_mode = args.get(4).boolean_value(scope);
+    let repl_mode = args.get(5).boolean_value(scope);
 
     // --- Queue the pending create; pre-allocate a Pending slot ---
     let handle_idx = {
@@ -285,6 +291,7 @@ fn create_context(
             package_map_json,
             port: port_global,
             watch_mode,
+            repl_mode,
         });
         idx
     };

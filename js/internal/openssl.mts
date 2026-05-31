@@ -15,12 +15,13 @@
 
 import {
   dlopen,
+  FfiCallback,
   Pointer,
   type DynamicLibrary,
   type NativeSymbolMap,
 } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8 } from './globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
 
 export interface CipherResult {
   ciphertext: Uint8Array;
@@ -251,7 +252,9 @@ const _sslSymbols = {
   SSL_free: { parameters: ['pointer'], result: 'void' },
   SSL_set_fd:   { parameters: ['pointer', 'i32'], result: 'i32' },
   SSL_connect:  { parameters: ['pointer'], result: 'i32' },
-  SSL_accept:   { parameters: ['pointer'], result: 'i32' },
+  // async: true — runs on the blocking pool so ALPN select FfiCallbacks fire via condvar
+  SSL_accept:   { parameters: ['pointer'], result: 'i32', async: true },
+  SSL_CTX_set_alpn_select_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
   SSL_read:     { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_write:    { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_shutdown: { parameters: ['pointer'], result: 'i32' },
@@ -271,6 +274,9 @@ const _sslSymbols = {
   // ALPN — Application Layer Protocol Negotiation
   // SSL_CTX_set_alpn_protos(ctx, protos, protos_len) — advertise protocol list
   SSL_CTX_set_alpn_protos: { parameters: ['pointer', 'buffer', 'u32'], result: 'i32' },
+  // SSL_get0_alpn_selected(ssl, *data_out, *len_out) — query negotiated protocol
+  // data_out receives a non-owning pointer into OpenSSL internals; len_out is u32.
+  SSL_get0_alpn_selected: { parameters: ['pointer', 'buffer', 'buffer'], result: 'void' },
 } satisfies NativeSymbolMap;
 
 // ---------------------------------------------------------------------------
@@ -1660,6 +1666,21 @@ export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
   if (rc !== 0) throw new Error('SSL_CTX_set_alpn_protos failed: ' + getErrorString());
 }
 
+/**
+ * Query the ALPN protocol that was negotiated on this SSL connection.
+ * Returns null if no protocol was negotiated (no ALPN, or handshake not done yet).
+ */
+export function sslGetAlpnSelected(ssl: object): string | null {
+  const lib = _requireSsl();
+  const dataBuf = new Uint8Array(8);   // receives a non-owning C pointer (8-byte address)
+  const lenBuf  = new Uint8Array(4);   // receives unsigned int length (4 bytes)
+  lib.symbols.SSL_get0_alpn_selected(ssl, dataBuf, lenBuf);
+  const len = new DataView(lenBuf.buffer).getUint32(0, true);
+  if (len === 0) return null;
+  // dataBuf holds the raw address OpenSSL wrote; copyFrom extracts it and reads len bytes from it.
+  const bytes = Pointer.copyFrom(dataBuf, len) as Uint8Array;
+  return decodeUtf8(bytes);
+}
 
 export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
   const rc = _requireSsl().symbols.SSL_CTX_set_default_verify_paths(ctx);
@@ -1724,10 +1745,60 @@ export function sslSetHostname(ssl: object, hostname: string): void {
 }
 
 /** Perform TLS handshake (client). Returns 1 on success. */
-export function sslConnect(ssl: object): number  { return _requireSsl().symbols.SSL_connect(ssl); }
+export function sslConnect(ssl: object): number { return _requireSsl().symbols.SSL_connect(ssl); }
 
-/** Perform TLS handshake (server). Returns 1 on success. */
-export function sslAccept(ssl: object): number   { return _requireSsl().symbols.SSL_accept(ssl); }
+/** Perform TLS handshake (server). Returns 1 on success (async — runs on blocking pool). */
+export function sslAccept(ssl: object): Promise<number> { return _requireSsl().symbols.SSL_accept(ssl) as Promise<number>; }
+
+/**
+ * Set the ALPN protocol selection callback on a server SSL_CTX.
+ *
+ * Returns an FfiCallback that must be retained for the lifetime of the SSL_CTX
+ * and closed when the SSL_CTX is freed.
+ *
+ * The callback picks the first protocol in `protocols` that the client also
+ * offered. If no match is found, no ALPN extension is sent in the ServerHello.
+ *
+ * Requires SSL_accept to be async:true so the FfiCallback fires via the
+ * condvar bridge rather than silently on the V8 thread.
+ */
+export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): object {
+  const lib = _requireSsl();
+  const dec = new TextDecoder();
+
+  const cb = new FfiCallback(
+    {
+      parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'u32', 'pointer'],
+      result: 'i32',
+    },
+    (
+      _ssl:   ArrayBuffer,
+      out:    ArrayBuffer,   // unsigned char **out — write selected proto address here
+      outlen: ArrayBuffer,   // unsigned char *outlen — write selected proto length here
+      inPtr:  ArrayBuffer,   // const unsigned char *in — client's ALPN wire list
+      inlen:  number | bigint,
+      _arg:   ArrayBuffer,
+    ): number => {
+      const n = Number(inlen);
+      const clientBytes = Pointer.copyFrom(inPtr, n) as Uint8Array;
+      let offset = 0;
+      while (offset < clientBytes.byteLength) {
+        const protoLen = clientBytes[offset]!;
+        const proto = dec.decode(clientBytes.subarray(offset + 1, offset + 1 + protoLen));
+        if (protocols.includes(proto)) {
+          Pointer.writePointer(out, 0, Pointer.offset(inPtr, offset + 1));
+          Pointer.writeU8(outlen, 0, protoLen);
+          return 0; // SSL_TLSEXT_ERR_OK
+        }
+        offset += 1 + protoLen;
+      }
+      return 3; // SSL_TLSEXT_ERR_NOACK — no match
+    },
+  );
+
+  lib.symbols.SSL_CTX_set_alpn_select_cb(ctx, cb.pointer, null);
+  return cb; // caller must retain + close alongside sslCtxFree
+}
 
 /**
  * Read up to `len` decrypted bytes into `buf`.

@@ -294,6 +294,11 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             unsafe { crate::profiler::dispose_profiler(ptr) };
         }
 
+        // Dispose the V8 inspector if it was created.
+        if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
+            unsafe { crate::inspector_module::dispose_inspector(ptr) };
+        }
+
         // Check for a deferred module evaluation error.
         let main_module = v8::Local::new(scope, &main_module_global);
         if main_module.get_status() == v8::ModuleStatus::Errored {

@@ -18,6 +18,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getLoadedFsPaths",
         "requestReload",
         "getWatchMode",
+        "getReplMode",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -49,6 +50,7 @@ fn eval_steps<'a>(
     set_fn!("getLoadedFsPaths", get_loaded_fs_paths);
     set_fn!("requestReload", request_reload);
     set_fn!("getWatchMode", get_watch_mode);
+    set_fn!("getReplMode", get_repl_mode);
 
     Some(v8::undefined(scope).into())
 }
@@ -168,4 +170,15 @@ fn get_watch_mode(
     let state_rc = get_state(scope);
     let watch_mode = state_rc.borrow().watch_mode;
     rv.set(v8::Boolean::new(scope, watch_mode).into());
+}
+
+/// Returns `true` if this Realm was started with `repl: true`.
+fn get_repl_mode(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let repl_mode = state_rc.borrow().repl_mode;
+    rv.set(v8::Boolean::new(scope, repl_mode).into());
 }

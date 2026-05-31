@@ -1,8 +1,12 @@
+#[cfg(unix)]
+extern crate libc;
+
 mod async_context;
 mod async_rt;
 mod async_runtime_module;
 mod docgen;
 mod ffi;
+mod inspector_module;
 mod loader;
 mod platform;
 mod profiler;
@@ -12,6 +16,11 @@ mod runtime;
 mod state;
 
 fn main() {
+    // Server processes must not die on broken-pipe writes. Network connections
+    // can be reset by the remote at any time; SIGPIPE would kill the process.
+    #[cfg(unix)]
+    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN); }
+
     let args: Vec<String> = std::env::args().collect();
 
     // Check for the process-realm child mode before any other initialisation.

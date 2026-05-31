@@ -121,6 +121,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             Some(config.wake_read_fd),
             config.wake_write_fd,
             config.watch_mode,
+            false, // thread/process realms don't support repl mode
             config.reload_requested_signal,
         );
         context.set_slot(Rc::new(RefCell::new(state)));
@@ -293,6 +294,10 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
         if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
             unsafe { crate::profiler::dispose_profiler(ptr) };
+        }
+
+        if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
+            unsafe { crate::inspector_module::dispose_inspector(ptr) };
         }
 
         // Explicitly release channel_tx before the isolate is disposed. V8 does

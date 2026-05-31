@@ -119,26 +119,32 @@ type HeadersInit =
 
 type BodyInit = string | Uint8Array | ArrayBuffer | FormData | null;
 
+type OutTrailers = Headers | (() => Headers | Promise<Headers>);
+
 interface RequestInit {
-  method?:  string;
-  headers?: HeadersInit;
-  body?:    BodyInit;
+  method?:   string;
+  headers?:  HeadersInit;
+  body?:     BodyInit;
+  trailers?: OutTrailers;
 }
 
 interface ResponseInit {
   status?:     number;
   statusText?: string;
   headers?:    HeadersInit;
+  trailers?:   OutTrailers;
 }
 
 interface WireResponseInit {
-  version?:    string;
-  status?:     number;
-  statusText?: string;
-  headers:     Headers;
-  body:        AsyncIterable<Uint8Array> | null;
-  url?:        string;
-  redirected?: boolean;
+  version?:     string;
+  status?:      number;
+  statusText?:  string;
+  headers:      Headers;
+  body:         AsyncIterable<Uint8Array> | null;
+  url?:         string;
+  redirected?:  boolean;
+  outTrailers?: OutTrailers | null;
+  inTrailers?:  Promise<Headers> | null;
 }
 
 type AsyncByteSource = AsyncIterable<Uint8Array | ArrayBuffer>;
@@ -164,6 +170,13 @@ const LAST_CHUNK_BYTES = new Uint8Array([0x30, CR, LF, CR, LF]); // "0\r\n\r\n"
 // Maximum header section size (prevents malicious clients from sending
 // unbounded headers).  64 KiB should be plenty.
 const MAX_HEADER_SIZE = 64 * 1024;
+
+function _makeTrailersDeferred(): { resolve: (h: Headers) => void; reject: (e: Error) => void; promise: Promise<Headers> } {
+  let resolve!: (h: Headers) => void;
+  let reject!: (e: Error) => void;
+  const promise = new Promise<Headers>(function makeTrailersDeferredExecutor(res, rej) { resolve = res; reject = rej; });
+  return { resolve, reject, promise };
+}
 
 // ---------------------------------------------------------------------------
 // Arena: per-connection bump allocator
@@ -383,9 +396,16 @@ function _createReader(source: AsyncByteSource) {
    * Return an async iterable that decodes chunked transfer-encoding.
    *
    * Each HTTP chunk is: <hex-size>\r\n<data>\r\n
-   * Terminated by a zero-length chunk: 0\r\n\r\n
+   * Terminated by a zero-length chunk: 0\r\n[trailer-headers]\r\n
+   *
+   * Optional callbacks: onTrailers is called with any parsed trailer headers
+   * when the terminal chunk is reached. onError is called if iteration fails
+   * before trailers are resolved, so callers can reject a trailer deferred.
    */
-  function chunkedBodyIterator(): AsyncByteIterable {
+  function chunkedBodyIterator(
+    onTrailers?: (h: Headers) => void,
+    onError?: (e: Error) => void,
+  ): AsyncByteIterable {
     let finished = false;
 
     // Internal byte-level helpers.
@@ -447,43 +467,62 @@ function _createReader(source: AsyncByteSource) {
       return parts.length === 1 && first ? first : _concat(parts, n);
     }
 
+    async function doNext(): Promise<IteratorResult<Uint8Array>> {
+      if (finished) return { done: true, value: undefined };
+
+      // Read the chunk-size line.
+      const sizeLine = await readLine();
+      const sizeStr = decodeUtf8(sizeLine).trim();
+      // chunk-extensions (after ';') are ignored.
+      const semi = sizeStr.indexOf(';');
+      const hexStr = semi >= 0 ? sizeStr.substring(0, semi) : sizeStr;
+      const chunkSize = parseInt(hexStr, 16);
+
+      if (isNaN(chunkSize)) throw new Error('Invalid chunk size: ' + sizeStr);
+
+      if (chunkSize === 0) {
+        // Terminal chunk — parse optional trailer headers, then consume the
+        // final CRLF. Trailers look like headers: "Name: value\r\n" lines
+        // terminated by an empty "\r\n" line. Per RFC 9112 §7.1, the trailer
+        // section must be consumed to keep the keep-alive pipeline in sync.
+        const trailerHeaders = onTrailers ? new Headers() : null;
+        while (true) {
+          const trailerLine = await readLine();
+          if (trailerLine.byteLength === 0) break;
+          if (trailerHeaders !== null) {
+            const line = decodeUtf8(trailerLine);
+            const colonIdx = line.indexOf(':');
+            if (colonIdx > 0) {
+              const name  = line.substring(0, colonIdx).trim().toLowerCase();
+              const value = line.substring(colonIdx + 1).trim();
+              trailerHeaders.append(name, value);
+            }
+          }
+        }
+        finished = true;
+        onTrailers?.(trailerHeaders ?? new Headers());
+        return { done: true, value: undefined };
+      }
+
+      // Read the chunk data + trailing CRLF.
+      const data = await readExact(chunkSize);
+      const cr = await readByte();
+      const lf = await readByte();
+      if (cr !== CR || lf !== LF) {
+        throw new Error('Expected CRLF after chunk data');
+      }
+      return { done: false, value: data };
+    }
+
     const iterator: AsyncIterator<Uint8Array> & AsyncByteIterable = {
       [Symbol.asyncIterator]() { return iterator; },
-
       async next(): Promise<IteratorResult<Uint8Array>> {
-        if (finished) return { done: true, value: undefined };
-
-        // Read the chunk-size line.
-        const sizeLine = await readLine();
-        const sizeStr = decodeUtf8(sizeLine).trim();
-        // chunk-extensions (after ';') are ignored.
-        const semi = sizeStr.indexOf(';');
-        const hexStr = semi >= 0 ? sizeStr.substring(0, semi) : sizeStr;
-        const chunkSize = parseInt(hexStr, 16);
-
-        if (isNaN(chunkSize)) throw new Error('Invalid chunk size: ' + sizeStr);
-
-        if (chunkSize === 0) {
-          // Terminal chunk — drain optional trailer headers then consume the
-          // final CRLF. Trailers look like headers: "Name: value\r\n" lines
-          // terminated by an empty "\r\n" line. Per RFC 9112 §7.1, the trailer
-          // section must be consumed to keep the keep-alive pipeline in sync.
-          while (true) {
-            const trailerLine = await readLine();
-            if (trailerLine.byteLength === 0) break; // empty line = end of trailers
-          }
-          finished = true;
-          return { done: true, value: undefined };
+        try {
+          return await doNext();
+        } catch (e) {
+          onError?.(e instanceof Error ? e : new Error(String(e)));
+          throw e;
         }
-
-        // Read the chunk data + trailing CRLF.
-        const data = await readExact(chunkSize);
-        const cr = await readByte();
-        const lf = await readByte();
-        if (cr !== CR || lf !== LF) {
-          throw new Error('Expected CRLF after chunk data');
-        }
-        return { done: false, value: data };
       },
     };
     return iterator;
@@ -833,16 +872,19 @@ export class Request {
   #headers: Headers;
   #rawBody: AsyncIterable<Uint8Array> | null;
   #bodyStream: ReadableStream | null = null;
+  #inTrailers: Promise<Headers> | null = null;
+  #outTrailers: OutTrailers | null = null;
 
   constructor(input: string | Request | symbol, init?: RequestInit | any) {
     this.#bodyUsed = false;
 
     if (input === INTERNAL) {
-      this.#method  = init.method;
-      this.#url     = init.url;
-      this.#version = init.version;
-      this.#headers = init.headers;
-      this.#rawBody = init.body === _emptyBody ? null : init.body;
+      this.#method     = init.method;
+      this.#url        = init.url;
+      this.#version    = init.version;
+      this.#headers    = init.headers;
+      this.#rawBody    = init.body === _emptyBody ? null : init.body;
+      this.#inTrailers = init.inTrailers ?? null;
       return;
     }
 
@@ -853,6 +895,7 @@ export class Request {
     this.#method  = /^(delete|get|head|options|post|put)$/i.test(rawMethod) ? rawMethod.toUpperCase() : rawMethod;
     this.#headers = (init && init.headers) ? new Headers(init.headers) : new Headers();
     this.#version = '';
+    this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
     if (init && init.body != null) {
       if (init.body instanceof FormData) {
         const fd = init.body;
@@ -871,6 +914,18 @@ export class Request {
       this.#rawBody = null;
     }
   }
+
+  /** Incoming trailer headers — resolves after the chunked body is fully consumed. */
+  get trailers(): Promise<Headers> {
+    if (this.#inTrailers !== null) return this.#inTrailers;
+    if (this.#outTrailers instanceof Headers) return Promise.resolve(this.#outTrailers);
+    if (typeof this.#outTrailers === 'function') return Promise.resolve(this.#outTrailers() as Headers | Promise<Headers>);
+    return Promise.resolve(new Headers());
+  }
+
+  _hasOutTrailers(): boolean { return this.#outTrailers !== null; }
+
+  _getRawOutTrailers(): OutTrailers | null { return this.#outTrailers; }
 
   /** The full URL string. */
   get url() { return this.#url; }
@@ -990,6 +1045,8 @@ export class Response {
   #headers: Headers;
   #rawBody: AsyncIterable<Uint8Array> | Uint8Array | null;
   #bodyStream: ReadableStream | null = null;
+  #inTrailers: Promise<Headers> | null = null;
+  #outTrailers: OutTrailers | null = null;
 
   constructor(body: BodyInit | symbol, init?: ResponseInit | any) {
     this.#bodyUsed   = false;
@@ -998,11 +1055,13 @@ export class Response {
     this.#redirected = false;
 
     if (body === INTERNAL) {
-      this.#version    = init.version;
-      this.#status     = init.status;
-      this.#statusText = init.statusText;
-      this.#headers    = init.headers;
-      this.#rawBody    = init.body === _emptyBody ? null : init.body;
+      this.#version     = init.version;
+      this.#status      = init.status;
+      this.#statusText  = init.statusText;
+      this.#headers     = init.headers;
+      this.#rawBody     = init.body === _emptyBody ? null : init.body;
+      this.#outTrailers = init.outTrailers ?? null;
+      this.#inTrailers  = init.inTrailers  ?? null;
       if (init.url !== undefined) this.#url = init.url;
       if (init.redirected !== undefined) this.#redirected = init.redirected;
       return;
@@ -1013,6 +1072,7 @@ export class Response {
     this.#status     = (init && init.status != null) ? Number(init.status) : 200;
     this.#statusText = (init && init.statusText != null) ? String(init.statusText) : '';
     this.#headers    = (init && init.headers) ? new Headers(init.headers) : new Headers();
+    this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
     if (body != null) {
       if (body instanceof FormData) {
         const fd = body;
@@ -1078,6 +1138,24 @@ export class Response {
 
   /** HTTP version string — fino extension (e.g. "HTTP/1.1"). */
   get version() { return this.#version; }
+
+  /** Incoming trailer headers — resolves after the chunked body is fully consumed. */
+  get trailers(): Promise<Headers> {
+    if (this.#inTrailers !== null) return this.#inTrailers;
+    if (this.#outTrailers instanceof Headers) return Promise.resolve(this.#outTrailers);
+    if (typeof this.#outTrailers === 'function') return Promise.resolve((this.#outTrailers as () => Headers | Promise<Headers>)());
+    return Promise.resolve(new Headers());
+  }
+
+  _hasOutTrailers(): boolean { return this.#outTrailers !== null; }
+
+  _getRawOutTrailers(): OutTrailers | null { return this.#outTrailers; }
+
+  async _getOutTrailers(): Promise<Headers> {
+    if (this.#outTrailers instanceof Headers) return this.#outTrailers;
+    if (typeof this.#outTrailers === 'function') return (this.#outTrailers as () => Headers | Promise<Headers>)();
+    return new Headers();
+  }
 
   /**
    * @internal — serve.mts fast path: returns the raw Uint8Array if the body
@@ -1241,11 +1319,18 @@ export async function parseRequest(source: AsyncIterable<Uint8Array | ArrayBuffe
 
   const framing = _bodyFraming(headers, true, 0);
   let body;
-  if (framing.type === 'fixed')        body = reader.bodyIterator(framing.length);
-  else if (framing.type === 'chunked') body = reader.chunkedBodyIterator();
-  else                                 body = _emptyBody;
+  let inTrailers: Promise<Headers> | null = null;
+  if (framing.type === 'fixed') {
+    body = reader.bodyIterator(framing.length);
+  } else if (framing.type === 'chunked') {
+    const deferred = _makeTrailersDeferred();
+    inTrailers = deferred.promise;
+    body = reader.chunkedBodyIterator(deferred.resolve, deferred.reject);
+  } else {
+    body = _emptyBody;
+  }
 
-  return new Request(INTERNAL, { method, url, version, headers, body });
+  return new Request(INTERNAL, { method, url, version, headers, body, inTrailers });
 }
 
 /**
@@ -1281,12 +1366,20 @@ export async function parseResponse(
   const framing = isHead ? { type: 'none' as const } : _bodyFraming(headers, false, status);
 
   let body;
-  if (framing.type === 'fixed')        body = reader.bodyIterator(framing.length);
-  else if (framing.type === 'chunked') body = reader.chunkedBodyIterator();
-  else if (framing.type === 'eof')     body = reader.bodyIterator(null);
-  else                                 body = _emptyBody;
+  let inTrailers: Promise<Headers> | null = null;
+  if (framing.type === 'fixed') {
+    body = reader.bodyIterator(framing.length);
+  } else if (framing.type === 'chunked') {
+    const deferred = _makeTrailersDeferred();
+    inTrailers = deferred.promise;
+    body = reader.chunkedBodyIterator(deferred.resolve, deferred.reject);
+  } else if (framing.type === 'eof') {
+    body = reader.bodyIterator(null);
+  } else {
+    body = _emptyBody;
+  }
 
-  return new Response(INTERNAL, { version, status, statusText, headers, body });
+  return new Response(INTERNAL, { version, status, statusText, headers, body, inTrailers });
 }
 
 // ---------------------------------------------------------------------------
@@ -1403,20 +1496,46 @@ function _chunkedFrame(bytes: Uint8Array, arena?: Arena): Uint8Array {
  * @returns {AsyncIterable<Uint8Array>}
  */
 export async function* serializeResponse(res: Response, arena?: Arena): AsyncGenerator<Uint8Array> {
+  const hasOutTrailers = res._hasOutTrailers();
   const te = (res.headers.get('transfer-encoding') || '').toLowerCase();
-  const isChunked = te.split(',').map(function trimPart(s) { return s.trim(); }).includes('chunked');
+  const alreadyChunked = te.split(',').map(function trimPart(s) { return s.trim(); }).includes('chunked');
+  const isChunked = alreadyChunked || hasOutTrailers;
 
-  const headStr = _buildResponseHead(res);
+  // When out-trailers force chunked but TE header isn't set, emit a modified head.
+  let headStr: string;
+  if (hasOutTrailers && !alreadyChunked) {
+    const wireHeaders = new Headers(res.headers);
+    wireHeaders.delete('content-length');
+    wireHeaders.set('transfer-encoding', 'chunked');
+    const version    = res.version || 'HTTP/1.1';
+    const status     = res.status != null ? res.status : 200;
+    const statusText = res.statusText != null ? res.statusText : '';
+    let head = version + ' ' + status + (statusText ? ' ' + statusText : '') + '\r\n';
+    for (const [name, value] of wireHeaders) head += name + ': ' + value + '\r\n';
+    headStr = head + '\r\n';
+  } else {
+    headStr = _buildResponseHead(res);
+  }
   yield arena ? _encodeAscii(headStr, arena) : encodeUtf8(headStr);
 
   const body = res.body;
-  if (body === null) return;
-
-  for await (const chunk of body) {
-    yield isChunked ? _chunkedFrame(chunk, arena) : chunk;
+  if (body !== null) {
+    for await (const chunk of body) {
+      yield isChunked ? _chunkedFrame(chunk, arena) : chunk;
+    }
   }
 
-  if (isChunked) yield LAST_CHUNK_BYTES;
+  if (isChunked) {
+    if (hasOutTrailers) {
+      const trailers = await res._getOutTrailers();
+      let trailerBlock = '0\r\n';
+      for (const [name, value] of trailers) trailerBlock += name + ': ' + value + '\r\n';
+      trailerBlock += '\r\n';
+      yield encodeUtf8(trailerBlock);
+    } else {
+      yield LAST_CHUNK_BYTES;
+    }
+  }
 }
 
 /**
@@ -1432,17 +1551,36 @@ export async function* serializeResponse(res: Response, arena?: Arena): AsyncGen
  * @returns {AsyncIterable<Uint8Array>}
  */
 export async function* serializeRequest(req: Request): AsyncGenerator<Uint8Array> {
-  const chunked = req.hasBody && !req.headers.has('content-length');
+  const hasOutTrailers = req._hasOutTrailers();
+  const chunked = hasOutTrailers || (req.hasBody && !req.headers.has('content-length'));
   yield encodeUtf8(_buildRequestHead(req, chunked));
 
   const body = req.body;
-  if (body === null) return;
-
-  for await (const chunk of body) {
-    yield chunked ? _chunkedFrame(chunk) : chunk;
+  if (body !== null) {
+    for await (const chunk of body) {
+      yield chunked ? _chunkedFrame(chunk) : chunk;
+    }
   }
 
-  if (chunked) yield LAST_CHUNK_BYTES;
+  if (chunked) {
+    if (hasOutTrailers) {
+      const rawTrailers = req._getRawOutTrailers();
+      let trailers: Headers;
+      if (rawTrailers instanceof Headers) {
+        trailers = rawTrailers;
+      } else if (typeof rawTrailers === 'function') {
+        trailers = await (rawTrailers as () => Headers | Promise<Headers>)();
+      } else {
+        trailers = new Headers();
+      }
+      let trailerBlock = '0\r\n';
+      for (const [name, value] of trailers) trailerBlock += name + ': ' + value + '\r\n';
+      trailerBlock += '\r\n';
+      yield encodeUtf8(trailerBlock);
+    } else {
+      yield LAST_CHUNK_BYTES;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1479,11 +1617,18 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext
 
     const framing = _bodyFraming(headers, true, 0);
     let body;
-    if (framing.type === 'fixed')        body = reader.bodyIterator(framing.length);
-    else if (framing.type === 'chunked') body = reader.chunkedBodyIterator();
-    else                                 body = _emptyBody;
+    let inTrailers: Promise<Headers> | null = null;
+    if (framing.type === 'fixed') {
+      body = reader.bodyIterator(framing.length);
+    } else if (framing.type === 'chunked') {
+      const deferred = _makeTrailersDeferred();
+      inTrailers = deferred.promise;
+      body = reader.chunkedBodyIterator(deferred.resolve, deferred.reject);
+    } else {
+      body = _emptyBody;
+    }
 
-    return new Request(INTERNAL, { method, url, version, headers, body });
+    return new Request(INTERNAL, { method, url, version, headers, body, inTrailers });
   }
 
   return {
@@ -1505,15 +1650,17 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext
  * @param {{ version: string, status: number, statusText: string, headers: Headers, body: AsyncIterable|null }} opts
  * @returns {Response}
  */
-export function buildWireResponse({ version, status, statusText, headers, body, url, redirected }: WireResponseInit): Response {
+export function buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): Response {
   return new Response(INTERNAL, {
-    version:    version    || 'HTTP/1.1',
-    status:     status     ?? 200,
-    statusText: statusText ?? '',
+    version:     version    || 'HTTP/1.1',
+    status:      status     ?? 200,
+    statusText:  statusText ?? '',
     headers,
-    body: body ?? _emptyBody,
+    body:        body ?? _emptyBody,
     url,
     redirected,
+    outTrailers: outTrailers ?? null,
+    inTrailers:  inTrailers  ?? null,
   });
 }
 

@@ -265,6 +265,11 @@ pub struct PendingRealm {
     pub port: Option<v8::Global<v8::Value>>,
     /// Whether this embedded child realm runs with watch mode enabled.
     pub watch_mode: bool,
+
+    /// Whether this embedded child realm runs in REPL mode. Exposed to JS via
+    /// `internal:realm-bridge.getReplMode()` so `_bootstrap.mts` can activate
+    /// the REPL message loop instead of importing an entry module.
+    pub repl_mode: bool,
 }
 
 /// Slot in the parent's `child_contexts` Vec.
@@ -417,6 +422,11 @@ pub struct FinoState {
     /// start the file-watch loop.
     pub watch_mode: bool,
 
+    /// `true` when this realm was started with `repl: true`. Exposed to JS
+    /// via `internal:realm-bridge.getReplMode()` so `_bootstrap.mts` can
+    /// activate the REPL message loop instead of importing an entry module.
+    pub repl_mode: bool,
+
     /// Shared atomic for thread realms: `requestReload()` writes `true` here
     /// so the parent's `ThreadRealmHandle` can observe the reload intent
     /// without entering the child's V8 context. `None` for embedded/process.
@@ -430,6 +440,13 @@ pub struct FinoState {
     /// The child's MessagePort object, passed by the parent at creation time.
     /// Read-only after bootstrap; accessed via `internal:realm-bridge.getPort()`.
     pub port: Option<v8::Global<v8::Value>>,
+
+    /// V8 inspector state for this realm. Created lazily by `internal:inspector`
+    /// on first use. Stored as a raw pointer (pointing to a heap-allocated
+    /// `InspectorState`) because inspector objects use C++ vtable-based types
+    /// that cannot be held behind a trait object or across `RefCell` borrows.
+    /// Disposed in realm teardown (same pattern as `cpu_profiler`).
+    pub inspector_state: Option<*mut std::ffi::c_void>,
 
     // ---------------------------------------------------------------------------
     // Thread Realm channels (populated only in thread-realm Isolates)
@@ -484,9 +501,11 @@ impl FinoState {
             terminated: false,
             reload_requested: false,
             watch_mode: false,
+            repl_mode: false,
             reload_requested_signal: None,
             entry_error: None,
             port: None,
+            inspector_state: None,
             channel_rx: None,
             channel_tx: None,
             wake_read_fd: None,
@@ -512,6 +531,7 @@ impl FinoState {
         wake_read_fd: Option<std::os::unix::io::RawFd>,
         wake_write_fd: Option<std::os::unix::io::RawFd>,
         watch_mode: bool,
+        repl_mode: bool,
         reload_requested_signal: Option<Arc<AtomicBool>>,
     ) -> Self {
         Self {
@@ -539,9 +559,11 @@ impl FinoState {
             terminated: false,
             reload_requested: false,
             watch_mode,
+            repl_mode,
             reload_requested_signal,
             entry_error: None,
             port,
+            inspector_state: None,
             channel_rx,
             channel_tx,
             wake_read_fd,

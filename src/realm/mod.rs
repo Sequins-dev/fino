@@ -74,6 +74,7 @@ pub fn process_pending_creates(scope: &mut v8::HandleScope<()>, state_rc: &Rc<Re
             pending_realm.package_map_json,
             pending_realm.port,
             pending_realm.watch_mode,
+            pending_realm.repl_mode,
         ) {
             Ok(child_realm) => ChildRealmSlot::Active(child_realm),
             Err(e) => {
@@ -238,6 +239,7 @@ fn create_child_context(
     package_map_json: Option<String>,
     port: Option<v8::Global<v8::Value>>,
     watch_mode: bool,
+    repl_mode: bool,
 ) -> Result<ChildRealm, String> {
     let total_start = if realm_timing_enabled() {
         Some(Instant::now())
@@ -284,6 +286,7 @@ fn create_child_context(
             None,
             None,
             watch_mode,
+            repl_mode,
             None, // embedded: parent reads reload_requested directly via context-scope
         );
 

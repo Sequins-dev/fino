@@ -65,10 +65,11 @@ import {
   Request,
   Response,
   Headers,
-  parseResponse,
-  serializeRequest,
   buildWireResponse,
 } from '../../net/http.mts';
+import { H1ClientDriver } from '../../net/http1.mts';
+import { H2ConnectionPool, createPoolEntry } from '../http-pool.mts';
+import { h2Available } from '../../net/http2/bindings.mts';
 import type { Address } from '../../net/socket.mts';
 import {
   brotliAvailable,
@@ -114,6 +115,7 @@ interface FetchInit {
   credentials?: 'omit' | 'same-origin' | 'include';
   cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
   keepalive?: boolean;
+  trailers?: Headers | (() => Headers | Promise<Headers>);
 }
 
 interface TraceRuntime {
@@ -224,13 +226,31 @@ async function _singleFetch(
   body: FetchBody,
   signal: MinimalAbortSignal | null,
   runtime: TraceRuntime = {},
-): Promise<{ response: Response; sock: Socket | TlsSocket }> {
+  trailers?: Headers | (() => Headers | Promise<Headers>),
+): Promise<{ response: Response; sock: Socket | TlsSocket | null }> {
   const parsed   = new URL(url);
   const isHttps  = parsed.protocol === 'https:';
   const hostname = parsed.hostname;
   const portStr  = parsed.port;
   const port     = portStr ? parseInt(portStr, 10) : (isHttps ? 443 : 80);
   const isDefaultPort = (isHttps && port === 443) || (!isHttps && port === 80);
+
+  // ---- H2 pool fast-path (HTTPS only) --------------------------------------
+
+  if (isHttps && h2Available) {
+    const origin = `https://${hostname}:${port}`;
+    const poolEntry = _h2Pool.get(origin);
+    if (poolEntry) {
+      const outReq = new Request(url, {
+        method,
+        headers: new Headers(headers),
+        body: body !== null ? body as any : undefined,
+        trailers: trailers ?? undefined,
+      } as any);
+      const response = await poolEntry.send(outReq);
+      return { response, sock: null };
+    }
+  }
 
   // ---- DNS lookup ----------------------------------------------------------
 
@@ -294,7 +314,8 @@ async function _singleFetch(
       timeUnixNano: Date.now() * 1_000_000,
     }));
     try {
-      const tlsConnectP = TlsSocket.connect(addr, { hostname });
+      const alpn = h2Available ? ['h2', 'http/1.1'] : undefined;
+      const tlsConnectP = TlsSocket.connect(addr, { hostname, alpn });
       // If abort fires before the connect resolves, the socket still resolves
       // later — close it immediately to prevent a fd leak.
       tlsConnectP.then(s => { if (signal?.aborted) s.close(); }, () => {});
@@ -371,6 +392,22 @@ async function _singleFetch(
   try {
     const [reader, writer] = sock.split();
 
+    // ---- H2 via negotiated ALPN ----------------------------------------------
+
+    if (isHttps && h2Available && (sock as TlsSocket).negotiatedProtocol === 'h2') {
+      const origin = `https://${hostname}:${port}`;
+      const entry = createPoolEntry(reader, writer);
+      _h2Pool.add(origin, entry);
+      const outReq = new Request(url, {
+        method,
+        headers: new Headers(headers),
+        body: body !== null ? body as any : undefined,
+        trailers: trailers ?? undefined,
+      } as any);
+      const response = await entry.send(outReq);
+      return { response, sock: null };
+    }
+
     // ---- Build request with auto-injected Host ----------------------------
 
     const reqHeaders = new Headers(headers);
@@ -394,16 +431,12 @@ async function _singleFetch(
       method,
       headers: reqHeaders,
       body: body !== null ? body as any : undefined,
-    });
+      trailers: trailers ?? undefined,
+    } as any);
 
-    // ---- Send request --------------------------------------------------------
+    // ---- Send + parse via H1 driver -----------------------------------------
 
-    await _raceAbort(signal, writer.pipe(serializeRequest(outReq)));
-    await _raceAbort(signal, writer.flush());
-
-    // ---- Parse response headers ----------------------------------------------
-
-    const response = await _raceAbort(signal, parseResponse(reader, method));
+    const response = await _h1Driver.send(outReq, reader, writer, { signal });
     return { response, sock };
 
   } catch (e) {
@@ -411,6 +444,9 @@ async function _singleFetch(
     throw e;
   }
 }
+
+const _h1Driver = new H1ClientDriver();
+const _h2Pool = new H2ConnectionPool();
 
 /**
  * Build the final Response object returned to the caller.
@@ -421,7 +457,7 @@ async function _singleFetch(
  */
 function _buildFinalResponse(
   response: Response,
-  sock: Socket | TlsSocket,
+  sock: Socket | TlsSocket | null,
   url: string,
   redirected: boolean,
   signal: MinimalAbortSignal | null,
@@ -486,6 +522,7 @@ function _buildFinalResponse(
     version, status, statusText, headers: responseHeaders,
     body: wrappedBody,
     url, redirected,
+    inTrailers: response.trailers,
   });
 }
 
@@ -568,7 +605,7 @@ function _checkIntegrity(bytes: Uint8Array, integrity: string): void {
  */
 async function _buildFinalResponseWithIntegrity(
   response: Response,
-  sock: Socket | TlsSocket,
+  sock: Socket | TlsSocket | null,
   url: string,
   redirected: boolean,
   signal: MinimalAbortSignal | null,
@@ -598,6 +635,7 @@ async function _buildFinalResponseWithIntegrity(
     body:       _bytesToIterable(bytes),
     url,
     redirected,
+    inTrailers: built.trailers,
   });
 }
 
@@ -696,11 +734,12 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
 
   // ---- Redirect loop ---------------------------------------------------------
 
-  let currentUrl     = baseUrl;
-  let currentMethod  = baseMethod;
-  let currentHeaders = baseHeaders;
-  let currentBody    = baseBody;
-  let redirected     = false;
+  let currentUrl      = baseUrl;
+  let currentMethod   = baseMethod;
+  let currentHeaders  = baseHeaders;
+  let currentBody     = baseBody;
+  let currentTrailers = (init && init.trailers) ? init.trailers : undefined;
+  let redirected      = false;
   let currentOrigin: string | null = null;
   const requestId = 'fetch-' + (++_fetchRequestSeq);
   try { currentOrigin = new URL(baseUrl).origin; } catch (_) {}
@@ -720,10 +759,10 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     }));
 
     let response: Response;
-    let sock: Socket | TlsSocket;
+    let sock: Socket | TlsSocket | null;
     try {
       ({ response, sock } = await _singleFetch(
-        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }
+        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers
       ));
     } catch (error) {
       topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {

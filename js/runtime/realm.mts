@@ -698,6 +698,13 @@ export interface RealmOptions {
    */
   watch?: boolean;
   /**
+   * If true, run this child Realm in REPL mode. The child listens for
+   * `{ __eval, id, code }` messages on its port and responds with
+   * `{ __eval_result }` or `{ __eval_error }`. Embedded-only — not
+   * compatible with `thread`, `process`, `remote`, or `watch`.
+   */
+  repl?: boolean;
+  /**
    * Parent-side MessagePort for communication with the child.
    * Ignored when `thread: true` or `process: true`.
    */
@@ -916,6 +923,11 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
 
     const watch = opts.watch ?? false;
+    const repl  = opts.repl  ?? false;
+
+    if (repl && (opts.thread || opts.process || opts.remote || opts.watch)) {
+      throw new Error('fino:realm — repl: true is only supported for embedded realms (not thread, process, remote, or watch)');
+    }
 
     if (opts.remote) {
       const cluster = getCluster();
@@ -957,7 +969,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         childPort  = channel.port2;
       }
       this.port = parentPort;
-      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch) as number;
+      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl) as number;
     }
 
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.

@@ -21,7 +21,7 @@ import { wakeFd } from 'internal:async-runtime';
 registerWakeSource(wakeFd);
 import './internal/loader.mts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode } from 'internal:realm-bridge';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
 import {
@@ -332,7 +332,7 @@ if (_threadWakeReadFd < 0 && _childPort !== undefined) {
   );
 }
 
-if (_childEntry !== undefined) {
+if (_childEntry) {
   let _childDone = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
   // watch mode (where _childDone is not checked) so thread/process realm
@@ -557,4 +557,73 @@ if (_childEntry !== undefined) {
       }
     })();
   }
+}
+
+// ---------------------------------------------------------------------------
+// REPL mode — activated when the child realm was created with `repl: true`.
+// ---------------------------------------------------------------------------
+// The parent drives the REPL by sending { __eval, id, code } messages and
+// receives { __eval_result, id, value } or { __eval_error, id, ... } in reply.
+// The realm stays alive until the parent sends { __terminate: true }.
+
+if ((getReplMode as () => boolean)()) {
+  let _replDone = false;
+  const _earlyEvals: unknown[] = [];
+  let _replHandlerInstalled = false;
+
+  if (_childPort !== undefined) {
+    _childPort.start();
+    _childPort.addEventListener('message', function _replEarlyHandler(ev) {
+      const msg = (ev as MessageEvent).data;
+      if (!msg || typeof msg !== 'object') return;
+      if ((msg as { __terminate?: boolean }).__terminate === true) {
+        _replDone = true;
+      } else if (!_replHandlerInstalled && (msg as { __eval?: boolean }).__eval === true) {
+        // Queue early __eval messages until the handler is ready; replay after install.
+        _earlyEvals.push(msg);
+      }
+    });
+  }
+
+  // Lazily import the REPL handler so the inspector is only wired up in REPL realms.
+  import('internal:repl-handler').then(
+    function _replHandlerLoaded(mod: Record<string, unknown>) {
+      const handleEval = mod['handleEval'] as (msg: { id: number; code: string; port: MessagePort }) => void;
+      if (_childPort !== undefined) {
+        _childPort.addEventListener('message', function _replMessageHandler(ev) {
+          const msg = (ev as MessageEvent).data;
+          if (!msg || typeof msg !== 'object') return;
+          if ((msg as { __eval?: boolean }).__eval === true) {
+            (ev as MessageEvent).stopImmediatePropagation?.();
+            handleEval({
+              id: (msg as { id: number }).id,
+              code: (msg as { code: string }).code,
+              port: _childPort as MessagePort,
+            });
+          }
+        });
+        _replHandlerInstalled = true;
+        const _toReplay = _earlyEvals.splice(0);
+        if (_toReplay.length > 0) {
+          Promise.resolve().then(function _replReplay() {
+            for (const m of _toReplay) {
+              _childPort!.dispatchEvent(new MessageEvent('message', { data: m }));
+            }
+          });
+        }
+      }
+    },
+    function _replHandlerError(err: unknown) {
+      runtimeGlobalThis.console?.error('[repl] failed to load handler:', err);
+      _replDone = true;
+    },
+  );
+
+  driveLoop(
+    function _replIsDone() {
+      return _replDone || (isTerminated() as boolean);
+    },
+    function _replOnDone() {},
+    { nonBlocking: true },
+  );
 }

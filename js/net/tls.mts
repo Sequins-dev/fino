@@ -40,6 +40,7 @@ export interface TlsConnectOptions extends ConnectOptions {
   hostname?:           string;
   ca?:                 string;
   rejectUnauthorized?: boolean;
+  alpn?:               string[];
 }
 
 function _checkTlsAvailable() {
@@ -55,20 +56,28 @@ function _checkTlsAvailable() {
 // Async TLS handshake helper
 // ---------------------------------------------------------------------------
 
-async function _doHandshake(ssl: object, fd: number, handshakeFn: (ssl: object) => number): Promise<void> {
+async function _doHandshake(ssl: object, fd: number, handshakeFn: (ssl: object) => number | Promise<number>): Promise<void> {
   // Ensure fd is non-blocking — required for the non-blocking SSL_connect/SSL_accept loop.
   // connectTcp and accept already set non-blocking mode, but upgrade() may receive an
   // externally-created socket that hasn't been set yet.
   setNonblocking(fd);
+  let iter = 0;
   while (true) {
-    const ret = handshakeFn(ssl);
-    if (ret === 1) return; // success
+    iter++;
+    const ret = await handshakeFn(ssl);
+    if (ret === 1) { return; } // success
 
     const err = openssl.sslGetError(ssl, ret);
     if (err === openssl.SSL_ERROR_WANT_READ) {
       await loop.readable(fd);
     } else if (err === openssl.SSL_ERROR_WANT_WRITE) {
-      await loop.writable(fd);
+      // Use a timeout fallback: on macOS, kqueue may not deliver EVFILT_WRITE
+      // when the peer RSTs while we're write-blocked during handshake. Without
+      // this, the fd leaks (sslFree and fd close never happen).
+      const t = loop.timeout(100);
+      await Promise.race([loop.writable(fd), t]);
+      t.cancel();
+      loop.removeWrite(fd);
     } else {
       throw new Error('TLS handshake failed (error=' + err + '): ' + openssl.getErrorString());
     }
@@ -113,7 +122,6 @@ export class TlsReader extends BufferedBytesReader {
       const err = openssl.sslGetError(this.#ssl, n);
       if (err === openssl.SSL_ERROR_ZERO_RETURN) return null;
       if (err === openssl.SSL_ERROR_WANT_READ) {
-        // No data yet — wait for fd readability, then retry.
         await loop.readable(this.#fd);
         if (this.closed) return null;
         continue;
@@ -164,7 +172,14 @@ export class TlsWriter extends BufferedBytesWriter {
       if (n > 0) { off += n; continue; }
       const err = openssl.sslGetError(this.#ssl, n);
       if (err === openssl.SSL_ERROR_WANT_WRITE) {
-        await loop.writable(this.#fd);
+        // Race writable with a 100ms timeout: on macOS, kqueue does not always
+        // deliver EVFILT_WRITE when the peer RSTs while we're write-blocked.
+        // The timeout ensures cleanup (sslWrite → SSL_ERROR_SYSCALL → throw)
+        // rather than hanging and leaking the fd.
+        const t = loop.timeout(100);
+        await Promise.race([loop.writable(this.#fd), t]);
+        t.cancel();
+        loop.removeWrite(this.#fd); // no-op if writable fired; cleanup if timeout fired
         if (this.closed) throw new Error('TlsWriter closed during write');
         continue;
       }
@@ -196,6 +211,7 @@ export class TlsWriter extends BufferedBytesWriter {
 export class TlsSocket extends Socket {
   #ssl: object;
   #sslCtx: object | null;
+  #negotiatedProtocol: string | null;
   // Bound reference to super.close() for use inside split() closures,
   // where `super` is not lexically accessible.
   #superClose: () => void;
@@ -204,8 +220,12 @@ export class TlsSocket extends Socket {
     super(fd, remoteAddr, null);
     this.#ssl    = ssl;
     this.#sslCtx = sslCtx;
+    this.#negotiatedProtocol = openssl.sslGetAlpnSelected(ssl);
     this.#superClose = () => super.close();
   }
+
+  /** The ALPN protocol negotiated during the TLS handshake, or null if none. */
+  get negotiatedProtocol(): string | null { return this.#negotiatedProtocol; }
 
   /**
    * Split into a [TlsReader, TlsWriter] pair. SSL cleanup and fd close happen
@@ -222,6 +242,7 @@ export class TlsSocket extends Socket {
     const superClose = this.#superClose;
     let closeCount = 0;
 
+    const fd = this.fd;
     const onBothClosed = function onBothClosed() {
       if (++closeCount < 2) return;
       try { openssl.sslShutdown(ssl); } catch (_) {}
@@ -331,6 +352,10 @@ export class TlsSocket extends Socket {
       } else {
         openssl.sslCtxSetDefaultVerifyPaths(sslCtx);
       }
+    }
+
+    if (opts.alpn && opts.alpn.length > 0) {
+      openssl.sslCtxSetAlpnProtos(sslCtx, opts.alpn);
     }
 
     const ssl = openssl.sslNew(sslCtx);

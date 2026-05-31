@@ -788,7 +788,6 @@ export class Socket {
           }
           return new Socket(result.fd, result.addr, boundAddr);
         }
-        // Spurious wakeup — wait again.
       }
     }
 
