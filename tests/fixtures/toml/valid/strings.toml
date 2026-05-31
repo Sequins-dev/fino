@@ -1,0 +1,8 @@
+basic = "hello world"
+literal = 'C:\Users\nobody'
+multiline_basic = """
+line one
+line two"""
+multiline_literal = '''
+raw
+content'''

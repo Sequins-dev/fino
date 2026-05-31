@@ -1,0 +1,7 @@
+[[products]]
+name = "Widget"
+price = 9.99
+
+[[products]]
+name = "Gadget"
+price = 14.99

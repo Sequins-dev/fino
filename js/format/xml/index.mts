@@ -18,13 +18,13 @@
  *   stringify(doc);
  */
 
-import { XmlParseError } from '../_error.mts';
-import { Scanner } from '../_scanner.mts';
-import { decodeUtf8 } from '../../internal/globals/encoding.mts';
+import { Scanner, ParseError } from 'fino:scanner';
 
 // ---------------------------------------------------------------------------
 // Node types
 // ---------------------------------------------------------------------------
+
+export class XmlParseError extends ParseError { name = 'XmlParseError'; }
 
 export interface XmlDocument {
   type: 'document';
@@ -76,8 +76,7 @@ export interface XmlStringifyOptions {
 // ---------------------------------------------------------------------------
 
 export function parse(input: string | Uint8Array, options: XmlParseOptions = {}): XmlDocument {
-  const src = typeof input === 'string' ? input : decodeUtf8(input, true, true);
-  return new XmlParser(src, options).parseDocument();
+  return new XmlParser(input, options).parseDocument();
 }
 
 // ---------------------------------------------------------------------------
@@ -88,14 +87,39 @@ export async function* parseStream(
   src: AsyncIterable<Uint8Array>,
   options: XmlParseOptions = {},
 ): AsyncIterableIterator<XmlEvent> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of src) chunks.push(chunk);
-  const total = chunks.reduce((n, c) => n + c.byteLength, 0);
-  const buf = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) { buf.set(c, off); off += c.byteLength; }
-  const text = decodeUtf8(buf, true, true);
-  yield* new XmlParser(text, options).events();
+  let accum = new Uint8Array(0);
+  // Events already yielded to the caller. On each re-parse attempt we skip
+  // this many events at the front (they were yielded in a previous iteration
+  // before the parser stalled at an incomplete chunk boundary).
+  let yieldedCount = 0;
+
+  for await (const chunk of src) {
+    const merged = new Uint8Array(accum.length + chunk.length);
+    merged.set(accum, 0);
+    merged.set(chunk, accum.length);
+    accum = merged;
+
+    let i = 0;
+    try {
+      for (const event of new XmlParser(accum, options).events()) {
+        if (i++ >= yieldedCount) yield event;
+      }
+      return; // parser reached natural end-of-document
+    } catch (e) {
+      if (!(e instanceof ParseError)) throw e;
+      // Parser stalled — likely an incomplete token at the chunk boundary.
+      // Record how many events were emitted before the stall; skip them on
+      // the next attempt once more data arrives.
+      yieldedCount = i;
+    }
+  }
+
+  // Source exhausted — parse the final accumulated buffer. Any error here is
+  // a genuine parse error (not a chunk-boundary truncation).
+  let i = 0;
+  for (const event of new XmlParser(accum, options).events()) {
+    if (i++ >= yieldedCount) yield event;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -120,9 +144,9 @@ class XmlParser {
   #depth = 0;
   #nsStack: Record<string, string>[] = [{ xml: _NS_XML, xmlns: _NS_XMLNS }];
 
-  constructor(src: string, opts: XmlParseOptions) {
+  constructor(src: string | Uint8Array, opts: XmlParseOptions) {
     this.#opts = opts;
-    this.#sc = new Scanner(src, (m, l, c, o, s) => new XmlParseError(m, l, c, o, s));
+    this.#sc = new Scanner(src, { encoding: 'utf-8', format: 'xml' });
   }
 
   parseDocument(): XmlDocument {
@@ -133,23 +157,23 @@ class XmlParser {
     while (!sc.done) {
       sc.skipWhitespace();
       if (sc.done) break;
-      if (!sc.match('<')) sc.error('expected <');
+      if (!sc.match('<')) throw sc.error('expected <');
       const next = sc.peek();
       if (next === '?') {
         const pi = this.#parsePI();
         // Skip XML declaration
         if (pi.target.toLowerCase() !== 'xml') prolog.push(pi);
-      } else if (next === '!' && sc.peekAt(1) === '-' && sc.peekAt(2) === '-') {
+      } else if (next === '!' && sc.peekCode(1) === 0x2D && sc.peekCode(2) === 0x2D) {
         prolog.push(this.#parseComment());
-      } else if (next === '!' && sc.rest().startsWith('!DOCTYPE')) {
+      } else if (next === '!' && sc.peek(8) === '!DOCTYPE') {
         prolog.push(this.#parseDoctype());
       } else {
-        root = this.#parseElement(sc.rest().match(/^([^\s/>]+)/)?.[1] ?? '');
+        root = this.#parseElement();
         break;
       }
     }
 
-    if (!root) sc.error('no root element');
+    if (!root) throw sc.error('no root element');
     sc.skipWhitespace();
     if (!sc.done) {
       // Allow comments/PIs after root
@@ -157,14 +181,14 @@ class XmlParser {
         sc.skipWhitespace();
         if (sc.done) break;
         if (sc.match('<')) {
-          if (sc.peek() === '?' || (sc.peek() === '!' && sc.peekAt(1) === '-')) {
+          if (sc.peek() === '?' || (sc.peek() === '!' && sc.peekCode(1) === 0x2D)) {
             if (sc.peek() === '?') this.#parsePI();
             else this.#parseComment();
           } else {
-            sc.error('content after root element');
+            throw sc.error('content after root element');
           }
         } else {
-          sc.error('content after root element');
+          throw sc.error('content after root element');
         }
       }
     }
@@ -181,8 +205,8 @@ class XmlParser {
       if (sc.match('<')) {
         const next = sc.peek();
         if (next === '?') { this.#parsePI(); continue; }
-        if (next === '!' && sc.peekAt(1) === '-') { this.#parseComment(); continue; }
-        if (sc.rest().startsWith('!DOCTYPE')) { this.#parseDoctype(); continue; }
+        if (next === '!' && sc.peekCode(1) === 0x2D) { this.#parseComment(); continue; }
+        if (sc.peek(8) === '!DOCTYPE') { this.#parseDoctype(); continue; }
         break;
       }
       break;
@@ -214,14 +238,14 @@ class XmlParser {
       const next = sc.peek();
       if (next === '/') {
         sc.eat(); // consume /
-        const closeName = sc.eatWhile(c => c !== '>');
+        const closeName = sc.eatWhile(c => c !== 0x3E);
         sc.expect('>');
-        if (closeName !== parentName) sc.error(`mismatched close tag: expected </${parentName}>, got </${closeName}>`);
+        if (closeName !== parentName) throw sc.error(`mismatched close tag: expected </${parentName}>, got </${closeName}>`);
         return;
       }
-      if (next === '!' && sc.peekAt(1) === '[') {
+      if (next === '!' && sc.peekCode(1) === 0x5B) {
         yield { type: 'cdata', data: this.#parseCData() };
-      } else if (next === '!' && sc.peekAt(1) === '-') {
+      } else if (next === '!' && sc.peekCode(1) === 0x2D) {
         yield { type: 'comment', data: this.#parseComment().data };
       } else if (next === '?') {
         const pi = this.#parsePI();
@@ -230,12 +254,12 @@ class XmlParser {
         yield* this.#elementEvents();
       }
     }
-    sc.error(`unclosed element <${parentName}>`);
+    throw sc.error(`unclosed element <${parentName}>`);
   }
 
-  #parseElement(tagName: string): XmlElement {
+  #parseElement(): XmlElement {
     const { name, prefix, ns, attrs, selfClose } = this.#parseStartTag();
-    if (++this.#depth > (this.#opts.maxDepth ?? MAX_DEPTH)) this.#sc.error('element nesting too deep');
+    if (++this.#depth > (this.#opts.maxDepth ?? MAX_DEPTH)) throw this.#sc.error('element nesting too deep');
     const children: XmlNode[] = [];
     if (!selfClose) {
       this.#parseChildren(name, children);
@@ -249,8 +273,8 @@ class XmlParser {
     const useNs = this.#opts.namespaces !== false;
     const nsFrame: Record<string, string> = {};
 
-    const name = sc.eatWhile(c => c !== ' ' && c !== '\t' && c !== '\n' && c !== '/' && c !== '>');
-    if (!name) sc.error('expected element name');
+    const name = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x2F && c !== 0x3E);
+    if (!name) throw sc.error('expected element name');
 
     const attrs: Record<string, string> = {};
     const rawAttrs: Record<string, string> = {};
@@ -260,13 +284,13 @@ class XmlParser {
       sc.skipWhitespace();
       const ch = sc.peek();
       if (ch === '/' || ch === '>') break;
-      const aname = sc.eatWhile(c => c !== '=' && c !== ' ' && c !== '\t' && c !== '\n' && c !== '/' && c !== '>');
+      const aname = sc.eatWhile(c => c !== 0x3D && c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x2F && c !== 0x3E);
       if (!aname) break;
       sc.skipWhitespace();
       sc.expect('=');
       sc.skipWhitespace();
       const q = sc.eat();
-      if (q !== '"' && q !== "'") sc.error('expected quote for attribute value');
+      if (q !== '"' && q !== "'") throw sc.error('expected quote for attribute value');
       let val = '';
       while (!sc.done && sc.peek() !== q) {
         val += this.#parseAttrChar(sc, q);
@@ -314,28 +338,28 @@ class XmlParser {
       const next = sc.peek();
       if (next === '/') {
         sc.eat();
-        const closeName = sc.eatWhile(c => c !== '>');
+        const closeName = sc.eatWhile(c => c !== 0x3E);
         sc.expect('>');
         const [, closeLocal] = _splitName(closeName);
         const [, parentLocal] = _splitName(parentName);
         if ((useNs ? closeLocal : closeName) !== (useNs ? parentLocal : parentName)) {
-          sc.error(`mismatched close tag: expected </${parentName}>, got </${closeName}>`);
+          throw sc.error(`mismatched close tag: expected </${parentName}>, got </${closeName}>`);
         }
         if (useNs && this.#nsStack.length > 1) this.#nsStack.pop();
         return;
       }
-      if (next === '!' && sc.peekAt(1) === '[') {
+      if (next === '!' && sc.peekCode(1) === 0x5B) {
         const cdata = this.#parseCData();
         children.push({ type: 'cdata', data: cdata });
-      } else if (next === '!' && sc.peekAt(1) === '-') {
+      } else if (next === '!' && sc.peekCode(1) === 0x2D) {
         children.push(this.#parseComment());
       } else if (next === '?') {
         children.push(this.#parsePI());
       } else {
-        children.push(this.#parseElement(''));
+        children.push(this.#parseElement());
       }
     }
-    sc.error(`unclosed element <${parentName}>`);
+    throw sc.error(`unclosed element <${parentName}>`);
   }
 
   #parseCharData(): string {
@@ -351,7 +375,7 @@ class XmlParser {
   #parseAttrChar(sc: Scanner, quote: string): string {
     if (sc.peek() === '&') return this.#parseEntityRef();
     const ch = sc.eat();
-    if (ch === '<') sc.error('< not allowed in attribute value');
+    if (ch === '<') throw sc.error('< not allowed in attribute value');
     return ch;
   }
 
@@ -361,27 +385,29 @@ class XmlParser {
     if (sc.eatChar('#')) {
       let hex = false;
       if (sc.eatChar('x')) hex = true;
-      const digits = sc.eatWhile(c => hex ? /[0-9a-fA-F]/.test(c) : /[0-9]/.test(c));
+      const digits = sc.eatWhile(c => hex
+        ? (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66)
+        : (c >= 0x30 && c <= 0x39));
       sc.expect(';');
       const cp = parseInt(digits, hex ? 16 : 10);
       this.#expandedChars++;
       if (this.#expandedChars > (this.#opts.maxEntityExpansion ?? MAX_ENTITY_EXPANSION)) {
-        sc.error('entity expansion limit exceeded');
+        throw sc.error('entity expansion limit exceeded');
       }
       return String.fromCodePoint(cp);
     }
-    const name = sc.eatWhile(c => c !== ';');
+    const name = sc.eatWhile(c => c !== 0x3B);
     sc.expect(';');
     if (name in _PREDEF) return _PREDEF[name]!;
     if (name in this.#entities) {
       const expanded = this.#entities[name]!;
       this.#expandedChars += expanded.length;
       if (this.#expandedChars > (this.#opts.maxEntityExpansion ?? MAX_ENTITY_EXPANSION)) {
-        sc.error('entity expansion limit exceeded');
+        throw sc.error('entity expansion limit exceeded');
       }
       return expanded;
     }
-    sc.error(`undefined entity: &${name};`);
+    throw sc.error(`undefined entity: &${name};`);
   }
 
   #parseCData(): string {
@@ -392,7 +418,7 @@ class XmlParser {
       if (sc.match(']]>')) return s;
       s += sc.eat();
     }
-    sc.error('unterminated CDATA section');
+    throw sc.error('unterminated CDATA section');
   }
 
   #parseComment(): XmlComment {
@@ -401,24 +427,24 @@ class XmlParser {
     let s = '';
     while (!sc.done) {
       if (sc.match('-->')) return { type: 'comment', data: s };
-      if (sc.peek() === '-' && sc.peek1() === '-') sc.error('-- not allowed inside comment');
+      if (sc.peek() === '-' && sc.peekCode(1) === 0x2D) throw sc.error('-- not allowed inside comment');
       s += sc.eat();
     }
-    sc.error('unterminated comment');
+    throw sc.error('unterminated comment');
   }
 
   #parsePI(): XmlPI {
     const sc = this.#sc;
     sc.expect('?');
-    const target = sc.eatWhile(c => c !== ' ' && c !== '\t' && c !== '\n' && c !== '?' && c !== '>');
+    const target = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x3F && c !== 0x3E);
     if (target.toLowerCase() === 'xml' && !this.#sc.done) {
       // XML declaration — consume it
-      const decl = sc.eatWhile(c => c !== '?');
+      const decl = sc.eatWhile(c => c !== 0x3F);
       sc.match('?>');
       return { type: 'pi', target, data: decl.trim() };
     }
     sc.skipWhitespace();
-    const data = sc.eatWhile(c => !(c === '?' && sc.peek1() === '>'));
+    const data = sc.eatWhile(c => !(c === 0x3F && sc.peekCode(1) === 0x3E));
     sc.match('?>');
     return { type: 'pi', target, data: data.trim() };
   }
@@ -438,17 +464,50 @@ class XmlParser {
 
       // Parse entity definitions from internal DTD subset
       if (s.endsWith('<!ENTITY')) {
+        const entityMark = sc.mark();
         sc.skipWhitespace();
-        const ename = sc.eatWhile(c => c !== ' ' && c !== '\t' && c !== '\n');
+        const ename = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A);
         sc.skipWhitespace();
-        const q = sc.eat();
-        if (q === '"' || q === "'") {
+
+        if (sc.peek() === '"' || sc.peek() === "'") {
+          // Internal entity definition
+          const q = sc.eat();
           let val = '';
           while (!sc.done && sc.peek() !== q) val += sc.eat();
           sc.expect(q);
           sc.skipWhitespace();
           sc.expect('>');
           if (!(ename in _PREDEF)) this.#entities[ename] = val;
+        } else if (sc.match('SYSTEM') || sc.match('PUBLIC')) {
+          // External entity — consume the identifier(s) then reject or resolve
+          sc.skipWhitespace();
+          let firstId = '';
+          if (sc.peek() === '"' || sc.peek() === "'") {
+            const q = sc.eat();
+            firstId = sc.eatUntil(c => c === q.charCodeAt(0));
+            sc.expect(q);
+          }
+          // PUBLIC has two identifiers; second is the system ID
+          sc.skipWhitespace();
+          let systemId = firstId;
+          if (sc.peek() === '"' || sc.peek() === "'") {
+            const q = sc.eat();
+            systemId = sc.eatUntil(c => c === q.charCodeAt(0));
+            sc.expect(q);
+          }
+          sc.skipWhitespace();
+          sc.expect('>');
+
+          const resolver = this.#opts.resolveExternalEntities;
+          if (typeof resolver === 'function') {
+            const val = resolver(systemId);
+            if (val !== null && !(ename in _PREDEF)) this.#entities[ename] = val;
+          } else {
+            throw sc.error(
+              `external entity rejected: ${ename} (set resolveExternalEntities to opt in)`,
+              entityMark,
+            );
+          }
         }
         s += ename;
       }

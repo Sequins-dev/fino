@@ -1,4 +1,4 @@
-import { bench } from 'fino:test/bench';
+import { bench } from 'fino:bench';
 
 bench('alpha bench', (b) => {
   b.measure('alpha measure', () => {

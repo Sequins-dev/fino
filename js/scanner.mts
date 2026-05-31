@@ -285,6 +285,16 @@ export class Scanner {
       throw this.error(message ?? `expected '${s}', got '${this.peek() || 'EOF'}'`);
   }
 
+  skipSpaceTab(): void {
+    this.#requireText('skipSpaceTab');
+    this.eatWhile(c => c === 0x20 || c === 0x09);
+  }
+
+  skipWhitespace(): void {
+    this.#requireText('skipWhitespace');
+    this.eatWhile(c => c === 0x20 || c === 0x09 || c === 0x0A || c === 0x0D);
+  }
+
   text(from: ScannerMark, to?: ScannerMark): string {
     this.#requireText('text');
     return _decodeBytes(

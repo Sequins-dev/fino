@@ -1,0 +1,5 @@
+Curated from yaml-test-suite (https://github.com/yaml/yaml-test-suite).
+yaml-test-suite commit: data-2022-01-17 (2022-01-17)
+
+Phase-1 cases only (no anchors, aliases, tags, merge keys, or complex keys).
+See skip.json for Phase-2 deferred cases.

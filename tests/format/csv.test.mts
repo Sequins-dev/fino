@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
-import { parse, stringify } from 'fino:format/csv';
+import { parse, stringify, parseStream } from 'fino:format/csv';
+import { loadCorpus, runCorpus, type CorpusCase } from './_corpus.mts';
 
 describe('fino:format/csv — parse basics', () => {
   it('parses simple rows', (t) => {
@@ -119,5 +120,104 @@ describe('fino:format/csv — roundtrip', () => {
     const original = 'a,b,c\r\n1,2,3\r\n4,5,6\r\n';
     const rows = parse(original);
     t.equal(stringify(rows), original);
+  });
+});
+
+describe('fino:format/csv — parseStream', () => {
+  async function chunks(csv: string, sizes: number[]): Promise<AsyncIterable<Uint8Array>> {
+    const enc = new TextEncoder();
+    const bytes = enc.encode(csv);
+    const parts: Uint8Array[] = [];
+    let pos = 0;
+    for (const sz of sizes) {
+      parts.push(bytes.subarray(pos, pos + sz));
+      pos += sz;
+    }
+    if (pos < bytes.length) parts.push(bytes.subarray(pos));
+    return (async function* () { for (const p of parts) yield p; })();
+  }
+
+  it('streams simple rows', async (t) => {
+    const src = await chunks('a,b,c\n1,2,3\n4,5,6\n', [7, 12]);
+    const rows: string[][] = [];
+    for await (const row of parseStream(src)) rows.push(row as string[]);
+    t.deepEqual(rows, [['a','b','c'],['1','2','3'],['4','5','6']]);
+  });
+
+  it('streams with header option', async (t) => {
+    const src = await chunks('name,age\nAlice,30\nBob,25\n', [9, 16]);
+    const rows: Record<string,string>[] = [];
+    for await (const row of parseStream(src, { header: true })) rows.push(row as Record<string,string>);
+    t.deepEqual(rows, [{ name: 'Alice', age: '30' }, { name: 'Bob', age: '25' }]);
+  });
+
+  it('handles quoted field with embedded newline across chunk boundary', async (t) => {
+    const csv = '"line1\nline2",b\nc,d\n';
+    const src = await chunks(csv, [8, csv.length - 8]);
+    const rows: string[][] = [];
+    for await (const row of parseStream(src)) rows.push(row as string[]);
+    t.equal(rows[0]![0], 'line1\nline2');
+    t.equal(rows[0]![1], 'b');
+    t.deepEqual(rows[1], ['c', 'd']);
+  });
+
+  it('handles last row without trailing newline', async (t) => {
+    const src = await chunks('a,b\n1,2', [4, 3]);
+    const rows: string[][] = [];
+    for await (const row of parseStream(src)) rows.push(row as string[]);
+    t.deepEqual(rows, [['a','b'],['1','2']]);
+  });
+
+  it('handles CRLF line endings', async (t) => {
+    const src = await chunks('a,b\r\n1,2\r\n', [5, 5]);
+    const rows: string[][] = [];
+    for await (const row of parseStream(src)) rows.push(row as string[]);
+    t.deepEqual(rows, [['a','b'],['1','2']]);
+  });
+
+  it('skipEmptyLines works in stream', async (t) => {
+    const src = await chunks('a,b\n\n1,2\n', [4, 6]);
+    const rows: string[][] = [];
+    for await (const row of parseStream(src, { skipEmptyLines: true })) rows.push(row as string[]);
+    t.deepEqual(rows, [['a','b'],['1','2']]);
+  });
+
+  it('throws on mismatched column count in stream', async (t) => {
+    const src = await chunks('a,b\n1,2,3\n', [5, 6]);
+    let threw = false;
+    try {
+      for await (const _ of parseStream(src, { header: true })) { /* consume */ }
+    } catch (e) {
+      threw = true;
+      t.ok((e as Error).message.includes('fields'), 'expected fields error');
+    }
+    t.ok(threw, 'expected error to be thrown');
+  });
+});
+
+const FIXTURES_DIR = new URL('../fixtures/csv', import.meta.url).pathname;
+const csvCorpus = await loadCorpus(FIXTURES_DIR);
+
+describe('fino:format/csv — conformance (csv-spectrum)', () => {
+  runCorpus(csvCorpus, it, (c, t) => {
+    if (c.expected === 'parse-err') {
+      t.throws(() => parse(c.input));
+      return;
+    }
+    const rows = parse(c.input);
+    if (c.expected !== 'parse-ok') {
+      t.deepEqual(rows, c.expected as string[][], c.id);
+    } else {
+      t.ok(Array.isArray(rows), 'parse succeeded');
+    }
+  });
+});
+
+describe('fino:format/csv — round-trip (corpus)', () => {
+  runCorpus(csvCorpus, it, (c, t) => {
+    if (c.expected === 'parse-err') return;
+    const first = parse(c.input) as string[][];
+    const second = parse(stringify(first)) as string[][];
+    t.deepEqual(second, first, c.id);
   });
 });

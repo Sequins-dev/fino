@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { parse, stringify, TomlLocalDate, TomlLocalTime, TomlLocalDateTime } from 'fino:format/toml';
+import { loadCorpus, runCorpus, type CorpusCase } from './_corpus.mts';
 
 describe('fino:format/toml — scalars', () => {
   it('parses strings', (t) => {
@@ -143,5 +144,32 @@ describe('fino:format/toml — stringify', () => {
     const doc = { products: [{ name: 'Hammer' }, { name: 'Nail' }] };
     const toml = stringify(doc);
     t.ok(toml.includes('[[products]]'));
+  });
+});
+
+const TOML_FIXTURES_DIR = new URL('../fixtures/toml', import.meta.url).pathname;
+const tomlCorpus = await loadCorpus(TOML_FIXTURES_DIR);
+
+describe('fino:format/toml — conformance (toml-test)', () => {
+  runCorpus(tomlCorpus, it, (c, t) => {
+    if (c.expected === 'parse-err') {
+      t.throws(() => parse(c.input));
+      return;
+    }
+    const doc = parse(c.input);
+    if (c.expected !== 'parse-ok') {
+      t.deepEqual(doc, c.expected as Record<string, unknown>, c.id);
+    } else {
+      t.ok(typeof doc === 'object' && doc !== null, 'parse succeeded');
+    }
+  });
+});
+
+describe('fino:format/toml — round-trip (corpus)', () => {
+  runCorpus(tomlCorpus, it, (c, t) => {
+    if (c.expected === 'parse-err') return;
+    const first = parse(c.input);
+    const second = parse(stringify(first));
+    t.deepEqual(second, first, c.id);
   });
 });

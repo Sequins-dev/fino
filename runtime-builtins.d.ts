@@ -51,6 +51,8 @@ declare module 'fino:scanner' {
     eatWhile(pred: (code: number) => boolean): string;
     eatUntil(pred: (code: number) => boolean): string;
     expect(s: string, message?: string): void;
+    skipSpaceTab(): void;
+    skipWhitespace(): void;
     text(from: ScannerMark, to?: ScannerMark): string;
     mark(): ScannerMark;
     snapshot(): ScannerSnapshot;

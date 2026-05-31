@@ -1,0 +1,4 @@
+tab = "foo\tbar"
+newline = "foo\nbar"
+unicode = "A\U00000042"
+backslash = "C:\\path"

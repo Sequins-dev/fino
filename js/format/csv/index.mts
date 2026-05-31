@@ -11,12 +11,13 @@
  *   // 'a,b\r\n1,2\r\n3,4\r\n'
  */
 
-import { CsvParseError } from '../_error.mts';
-import { decodeUtf8 } from '../../internal/globals/encoding.mts';
+import { Scanner, ParseError } from 'fino:scanner';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+
+export class CsvParseError extends ParseError { name = 'CsvParseError'; }
 
 export type CsvRow = string[];
 export type CsvRecord = Record<string, string>;
@@ -52,7 +53,6 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions & { h
 export function parse(input: string | Uint8Array, options: CsvParseOptions & { columns: string[] }): Record<string, string>[];
 export function parse(input: string | Uint8Array, options?: CsvParseOptions): string[][] | Record<string, string>[];
 export function parse(input: string | Uint8Array, options: CsvParseOptions = {}): string[][] | Record<string, string>[] {
-  const src = typeof input === 'string' ? input : decodeUtf8(input, true, true);
   const delim = options.delimiter ?? ',';
   const quote = options.quote ?? '"';
   const comment = options.comment;
@@ -68,80 +68,68 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
   const quoteCode = quote.charCodeAt(0);
   const commentCode = comment ? comment.charCodeAt(0) : -1;
 
-  const makeError = (msg: string, line: number, col: number, offset: number, snippet: string) =>
-    new CsvParseError(msg, line, col, offset, snippet);
-
+  const sc = new Scanner(input, { encoding: 'utf-8', format: 'csv' });
   const raw: string[][] = [];
-  let pos = 0;
-  let lineNum = 1;
 
-  while (pos < src.length) {
+  while (!sc.done) {
     // Skip comment lines
-    if (commentCode !== -1 && src.charCodeAt(pos) === commentCode) {
-      while (pos < src.length && src.charCodeAt(pos) !== 0x0a) pos++;
-      if (pos < src.length) { pos++; lineNum++; }
+    if (commentCode !== -1 && sc.peekCode() === commentCode) {
+      sc.eatUntil(c => c === 0x0A);
+      if (!sc.done) sc.eat(); // consume LF
       continue;
     }
 
     const row: string[] = [];
-    let rowStart = pos;
-    let lineStart = lineNum;
+    const rowMark = sc.mark();
 
-    // Parse one row
     while (true) {
       let field: string;
 
-      if (src.charCodeAt(pos) === quoteCode) {
+      if (sc.peekCode() === quoteCode) {
         // Quoted field
-        pos++; // consume opening quote
+        sc.eat(); // consume opening quote
         let buf = '';
         while (true) {
-          if (pos >= src.length) {
-            const snip = src.slice(Math.max(0, rowStart), rowStart + 40);
-            throw makeError('unterminated quoted field', lineStart, 1, rowStart, snip);
-          }
-          const c = src.charCodeAt(pos);
+          if (sc.done) throw sc.error('unterminated quoted field', rowMark);
+          const c = sc.peekCode();
           if (c === quoteCode) {
-            pos++;
-            if (src.charCodeAt(pos) === quoteCode) {
-              buf += quote; pos++; // doubled quote → literal quote
+            sc.eat();
+            if (sc.peekCode() === quoteCode) {
+              buf += sc.eat(); // doubled quote → literal quote
             } else {
               break; // closing quote
             }
           } else {
-            if (c === 0x0a) lineNum++;
-            buf += src[pos]!;
-            pos++;
+            buf += sc.eat();
           }
         }
         field = buf;
       } else {
-        // Unquoted field — read until delimiter, CR, LF, or EOF
-        const start = pos;
-        while (pos < src.length) {
-          const c = src.charCodeAt(pos);
-          if (c === delimCode || c === 0x0a || c === 0x0d) break;
-          pos++;
-        }
-        field = src.slice(start, pos);
+        // Unquoted field — eat until delimiter, CR, LF, or EOF
+        const start = sc.mark();
+        sc.eatUntil(c => c === delimCode || c === 0x0A || c === 0x0D);
+        field = sc.text(start);
       }
 
       if (trim) field = field.trim();
       row.push(field);
 
       // After field: delimiter → next field; CR/LF/EOF → end of row
-      const c = src.charCodeAt(pos);
-      if (c === delimCode) {
-        pos++;
+      if (sc.peekCode() === delimCode) {
+        sc.eat(); // consume delimiter
       } else {
         break;
       }
     }
 
     // Consume line ending
-    const c = src.charCodeAt(pos);
-    if (c === 0x0d && src.charCodeAt(pos + 1) === 0x0a) { pos += 2; lineNum++; }
-    else if (c === 0x0d || c === 0x0a) { pos++; lineNum++; }
+    const lc = sc.peekCode();
+    if (lc === 0x0D) {
+      sc.eat(); // CR
+      if (sc.peekCode() === 0x0A) sc.eat(); // CRLF
+    } else if (lc === 0x0A) {
+      sc.eat(); // LF
+    }
 
     if (skipEmpty && row.length === 1 && row[0] === '') continue;
     raw.push(row);
@@ -163,7 +151,7 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
       if (dataRows[i]!.length !== headers.length) {
         throw new CsvParseError(
           `row ${i + (options.header ? 2 : 1)} has ${dataRows[i]!.length} fields, expected ${headers.length}`,
-          i + (options.header ? 2 : 1), 1, 0, '',
+          { detail: 'column count mismatch', format: 'csv', offset: 0, source: new Uint8Array(0) },
         );
       }
     }
@@ -203,6 +191,172 @@ function _autocast(v: string): unknown {
   const n = Number(v);
   if (!isNaN(n) && v.trim() !== '') return n;
   return v;
+}
+
+// ---------------------------------------------------------------------------
+// Parse stream
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a CSV byte stream row-by-row without buffering the entire input.
+ * Each chunk from `src` is processed incrementally; quoted fields containing
+ * embedded newlines are handled correctly across chunk boundaries.
+ */
+export async function* parseStream(
+  src: AsyncIterable<Uint8Array>,
+  options: CsvParseOptions = {},
+): AsyncIterableIterator<CsvRow | CsvRecord> {
+  const delim = options.delimiter ?? ',';
+  const quote = options.quote ?? '"';
+  const comment = options.comment;
+  const skipEmpty = options.skipEmptyLines ?? false;
+  const trim = options.trim ?? false;
+  const relax = options.relaxColumnCount ?? false;
+  const cast = options.cast;
+
+  if (delim.length !== 1) throw new TypeError('csv: delimiter must be a single character');
+  if (quote.length !== 1) throw new TypeError('csv: quote must be a single character');
+
+  const delimCode = delim.charCodeAt(0);
+  const quoteCode = quote.charCodeAt(0);
+  const commentCode = comment ? comment.charCodeAt(0) : -1;
+
+  let headers: string[] | null = options.columns ?? null;
+  let headerConsumed = options.header !== true || options.columns !== undefined;
+
+  // Find the byte offset one past the end of the next complete row in `bytes`
+  // starting at `start`. A row is complete when a newline is found outside a
+  // quoted field. Returns -1 if no complete row exists yet (need more data).
+  function findRowEnd(bytes: Uint8Array, start: number): number {
+    let inQuote = false;
+    for (let i = start; i < bytes.length; i++) {
+      const b = bytes[i]!;
+      if (inQuote) {
+        if (b === quoteCode) {
+          if (bytes[i + 1] === quoteCode) { i++; continue; } // doubled quote
+          inQuote = false;
+        }
+      } else {
+        if (b === quoteCode) { inQuote = true; }
+        else if (b === 0x0D) { return bytes[i + 1] === 0x0A ? i + 2 : i + 1; } // CR/CRLF
+        else if (b === 0x0A) { return i + 1; } // LF
+      }
+    }
+    return -1;
+  }
+
+  // Parse a single row from a byte slice and return its fields.
+  // Returns null for comment lines or blank lines when skipEmpty is set.
+  function parseRow(bytes: Uint8Array): string[] | null {
+    const sc = new Scanner(bytes, { encoding: 'utf-8', format: 'csv' });
+    if (commentCode !== -1 && sc.peekCode() === commentCode) return null;
+
+    const row: string[] = [];
+    const rowMark = sc.mark();
+
+    while (true) {
+      let field: string;
+      if (sc.peekCode() === quoteCode) {
+        sc.eat(); // opening quote
+        let fieldBuf = '';
+        while (true) {
+          if (sc.done) throw sc.error('unterminated quoted field', rowMark);
+          const c = sc.peekCode();
+          if (c === quoteCode) {
+            sc.eat();
+            if (sc.peekCode() === quoteCode) { fieldBuf += sc.eat(); }
+            else break;
+          } else {
+            fieldBuf += sc.eat();
+          }
+        }
+        field = fieldBuf;
+      } else {
+        const start = sc.mark();
+        sc.eatUntil(c => c === delimCode || c === 0x0A || c === 0x0D);
+        field = sc.text(start);
+      }
+      if (trim) field = field.trim();
+      row.push(field);
+      if (sc.peekCode() === delimCode) sc.eat();
+      else break;
+    }
+
+    if (skipEmpty && row.length === 1 && row[0] === '') return null;
+    return row;
+  }
+
+  let tail = new Uint8Array(0);
+
+  for await (const chunk of src) {
+    // Append chunk to unprocessed tail
+    const merged = new Uint8Array(tail.length + chunk.length);
+    merged.set(tail, 0);
+    merged.set(chunk, tail.length);
+    tail = merged;
+
+    // Drain all complete rows from tail
+    let offset = 0;
+    while (true) {
+      const rowEnd = findRowEnd(tail, offset);
+      if (rowEnd === -1) break;
+      const rowBytes = tail.subarray(offset, rowEnd);
+      offset = rowEnd;
+
+      const raw = parseRow(rowBytes);
+      if (raw === null) continue;
+
+      if (!headerConsumed) {
+        headers = raw;
+        headerConsumed = true;
+        continue;
+      }
+      yield _emitStreamRow(raw, headers, relax, cast);
+    }
+    tail = tail.slice(offset);
+  }
+
+  // Last row (no trailing newline)
+  if (tail.length > 0) {
+    const raw = parseRow(tail);
+    if (raw !== null) {
+      if (!headerConsumed) {
+        // File was only headers — nothing to yield
+      } else {
+        yield _emitStreamRow(raw, headers, relax, cast);
+      }
+    }
+  }
+}
+
+function _emitStreamRow(
+  raw: string[],
+  headers: string[] | null,
+  relax: boolean,
+  cast: boolean | CastFn | undefined,
+): CsvRow | CsvRecord {
+  if (!headers) {
+    if (!cast) return raw;
+    return raw.map((v, ci) =>
+      typeof cast === 'function'
+        ? cast(v, { column: ci, header: undefined }) as string
+        : _autocast(v) as string,
+    );
+  }
+  if (!relax && raw.length !== headers.length) {
+    throw new CsvParseError(
+      `row has ${raw.length} fields, expected ${headers.length}`,
+      { detail: 'column count mismatch', format: 'csv', offset: 0, source: new Uint8Array(0) },
+    );
+  }
+  const obj: Record<string, string | unknown> = {};
+  for (let i = 0; i < headers.length; i++) {
+    const v = raw[i] ?? '';
+    obj[headers[i]!] = cast
+      ? typeof cast === 'function' ? cast(v, { column: i, header: headers[i] }) : _autocast(v)
+      : v;
+  }
+  return obj as CsvRecord;
 }
 
 // ---------------------------------------------------------------------------

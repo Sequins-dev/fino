@@ -1,0 +1,5 @@
+Curated from csv-spectrum (https://github.com/maxogden/csv-spectrum) and RFC 4180.
+csv-spectrum commit: 9b0ced8 (2014-05-21)
+RFC 4180: https://www.rfc-editor.org/rfc/rfc4180
+
+Cases adapted and extended for fino:format/csv test coverage.

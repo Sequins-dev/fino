@@ -21,7 +21,7 @@ export function createBenchCommand(): Command {
       }
 
       for (const file of benchFiles) await import(normalizeModuleSpecifier(String(file)));
-      const { run } = await import('../test/bench.mts');
+      const { run } = await import('fino:bench');
       return filter === undefined ? run({}) : run({ filter });
     },
     options: [

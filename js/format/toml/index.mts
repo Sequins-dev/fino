@@ -20,9 +20,13 @@
  *   stringify(cfg);
  */
 
-import { TomlParseError } from '../_error.mts';
-import { Scanner } from '../_scanner.mts';
-import { decodeUtf8 } from '../../internal/globals/encoding.mts';
+import { Scanner, ParseError } from 'fino:scanner';
+
+// ---------------------------------------------------------------------------
+// Per-format error class
+// ---------------------------------------------------------------------------
+
+export class TomlParseError extends ParseError { name = 'TomlParseError'; }
 
 // ---------------------------------------------------------------------------
 // Exported datetime wrapper types
@@ -70,8 +74,7 @@ export interface TomlStringifyOptions { indent?: string; }
 // ---------------------------------------------------------------------------
 
 export function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue> {
-  const src = typeof input === 'string' ? input : decodeUtf8(input, true, true);
-  return new TomlParser(src, options).parse();
+  return new TomlParser(input, options).parse();
 }
 
 // Per-table metadata to track explicit definition (for duplicate-table detection)
@@ -87,9 +90,9 @@ class TomlParser {
   #opts: TomlParseOptions;
   #root: TomlTable = Object.create(null);
 
-  constructor(src: string, opts: TomlParseOptions) {
+  constructor(src: string | Uint8Array, opts: TomlParseOptions) {
     this.#opts = opts;
-    this.#sc = new Scanner(src, (msg, line, col, off, snip) => new TomlParseError(msg, line, col, off, snip));
+    this.#sc = new Scanner(src, { encoding: 'utf-8', format: 'toml' });
   }
 
   parse(): Record<string, TomlValue> {
@@ -111,7 +114,7 @@ class TomlParser {
         if (isArray) sc.expect(']');
         this.#skipWs();
         if (!sc.done && sc.peek() !== '#') {
-          if (sc.peek() !== '\n' && sc.peek() !== '\r') sc.error('expected newline after table header');
+          if (sc.peek() !== '\n' && sc.peek() !== '\r') throw sc.error('expected newline after table header');
         }
         this.#skipComment();
         current = this.#resolveTable(this.#root, keys, isArray);
@@ -128,7 +131,7 @@ class TomlParser {
       const val = this.#parseValue();
       sc.skipSpaceTab();
       if (!sc.done && sc.peek() !== '#' && sc.peek() !== '\n' && sc.peek() !== '\r') {
-        sc.error('expected newline or comment after value');
+        throw sc.error('expected newline or comment after value');
       }
       this.#skipComment();
       this.#setKey(current, keys, val);
@@ -174,10 +177,8 @@ class TomlParser {
     if (ch === '"') return this.#parseBasicString();
     if (ch === "'") return this.#parseLiteralString();
     // bare key: a-z A-Z 0-9 - _
-    const start = sc.pos;
-    sc.eatWhile(c => /[a-zA-Z0-9_-]/.test(c));
-    const k = sc.slice(start);
-    if (k === '') sc.error('expected key');
+    const k = sc.eatWhile(c => (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c === 95 || c === 45);
+    if (k === '') throw sc.error('expected key');
     sc.skipSpaceTab();
     return k;
   }
@@ -187,26 +188,26 @@ class TomlParser {
     const ch = sc.peek();
 
     if (ch === '"') {
-      if (sc.peekAt(1) === '"' && sc.peekAt(2) === '"') return this.#parseMultilineBasicString();
+      if (sc.peek(3) === '"""') return this.#parseMultilineBasicString();
       return this.#parseBasicString();
     }
     if (ch === "'") {
-      if (sc.peekAt(1) === "'" && sc.peekAt(2) === "'") return this.#parseMultilineLiteralString();
+      if (sc.peek(3) === "'''") return this.#parseMultilineLiteralString();
       return this.#parseLiteralString();
     }
     if (ch === '[') return this.#parseArray();
     if (ch === '{') return this.#parseInlineTable();
-    if (ch === 't') { if (sc.match('true'))  return true;  sc.error('expected true'); }
-    if (ch === 'f') { if (sc.match('false')) return false; sc.error('expected false'); }
-    if (ch === 'i') { if (sc.match('inf'))   return Infinity; sc.error('expected inf'); }
-    if (ch === 'n') { if (sc.match('nan'))   return NaN; sc.error('expected nan'); }
+    if (ch === 't') { if (sc.match('true'))  return true;  throw sc.error('expected true'); }
+    if (ch === 'f') { if (sc.match('false')) return false; throw sc.error('expected false'); }
+    if (ch === 'i') { if (sc.match('inf'))   return Infinity; throw sc.error('expected inf'); }
+    if (ch === 'n') { if (sc.match('nan'))   return NaN; throw sc.error('expected nan'); }
     if (ch === '+') {
-      if (sc.peekAt(1) === 'i') { sc.match('+inf'); return Infinity; }
-      if (sc.peekAt(1) === 'n') { sc.match('+nan'); return NaN; }
+      if (sc.peekCode(1) === 0x69 /* i */) { sc.match('+inf'); return Infinity; }
+      if (sc.peekCode(1) === 0x6E /* n */) { sc.match('+nan'); return NaN; }
     }
     if (ch === '-') {
-      if (sc.peekAt(1) === 'i') { sc.match('-inf'); return -Infinity; }
-      if (sc.peekAt(1) === 'n') { sc.match('-nan'); return NaN; }
+      if (sc.peekCode(1) === 0x69 /* i */) { sc.match('-inf'); return -Infinity; }
+      if (sc.peekCode(1) === 0x6E /* n */) { sc.match('-nan'); return NaN; }
     }
 
     // Number or datetime
@@ -221,10 +222,10 @@ class TomlParser {
       const ch = sc.peek();
       if (ch === '"') { sc.eat(); return s; }
       if (ch === '\\') { s += this.#parseEscape(); continue; }
-      if (ch === '\n' || ch === '\r') sc.error('newline not allowed in basic string');
+      if (ch === '\n' || ch === '\r') throw sc.error('newline not allowed in basic string');
       s += sc.eat();
     }
-    sc.error('unterminated string');
+    throw sc.error('unterminated string');
   }
 
   #parseLiteralString(): string {
@@ -234,10 +235,10 @@ class TomlParser {
     while (!sc.done) {
       const ch = sc.peek();
       if (ch === "'") { sc.eat(); return s; }
-      if (ch === '\n' || ch === '\r') sc.error('newline not allowed in literal string');
+      if (ch === '\n' || ch === '\r') throw sc.error('newline not allowed in literal string');
       s += sc.eat();
     }
-    sc.error('unterminated literal string');
+    throw sc.error('unterminated literal string');
   }
 
   #parseMultilineBasicString(): string {
@@ -262,7 +263,7 @@ class TomlParser {
       }
       s += sc.eat();
     }
-    sc.error('unterminated multiline basic string');
+    throw sc.error('unterminated multiline basic string');
   }
 
   #parseMultilineLiteralString(): string {
@@ -275,7 +276,7 @@ class TomlParser {
       if (sc.match("'''")) return s;
       s += sc.eat();
     }
-    sc.error('unterminated multiline literal string');
+    throw sc.error('unterminated multiline literal string');
   }
 
   #parseEscape(): string {
@@ -295,7 +296,7 @@ class TomlParser {
       case '\\': return '\\';
       case 'u': return this.#parseUnicode(4);
       case 'U': return this.#parseUnicode(8);
-      default: this.#sc.error(`unknown escape \\${ch}`);
+      default: throw this.#sc.error(`unknown escape \\${ch}`);
     }
   }
 
@@ -304,7 +305,7 @@ class TomlParser {
     let hex = '';
     for (let i = 0; i < len; i++) hex += sc.eat();
     const cp = parseInt(hex, 16);
-    if (isNaN(cp)) sc.error('invalid unicode escape');
+    if (isNaN(cp)) throw sc.error('invalid unicode escape');
     return String.fromCodePoint(cp);
   }
 
@@ -350,23 +351,13 @@ class TomlParser {
 
   #parseNumberOrDate(): TomlValue {
     const sc = this.#sc;
-    const start = sc.pos;
-
     // Collect the token (consume sign, digits, separators, letters)
-    const raw = sc.eatWhile(c => /[0-9a-fA-Fox_+\-.:TZ]/.test(c));
-    if (raw === '') sc.error('expected value');
+    const raw = sc.eatWhile(c => /[0-9a-fA-Fox_+\-.:TZ]/.test(String.fromCharCode(c)));
+    if (raw === '') throw sc.error('expected value');
 
     // --- Datetime detection ---
-    // Offset datetime:    1979-05-27T07:32:00Z | 1979-05-27 07:32:00+00:00
-    // Local datetime:     1979-05-27T07:32:00 (no offset)
-    // Local date:         1979-05-27
-    // Local time:         07:32:00
-    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) {
-      return this.#parseDate(raw);
-    }
-    if (/^\d{2}:\d{2}:\d{2}/.test(raw)) {
-      return this.#parseTime(raw);
-    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return this.#parseDate(raw);
+    if (/^\d{2}:\d{2}:\d{2}/.test(raw)) return this.#parseTime(raw);
 
     // --- Integer: hex/oct/bin/dec ---
     if (raw.startsWith('0x')) return this.#parseInt(parseInt(raw.slice(2), 16), raw);
@@ -376,9 +367,7 @@ class TomlParser {
     // Strip underscores for numeric parse
     const clean = raw.replace(/_/g, '');
 
-    if (/^[+-]?(?:0|[1-9][0-9]*)$/.test(clean)) {
-      return this.#parseInt(parseInt(clean, 10), raw);
-    }
+    if (/^[+-]?(?:0|[1-9][0-9]*)$/.test(clean)) return this.#parseInt(parseInt(clean, 10), raw);
 
     // Float
     const f = parseFloat(clean.replace(/^[+]/, ''));
@@ -386,13 +375,13 @@ class TomlParser {
     if (clean === 'inf' || clean === '+inf') return Infinity;
     if (clean === '-inf') return -Infinity;
 
-    sc.error(`invalid value: ${raw}`);
+    throw sc.error(`invalid value: ${raw}`);
   }
 
   #parseInt(n: number, raw: string): number | bigint {
     if (!Number.isSafeInteger(n)) {
       if (this.#opts.bigint) return BigInt(raw.replace(/_/g, ''));
-      this.#sc.error(`integer overflow: ${raw} exceeds Number.MAX_SAFE_INTEGER; use { bigint: true }`);
+      throw this.#sc.error(`integer overflow: ${raw} exceeds Number.MAX_SAFE_INTEGER; use { bigint: true }`);
     }
     return n;
   }
@@ -436,7 +425,7 @@ class TomlParser {
       } else if (typeof next === 'object' && next !== null) {
         t = next as TomlTable;
       } else {
-        this.#sc.error(`key '${k}' is not a table`);
+        throw this.#sc.error(`key '${k}' is not a table`);
       }
     }
     const last = keys[keys.length - 1]!;
@@ -446,7 +435,7 @@ class TomlParser {
         arr[_ARRAY] = true;
         t[last] = arr as unknown as TomlValue;
       } else if (!Array.isArray(t[last]) || !(t[last] as unknown as TomlTable)[_ARRAY]) {
-        this.#sc.error(`key '${last}' is not an array of tables`);
+        throw this.#sc.error(`key '${last}' is not an array of tables`);
       }
       const arr = t[last] as TomlTable[];
       const entry: TomlTable = Object.create(null);
@@ -462,7 +451,7 @@ class TomlParser {
     }
     const existing = t[last] as TomlTable;
     if (existing[_DEFINED] && !existing[_IMPLICIT]) {
-      this.#sc.error(`duplicate table '${last}'`);
+      throw this.#sc.error(`duplicate table '${last}'`);
     }
     existing[_IMPLICIT] = false;
     existing[_DEFINED] = true;
@@ -480,12 +469,12 @@ class TomlParser {
       }
       const next = cur[k];
       if (typeof next !== 'object' || next === null || Array.isArray(next)) {
-        this.#sc.error(`key '${k}' is not a table`);
+        throw this.#sc.error(`key '${k}' is not a table`);
       }
       cur = next as TomlTable;
     }
     const last = keys[keys.length - 1]!;
-    if (last in cur) this.#sc.error(`duplicate key '${last}'`);
+    if (last in cur) throw this.#sc.error(`duplicate key '${last}'`);
     cur[last] = val;
   }
 }

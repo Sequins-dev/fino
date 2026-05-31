@@ -1,0 +1,5 @@
+Curated from the W3C XML Conformance Test Suite (xmlconf).
+xmlconf: https://www.w3.org/XML/Test/ (edition 20130930)
+
+well-formed cases: adapted from xmltest/valid/sa/*.xml
+not-well-formed cases: adapted from xmltest/not-wf/sa/*.xml and xmltest/not-wf/ext-sa/*.xml

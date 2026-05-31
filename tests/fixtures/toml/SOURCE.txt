@@ -1,0 +1,5 @@
+Curated from toml-lang/toml-test (https://github.com/toml-lang/toml-test).
+toml-test commit: v1.4.0 (2023-08-30)
+
+Cases are from the valid/spec/ and invalid/spec/ directories, adapted for
+fino:format/toml which implements TOML 1.0.

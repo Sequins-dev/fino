@@ -21,8 +21,6 @@
       "fino:semver": ["./js/semver.mts"],
       "fino:uuid": ["./js/uuid.mts"],
       "fino:format/*": ["./js/format/*/index.mts"],
-      "internal:format/error": ["./js/format/_error.mts"],
-      "internal:format/scanner": ["./js/format/_scanner.mts"],
       "fino:bench": ["./js/test/bench.mts"],
       "fino:test/*": ["./js/test/*.mts"],
       "fino:tty": ["./js/tty.mts"],
