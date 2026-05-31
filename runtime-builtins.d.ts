@@ -1,3 +1,64 @@
+declare module 'fino:scanner' {
+  export type Encoding = 'utf-8' | 'ascii' | 'latin1' | 'utf-16le' | 'utf-16be';
+  export interface ScannerOptions {
+    encoding?: Encoding;
+    format?: string;
+    filename?: string;
+  }
+  export interface ScannerMark {
+    readonly offset: number;
+    readonly line?: number;
+    readonly column?: number;
+  }
+  export type ScannerSnapshot = ScannerMark;
+  export class ParseError extends Error {
+    readonly format: string;
+    readonly filename: string | undefined;
+    readonly offset: number;
+    readonly line: number | undefined;
+    readonly column: number | undefined;
+    readonly length: number;
+    render(options?: { color?: boolean; contextLines?: number }): string;
+  }
+  export class Scanner {
+    constructor(source: string | Uint8Array, options?: ScannerOptions);
+    readonly offset: number;
+    readonly done: boolean;
+    readonly encoding: Encoding | null;
+    readonly line: number;
+    readonly column: number;
+    peekByte(at?: number): number;
+    eatByte(): number;
+    eatBytes(n: number): Uint8Array;
+    matchBytes(b: Uint8Array | readonly number[]): boolean;
+    eatUntilByte(c: number, max?: number): Uint8Array;
+    bytesSlice(from: ScannerMark, to?: ScannerMark): Uint8Array;
+    readU8(): number;   readI8(): number;
+    readU16BE(): number; readU16LE(): number;
+    readI16BE(): number; readI16LE(): number;
+    readU32BE(): number; readU32LE(): number;
+    readI32BE(): number; readI32LE(): number;
+    readU64BE(): bigint; readU64LE(): bigint;
+    readI64BE(): bigint; readI64LE(): bigint;
+    readF32BE(): number; readF32LE(): number;
+    readF64BE(): number; readF64LE(): number;
+    eatText(byteLength: number, encoding?: Encoding): string;
+    peek(n?: number): string;
+    peekCode(n?: number): number;
+    eat(n?: number): string;
+    eatChar(s: string): boolean;
+    match(s: string): boolean;
+    eatWhile(pred: (code: number) => boolean): string;
+    eatUntil(pred: (code: number) => boolean): string;
+    expect(s: string, message?: string): void;
+    text(from: ScannerMark, to?: ScannerMark): string;
+    mark(): ScannerMark;
+    snapshot(): ScannerSnapshot;
+    restore(s: ScannerSnapshot): void;
+    error(detail: string, span?: ScannerMark | { from: ScannerMark; to: ScannerMark }): ParseError;
+  }
+}
+
 declare module 'fino:ffi' {
   export interface NativeSymbolSpec {
     parameters?: readonly unknown[];

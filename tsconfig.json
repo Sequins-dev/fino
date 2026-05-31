@@ -17,6 +17,7 @@
       "fino:opentelemetry": ["./js/opentelemetry.mts"],
       "fino:realm": ["./js/runtime/realm.mts"],
       "fino:runtime/*": ["./js/runtime/*.mts"],
+      "fino:scanner": ["./js/scanner.mts"],
       "fino:semver": ["./js/semver.mts"],
       "fino:uuid": ["./js/uuid.mts"],
       "fino:format/*": ["./js/format/*/index.mts"],

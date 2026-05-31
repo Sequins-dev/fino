@@ -275,8 +275,9 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:opentelemetry/sdk", "opentelemetry/sdk"),
     source_builtin!("fino:opentelemetry", "opentelemetry"),
-    source_builtin!("fino:semver", "semver"),
-    source_builtin!("fino:uuid", "uuid"),
+    source_builtin!("fino:scanner", "scanner"),
+    source_builtin!("fino:semver",  "semver"),
+    source_builtin!("fino:uuid",    "uuid"),
     // format
     source_builtin!("internal:format/error",   "format/_error"),
     source_builtin!("internal:format/scanner", "format/_scanner"),
