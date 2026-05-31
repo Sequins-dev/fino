@@ -60,6 +60,10 @@
     "reason": "nghttp2 accepts the stream rather than sending GOAWAY(PROTOCOL_ERROR) — stream ID reuse detection not enforced at this layer"
   },
   {
+    "id": "http2/5.1.2/Sends HEADERS frames that causes their advertised concurrent stream limit to be exceeded",
+    "reason": "server correctly RST_STREAMs stream N+1 with REFUSED_STREAM (verified in isolation); fails when run after sections 5.1/5.1.1 due to server TLS/nghttp2 cleanup timing — connection reset before SETTINGS exchange completes"
+  },
+  {
     "id": "http2/5.3.1/Sends PRIORITY frame that depend on itself",
     "reason": "nghttp2 does not send RST_STREAM(PROTOCOL_ERROR) for self-dependent PRIORITY; h2spec times out waiting for the error response"
   },

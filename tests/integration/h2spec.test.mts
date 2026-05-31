@@ -280,7 +280,12 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     const allFailing: string[] = [];
     const missingSections: string[] = [];
 
-    for (const section of _SECTIONS) {
+    for (let si = 0; si < _SECTIONS.length; si++) {
+      const section = _SECTIONS[si]!;
+      // Give the server a moment to finish cleanup from the previous section's
+      // connection teardown (TLS + nghttp2 async cleanup) before the next
+      // section's probe connection arrives. First section needs no delay.
+      if (si > 0) await new Promise<void>(r => setTimeout(r, 500));
       const { xml, stderr } = await _runSection(h2specPath!, section, port);
       if (!xml) {
         missingSections.push(`${section} (stderr: ${stderr.trim() || '<empty>'})`);
