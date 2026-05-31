@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>API - csv</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">context</div><ul><li><a href="../context/index.html">index</a></li><li><a href="../context/topic.html">topic</a></li></ul></li><li><div class="docs-sidebar-directory">database</div><ul><li><a href="../database/sqlite.html">sqlite</a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a href="csv.html" aria-current="page">csv</a></li><li><a href="markdown.html">markdown</a></li><li><a href="toml.html">toml</a></li><li><a href="typescript.html">typescript</a></li><li><a href="xml.html">xml</a></li><li><a href="yaml.html">yaml</a></li></ul></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><div class="docs-sidebar-directory">http</div><ul><li><a href="../net/http/driver.html">driver</a></li><li><a href="../net/http/eventsource.html">eventsource</a></li><li><a href="../net/http/h1.html">h1</a></li><li><a href="../net/http/h2.html">h2</a></li><li><a href="../net/http/index.html">index</a></li><li><a href="../net/http/server.html">server</a></li><li><a href="../net/http/websocket.html">websocket</a></li></ul></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li></ul></li><li><div class="docs-sidebar-directory">opentelemetry</div><ul><li><a href="../opentelemetry/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">parsing</div><ul><li><a href="../parsing/scanner.html">scanner</a></li></ul></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><div class="docs-sidebar-directory">realm</div><ul><li><a href="../runtime/realm/index.html">index</a></li><li><a href="../runtime/realm/pool.html">pool</a></li><li><a href="../runtime/realm/self.html">self</a></li></ul></li></ul></li><li><a href="../semver.html">semver</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../test/assert.html">assert</a></li><li><a href="../test/bench.html">bench</a></li><li><a href="../test/mock.html">mock</a></li><li><a href="../test/test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:csv">csv</h1>
+<p class="muted">js/format/csv.mts</p>
+<p>fino:format/csv — CSV parsing and serialization (RFC 4180 + dialect options).</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse, stringify } from <span class="tok-string">&#39;fino:format/csv&#39;</span>;
+
+<span class="tok-keyword">const</span> rows = parse(<span class="tok-string">&#39;a,b\n1,2\n3,4&#39;</span>, { header: <span class="tok-keyword">true</span> });
+<span class="tok-comment">// [{ a: &#39;1&#39;, b: &#39;2&#39; }, { a: &#39;3&#39;, b: &#39;4&#39; }]</span>
+
+<span class="tok-keyword">const</span> out = stringify([{ a: <span class="tok-string">&#39;1&#39;</span>, b: <span class="tok-string">&#39;2&#39;</span> }, { a: <span class="tok-string">&#39;3&#39;</span>, b: <span class="tok-string">&#39;4&#39;</span> }]);
+<span class="tok-comment">// &#39;a,b\r\n1,2\r\n3,4\r\n&#39;</span></code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="csv.CsvParseError">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="csv.html#csv.CsvParseError">CsvParseError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="../parsing/scanner.html#scanner.ParseError">ParseError</a> {</code></h3>
+
+<p>Error thrown when CSV input is malformed.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="csv.CsvParseError.name">
+<h5><code>name</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="csv.CsvRow">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="csv.html#csv.CsvRow">CsvRow</a> = <span class="tok-keyword">string</span>[]</code></h3>
+
+<p>Positional CSV row with one string per field.</p>
+
+</section>
+
+<section id="csv.CsvRecord">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="csv.html#csv.CsvRecord">CsvRecord</a> = <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h3>
+
+<p>Object row produced when headers or explicit columns are enabled.</p>
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="csv.CsvParseOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a> {</code></h3>
+
+<p>Options controlling CSV parsing dialect and row shape.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="csv.CsvParseOptions.delimiter">
+<h5><code>delimiter?: <span class="tok-keyword">string</span></code></h5>
+
+<p>One-character field delimiter. Defaults to comma.</p>
+</section>
+
+<section class="member" id="csv.CsvParseOptions.quote">
+<h5><code>quote?: <span class="tok-keyword">string</span></code></h5>
+
+<p>One-character quote delimiter. Defaults to double quote.</p>
+</section>
+
+<section class="member" id="csv.CsvParseOptions.comment">
+<h5><code>comment?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Optional one-character line comment prefix.</p>
+</section>
+
+<section class="member" id="csv.CsvParseOptions.header">
+<h5><code>header?: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Use the first row as object keys.</p>
+</section>
+
+<section class="member" id="csv.CsvParseOptions.columns">
+<h5><code>columns?: <span class="tok-keyword">string</span>[]</code></h5>
+
+<p>Explicit object keys for each field.</p>
+</section>
+
+<section class="member" id="csv.CsvParseOptions.skipEmptyLines">
+<h5><code>skipEmptyLines?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="csv.CsvParseOptions.trim">
+<h5><code>trim?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="csv.CsvParseOptions.relaxColumnCount">
+<h5><code>relaxColumnCount?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="csv.CsvParseOptions.cast">
+<h5><code>cast?: <span class="tok-keyword">boolean</span> | CastFn</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="csv.CsvStringifyOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="csv.html#csv.CsvStringifyOptions">CsvStringifyOptions</a> {</code></h3>
+
+<p>Options controlling CSV output dialect and header emission.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="csv.CsvStringifyOptions.delimiter">
+<h5><code>delimiter?: <span class="tok-keyword">string</span></code></h5>
+
+<p>One-character field delimiter. Defaults to comma.</p>
+</section>
+
+<section class="member" id="csv.CsvStringifyOptions.quote">
+<h5><code>quote?: <span class="tok-keyword">string</span></code></h5>
+
+<p>One-character quote delimiter. Defaults to double quote.</p>
+</section>
+
+<section class="member" id="csv.CsvStringifyOptions.lineEnding">
+<h5><code>lineEnding?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Row separator. Defaults to CRLF.</p>
+</section>
+
+<section class="member" id="csv.CsvStringifyOptions.header">
+<h5><code>header?: <span class="tok-keyword">boolean</span> | <span class="tok-keyword">string</span>[]</code></h5>
+
+<p>Emit a header row when stringifying records.</p>
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="csv.parse">
+<h3><code><span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options?: <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a> &amp; { header?: <span class="tok-keyword">false</span>; columns?: <span class="tok-keyword">undefined</span> }): <span class="tok-keyword">string</span>[][]</code></h3>
+<pre><code class="language-ts"><span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options?: <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a> &amp; { header?: <span class="tok-keyword">false</span>; columns?: <span class="tok-keyword">undefined</span> }): <span class="tok-keyword">string</span>[][]
+<span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a> &amp; { header: <span class="tok-keyword">true</span> }): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;[]
+<span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a> &amp; { columns: <span class="tok-keyword">string</span>[] }): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;[]
+<span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options?: <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a>): <span class="tok-keyword">string</span>[][] | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;[]</code></pre>
+<p>Parse a CSV string or bytes into positional rows or records.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse } from <span class="tok-string">&#39;fino:format/csv&#39;</span>;
+
+parse(<span class="tok-string">&#39;a,b\n1,2\n&#39;</span>, { header: <span class="tok-keyword">true</span> }); <span class="tok-comment">// [{ a: &#39;1&#39;, b: &#39;2&#39; }]</span></code></pre>
+
+</section>
+
+<section id="csv.parseStream">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span>* parseStream( src: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;, options: <a class="tok-type" href="csv.html#csv.CsvParseOptions">CsvParseOptions</a> = {}, ): AsyncIterableIterator&lt;<a class="tok-type" href="csv.html#csv.CsvRow">CsvRow</a> | <a class="tok-type" href="csv.html#csv.CsvRecord">CsvRecord</a>&gt;</code></h3>
+
+<p>Parse a CSV byte stream row-by-row without buffering the entire input. Each chunk from <code>src</code> is processed incrementally; quoted fields containing embedded newlines are handled correctly across chunk boundaries.</p>
+
+</section>
+
+<section id="csv.stringify">
+<h3><code><span class="tok-keyword">function</span> stringify( rows: <span class="tok-keyword">string</span>[][] | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;[], options: <a class="tok-type" href="csv.html#csv.CsvStringifyOptions">CsvStringifyOptions</a> = {}, ): <span class="tok-keyword">string</span></code></h3>
+
+<p>Serialize rows or records to CSV.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { stringify } from <span class="tok-string">&#39;fino:format/csv&#39;</span>;
+
+stringify([{ a: <span class="tok-string">&#39;1&#39;</span>, b: <span class="tok-string">&#39;2&#39;</span> }]); <span class="tok-comment">// &#39;a,b\r\n1,2\r\n&#39;</span></code></pre>
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

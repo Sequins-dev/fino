@@ -3,8 +3,8 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { Context, Snapshot, snapshotAll } from 'fino:runtime/context';
-import { topic, Topic, SubscriptionHandle, BindingHandle } from 'fino:util/topic';
+import { Context, Snapshot, snapshotAll } from 'fino:context';
+import { topic, Topic, SubscriptionHandle, BindingHandle } from 'fino:context/topic';
 
 describe('Context basics', () => {
   it('Context — get() returns undefined when no value set', (t) => {

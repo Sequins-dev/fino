@@ -3,10 +3,10 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Request, Response, Headers } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
-import { h2Available } from 'fino:net/http2';
+import { h2Available } from 'fino:net/http/h2';
 
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);

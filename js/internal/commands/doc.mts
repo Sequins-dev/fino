@@ -8,9 +8,9 @@
 import { DiskFileSystem } from '../../file/fs.mts';
 import { Command, type CommandContext } from '../../util/argv.mts';
 import { cwd } from '../../runtime/process.mts';
-import { renderMarkdown, renderMarkdownInline, type MarkdownOptions } from '../../markdown.mts';
+import { renderMarkdown, renderMarkdownInline, type MarkdownOptions } from '../../format/markdown.mts';
 import { escapeHtml, render as renderTemplate } from '../../template.mts';
-import { parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript/index.mts';
+import { parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.mts';
 
 const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
@@ -1691,7 +1691,7 @@ function renderCandidates(title: string, candidates: FlatSymbol[]): string {
 }
 
 async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
-  const sqlite = await import('fino:sqlite');
+  const sqlite = await import('fino:database/sqlite');
   if (!sqlite.sqliteAvailable) throw new Error('fino doc: sqlite unavailable');
   await ensureDir(dirname(dbPath));
   if (await exists(dbPath)) await fs.unlink(dbPath);
@@ -1819,7 +1819,7 @@ async function runSearchCommand(ctx: CommandContext): Promise<string> {
 }
 
 async function searchSqlite(dbPath: string, query: string): Promise<string> {
-  const sqlite = await import('fino:sqlite');
+  const sqlite = await import('fino:database/sqlite');
   if (!sqlite.sqliteAvailable) throw new Error('fino doc search: sqlite unavailable');
 
   const ftsQuery = toFtsQuery(query);

@@ -1,17 +1,17 @@
 /**
- * Virtualization tests for fino:sqlite.
+ * Virtualization tests for fino:database/sqlite.
  *
  * Proves that sqlite I/O flows through the FileSystem abstraction, not raw
  * file paths. Three subtests:
  *
  * 1. Child realm with a Facade restricting fino:file to a specific path
- * 2. Child realm with fino:sqlite entirely blocked via ImportMap.deny
+ * 2. Child realm with fino:database/sqlite entirely blocked via ImportMap.deny
  * 3. In-memory FileSystem — the load-bearing test. Opens a Database backed
  *    by a pure JS MemoryFileSystem, inserts + selects rows. No disk access.
  */
 
 import { describe, it } from 'fino:test/test';
-import { sqliteAvailable, Database } from 'fino:sqlite';
+import { sqliteAvailable, Database } from 'fino:database/sqlite';
 import type { FileSystem, FileHandle } from 'internal:file/provider';
 import type { Stat } from 'internal:file/stat';
 import type { Path } from 'internal:file/path';
@@ -134,7 +134,7 @@ class MemoryFileSystem {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('fino:sqlite — in-memory FileSystem (virtualization)', () => {
+describe('fino:database/sqlite — in-memory FileSystem (virtualization)', () => {
   it('insert + select round-trip through pure JS MemoryFileSystem', async (t) => {
     const memFs = new MemoryFileSystem();
     const db    = await Database.open('/test.db', { fs: memFs as unknown as FileSystem });

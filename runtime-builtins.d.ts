@@ -1,4 +1,4 @@
-declare module 'fino:scanner' {
+declare module 'fino:parsing/scanner' {
   export type Encoding = 'utf-8' | 'ascii' | 'latin1' | 'utf-16le' | 'utf-16be';
   export interface ScannerOptions {
     encoding?: Encoding;

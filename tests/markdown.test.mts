@@ -1,7 +1,7 @@
 import { describe, it } from 'fino:test/test';
-import { parseMarkdown, renderMarkdown, renderMarkdownInline } from 'fino:markdown';
+import { parseMarkdown, renderMarkdown, renderMarkdownInline } from 'fino:format/markdown';
 
-describe('fino:markdown', () => {
+describe('fino:format/markdown', () => {
   it('renders common markdown blocks and inline spans', (t) => {
     const html = renderMarkdown(`# Title
 

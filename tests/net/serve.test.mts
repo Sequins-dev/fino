@@ -6,7 +6,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'fino:runtime/loop';

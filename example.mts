@@ -9,7 +9,7 @@
  * Stop:  curl http://127.0.0.1:$PORT/stop
  */
 
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { env } from 'fino:runtime/process';
 

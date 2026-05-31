@@ -5,7 +5,7 @@
  * @internal
  */
 
-import { subscribeMatching } from '../../../util/topic.mts';
+import { subscribeMatching } from '../../../context/topic.mts';
 import type { Disposable, OtelSdkLike, SpanEventRecord, SpanLinkRecord, SpanRecord } from '../common.mts';
 import { isScopedTraceTopic } from '../traces.mts';
 

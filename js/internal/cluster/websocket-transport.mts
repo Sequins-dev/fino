@@ -16,8 +16,8 @@
  * @internal
  */
 
-import { serve } from 'fino:net/serve';
-import { WebSocketConnection } from 'fino:net/websocket';
+import { serve } from 'fino:net/http/server';
+import { WebSocketConnection } from 'fino:net/http/websocket';
 import type { Request } from 'fino:net/http';
 import { Response } from 'fino:net/http';
 

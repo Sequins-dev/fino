@@ -5,7 +5,7 @@
  * @internal
  */
 
-import { topic } from '../../../util/topic.mts';
+import { topic } from '../../../context/topic.mts';
 import {
   installRequestContext,
   nowUnixNano,

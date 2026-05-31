@@ -5,8 +5,8 @@
  * @internal
  */
 
-import { Context } from '../../runtime/context.mts';
-import { Topic, topic } from '../../util/topic.mts';
+import { Context } from '../../context/index.mts';
+import { Topic, topic } from '../../context/topic.mts';
 import {
   Baggage,
   BaseProvider,

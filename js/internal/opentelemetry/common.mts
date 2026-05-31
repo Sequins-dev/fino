@@ -5,9 +5,9 @@
  * @internal
  */
 
-import { Context } from '../../runtime/context.mts';
-import { topic } from '../../util/topic.mts';
-export { topic } from '../../util/topic.mts';
+import { Context } from '../../context/index.mts';
+import { topic } from '../../context/topic.mts';
+export { topic } from '../../context/topic.mts';
 
 export type Attributes = Record<string, unknown>;
 export type ScopeInfo = {

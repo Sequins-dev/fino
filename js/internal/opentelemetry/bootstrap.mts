@@ -23,7 +23,7 @@ import {
   TraceTopicInstrumentation,
   TlsInstrumentation,
   TracerProvider,
-} from '../../opentelemetry.mts';
+} from '../../opentelemetry/index.mts';
 import { registerShutdownHook } from '../shutdown.mts';
 
 function logOtelDebug(prefix: string, value: unknown): void {

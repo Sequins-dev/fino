@@ -1,5 +1,5 @@
 /**
- * Tests for fino:net/websocket — WebSocketConnection (engine) and WebSocket (facade).
+ * Tests for fino:net/http/websocket — WebSocketConnection (engine) and WebSocket (facade).
  *
  * Tests cover:
  *   - Handshake key/accept computation (RFC 6455 §1.3 golden vector)
@@ -14,8 +14,8 @@
 
 import { describe, it } from 'fino:test/test';
 import { ok, equal, deepEqual } from 'fino:test/assert';
-import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/websocket';
-import { serve } from 'fino:net/serve';
+import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
+import { serve } from 'fino:net/http/server';
 import { Headers, Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'fino:runtime/loop';

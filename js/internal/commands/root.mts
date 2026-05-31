@@ -20,9 +20,9 @@ import {
   runWithLoggerProvider,
   runWithMeterProvider,
   runWithTracerProvider,
-} from '../../opentelemetry.mts';
+} from '../../opentelemetry/index.mts';
 import { createCliOtelRuntime } from '../opentelemetry/bootstrap.mts';
-import { Realm } from '../../runtime/realm.mts';
+import { Realm } from '../../runtime/realm/index.mts';
 
 function normalizeScriptSpecifier(script: string): string {
   if (script.startsWith('file://')) return script;

@@ -1,8 +1,8 @@
 /**
- * Tests for fino:util/topic — Topic pub/sub and async iterator.
+ * Tests for fino:context/topic — Topic pub/sub and async iterator.
  */
 import { describe, it } from 'fino:test/test';
-import { subscribeMatching, topic } from 'fino:util/topic';
+import { subscribeMatching, topic } from 'fino:context/topic';
 
 describe('Topic async iterator', () => {
   it('yields published messages in order', async (t) => {

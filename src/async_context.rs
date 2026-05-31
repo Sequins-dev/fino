@@ -2,7 +2,7 @@
 //!
 //! Exposes `internal:async-context` as a synthetic V8 module. The slot management
 //! logic (COW array manipulation, snapshot/restore) lives entirely in JavaScript
-//! (`js/runtime/context.mts`). This module only provides:
+//! (`js/context/index.mts`). This module only provides:
 //!
 //! - `getCPED` / `setCPED`: V8 Torque builtins extracted from the extras binding
 //!   object. These compile to direct CPED memory loads/stores on the V8 isolate

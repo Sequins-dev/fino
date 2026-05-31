@@ -5,8 +5,8 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { h2Available, h2Version, H2ClientDriver, Nghttp2Session } from 'fino:net/http2';
-import { serve } from 'fino:net/serve';
+import { h2Available, h2Version, H2ClientDriver, Nghttp2Session } from 'fino:net/http/h2';
+import { serve } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { Response } from 'fino:net/http';
 

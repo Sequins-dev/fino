@@ -1,12 +1,12 @@
 import { describe, it } from 'fino:test/test';
-import { Database, sqliteAvailable, vec, vecDecode } from 'fino:sqlite';
+import { Database, sqliteAvailable, vec, vecDecode } from 'fino:database/sqlite';
 
 if (!sqliteAvailable) {
   console.log('SKIP: libsqlite3 not found (install via: brew install sqlite or apt install libsqlite3-0)');
   process.exit(0);
 }
 
-describe('fino:sqlite — basic', () => {
+describe('fino:database/sqlite — basic', () => {
   it('opens and closes an in-memory database', async (t) => {
     const db = await Database.open(':memory:');
     t.ok(!db['#closed'], 'db should be open');  // just tests open() doesn't throw
@@ -52,7 +52,7 @@ describe('fino:sqlite — basic', () => {
   });
 });
 
-describe('fino:sqlite — type round-trips', () => {
+describe('fino:database/sqlite — type round-trips', () => {
   it('NULL → null', async (t) => {
     const db  = await Database.open(':memory:');
     const row = await db.prepare('SELECT NULL AS v').get();
@@ -114,7 +114,7 @@ describe('fino:sqlite — type round-trips', () => {
   });
 });
 
-describe('fino:sqlite — query methods', () => {
+describe('fino:database/sqlite — query methods', () => {
   async function setup() {
     const db = await Database.open(':memory:');
     await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
@@ -159,7 +159,7 @@ describe('fino:sqlite — query methods', () => {
   });
 });
 
-describe('fino:sqlite — transactions', () => {
+describe('fino:database/sqlite — transactions', () => {
   it('commits on success', async (t) => {
     const db  = await Database.open(':memory:');
     await db.exec('CREATE TABLE t (v INTEGER)');
@@ -187,7 +187,7 @@ describe('fino:sqlite — transactions', () => {
   });
 });
 
-describe('fino:sqlite — Statement finalize', () => {
+describe('fino:database/sqlite — Statement finalize', () => {
   it('finalize is idempotent', async (t) => {
     const db   = await Database.open(':memory:');
     const stmt = db.prepare('SELECT 1');
@@ -206,7 +206,7 @@ describe('fino:sqlite — Statement finalize', () => {
   });
 });
 
-describe('fino:sqlite — vector helpers', () => {
+describe('fino:database/sqlite — vector helpers', () => {
   it('vec() encodes a float array as sqlite-vec text', (t) => {
     t.equal(vec([1.0, 2.0, 3.0]), '[1,2,3]', 'number[] encoding');
     t.equal(vec(new Float32Array([0.5, -1.0])), '[0.5,-1]', 'Float32Array encoding');

@@ -22,7 +22,7 @@
  * throws or an expectation fails.
  */
 
-import { Headers, Request, Response } from '../net/http.mts';
+import { Headers, Request, Response } from '../net/http/index.mts';
 
 type FetchInput = string | URL | Request;
 type FetchInit = {

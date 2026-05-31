@@ -12,7 +12,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
 

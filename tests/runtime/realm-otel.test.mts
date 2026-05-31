@@ -7,7 +7,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { topic } from 'fino:util/topic';
+import { topic } from 'fino:context/topic';
 import { Realm } from 'fino:realm';
 import { RealmPool } from 'fino:realm/pool';
 

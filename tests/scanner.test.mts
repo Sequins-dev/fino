@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { Scanner, ParseError } from 'fino:scanner';
+import { Scanner, ParseError } from 'fino:parsing/scanner';
 
 // ── Binary ops ────────────────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@
 import { before, after, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { createArchive } from 'fino:archive';
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { Process, execPath, env } from 'fino:runtime/process';
 

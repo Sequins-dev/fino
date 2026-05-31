@@ -7,7 +7,7 @@
  *   curl http://127.0.0.1:$PORT/stop   # stops profiling, writes profile.pb, shuts down
  */
 
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { startProfiling, stopProfiling } from 'fino:profiler';
 import { DiskFileSystem } from 'fino:file';

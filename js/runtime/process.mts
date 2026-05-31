@@ -94,7 +94,7 @@ import { dlopen, Pointer } from 'fino:ffi';
 import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
 import { FdReader, FdWriter } from '../internal/stream.mts';
 import * as loop from './loop.mts';
-import { topic, Topic } from '../util/topic.mts';
+import { topic, Topic } from '../context/topic.mts';
 
 export interface ProcessOptions {
   cwd?:  string;

@@ -6,7 +6,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/serve';
+import { serve } from 'fino:net/http/server';
 import { Request, Response, Headers } from 'fino:net/http';
 import { gzip, brotliAvailable, brotliCompress } from 'fino:util/compression';
 

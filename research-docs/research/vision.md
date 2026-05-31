@@ -32,7 +32,7 @@ hard-to-copy properties are a specific *combination* that no incumbent runtime h
    75, terminate, `REALM_EXIT` propagation) already works across the cluster. Parent death
    tears down children; this is the skeleton of a reliable orchestrator.
 
-5. **Embeddable vector-capable storage with pluggable I/O.** `fino:sqlite` binds system
+5. **Embeddable vector-capable storage with pluggable I/O.** `fino:database/sqlite` binds system
    libsqlite3 over a **JS-implemented VFS** (function pointers are `FfiCallback`s), so
    SQLite transparently runs on disk, memory, or an S3/virtual filesystem — and
    `sqlite-vec` gives vector search in-process. No external database or vector store
@@ -102,13 +102,13 @@ the runtime itself, not a container around it.*
 |---|---|---|
 | **Agents** (LLM + tools + memory) | An agent is a module; its tool surface is a set of `Facade`s; its authority is its import rules | Substrate ready |
 | **Tools** (typed, MCP) | Tools are Facade methods (typed RPC). Untrusted/codegen tools run in narrowed child realms; MCP servers hosted as realms behind a Facade | Substrate ready; needs tool/MCP SDK |
-| **Workflows** (graph, durable, suspend/resume) | Structured-concurrency realm graph; `watch`/reload (exit-code 75) is the suspend/resume primitive; durable state in `fino:sqlite` | Needs a durable-execution layer over realms |
-| **Memory** (working + semantic recall) | `fino:sqlite` for thread/working memory; `sqlite-vec` for semantic recall — in-process, no external store | Substrate ready; needs memory API |
+| **Workflows** (graph, durable, suspend/resume) | Structured-concurrency realm graph; `watch`/reload (exit-code 75) is the suspend/resume primitive; durable state in `fino:database/sqlite` | Needs a durable-execution layer over realms |
+| **Memory** (working + semantic recall) | `fino:database/sqlite` for thread/working memory; `sqlite-vec` for semantic recall — in-process, no external store | Substrate ready; needs memory API |
 | **RAG** (chunk/embed/retrieve/rerank) | `sqlite-vec` vector store over pluggable VFS (S3-backed for serverless); embeddings via fetch to providers | Substrate ready; needs RAG toolkit |
 | **Multi-agent networks** | Agents as realms; `remote` realms distribute them across machines with location-transparent messaging | Substrate ready (cluster); gated by cluster auth |
 | **Evals / scoring** | Eval runs as isolated realms (reproducible, parallel via `RealmPool`) | Substrate ready; needs eval harness |
 | **Observability** | Built-in OTel traces per agent step + per-realm V8 Inspector for live debugging | Best-in-class already |
-| **Voice / streaming** | WebSocket + streaming bodies + SSE (`fino:net/eventsource`) | Transport ready |
+| **Voice / streaming** | WebSocket + streaming bodies + SSE (`fino:net/http/eventsource`) | Transport ready |
 | **Deployment** | Single binary; `remote` realms; appliance or serverless | Ready (self-host); serverless needs platform |
 
 **Differentiating capabilities no competitor can easily match:**
@@ -274,7 +274,7 @@ Layered, each layer leaning on an existing primitive:
 fino:agent            Agent, run(), streaming, handoff           (new, JS)
 fino:agent/tool       Tool defs, typed schema, MCP adapter       -> Facade RPC
 fino:agent/sandbox    runUntrusted(code, grants)                  -> ImportMap.deny + Realm
-fino:agent/memory     thread memory + semantic recall            -> fino:sqlite + sqlite-vec
+fino:agent/memory     thread memory + semantic recall            -> fino:database/sqlite + sqlite-vec
 fino:agent/rag        chunk / embed / retrieve / rerank          -> sqlite-vec + fetch
 fino:agent/workflow   graph, step, suspend/resume, durable       -> realm watch/reload + sqlite
 fino:agent/eval       scorers, datasets, parallel runs           -> RealmPool
@@ -285,7 +285,7 @@ fino:agent/net        multi-agent across nodes                   -> cluster remo
 - **Agent** = a module + a model client (LLM via `fetch`) + a tool set (Facades) + a memory
   handle + an import-rule policy. `agent.run(input)` streams steps; tool calls dispatch
   over RPC; untrusted tools execute via `sandbox.runUntrusted`.
-- **Memory** = a `fino:sqlite` database (working memory: messages/threads; semantic:
+- **Memory** = a `fino:database/sqlite` database (working memory: messages/threads; semantic:
   `sqlite-vec`), pluggable VFS so the same code runs on local disk or S3 for serverless.
 - **Workflow** = a graph of steps, each a realm; durability via journaling step results to
   SQLite + `watch`/reload to resume after a crash; suspend = persist + terminate, resume =
@@ -322,7 +322,7 @@ breadth-of-unlock x leverage. Items already tracked elsewhere are cross-referenc
    `openssl.mts`.)
 6. **Cross-process/remote capability transfer.** *Unlocks:* #2,#5,#7,#12 — ocap
    delegation in process/remote topologies (extend `transit.rs` model).
-7. **Durable state / journal primitive** (over `fino:sqlite`, optional distributed KV
+7. **Durable state / journal primitive** (over `fino:database/sqlite`, optional distributed KV
    later). *Unlocks:* #6,#7,#10 — durable workflows and config planes.
 8. **HTTP/2 driver** then **UDP/QUIC**. *Unlocks:* #3,#13 (gRPC), then the H3/QUIC
    future and mesh credibility. (See `roadmap.md` 4.1.) Largest effort; sequence last.
@@ -382,13 +382,13 @@ operational-maturity investments each requires.
 
 For readers verifying claims against the code:
 
-- Realms / modes / lifecycle: `js/runtime/realm.mts`, `src/realm/{mod,native,child,bridge}.rs`
+- Realms / modes / lifecycle: `js/runtime/realm/index.mts`, `src/realm/{mod,native,child,bridge}.rs`
 - Capability narrowing: `src/state.rs` (directives), `src/realm/native.rs` (`narrowing_check`),
   `src/loader.rs` (block/remap enforcement)
-- RPC / Facade / streaming / handles: `js/runtime/realm.mts`, `js/internal/.../parent-rpc.mts`,
+- RPC / Facade / streaming / handles: `js/runtime/realm/index.mts`, `js/internal/.../parent-rpc.mts`,
   `src/realm/synthetic.rs`; cross-thread port transfer: `src/realm/transit.rs`
 - Cluster / remote realms / transport: `js/cluster/*`, `docs/research/cluster.md`
-- Networking: `js/net/{http,http1,protocol,serve,tls,websocket}.mts`,
+- Networking: `js/net/{dns,socket,tls}.mts`, `js/net/http/*.mts`,
   `js/internal/openssl.mts`, `js/net/socket.mts`; gaps noted in §1
 - FFI / callbacks: `src/ffi/{mod,call,closure,pointer,fast}.rs`
 - Async / event loop: `src/async_rt/*`, `src/runtime.rs`, `js/runtime/loop.mts`

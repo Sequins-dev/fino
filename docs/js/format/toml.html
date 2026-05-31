@@ -1,0 +1,280 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>API - toml</title>
+<style>:root{color-scheme:light;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar a{display:inline-block;padding:2px 0}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:#f6f8fa;border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">API Documentation</a></p>
+<ul><li><div class="docs-sidebar-directory">js</div><ul><li><a href="../archive.html">archive</a></li><li><div class="docs-sidebar-directory">context</div><ul><li><a href="../context/index.html">index</a></li><li><a href="../context/topic.html">topic</a></li></ul></li><li><div class="docs-sidebar-directory">database</div><ul><li><a href="../database/sqlite.html">sqlite</a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a href="../file/fs.html">fs</a></li><li><a href="../file/path.html">path</a></li><li><a href="../file/watch.html">watch</a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a href="csv.html">csv</a></li><li><a href="markdown.html">markdown</a></li><li><a href="toml.html" aria-current="page">toml</a></li><li><a href="typescript.html">typescript</a></li><li><a href="xml.html">xml</a></li><li><a href="yaml.html">yaml</a></li></ul></li><li><div class="docs-sidebar-directory">net</div><ul><li><a href="../net/dns.html">dns</a></li><li><div class="docs-sidebar-directory">http</div><ul><li><a href="../net/http/driver.html">driver</a></li><li><a href="../net/http/eventsource.html">eventsource</a></li><li><a href="../net/http/h1.html">h1</a></li><li><a href="../net/http/h2.html">h2</a></li><li><a href="../net/http/index.html">index</a></li><li><a href="../net/http/server.html">server</a></li><li><a href="../net/http/websocket.html">websocket</a></li></ul></li><li><a href="../net/socket.html">socket</a></li><li><a href="../net/tls.html">tls</a></li></ul></li><li><div class="docs-sidebar-directory">opentelemetry</div><ul><li><a href="../opentelemetry/index.html">index</a></li></ul></li><li><div class="docs-sidebar-directory">parsing</div><ul><li><a href="../parsing/scanner.html">scanner</a></li></ul></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a href="../runtime/cluster.html">cluster</a></li><li><a href="../runtime/loop.html">loop</a></li><li><a href="../runtime/messaging.html">messaging</a></li><li><a href="../runtime/module.html">module</a></li><li><a href="../runtime/process.html">process</a></li><li><div class="docs-sidebar-directory">realm</div><ul><li><a href="../runtime/realm/index.html">index</a></li><li><a href="../runtime/realm/pool.html">pool</a></li><li><a href="../runtime/realm/self.html">self</a></li></ul></li></ul></li><li><a href="../semver.html">semver</a></li><li><a href="../template.html">template</a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a href="../test/assert.html">assert</a></li><li><a href="../test/bench.html">bench</a></li><li><a href="../test/mock.html">mock</a></li><li><a href="../test/test.html">test</a></li></ul></li><li><a href="../tty.html">tty</a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a href="../util/argv.html">argv</a></li><li><a href="../util/compression.html">compression</a></li><li><a href="../util/prompt.html">prompt</a></li></ul></li><li><a href="../uuid.html">uuid</a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:toml">toml</h1>
+<p class="muted">js/format/toml.mts</p>
+<p>fino:format/toml — TOML 1.0.0 parser and serializer.</p>
+<p>Full TOML 1.0.0 conformance: all scalar types (strings, integers, floats, booleans, datetimes), tables, arrays, arrays-of-tables, inline tables. Key uniqueness and structural rules from the spec are enforced.</p>
+<p>Datetime types:</p>
+<ul>
+<li>Offset datetime   → native Date</li>
+<li>Local datetime    → TomlLocalDateTime</li>
+<li>Local date        → TomlLocalDate</li>
+<li>Local time        → TomlLocalTime</li>
+</ul>
+<p>Integer overflow: throws by default; pass { bigint: true } to receive BigInt.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse, stringify } from <span class="tok-string">&#39;fino:format/toml&#39;</span>;
+
+<span class="tok-keyword">const</span> cfg = parse(<span class="tok-string">&#39;[server]\nport = 8080\nhosts = [&quot;a&quot;, &quot;b&quot;]&#39;</span>);
+stringify(cfg);</code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="toml.TomlParseError">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="toml.html#toml.TomlParseError">TomlParseError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="../parsing/scanner.html#scanner.ParseError">ParseError</a> {</code></h3>
+
+<p>Error thrown when TOML input is malformed.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="toml.TomlParseError.name">
+<h5><code>name</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="toml.TomlLocalDate">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="toml.html#toml.TomlLocalDate">TomlLocalDate</a> {</code></h3>
+
+<p>TOML local date value without a time or offset.</p>
+
+<h4>Readonly Properties</h4>
+
+<section class="member" id="toml.TomlLocalDate.year">
+<h5><code><span class="tok-keyword">readonly</span> year: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalDate.month">
+<h5><code><span class="tok-keyword">readonly</span> month: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalDate.day">
+<h5><code><span class="tok-keyword">readonly</span> day: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="toml.TomlLocalDate.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(y: <span class="tok-keyword">number</span>, mo: <span class="tok-keyword">number</span>, d: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="toml.TomlLocalDate.toString">
+<h5><code><a class="tok-type" href="toml.html#toml.TomlLocalDate.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalDate.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="toml.TomlLocalTime">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="toml.html#toml.TomlLocalTime">TomlLocalTime</a> {</code></h3>
+
+<p>TOML local time value without a date or offset.</p>
+
+<h4>Readonly Properties</h4>
+
+<section class="member" id="toml.TomlLocalTime.hour">
+<h5><code><span class="tok-keyword">readonly</span> hour: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalTime.minute">
+<h5><code><span class="tok-keyword">readonly</span> minute: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalTime.second">
+<h5><code><span class="tok-keyword">readonly</span> second: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalTime.ms">
+<h5><code><span class="tok-keyword">readonly</span> ms: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="toml.TomlLocalTime.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(h: <span class="tok-keyword">number</span>, m: <span class="tok-keyword">number</span>, s: <span class="tok-keyword">number</span>, ms = <span class="tok-number">0</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="toml.TomlLocalTime.toString">
+<h5><code><a class="tok-type" href="toml.html#toml.TomlLocalDate.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalTime.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="toml.TomlLocalDateTime">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="toml.html#toml.TomlLocalDateTime">TomlLocalDateTime</a> {</code></h3>
+
+<p>TOML local date-time value without an offset.</p>
+
+<h4>Readonly Properties</h4>
+
+<section class="member" id="toml.TomlLocalDateTime.date">
+<h5><code><span class="tok-keyword">readonly</span> date: <a class="tok-type" href="toml.html#toml.TomlLocalDate">TomlLocalDate</a></code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalDateTime.time">
+<h5><code><span class="tok-keyword">readonly</span> time: <a class="tok-type" href="toml.html#toml.TomlLocalTime">TomlLocalTime</a></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="toml.TomlLocalDateTime.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(d: <a class="tok-type" href="toml.html#toml.TomlLocalDate">TomlLocalDate</a>, t: <a class="tok-type" href="toml.html#toml.TomlLocalTime">TomlLocalTime</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="toml.TomlLocalDateTime.toString">
+<h5><code><a class="tok-type" href="toml.html#toml.TomlLocalDate.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="toml.TomlLocalDateTime.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="toml.TomlValue">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="toml.html#toml.TomlValue">TomlValue</a> = | <span class="tok-keyword">string</span> | <span class="tok-keyword">number</span> | <span class="tok-number">bigint</span> | <span class="tok-keyword">boolean</span> | Date | <a class="tok-type" href="toml.html#toml.TomlLocalDate">TomlLocalDate</a> | <a class="tok-type" href="toml.html#toml.TomlLocalTime">TomlLocalTime</a> | <a class="tok-type" href="toml.html#toml.TomlLocalDateTime">TomlLocalDateTime</a> | <a class="tok-type" href="toml.html#toml.TomlValue">TomlValue</a>[] | { [k: <span class="tok-keyword">string</span>]: <a class="tok-type" href="toml.html#toml.TomlValue">TomlValue</a> }</code></h3>
+
+<p>Value types produced by the TOML parser and accepted by the stringifier.</p>
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="toml.TomlParseOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="toml.html#toml.TomlParseOptions">TomlParseOptions</a> {</code></h3>
+
+<p>Options controlling TOML parsing.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="toml.TomlParseOptions.bigint">
+<h5><code><span class="tok-number">bigint</span>?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="toml.TomlStringifyOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="toml.html#toml.TomlStringifyOptions">TomlStringifyOptions</a> {</code></h3>
+
+<p>Options controlling TOML output formatting.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="toml.TomlStringifyOptions.indent">
+<h5><code>indent?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="toml.parse">
+<h3><code><span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="toml.html#toml.TomlParseOptions">TomlParseOptions</a> = {}): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <a class="tok-type" href="toml.html#toml.TomlValue">TomlValue</a>&gt;</code></h3>
+
+<p>Parse a TOML document into a plain object.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse } from <span class="tok-string">&#39;fino:format/toml&#39;</span>;
+
+parse(<span class="tok-string">&#39;title = &quot;Fino&quot;\n[server]\nport = 8080\n&#39;</span>);</code></pre>
+
+</section>
+
+<section id="toml.stringify">
+<h3><code><span class="tok-keyword">function</span> stringify(value: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <a class="tok-type" href="toml.html#toml.TomlValue">TomlValue</a>&gt;, options: <a class="tok-type" href="toml.html#toml.TomlStringifyOptions">TomlStringifyOptions</a> = {}): <span class="tok-keyword">string</span></code></h3>
+
+<p>Serialize a TOML-compatible object.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { stringify } from <span class="tok-string">&#39;fino:format/toml&#39;</span>;
+
+stringify({ server: { port: <span class="tok-number">8080</span> } });</code></pre>
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

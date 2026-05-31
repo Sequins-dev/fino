@@ -71,9 +71,9 @@ import {
   Headers,
   buildWireResponse,
 } from 'fino:net/http';
-import { H1ClientDriver } from 'fino:net/http1';
-import { H2ConnectionPool, createPoolEntry } from '../http-pool.mts';
-import { h2Available } from '../net/http2/bindings.mts';
+import { H1ClientDriver } from 'fino:net/http/h1';
+import { H2ConnectionPool, createPoolEntry } from '../net/http/pool.mts';
+import { h2Available } from '../net/http/h2/bindings.mts';
 import type { Address } from 'fino:net/socket';
 import {
   brotliAvailable,
@@ -82,7 +82,7 @@ import {
   createInflateRaw,
   createBrotliDecompress,
 } from 'fino:util/compression';
-import { topic } from 'fino:util/topic';
+import { topic } from 'fino:context/topic';
 import { otelRuntimeEvent, otelRuntimeTopic } from '../opentelemetry/common.mts';
 import * as openssl from '../openssl.mts';
 

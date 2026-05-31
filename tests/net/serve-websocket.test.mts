@@ -7,8 +7,8 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/serve';
-import { WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/websocket';
+import { serve } from 'fino:net/http/server';
+import { WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
 
 // ---------------------------------------------------------------------------

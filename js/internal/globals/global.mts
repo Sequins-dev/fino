@@ -61,6 +61,6 @@ export { crypto, cryptoAvailable, tlsAvailable } from './crypto.mts';
 export { fetch } from './fetch.mts';
 export { Headers, Request, Response } from 'fino:net/http';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
-export { WebSocket, CloseEvent, ErrorEvent } from 'fino:net/websocket';
+export { WebSocket, CloseEvent, ErrorEvent } from 'fino:net/http/websocket';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.mts';
 export { BroadcastChannel } from './broadcast-channel.mts';
