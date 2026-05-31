@@ -277,6 +277,13 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:opentelemetry", "opentelemetry"),
     source_builtin!("fino:semver", "semver"),
     source_builtin!("fino:uuid", "uuid"),
+    // format
+    source_builtin!("internal:format/error",   "format/_error"),
+    source_builtin!("internal:format/scanner", "format/_scanner"),
+    source_builtin!("fino:format/csv",  "format/csv/index"),
+    source_builtin!("fino:format/toml", "format/toml/index"),
+    source_builtin!("fino:format/xml",  "format/xml/index"),
+    source_builtin!("fino:format/yaml", "format/yaml/index"),
     // test
     source_builtin!("fino:test/assert", "test/assert"),
     source_builtin!("fino:test/test", "test/test"),
