@@ -20,6 +20,7 @@
  */
 
 import * as openssl from '../openssl.mts';
+import { v4 as _uuidV4 } from 'fino:uuid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1111,21 +1112,9 @@ export const crypto = {
     return typedArray;
   },
 
-  /**
-   * Generate a random UUID v4 string.
-   * @returns {string}
-   */
   randomUUID(): string {
     _checkCryptoAvailable();
-    const buf = new ArrayBuffer(16);
-    openssl.randBytes(buf, 16);
-    const bytes = new Uint8Array(buf);
-    // Set version 4 (bits 12-15 of byte 6)
-    bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
-    // Set variant bits 7-8 of byte 8 to 10xx
-    bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-    const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('');
-    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    return _uuidV4().toString();
   },
 
   subtle,
