@@ -72,11 +72,12 @@
  *   - bits [6:0] = 0x7f → stopped (WIFSTOPPED) — we ignore this case
  *
  *
- * @example
+ * ```ts
  * import { pid, cwd, argv } from './process.mts';
  * console.log(`PID ${pid}, CWD ${cwd()}, args: ${argv.join(' ')}`);
+ * ```
  *
- * @example
+ * ```ts
  * import { Process } from './process.mts';
  * import { decodeUtf8 } from '../internal/globals/encoding.mts';
  *
@@ -85,6 +86,7 @@
  *   console.log(decodeUtf8(chunk));
  * }
  * const { code } = await proc.wait();
+ * ```
  */
 
 import { os, arch, args, env, execPath } from 'internal:process';
@@ -337,7 +339,7 @@ const _registeredSignals = new Set<string>();
  * @param {string} name - Signal name (e.g. `'SIGTERM'`, `'SIGUSR1'`)
  * @returns {Topic} A Topic that publishes `{ signal: string, signo: number }` on delivery
  *
- * @example
+ * ```ts
  * import { signal } from './process.mts';
  *
  * const handle = signal('SIGTERM').subscribe(({ signal }) => {
@@ -346,6 +348,7 @@ const _registeredSignals = new Set<string>();
  * });
  *
  * // Later: handle.dispose() to unsubscribe
+ * ```
  */
 export function signal(name: string): Topic {
   const t = topic('process:' + name);
@@ -370,12 +373,13 @@ export function signal(name: string): Topic {
  * - `stdout` — a Reader to receive bytes from the child's stdout
  * - `stderr` — a Reader to receive bytes from the child's stderr
  *
- * @example
+ * ```ts
  * const proc = new Process('/usr/bin/cat', []);
  * await proc.stdin.write(encodeUtf8('hello\n'));
  * proc.stdin.close();
  * for await (const chunk of proc.stdout) { ... }
  * const { code } = await proc.wait();
+ * ```
  */
 export class Process {
   #pid: number;

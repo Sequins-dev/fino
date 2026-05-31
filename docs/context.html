@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - context</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:context">context</h1>
+<p class="muted">js/runtime/context.mts</p>
+<p>fino:context — Async context propagation.</p>
+<p>A <code>Context</code> is a named slot whose value follows the causal chain of async execution through <code>await</code> and <code>.then()</code>. It works by hooking into V8&#39;s ContinuationPreservedEmbedderData (CPED): when a promise continuation is enqueued, the current frame is captured; when the continuation runs, the frame is restored.</p>
+<p>API mirrors the execution-flow library (closure-based):</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { Context } from <span class="tok-string">&#39;./context.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> requestId = <span class="tok-keyword">new</span> Context(<span class="tok-string">&#39;requestId&#39;</span>);
+
+<span class="tok-keyword">await</span> requestId.runWithValue(<span class="tok-string">&#39;abc-123&#39;</span>, <span class="tok-keyword">async</span> () =&gt; {
+  <span class="tok-keyword">await</span> someAsyncOp();
+  console.log(requestId.<span class="tok-keyword">get</span>()); <span class="tok-comment">// &#39;abc-123&#39; — propagated through await</span>
+});</code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="context.Context">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="context.html#context.Context">Context</a>&lt;T = <span class="tok-keyword">unknown</span>&gt; {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="context.Context.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="context.Context.name">
+<h5><code><span class="tok-keyword">get</span> name()</code></h5>
+
+<p>The context name (readonly).</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="context.Context.get">
+<h5><code><span class="tok-keyword">get</span>(): T | <span class="tok-keyword">undefined</span></code></h5>
+
+<p>Return the current value of this context slot, or <code>undefined</code> if no value has been set (or if <code>runClear</code> is active) in the current async scope.</p>
+</section>
+
+<section class="member" id="context.Context.runWithValue">
+<h5><code>runWithValue&lt;R&gt;(value: T, fn: () =&gt; R): R</code></h5>
+
+<p>Run <code>fn</code> with this context slot set to <code>value</code>. The previous value is restored when <code>fn</code> returns or throws, preserving proper scope nesting.</p>
+<p>Works for both sync and async functions. When <code>fn</code> is async, all continuations within the returned promise will see <code>value</code>.</p>
+</section>
+
+<section class="member" id="context.Context.runClear">
+<h5><code>runClear&lt;R&gt;(fn: () =&gt; R): R</code></h5>
+
+<p>Run <code>fn</code> with this context slot explicitly cleared, making <code>get()</code> return <code>undefined</code> for the duration of <code>fn</code> even if an outer scope has a value. The previous value is restored afterwards.</p>
+</section>
+
+<section class="member" id="context.Context.enterWith">
+<h5><code>enterWith(value: T): <span class="tok-keyword">void</span></code></h5>
+
+<p>Unconditionally set this slot to <code>value</code> in the current async execution scope without scheduling a restore. All future microtasks enqueued from this point — and their continuations — will inherit the value.</p>
+<p>Use sparingly. Unlike <code>runWithValue</code>, there is no automatic cleanup: the caller is responsible for calling <code>exit()</code> when appropriate.</p>
+<p>Analogous to Node.js <code>AsyncLocalStorage.enterWith()</code>.</p>
+</section>
+
+<section class="member" id="context.Context.exit">
+<h5><code>exit(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Clear this slot in the current async execution scope. Code running synchronously after this call will see <code>undefined</code>. Previously-enqueued microtasks keep their captured value unchanged.</p>
+</section>
+
+<section class="member" id="context.Context.snapshot">
+<h5><code>snapshot()</code></h5>
+
+<p>Capture the current frame as a <code>Snapshot</code> that can be re-entered later — useful when manually scheduling callbacks outside the normal async flow (e.g. passing callbacks to third-party queues or custom event emitters).</p>
+</section>
+
+
+</section>
+
+<section id="context.Snapshot">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="context.html#context.Snapshot">Snapshot</a> {</code></h3>
+
+<p>A frozen capture of the full context frame at a point in time, across all <code>Context</code> instances. Can be re-entered later via <code>runWithValue()</code>.</p>
+<p>Obtain via <code>context.snapshot()</code> or the module-level <code>snapshotAll()</code>.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="context.Snapshot.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(handle: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="context.Snapshot.runWithValue">
+<h5><code>runWithValue&lt;R&gt;(fn: () =&gt; R): R</code></h5>
+
+<p>Run <code>fn</code> inside the snapshotted frame. The previous frame is restored afterwards regardless of whether <code>fn</code> throws.</p>
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="context.snapshotAll">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> snapshotAll(): <a class="tok-type" href="context.html#context.Snapshot">Snapshot</a></code></h3>
+
+<p>Capture all current context slot values as a <code>Snapshot</code>. Useful at the point where a callback is registered, so it can be replayed with the full context frame intact when the callback is invoked later.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

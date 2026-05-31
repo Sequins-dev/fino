@@ -1,0 +1,663 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - webstreams</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:webstreams">webstreams</h1>
+<p class="muted">js/internal/globals/webstreams.mts</p>
+<p>fino:webstreams — ReadableStream, WritableStream, TransformStream</p>
+<p>WHATWG Streams specification: <a href="https://streams.spec.whatwg.org/">https://streams.spec.whatwg.org/</a></p>
+<h3>Architecture</h3>
+<p>Two internal representations per stream type allow an efficient fast path for I/O-backed streams while remaining spec-compliant for user-defined sources and sinks.</p>
+<p>ReadableStream (WeakMap <code>_rs</code>):</p>
+<ul>
+<li>kind: &#39;iterable&#39; — backed by an async iterable (Reader, generator, channel).</li>
+</ul>
+<p>No controller, no queue; reads delegate directly to the underlying iterator.</p>
+<ul>
+<li>kind: &#39;source&#39;   — backed by an UnderlyingSource with start/pull/cancel.</li>
+</ul>
+<p>Uses ReadableStreamDefaultController for default streams, or ReadableByteStreamController for type:&#39;bytes&#39; streams. Full HWM-driven pull algorithm, backpressure, BYOB support.</p>
+<p>WritableStream (WeakMap <code>_ws</code>):</p>
+<ul>
+<li>kind: &#39;writer&#39; — backed by a Fino Writer (write/close). Writes delegate</li>
+</ul>
+<p>directly through; no controller overhead.</p>
+<ul>
+<li>kind: &#39;sink&#39;   — backed by an UnderlyingSink with start/write/close/abort.</li>
+</ul>
+<p>Full serialized write queue, HWM-based backpressure, ready promise.</p>
+<h3>Short-circuit piping</h3>
+<p>ReadableStream.pipeTo(WritableStream) inspects internal kinds: iterable + writer → iterates source directly, writes via Writer — equivalent to Writer.pipe(asyncIterable), zero overhead otherwise         → spec-compliant reader.read() / writer.write() pump</p>
+<h3>Exports</h3>
+<p>ReadableStream, ReadableStreamDefaultReader, ReadableStreamDefaultController ReadableStreamBYOBReader, ReadableStreamBYOBRequest, ReadableByteStreamController WritableStream, WritableStreamDefaultWriter, WritableStreamDefaultController TransformStream, TransformStreamDefaultController CountQueuingStrategy, ByteLengthQueuingStrategy</p>
+
+
+<h2>Classes</h2>
+
+<section id="webstreams.CountQueuingStrategy">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.CountQueuingStrategy">CountQueuingStrategy</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="webstreams.CountQueuingStrategy.highWaterMark">
+<h5><code>highWaterMark: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.CountQueuingStrategy.constructor">
+<h5><code><span class="tok-keyword">constructor</span>({ highWaterMark }: { highWaterMark: <span class="tok-keyword">number</span> })</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.CountQueuingStrategy.size">
+<h5><code>size(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ByteLengthQueuingStrategy">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ByteLengthQueuingStrategy">ByteLengthQueuingStrategy</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="webstreams.ByteLengthQueuingStrategy.highWaterMark">
+<h5><code>highWaterMark: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ByteLengthQueuingStrategy.constructor">
+<h5><code><span class="tok-keyword">constructor</span>({ highWaterMark }: { highWaterMark: <span class="tok-keyword">number</span> })</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ByteLengthQueuingStrategy.size">
+<h5><code>size(chunk: ArrayBufferView): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ReadableStreamDefaultController">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ReadableStreamDefaultController">ReadableStreamDefaultController</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ReadableStreamDefaultController.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(rsState: ReadableStreamState)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.ReadableStreamDefaultController.desiredSize">
+<h5><code><span class="tok-keyword">get</span> desiredSize()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ReadableStreamDefaultController.enqueue">
+<h5><code>enqueue(chunk: <span class="tok-keyword">any</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamDefaultController.close">
+<h5><code>close()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamDefaultController.error">
+<h5><code>error(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ReadableByteStreamController">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ReadableByteStreamController">ReadableByteStreamController</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ReadableByteStreamController.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(rsState: ReadableStreamState)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.ReadableByteStreamController.desiredSize">
+<h5><code><span class="tok-keyword">get</span> desiredSize()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableByteStreamController.byobRequest">
+<h5><code><span class="tok-keyword">get</span> byobRequest()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ReadableByteStreamController.enqueue">
+<h5><code>enqueue(chunk: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a> | ArrayBufferView)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableByteStreamController.close">
+<h5><code>close()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableByteStreamController.error">
+<h5><code>error(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableByteStreamController._byobRespond">
+<h5><code>_byobRespond(bytesWritten: <span class="tok-keyword">number</span>, view: ArrayBufferView)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableByteStreamController._byobRespondWithNewView">
+<h5><code>_byobRespondWithNewView(view: ArrayBufferView)</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ReadableStreamBYOBRequest">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ReadableStreamBYOBRequest">ReadableStreamBYOBRequest</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ReadableStreamBYOBRequest.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(controller: <a class="tok-type" href="webstreams.html#webstreams.ReadableByteStreamController">ReadableByteStreamController</a>, desc: PullIntoDescriptor)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.ReadableStreamBYOBRequest.view">
+<h5><code><span class="tok-keyword">get</span> view()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ReadableStreamBYOBRequest.respond">
+<h5><code>respond(bytesWritten: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamBYOBRequest.respondWithNewView">
+<h5><code>respondWithNewView(view: ArrayBufferView)</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ReadableStream">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ReadableStream">ReadableStream</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ReadableStream.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(underlyingSource?: <span class="tok-keyword">any</span>, queuingStrategy?: QueuingStrategyLike)</code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="webstreams.ReadableStream.from">
+<h5><code><span class="tok-keyword">static</span> from(asyncIterable: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">any</span>&gt; | Iterable&lt;<span class="tok-keyword">any</span>&gt;)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.ReadableStream.locked">
+<h5><code><span class="tok-keyword">get</span> locked()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ReadableStream.cancel">
+<h5><code>cancel(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStream.getReader">
+<h5><code>getReader(options?: { mode?: <span class="tok-string">&#39;byob&#39;</span> })</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStream.pipeTo">
+<h5><code><span class="tok-keyword">async</span> pipeTo(destination: <a class="tok-type" href="webstreams.html#webstreams.WritableStream">WritableStream</a>, options?: { preventClose?: <span class="tok-keyword">boolean</span>; preventAbort?: <span class="tok-keyword">boolean</span>; preventCancel?: <span class="tok-keyword">boolean</span>; signal?: <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a> | <span class="tok-keyword">null</span> })</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStream.pipeThrough">
+<h5><code>pipeThrough(transform: { readable: <a class="tok-type" href="webstreams.html#webstreams.ReadableStream">ReadableStream</a>; writable: <a class="tok-type" href="webstreams.html#webstreams.WritableStream">WritableStream</a> }, options?: { preventClose?: <span class="tok-keyword">boolean</span>; preventAbort?: <span class="tok-keyword">boolean</span>; preventCancel?: <span class="tok-keyword">boolean</span>; signal?: <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a> | <span class="tok-keyword">null</span> })</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStream.tee">
+<h5><code>tee()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ReadableStreamDefaultReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ReadableStreamDefaultReader">ReadableStreamDefaultReader</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ReadableStreamDefaultReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(stream: <a class="tok-type" href="webstreams.html#webstreams.ReadableStream">ReadableStream</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.ReadableStreamDefaultReader.closed">
+<h5><code><span class="tok-keyword">get</span> closed()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ReadableStreamDefaultReader.read">
+<h5><code>read()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamDefaultReader.cancel">
+<h5><code>cancel(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamDefaultReader.releaseLock">
+<h5><code>releaseLock()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.ReadableStreamBYOBReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.ReadableStreamBYOBReader">ReadableStreamBYOBReader</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.ReadableStreamBYOBReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(stream: <a class="tok-type" href="webstreams.html#webstreams.ReadableStream">ReadableStream</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.ReadableStreamBYOBReader.closed">
+<h5><code><span class="tok-keyword">get</span> closed()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.ReadableStreamBYOBReader.read">
+<h5><code>read(view: ArrayBufferView, options?: { min?: <span class="tok-keyword">number</span> })</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamBYOBReader.cancel">
+<h5><code>cancel(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.ReadableStreamBYOBReader.releaseLock">
+<h5><code>releaseLock()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.WritableStreamDefaultController">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.WritableStreamDefaultController">WritableStreamDefaultController</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.WritableStreamDefaultController.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(wsState: WritableStreamState)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.WritableStreamDefaultController.signal">
+<h5><code><span class="tok-keyword">get</span> signal()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultController.abortReason">
+<h5><code><span class="tok-keyword">get</span> abortReason()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.WritableStreamDefaultController.error">
+<h5><code>error(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultController._abort">
+<h5><code>_abort(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.WritableStream">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.WritableStream">WritableStream</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.WritableStream.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(underlyingSink?: <span class="tok-keyword">any</span>, queuingStrategy?: QueuingStrategyLike)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.WritableStream.locked">
+<h5><code><span class="tok-keyword">get</span> locked()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.WritableStream.close">
+<h5><code>close()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStream.abort">
+<h5><code>abort(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStream.getWriter">
+<h5><code>getWriter()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.WritableStreamDefaultWriter">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.WritableStreamDefaultWriter">WritableStreamDefaultWriter</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(stream: <a class="tok-type" href="webstreams.html#webstreams.WritableStream">WritableStream</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.closed">
+<h5><code><span class="tok-keyword">get</span> closed()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.desiredSize">
+<h5><code><span class="tok-keyword">get</span> desiredSize()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.ready">
+<h5><code><span class="tok-keyword">get</span> ready()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.write">
+<h5><code>write(chunk: <span class="tok-keyword">any</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.close">
+<h5><code>close()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.abort">
+<h5><code>abort(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.WritableStreamDefaultWriter.releaseLock">
+<h5><code>releaseLock()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.TransformStreamDefaultController">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.TransformStreamDefaultController">TransformStreamDefaultController</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.TransformStreamDefaultController.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(channel: Channel)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="webstreams.TransformStreamDefaultController._setReadableState">
+<h5><code>_setReadableState(rsState: ReadableStreamState | <span class="tok-keyword">undefined</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.TransformStreamDefaultController.enqueue">
+<h5><code>enqueue(chunk: <span class="tok-keyword">any</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.TransformStreamDefaultController.terminate">
+<h5><code>terminate()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.TransformStreamDefaultController.error">
+<h5><code>error(reason: <span class="tok-keyword">unknown</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.TransformStreamDefaultController.desiredSize">
+<h5><code><span class="tok-keyword">get</span> desiredSize()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="webstreams.TransformStream">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="webstreams.html#webstreams.TransformStream">TransformStream</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="webstreams.TransformStream.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(transformer?: <span class="tok-keyword">any</span>, writableStrategy?: QueuingStrategyLike, readableStrategy?: QueuingStrategyLike)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="webstreams.TransformStream.readable">
+<h5><code><span class="tok-keyword">get</span> readable()</code></h5>
+
+
+</section>
+
+<section class="member" id="webstreams.TransformStream.writable">
+<h5><code><span class="tok-keyword">get</span> writable()</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

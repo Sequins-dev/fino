@@ -1,0 +1,329 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/file/bindings</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-file-bindings">js/file/bindings</h1>
+<p class="muted">js/file/bindings.mts</p>
+<p>internal:file-bindings — shared libc FFI bindings, constants, and helpers for the fino:file sub-modules (stat, handle, entry, fs).</p>
+
+
+<h2>Constants</h2>
+
+<section id="js-file-bindings.isDarwin">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> isDarwin</code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.lib">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> lib</code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_RDONLY">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_RDONLY">O_RDONLY</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_WRONLY">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_WRONLY">O_WRONLY</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_RDWR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_RDWR">O_RDWR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_CREAT">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_CREAT">O_CREAT</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_TRUNC">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_TRUNC">O_TRUNC</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_APPEND">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_APPEND">O_APPEND</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.O_EXCL">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.O_EXCL">O_EXCL</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFMT">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFMT">S_IFMT</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFREG">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFREG">S_IFREG</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFDIR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFDIR">S_IFDIR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFLNK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFLNK">S_IFLNK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFSOCK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFSOCK">S_IFSOCK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFIFO">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFIFO">S_IFIFO</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFBLK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFBLK">S_IFBLK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.S_IFCHR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.S_IFCHR">S_IFCHR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.SEEK_SET">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.SEEK_SET">SEEK_SET</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.SEEK_CUR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.SEEK_CUR">SEEK_CUR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.SEEK_END">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.SEEK_END">SEEK_END</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.F_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.F_OK">F_OK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.R_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.R_OK">R_OK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.W_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.W_OK">W_OK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.X_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.X_OK">X_OK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_UNKNOWN">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_UNKNOWN">DT_UNKNOWN</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_FIFO">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_FIFO">DT_FIFO</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_CHR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_CHR">DT_CHR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_DIR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_DIR">DT_DIR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_BLK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_BLK">DT_BLK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_REG">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_REG">DT_REG</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_LNK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_LNK">DT_LNK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.DT_SOCK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/file/bindings.html#js-file-bindings.DT_SOCK">DT_SOCK</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Lets</h2>
+
+<section id="js-file-bindings.loopModule">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">let</span> loopModule: LoopModule | <span class="tok-keyword">null</span></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.asyncOps">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">let</span> asyncOps: AsyncOpsModule | <span class="tok-keyword">null</span></code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-file-bindings.cstr">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> cstr(s: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Encode a JS string as a null-terminated UTF-8 buffer.</p>
+
+</section>
+
+<section id="js-file-bindings.throwErrno">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> throwErrno(syscall: <span class="tok-keyword">string</span>, path: <span class="tok-keyword">string</span>): <span class="tok-keyword">never</span></code></h3>
+
+<p>Throw an error annotated with the current errno value.</p>
+
+</section>
+
+<section id="js-file-bindings.readCStr">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> readCStr(ptr: <span class="tok-keyword">object</span>, offset: <span class="tok-keyword">number</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Read a null-terminated C string from a pointer at the given byte offset.</p>
+
+</section>
+
+<section id="js-file-bindings._toStr">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _toStr(p: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Coerce a Path or string to a plain string for FFI / error messages.</p>
+
+</section>
+
+<section id="js-file-bindings._toPath">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _toPath(p: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>): <a class="tok-type" href="path.html#path.Path">Path</a></code></h3>
+
+<p>Coerce a Path or string to a Path instance.</p>
+
+</section>
+
+<section id="js-file-bindings.joinPath">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> joinPath(dir: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Join a directory path and a child name, avoiding double slashes.</p>
+
+</section>
+
+<section id="js-file-bindings.modeToFlags">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> modeToFlags(mode: <span class="tok-keyword">string</span>): <span class="tok-keyword">number</span></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.modeIsReadable">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> modeIsReadable(mode: <span class="tok-keyword">string</span>): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+<section id="js-file-bindings.modeIsWritable">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> modeIsWritable(mode: <span class="tok-keyword">string</span>): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

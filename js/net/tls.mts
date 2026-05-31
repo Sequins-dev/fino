@@ -205,8 +205,10 @@ export class TlsWriter extends BufferedBytesWriter {
  * `tls instanceof Socket` is true.
  *
  * Use the static factories rather than the constructor directly:
+ * ```ts
  *   const tls = await TlsSocket.connect(lp, { family: 'ipv4', ip: '…', port: 443 });
  *   const [reader, writer] = tls.split();
+ * ```
  */
 export class TlsSocket extends Socket {
   #ssl: object;

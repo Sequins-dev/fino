@@ -1,0 +1,416 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - sdk</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:sdk">sdk</h1>
+<p class="muted">js/opentelemetry/sdk.mts</p>
+
+
+
+<h2>Classes</h2>
+
+<section id="sdk.InMemoryExporter">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.InMemoryExporter">InMemoryExporter</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.InMemoryExporter.exportSpans">
+<h5><code><span class="tok-keyword">async</span> exportSpans(spans: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="common.html#common.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.InMemoryExporter.exportLogs">
+<h5><code><span class="tok-keyword">async</span> exportLogs(logs: <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="common.html#common.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.InMemoryExporter.exportMetrics">
+<h5><code><span class="tok-keyword">async</span> exportMetrics(metrics: <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="common.html#common.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.InMemoryExporter.getFinishedSpans">
+<h5><code>getFinishedSpans(): <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.InMemoryExporter.getFinishedLogs">
+<h5><code>getFinishedLogs(): <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.InMemoryExporter.getFinishedMetrics">
+<h5><code>getFinishedMetrics(): <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.SpanProcessor">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.SpanProcessor">SpanProcessor</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.SpanProcessor.onStart">
+<h5><code>onStart(_span: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.SpanProcessor.onEnd">
+<h5><code>onEnd(_span: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.SpanProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.SpanProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.LogRecordProcessor">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.LogRecordProcessor">LogRecordProcessor</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.LogRecordProcessor.onEmit">
+<h5><code>onEmit(_log: <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.LogRecordProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.LogRecordProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.MetricReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.MetricReader">MetricReader</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="sdk.MetricReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: { temporality?: <a class="tok-type" href="common.html#common.MetricTemporality">MetricTemporality</a> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="sdk.MetricReader.temporality">
+<h5><code><span class="tok-keyword">get</span> temporality(): <a class="tok-type" href="common.html#common.MetricTemporality">MetricTemporality</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.MetricReader.record">
+<h5><code>record(_metric: <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.MetricReader.receive">
+<h5><code>receive(_metrics: <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>[]): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.MetricReader.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.MetricReader.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.ManualMetricReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.ManualMetricReader">ManualMetricReader</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="sdk.html#sdk.MetricReader">MetricReader</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.ManualMetricReader.receive">
+<h5><code>receive(metrics: <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>[]): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.ManualMetricReader.collect">
+<h5><code>collect(): <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.BatchSpanProcessor">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.BatchSpanProcessor">BatchSpanProcessor</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="sdk.html#sdk.SpanProcessor">SpanProcessor</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="sdk.BatchSpanProcessor.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(exporter: <a class="tok-type" href="common.html#common.OtelExporter">OtelExporter</a>, options: { maxQueueSize?: <span class="tok-keyword">number</span>; maxExportBatchSize?: <span class="tok-keyword">number</span>; scheduledDelayMillis?: <span class="tok-keyword">number</span> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="sdk.BatchSpanProcessor.droppedSpanCount">
+<h5><code><span class="tok-keyword">get</span> droppedSpanCount(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.BatchSpanProcessor.onEnd">
+<h5><code>onEnd(span: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.BatchSpanProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.BatchSpanProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.BatchLogRecordProcessor">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.BatchLogRecordProcessor">BatchLogRecordProcessor</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="sdk.html#sdk.LogRecordProcessor">LogRecordProcessor</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="sdk.BatchLogRecordProcessor.constructor">
+<h5><code><span class="tok-keyword">constructor</span>( exporter: <a class="tok-type" href="common.html#common.OtelExporter">OtelExporter</a>, options: { maxQueueSize?: <span class="tok-keyword">number</span>; maxExportBatchSize?: <span class="tok-keyword">number</span>; scheduledDelayMillis?: <span class="tok-keyword">number</span>; attributeCountLimit?: <span class="tok-keyword">number</span>; attributeValueLengthLimit?: <span class="tok-keyword">number</span>; } = {}, )</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.BatchLogRecordProcessor.onEmit">
+<h5><code>onEmit(log: <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.BatchLogRecordProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.BatchLogRecordProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.PeriodicMetricReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.PeriodicMetricReader">PeriodicMetricReader</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="sdk.html#sdk.MetricReader">MetricReader</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="sdk.PeriodicMetricReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(exporter: <a class="tok-type" href="common.html#common.OtelExporter">OtelExporter</a>, options: { temporality?: <a class="tok-type" href="common.html#common.MetricTemporality">MetricTemporality</a>; intervalMs?: <span class="tok-keyword">number</span> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.PeriodicMetricReader._startPeriodicCollection">
+<h5><code>_startPeriodicCollection(collectAndFlush: () =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;): <span class="tok-keyword">void</span></code></h5>
+
+<p>Called by OtelSDK.start() to wire up a periodic collection cycle. <code>collectAndFlush</code> calls back into the SDK to collect accumulated metrics, deliver them via receive(), and then calls forceFlush() to export.</p>
+</section>
+
+<section class="member" id="sdk.PeriodicMetricReader.receive">
+<h5><code>receive(metrics: <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>[]): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.PeriodicMetricReader.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.PeriodicMetricReader.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="sdk.OtelSDK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="sdk.html#sdk.OtelSDK">OtelSDK</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="sdk.OtelSDK.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: { exporters?: <a class="tok-type" href="common.html#common.OtelExporter">OtelExporter</a>[]; instrumentations?: <a class="tok-type" href="common.html#common.Instrumentation">Instrumentation</a>[]; spanProcessors?: <a class="tok-type" href="sdk.html#sdk.SpanProcessor">SpanProcessor</a>[]; logRecordProcessors?: <a class="tok-type" href="sdk.html#sdk.LogRecordProcessor">LogRecordProcessor</a>[]; metricReaders?: <a class="tok-type" href="sdk.html#sdk.MetricReader">MetricReader</a>[]; sampler?: <a class="tok-type" href="traces.html#traces.Sampler">Sampler</a>; propagator?: <a class="tok-type" href="common.html#common.TextMapPropagator">TextMapPropagator</a>; views?: <a class="tok-type" href="common.html#common.MetricView">MetricView</a>[]; metricCardinalityLimit?: <span class="tok-keyword">number</span>; spanLimits?: <a class="tok-type" href="common.html#common.SpanLimits">SpanLimits</a>; resource?: <a class="tok-type" href="common.html#common.Resource">Resource</a> | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt; | <span class="tok-keyword">null</span>; } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="sdk.OtelSDK.propagator">
+<h5><code><span class="tok-keyword">get</span> propagator(): <a class="tok-type" href="common.html#common.TextMapPropagator">TextMapPropagator</a></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.resource">
+<h5><code><span class="tok-keyword">get</span> resource(): <a class="tok-type" href="common.html#common.Resource">Resource</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="sdk.OtelSDK.start">
+<h5><code>start(): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.recordSpanStart">
+<h5><code>recordSpanStart(span: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.recordSpan">
+<h5><code>recordSpan(span: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.recordLog">
+<h5><code>recordLog(log: <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.recordMetric">
+<h5><code>recordMetric(metric: <a class="tok-type" href="common.html#common.MetricRecord">MetricRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.flush">
+<h5><code><span class="tok-keyword">async</span> flush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="sdk.OtelSDK.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="sdk.PeriodicExportingMetricReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="sdk.html#sdk.PeriodicExportingMetricReader">PeriodicExportingMetricReader</a></code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

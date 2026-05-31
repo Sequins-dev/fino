@@ -9,6 +9,7 @@
  *
  * ## Usage
  *
+ * ```ts
  *   import { serve } from './serve.mts';
  *
  *   const server = serve({ port: 3000 }, async (req) => {
@@ -17,6 +18,7 @@
  *
  *   // Graceful shutdown:
  *   await server.close();
+ * ```
  *
  *
  * ## Keep-alive
@@ -97,12 +99,13 @@ const _h2Driver = new H2ServerDriver();
  * @param {(req: Request) => Response | ConnectionTakeover | Promise<...>} handler
  * @returns {{ address, port, close(): Promise<void> }}
  *
- * @example
+ * ```ts
  * import { serve } from './serve.mts';
  *
  * const server = serve({ port: 3000 }, async (req) => new Response('hello'));
  * // ... handle some requests ...
  * await server.close();
+ * ```
  */
 export function serve(
   options: ServeOptions,

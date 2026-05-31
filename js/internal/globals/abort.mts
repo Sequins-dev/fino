@@ -41,7 +41,7 @@
  * triggers the output. The first input to fire wins (idempotent closure).
  *
  *
- * @example
+ * ```ts
  * // AbortController and AbortSignal are available via globalThis
  *
  * const controller = new AbortController();
@@ -55,6 +55,7 @@
  * AbortSignal.abort(reason?)   // pre-aborted signal
  * AbortSignal.timeout(ms)      // signal that aborts after ms milliseconds
  * AbortSignal.any(signals)     // signal that aborts when any input signal aborts
+ * ```
  */
 
 import { EventTarget, Event } from './eventtarget.mts';

@@ -55,7 +55,7 @@
  * Blob is the provided `contentType` (lowercased), or empty string if omitted.
  *
  *
- * @example
+ * ```ts
  * // Blob and File are available via globalThis
  *
  * const blob = new Blob(['hello, ', 'world'], { type: 'text/plain' });
@@ -68,6 +68,7 @@
  * const file = new File([blob], 'hello.txt', { type: 'text/plain' });
  * file.name;                // 'hello.txt'
  * file.lastModified;        // number (ms since epoch)
+ * ```
  */
 
 import { encodeUtf8, decodeUtf8, _registerBlobCloneHelper } from './encoding.mts';

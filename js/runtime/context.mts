@@ -8,6 +8,7 @@
  *
  * API mirrors the execution-flow library (closure-based):
  *
+ * ```ts
  *   import { Context } from './context.mts';
  *
  *   const requestId = new Context('requestId');
@@ -16,6 +17,7 @@
  *     await someAsyncOp();
  *     console.log(requestId.get()); // 'abc-123' — propagated through await
  *   });
+ * ```
  */
 
 import { getCPED, setCPED } from 'internal:async-context';

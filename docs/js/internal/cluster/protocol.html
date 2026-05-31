@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/internal/cluster/protocol</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../../index.html">API Modules</a></p>
+<h1 id="module:js-internal-cluster-protocol">js/internal/cluster/protocol</h1>
+<p class="muted">js/internal/cluster/protocol.mts</p>
+<p>internal:cluster/protocol — cluster wire types and JSON codec.</p>
+<p>All cluster messages are JSON-encoded ClusterMessage values. The codec layer is deliberately thin: encode/decode are just JSON.stringify/parse so the transport can switch to binary (QUIC, CBOR) later without changing the protocol layer.</p>
+<p>Realm IDs use the format <code>{nodeId}/{localHandle}</code>, which encodes the host node for O(1) routing: extract the nodeId prefix to find the host.</p>
+<p>Port IDs use the format <code>{nodeId}/p-{handle}</code> and are used for PORT_MSG routing. Each ClusterPort on the parent side has a unique portId; the SPAWN message carries <code>parentPortId</code> so the child relay knows where to address PORT_MSG.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-internal-cluster-protocol.NodeLoad">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.NodeLoad">NodeLoad</a> {</code></h3>
+
+<p>internal:cluster/protocol — cluster wire types and JSON codec.</p>
+<p>All cluster messages are JSON-encoded ClusterMessage values. The codec layer is deliberately thin: encode/decode are just JSON.stringify/parse so the transport can switch to binary (QUIC, CBOR) later without changing the protocol layer.</p>
+<p>Realm IDs use the format <code>{nodeId}/{localHandle}</code>, which encodes the host node for O(1) routing: extract the nodeId prefix to find the host.</p>
+<p>Port IDs use the format <code>{nodeId}/p-{handle}</code> and are used for PORT_MSG routing. Each ClusterPort on the parent side has a unique portId; the SPAWN message carries <code>parentPortId</code> so the child relay knows where to address PORT_MSG.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-internal-cluster-protocol.NodeLoad.cpu">
+<h5><code>cpu: <span class="tok-keyword">number</span></code></h5>
+
+<p>CPU utilisation in [0, 1.</p>
+</section>
+
+<section class="member" id="js-internal-cluster-protocol.NodeLoad.memory">
+<h5><code>memory: <span class="tok-keyword">number</span></code></h5>
+
+<p>Resident memory in bytes.</p>
+</section>
+
+
+</section>
+
+<section id="js-internal-cluster-protocol.PeerInfo">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.PeerInfo">PeerInfo</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-internal-cluster-protocol.PeerInfo.nodeId">
+<h5><code>nodeId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-internal-cluster-protocol.PeerInfo.load">
+<h5><code>load: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.NodeLoad">NodeLoad</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-internal-cluster-protocol.SerializedSpawnConfig">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.SerializedSpawnConfig">SerializedSpawnConfig</a> {</code></h3>
+
+<p>Serialized rule list + entry path sent with SPAWN. Matches Rust&#39;s ImportRule JSON layout.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-internal-cluster-protocol.SerializedSpawnConfig.entry">
+<h5><code>entry: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-internal-cluster-protocol.SerializedSpawnConfig.root">
+<h5><code>root: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-internal-cluster-protocol.SerializedSpawnConfig.rules">
+<h5><code>rules: <span class="tok-keyword">unknown</span>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-internal-cluster-protocol.ClusterMessage">
+<h3><code>export type ClusterMessage = // Membership | { t: &#39;HELLO&#39;; nodeId: string; load: NodeLoad } | { t: &#39;WELCOME&#39;; nodeId: string; peers: PeerInfo[] } | { t: &#39;PEER_UP&#39;; peer: PeerInfo } | { t: &#39;PEER_DOWN&#39;; nodeId: string } | { t: &#39;HEARTBEAT&#39;; ts: number } // Realm lifecycle | { t: &#39;SPAWN&#39;; spawnReqId: string; parentPortId: string; config: SerializedSpawnConfig } | { t: &#39;SPAWN_ACK&#39;; spawnReqId: string; childPortId: string; ok: boolean; error?: string } | { t: &#39;REALM_EXIT&#39;; realmId: string; error?: string } | { t: &#39;TERMINATE&#39;; realmId: string } // Data plane: all inter-realm messages (PORT_MSG carries __rpc_req/__rpc_res payloads too) | { t: &#39;PORT_MSG&#39;; fromPort: string; toPort: string; payload: string }</code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-internal-cluster-protocol.encode">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> encode(msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-internal-cluster-protocol.decode">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> decode(s: <span class="tok-keyword">string</span>): <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a></code></h3>
+
+
+
+</section>
+
+<section id="js-internal-cluster-protocol.nodeIdFromId">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> nodeIdFromId(id: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Extract the nodeId prefix from a realmId or portId (<code>{nodeId}/...</code>).</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

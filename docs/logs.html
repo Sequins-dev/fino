@@ -1,0 +1,235 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - logs</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:logs">logs</h1>
+<p class="muted">js/opentelemetry/logs.mts</p>
+
+
+
+<h2>Enums</h2>
+
+<section id="logs.SeverityNumber">
+<h3><code>export enum SeverityNumber { TRACE = 1, TRACE2 = 2, TRACE3 = 3, TRACE4 = 4, DEBUG = 5, DEBUG2 = 6, DEBUG3 = 7, DEBUG4 = 8, INFO = 9, INFO2 = 10, INFO3 = 11, INFO4 = 12, WARN = 13, WARN2 = 14, WARN3 = 15, WARN4 = 16, ERROR = 17, ERROR2 = 18, ERROR3 = 19, ERROR4 = 20, FATAL = 21, FATAL2 = 22, FATAL3 = 23, FATAL4 = 24, } export class LoggerProvider extends BaseProvider { getLogger( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Logger { return new Logger(this, normalizeScope(name, version, options?.schemaUrl, options?.attributes, options?.droppedAttributesCount)); } } export class Logger { #provider: LoggerProvider; #scope: ScopeInfo; // Pre-cached topic sets keyed by severity suffix, plus the shared record topic. #topicsByPhase: Map&lt;string, Array&lt;Topic&lt;LogRecord&gt;&gt;&gt;; #recordTopic: Topic&lt;LogRecord&gt;; constructor(provider: LoggerProvider, scope: ScopeInfo) { this.#provider = provider; this.#scope = scope; this.#topicsByPhase = new Map(); this.#recordTopic = topic&lt;LogRecord&gt;(&#39;otel:log:record&#39;); } #getTopics(phase: string): Array&lt;Topic&lt;LogRecord&gt;&gt; { let topics = this.#topicsByPhase.get(phase); if (!topics) { topics = topicNames(&#39;log&#39;, this.#scope, phase).map((name) =&gt; topic&lt;LogRecord&gt;(name)); this.#topicsByPhase.set(phase, topics); } return topics; } #publishRecord(record: LogRecord, phase: string): void { for (const t of this.#getTopics(phase)) t.publish(record); this.#recordTopic.publish(record); } get scope(): ScopeInfo { return { ...this.#scope, ...(this.#scope.attributes ? { attributes: { ...this.#scope.attributes } } : {}), }; } emit(body: unknown, options: { severityText?: string; severityNumber?: number; attributes?: Attributes } = {}): void { const activeContext = getActiveSpanContext(); const record: LogRecord = { schemaVersion: OTEL_SCHEMA_VERSION, body, severityText: options.severityText || &#39;INFO&#39;, severityNumber: options.severityNumber || SeverityNumber.INFO, timeUnixNano: nowUnixNano(), attributes: { ...(options.attributes || {}) }, scope: { ...this.#scope }, resource: this.#provider.resource, ...(activeContext?.traceId ? { traceId: activeContext.traceId } : {}), ...(activeContext?.spanId ? { spanId: activeContext.spanId } : {}), ...(activeContext?.traceFlags !== undefined ? { traceFlags: activeContext.traceFlags } : {}), ...(activeContext?.baggage !== undefined ? { baggage: activeContext.baggage } : {}), }; this.#publishRecord(record, String(options.severityText || &#39;emit&#39;).toLowerCase()); } emitRecord(builder: LogRecordBuilder | Partial&lt;LogRecord&gt;): void { const record = builder instanceof LogRecordBuilder ? builder.build() : { ...builder }; const activeContext = getActiveSpanContext(); const finalRecord: LogRecord = { schemaVersion: record.schemaVersion ?? OTEL_SCHEMA_VERSION, severityText: record.severityText ?? &#39;INFO&#39;, severityNumber: record.severityNumber ?? SeverityNumber.INFO, timeUnixNano: record.timeUnixNano ?? nowUnixNano(), attributes: { ...(record.attributes || {}) }, scope: { ...this.#scope }, resource: record.resource ?? this.#provider.resource, }; if (record.body !== undefined) finalRecord.body = record.body; if (record.observedTimeUnixNano !== undefined) finalRecord.observedTimeUnixNano = record.observedTimeUnixNano; if (record.droppedAttributesCount !== undefined) finalRecord.droppedAttributesCount = record.droppedAttributesCount; const traceId = record.traceId ?? activeContext?.traceId; const spanId = record.spanId ?? activeContext?.spanId; const traceFlags = record.traceFlags ?? activeContext?.traceFlags; const baggage = record.baggage ?? activeContext?.baggage; if (traceId !== undefined) finalRecord.traceId = traceId; if (spanId !== undefined) finalRecord.spanId = spanId; if (traceFlags !== undefined) finalRecord.traceFlags = traceFlags; if (baggage !== undefined) finalRecord.baggage = baggage; if (record.eventName !== undefined) finalRecord.eventName = record.eventName; if (record.categoryName !== undefined) finalRecord.categoryName = record.categoryName; if (record.flags !== undefined) finalRecord.flags = record.flags; this.#publishRecord(finalRecord, String(finalRecord.severityText || &#39;emit&#39;).toLowerCase()); } debug(body: unknown, attributes: Attributes = {}): void { this.emit(body, { severityText: &#39;DEBUG&#39;, severityNumber: SeverityNumber.DEBUG, attributes }); } info(body: unknown, attributes: Attributes = {}): void { this.emit(body, { severityText: &#39;INFO&#39;, severityNumber: SeverityNumber.INFO, attributes }); } warn(body: unknown, attributes: Attributes = {}): void { this.emit(body, { severityText: &#39;WARN&#39;, severityNumber: SeverityNumber.WARN, attributes }); } error(body: unknown, attributes: Attributes = {}): void { this.emit(body, { severityText: &#39;ERROR&#39;, severityNumber: SeverityNumber.ERROR, attributes }); } } export class LogRecordBuilder { #record: Partial&lt;LogRecord&gt; &amp; { attributes: Attributes }; constructor() { this.#record = { attributes: {} }; } setBody(body: unknown): this { this.#record.body = body; return this; } setTextBody(body: string): this { this.#record.body = String(body); return this; } setJsonBody(body: unknown): this { this.#record.body = body; return this; } setSeverity(severityText: string, severityNumber?: number): this { this.#record.severityText = severityText; if (severityNumber === undefined) { delete this.#record.severityNumber; } else { this.#record.severityNumber = severityNumber; } return this; } setAttribute(key: string, value: unknown): this { this.#record.attributes[key] = value; return this; } setAttributes(attributes: Attributes): this { Object.assign(this.#record.attributes, attributes || {}); return this; } setEventName(name: string): this { this.#record.eventName = String(name); return this; } setCategory(name: string): this { this.#record.categoryName = String(name); return this; } setDroppedAttributesCount(count: number): this { this.#record.droppedAttributesCount = Number(count) || 0; return this; } setContext(context: TraceContext | null | undefined): this { if (context?.traceId) this.#record.traceId = context.traceId; else delete this.#record.traceId; if (context?.spanId) this.#record.spanId = context.spanId; else delete this.#record.spanId; if (context?.traceFlags !== undefined) this.#record.traceFlags = context.traceFlags; else delete this.#record.traceFlags; if (context?.baggage !== undefined) this.#record.baggage = context.baggage; else delete this.#record.baggage; return this; } build(): LogRecord { return { ...this.#record, attributes: { ...(this.#record.attributes || {}) }, }; } } export function applyLogLimits( log: LogRecord, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number } = {}, ): LogRecord { const hasLimit = Number.isFinite(limits.attributeCountLimit ?? Infinity) || Number.isFinite(limits.attributeValueLengthLimit ?? Infinity); if (!hasLimit) return log; const { attrs, dropped } = limitAttributeEntries(log.attributes || {}, limits); return { ...log, attributes: attrs, ...(dropped &gt; 0 ? { droppedAttributesCount: (log.droppedAttributesCount || 0) + dropped } : {}), }; } const loggerProviderContext = new Context&lt;LoggerProvider | null&gt;(&#39;otel:logger-provider&#39;)</code></h3>
+
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="logs.LoggerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="logs.html#logs.LoggerProvider">LoggerProvider</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="common.html#common.BaseProvider">BaseProvider</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="logs.LoggerProvider.getLogger">
+<h5><code>getLogger( name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, options?: { schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>; attributes?: <a class="tok-type" href="common.html#common.Attributes">Attributes</a>; droppedAttributesCount?: <span class="tok-keyword">number</span> }, ): <a class="tok-type" href="logs.html#logs.Logger">Logger</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="logs.Logger">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="logs.html#logs.Logger">Logger</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="logs.Logger.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(provider: <a class="tok-type" href="logs.html#logs.LoggerProvider">LoggerProvider</a>, scope: <a class="tok-type" href="common.html#common.ScopeInfo">ScopeInfo</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="logs.Logger.scope">
+<h5><code><span class="tok-keyword">get</span> scope(): <a class="tok-type" href="common.html#common.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="logs.Logger.emit">
+<h5><code>emit(body: <span class="tok-keyword">unknown</span>, options: { severityText?: <span class="tok-keyword">string</span>; severityNumber?: <span class="tok-keyword">number</span>; attributes?: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> } = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.Logger.emitRecord">
+<h5><code>emitRecord(builder: <a class="tok-type" href="logs.html#logs.LogRecordBuilder">LogRecordBuilder</a> | Partial&lt;<a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>&gt;): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.Logger.debug">
+<h5><code>debug(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.Logger.info">
+<h5><code>info(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.Logger.warn">
+<h5><code>warn(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.Logger.error">
+<h5><code>error(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="logs.LogRecordBuilder">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="logs.html#logs.LogRecordBuilder">LogRecordBuilder</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="logs.LogRecordBuilder.constructor">
+<h5><code><span class="tok-keyword">constructor</span>()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="logs.LogRecordBuilder.setBody">
+<h5><code>setBody(body: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setTextBody">
+<h5><code>setTextBody(body: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setJsonBody">
+<h5><code>setJsonBody(body: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setSeverity">
+<h5><code>setSeverity(severityText: <span class="tok-keyword">string</span>, severityNumber?: <span class="tok-keyword">number</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setAttribute">
+<h5><code>setAttribute(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setAttributes">
+<h5><code>setAttributes(attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setEventName">
+<h5><code>setEventName(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setCategory">
+<h5><code>setCategory(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setDroppedAttributesCount">
+<h5><code>setDroppedAttributesCount(count: <span class="tok-keyword">number</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.setContext">
+<h5><code>setContext(context: <a class="tok-type" href="common.html#common.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span> | <span class="tok-keyword">undefined</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="logs.LogRecordBuilder.build">
+<h5><code>build(): <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="logs.applyLogLimits">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> applyLogLimits( log: <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a>, limits: { attributeCountLimit?: <span class="tok-keyword">number</span>; attributeValueLengthLimit?: <span class="tok-keyword">number</span> } = {}, ): <a class="tok-type" href="common.html#common.LogRecord">LogRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="logs.getLoggerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> getLoggerProvider(): <a class="tok-type" href="logs.html#logs.LoggerProvider">LoggerProvider</a></code></h3>
+
+
+
+</section>
+
+<section id="logs.setLoggerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> setLoggerProvider(provider: <a class="tok-type" href="logs.html#logs.LoggerProvider">LoggerProvider</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="logs.runWithLoggerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> runWithLoggerProvider&lt;R&gt;(provider: <a class="tok-type" href="logs.html#logs.LoggerProvider">LoggerProvider</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="logs.runWithoutLoggerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> runWithoutLoggerProvider&lt;R&gt;(fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

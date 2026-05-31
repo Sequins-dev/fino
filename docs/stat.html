@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - stat</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:stat">stat</h1>
+<p class="muted">js/file/stat.mts</p>
+<p>internal:file-stat — Stat class for fino:file.</p>
+<p>Parses a struct stat buffer returned by stat(2) / lstat(2) / fstat(2). Layout differs between macOS arm64 and Linux x86_64.</p>
+
+
+<h2>Classes</h2>
+
+<section id="stat.Stat">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="stat.html#stat.Stat">Stat</a> {</code></h3>
+
+<p>File metadata parsed from a struct stat buffer.</p>
+<p>Numeric fields that may be large (ino, dev, size, blocks) are returned as Numbers; they fit within JS safe-integer range for all practical file sizes.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="stat.Stat.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(dev: <span class="tok-keyword">number</span>, ino: <span class="tok-keyword">number</span>, mode: <span class="tok-keyword">number</span>, nlink: <span class="tok-keyword">number</span>, uid: <span class="tok-keyword">number</span>, gid: <span class="tok-keyword">number</span>, rdev: <span class="tok-keyword">number</span>, size: <span class="tok-keyword">number</span>, blksize: <span class="tok-keyword">number</span>, blocks: <span class="tok-keyword">number</span>, atimeMs: <span class="tok-keyword">number</span>, mtimeMs: <span class="tok-keyword">number</span>, ctimeMs: <span class="tok-keyword">number</span>, birthtimeMs: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="stat.Stat.dev">
+<h5><code><span class="tok-keyword">get</span> dev()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.ino">
+<h5><code><span class="tok-keyword">get</span> ino()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.mode">
+<h5><code><span class="tok-keyword">get</span> mode()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.nlink">
+<h5><code><span class="tok-keyword">get</span> nlink()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.uid">
+<h5><code><span class="tok-keyword">get</span> uid()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.gid">
+<h5><code><span class="tok-keyword">get</span> gid()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.rdev">
+<h5><code><span class="tok-keyword">get</span> rdev()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.size">
+<h5><code><span class="tok-keyword">get</span> size()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.blksize">
+<h5><code><span class="tok-keyword">get</span> blksize()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.blocks">
+<h5><code><span class="tok-keyword">get</span> blocks()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.atimeMs">
+<h5><code><span class="tok-keyword">get</span> atimeMs()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.mtimeMs">
+<h5><code><span class="tok-keyword">get</span> mtimeMs()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.ctimeMs">
+<h5><code><span class="tok-keyword">get</span> ctimeMs()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.birthtimeMs">
+<h5><code><span class="tok-keyword">get</span> birthtimeMs()</code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.permissions">
+<h5><code><span class="tok-keyword">get</span> permissions(): <span class="tok-keyword">number</span></code></h5>
+
+<p>Permission bits (mode &amp; 0o7777).</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="stat.Stat.isFile">
+<h5><code>isFile(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.isDirectory">
+<h5><code>isDirectory(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.isSymlink">
+<h5><code>isSymlink(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.isSocket">
+<h5><code>isSocket(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.isFIFO">
+<h5><code>isFIFO(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.isBlockDevice">
+<h5><code>isBlockDevice(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="stat.Stat.isCharacterDevice">
+<h5><code>isCharacterDevice(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="stat.Stat.parse">
+<h5><code><span class="tok-keyword">static</span> parse(buf: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a> | ArrayBufferView): <a class="tok-type" href="stat.html#stat.Stat">Stat</a></code></h5>
+
+<p>Parse a struct stat from a 256-byte ArrayBuffer. Layout differs between macOS arm64 and Linux x86_64.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

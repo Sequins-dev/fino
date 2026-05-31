@@ -1,0 +1,207 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/net/tls</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-net-tls">js/net/tls</h1>
+<p class="muted">js/net/tls.mts</p>
+<p>fino:tls — TLS socket layer.</p>
+<p><code>TlsSocket</code> extends <code>Socket</code> from <code>fino:socket</code>. TCP connection setup is shared via <code>connectTcp()</code> — no duplication. TlsSocket overrides <code>split()</code> to return <code>TlsReader</code>/<code>TlsWriter</code> (which handle SSL_read/SSL_write), and overrides <code>close()</code> to perform SSL teardown before the fd close.</p>
+<p><code>TlsReader</code> and <code>TlsWriter</code> extend the base <code>Reader</code>/<code>Writer</code> from <code>fino:stream</code>, implementing the template methods with SSL-specific I/O. All loop machinery (readability waiting, retry, backpressure, async iteration, pipe) is inherited — no duplication.</p>
+<h3>TLS options</h3>
+<p>{ hostname: &#39;example.com&#39;,    // SNI + hostname verification ca: &#39;/path/to/ca.pem&#39;,      // custom CA file (optional) rejectUnauthorized: true,   // verify peer cert (default: true) }</p>
+<h3>Close coordination</h3>
+<p>When <code>split()</code> is used, both TlsReader and TlsWriter share the SSL* pointer. When both halves close, SSL is shut down and freed, then the fd is closed via `super.close()`. When `close()` is called directly (without splitting), SSL teardown happens before calling `super.close()`.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-net-tls.TlsConnectOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsConnectOptions">TlsConnectOptions</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.ConnectOptions">ConnectOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-tls.TlsConnectOptions.hostname">
+<h5><code>hostname?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-tls.TlsConnectOptions.ca">
+<h5><code>ca?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-tls.TlsConnectOptions.rejectUnauthorized">
+<h5><code>rejectUnauthorized?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-tls.TlsConnectOptions.alpn">
+<h5><code>alpn?: <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="js-net-tls.TlsReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsReader">TlsReader</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="stream.html#stream.BufferedBytesReader">BufferedBytesReader</a> {</code></h3>
+
+<p>Read half of a TLS connection. Extends BufferedBytesReader with SSL-specific I/O: uses SSL_read instead of read(2), checks SSL_pending before waiting for fd readability, and classifies SSL error codes correctly.</p>
+<p>Buffering, structural reads (readExactly, readUntil, etc.), and the async iterator protocol are all inherited from BufferedBytesReader.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-net-tls.TlsReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(ssl: <span class="tok-keyword">object</span>, fd: <span class="tok-keyword">number</span>, onClose: () =&gt; <span class="tok-keyword">void</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-net-tls.TlsReader.fd">
+<h5><code><span class="tok-keyword">get</span> fd(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-tls.TlsReader.doPull">
+<h5><code><span class="tok-keyword">protected</span> <span class="tok-keyword">async</span> doPull(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <span class="tok-keyword">null</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-tls.TlsWriter">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsWriter">TlsWriter</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="stream.html#stream.BufferedBytesWriter">BufferedBytesWriter</a> {</code></h3>
+
+<p>Write half of a TLS connection. Extends BufferedBytesWriter with SSL-specific I/O: uses SSL_write instead of write(2) and handles SSL_ERROR_WANT_READ during TLS renegotiation.</p>
+<p>Write coalescing, pipe(), and async close() are inherited from BufferedBytesWriter.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-net-tls.TlsWriter.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(ssl: <span class="tok-keyword">object</span>, fd: <span class="tok-keyword">number</span>, onClose: () =&gt; <span class="tok-keyword">void</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-net-tls.TlsWriter.fd">
+<h5><code><span class="tok-keyword">get</span> fd(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-tls.TlsWriter.doFlush">
+<h5><code><span class="tok-keyword">protected</span> <span class="tok-keyword">async</span> doFlush(buf: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-tls.TlsSocket">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsSocket">TlsSocket</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.Socket">Socket</a> {</code></h3>
+
+<p>A connected TLS socket. Extends <code>Socket</code> with SSL state. TCP connection setup is shared with <code>Socket</code> via <code>connectTcp()</code>. <code>split()</code> and <code>close()</code> are overridden to handle SSL teardown.</p>
+<p><code>tls instanceof Socket</code> is true.</p>
+<p>Use the static factories rather than the constructor directly:</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> tls = <span class="tok-keyword">await</span> TlsSocket.connect(lp, { family: <span class="tok-string">&#39;ipv4&#39;</span>, ip: <span class="tok-string">&#39;…&#39;</span>, port: <span class="tok-number">443</span> });
+<span class="tok-keyword">const</span> [reader, writer] = tls.split();</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-net-tls.TlsSocket.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(fd: <span class="tok-keyword">number</span>, remoteAddr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <span class="tok-keyword">null</span>, ssl: <span class="tok-keyword">object</span>, sslCtx: <span class="tok-keyword">object</span> | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-net-tls.TlsSocket.negotiatedProtocol">
+<h5><code><span class="tok-keyword">get</span> negotiatedProtocol(): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+<p>The ALPN protocol negotiated during the TLS handshake, or null if none.</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-tls.TlsSocket.split">
+<h5><code>split(): [<a class="tok-type" href="js/net/tls.html#js-net-tls.TlsReader">TlsReader</a>, <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsWriter">TlsWriter</a>]</code></h5>
+
+<p>Split into a [TlsReader, TlsWriter pair. SSL cleanup and fd close happen automatically when both halves have been closed.</p>
+<p>Note: TLS does not support half-close (no SHUT_RD/SHUT_WR per half). Both sides must close before SSL_shutdown is issued.</p>
+</section>
+
+<section class="member" id="js-net-tls.TlsSocket.close">
+<h5><code>close()</code></h5>
+
+<p>Close both directions immediately. Performs SSL teardown, then delegates fd cleanup to <code>Socket.close()</code>. Idempotent.</p>
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="js-net-tls.TlsSocket.connect">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> connect(addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>, opts: <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsConnectOptions">TlsConnectOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/tls.html#js-net-tls.TlsSocket">TlsSocket</a>&gt;</code></h5>
+
+<p>Connect to a remote address over TLS. Uses <code>connectTcp()</code> for the TCP layer (same helper as <code>Socket.connect()</code>), then performs the TLS handshake.</p>
+</section>
+
+<section class="member" id="js-net-tls.TlsSocket.upgrade">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> upgrade(socket: <a class="tok-type" href="js/net/socket.html#js-net-socket.Socket">Socket</a>, opts: <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsConnectOptions">TlsConnectOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/tls.html#js-net-tls.TlsSocket">TlsSocket</a>&gt;</code></h5>
+
+<p>Upgrade an existing connected Socket to TLS (client side). The original Socket should not be used after this call.</p>
+</section>
+
+<section class="member" id="js-net-tls.TlsSocket.accept">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> accept(fd: <span class="tok-keyword">number</span>, sslCtx: <span class="tok-keyword">object</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/tls.html#js-net-tls.TlsSocket">TlsSocket</a>&gt;</code></h5>
+
+<p>Accept a TLS connection (server side) on an already-accepted TCP fd.</p>
+</section>
+
+<section class="member" id="js-net-tls.TlsSocket._handshakeClient">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> _handshakeClient(fd: <span class="tok-keyword">number</span>, remoteAddr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <span class="tok-keyword">null</span>, hostname: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>, opts: <a class="tok-type" href="js/net/tls.html#js-net-tls.TlsConnectOptions">TlsConnectOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/tls.html#js-net-tls.TlsSocket">TlsSocket</a>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

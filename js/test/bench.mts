@@ -101,7 +101,7 @@
  *     - template (663.07% slower)
  *
  *
- * @example
+ * ```ts
  * import { bench } from './bench.mts';
  *
  * bench('string ops', (b) => {
@@ -115,6 +115,7 @@
  *     g.measure('Number()', () => { Number('42'); });
  *   });
  * });
+ * ```
  */
 
 import console from '../internal/globals/console.mts';
@@ -275,8 +276,10 @@ export class Group {
    *
    * Accepts either a function or an options object:
    *
+   * ```ts
    *   b.measure('name', fn)
    *   b.measure('name', { setup, fn, teardown })
+   * ```
    *
    * `fn` may be synchronous or async. If `fn()` returns a thenable, the
    * measurement loop spins the global event loop to completion on every

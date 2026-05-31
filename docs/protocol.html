@@ -1,0 +1,129 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fino JS API - protocol</title>
+<style>body{font-family:system-ui,sans-serif;max-width:920px;margin:40px auto;padding:0 20px;line-height:1.5}pre{background:#f6f8fa;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace}.tag{color:#555}</style>
+<h1 id="module:protocol">protocol</h1>
+<p>fino:net/protocol — shared interfaces for HTTP server and client drivers.</p>
+<p>Both H1ServerDriver and H2ServerDriver implement ServerDriver. Both
+H1ClientDriver and H2ClientDriver implement ClientDriver. serve() and
+fetch() dispatch to the right driver based on ALPN negotiation or h2c
+preface detection.</p>
+<p>ConnectionTakeover is the base class for protocol-level connection hijacks
+(e.g. WebSocket). The h1 driver checks `result instanceof ConnectionTakeover`
+and calls _takeOver(reader, writer). The h2 driver additionally checks
+compatibleProtocols before allowing the upgrade.</p>
+<section id="protocol.ServerResult">
+<h2>ServerResult</h2>
+<pre><code>export type ServerResult = Response | ConnectionTakeover</code></pre>
+
+</section>
+<section id="protocol.ServerHandler">
+<h2>ServerHandler</h2>
+<pre><code>export type ServerHandler = (req: Request) =&gt; ServerResult | Promise&lt;ServerResult&gt;</code></pre>
+
+</section>
+<section id="protocol.ServerDriverOptions">
+<h2>ServerDriverOptions</h2>
+<pre><code>export interface ServerDriverOptions</code></pre>
+
+<section id="protocol.ServerDriverOptions.maxConcurrent">
+<h3>maxConcurrent</h3>
+<pre><code>maxConcurrent: number</code></pre>
+<p>Max concurrent in-flight requests / streams. </p>
+</section>
+<section id="protocol.ServerDriverOptions.allowH2cUpgrade">
+<h3>allowH2cUpgrade</h3>
+<pre><code>allowH2cUpgrade?: boolean</code></pre>
+<p>If true, recognise the h2c Upgrade dance in H1 driver. </p>
+</section>
+</section>
+<section id="protocol.ServerDriver">
+<h2>ServerDriver</h2>
+<pre><code>export interface ServerDriver</code></pre>
+
+<section id="protocol.ServerDriver.run">
+<h3>run</h3>
+<pre><code>run( reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions, ): Promise&lt;void&gt;</code></pre>
+<p>Process one accepted connection. Resolves when the connection is fully
+closed (all in-flight requests done, buffers flushed).</p>
+</section>
+</section>
+<section id="protocol.CancelSignal">
+<h2>CancelSignal</h2>
+<pre><code>export interface CancelSignal</code></pre>
+
+<section id="protocol.CancelSignal.aborted">
+<h3>aborted</h3>
+<pre><code>readonly aborted: boolean</code></pre>
+
+</section>
+<section id="protocol.CancelSignal.reason">
+<h3>reason</h3>
+<pre><code>readonly reason: unknown</code></pre>
+
+</section>
+<section id="protocol.CancelSignal.addEventListener">
+<h3>addEventListener</h3>
+<pre><code>addEventListener(type: string, fn: () =&gt; void, opts?: { once?: boolean }): void</code></pre>
+
+</section>
+<section id="protocol.CancelSignal.removeEventListener">
+<h3>removeEventListener</h3>
+<pre><code>removeEventListener(type: string, fn: () =&gt; void): void</code></pre>
+
+</section>
+</section>
+<section id="protocol.ClientDriverOptions">
+<h2>ClientDriverOptions</h2>
+<pre><code>export interface ClientDriverOptions</code></pre>
+
+<section id="protocol.ClientDriverOptions.signal">
+<h3>signal</h3>
+<pre><code>signal: CancelSignal | null</code></pre>
+
+</section>
+</section>
+<section id="protocol.ClientDriver">
+<h2>ClientDriver</h2>
+<pre><code>export interface ClientDriver</code></pre>
+
+<section id="protocol.ClientDriver.send">
+<h3>send</h3>
+<pre><code>send( req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions, ): Promise&lt;Response&gt;</code></pre>
+<p>Send one logical request on an already-connected reader/writer pair.
+Resolves with the parsed Response. Does NOT close the connection — the
+caller decides lifetime (for pooling).</p>
+</section>
+<section id="protocol.ClientDriver.multiplexed">
+<h3>multiplexed</h3>
+<pre><code>readonly multiplexed: boolean</code></pre>
+<p>True if the underlying connection supports multiple concurrent streams. </p>
+</section>
+</section>
+<section id="protocol.ConnectionTakeover">
+<h2>ConnectionTakeover</h2>
+<pre><code>export interface ConnectionTakeover</code></pre>
+<p>Interface for anything that hijacks a connection at the protocol level.
+serve() detects `result instanceof ConnectionTakeover` via isConnectionTakeover()
+and calls _takeOver(reader, writer).</p>
+<p>Implementors declare compatibleProtocols. The h2 driver rejects takeovers
+that do not include 'h2' with a stream RST_STREAM + INTERNAL_ERROR.</p>
+<section id="protocol.ConnectionTakeover.compatibleProtocols">
+<h3>compatibleProtocols</h3>
+<pre><code>readonly compatibleProtocols: ReadonlySet&lt;string&gt;</code></pre>
+<p>Set of HTTP protocol versions this takeover is compatible with. </p>
+</section>
+<section id="protocol.ConnectionTakeover._takeOver">
+<h3>_takeOver</h3>
+<pre><code>_takeOver(reader: BytesReader, writer: BytesWriter): Promise&lt;void&gt;</code></pre>
+<p>Take ownership of the connection's reader/writer. Called by the server
+driver after it has written any handshake response (e.g. &quot;101 Switching
+Protocols&quot;). Resolves when the takeover is fully closed.</p>
+</section>
+</section>
+<section id="protocol.isConnectionTakeover">
+<h2>isConnectionTakeover</h2>
+<pre><code>export function isConnectionTakeover(v: unknown): v is ConnectionTakeover</code></pre>
+<p>Duck-type check for ConnectionTakeover. Use instead of instanceof
+since ConnectionTakeover is an interface.</p>
+</section>

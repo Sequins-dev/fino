@@ -1,0 +1,262 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - traces</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:traces">traces</h1>
+<p class="muted">js/opentelemetry/traces.mts</p>
+
+
+
+<h2>Classes</h2>
+
+<section id="traces.Sampler">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#traces.Sampler">Sampler</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="traces.Sampler.shouldSample">
+<h5><code>shouldSample(_record: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>): <a class="tok-type" href="common.html#common.SamplingResult">SamplingResult</a> | <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="traces.AlwaysOnSampler">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#traces.AlwaysOnSampler">AlwaysOnSampler</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="traces.html#traces.Sampler">Sampler</a> {</code></h3>
+
+
+
+</section>
+
+<section id="traces.TracerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#traces.TracerProvider">TracerProvider</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="common.html#common.BaseProvider">BaseProvider</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="traces.TracerProvider.getTracer">
+<h5><code>getTracer( name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, options?: { schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>; attributes?: <a class="tok-type" href="common.html#common.Attributes">Attributes</a>; droppedAttributesCount?: <span class="tok-keyword">number</span> }, ): <a class="tok-type" href="traces.html#traces.Tracer">Tracer</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="traces.Span">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#traces.Span">Span</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="traces.Span.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(tracer: <a class="tok-type" href="traces.html#traces.Tracer">Tracer</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="common.html#common.SpanStartOptions">SpanStartOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="traces.Span.traceId">
+<h5><code><span class="tok-keyword">get</span> traceId(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.spanId">
+<h5><code><span class="tok-keyword">get</span> spanId(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="traces.Span.setAttribute">
+<h5><code>setAttribute(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.setAttributes">
+<h5><code>setAttributes(attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.addEvent">
+<h5><code>addEvent(name: <span class="tok-keyword">string</span>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}, timeUnixNano: <span class="tok-keyword">number</span> = nowUnixNano()): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.addLink">
+<h5><code>addLink(linkContext: <a class="tok-type" href="common.html#common.SpanLinkContext">SpanLinkContext</a>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.setStatus">
+<h5><code>setStatus(status: <a class="tok-type" href="common.html#common.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.recordException">
+<h5><code>recordException(error: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="common.html#common.Attributes">Attributes</a> = {}): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.updateName">
+<h5><code>updateName(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.isRecording">
+<h5><code>isRecording(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Span.end">
+<h5><code>end(options: <a class="tok-type" href="common.html#common.SpanEndOptions">SpanEndOptions</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="traces.Tracer">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#traces.Tracer">Tracer</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="traces.Tracer.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(provider: <a class="tok-type" href="traces.html#traces.TracerProvider">TracerProvider</a>, scope: <a class="tok-type" href="common.html#common.ScopeInfo">ScopeInfo</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="traces.Tracer.scope">
+<h5><code><span class="tok-keyword">get</span> scope(): <a class="tok-type" href="common.html#common.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="traces.Tracer.publishTrace">
+<h5><code>publishTrace(kind: <span class="tok-string">&#39;start&#39;</span> | <span class="tok-string">&#39;end&#39;</span> | <span class="tok-string">&#39;event&#39;</span> | <span class="tok-string">&#39;attribute&#39;</span> | <span class="tok-string">&#39;link&#39;</span> | <span class="tok-string">&#39;status&#39;</span> | <span class="tok-string">&#39;rename&#39;</span>, payload: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a> &amp; <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="traces.Tracer.startSpan">
+<h5><code>startSpan(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="common.html#common.SpanStartOptions">SpanStartOptions</a> = {}): <a class="tok-type" href="traces.html#traces.Span">Span</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="traces.applySpanLimits">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> applySpanLimits(span: <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a>, limits: <a class="tok-type" href="common.html#common.SpanLimits">SpanLimits</a> = {}): <a class="tok-type" href="common.html#common.SpanRecord">SpanRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="traces.isScopedTraceTopic">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> isScopedTraceTopic( name: <span class="tok-keyword">string</span>, phase: <span class="tok-string">&#39;start&#39;</span> | <span class="tok-string">&#39;end&#39;</span> | <span class="tok-string">&#39;event&#39;</span> | <span class="tok-string">&#39;attribute&#39;</span> | <span class="tok-string">&#39;link&#39;</span> | <span class="tok-string">&#39;status&#39;</span> | <span class="tok-string">&#39;rename&#39;</span>, ): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+<section id="traces.getTracerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> getTracerProvider(): <a class="tok-type" href="traces.html#traces.TracerProvider">TracerProvider</a></code></h3>
+
+
+
+</section>
+
+<section id="traces.setTracerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> setTracerProvider(provider: <a class="tok-type" href="traces.html#traces.TracerProvider">TracerProvider</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="traces.runWithTracerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> runWithTracerProvider&lt;R&gt;(provider: <a class="tok-type" href="traces.html#traces.TracerProvider">TracerProvider</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="traces.runWithoutTracerProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> runWithoutTracerProvider&lt;R&gt;(fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="traces.isTracerProviderContextEnabled">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> isTracerProviderContextEnabled(): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+<section id="traces.getActiveSpan">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> getActiveSpan(): <a class="tok-type" href="traces.html#traces.Span">Span</a> | <span class="tok-keyword">undefined</span></code></h3>
+
+
+
+</section>
+
+<section id="traces.getActiveSpanContext">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> getActiveSpanContext(): <a class="tok-type" href="common.html#common.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span></code></h3>
+
+
+
+</section>
+
+<section id="traces.runWithActiveSpan">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> runWithActiveSpan&lt;R&gt;(span: <a class="tok-type" href="traces.html#traces.Span">Span</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

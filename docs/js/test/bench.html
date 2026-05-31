@@ -1,0 +1,178 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/test/bench</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-test-bench">js/test/bench</h1>
+<p class="muted">js/test/bench.mts</p>
+<p>fino:bench — benchmark suite, a JS port of benc.h.</p>
+<p>Mirrors the structure of <code>fino:test</code>: register suites with <code>bench()</code>, then call <code>run()</code> to execute them all and print results. Each suite receives a <code>Group</code> object for registering measurements and nested sub-groups. Output format matches benc.h v1.0.0 so results are comparable with C benchmarks.</p>
+<p>Benchmark functions may be <strong>synchronous or async</strong>. Async benchmarks are detected automatically: if <code>fn()</code> returns a thenable, the measurement loop spins the global event loop synchronously to completion on every iteration:</p>
+<pre><code class="language-js"><span class="tok-keyword">import</span> { DiskFileSystem } from <span class="tok-string">&#39;../file/fs.mts&#39;</span>;
+
+bench(<span class="tok-string">&#39;file I/O&#39;</span>, (b) =&gt; {
+  b.measure(<span class="tok-string">&#39;readFile&#39;</span>, <span class="tok-keyword">async</span> () =&gt; {
+    <span class="tok-keyword">const</span> fs = <span class="tok-keyword">new</span> DiskFileSystem();
+    <span class="tok-keyword">await</span> fs.readFile(<span class="tok-string">&#39;/etc/hosts&#39;</span>);
+  });
+});</code></pre>
+<p>Setup and teardown can be separated from the measured body using object form. The <code>setup()</code> return value is passed to each <code>fn(ctx)</code> invocation; neither <code>setup()</code> nor <code>teardown()</code> is included in the timing:</p>
+<pre><code class="language-js">b.measure(<span class="tok-string">&#39;name&#39;</span>, {
+  setup()    { <span class="tok-keyword">return</span> createResources(); },
+  fn(ctx)    { <span class="tok-keyword">return</span> doWork(ctx); },
+  teardown() { cleanup(); },
+});</code></pre>
+<h3>High-resolution timer (now())</h3>
+<p>The timer is platform-specific:</p>
+<ul>
+<li><strong>macOS</strong>: <code>mach_continuous_time()</code> returns ticks in a hardware-defined</li>
+</ul>
+<p>unit. The conversion ratio is fetched once via <code>mach_timebase_info()</code>, which fills a <code>{ uint32_t numer; uint32_t denom; }</code> struct. The tick count is multiplied by <code>numer/denom</code> to get nanoseconds. On Apple Silicon the ratio is 1/1 (ticks are already nanoseconds); on Intel Macs it is a small rational number. <code>mach_continuous_time()</code> is preferred over <code>mach_absolute_time()</code> because it continues advancing while the system is asleep, giving consistent wall-clock readings.</p>
+<ul>
+<li><strong>Linux</strong>: <code>clock_gettime(CLOCK_MONOTONIC, &amp;ts)</code> returns a `struct timespec</li>
+</ul>
+<p>{ time_t tv_sec; long tv_nsec; }<code>. We allocate a 16-byte buffer (large enough for 64-bit </code>time_t<code> on LP64), read both fields as </code>BigInt64` (to handle the full 64-bit range), and convert to nanoseconds.</p>
+<h3>Welford&#39;s online algorithm (Stats class)</h3>
+<p>Rather than collecting all sample values and computing stats at the end, the <code>Stats</code> class uses Welford&#39;s online algorithm to compute mean and variance in a single pass with O(1) memory. Each call to <code>stats.push(x)</code>:</p>
+<ol>
+<li>Increments the count.</li>
+<li>Computes a new mean: <code>mean&#39; = mean + (x - mean) / count</code></li>
+<li>Updates the sum of squared deviations:</li>
+</ol>
+<p><code>dSquared&#39; = dSquared + (x - mean&#39;) * (x - mean)</code></p>
+<p>Population variance is <code>dSquared / count</code>. Standard deviation is the square root of variance. This matches the benc.h implementation exactly (which uses the same recurrence).</p>
+<h3>Measurement loop</h3>
+<p><code>group.measure(name, fn)</code> defers registration until <code>finalize()</code>. When executed, it runs <code>fn()</code> repeatedly until at least 1 second of wall time has elapsed (measured by accumulating <code>now()</code> deltas in <code>stats.total</code>). This adaptive approach ensures that fast functions get many samples (better statistics) and slow functions get at least one full second of coverage.</p>
+<p>For async benchmarks, each iteration spins the global event loop synchronously via <code>loop.spin()</code>.</p>
+<h3>Comparison output</h3>
+<p>After all measurements in a group complete, <code>#compare()</code> sorts them by ops/sec (descending), prints the fastest as a baseline, and prints each slower measurement as a percentage overhead relative to the fastest&#39;s mean nanoseconds per iteration. This matches benc.h&#39;s <code>bench_compare()</code>.</p>
+<h3>Output format</h3>
+<p>benc.h v1.0.0 # string ops concat   - 26.92m i/s (±49.87%) (34.11ns/i) template - 3.53m i/s (±165.47%) (278.89ns/i) Comparing...</p>
+<ul>
+<li>concat (fastest)</li>
+<li>template (663.07% slower)</li>
+</ul>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { bench } from <span class="tok-string">&#39;./bench.mts&#39;</span>;
+
+bench(<span class="tok-string">&#39;string ops&#39;</span>, (b) =&gt; {
+  b.measure(<span class="tok-string">&#39;concat&#39;</span>,   () =&gt; { <span class="tok-string">&#39;hello&#39;</span> + <span class="tok-string">&#39; world&#39;</span>; });
+  b.measure(<span class="tok-string">&#39;template&#39;</span>, () =&gt; { <span class="tok-string">`hello ${</span><span class="tok-string">&#39; world&#39;</span>}`; });
+});
+
+bench(<span class="tok-string">&#39;with sub-groups&#39;</span>, (b) =&gt; {
+  b.group(<span class="tok-string">&#39;parsing&#39;</span>, (g) =&gt; {
+    g.measure(<span class="tok-string">&#39;parseInt&#39;</span>, () =&gt; { parseInt(<span class="tok-string">&#39;42&#39;</span>, <span class="tok-number">10</span>); });
+    g.measure(<span class="tok-string">&#39;Number()&#39;</span>, () =&gt; { Number(<span class="tok-string">&#39;42&#39;</span>); });
+  });
+});</code></pre>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-test-bench.MeasureOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/test/bench.html#js-test-bench.MeasureOptions">MeasureOptions</a>&lt;T = <span class="tok-keyword">unknown</span>&gt; {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-test-bench.MeasureOptions.setup">
+<h5><code>setup?: () =&gt; T</code></h5>
+
+
+</section>
+
+<section class="member" id="js-test-bench.MeasureOptions.fn">
+<h5><code>fn: (ctx: T) =&gt; <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-test-bench.MeasureOptions.teardown">
+<h5><code>teardown?: (ctx: T) =&gt; <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="js-test-bench.Group">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/test/bench.html#js-test-bench.Group">Group</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-test-bench.Group.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>, indent: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>, filter: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span> = <span class="tok-keyword">null</span>, path: <span class="tok-keyword">string</span>[] = [name])</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-test-bench.Group.measure">
+<h5><code>measure&lt;T&gt;(name: <span class="tok-keyword">string</span>, fnOrOpts: ((ctx?: <span class="tok-keyword">unknown</span>) =&gt; <span class="tok-keyword">unknown</span>) | <a class="tok-type" href="js/test/bench.html#js-test-bench.MeasureOptions">MeasureOptions</a>&lt;T&gt;): <span class="tok-keyword">void</span></code></h5>
+
+<p>Register a measurement. Execution is deferred until <code>finalize()</code>.</p>
+<p>Accepts either a function or an options object:</p>
+<pre><code class="language-ts">b.measure(<span class="tok-string">&#39;name&#39;</span>, fn)
+b.measure(<span class="tok-string">&#39;name&#39;</span>, { setup, fn, teardown })</code></pre>
+<p><code>fn</code> may be synchronous or async. If <code>fn()</code> returns a thenable, the measurement loop spins the global event loop to completion on every iteration.</p>
+<p><code>setup()</code> and <code>teardown()</code> are synchronous and are not included in timing. The return value of <code>setup()</code> is passed as the first argument to <code>fn(ctx)</code>.</p>
+</section>
+
+<section class="member" id="js-test-bench.Group.group">
+<h5><code>group(name: <span class="tok-keyword">string</span>, fn: (g: <a class="tok-type" href="js/test/bench.html#js-test-bench.Group">Group</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Add a named sub-group. Registration is deferred until <code>finalize()</code>.</p>
+</section>
+
+<section class="member" id="js-test-bench.Group.finalize">
+<h5><code>finalize()</code></h5>
+
+<p>Execute all pending measurements and sub-groups, then print the comparison. Called by run() after the suite body returns.</p>
+</section>
+
+<section class="member" id="js-test-bench.Group.shouldRun">
+<h5><code>shouldRun(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-test-bench.bench">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> bench(name: <span class="tok-keyword">string</span>, fn: (b: <a class="tok-type" href="js/test/bench.html#js-test-bench.Group">Group</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a benchmark suite.</p>
+
+</section>
+
+<section id="js-test-bench.run">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: { filter?: <span class="tok-keyword">string</span> } = {})</code></h3>
+
+<p>Run all registered benchmark suites and print results.</p>
+<p>Prints the benc.h v1.0.0 header, then each suite in registration order.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

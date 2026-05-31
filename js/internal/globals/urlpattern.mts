@@ -80,7 +80,7 @@
  *   that covers the full syntax but may differ in edge cases.
  *
  *
- * @example
+ * ```ts
  * // URLPattern is available via globalThis
  *
  * // Object form (most precise):
@@ -101,6 +101,7 @@
  * //   {group}       — non-capturing group
  * //   ?  +  *       — modifiers after :name, (regex), {group}, or *
  * //   \x            — literal escape
+ * ```
  */
 
 import { URL } from './url.mts';

@@ -1,0 +1,382 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - argv</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:argv">argv</h1>
+<p class="muted">js/util/argv.mts</p>
+<p>fino:util/argv — config-based argv parser with nested command execution.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="argv.CommandConfig">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.CommandConfig">CommandConfig</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="argv.CommandConfig.name">
+<h5><code>name?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandConfig.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandConfig.allowUnknown">
+<h5><code>allowUnknown?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandConfig.run">
+<h5><code>run?: (ctx: <a class="tok-type" href="argv.html#argv.CommandContext">CommandContext</a>) =&gt; <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandConfig.options">
+<h5><code>options?: <a class="tok-type" href="argv.html#argv.OptionConfig">OptionConfig</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandConfig.positionals">
+<h5><code>positionals?: <a class="tok-type" href="argv.html#argv.PositionalConfig">PositionalConfig</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandConfig.commands">
+<h5><code>commands?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="argv.html#argv.Command">Command</a> | <a class="tok-type" href="argv.html#argv.CommandConfig">CommandConfig</a>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="argv.OptionConfig">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.OptionConfig">OptionConfig</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="argv.OptionConfig.flags">
+<h5><code>flags: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.OptionConfig.type">
+<h5><code><span class="tok-keyword">type</span>?: <span class="tok-string">&#39;boolean&#39;</span> | <span class="tok-string">&#39;string&#39;</span> | <span class="tok-string">&#39;number&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.OptionConfig.multiple">
+<h5><code>multiple?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.OptionConfig.required">
+<h5><code>required?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.OptionConfig.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.OptionConfig.default">
+<h5><code><span class="tok-keyword">default</span>?: OptionDefault</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="argv.PositionalConfig">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.PositionalConfig">PositionalConfig</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="argv.PositionalConfig.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.PositionalConfig.type">
+<h5><code><span class="tok-keyword">type</span>?: <span class="tok-string">&#39;string&#39;</span> | <span class="tok-string">&#39;number&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.PositionalConfig.required">
+<h5><code>required?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.PositionalConfig.multiple">
+<h5><code>multiple?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.PositionalConfig.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="argv.CommandContext">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.CommandContext">CommandContext</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="argv.CommandContext.command">
+<h5><code>command: <a class="tok-type" href="argv.html#argv.Command">Command</a></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.invocation">
+<h5><code>invocation: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.parent">
+<h5><code>parent: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.root">
+<h5><code>root: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.path">
+<h5><code>path: <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.args">
+<h5><code>args: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.options">
+<h5><code>options: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.positionals">
+<h5><code>positionals: <span class="tok-keyword">unknown</span>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.chain">
+<h5><code>chain: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.prompt">
+<h5><code>prompt: <a class="tok-type" href="prompt.html#prompt.PromptSession">PromptSession</a></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandContext.providedOptions">
+<h5><code>providedOptions: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set">Set</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="argv.CommandContext.optionProvided">
+<h5><code>optionProvided(key: <span class="tok-keyword">string</span>): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="argv.CommandInvocation">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="argv.CommandInvocation.command">
+<h5><code>command: <a class="tok-type" href="argv.html#argv.Command">Command</a></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandInvocation.parent">
+<h5><code>parent: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandInvocation.args">
+<h5><code>args: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandInvocation.options">
+<h5><code>options: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandInvocation.positionals">
+<h5><code>positionals: <span class="tok-keyword">unknown</span>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandInvocation.providedOptions">
+<h5><code>providedOptions: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set">Set</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="argv.CommandInvocation.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(command: <a class="tok-type" href="argv.html#argv.Command">Command</a>, parent: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> | <span class="tok-keyword">null</span>, args: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, options: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, positionals: <span class="tok-keyword">unknown</span>[], providedOptions: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set">Set</a>&lt;<span class="tok-keyword">string</span>&gt;)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="argv.CommandInvocation.name">
+<h5><code><span class="tok-keyword">get</span> name(): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.CommandInvocation.path">
+<h5><code><span class="tok-keyword">get</span> path(): <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="argv.Command">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="argv.html#argv.Command">Command</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="argv.Command.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(config: <a class="tok-type" href="argv.html#argv.CommandConfig">CommandConfig</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="argv.Command.name">
+<h5><code><span class="tok-keyword">get</span> name(): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.Command.description">
+<h5><code><span class="tok-keyword">get</span> description(): <span class="tok-keyword">string</span> | <span class="tok-keyword">undefined</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.Command.parent">
+<h5><code><span class="tok-keyword">get</span> parent(): <a class="tok-type" href="argv.html#argv.Command">Command</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="argv.Command.parse">
+<h5><code>parse(argv: <span class="tok-keyword">string</span>[], options: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> = {}): <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.Command.run">
+<h5><code>run(ctx: <a class="tok-type" href="argv.html#argv.CommandContext">CommandContext</a>): <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.Command.usage">
+<h5><code>usage(programName?: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="argv.Command.help">
+<h5><code>help(programName?: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

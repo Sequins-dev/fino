@@ -1,0 +1,362 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - url</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:url">url</h1>
+<p class="muted">js/internal/globals/url.mts</p>
+<p>fino:url — WHATWG URL and URLSearchParams implementation.</p>
+<p>This is a pure-JS implementation of the WHATWG URL Standard (<a href="https://url.spec.whatwg.org/">https://url.spec.whatwg.org/</a>). It handles absolute URL parsing, relative URL resolution against a base, and the full URLSearchParams mutation API. No native binding or C library is used — all parsing is done in JS.</p>
+<h3>Architecture</h3>
+<p>A parsed URL is stored as a plain object with six string fields:</p>
+<p>{ scheme, username, password, host, port, pathname, search, hash }</p>
+<p>This &quot;state object&quot; is the single source of truth for all property getters. Setters mutate the state object directly (e.g. <code>url.hostname = &#39;foo&#39;</code> sets <code>state.host</code>). Serialization via <code>_serialize()</code> concatenates the fields in the correct order.</p>
+<p><code>URLSearchParams</code> has an <code>#onUpdate</code> callback. When a <code>URLSearchParams</code> instance is attached to a <code>URL</code> (via <code>url.searchParams</code>), mutations to the params object call <code>onUpdate(queryString)</code>, which stores the new query string back into <code>url.#state.search</code>. Conversely, when <code>url.search</code> is set directly, <code>url.#params.setQuery()</code> is called to resync the params list. This keeps the URL&#39;s <code>search</code> property and its <code>searchParams</code> in sync without a round-trip through the full parser.</p>
+<h3>URL parsing</h3>
+<p><code>_parseURL(input, base)</code> is a hand-rolled parser, not a state-machine as specified by the WHATWG standard. It handles the most common cases:</p>
+<ul>
+<li>Absolute URLs with authority (<code>scheme://user:pass@host:port/path?q#f</code>)</li>
+<li>Opaque URLs without authority (<code>data:</code>, <code>javascript:</code>)</li>
+<li>Relative URLs resolved against a base via <code>_resolveRelative()</code></li>
+</ul>
+<p>Relative resolution follows RFC 3986 §5.2: same-fragment, same-query, protocol-relative, absolute-path, and relative-path references are each handled as a special case before falling through to the generic merge-with- base-directory logic.</p>
+<p><code>_normalizePath()</code> resolves <code>.</code> and <code>..</code> segments in the output path. It does not percent-encode or decode path segments — characters in the path are preserved exactly as supplied.</p>
+<h3>Default port stripping</h3>
+<p>The WHATWG spec says that default ports must be excluded from the URL serialization. <code>_parseURL</code> strips default ports on parse (e.g. <code>:80</code> for HTTP, <code>:443</code> for HTTPS), so they never appear in <code>url.port</code> or <code>url.href</code>. Setters that modify the scheme or port also strip defaults.</p>
+<h3>URLSearchParams encoding</h3>
+<p>URLSearchParams uses <code>application/x-www-form-urlencoded</code> encoding, which differs from percent-encoding in two ways: spaces become <code>+</code> (not <code>%20</code>), and the safe character set is narrower. The <code>_formEncode</code> / <code>_formDecode</code> helpers implement this. For multi-byte characters they delegate to the built-in <code>encodeURIComponent</code> / <code>decodeURIComponent</code> rather than re-implementing the UTF-8 encoder.</p>
+<h3>What is NOT implemented</h3>
+<ul>
+<li>IDNA (internationalized domain names) — hostnames are lowercased but not</li>
+</ul>
+<p>decoded from Punycode.</p>
+<ul>
+<li>Full WHATWG URL state machine with all 20+ parser states.</li>
+<li>IPv6 normalization beyond bracket-wrapping.</li>
+<li>Opaque path handling (e.g. <code>blob:</code> URLs with UUIDs).</li>
+</ul>
+<p>These omissions are intentional. The implemented subset covers all practical HTTP/HTTPS usage. Add missing features only when a concrete use-case requires them.</p>
+<pre><code class="language-ts"><span class="tok-comment">// URL and URLSearchParams are available via globalThis</span>
+
+<span class="tok-keyword">const</span> url = <span class="tok-keyword">new</span> URL(<span class="tok-string">&#39;https://user:pass@example.com:8080/path?q=1#frag&#39;</span>);
+url.protocol    <span class="tok-comment">// &#39;https:&#39;</span>
+url.hostname    <span class="tok-comment">// &#39;example.com&#39;</span>
+url.port        <span class="tok-comment">// &#39;8080&#39;</span>
+url.pathname    <span class="tok-comment">// &#39;/path&#39;</span>
+url.search      <span class="tok-comment">// &#39;?q=1&#39;</span>
+url.hash        <span class="tok-comment">// &#39;#frag&#39;</span>
+url.origin      <span class="tok-comment">// &#39;https://example.com:8080&#39;</span>
+
+<span class="tok-comment">// Relative URL resolution</span>
+<span class="tok-keyword">const</span> u = <span class="tok-keyword">new</span> URL(<span class="tok-string">&#39;../other&#39;</span>, <span class="tok-string">&#39;http://example.com/a/b/&#39;</span>);
+u.href  <span class="tok-comment">// &#39;http://example.com/a/other&#39;</span>
+
+<span class="tok-comment">// URLSearchParams</span>
+<span class="tok-keyword">const</span> p = <span class="tok-keyword">new</span> URLSearchParams(<span class="tok-string">&#39;a=1&amp;b=hello+world&#39;</span>);
+p.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;b&#39;</span>)  <span class="tok-comment">// &#39;hello world&#39;</span>
+p.toString()  <span class="tok-comment">// &#39;a=1&amp;b=hello+world&#39;</span></code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="url.URLSearchParams">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="url.html#url.URLSearchParams">URLSearchParams</a> {</code></h3>
+
+<p>WHATWG URLSearchParams.</p>
+<p>When attached to a URL (via url.searchParams), mutations automatically update url.search.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="url.URLSearchParams.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(init?: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URLSearchParams">URLSearchParams</a> | [<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>][] | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt; | <span class="tok-keyword">null</span>, onUpdate: ((qs: <span class="tok-keyword">string</span>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span> = <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="url.URLSearchParams.size">
+<h5><code><span class="tok-keyword">get</span> size()</code></h5>
+
+<p>Number of entries.</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="url.URLSearchParams.append">
+<h5><code>append(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Append a new name/value pair (allows duplicates).</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.delete">
+<h5><code><span class="tok-keyword">delete</span>(name: <span class="tok-keyword">string</span>, value?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Remove entries with the given name, optionally matching value too.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.get">
+<h5><code><span class="tok-keyword">get</span>(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+<p>Return the first value for the given name, or null.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.getAll">
+<h5><code>getAll(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span>[]</code></h5>
+
+<p>Return all values for the given name.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.has">
+<h5><code>has(name: <span class="tok-keyword">string</span>, value?: <span class="tok-keyword">string</span>): <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Return true if an entry with the given name (and optionally value) exists.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.set">
+<h5><code><span class="tok-keyword">set</span>(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Set the value for a name (removes existing entries for that name).</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.sort">
+<h5><code>sort()</code></h5>
+
+<p>Sort all entries by name (stable).</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.toString">
+<h5><code><a class="tok-type" href="url.html#url.URLSearchParams.toString">toString</a>()</code></h5>
+
+<p>Serialize to application/x-www-form-urlencoded string.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.entries">
+<h5><code>entries()</code></h5>
+
+<p>Iterate over [name, value pairs.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.keys">
+<h5><code>keys()</code></h5>
+
+<p>Iterate over names.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.values">
+<h5><code>values()</code></h5>
+
+<p>Iterate over values.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.forEach">
+<h5><code>forEach(callback: (value: <span class="tok-keyword">string</span>, name: <span class="tok-keyword">string</span>, parent: <a class="tok-type" href="url.html#url.URLSearchParams">URLSearchParams</a>) =&gt; <span class="tok-keyword">void</span>, thisArg?: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Iterate over [name, value pairs.</p>
+</section>
+
+<section class="member" id="url.URLSearchParams.setQuery">
+<h5><code>setQuery(str: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Update the list from a raw query string. Called by URL when its search is set.</p>
+</section>
+
+
+</section>
+
+<section id="url.URL">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="url.html#url.URL">URL</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="url.URL.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>, base?: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="url.URL.href">
+<h5><code><span class="tok-keyword">get</span> href()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.origin">
+<h5><code><span class="tok-keyword">get</span> origin()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.protocol">
+<h5><code><span class="tok-keyword">get</span> protocol()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.username">
+<h5><code><span class="tok-keyword">get</span> username()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.password">
+<h5><code><span class="tok-keyword">get</span> password()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.host">
+<h5><code><span class="tok-keyword">get</span> host()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.hostname">
+<h5><code><span class="tok-keyword">get</span> hostname()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.port">
+<h5><code><span class="tok-keyword">get</span> port()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.pathname">
+<h5><code><span class="tok-keyword">get</span> pathname()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.search">
+<h5><code><span class="tok-keyword">get</span> search()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.searchParams">
+<h5><code><span class="tok-keyword">get</span> searchParams()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.hash">
+<h5><code><span class="tok-keyword">get</span> hash()</code></h5>
+
+
+</section>
+
+
+<h4>Setters</h4>
+
+<section class="member" id="url.URL.href:setter">
+<h5><code><span class="tok-keyword">set</span> href(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.protocol:setter">
+<h5><code><span class="tok-keyword">set</span> protocol(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.username:setter">
+<h5><code><span class="tok-keyword">set</span> username(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.password:setter">
+<h5><code><span class="tok-keyword">set</span> password(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.host:setter">
+<h5><code><span class="tok-keyword">set</span> host(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.hostname:setter">
+<h5><code><span class="tok-keyword">set</span> hostname(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.port:setter">
+<h5><code><span class="tok-keyword">set</span> port(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.pathname:setter">
+<h5><code><span class="tok-keyword">set</span> pathname(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.search:setter">
+<h5><code><span class="tok-keyword">set</span> search(value)</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.hash:setter">
+<h5><code><span class="tok-keyword">set</span> hash(value)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="url.URL.toString">
+<h5><code><a class="tok-type" href="url.html#url.URLSearchParams.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="url.URL.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="url.URL.canParse">
+<h5><code><span class="tok-keyword">static</span> canParse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>, base?: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>): <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Return true if the input is a parseable URL (no exception thrown).</p>
+</section>
+
+<section class="member" id="url.URL.parse">
+<h5><code><span class="tok-keyword">static</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>, base?: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>): <a class="tok-type" href="url.html#url.URL">URL</a> | <span class="tok-keyword">null</span></code></h5>
+
+<p>Parse and return a URL, or null if invalid.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

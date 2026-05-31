@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - watch</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:watch">watch</h1>
+<p class="muted">js/file/watch.mts</p>
+<p>fino:file/watch — Cross-platform filesystem event watcher.</p>
+<p>Watches files and directories for changes and exposes a unified async iterator interface. Platform implementations differ, but the event model is the same on both:</p>
+<p>{ type: &#39;create&#39; | &#39;modify&#39; | &#39;delete&#39; | &#39;rename&#39;, path: string }</p>
+<h3>Platform details</h3>
+<p><strong>macOS</strong> — uses kqueue EVFILT_VNODE (via <code>fino:runtime/loop</code>&#39;s <code>vnode()</code> API). One open fd is required per watched path. EV_CLEAR auto-re-arms the filter after each delivery. Events report which flags fired (NOTE_WRITE, NOTE_DELETE, etc.) but not which specific file changed within a directory — a NOTE_WRITE on a directory only means &quot;something changed in this directory&quot;.</p>
+<p><strong>Linux</strong> — uses inotify (via <code>internal:file/watch-bindings</code>). A single inotify fd handles all watches. Events include the specific filename that changed, providing finer-grained information than the macOS backend.</p>
+<h3>Known limitations</h3>
+<ul>
+<li>macOS: each watched path requires an open fd. Deep recursive watches may</li>
+</ul>
+<p>approach per-process fd limits (default 256; raise with <code>ulimit -n</code>).</p>
+<ul>
+<li>macOS: directory watches only know that something changed, not which entry.</li>
+</ul>
+<p>Callers that need the specific changed file must re-scan the directory.</p>
+<ul>
+<li>macOS: renames report only the old path (NOTE_RENAME on the source).</li>
+<li>Recursive watching: there is a brief race window between a new subdirectory</li>
+</ul>
+<p>being created and its watch being registered — a few events may be missed.</p>
+<h3>Usage</h3>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { Watcher } from <span class="tok-string">&#39;./watch.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> watcher = <span class="tok-keyword">new</span> Watcher();
+watcher.watch(<span class="tok-string">&#39;/tmp/mydir&#39;</span>);
+
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> event <span class="tok-keyword">of</span> watcher) {
+  console.log(event.<span class="tok-keyword">type</span>, event.path);
+}
+
+watcher.close();</code></pre>
+
+
+<h2>Types</h2>
+
+<section id="watch.WatchEventType">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="watch.html#watch.WatchEventType">WatchEventType</a> = <span class="tok-string">&#39;create&#39;</span> | <span class="tok-string">&#39;modify&#39;</span> | <span class="tok-string">&#39;delete&#39;</span> | <span class="tok-string">&#39;rename&#39;</span></code></h3>
+
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="watch.WatchEvent">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="watch.html#watch.WatchEvent">WatchEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="watch.WatchEvent.type">
+<h5><code><span class="tok-keyword">type</span>: <a class="tok-type" href="watch.html#watch.WatchEventType">WatchEventType</a></code></h5>
+
+<p>Type of filesystem event.</p>
+</section>
+
+<section class="member" id="watch.WatchEvent.path">
+<h5><code>path: <span class="tok-keyword">string</span></code></h5>
+
+<p>Absolute or relative path of the affected file or directory.</p>
+</section>
+
+
+</section>
+
+<section id="watch.WatchOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="watch.html#watch.WatchOptions">WatchOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="watch.WatchOptions.recursive">
+<h5><code>recursive?: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Watch subdirectories recursively. On macOS, this opens one fd per subdirectory. On Linux, it adds one inotify watch per subdirectory. Default: false.</p>
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="watch.Watcher">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="watch.html#watch.Watcher">Watcher</a> {</code></h3>
+
+<p>Async-iterable filesystem watcher. Construct, call <code>watch()</code> for each path, then iterate events with <code>for await</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> watcher = <span class="tok-keyword">new</span> Watcher(lp, { recursive: <span class="tok-keyword">true</span> });
+watcher.watch(<span class="tok-string">&#39;/tmp/mydir&#39;</span>);
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> { <span class="tok-keyword">type</span>, path } <span class="tok-keyword">of</span> watcher) {
+  console.log(<span class="tok-keyword">type</span>, path);
+}</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="watch.Watcher.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: <a class="tok-type" href="watch.html#watch.WatchOptions">WatchOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="watch.Watcher.watch">
+<h5><code>watch(path: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Start watching <code>path</code> for changes.</p>
+<p>On macOS, opens an fd for each watched path (and each subdirectory if <code>recursive: true</code>). On Linux, adds an inotify watch.</p>
+<p>May be called multiple times to watch multiple paths.</p>
+</section>
+
+<section class="member" id="watch.Watcher.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Stop watching all paths and release all resources. Resolves any pending iterator .next() calls with <code>{ done: true }</code>.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

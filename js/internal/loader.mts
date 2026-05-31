@@ -17,7 +17,8 @@
 import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
-import { registerResolve, registerInitMeta, getPackageMap } from 'internal:loader-hooks';
+import { registerResolve, registerInitMeta, registerTranspile, getPackageMap } from 'internal:loader-hooks';
+import { transpile as transpileTypeScript } from 'fino:format/typescript';
 
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
@@ -209,5 +210,14 @@ function initImportMeta(
   };
 }
 
+function transpile(source: string, filename: string): { code: string; map: string } {
+  const result = transpileTypeScript(source, { filename });
+  if (!result.ok) {
+    throw new Error(result.errors.map((error) => error.message).join('\n') || `Unable to transpile ${filename}`);
+  }
+  return { code: result.code, map: result.map };
+}
+
 registerResolve(resolve);
 registerInitMeta(initImportMeta);
+registerTranspile(transpile);

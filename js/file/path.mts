@@ -61,7 +61,7 @@
  * strings and don't want to construct a `Path` just to call one method.
  *
  *
- * @example
+ * ```ts
  * import { Path, join, resolve, relative, dirname, basename } from './path.mts';
  *
  * const p = new Path('/usr/local/bin');
@@ -75,6 +75,7 @@
  *
  * resolve('/home', 'user', 'docs')  // Path('/home/user/docs')
  * relative('/a/b', '/a/b/c/d')      // Path('c/d')
+ * ```
  */
 
 import { os } from 'internal:process';

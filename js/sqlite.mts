@@ -7,6 +7,7 @@
  * work transparently.
  *
  * Usage:
+ * ```ts
  *   import { Database } from 'fino:sqlite';
  *   const db = await Database.open('/path/to.db');
  *   await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
@@ -14,6 +15,7 @@
  *   await stmt.run(1n, 'hello');
  *   const rows = await db.prepare('SELECT * FROM t').all();
  *   await db.close();
+ * ```
  */
 
 import { Pointer } from 'fino:ffi';

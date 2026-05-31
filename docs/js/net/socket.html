@@ -1,0 +1,651 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/net/socket</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-net-socket">js/net/socket</h1>
+<p class="muted">js/net/socket.mts</p>
+<p>fino:socket — POSIX socket API for TCP, UDP, and Unix domain sockets.</p>
+<p>This module wraps the POSIX socket syscalls via <code>fino:ffi</code> and provides both a low-level procedural API (raw fd integers) and a higher-level <code>Socket</code> class with async <code>connect()</code> / <code>listen()</code> and a <code>split()</code> method that divides a connection into independent <code>Reader</code> and <code>Writer</code> halves (from <code>fino:stream</code>).</p>
+<h3>Address families and address objects</h3>
+<p>Addresses are plain JS objects rather than classes. The <code>family</code> field selects the address type: { family: &#39;ipv4&#39;, ip: &#39;127.0.0.1&#39;, port: 8080 } { family: &#39;ipv6&#39;, ip: &#39;::1&#39;,       port: 8080 } { family: &#39;unix&#39;, path: &#39;/tmp/app.sock&#39; }</p>
+<p><code>encodeAddr()</code> translates these to C <code>sockaddr_in</code> / <code>sockaddr_in6</code> / <code>sockaddr_un</code> buffers using <code>inet_pton(3)</code> for IP parsing. <code>decodeAddr()</code> is the reverse, using <code>inet_ntop(3)</code> for IP formatting.</p>
+<h3>Platform differences in sockaddr layout</h3>
+<p><strong>macOS</strong> struct sockaddr includes a <code>sa_len</code> byte at offset 0: offset 0: sa_len    (uint8)  — total size of the struct offset 1: sa_family (uint8)  — AF_INET / AF_INET6 / AF_UNIX</p>
+<p><strong>Linux</strong> struct sockaddr has no <code>sa_len</code> field: offset 0: sa_family (uint16 LE) — AF_INET / AF_INET6 / AF_UNIX</p>
+<p><code>writeFamily()</code> and <code>readFamily()</code> handle this difference. All <code>encodeAddr()</code> and <code>decodeAddr()</code> code goes through these helpers.</p>
+<h3>Non-blocking connect</h3>
+<p><code>Socket.connect()</code> uses non-blocking sockets for async connection setup:</p>
+<ol>
+<li>Create a socket, set O_NONBLOCK.</li>
+<li>Call <code>connect()</code> — returns immediately with EINPROGRESS.</li>
+<li><code>await loop.writable(lp, fd)</code> — suspend until the kernel signals</li>
+</ol>
+<p>that the connection attempt completed (success or failure).</p>
+<ol>
+<li><code>getsockopt(fd, SOL_SOCKET, SO_ERROR)</code> — check the actual result.</li>
+</ol>
+<p>Zero means success; nonzero is an errno value.</p>
+<p>This approach never blocks the Fino process, even for connections to remote hosts that may be slow to respond.</p>
+<h3>accept4 on Linux</h3>
+<p>Linux provides <code>accept4(2)</code> which sets <code>SOCK_NONBLOCK</code> on the accepted socket atomically, avoiding a separate <code>fcntl(F_SETFL)</code> call. On macOS, we call <code>accept(2)</code> followed by <code>setNonblocking(fd)</code>. The <code>accept</code> function in this module handles the platform difference automatically.</p>
+<h3>EAGAIN values differ by platform</h3>
+<p>When a non-blocking call would block, the kernel returns EAGAIN or EWOULDBLOCK (same value on most platforms). But the numeric errno differs: Linux:  EAGAIN = 11  (returned as -11 from our FFI functions) macOS:  EAGAIN = 35  (returned as -35)</p>
+<p>Similarly, EINPROGRESS is -115 on Linux and -36 on macOS. The errno constants exported by this module use the correct values for the current platform.</p>
+<h3>Socket.split() and fd lifecycle</h3>
+<p><code>Socket.split()</code> returns <code>[Reader, Writer]</code> that share the underlying fd. The fd should only be <code>close()</code>d when both halves are done. The <code>onClose</code> callbacks implement a reference-count of 2:</p>
+<ul>
+<li>Reader&#39;s close: <code>shutdown(fd, SHUT_RD)</code> + decrement ref. This sends an</li>
+</ul>
+<p>EOF to any in-flight <code>read(2)</code> call, unblocking the Reader cleanly.</p>
+<ul>
+<li>Writer&#39;s close: <code>shutdown(fd, SHUT_WR)</code> + decrement ref. This sends a</li>
+</ul>
+<p>TCP FIN to the remote peer.</p>
+<ul>
+<li>When both have closed (ref reaches 0): <code>close(fd)</code> releases the fd.</li>
+</ul>
+<p><code>shutdown(SHUT_RD)</code> is a local operation — it doesn&#39;t send anything on the wire; it just makes the read side of the socket return 0 (EOF) immediately. <code>shutdown(SHUT_WR)</code> sends a FIN packet, signalling to the peer that we&#39;re done sending but may still be reading.</p>
+<h3>Server (Socket.listen)</h3>
+<p><code>Socket.listen()</code> returns a plain object (not a class) with:</p>
+<ul>
+<li><code>accept()</code> — async function that awaits the next incoming connection</li>
+<li><code>close()</code> — closes the server socket</li>
+<li><code>[Symbol.asyncIterator]</code> — iterate incoming connections</li>
+</ul>
+<p>The server socket is set non-blocking after <code>listen(2)</code>, and <code>loop.readable()</code> is used to await the next connection before calling <code>accept()</code>. If <code>accept()</code> returns null (spurious wakeup), the loop retries.</p>
+<p>Unix domain sockets: <code>Socket.listen()</code> calls <code>unlink(path)</code> before <code>bind()</code> to remove any stale socket file from a previous run.</p>
+<h3>Contributing</h3>
+<ul>
+<li>All socket fds must be set to non-blocking mode before use with the event</li>
+</ul>
+<p>loop. <code>setNonblocking()</code> is called automatically by <code>Socket.connect()</code> and <code>Socket.listen()</code>, but callers using the low-level API must call it themselves.</p>
+<ul>
+<li><code>send()</code> and <code>recv()</code> are provided for connected sockets (TCP). For UDP,</li>
+</ul>
+<p>use <code>sendto()</code> and <code>recvfrom()</code>.</p>
+<ul>
+<li><code>setsockopt()</code> with a boolean or number value writes a 4-byte little-endian</li>
+</ul>
+<p>int. For raw option buffers (e.g. <code>struct linger</code>), pass an ArrayBuffer.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-net-socket.IPv4Address">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.IPv4Address">IPv4Address</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.IPv4Address.family">
+<h5><code>family: <span class="tok-string">&#39;ipv4&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.IPv4Address.ip">
+<h5><code>ip: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.IPv4Address.port">
+<h5><code>port: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-socket.IPv6Address">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.IPv6Address">IPv6Address</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.IPv6Address.family">
+<h5><code>family: <span class="tok-string">&#39;ipv6&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.IPv6Address.ip">
+<h5><code>ip: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.IPv6Address.port">
+<h5><code>port: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-socket.UnixAddress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.UnixAddress">UnixAddress</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.UnixAddress.family">
+<h5><code>family: <span class="tok-string">&#39;unix&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.UnixAddress.path">
+<h5><code>path: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-socket.UnknownAddress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.UnknownAddress">UnknownAddress</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.UnknownAddress.family">
+<h5><code>family: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-socket.ConnectOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.ConnectOptions">ConnectOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.ConnectOptions.noDelay">
+<h5><code>noDelay?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-socket.ListenOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.ListenOptions">ListenOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.ListenOptions.reuseAddr">
+<h5><code>reuseAddr?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.ListenOptions.reusePort">
+<h5><code>reusePort?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.ListenOptions.backlog">
+<h5><code>backlog?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-socket.Server">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.Server">Server</a> {</code></h3>
+
+<p>Server object returned by Socket.listen().</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-socket.Server.fd">
+<h5><code>fd: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.Server.address">
+<h5><code>address: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-socket.Server.accept">
+<h5><code>accept(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/socket.html#js-net-socket.Socket">Socket</a> | <span class="tok-keyword">null</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.Server.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-net-socket.Address">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> = <a class="tok-type" href="js/net/socket.html#js-net-socket.IPv4Address">IPv4Address</a> | <a class="tok-type" href="js/net/socket.html#js-net-socket.IPv6Address">IPv6Address</a> | <a class="tok-type" href="js/net/socket.html#js-net-socket.UnixAddress">UnixAddress</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="js-net-socket.AF_INET">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.AF_INET">AF_INET</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.AF_INET6">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.AF_INET6">AF_INET6</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.AF_UNIX">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.AF_UNIX">AF_UNIX</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SOCK_STREAM">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SOCK_STREAM">SOCK_STREAM</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SOCK_DGRAM">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SOCK_DGRAM">SOCK_DGRAM</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SOCK_NONBLOCK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SOCK_NONBLOCK">SOCK_NONBLOCK</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.IPPROTO_TCP">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.IPPROTO_TCP">IPPROTO_TCP</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.IPPROTO_UDP">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.IPPROTO_UDP">IPPROTO_UDP</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SOL_SOCKET">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SOL_SOCKET">SOL_SOCKET</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SO_REUSEADDR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SO_REUSEADDR">SO_REUSEADDR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SO_REUSEPORT">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SO_REUSEPORT">SO_REUSEPORT</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SO_KEEPALIVE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SO_KEEPALIVE">SO_KEEPALIVE</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SO_ERROR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SO_ERROR">SO_ERROR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.IPPROTO_TCP_LEVEL">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.IPPROTO_TCP_LEVEL">IPPROTO_TCP_LEVEL</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.TCP_NODELAY">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.TCP_NODELAY">TCP_NODELAY</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SHUT_RD">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SHUT_RD">SHUT_RD</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SHUT_WR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SHUT_WR">SHUT_WR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.SHUT_RDWR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.SHUT_RDWR">SHUT_RDWR</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.EAGAIN">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.EAGAIN">EAGAIN</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.EINPROGRESS">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.EINPROGRESS">EINPROGRESS</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.ECONNRESET">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.ECONNRESET">ECONNRESET</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.EPIPE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.EPIPE">EPIPE</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.EADDRINUSE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.EADDRINUSE">EADDRINUSE</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.ECONNREFUSED">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.ECONNREFUSED">ECONNREFUSED</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-net-socket.encodeAddr">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> encodeAddr(addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>): { buf: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>; len: <span class="tok-keyword">number</span> }</code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.decodeAddr">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> decodeAddr(buf: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <a class="tok-type" href="js/net/socket.html#js-net-socket.UnknownAddress">UnknownAddress</a></code></h3>
+
+<p>Decode a sockaddr ArrayBuffer into a JS address object.</p>
+
+</section>
+
+<section id="js-net-socket.socket">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> socket(family: <span class="tok-keyword">number</span> = <a class="tok-type" href="js/net/socket.html#js-net-socket.AF_INET">AF_INET</a>, <span class="tok-keyword">type</span>: <span class="tok-keyword">number</span> = <a class="tok-type" href="js/net/socket.html#js-net-socket.SOCK_STREAM">SOCK_STREAM</a>, protocol: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>): <span class="tok-keyword">number</span></code></h3>
+
+<p>Create a socket.</p>
+
+</section>
+
+<section id="js-net-socket.setNonblocking">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> setNonblocking(fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Set a socket to non-blocking mode via fcntl(F_SETFL, O_NONBLOCK).</p>
+
+</section>
+
+<section id="js-net-socket.setsockopt">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> setsockopt(fd: <span class="tok-keyword">number</span>, level: <span class="tok-keyword">number</span>, optname: <span class="tok-keyword">number</span>, value: <span class="tok-keyword">boolean</span> | <span class="tok-keyword">number</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Set socket option. Value can be a boolean/number (written as 4-byte int) or an ArrayBuffer for raw option data.</p>
+
+</section>
+
+<section id="js-net-socket.getsockopt">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> getsockopt(fd: <span class="tok-keyword">number</span>, level: <span class="tok-keyword">number</span>, optname: <span class="tok-keyword">number</span>, bufSize: <span class="tok-keyword">number</span> = <span class="tok-number">4</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a></code></h3>
+
+<p>Get socket option. Returns the raw ArrayBuffer (4 bytes for int options).</p>
+
+</section>
+
+<section id="js-net-socket.getsockname">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> getsockname(fd: <span class="tok-keyword">number</span>): <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <a class="tok-type" href="js/net/socket.html#js-net-socket.UnknownAddress">UnknownAddress</a></code></h3>
+
+
+
+</section>
+
+<section id="js-net-socket.bind">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> bind(fd: <span class="tok-keyword">number</span>, addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Bind a socket to an address.</p>
+
+</section>
+
+<section id="js-net-socket.listen">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> listen(fd: <span class="tok-keyword">number</span>, backlog: <span class="tok-keyword">number</span> = <span class="tok-number">128</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Mark a socket as passive (server socket).</p>
+
+</section>
+
+<section id="js-net-socket.accept">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> accept(serverFd: <span class="tok-keyword">number</span>, setNonblock: <span class="tok-keyword">boolean</span> = <span class="tok-keyword">true</span>): { fd: <span class="tok-keyword">number</span>; addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <a class="tok-type" href="js/net/socket.html#js-net-socket.UnknownAddress">UnknownAddress</a> } | <span class="tok-keyword">null</span></code></h3>
+
+<p>Accept a pending connection. Returns <code>{ fd, addr }</code>. If the socket is non-blocking and no connection is pending, returns null.</p>
+<p>On Linux, the accepted socket is made non-blocking atomically via accept4.</p>
+
+</section>
+
+<section id="js-net-socket.connect">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> connect(fd: <span class="tok-keyword">number</span>, addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>): <span class="tok-keyword">number</span></code></h3>
+
+<p>Initiate a connection to a remote address. For non-blocking sockets, returns -115 (EINPROGRESS) on Linux or -36 (EINPROGRESS) on macOS — use fino:loop addWrite() to wait for completion, then check SO_ERROR via getsockopt().</p>
+
+</section>
+
+<section id="js-net-socket.send">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> send(fd: <span class="tok-keyword">number</span>, data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>, flags: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>): <span class="tok-keyword">number</span></code></h3>
+
+<p>Send data on a connected socket.</p>
+
+</section>
+
+<section id="js-net-socket.recv">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> recv(fd: <span class="tok-keyword">number</span>, maxBytes: <span class="tok-keyword">number</span> = <span class="tok-number">65536</span>, flags: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <span class="tok-keyword">number</span> | <span class="tok-keyword">null</span></code></h3>
+
+<p>Receive data from a connected socket.</p>
+
+</section>
+
+<section id="js-net-socket.sendto">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> sendto(fd: <span class="tok-keyword">number</span>, data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>, destAddr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>, flags: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>): <span class="tok-keyword">number</span></code></h3>
+
+<p>Send a datagram to a specific address (UDP).</p>
+
+</section>
+
+<section id="js-net-socket.recvfrom">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> recvfrom(fd: <span class="tok-keyword">number</span>, maxBytes: <span class="tok-keyword">number</span> = <span class="tok-number">65536</span>, flags: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>): { data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>; addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <a class="tok-type" href="js/net/socket.html#js-net-socket.UnknownAddress">UnknownAddress</a> } | <span class="tok-keyword">number</span></code></h3>
+
+<p>Receive a datagram (UDP). Returns <code>{ data, addr }</code> or null on EAGAIN.</p>
+
+</section>
+
+<section id="js-net-socket.shutdown">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> shutdown(fd: <span class="tok-keyword">number</span>, how: <span class="tok-keyword">number</span> = <a class="tok-type" href="js/net/socket.html#js-net-socket.SHUT_RDWR">SHUT_RDWR</a>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Shut down part or all of a socket connection.</p>
+
+</section>
+
+<section id="js-net-socket.close">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> close(fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Close a socket.</p>
+
+</section>
+
+<section id="js-net-socket.connectTcp">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> connectTcp(addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>, opts: <a class="tok-type" href="js/net/socket.html#js-net-socket.ConnectOptions">ConnectOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">number</span>&gt;</code></h3>
+
+<p>Establish a non-blocking TCP connection and return the raw fd. Used by both Socket.connect() and TlsSocket.connect() (in fino:tls) to avoid duplicating the connect/SO_ERROR dance.</p>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="js-net-socket.Socket">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/net/socket.html#js-net-socket.Socket">Socket</a> {</code></h3>
+
+<p>A connected socket that can be split into independent Reader and Writer halves. The underlying fd is closed automatically when both halves close.</p>
+<p>Use the static factories rather than the constructor directly:</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> sock = <span class="tok-keyword">await</span> Socket.connect(lp, { family: <span class="tok-string">&#39;ipv4&#39;</span>, ip: <span class="tok-string">&#39;…&#39;</span>, port: <span class="tok-number">80</span> });
+<span class="tok-keyword">const</span> server = Socket.listen(lp, { family: <span class="tok-string">&#39;ipv6&#39;</span>, ip: <span class="tok-string">&#39;::&#39;</span>, port: <span class="tok-number">8080</span> });</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-net-socket.Socket.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(fd: <span class="tok-keyword">number</span>, remoteAddr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <span class="tok-keyword">null</span>, localAddr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a> | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-net-socket.Socket.fd">
+<h5><code><span class="tok-keyword">get</span> fd()</code></h5>
+
+<p>Raw file descriptor — for advanced use with the low-level API.</p>
+</section>
+
+<section class="member" id="js-net-socket.Socket.remoteAddress">
+<h5><code><span class="tok-keyword">get</span> remoteAddress()</code></h5>
+
+<p>Remote address object, or null for server-side accepted sockets.</p>
+</section>
+
+<section class="member" id="js-net-socket.Socket.localAddress">
+<h5><code><span class="tok-keyword">get</span> localAddress()</code></h5>
+
+<p>Local address object, or null if not known.</p>
+</section>
+
+<section class="member" id="js-net-socket.Socket.closed">
+<h5><code><span class="tok-keyword">get</span> closed()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-socket.Socket.split">
+<h5><code>split(): [<a class="tok-type" href="stream.html#stream.BufferedBytesReader">BufferedBytesReader</a>, <a class="tok-type" href="stream.html#stream.BufferedBytesWriter">BufferedBytesWriter</a>]</code></h5>
+
+<p>Split into a [Reader, Writer pair. The underlying fd is closed automatically when both halves have been closed.</p>
+<p>The Reader&#39;s close sends SHUT_RD (wakes any in-flight read with EOF). The Writer&#39;s close sends SHUT_WR (sends FIN to the peer).</p>
+</section>
+
+<section class="member" id="js-net-socket.Socket.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Immediately close the socket (both directions). Calls shutdown(SHUT_RDWR) then close(fd). Idempotent.</p>
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="js-net-socket.Socket.connect">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> connect(addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>, opts: <a class="tok-type" href="js/net/socket.html#js-net-socket.ConnectOptions">ConnectOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/socket.html#js-net-socket.Socket">Socket</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-socket.Socket.listen">
+<h5><code><span class="tok-keyword">static</span> listen(addr: <a class="tok-type" href="js/net/socket.html#js-net-socket.Address">Address</a>, opts: <a class="tok-type" href="js/net/socket.html#js-net-socket.ListenOptions">ListenOptions</a> = {}): <a class="tok-type" href="js/net/socket.html#js-net-socket.Server">Server</a></code></h5>
+
+<p>Create a listening server. Returns a Server object that is an async iterable of incoming Socket connections.</p>
+<p>Supports IPv4, IPv6, and Unix domain sockets via <code>addr.family</code>.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

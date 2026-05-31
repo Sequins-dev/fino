@@ -22,11 +22,12 @@
  * `deepEqual(parse(stringify(parse(x))), parse(x))` holds; text-exact
  * round-trip does not for documents with merge keys.
  *
- * @example
+ * ```ts
  *   import { parse, stringify, parseAll } from 'fino:format/yaml';
  *
  *   const cfg = parse('server:\n  port: 8080\nhosts:\n  - a\n  - b\n');
  *   stringify({ x: 1, y: [2, 3] });
+ * ```
  */
 
 import { ParseError } from 'fino:scanner';

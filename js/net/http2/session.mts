@@ -13,9 +13,11 @@
  *   Pointer.copyFrom(ptr, n)  → copy n bytes from the C address in ptr into a new Uint8Array
  *
  * Out-parameters (e.g. nghttp2_session**, nghttp2_session_callbacks**):
+ * ```ts
  *   const handle = new ArrayBuffer(8);  // 8 bytes to receive the written pointer
  *   sym.foo(Pointer.of(handle), ...);   // pass address of those 8 bytes
  *   // Now handle's 8 bytes contain the allocated C pointer — use handle directly.
+ * ```
  *
  * ## Threading
  *

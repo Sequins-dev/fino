@@ -6,6 +6,7 @@
  * bound context value for the duration of `fn`. This separates the concerns of
  * *publishing* (the library/framework) from *consuming* context (application code).
  *
+ * ```ts
  *   import { topic } from './topic.mts';
  *   import { Context } from '../runtime/context.mts';
  *
@@ -19,6 +20,7 @@
  *     // requestCtx.get() === request here, and in any awaited code
  *     handleRequest();
  *   });
+ * ```
  */
 
 // ---------------------------------------------------------------------------
@@ -138,11 +140,12 @@ export class Topic<T = unknown> {
    * out of the loop (or calling `return()` on the iterator) disposes the
    * subscription automatically.
    *
-   * @example
+   * ```ts
    * for await (const { signal } of signal('SIGTERM')) {
    *   console.log('received', signal);
    *   break; // disposes the subscription
    * }
+   * ```
    */
   [Symbol.asyncIterator](): AsyncIterator<T> {
     const queue: T[] = [];

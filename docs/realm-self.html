@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - realm-self</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:realm-self">realm-self</h1>
+<p class="muted">js/runtime/realm-self.mts</p>
+<p>fino:realm/self — child Realm&#39;s own communication port.</p>
+<p>In an embedded child Realm, <code>port</code> is the MessagePort the parent passed in at construction time. Use it to exchange messages with the parent.</p>
+<p>In the root Realm, a process realm, a thread realm, or any child created without an explicit port, <code>port</code> is <code>undefined</code>. Thread and process realms communicate with their parent through <code>internal:thread-port</code> (<code>nativeSend</code> / <code>nativeRecv</code>) rather than a MessagePort object — access that channel via the bootstrap&#39;s <code>ThreadPort</code> or by calling <code>nativeSend</code> / <code>nativeRecv</code> directly.</p>
+<p>Module caching guarantees a single port instance per context. Importing this module from both the entry module and the bootstrap always yields the same object.</p>
+
+
+<h2>Constants</h2>
+
+<section id="realm-self.port">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> port</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

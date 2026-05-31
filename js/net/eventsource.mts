@@ -12,6 +12,7 @@
  * No connection or reconnection logic — purely a wire-format parser, analogous
  * to how `parseResponse()` consumes a byte stream.
  *
+ * ```ts
  *   import { EventSourceReader } from './eventsource.mts';
  *
  *   const reader = new EventSourceReader(response.body);
@@ -19,6 +20,7 @@
  *     // event: { type, data, id, retry }
  *   }
  *   reader.lastEventId; // persists across all events in the stream
+ * ```
  *
  *
  * ## EventSourceWriter (composable formatter primitive)
@@ -26,6 +28,7 @@
  * Formats and writes SSE events to any Writer (from fino:stream).
  * Server-side counterpart to EventSourceReader.
  *
+ * ```ts
  *   import { EventSourceWriter } from './eventsource.mts';
  *
  *   const esw = new EventSourceWriter(writer);
@@ -33,6 +36,7 @@
  *   await esw.event({ event: 'update', data: 'multi\nline', id: '42' });
  *   await esw.comment('keep-alive');
  *   await esw.retry(5000);
+ * ```
  *
  *
  * ## EventSource (spec-compliant SSE client)
@@ -41,6 +45,7 @@
  * Last-Event-ID resumption, and EventTarget-based event dispatch. Extends
  * EventTarget so `addEventListener` / `removeEventListener` work as expected.
  *
+ * ```ts
  *   import { EventSource } from './eventsource.mts';
  *
  *   const es = new EventSource('http://localhost:3000/events');
@@ -50,6 +55,7 @@
  *   es.addEventListener('update', (e) => { ... });
  *   // later:
  *   es.close();
+ * ```
  *
  *
  * ## SSE wire format
@@ -94,7 +100,9 @@
  * - EventSourceReader is a single-use async iterator — do not call
  *   `[Symbol.asyncIterator]()` more than once on the same instance.
  * - EventSourceWriter does not own the Writer; callers are responsible
+ * ```ts
  *   for closing it.
+ * ```
  * - EventSource connects immediately upon construction.
  * - Keep EventSourceReader and EventSourceWriter free of connection logic.
  *   Network concerns belong in EventSource only.
@@ -149,11 +157,12 @@ interface ClosableAsyncByteReader extends AsyncIterable<Uint8Array | ArrayBuffer
  *
  * Implements `[Symbol.asyncIterator]` for `for await` consumption.
  *
- * @example
+ * ```ts
  * const reader = new EventSourceReader(response.body);
  * for await (const event of reader) {
  *   console.log(event.type, event.data);
  * }
+ * ```
  */
 export class EventSourceReader {
   #source: AsyncIterable<Uint8Array | ArrayBuffer>;
@@ -272,12 +281,13 @@ export class EventSourceReader {
  * The writer must have an async `write(Uint8Array)` method compatible with
  * the Writer interface from fino:stream.
  *
- * @example
+ * ```ts
  * const esw = new EventSourceWriter(writer);
  * await esw.event({ data: 'hello' });
  * await esw.event({ event: 'update', data: 'line1\nline2', id: '42' });
  * await esw.comment('keep-alive');
  * await esw.retry(5000);
+ * ```
  */
 export class EventSourceWriter {
   #writer: WriterLike;
@@ -371,13 +381,14 @@ const DEFAULT_RETRY_MS = 3000;
  * events through the EventTarget interface.
  *
  *
- * @example
+ * ```ts
  * loop.run(async () => {
  *   const es = new EventSource('http://localhost:3000/events');
  *   es.onmessage = (e) => console.log(e.data);
  *   await someShutdownSignal;
  *   es.close();
  * });
+ * ```
  */
 export class EventSource extends EventTarget {
   static CONNECTING = CONNECTING;

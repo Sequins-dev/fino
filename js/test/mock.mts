@@ -7,6 +7,7 @@
  *
  * The API is closure-scoped on purpose:
  *
+ * ```ts
  *   await mockFetch(async (mock) => {
  *     mock.get('https://example.com/data').reply(200, 'ok');
  *     const res = await fetch('https://example.com/data');
@@ -15,6 +16,7 @@
  *   await mockFetch('https://collector.example', async (mock) => {
  *     mock.post('/v1/traces').header('content-type', /json/).reply(202);
  *   });
+ * ```
  *
  * The original global is always restored in `finally`, even if the callback
  * throws or an expectation fails.

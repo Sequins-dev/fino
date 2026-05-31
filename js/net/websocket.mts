@@ -10,6 +10,7 @@
  * handshakes, PING/PONG, and subprotocol negotiation. Used directly by
  * server code or wrapped by the WHATWG `WebSocket` facade.
  *
+ * ```ts
  *   // CLIENT
  *   const conn = WebSocketConnection.connect('wss://example.com/ws', {
  *     protocols: ['chat.v1'],
@@ -30,6 +31,7 @@
  *     }
  *     return new Response('hello');
  *   });
+ * ```
  *
  *
  * ## WebSocket (WHATWG facade)
@@ -37,11 +39,13 @@
  * Strict spec-compliant global. Wraps a WebSocketConnection.
  * No extra methods — spec surface only.
  *
+ * ```ts
  *   const ws = new WebSocket('wss://example.com/ws', ['chat.v1']);
  *   ws.binaryType = 'arraybuffer';
  *   ws.onopen    = () => ws.send('hello');
  *   ws.onmessage = (e) => console.log(e.data);
  *   ws.onclose   = (e) => console.log('closed', e.code, e.wasClean);
+ * ```
  *
  *
  * ## Close handshake
@@ -636,7 +640,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * Throws a plain Error (name='SyntaxError') if the request is not a valid
    * WebSocket upgrade. The handler can catch this and return a 400 Response.
    *
-   * @example
+   * ```ts
    * serve({ port: 3000 }, (req) => {
    *   if (req.headers.get('upgrade') === 'websocket') {
    *     const ws = WebSocketConnection.accept(req, { protocol: 'chat.v1' });
@@ -645,6 +649,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    *   }
    *   return new Response('hello');
    * });
+   * ```
    */
   static accept(req: { method: string; url: string; headers: Headers }, opts: WebSocketAcceptOptions = {}): WebSocketConnection {
     // Validate request
@@ -722,12 +727,13 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * The 'open' event fires when the handshake completes; 'error' + 'close'
    * fire if the connection fails.
    *
-   * @example
+   * ```ts
    * const ws = WebSocketConnection.connect('wss://example.com/chat', {
    *   protocols: ['chat.v1'],
    * });
    * ws.addEventListener('open',    () => ws.send('hello'));
    * ws.addEventListener('message', (e) => console.log(e.data));
+   * ```
    */
   static connect(url: string | URL, opts: WebSocketConnectOptions = {}): WebSocketConnection {
     const parsed = new URL(String(url));

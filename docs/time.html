@@ -1,0 +1,94 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - time</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:time">time</h1>
+<p class="muted">js/internal/globals/time.mts</p>
+<p>fino:time — Timer globals and performance.now().</p>
+<p>Implements the web-standard timer API:</p>
+<ul>
+<li><code>setTimeout(fn, ms, ...args)</code>  → integer id</li>
+<li><code>clearTimeout(id)</code></li>
+<li><code>setInterval(fn, ms, ...args)</code> → integer id</li>
+<li><code>clearInterval(id)</code></li>
+<li><code>queueMicrotask(fn)</code></li>
+<li><code>performance.now()</code>            → milliseconds (float, monotonic)</li>
+</ul>
+<p>All timer functions are automatically installed on <code>globalThis</code> when this module is first imported, so importing the module is sufficient:</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> <span class="tok-string">&#39;fino:time&#39;</span>;
+setTimeout(() =&gt; console.log(<span class="tok-string">&#39;hi&#39;</span>), <span class="tok-number">500</span>);</code></pre>
+<h3>Loop integration</h3>
+<p>Timers are scheduled via <code>fino:loop</code>, which is a singleton. Timers keep the process alive until they fire; cancelled timers still consume a slot until they expire.</p>
+<h3>Cancellation</h3>
+<p><code>clearTimeout</code> / <code>clearInterval</code> mark the timer as cancelled. The underlying kqueue/io_uring timer still fires (it cannot be removed from the backend without a more complex API), but the callback is silently skipped. The process exits as soon as all pending timers have fired and the script is otherwise done — even cancelled ones count as &quot;pending&quot; until they fire.</p>
+<h3>performance.now()</h3>
+<p>Returns the elapsed time in milliseconds since module load, with sub- millisecond precision. Uses the same high-resolution monotonic clock as <code>fino:bench</code>:</p>
+<ul>
+<li>macOS: <code>mach_continuous_time()</code> (advances during sleep)</li>
+<li>Linux: <code>clock_gettime(CLOCK_MONOTONIC)</code></li>
+</ul>
+
+
+<h2>Constants</h2>
+
+<section id="time.performance">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> performance</code></h3>
+
+<p>Subset of the web Performance API.</p>
+<ul>
+<li><code>performance.now()</code> — milliseconds elapsed since module load (monotonic, float)</li>
+<li><code>performance.timeOrigin</code> — Unix timestamp (ms) of module load</li>
+<li><code>performance.toJSON()</code> — serializable snapshot</li>
+</ul>
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="time.setTimeout">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> setTimeout(fn: (...args: <span class="tok-keyword">any</span>[]) =&gt; <span class="tok-keyword">void</span>, ms: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>, ...args: <span class="tok-keyword">any</span>[]): <span class="tok-keyword">number</span></code></h3>
+
+<p>Schedule <code>fn(...args)</code> to run after at least <code>ms</code> milliseconds.</p>
+
+</section>
+
+<section id="time.clearTimeout">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> clearTimeout(id: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Cancel a pending <code>setTimeout</code>. No-op if <code>id</code> is unknown or already fired.</p>
+
+</section>
+
+<section id="time.setInterval">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> setInterval(fn: (...args: <span class="tok-keyword">any</span>[]) =&gt; <span class="tok-keyword">void</span>, ms: <span class="tok-keyword">number</span> = <span class="tok-number">0</span>, ...args: <span class="tok-keyword">any</span>[]): <span class="tok-keyword">number</span></code></h3>
+
+<p>Repeatedly call <code>fn(...args)</code> every <code>ms</code> milliseconds until cancelled.</p>
+
+</section>
+
+<section id="time.clearInterval">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> clearInterval(id: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Cancel a repeating <code>setInterval</code>. No-op if <code>id</code> is unknown.</p>
+
+</section>
+
+<section id="time.queueMicrotask">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> queueMicrotask(fn: () =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Enqueue <code>fn</code> as a microtask — runs before any I/O callbacks but after the current synchronous code completes. Equivalent to <code>Promise.resolve().then(fn)</code>.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

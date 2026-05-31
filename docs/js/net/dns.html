@@ -1,0 +1,477 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/net/dns</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-net-dns">js/net/dns</h1>
+<p class="muted">js/net/dns.mts</p>
+<p>fino:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.</p>
+<p>This module implements DNS resolution entirely in JS by speaking the DNS wire protocol directly over UDP sockets (from <code>fino:socket</code>). It reads nameservers from <code>/etc/resolv.conf</code> via <code>fino:file</code>. No blocking libc calls are made — the entire resolution path is async and event-loop driven.</p>
+<h3>Why not use libc getaddrinfo?</h3>
+<p><code>getaddrinfo(3)</code> is the standard libc function for DNS resolution, but it blocks the calling thread. Calling it from Fino would freeze the entire event loop for the duration of the DNS query — potentially hundreds of milliseconds. Using raw UDP lets us await the response asynchronously via <code>loop.readable()</code>, keeping the process responsive to other I/O while the query is in flight.</p>
+<h3>DNS wire protocol overview (RFC 1035)</h3>
+<p>A DNS query packet is:</p>
+<p>Header (12 bytes, big-endian): [0-1  ID      — 16-bit transaction ID (random per query) [2-3  Flags   — 0x0100 = standard query with recursion desired [4-5  QDCOUNT — number of questions (always 1) [6-7  ANCOUNT — answer count (0 in queries) [8-9  NSCOUNT — authority count (0 in queries) [10-11 ARCOUNT — additional count (0 in queries)</p>
+<p>Question section: QNAME   — domain name in wire format (length-prefixed labels, null-terminated) QTYPE   — record type (A=1, AAAA=28, MX=15, etc.) QCLASS  — always IN=1 (Internet)</p>
+<p>Wire-format domain names encode each label (dot-separated part) as a length byte followed by the label&#39;s bytes. &quot;example.com&quot; becomes: [7 &#39;e&#39;,&#39;x&#39;,&#39;a&#39;,&#39;m&#39;,&#39;p&#39;,&#39;l&#39;,&#39;e&#39;  [3 &#39;c&#39;,&#39;o&#39;,&#39;m&#39;  [0</p>
+<p>DNS responses use <strong>compression pointers</strong> to avoid repeating domain names: a two-byte sequence starting with bits 11xxxxxx is a pointer to an earlier offset in the message. <code>_decodeName()</code> follows these pointers recursively, with a hop limit to prevent infinite loops from malformed responses.</p>
+<h3>Resource record parsing</h3>
+<p>Each answer/authority/additional record is: NAME    — domain name (may use compression) TYPE    — u16 big-endian CLASS   — u16 big-endian (always 1) TTL     — u32 big-endian (seconds) RDLENGTH— u16 big-endian (length of RDATA) RDATA   — variable; format depends on TYPE</p>
+<p><code>parseResourceRecord()</code> handles A, AAAA, CNAME, NS, PTR, MX, TXT, SOA, and SRV. Unknown types return raw bytes.</p>
+<h3>CNAME chain following</h3>
+<p>For A and AAAA queries, <code>resolve()</code> follows CNAME chains automatically (up to 10 hops) by re-querying the CNAME target if the response contains no direct A/AAAA records. This is how most real resolvers work — the CNAME leads to the actual IP.</p>
+<h3>Nameserver discovery</h3>
+<p>On first use, <code>#loadServers()</code> reads <code>/etc/resolv.conf</code> and parses <code>nameserver &lt;ip&gt;</code> lines. If the file is unreadable or has no nameserver lines, it falls back to Google&#39;s public DNS servers (8.8.8.8, 8.8.4.4). Callers can override nameservers with <code>resolver.setServers([&#39;1.1.1.1&#39;])</code>.</p>
+<h3>IPv6 formatting via sock.decodeAddr</h3>
+<p>Rather than implementing IPv6 string formatting from scratch (handling <code>::</code>, leading zeros, etc.), <code>formatIPv6()</code> builds a synthetic <code>sockaddr_in6</code> buffer and passes it to <code>sock.decodeAddr()</code>, which calls <code>inet_ntop(3)</code>. This gives correct RFC 5952 compressed output (e.g. <code>2001:db8::1</code>) without extra code.</p>
+<h3>Query timeout and retry</h3>
+<p>Each query races <code>loop.readable(lp, fd)</code> against <code>loop.timeout(lp, ms)</code>. If the timeout fires first, we close the socket and try the next nameserver. After all servers have been tried <code>retries</code> times without a valid response, we throw an <code>ETIMEOUT</code> error.</p>
+<h3>Contributing</h3>
+<ul>
+<li>DNS packets are big-endian. All header fields and record metadata use the</li>
+</ul>
+<p><code>readU16()</code> / <code>readU32()</code> big-endian helpers defined at the top of the file.</p>
+<ul>
+<li>Transaction IDs should be random per query to prevent response spoofing.</li>
+</ul>
+<p>The current implementation uses <code>Math.random()</code>. A production resolver would use <code>getpid()</code> XOR&#39;d with a counter to reduce collision probability.</p>
+<ul>
+<li>UDP datagrams may arrive out of order or be duplicates. We check that the</li>
+</ul>
+<p>response ID matches the query ID and discard non-matching packets.</p>
+<ul>
+<li>DNSSEC validation is not implemented. Responses are trusted at face value.</li>
+</ul>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-net-dns.MxRecord">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.MxRecord">MxRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.MxRecord.priority">
+<h5><code>priority: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.MxRecord.exchange">
+<h5><code>exchange: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.SoaRecord">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.SoaRecord">SoaRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.SoaRecord.nsname">
+<h5><code>nsname: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SoaRecord.hostmaster">
+<h5><code>hostmaster: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SoaRecord.serial">
+<h5><code>serial: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SoaRecord.refresh">
+<h5><code>refresh: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SoaRecord.retry">
+<h5><code>retry: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SoaRecord.expire">
+<h5><code>expire: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SoaRecord.minttl">
+<h5><code>minttl: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.SrvRecord">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.SrvRecord">SrvRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.SrvRecord.priority">
+<h5><code>priority: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SrvRecord.weight">
+<h5><code>weight: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SrvRecord.port">
+<h5><code>port: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.SrvRecord.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.DnsResourceRecord">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsResourceRecord">DnsResourceRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.DnsResourceRecord.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResourceRecord.type">
+<h5><code><span class="tok-keyword">type</span>: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResourceRecord.ttl">
+<h5><code>ttl: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResourceRecord.data">
+<h5><code>data: <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsRecordData">DnsRecordData</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.DnsResponse">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsResponse">DnsResponse</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.DnsResponse.id">
+<h5><code>id: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResponse.flags">
+<h5><code>flags: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResponse.rcode">
+<h5><code>rcode: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResponse.truncated">
+<h5><code>truncated: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResponse.answers">
+<h5><code>answers: <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsResourceRecord">DnsResourceRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResponse.authorities">
+<h5><code>authorities: <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsResourceRecord">DnsResourceRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.DnsResponse.additionals">
+<h5><code>additionals: <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsResourceRecord">DnsResourceRecord</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.ResolverOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.ResolverOptions">ResolverOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.ResolverOptions.timeout">
+<h5><code>timeout?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.ResolverOptions.retries">
+<h5><code>retries?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.LookupOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.LookupOptions">LookupOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.LookupOptions.family">
+<h5><code>family?: <span class="tok-number">4</span> | <span class="tok-number">6</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-dns.LookupResult">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.LookupResult">LookupResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-dns.LookupResult.address">
+<h5><code>address: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-dns.LookupResult.family">
+<h5><code>family: <span class="tok-number">4</span> | <span class="tok-number">6</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-net-dns.DnsRecordData">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsRecordData">DnsRecordData</a> = <span class="tok-keyword">string</span> | <span class="tok-keyword">string</span>[] | <a class="tok-type" href="js/net/dns.html#js-net-dns.MxRecord">MxRecord</a> | <a class="tok-type" href="js/net/dns.html#js-net-dns.SoaRecord">SoaRecord</a> | <a class="tok-type" href="js/net/dns.html#js-net-dns.SrvRecord">SrvRecord</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <span class="tok-keyword">null</span></code></h3>
+
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="js-net-dns.RECORD_TYPES">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.RECORD_TYPES">RECORD_TYPES</a></code></h3>
+
+<p>Map from DNS record type name to numeric QTYPE value.</p>
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-net-dns._encodeName">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _encodeName(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Encode a domain name into DNS wire format (length-prefixed labels). &quot;example.com&quot; → Uint8Array [7, &#39;e&#39;,&#39;x&#39;,&#39;a&#39;,&#39;m&#39;,&#39;p&#39;,&#39;l&#39;,&#39;e&#39;, 3, &#39;c&#39;,&#39;o&#39;,&#39;m&#39;, 0</p>
+<p>Exported for unit testing.</p>
+
+</section>
+
+<section id="js-net-dns._buildQuery">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _buildQuery(id: <span class="tok-keyword">number</span>, name: <span class="tok-keyword">string</span>, qtype: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Build a complete DNS query packet.</p>
+<p>Exported for unit testing.</p>
+
+</section>
+
+<section id="js-net-dns._decodeName">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _decodeName(msg: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, startOffset: <span class="tok-keyword">number</span>): { name: <span class="tok-keyword">string</span>; nextOffset: <span class="tok-keyword">number</span> }</code></h3>
+
+<p>Decode a DNS name from wire format, following compression pointers.</p>
+<p>nextOffset is the offset of the first byte after this name in the stream.</p>
+<p>Exported for unit testing.</p>
+
+</section>
+
+<section id="js-net-dns._parseResponse">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _parseResponse(msg: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): <a class="tok-type" href="js/net/dns.html#js-net-dns.DnsResponse">DnsResponse</a></code></h3>
+
+<p>Parse a complete DNS response packet.</p>
+<p>Exported for unit testing.</p>
+
+</section>
+
+<section id="js-net-dns._reverseIP">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _reverseIP(ip: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Convert an IP address string to its PTR query name. &quot;1.2.3.4&quot;  → &quot;4.3.2.1.in-addr.arpa&quot; &quot;2001:db8::1&quot; → nibble-reversed + &quot;.ip6.arpa&quot;</p>
+<p>Exported for unit testing.</p>
+
+</section>
+
+<section id="js-net-dns.lookup">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> lookup(hostname: <span class="tok-keyword">string</span>, opts: <a class="tok-type" href="js/net/dns.html#js-net-dns.LookupOptions">LookupOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/dns.html#js-net-dns.LookupResult">LookupResult</a>&gt;</code></h3>
+
+<p>Look up the primary address for a hostname.</p>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="js-net-dns.Resolver">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/net/dns.html#js-net-dns.Resolver">Resolver</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-net-dns.Resolver.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(opts: <a class="tok-type" href="js/net/dns.html#js-net-dns.ResolverOptions">ResolverOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-dns.Resolver.getServers">
+<h5><code>getServers(): <span class="tok-keyword">string</span>[]</code></h5>
+
+<p>Return the current list of nameserver IP addresses.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.setServers">
+<h5><code>setServers(servers: <span class="tok-keyword">string</span>[]): <span class="tok-keyword">void</span></code></h5>
+
+<p>Override the nameserver list. Each entry is an IPv4 or IPv6 address string, optionally with a port: &#39;1.1.1.1&#39;, &#39;1.1.1.1:5353&#39;, &#39;[::1:5353&#39;.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolve">
+<h5><code><span class="tok-keyword">async</span> resolve(hostname: <span class="tok-keyword">string</span>, rrtype: RecordTypeName = <span class="tok-string">&#39;A&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/dns.html#js-net-dns.DnsRecordData">DnsRecordData</a>[]&gt;</code></h5>
+
+<p>Resolve a hostname for the given record type.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolve4">
+<h5><code><span class="tok-keyword">async</span> resolve4(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve IPv4 addresses.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolve6">
+<h5><code><span class="tok-keyword">async</span> resolve6(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve IPv6 addresses.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolveMx">
+<h5><code><span class="tok-keyword">async</span> resolveMx(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve MX records.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolveTxt">
+<h5><code><span class="tok-keyword">async</span> resolveTxt(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve TXT records.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolveNs">
+<h5><code><span class="tok-keyword">async</span> resolveNs(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve NS records.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolveSrv">
+<h5><code><span class="tok-keyword">async</span> resolveSrv(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve SRV records.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolveSoa">
+<h5><code><span class="tok-keyword">async</span> resolveSoa(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve SOA record.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.resolveCname">
+<h5><code><span class="tok-keyword">async</span> resolveCname(hostname: <span class="tok-keyword">string</span>)</code></h5>
+
+<p>Resolve CNAME records.</p>
+</section>
+
+<section class="member" id="js-net-dns.Resolver.reverse">
+<h5><code><span class="tok-keyword">async</span> reverse(ip: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/dns.html#js-net-dns.DnsRecordData">DnsRecordData</a>[]&gt;</code></h5>
+
+<p>Reverse DNS lookup.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

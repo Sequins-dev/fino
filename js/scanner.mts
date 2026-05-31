@@ -5,15 +5,16 @@
  * mixed binary/text parsing (common in real protocols: HTTP/1 ASCII headers + binary body,
  * HPACK varint prefixes + UTF-8 strings, ZIP central directory + UTF-8 names).
  *
- * @example
+ * ```ts
  * // Binary protocol
  * import { Scanner } from 'fino:scanner';
  * const s = new Scanner(buffer);
  * const version = s.readU8();
  * const length  = s.readU32BE();
  * const payload = s.eatBytes(length);
+ * ```
  *
- * @example
+ * ```ts
  * // Text format
  * import { Scanner, ParseError } from 'fino:scanner';
  * class MyError extends ParseError { name = 'MyError'; }
@@ -22,6 +23,7 @@
  *   const tok = s.eatWhile(code => code !== 0x3B); // eat until ';'
  *   if (!s.done) s.expect(';');
  * }
+ * ```
  */
 
 import { encodeUtf8, decodeUtf8 } from './internal/globals/encoding.mts';

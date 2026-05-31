@@ -1,0 +1,269 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/format/toml/index</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../../index.html">API Modules</a></p>
+<h1 id="module:js-format-toml-index">js/format/toml/index</h1>
+<p class="muted">js/format/toml/index.mts</p>
+<p>fino:format/toml — TOML 1.0.0 parser and serializer.</p>
+<p>Full TOML 1.0.0 conformance: all scalar types (strings, integers, floats, booleans, datetimes), tables, arrays, arrays-of-tables, inline tables. Key uniqueness and structural rules from the spec are enforced.</p>
+<p>Datetime types:</p>
+<ul>
+<li>Offset datetime   → native Date</li>
+<li>Local datetime    → TomlLocalDateTime</li>
+<li>Local date        → TomlLocalDate</li>
+<li>Local time        → TomlLocalTime</li>
+</ul>
+<p>Integer overflow: throws by default; pass { bigint: true } to receive BigInt.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse, stringify } from <span class="tok-string">&#39;fino:format/toml&#39;</span>;
+
+<span class="tok-keyword">const</span> cfg = parse(<span class="tok-string">&#39;[server]\nport = 8080\nhosts = [&quot;a&quot;, &quot;b&quot;]&#39;</span>);
+stringify(cfg);</code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="js-format-toml-index.TomlParseError">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlParseError">TomlParseError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="scanner.html#scanner.ParseError">ParseError</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-toml-index.TomlParseError.name">
+<h5><code>name</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-toml-index.TomlLocalDate">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate">TomlLocalDate</a> {</code></h3>
+
+
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalDate.year">
+<h5><code><span class="tok-keyword">readonly</span> year: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalDate.month">
+<h5><code><span class="tok-keyword">readonly</span> month: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalDate.day">
+<h5><code><span class="tok-keyword">readonly</span> day: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalDate.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(y: <span class="tok-keyword">number</span>, mo: <span class="tok-keyword">number</span>, d: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalDate.toString">
+<h5><code><a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalDate.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-toml-index.TomlLocalTime">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalTime">TomlLocalTime</a> {</code></h3>
+
+
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.hour">
+<h5><code><span class="tok-keyword">readonly</span> hour: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.minute">
+<h5><code><span class="tok-keyword">readonly</span> minute: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.second">
+<h5><code><span class="tok-keyword">readonly</span> second: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.ms">
+<h5><code><span class="tok-keyword">readonly</span> ms: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(h: <span class="tok-keyword">number</span>, m: <span class="tok-keyword">number</span>, s: <span class="tok-keyword">number</span>, ms = <span class="tok-number">0</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.toString">
+<h5><code><a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalTime.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-toml-index.TomlLocalDateTime">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDateTime">TomlLocalDateTime</a> {</code></h3>
+
+
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalDateTime.date">
+<h5><code><span class="tok-keyword">readonly</span> date: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate">TomlLocalDate</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalDateTime.time">
+<h5><code><span class="tok-keyword">readonly</span> time: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalTime">TomlLocalTime</a></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalDateTime.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(d: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate">TomlLocalDate</a>, t: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalTime">TomlLocalTime</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-format-toml-index.TomlLocalDateTime.toString">
+<h5><code><a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate.toString">toString</a>()</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-toml-index.TomlLocalDateTime.toJSON">
+<h5><code>toJSON()</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-format-toml-index.TomlValue">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlValue">TomlValue</a> = | <span class="tok-keyword">string</span> | <span class="tok-keyword">number</span> | <span class="tok-number">bigint</span> | <span class="tok-keyword">boolean</span> | Date | <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDate">TomlLocalDate</a> | <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalTime">TomlLocalTime</a> | <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlLocalDateTime">TomlLocalDateTime</a> | <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlValue">TomlValue</a>[] | { [k: <span class="tok-keyword">string</span>]: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlValue">TomlValue</a> }</code></h3>
+
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-format-toml-index.TomlParseOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlParseOptions">TomlParseOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-toml-index.TomlParseOptions.bigint">
+<h5><code><span class="tok-number">bigint</span>?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-toml-index.TomlStringifyOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlStringifyOptions">TomlStringifyOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-toml-index.TomlStringifyOptions.indent">
+<h5><code>indent?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-format-toml-index.parse">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlParseOptions">TomlParseOptions</a> = {}): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlValue">TomlValue</a>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-format-toml-index.stringify">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> stringify(value: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlValue">TomlValue</a>&gt;, options: <a class="tok-type" href="js/format/toml/index.html#js-format-toml-index.TomlStringifyOptions">TomlStringifyOptions</a> = {}): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

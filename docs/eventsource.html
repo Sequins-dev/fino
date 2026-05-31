@@ -1,0 +1,337 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - eventsource</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:eventsource">eventsource</h1>
+<p class="muted">js/net/eventsource.mts</p>
+<p>fino:eventsource — Server-Sent Events (SSE) client and server.</p>
+<p>Implements the SSE wire protocol (W3C EventSource spec) in two composable layers, following the same thin-primitive philosophy as fino:stream and fino:http.</p>
+<h3>EventSourceReader (composable parser primitive)</h3>
+<p>Wraps any async iterable of byte chunks and yields parsed SSE events. No connection or reconnection logic — purely a wire-format parser, analogous to how <code>parseResponse()</code> consumes a byte stream.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { EventSourceReader } from <span class="tok-string">&#39;./eventsource.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> reader = <span class="tok-keyword">new</span> EventSourceReader(response.body);
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> event <span class="tok-keyword">of</span> reader) {
+  <span class="tok-comment">// event: { type, data, id, retry }</span>
+}
+reader.lastEventId; <span class="tok-comment">// persists across all events in the stream</span></code></pre>
+<h3>EventSourceWriter (composable formatter primitive)</h3>
+<p>Formats and writes SSE events to any Writer (from fino:stream). Server-side counterpart to EventSourceReader.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { EventSourceWriter } from <span class="tok-string">&#39;./eventsource.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> esw = <span class="tok-keyword">new</span> EventSourceWriter(writer);
+<span class="tok-keyword">await</span> esw.event({ data: <span class="tok-string">&#39;hello&#39;</span> });
+<span class="tok-keyword">await</span> esw.event({ event: <span class="tok-string">&#39;update&#39;</span>, data: <span class="tok-string">&#39;multi\nline&#39;</span>, id: <span class="tok-string">&#39;42&#39;</span> });
+<span class="tok-keyword">await</span> esw.comment(<span class="tok-string">&#39;keep-alive&#39;</span>);
+<span class="tok-keyword">await</span> esw.retry(<span class="tok-number">5000</span>);</code></pre>
+<h3>EventSource (spec-compliant SSE client)</h3>
+<p>Full W3C EventSource with connection management, automatic reconnection with Last-Event-ID resumption, and EventTarget-based event dispatch. Extends EventTarget so <code>addEventListener</code> / <code>removeEventListener</code> work as expected.</p>
+<pre><code class="language-ts">import { EventSource } from &#39;./eventsource.mts&#39;;
+
+const es = new EventSource(&#39;http://localhost:3000/events&#39;);
+es.onopen    = () =&gt; { ... };
+es.onmessage = (e) =&gt; { console.log(e.data); };
+es.onerror   = (e) =&gt; { ... };
+es.addEventListener(&#39;update&#39;, (e) =&gt; { ... });
+// later:
+es.close();</code></pre>
+<h3>SSE wire format</h3>
+<p>Each event is one or more field lines followed by a blank line: event: &lt;type&gt;\n       ← optional; defaults to &quot;message&quot; data: &lt;line1&gt;\n data: &lt;line2&gt;\n       ← multi-line data: joined with &quot;\n&quot; id: &lt;id&gt;\n            ← optional; updates lastEventId buffer retry: &lt;ms&gt;\n         ← optional; integer ms reconnection interval \n                    ← blank line dispatches the event</p>
+<p>Lines starting with <code>:</code> are comments (ignored). Unknown field names are ignored. Line terminators: LF, CRLF, or bare CR (per W3C spec).</p>
+<h3>EventSourceReader parser rules (W3C spec)</h3>
+<ul>
+<li><code>id:</code> field value must not contain null (U+0000); otherwise ignored.</li>
+<li><code>retry:</code> value must be all ASCII digits; otherwise ignored.</li>
+<li>An empty <code>id:</code> field (i.e. <code>id:\n</code>) sets lastEventId to &quot;&quot;.</li>
+<li>Events without any <code>data:</code> lines are not dispatched.</li>
+<li>A field name with no colon means the entire line is the field name and</li>
+</ul>
+<p>the value is empty string.</p>
+<ul>
+<li>A single leading space after the colon is stripped from field values.</li>
+</ul>
+<h3>EventSource reconnection (W3C spec + pragmatic additions)</h3>
+<ul>
+<li>Reconnects on: EOF (stream ended normally), network errors, and HTTP</li>
+</ul>
+<p>status codes 429, 500, 502, 503, 504 (retriable errors).</p>
+<ul>
+<li>Does NOT reconnect on: wrong Content-Type, other HTTP error statuses.</li>
+<li>HTTP 204 closes the stream gracefully without reconnecting.</li>
+<li>Reconnection uses a configurable retry interval (default: 3000ms),</li>
+</ul>
+<p>updated dynamically by <code>retry:</code> fields in the event stream.</p>
+<ul>
+<li>The <code>Last-Event-ID</code> header is sent on every reconnect attempt if</li>
+</ul>
+<p>a non-empty last event ID has been seen.</p>
+<h3>Contributing</h3>
+<ul>
+<li>EventSourceReader is a single-use async iterator — do not call</li>
+</ul>
+<p><code>[Symbol.asyncIterator]()</code> more than once on the same instance.</p>
+<ul>
+<li>EventSourceWriter does not own the Writer; callers are responsible</li>
+</ul>
+<pre><code class="language-ts">for closing it.</code></pre>
+<ul>
+<li>EventSource connects immediately upon construction.</li>
+<li>Keep EventSourceReader and EventSourceWriter free of connection logic.</li>
+</ul>
+<p>Network concerns belong in EventSource only.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="eventsource.SseEvent">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="eventsource.html#eventsource.SseEvent">SseEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="eventsource.SseEvent.type">
+<h5><code><span class="tok-keyword">type</span>: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.SseEvent.data">
+<h5><code>data: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.SseEvent.id">
+<h5><code>id: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.SseEvent.retry">
+<h5><code>retry: <span class="tok-keyword">number</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="eventsource.EventSourceInit">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="eventsource.html#eventsource.EventSourceInit">EventSourceInit</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="eventsource.EventSourceInit.headers">
+<h5><code>headers?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt; | <a class="tok-type" href="http.html#http.Headers">Headers</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="eventsource.EventSourceReader">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="eventsource.html#eventsource.EventSourceReader">EventSourceReader</a> {</code></h3>
+
+<p>Parses an SSE byte stream into discrete events.</p>
+<p>Accepts any async iterable of Uint8Array/ArrayBuffer chunks — e.g. a Reader from fino:stream or an HTTP response body from fino:http.</p>
+<p>Implements <code>[Symbol.asyncIterator]</code> for <code>for await</code> consumption.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> reader = <span class="tok-keyword">new</span> EventSourceReader(response.body);
+<span class="tok-keyword">for</span> <span class="tok-keyword">await</span> (<span class="tok-keyword">const</span> event <span class="tok-keyword">of</span> reader) {
+  console.log(event.<span class="tok-keyword">type</span>, event.data);
+}</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="eventsource.EventSourceReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>&gt;)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="eventsource.EventSourceReader.lastEventId">
+<h5><code><span class="tok-keyword">get</span> lastEventId()</code></h5>
+
+<p>The last event ID seen in the stream. Updated as events are yielded, so it reflects the ID of the most recently yielded event that had an <code>id:</code> field. Persists across all events in the stream.</p>
+</section>
+
+
+</section>
+
+<section id="eventsource.EventSourceWriter">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="eventsource.html#eventsource.EventSourceWriter">EventSourceWriter</a> {</code></h3>
+
+<p>Formats and writes SSE events to a Writer.</p>
+<p>The writer must have an async <code>write(Uint8Array)</code> method compatible with the Writer interface from fino:stream.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> esw = <span class="tok-keyword">new</span> EventSourceWriter(writer);
+<span class="tok-keyword">await</span> esw.event({ data: <span class="tok-string">&#39;hello&#39;</span> });
+<span class="tok-keyword">await</span> esw.event({ event: <span class="tok-string">&#39;update&#39;</span>, data: <span class="tok-string">&#39;line1\nline2&#39;</span>, id: <span class="tok-string">&#39;42&#39;</span> });
+<span class="tok-keyword">await</span> esw.comment(<span class="tok-string">&#39;keep-alive&#39;</span>);
+<span class="tok-keyword">await</span> esw.retry(<span class="tok-number">5000</span>);</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="eventsource.EventSourceWriter.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(writer: WriterLike)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="eventsource.EventSourceWriter.event">
+<h5><code><span class="tok-keyword">async</span> event(opts: SseEventOptions): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Write an SSE event.</p>
+<p>Multi-line <code>data</code> strings are automatically split into separate <code>data:</code> lines. All fields are optional except <code>data</code>.</p>
+</section>
+
+<section class="member" id="eventsource.EventSourceWriter.comment">
+<h5><code><span class="tok-keyword">async</span> comment(text: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Write a comment line. Useful for keep-alive heartbeats that prevent proxies from closing idle connections.</p>
+</section>
+
+<section class="member" id="eventsource.EventSourceWriter.retry">
+<h5><code><span class="tok-keyword">async</span> retry(ms: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Write a standalone <code>retry:</code> field to update the client&#39;s reconnection interval without dispatching an event.</p>
+</section>
+
+
+</section>
+
+<section id="eventsource.EventSource">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="eventsource.html#eventsource.EventSource">EventSource</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="eventtarget.html#eventtarget.EventTarget">EventTarget</a> {</code></h3>
+
+<p>W3C EventSource — a spec-compliant SSE client.</p>
+<p>Manages its own HTTP connection (plain or TLS), handles reconnection with exponential retry intervals, resumes from the last event ID, and dispatches events through the EventTarget interface.</p>
+<pre><code class="language-ts">loop.run(<span class="tok-keyword">async</span> () =&gt; {
+  <span class="tok-keyword">const</span> es = <span class="tok-keyword">new</span> EventSource(<span class="tok-string">&#39;http://localhost:3000/events&#39;</span>);
+  es.onmessage = (e) =&gt; console.log(e.data);
+  <span class="tok-keyword">await</span> someShutdownSignal;
+  es.close();
+});</code></pre>
+
+<h4>Static Propertys</h4>
+
+<section class="member" id="eventsource.EventSource.CONNECTING">
+<h5><code><span class="tok-keyword">static</span> <a class="tok-type" href="eventsource.html#eventsource.EventSource.CONNECTING">CONNECTING</a></code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.EventSource.OPEN">
+<h5><code><span class="tok-keyword">static</span> <a class="tok-type" href="eventsource.html#eventsource.EventSource.OPEN">OPEN</a></code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.EventSource.CLOSED">
+<h5><code><span class="tok-keyword">static</span> <a class="tok-type" href="eventsource.html#eventsource.EventSource.CLOSED">CLOSED</a></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="eventsource.EventSource.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(url: <span class="tok-keyword">string</span>, init?: <a class="tok-type" href="eventsource.html#eventsource.EventSourceInit">EventSourceInit</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="eventsource.EventSource.readyState">
+<h5><code><span class="tok-keyword">get</span> readyState()</code></h5>
+
+<p>Current ready state: CONNECTING (0), OPEN (1), or CLOSED (2).</p>
+</section>
+
+<section class="member" id="eventsource.EventSource.url">
+<h5><code><span class="tok-keyword">get</span> url()</code></h5>
+
+<p>The URL passed to the constructor.</p>
+</section>
+
+<section class="member" id="eventsource.EventSource.lastEventId">
+<h5><code><span class="tok-keyword">get</span> lastEventId()</code></h5>
+
+<p>The last event ID received from the server. Sent as Last-Event-ID on reconnect. Empty string before any id: field is received.</p>
+</section>
+
+<section class="member" id="eventsource.EventSource.onopen">
+<h5><code><span class="tok-keyword">get</span> onopen()</code></h5>
+
+<p>Callback for <code>open</code> events (connection established).</p>
+</section>
+
+<section class="member" id="eventsource.EventSource.onmessage">
+<h5><code><span class="tok-keyword">get</span> onmessage()</code></h5>
+
+<p>Callback for <code>message</code> events (default-type SSE events).</p>
+</section>
+
+<section class="member" id="eventsource.EventSource.onerror">
+<h5><code><span class="tok-keyword">get</span> onerror()</code></h5>
+
+<p>Callback for <code>error</code> events (connection errors and fatal failures).</p>
+</section>
+
+
+<h4>Setters</h4>
+
+<section class="member" id="eventsource.EventSource.onopen:setter">
+<h5><code><span class="tok-keyword">set</span> onopen(fn: ((e: <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.EventSource.onmessage:setter">
+<h5><code><span class="tok-keyword">set</span> onmessage(fn: ((e: <a class="tok-type" href="js/internal/globals/messaging.html#js-internal-globals-messaging.MessageEvent">MessageEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="eventsource.EventSource.onerror:setter">
+<h5><code><span class="tok-keyword">set</span> onerror(fn: ((e: <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="eventsource.EventSource.close">
+<h5><code>close()</code></h5>
+
+<p>Close the connection and prevent any further reconnection. Idempotent — safe to call multiple times.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

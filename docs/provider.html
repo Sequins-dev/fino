@@ -1,0 +1,248 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Debug - provider</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:provider">provider</h1>
+<p class="muted">js/file/provider.mts</p>
+<p>internal:file/provider — Abstract FileSystem and FileHandle interfaces.</p>
+<p>Defines the contract that all filesystem providers must satisfy. Concrete implementations include:</p>
+<ul>
+<li>DiskFileSystem — POSIX filesystem backed by libc syscalls (fino:file)</li>
+<li>MemoryFileSystem — in-memory Map&lt;path, Uint8Array&gt; (future)</li>
+<li>OverlayFileSystem — copy-on-write layer over a base provider (future)</li>
+<li>RestrictedFileSystem — path-allowlist enforcement (future)</li>
+<li>S3FileSystem — remote object storage via fetch() (future)</li>
+</ul>
+<p>The <code>readFile</code> and <code>writeFile</code> convenience methods are implemented here on the abstract base class so all providers inherit them for free.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="provider.ByteWriter">
+<h3><code>face ByteWriter { write(da</code></h3>
+
+<p>A byte-oriented writer with flush and close.</p>
+
+<h4>Methods</h4>
+
+<section class="member" id="provider.ByteWriter.write">
+<h5><code>Uint8Array | string): void; flush():</code></h5>
+
+
+</section>
+
+<section class="member" id="provider.ByteWriter.flush">
+<h5><code>mise&lt;void&gt;; close():</code></h5>
+
+
+</section>
+
+<section class="member" id="provider.ByteWriter.close">
+<h5><code>mise&lt;void&gt;; } /** * A</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="provider.FileHandle">
+<h3><code>ce FileHandle { /** Absolu</code></h3>
+
+<p>An open file handle. Provides read/write access and metadata. The handle owns its resource lifecycle — call <code>close()</code> when done.</p>
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="provider.FileHandle.path">
+<h5><code>Path; /** True if</code></h5>
+
+<p>Absolute path of the opened file.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.closed">
+<h5><code>d: <span class="tok-keyword">boolean</span>; /** Stat th</code></h5>
+
+<p>True if the handle has been closed.</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="provider.FileHandle.stat">
+<h5><code>e&lt;Stat&gt;; /** * Re</code></h5>
+
+<p>Stat the open file (equivalent to fstat).</p>
+</section>
+
+<section class="member" id="provider.FileHandle.reader">
+<h5><code>cIterable&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;; /** * Re</code></h5>
+
+<p>Returns an async iterable that yields chunks of the file&#39;s contents. Only valid for modes that allow reading (&#39;r&#39;, &#39;r+&#39;, &#39;w+&#39;, &#39;a+&#39;).</p>
+</section>
+
+<section class="member" id="provider.FileHandle.writer">
+<h5><code>Writer; /** Read th</code></h5>
+
+<p>Returns a writer for this file. Only valid for modes that allow writing (&#39;w&#39;, &#39;a&#39;, &#39;r+&#39;, &#39;w+&#39;, &#39;a+&#39;).</p>
+</section>
+
+<section class="member" id="provider.FileHandle.bytes">
+<h5><code>se&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;; /** Read th</code></h5>
+
+<p>Read the entire file contents as a byte array.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.text">
+<h5><code>e&lt;<span class="tok-keyword">string</span>&gt;; /** Read ex</code></h5>
+
+<p>Read the entire file contents as a UTF-8 string.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.pread">
+<h5><code>ber | bigint, len: number): Promise&lt;Uint8Array&gt;; /** Write `</code></h5>
+
+<p>Read exactly <code>len</code> bytes at byte position <code>pos</code> without moving the file offset.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.pwrite">
+<h5><code>mber | bigint, data: Uint8Array): Promise&lt;number&gt;; /** Flush O</code></h5>
+
+<p>Write <code>data</code> at byte position <code>pos</code> without moving the file offset. Returns bytes written.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.sync">
+<h5><code>e&lt;<span class="tok-keyword">void</span>&gt;; /** Set the</code></h5>
+
+<p>Flush OS write buffers to disk.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.truncate">
+<h5><code>number | bigint): Promise&lt;void&gt;; /** Return</code></h5>
+
+<p>Set the file size (truncate or extend with zeros).</p>
+</section>
+
+<section class="member" id="provider.FileHandle.size">
+<h5><code>e&lt;<span class="tok-number">bigint</span>&gt;; /** Close t</code></h5>
+
+<p>Return the current file size in bytes.</p>
+</section>
+
+<section class="member" id="provider.FileHandle.close">
+<h5><code>se&lt;void&gt;; } /** * Abs</code></h5>
+
+<p>Close the handle and release its underlying resource.</p>
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="provider.FileSystem">
+<h3><code>t class FileSystem { // --------</code></h3>
+
+<p>Abstract base class for filesystem providers.</p>
+<p>Implementations must provide the core POSIX-like operations. The convenience methods <code>readFile</code> and <code>writeFile</code> are implemented here using <code>open</code> and the handle&#39;s reader/writer, so providers get them for free.</p>
+
+<h4>Methods</h4>
+
+<section class="member" id="provider.FileSystem.stat">
+<h5><code>th: Path | string): Promise&lt;Stat&gt;; /** Stat a p</code></h5>
+
+<p>Stat a path, following symlinks.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.lstat">
+<h5><code>ath: Path | string): Promise&lt;Stat&gt;; /** Open a f</code></h5>
+
+<p>Stat a path without following symlinks.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.open">
+<h5><code>th: Path | string, mode?: string): Promise&lt;FileHandle&gt;; /** * Ope</code></h5>
+
+<p>Open a file and return a handle. Mode defaults to &#39;r&#39;.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.dir">
+<h5><code>h: Path | string): Promise&lt;unknown&gt;; /** * Ret</code></h5>
+
+<p>Open a directory handle. Returns a <code>DirEntry</code> (fino:file) or equivalent directory object. Typed as <code>unknown</code> here to avoid circular dependencies between the provider interface and the concrete Entry types.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.entry">
+<h5><code>ath: Path | string): Promise&lt;unknown&gt;; /** Create a</code></h5>
+
+<p>Return an Entry object for a path. Returns an <code>Entry</code> subtype (fino:file) or equivalent. Typed as <code>unknown</code> here to avoid circular dependencies.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.mkdir">
+<h5><code>ath: Path | string, mode?: number): Promise&lt;void&gt;; /** Remove a</code></h5>
+
+<p>Create a directory.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.rmdir">
+<h5><code>ath: Path | string): Promise&lt;void&gt;; /** Delete a</code></h5>
+
+<p>Remove an empty directory.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.unlink">
+<h5><code>path: Path | string): Promise&lt;void&gt;; /** Rename /</code></h5>
+
+<p>Delete a file.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.rename">
+<h5><code>oldPath: Path | string, newPath: Path | string): Promise&lt;void&gt;; /** Read the</code></h5>
+
+<p>Rename / move a file or directory.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.readlink">
+<h5><code>k(path: Path | string): Promise&lt;string&gt;; /** Create a</code></h5>
+
+<p>Read the target of a symlink.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.symlink">
+<h5><code>(target: Path | string, linkpath: Path | string): Promise&lt;void&gt;; /** Resolve</code></h5>
+
+<p>Create a symlink.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.realpath">
+<h5><code>h(path: Path | string): Promise&lt;string&gt;; // ---------</code></h5>
+
+<p>Resolve the canonical absolute path.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.readFile">
+<h5><code>h: Path | string): Promise&lt;string&gt; { const f = aw</code></h5>
+
+<p>Read the entire file contents as a UTF-8 string.</p>
+</section>
+
+<section class="member" id="provider.FileSystem.writeFile">
+<h5><code>th: Path | string, data: string | Uint8Array | ArrayBuffer): Promise&lt;void&gt; { const f = aw</code></h5>
+
+<p>Write data to a file, creating or truncating as needed.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

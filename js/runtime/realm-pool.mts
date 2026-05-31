@@ -37,9 +37,10 @@ const _topicPoolCallEnd = topic(otelRuntimeTopic('realm_pool', 'call', 'end'));
  * All code within `pool.call()` — including async continuations — can read
  * this value via `correlationIdContext.get()`.
  *
- * @example
+ * ```ts
  * import { correlationIdContext } from 'fino:realm/pool';
  * const id = correlationIdContext.get(); // string | undefined
+ * ```
  */
 export const correlationIdContext = new Context<string>('correlationId');
 

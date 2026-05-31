@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - serve</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:serve">serve</h1>
+<p class="muted">js/net/serve.mts</p>
+<p>fino:serve — HTTP server convenience.</p>
+<p><code>serve()</code> wraps <code>Socket.listen()</code> and dispatches each accepted connection to an H1ServerDriver (or, in future, an H2ServerDriver based on ALPN/preface detection). The driver owns the per-connection keep-alive, pipelining, and protocol-upgrade logic.</p>
+<h3>Usage</h3>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { serve } from <span class="tok-string">&#39;./serve.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> server = serve({ port: <span class="tok-number">3000</span> }, <span class="tok-keyword">async</span> (req) =&gt; {
+  <span class="tok-keyword">return</span> <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;hello&#39;</span>);
+});
+
+<span class="tok-comment">// Graceful shutdown:</span>
+<span class="tok-keyword">await</span> server.close();</code></pre>
+<h3>Keep-alive</h3>
+<p>HTTP/1.1 connections are kept alive by default. The driver loops over requests on the same TCP connection until the client sends <code>Connection: close</code>, the handler returns a response with that header, or the connection is reset.</p>
+<h3>Content-Length</h3>
+<p>If the handler&#39;s Response does not include a <code>Content-Length</code> or <code>Transfer-Encoding</code> header, the driver eagerly buffers the body and injects <code>Content-Length</code>. For truly streaming responses, set one of those headers yourself.</p>
+<h3>Error handling</h3>
+<p>If the handler throws an unhandled error, the driver sends a bare <code>500 Internal Server Error</code> response and closes the connection. The handler is responsible for catching its own application errors and returning appropriate responses.</p>
+
+
+<h2>Functions</h2>
+
+<section id="serve.serve">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> serve( options: ServeOptions, handler: (req: <a class="tok-type" href="http.html#http.Request">Request</a>) =&gt; <a class="tok-type" href="http.html#http.Response">Response</a> | <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ConnectionTakeover">ConnectionTakeover</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="http.html#http.Response">Response</a> | <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ConnectionTakeover">ConnectionTakeover</a>&gt;, ): ServeServer</code></h3>
+
+<p>Start an HTTP server.</p>
+<p>Each incoming connection is handled concurrently. The event loop is implicitly kept alive as long as the server is open.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { serve } from <span class="tok-string">&#39;./serve.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> server = serve({ port: <span class="tok-number">3000</span> }, <span class="tok-keyword">async</span> (req) =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;hello&#39;</span>));
+<span class="tok-comment">// ... handle some requests ...</span>
+<span class="tok-keyword">await</span> server.close();</code></pre>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

@@ -46,6 +46,7 @@
  *
  * ## Usage
  *
+ * ```ts
  *   const res = await fetch('https://example.com/data');
  *   const json = await res.json();
  *
@@ -56,6 +57,7 @@
  *     signal: AbortSignal.timeout(5000),
  *     redirect: 'follow',
  *   });
+ * ```
  */
 
 import { lookup } from '../../net/dns.mts';

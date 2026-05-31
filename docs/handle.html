@@ -1,0 +1,136 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - handle</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:handle">handle</h1>
+<p class="muted">js/file/handle.mts</p>
+<p>internal:file-handle — File class for fino:file.</p>
+<p>An opened file handle. Provides metadata access and Reader/Writer factories. The File owns the fd lifecycle — call close() when done.</p>
+
+
+<h2>Classes</h2>
+
+<section id="handle.File">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="handle.html#handle.File">File</a> {</code></h3>
+
+<p>An opened file handle. Provides metadata access and Reader/Writer factories.</p>
+<p>The File owns the fd lifecycle — call <code>close()</code> when done. Readers and Writers produced by this File share the same underlying fd; close the File (not the Reader/Writer) to release it.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="handle.File.split">
+<h5><code>split?: () =&gt; [<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;, <a class="tok-type" href="stream.html#stream.FdWriter">FdWriter</a>]</code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="handle.File.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(fd: <span class="tok-keyword">number</span>, fs: <span class="tok-keyword">object</span>, path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, mode: <span class="tok-keyword">string</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="handle.File.path">
+<h5><code><span class="tok-keyword">get</span> path()</code></h5>
+
+
+</section>
+
+<section class="member" id="handle.File.closed">
+<h5><code><span class="tok-keyword">get</span> closed()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="handle.File.stat">
+<h5><code><span class="tok-keyword">async</span> stat(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="stat.html#stat.Stat">Stat</a>&gt;</code></h5>
+
+<p>Return file metadata via fstat(2) on the open fd.</p>
+</section>
+
+<section class="member" id="handle.File.reader">
+<h5><code>reader(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h5>
+
+<p>Return an async iterable that yields Uint8Array chunks for this file. Only valid for readable modes (r, r+, w+, a+).</p>
+<p>On Linux: uses IORING_OP_READ for genuine async I/O. On macOS: uses kqueue EVFILT_READ to yield to the event loop between reads. EVFILT_READ on a vnode fires immediately when current_offset &lt; file_size. It does not fire at EOF (offset == file_size), so we check lseek(SEEK_CUR) before each loop.readable() call to exit the loop cleanly at EOF.</p>
+</section>
+
+<section class="member" id="handle.File.writer">
+<h5><code>writer(): <a class="tok-type" href="stream.html#stream.FdWriter">FdWriter</a></code></h5>
+
+<p>Return a Writer for this file. Only valid for writable modes (w, a, r+, w+, a+). The writer shares the fd; close the File when done, not the writer.</p>
+</section>
+
+<section class="member" id="handle.File.bytes">
+<h5><code><span class="tok-keyword">async</span> bytes(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h5>
+
+<p>Read the entire file contents as a Uint8Array.</p>
+<p>On Linux: uses IORING_OP_READ for genuine async I/O. On macOS: uses kqueue EVFILT_READ to yield to the event loop between reads. Same lseek(SEEK_CUR) EOF guard as reader() — see reader() for details.</p>
+</section>
+
+<section class="member" id="handle.File.text">
+<h5><code><span class="tok-keyword">async</span> text(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+<p>Read the entire file contents as a UTF-8 string.</p>
+</section>
+
+<section class="member" id="handle.File.pread">
+<h5><code><span class="tok-keyword">async</span> pread(pos: <span class="tok-keyword">number</span> | <span class="tok-number">bigint</span>, len: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="handle.File.pwrite">
+<h5><code><span class="tok-keyword">async</span> pwrite(pos: <span class="tok-keyword">number</span> | <span class="tok-number">bigint</span>, data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">number</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="handle.File.sync">
+<h5><code><span class="tok-keyword">async</span> sync(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="handle.File.truncate">
+<h5><code><span class="tok-keyword">async</span> truncate(len: <span class="tok-keyword">number</span> | <span class="tok-number">bigint</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="handle.File.size">
+<h5><code><span class="tok-keyword">async</span> size(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-number">bigint</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="handle.File.close">
+<h5><code><span class="tok-keyword">async</span> close(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Close this file handle and release the underlying fd.</p>
+<p>On Linux: uses IORING_OP_CLOSE for async close. On macOS: closes synchronously via close(2).</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

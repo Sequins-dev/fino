@@ -1,0 +1,218 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - path</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:path">path</h1>
+<p class="muted">js/file/path.mts</p>
+<p>fino:path — POSIX path manipulation.</p>
+<p>Provides an immutable <code>Path</code> class and a set of module-level functions for working with filesystem path strings. All operations are purely in-memory string transformations — no filesystem access, no stat() calls. For actual filesystem I/O, see <code>fino:file</code>.</p>
+<p>The module supports POSIX paths (macOS, Linux) by default and has minimal Windows stubs (the separator constants and <code>isAbsolute</code> regex detect Windows paths), though Fino itself only runs on POSIX systems today.</p>
+<h3>Immutability</h3>
+<p><code>Path</code> instances are immutable: <code>normalize()</code>, <code>join()</code>, <code>resolve()</code>, and <code>relative()</code> all return new <code>Path</code> instances. The internal <code>#path</code> string is never modified after construction. This makes Path objects safe to pass around without defensive copies.</p>
+<p><code>Path.from(input)</code> is a coercion helper: if the input is already a <code>Path</code>, it returns it directly (no allocation). If it&#39;s a string, it wraps it in a new <code>Path</code>. Use <code>Path.from()</code> in hot paths to avoid unnecessary wrapping.</p>
+<h3>Path normalization</h3>
+<p><code>_normalize(p)</code> collapses repeated separators and resolves <code>.</code> and <code>..</code> segments. Key behavior:</p>
+<ul>
+<li>Empty string → <code>&#39;.&#39;</code> (current directory, like POSIX realpath)</li>
+<li>Leading slash is preserved (path stays absolute)</li>
+<li>Trailing slash is preserved (caller&#39;s intent to refer to a directory)</li>
+<li><code>..</code> at the root of an absolute path is silently ignored (can&#39;t go above</li>
+</ul>
+<p>root)</p>
+<ul>
+<li><code>..</code> at the start of a relative path is preserved (we can&#39;t resolve it</li>
+</ul>
+<p>without knowing the current directory)</p>
+<h3>Path resolution vs. joining</h3>
+<p><code>join(...segments)</code> concatenates segments with the separator and normalizes the result. It does not produce absolute paths from relative ones.</p>
+<p><code>resolve(...segments)</code> processes segments from right to left, stopping at the first absolute segment. This mirrors Node.js <code>path.resolve</code> and POSIX shell path building: <code>resolve(&#39;/a&#39;, &#39;b&#39;, &#39;/c&#39;, &#39;d&#39;)</code> → <code>/c/d</code> (starts over at <code>/c</code>).</p>
+<p><code>relative(from, to)</code> computes a relative path from <code>from</code> to <code>to</code> by finding the longest common prefix of normalized segments, then emitting <code>..</code> for each diverging segment in <code>from</code> followed by the remaining segments of <code>to</code>.</p>
+<h3>Module-level functions vs. Path methods</h3>
+<p>Both exist for ergonomic reasons. The class methods operate on an existing <code>Path</code> instance. The module-level functions accept <code>string|Path</code> and delegate to the class, covering the common case where callers have raw strings and don&#39;t want to construct a <code>Path</code> just to call one method.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { Path, join, resolve, relative, dirname, basename } from <span class="tok-string">&#39;./path.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> p = <span class="tok-keyword">new</span> Path(<span class="tok-string">&#39;/usr/local/bin&#39;</span>);
+p.dirname()       <span class="tok-comment">// Path(&#39;/usr/local&#39;)</span>
+p.basename()      <span class="tok-comment">// &#39;bin&#39;</span>
+p.join(<span class="tok-string">&#39;node&#39;</span>)    <span class="tok-comment">// Path(&#39;/usr/local/bin/node&#39;)</span>
+
+<span class="tok-keyword">const</span> rel = <span class="tok-keyword">new</span> Path(<span class="tok-string">&#39;./src/../lib/index.mjs&#39;</span>);
+rel.normalize()   <span class="tok-comment">// Path(&#39;lib/index.mjs&#39;)</span>
+rel.extname()     <span class="tok-comment">// &#39;.mjs&#39;</span>
+
+resolve(<span class="tok-string">&#39;/home&#39;</span>, <span class="tok-string">&#39;user&#39;</span>, <span class="tok-string">&#39;docs&#39;</span>)  <span class="tok-comment">// Path(&#39;/home/user/docs&#39;)</span>
+relative(<span class="tok-string">&#39;/a/b&#39;</span>, <span class="tok-string">&#39;/a/b/c/d&#39;</span>)      <span class="tok-comment">// Path(&#39;c/d&#39;)</span></code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="path.Path">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="path.html#path.Path">Path</a> {</code></h3>
+
+<p>An immutable representation of a filesystem path. All mutation methods return new Path instances.</p>
+<p>Constructor accepts a string or another Path. Use <code>Path.from()</code> for coercion that passes Path instances through without allocating.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="path.Path.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="path.Path.from">
+<h5><code><span class="tok-keyword">static</span> from(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <a class="tok-type" href="path.html#path.Path">Path</a></code></h5>
+
+<p>Convert a string or Path to a Path. If the input is already a Path, returns it directly (no copy).</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="path.Path.dirname">
+<h5><code>dirname(): <a class="tok-type" href="path.html#path.Path">Path</a></code></h5>
+
+<p>Return the directory portion of the path (everything before the last separator). Equivalent to POSIX <code>dirname</code>.</p>
+</section>
+
+<section class="member" id="path.Path.basename">
+<h5><code>basename(suffix?: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h5>
+
+<p>Return the final component of the path. If <code>suffix</code> is provided and matches the end of the basename, it is removed.</p>
+</section>
+
+<section class="member" id="path.Path.extname">
+<h5><code>extname(): <span class="tok-keyword">string</span></code></h5>
+
+<p>Return the file extension (including the leading dot), or an empty string if there is none.</p>
+</section>
+
+<section class="member" id="path.Path.isAbsolute">
+<h5><code>isAbsolute(): <span class="tok-keyword">boolean</span></code></h5>
+
+<p>True if the path is absolute.</p>
+</section>
+
+<section class="member" id="path.Path.normalize">
+<h5><code>normalize(): <a class="tok-type" href="path.html#path.Path">Path</a></code></h5>
+
+<p>Return a normalized version of this path: collapse multiple separators, resolve <code>.</code> and <code>..</code> segments.</p>
+</section>
+
+<section class="member" id="path.Path.join">
+<h5><code>join(...segments: (<span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>)[]): <a class="tok-type" href="path.html#path.Path">Path</a></code></h5>
+
+<p>Join this path with one or more additional segments.</p>
+</section>
+
+<section class="member" id="path.Path.resolve">
+<h5><code>resolve(...bases: (<span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>)[]): <a class="tok-type" href="path.html#path.Path">Path</a></code></h5>
+
+<p>Resolve this path against one or more base paths, producing an absolute path. Processes from right to left; the first absolute path wins.</p>
+<p>If no segments produce an absolute path, the result is relative.</p>
+</section>
+
+<section class="member" id="path.Path.relative">
+<h5><code>relative(from: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <a class="tok-type" href="path.html#path.Path">Path</a></code></h5>
+
+<p>Return a relative path from <code>from</code> to this path. Both paths are normalized before computing the relation.</p>
+</section>
+
+<section class="member" id="path.Path.toString">
+<h5><code><a class="tok-type" href="path.html#path.Path.toString">toString</a>(): <span class="tok-keyword">string</span></code></h5>
+
+<p>Return the raw path string.</p>
+</section>
+
+<section class="member" id="path.Path.toJSON">
+<h5><code>toJSON(): <span class="tok-keyword">string</span></code></h5>
+
+<p>JSON serialization returns the path string.</p>
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="path.join">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> join(...segments: (<span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>)[]): <a class="tok-type" href="path.html#path.Path">Path</a></code></h3>
+
+<p>Join path segments.</p>
+
+</section>
+
+<section id="path.resolve">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> resolve(...segments: (<span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>)[]): <a class="tok-type" href="path.html#path.Path">Path</a></code></h3>
+
+<p>Resolve a sequence of paths into an absolute path.</p>
+
+</section>
+
+<section id="path.normalize">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> normalize(p: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <a class="tok-type" href="path.html#path.Path">Path</a></code></h3>
+
+<p>Normalize a path string.</p>
+
+</section>
+
+<section id="path.dirname">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> dirname(p: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <a class="tok-type" href="path.html#path.Path">Path</a></code></h3>
+
+<p>Return the directory name of a path.</p>
+
+</section>
+
+<section id="path.basename">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> basename(p: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>, suffix?: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Return the basename of a path, optionally stripping a suffix.</p>
+
+</section>
+
+<section id="path.extname">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> extname(p: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Return the extension of a path.</p>
+
+</section>
+
+<section id="path.isAbsolute">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> isAbsolute(p: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <span class="tok-keyword">boolean</span></code></h3>
+
+<p>Check if a path is absolute.</p>
+
+</section>
+
+<section id="path.relative">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> relative(from: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>, to: <span class="tok-keyword">string</span> | <a class="tok-type" href="path.html#path.Path">Path</a>): <a class="tok-type" href="path.html#path.Path">Path</a></code></h3>
+
+<p>Compute a relative path from <code>from</code> to <code>to</code>.</p>
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="path.sep">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> sep</code></h3>
+
+<p>Platform path separator.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

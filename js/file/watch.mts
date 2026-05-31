@@ -115,12 +115,13 @@ export interface WatchOptions {
  * Async-iterable filesystem watcher. Construct, call `watch()` for each path,
  * then iterate events with `for await`.
  *
- * @example
+ * ```ts
  * const watcher = new Watcher(lp, { recursive: true });
  * watcher.watch('/tmp/mydir');
  * for await (const { type, path } of watcher) {
  *   console.log(type, path);
  * }
+ * ```
  */
 export class Watcher {
   #recursive: boolean;

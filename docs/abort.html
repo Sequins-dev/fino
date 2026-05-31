@@ -1,0 +1,152 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - abort</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:abort">abort</h1>
+<p class="muted">js/internal/globals/abort.mts</p>
+<p>fino:abort — AbortController and AbortSignal (WHATWG DOM spec)</p>
+<p>AbortController / AbortSignal is the cancellation primitive used across the web platform: fetch(), stream readers, and any API that accepts a <code>signal</code> option. This module implements the WHATWG DOM spec surface (<a href="https://dom.spec.whatwg.org/#aborting-ongoing-activities">https://dom.spec.whatwg.org/#aborting-ongoing-activities</a>) in pure JS.</p>
+<h3>AbortSignal extends EventTarget</h3>
+<p>AbortSignal inherits addEventListener / removeEventListener / dispatchEvent from <code>fino:eventtarget</code>. The abort event is dispatched as a proper Event instance. The <code>onabort</code> IDL event handler fires before registered listeners (consistent with browsers and the previous ad-hoc implementation).</p>
+<h3>The _signalAbort WeakMap pattern</h3>
+<p>The WHATWG spec has a conceptual &quot;abort steps&quot; algorithm that is triggered by the controller but runs inside the signal. In a full DOM implementation this is a C++ internal link. Here we approximate it with a WeakMap.</p>
+<p>In <code>AbortSignal</code>&#39;s constructor, a closure is created that has direct access to <code>this.#aborted</code> and <code>this.#reason</code>. That closure is stored in the module-level <code>_signalAbort</code> WeakMap, keyed on the signal instance. <code>AbortController.abort()</code> calls <code>_signalAbort.get(this.#signal)</code> to retrieve and invoke the closure.</p>
+<h3>AbortSignal.timeout(ms)</h3>
+<p>Uses <code>fino:loop</code> to set a timer. The import is done lazily to avoid a circular dependency at module load time.</p>
+<h3>AbortSignal.any(signals)</h3>
+<p>Iterates the input signals. If any is already aborted, the output signal is immediately aborted. Otherwise each input gets an abort listener that triggers the output. The first input to fire wins (idempotent closure).</p>
+<pre><code class="language-ts">// AbortController and AbortSignal are available via globalThis
+
+const controller = new AbortController();
+const { signal } = controller;
+
+signal.addEventListener(&#39;abort&#39;, (e) =&gt; console.log(&#39;aborted:&#39;, e.target.reason));
+controller.abort();
+// → signal.aborted === true
+
+// Static factories:
+AbortSignal.abort(reason?)   // pre-aborted signal
+AbortSignal.timeout(ms)      // signal that aborts after ms milliseconds
+AbortSignal.any(signals)     // signal that aborts when any input signal aborts</code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="abort.AbortSignal">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="eventtarget.html#eventtarget.EventTarget">EventTarget</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="abort.AbortSignal.constructor">
+<h5><code><span class="tok-keyword">constructor</span>()</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="abort.AbortSignal.aborted">
+<h5><code><span class="tok-keyword">get</span> aborted()</code></h5>
+
+
+</section>
+
+<section class="member" id="abort.AbortSignal.reason">
+<h5><code><span class="tok-keyword">get</span> reason()</code></h5>
+
+
+</section>
+
+<section class="member" id="abort.AbortSignal.onabort">
+<h5><code><span class="tok-keyword">get</span> onabort()</code></h5>
+
+
+</section>
+
+
+<h4>Setters</h4>
+
+<section class="member" id="abort.AbortSignal.onabort:setter">
+<h5><code><span class="tok-keyword">set</span> onabort(v: ((event: <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="abort.AbortSignal.throwIfAborted">
+<h5><code>throwIfAborted(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="abort.AbortSignal.dispatchEvent">
+<h5><code>dispatchEvent(event: <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a>): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="abort.AbortSignal.abort">
+<h5><code><span class="tok-keyword">static</span> abort(reason?: <span class="tok-keyword">unknown</span>): <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a></code></h5>
+
+
+</section>
+
+<section class="member" id="abort.AbortSignal.timeout">
+<h5><code><span class="tok-keyword">static</span> timeout(ms: <span class="tok-keyword">number</span>): <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a></code></h5>
+
+
+</section>
+
+<section class="member" id="abort.AbortSignal.any">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">any</span>(signals: <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a>[]): <a class="tok-type" href="abort.html#abort.AbortSignal">AbortSignal</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="abort.AbortController">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="abort.html#abort.AbortController">AbortController</a> {</code></h3>
+
+
+
+<h4>Getters</h4>
+
+<section class="member" id="abort.AbortController.signal">
+<h5><code><span class="tok-keyword">get</span> signal()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="abort.AbortController.abort">
+<h5><code>abort(reason?: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

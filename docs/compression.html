@@ -1,0 +1,177 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - compression</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:compression">compression</h1>
+<p class="muted">js/util/compression.mts</p>
+<p>fino:compression — gzip, deflate, brotli</p>
+<p>Wraps system zlib (always available) and optional brotli (homebrew on macOS, libbrotli on Linux) via FFI.</p>
+<h3>One-shot API</h3>
+<pre><code class="language-ts">import { gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw,
+         brotliCompress, brotliDecompress, brotliAvailable } from &#39;./compression.mts&#39;;
+
+const compressed = gzip(new Uint8Array([...]));          // → Uint8Array
+const original   = gunzip(compressed);                  // → Uint8Array</code></pre>
+<h3>Streaming API</h3>
+<pre><code class="language-ts">import { createGzip, createGunzip } from &#39;./compression.mts&#39;;
+
+const gz = createGzip({ level: 6 });
+for await (const chunk of gz.transform(source)) { ... }
+// or: await writer.pipe(gz.transform(reader));</code></pre>
+<p>Options: { level } — 0-9 for zlib, 0-11 for brotli.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="compression.CompressionOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="compression.html#compression.CompressionOptions">CompressionOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="compression.CompressionOptions.level">
+<h5><code>level?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="compression.brotliAvailable">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> brotliAvailable</code></h3>
+
+<p>True when brotli encode/decode libraries are available.</p>
+
+</section>
+
+<section id="compression.createGzip">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createGzip</code></h3>
+
+
+
+</section>
+
+<section id="compression.createGunzip">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createGunzip</code></h3>
+
+
+
+</section>
+
+<section id="compression.createDeflate">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createDeflate</code></h3>
+
+
+
+</section>
+
+<section id="compression.createInflate">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createInflate</code></h3>
+
+
+
+</section>
+
+<section id="compression.createDeflateRaw">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createDeflateRaw</code></h3>
+
+
+
+</section>
+
+<section id="compression.createInflateRaw">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createInflateRaw</code></h3>
+
+
+
+</section>
+
+<section id="compression.createBrotliCompress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createBrotliCompress</code></h3>
+
+
+
+</section>
+
+<section id="compression.createBrotliDecompress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> createBrotliDecompress</code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="compression.gzip">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> gzip(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>, opts?: <a class="tok-type" href="compression.html#compression.CompressionOptions">CompressionOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Compress data to gzip format.</p>
+
+</section>
+
+<section id="compression.gunzip">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> gunzip(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Decompress gzip data (auto-detects zlib or gzip).</p>
+
+</section>
+
+<section id="compression.deflate">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> deflate(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>, opts?: <a class="tok-type" href="compression.html#compression.CompressionOptions">CompressionOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Compress data to zlib format.</p>
+
+</section>
+
+<section id="compression.inflate">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> inflate(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Decompress zlib data (auto-detects zlib or gzip).</p>
+
+</section>
+
+<section id="compression.deflateRaw">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> deflateRaw(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>, opts?: <a class="tok-type" href="compression.html#compression.CompressionOptions">CompressionOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Compress data to raw deflate format (no zlib/gzip header).</p>
+
+</section>
+
+<section id="compression.inflateRaw">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> inflateRaw(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Decompress raw deflate data.</p>
+
+</section>
+
+<section id="compression.brotliCompress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> brotliCompress(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>, opts?: <a class="tok-type" href="compression.html#compression.CompressionOptions">CompressionOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Compress data using brotli. Throws if brotli is not available.</p>
+
+</section>
+
+<section id="compression.brotliDecompress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> brotliDecompress(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Decompress brotli data. Throws if brotli is not available.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

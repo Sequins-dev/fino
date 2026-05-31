@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/test/test</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-test-test">js/test/test</h1>
+<p class="muted">js/test/test.mts</p>
+<p>fino:test — TAP-13 test framework with nesting and BDD-style describe/it.</p>
+<p>Two equivalent but non-mixable patterns:</p>
+<p><strong>Pattern 1: suite + test</strong></p>
+<pre><code class="language-js"><span class="tok-keyword">import</span> { test, suite } from <span class="tok-string">&#39;./test.mts&#39;</span>;
+
+test(<span class="tok-string">&#39;standalone&#39;</span>, (t) =&gt; { t.ok(<span class="tok-keyword">true</span>); });
+
+suite(<span class="tok-string">&#39;math&#39;</span>, () =&gt; {
+  test(<span class="tok-string">&#39;adds&#39;</span>, (t) =&gt; { t.equal(<span class="tok-number">1</span> + <span class="tok-number">1</span>, <span class="tok-number">2</span>); });
+  test(<span class="tok-string">&#39;subs&#39;</span>, (t) =&gt; { t.equal(<span class="tok-number">2</span> - <span class="tok-number">1</span>, <span class="tok-number">1</span>); });
+});</code></pre>
+<p><strong>Pattern 2: describe + it + lifecycle hooks</strong></p>
+<pre><code class="language-js">import { describe, it } from &#39;./test.mts&#39;;
+
+describe(&#39;math&#39;, () =&gt; {
+  before(async () =&gt; { ... });       // once, before first it
+  beforeEach(async () =&gt; { ... });   // before each it
+  afterEach(async () =&gt; { ... });    // after each it (always runs)
+  after(async () =&gt; { ... });        // once, after last it (always runs)
+
+  it(&#39;adds&#39;, (t) =&gt; { t.equal(1 + 1, 2); });
+  it(&#39;subs&#39;, (t) =&gt; { t.equal(2 - 1, 1); });
+});</code></pre>
+<p>Mixing is forbidden: <code>it()</code> inside <code>suite()</code>, <code>test()</code> inside <code>describe()</code>, <code>suite()</code> inside <code>describe()</code>, or <code>describe()</code> inside <code>suite()</code> all throw. <code>it()</code> and hook functions throw if used at the top level.</p>
+<h3>TAP-13 output</h3>
+<p>Nested groups produce standard TAP subtests (indented 4 spaces per level):</p>
+<p>TAP version 13 1..2 ok 1 - standalone # Subtest: math 1..2 ok 1 - adds ok 2 - subs ok 2 - math # tests 2 # pass  2</p>
+<h3>Internal representation</h3>
+<p>Both APIs share a tree of nodes:</p>
+<p>Leaf:  { name, fn, children: null, skip: string|null } Group: { name, kind: &#39;suite&#39;|&#39;describe&#39;, children: [, before, beforeEach, after, afterEach, skip: string|null }</p>
+<p><code>_current</code> points at the group being registered into (<code>null</code> = top level). The unified runner <code>_runEntries(entries, depth, parentNode)</code> recurses the tree, applying hooks from <code>parentNode</code> to each leaf inside a <code>describe</code> group.</p>
+
+
+<h2>Functions</h2>
+
+<section id="js-test-test.test">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> test(name: <span class="tok-keyword">string</span>, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a test case. Can be top-level or inside <code>suite()</code>. Throws inside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.suite">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> suite(name: <span class="tok-keyword">string</span>, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a group of tests. Can be nested inside other <code>suite()</code> calls. Throws inside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.describe">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> describe(name: <span class="tok-keyword">string</span>, optsOrFn: GroupFn | RegisterOptions, maybeFn?: GroupFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a BDD-style test group with optional lifecycle hooks. Can be nested inside other <code>describe()</code> calls. Throws inside <code>suite()</code>.</p>
+
+</section>
+
+<section id="js-test-test.it">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> it(name: <span class="tok-keyword">string</span>, optsOrFn: TestFn | RegisterOptions, maybeFn?: TestFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register a test case inside <code>describe()</code>. Throws outside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.before">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> before(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Run <code>fn</code> once before the first <code>it</code> in this <code>describe</code> block. Throws outside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.after">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> after(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Run <code>fn</code> once after the last <code>it</code> in this <code>describe</code> block. Always runs even if tests fail. Throws outside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.beforeEach">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> beforeEach(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Run <code>fn</code> before each <code>it</code> in this <code>describe</code> block. Throws outside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.afterEach">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> afterEach(fn: HookFn): <span class="tok-keyword">void</span></code></h3>
+
+<p>Run <code>fn</code> after each <code>it</code> in this <code>describe</code> block. Always runs even if the test fails. Throws outside <code>describe()</code>.</p>
+
+</section>
+
+<section id="js-test-test.run">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: RunOptions = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h3>
+
+<p>Run all registered tests and print TAP-13 output.</p>
+<p>Called automatically by the fino CLI in <code>--test</code> mode. User test files only need to call <code>test()</code> / <code>suite()</code> / <code>describe()</code> — never <code>run()</code>.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

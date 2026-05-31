@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - global</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:global">global</h1>
+<p class="muted">js/internal/globals/global.mts</p>
+<p>fino:global — web-standard globals registry.</p>
+<p>This module is a barrel re-export that collects all web-platform APIs that should be available as globals. It serves two purposes:</p>
+<ol>
+<li><strong>globalThis registration</strong> — <code>js/_main.mjs</code> imports <code>fino:global</code> and</li>
+</ol>
+<p>assigns each export onto <code>globalThis</code>, making them available without an explicit import in user scripts (just like browsers and Node.js).</p>
+<ol>
+<li><strong>Explicit import</strong> — userland code can import from <code>fino:global</code></li>
+</ol>
+<p>directly if it needs a named import that is guaranteed to be the same object as the global, or if the script is running in a context where globals aren&#39;t set up yet.</p>
+<h3>Why a separate module?</h3>
+<p>Separating global registration from the individual module implementations keeps each module self-contained and independently importable. <code>fino:url</code> doesn&#39;t know or care that <code>URL</code> ends up on <code>globalThis</code> — that is <code>fino:global</code>&#39;s concern. This also makes it easy to add or remove globals: add an export here and <code>_main.mjs</code>&#39;s assignment loop picks it up.</p>
+<h3>What is NOT here</h3>
+<ul>
+<li><code>setTimeout</code> / <code>setInterval</code> / <code>clearTimeout</code> / <code>clearInterval</code> — also</li>
+</ul>
+<p>set on globalThis by <code>_main.mjs</code> but come from <code>fino:loop</code> directly, not this module, because they&#39;re wired to a specific loop handle.</p>
+<ul>
+<li><code>process</code> — available as <code>fino:process</code> but not on globalThis (fino is</li>
+</ul>
+<p>not Node.js; prefer explicit imports for process-level APIs).</p>
+<p class="muted">No exported declarations found.</p>
+
+
+</main>
+</body>
+</html>

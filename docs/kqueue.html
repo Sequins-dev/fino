@@ -1,0 +1,288 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - kqueue</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:kqueue">kqueue</h1>
+<p class="muted">js/internal/runtime/kqueue.mts</p>
+<p>fino:kqueue — low-level kqueue bindings for macOS/BSD.</p>
+<p>kqueue is the kernel event notification interface on macOS (and other BSDs). A kqueue fd is a file descriptor that the kernel fills with events as they become ready. You register interest in events via <code>kevent()</code> changesets, then wait for them with another <code>kevent()</code> call that blocks until events arrive.</p>
+<p>This module wraps <code>kqueue(2)</code> and <code>kevent(2)</code> via FFI (<code>fino:ffi</code>) and implements the common backend interface that <code>fino:loop</code> expects. It is only loaded on macOS; Linux uses <code>fino:io_uring</code> instead.</p>
+<h3>struct kevent layout</h3>
+<p>kqueue events are described by <code>struct kevent</code> (32 bytes on macOS 64-bit):</p>
+<p>offset  0: ident  (uint64)  — identifier: fd for read/write, timer id for timers, pid for proc offset  8: filter (int16)   — event type: EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER, EVFILT_PROC offset 10: flags  (uint16)  — EV_ADD / EV_DELETE / EV_ONESHOT / EV_EOF / EV_ERROR etc. offset 12: fflags (uint32)  — filter-specific flags (e.g. NOTE_EXIT for EVFILT_PROC) offset 16: data   (int64)   — filter-specific data (e.g. bytes available, timer ms) offset 24: udata  (uint64)  — user-supplied opaque value, returned as-is in events</p>
+<p>We use <code>udata</code> to store the same value as <code>ident</code> (the fd or id) so that <code>fino:loop</code>&#39;s dispatch table can use a single field to look up the resolver.</p>
+<h3>How kevent() is called</h3>
+<p><code>kevent(kqFd, changelist, nchanges, eventlist, nevents, timeout)</code> is a dual-purpose syscall:</p>
+<ul>
+<li>Pass a non-empty changelist to <em>register</em> new interests (EV_ADD/EV_DELETE).</li>
+<li>Pass a non-null eventlist to <em>wait</em> for events (blocks up to <code>timeout</code>).</li>
+<li>Both can be combined in one call, but we split them for clarity.</li>
+</ul>
+<p>When registering changes, we pass <code>nchanges &gt; 0</code> and <code>nevents = 0</code> with a zero timeout. When waiting, we pass <code>nchanges = 0</code> and <code>nevents = MAX_EVENTS</code> with the desired timeout (or null for infinite block).</p>
+<h3>EV_ONESHOT for timers</h3>
+<p>Timer events use <code>EV_ONESHOT</code> so the kernel auto-removes the event after it fires once. Without this flag, the timer would fire repeatedly. We also use <code>EV_ONESHOT</code> for <code>EVFILT_PROC</code> (process exit) since we only want one notification when the process exits. Read/write watches do NOT use EV_ONESHOT — they remain registered until explicitly removed, which allows <code>fino:loop</code> to re-arm them on the next <code>readable()</code>/<code>writable()</code> call.</p>
+<h3>addProc race condition</h3>
+<p>There is a race between a process exiting and the <code>EVFILT_PROC</code> filter being registered. If the process exits between <code>fork()</code> returning and our <code>kevent()</code> call, the kernel rejects the filter (returns an error). We detect this by checking the <code>kevent()</code> return value in <code>addProc()</code>: a negative return means the process already exited, so <code>addProc()</code> returns <code>false</code> and <code>fino:loop</code>&#39;s <code>proc()</code> resolves immediately so the caller can proceed to <code>waitpid()</code>.</p>
+<h3>struct timespec for timeout</h3>
+<p><code>kevent()</code>&#39;s timeout parameter is a pointer to <code>struct timespec</code>: { int64 tv_sec; int64 tv_nsec; }  (16 bytes, little-endian on arm64/x86_64) We build this with a DataView over an ArrayBuffer. Passing <code>null</code> for the timeout pointer means &quot;block indefinitely&quot;.</p>
+<h3>EV_ERROR in returned events</h3>
+<p>When a changelist entry fails (e.g. bad fd), kqueue returns the failed change as an event with <code>EV_ERROR</code> set in <code>flags</code> and <code>errno</code> in <code>data</code>. We check for this in <code>kevent()</code> and throw an error rather than silently dropping it.</p>
+<h3>Contributing</h3>
+<ul>
+<li>All constants (EVFILT_<em>, EV_</em>, NOTE_*) match the macOS `&lt;sys/event.h&gt;` values.</li>
+<li>The <code>udata</code> field is written with the same value as <code>ident</code> everywhere. If</li>
+</ul>
+<p>you need to distinguish multiple registrations for the same fd, you&#39;d change this — but <code>fino:loop</code> currently uses the fd itself as the map key.</p>
+<ul>
+<li><code>MAX_EVENTS = 256</code> is a tunable. Higher values reduce syscall overhead for</li>
+</ul>
+<p>high-connection servers at the cost of a larger stack-allocated buffer.</p>
+
+
+<h2>Constants</h2>
+
+<section id="kqueue.NOTE_DELETE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_DELETE">NOTE_DELETE</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.NOTE_WRITE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_WRITE">NOTE_WRITE</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.NOTE_EXTEND">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_EXTEND">NOTE_EXTEND</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.NOTE_ATTRIB">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_ATTRIB">NOTE_ATTRIB</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.NOTE_LINK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_LINK">NOTE_LINK</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.NOTE_RENAME">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_RENAME">NOTE_RENAME</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.NOTE_REVOKE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.NOTE_REVOKE">NOTE_REVOKE</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EV_EOF">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EV_EOF">EV_EOF</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EV_ERROR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EV_ERROR">EV_ERROR</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EVFILT_READ">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EVFILT_READ">EVFILT_READ</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EVFILT_WRITE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EVFILT_WRITE">EVFILT_WRITE</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EVFILT_TIMER">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EVFILT_TIMER">EVFILT_TIMER</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EVFILT_PROC">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EVFILT_PROC">EVFILT_PROC</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EVFILT_VNODE">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EVFILT_VNODE">EVFILT_VNODE</a></code></h3>
+
+
+
+</section>
+
+<section id="kqueue.EVFILT_SIGNAL">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <a class="tok-type" href="kqueue.html#kqueue.EVFILT_SIGNAL">EVFILT_SIGNAL</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="kqueue.create">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> create(): KqueueLoop</code></h3>
+
+<p>Create a new kqueue event loop handle.</p>
+
+</section>
+
+<section id="kqueue.addRead">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addRead(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>, userData: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Watch <code>fd</code> for read readiness (one-shot — auto-removed after delivery). <code>userData</code> is a number returned with the event.</p>
+
+</section>
+
+<section id="kqueue.addWrite">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addWrite(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>, userData: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Watch <code>fd</code> for write readiness (one-shot — auto-removed after delivery).</p>
+
+</section>
+
+<section id="kqueue.addPersistentRead">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addPersistentRead(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>, userData: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Watch <code>fd</code> for read readiness persistently (EV_CLEAR — not oneshot). Fires each time data arrives; does not auto-remove after delivery. Used for background wake sources that must not be counted as live I/O for the loop&#39;s <code>alive()</code> check.</p>
+
+</section>
+
+<section id="kqueue.removeRead">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> removeRead(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Explicitly cancel a read watch for <code>fd</code> (e.g. on connection close before event fires). Queued as a pending change so it batches with the next wait().</p>
+
+</section>
+
+<section id="kqueue.removeWrite">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> removeWrite(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Explicitly cancel a write watch for <code>fd</code>.</p>
+
+</section>
+
+<section id="kqueue.addTimer">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addTimer(loop: KqueueLoop, id: <span class="tok-keyword">number</span>, ms: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Add a one-shot timer. Fires after <code>ms</code> milliseconds. <code>id</code> is returned as <code>ident</code> in the event.</p>
+
+</section>
+
+<section id="kqueue.removeTimer">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> removeTimer(loop: KqueueLoop, id: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Cancel a pending timer. Queued as a pending change so it batches with the next wait().</p>
+
+</section>
+
+<section id="kqueue.addProc">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addProc(loop: KqueueLoop, pid: <span class="tok-keyword">number</span>, userData: <span class="tok-keyword">number</span>): <span class="tok-keyword">boolean</span></code></h3>
+
+<p>Watch <code>pid</code> for exit. Fires exactly once when the process exits. <code>userData</code> is returned as <code>ident</code> in the event.</p>
+<p>Returns <code>true</code> if the filter was registered successfully, <code>false</code> if the process has already exited (kevent returns an error in that case). The caller is responsible for handling the already-exited case.</p>
+
+</section>
+
+<section id="kqueue.removeProc">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> removeProc(loop: KqueueLoop, pid: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Remove a process watch for <code>pid</code>.</p>
+
+</section>
+
+<section id="kqueue.poll">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> poll(loop: KqueueLoop): Kevent[]</code></h3>
+
+<p>Non-blocking poll — returns any events immediately available.</p>
+
+</section>
+
+<section id="kqueue.wait">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> wait(loop: KqueueLoop, timeoutMs: <span class="tok-keyword">number</span> | <span class="tok-keyword">null</span> = <span class="tok-keyword">null</span>): Kevent[]</code></h3>
+
+<p>Blocking wait — blocks until events arrive or <code>timeoutMs</code> elapses. Flushes any pending add/remove changes in the same syscall. Pass <code>null</code> to block indefinitely.</p>
+
+</section>
+
+<section id="kqueue.addVnode">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addVnode(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>, fflags: <span class="tok-keyword">number</span>, userData: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Watch <code>fd</code> for filesystem events (EVFILT_VNODE). Fires repeatedly via EV_CLEAR.</p>
+<p><code>fflags</code> is a bitmask of NOTE_* values indicating which events to watch: NOTE_DELETE | NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_LINK | NOTE_RENAME | NOTE_REVOKE</p>
+<p>Unlike read/write/timer watches, vnode watches are <em>persistent</em> — they continue firing after each event because EV_CLEAR re-arms the filter. Call <code>removeVnode()</code> to explicitly stop watching.</p>
+<p>The <code>fd</code> must remain open for as long as the watch is active. Closing the fd automatically removes the filter from kqueue.</p>
+<p><code>userData</code> is returned as <code>udata</code> in events (used by fino:loop to look up the callback via the fd).</p>
+
+</section>
+
+<section id="kqueue.removeVnode">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> removeVnode(loop: KqueueLoop, fd: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Remove a vnode watch for <code>fd</code>.</p>
+
+</section>
+
+<section id="kqueue.addSignal">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> addSignal(loop: KqueueLoop, signo: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Watch <code>signo</code> for delivery to this process (macOS only, via EVFILT_SIGNAL). Fires repeatedly via EV_CLEAR each time the signal is received.</p>
+<p>Also overrides the signal&#39;s disposition to SIG_IGN so the default action (e.g. process termination for SIGTERM/SIGINT) does not take effect. The kqueue filter still fires even with SIG_IGN set.</p>
+<p><code>signo</code> is returned as <code>ident</code> in events.</p>
+
+</section>
+
+<section id="kqueue.removeSignal">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> removeSignal(loop: KqueueLoop, signo: <span class="tok-keyword">number</span>): <span class="tok-keyword">void</span></code></h3>
+
+<p>Remove signal watch for <code>signo</code> and restore default disposition.</p>
+
+</section>
+
+<section id="kqueue.destroy">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> destroy(loop: KqueueLoop): <span class="tok-keyword">void</span></code></h3>
+
+<p>Close the kqueue file descriptor and release resources.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

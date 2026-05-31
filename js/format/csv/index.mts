@@ -1,7 +1,7 @@
 /**
  * fino:format/csv — CSV parsing and serialization (RFC 4180 + dialect options).
  *
- * @example
+ * ```ts
  *   import { parse, stringify } from 'fino:format/csv';
  *
  *   const rows = parse('a,b\n1,2\n3,4', { header: true });
@@ -9,6 +9,7 @@
  *
  *   const out = stringify([{ a: '1', b: '2' }, { a: '3', b: '4' }]);
  *   // 'a,b\r\n1,2\r\n3,4\r\n'
+ * ```
  */
 
 import { Scanner, ParseError } from 'fino:scanner';

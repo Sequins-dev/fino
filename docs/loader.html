@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - loader</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:loader">loader</h1>
+<p class="muted">js/internal/loader.mts</p>
+<p>internal:loader — JS-side module resolution and import.meta population.</p>
+<p>Registers two callbacks with the Rust module loader via <code>internal:loader-hooks</code>:</p>
+<ul>
+<li><code>resolve(specifier, referrerDir, root)</code> → canonical absolute path</li>
+<li><code>initImportMeta(importMeta, filename, root)</code> → populates import.meta</li>
+</ul>
+<p>This module must remain synchronous (no top-level <code>await</code>) so it can be statically imported from <code>_main.mjs</code>.</p>
+<p>We open our own libc handle for <code>realpath</code> rather than reusing <code>internal:file/bindings</code> because that module uses <code>await import(...)</code>, which would make this module (and <code>_main.mjs</code>) async.</p>
+<p class="muted">No exported declarations found.</p>
+
+
+</main>
+</body>
+</html>

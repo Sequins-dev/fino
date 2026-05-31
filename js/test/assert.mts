@@ -60,15 +60,17 @@
  * default export and also as named free functions (`ok`, `equal`, `throws`,
  * etc.). This lets callers choose between:
  *
+ * ```ts
  *   import assert from './assert.mts';        // default instance
  *   assert.ok(value);
  *
  *   import { ok, equal } from './assert.mts'; // named free functions
  *   ok(value);
  *   equal(got, expected);
+ * ```
  *
  *
- * @example
+ * ```ts
  * import { Assert, AssertionError } from './assert.mts';
  *
  * const assert = new Assert({
@@ -78,6 +80,7 @@
  * assert.equal(got, expected, 'same value');
  * assert.deepEqual({ a: 1 }, { a: 1 }, 'same shape');
  * await assert.rejects(async () => { throw new Error('oops'); }, /oops/);
+ * ```
  */
 
 // ---------------------------------------------------------------------------

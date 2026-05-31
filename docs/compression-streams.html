@@ -1,0 +1,104 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - compression-streams</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:compression-streams">compression-streams</h1>
+<p class="muted">js/internal/globals/compression-streams.mts</p>
+<p>internal:compression-streams — CompressionStream and DecompressionStream.</p>
+<p>WHATWG Compression Streams specification implementation. Wraps the streaming compression API from fino:compression in the standard Web Streams interface (ReadableStream / WritableStream pair).</p>
+<p>Supported formats: &#39;gzip&#39;, &#39;deflate&#39;, &#39;deflate-raw&#39; (Brotli is not part of the WHATWG spec.)</p>
+<h3>Bridging the two streaming APIs</h3>
+<p>fino:compression provides streaming via factories: <code>createGzip(opts)</code> returns an object with <code>transform(asyncIterable) → asyncIterable</code>. This does not speak Web Streams. To bridge:</p>
+<ol>
+<li>A simple async-iterable input channel is created.</li>
+<li>The compression factory is connected to it: <code>factory().transform(channel)</code>.</li>
+<li>The output iterable is wrapped in <code>ReadableStream.from()</code>.</li>
+<li>A <code>WritableStream</code> sink feeds incoming writes into the channel.</li>
+</ol>
+<p>This keeps all the actual compression work in the existing FFI-backed generators and avoids duplicating the zlib/brotli logic here.</p>
+
+
+<h2>Classes</h2>
+
+<section id="compression-streams.CompressionStream">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="compression-streams.html#compression-streams.CompressionStream">CompressionStream</a> {</code></h3>
+
+<p>Transforms a stream of bytes by compressing it using gzip, deflate, or deflate-raw (raw DEFLATE without a wrapper).</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> cs = <span class="tok-keyword">new</span> CompressionStream(<span class="tok-string">&#39;gzip&#39;</span>);
+readableSource.pipeThrough(cs);  <span class="tok-comment">// cs.readable yields compressed chunks</span></code></pre>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> cs  = <span class="tok-keyword">new</span> CompressionStream(<span class="tok-string">&#39;gzip&#39;</span>);
+<span class="tok-keyword">const</span> writer = cs.writable.getWriter();
+<span class="tok-keyword">await</span> writer.write(data);
+<span class="tok-keyword">await</span> writer.close();
+<span class="tok-keyword">const</span> compressed = <span class="tok-keyword">await</span> <span class="tok-keyword">new</span> Response(cs.readable).bytes();</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="compression-streams.CompressionStream.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(format: CompressionFormat)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="compression-streams.CompressionStream.readable">
+<h5><code><span class="tok-keyword">get</span> readable()</code></h5>
+
+
+</section>
+
+<section class="member" id="compression-streams.CompressionStream.writable">
+<h5><code><span class="tok-keyword">get</span> writable()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="compression-streams.DecompressionStream">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="compression-streams.html#compression-streams.DecompressionStream">DecompressionStream</a> {</code></h3>
+
+<p>Transforms a stream of compressed bytes (gzip, deflate, or deflate-raw) into the original uncompressed data.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> ds = <span class="tok-keyword">new</span> DecompressionStream(<span class="tok-string">&#39;gzip&#39;</span>);
+compressedReadable.pipeThrough(ds);  <span class="tok-comment">// ds.readable yields decompressed chunks</span></code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="compression-streams.DecompressionStream.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(format: CompressionFormat)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="compression-streams.DecompressionStream.readable">
+<h5><code><span class="tok-keyword">get</span> readable()</code></h5>
+
+
+</section>
+
+<section class="member" id="compression-streams.DecompressionStream.writable">
+<h5><code><span class="tok-keyword">get</span> writable()</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

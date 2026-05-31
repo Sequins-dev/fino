@@ -1,0 +1,307 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - archive</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:archive">archive</h1>
+<p class="muted">js/archive.mts</p>
+<p>fino:archive — zip, tar, and tar.gz archive helpers implemented in JS.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="archive.ArchiveOpenOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="archive.ArchiveOpenOptions.format">
+<h5><code>format?: ArchiveFormat</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveOpenOptions.readOnly">
+<h5><code>readOnly?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="archive.ArchiveWriteOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="archive.html#archive.ArchiveWriteOptions">ArchiveWriteOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="archive.ArchiveWriteOptions.kind">
+<h5><code>kind?: ArchiveKind</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveWriteOptions.compression">
+<h5><code>compression?: ZipCompression</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveWriteOptions.mtime">
+<h5><code>mtime?: Date | <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveWriteOptions.mode">
+<h5><code>mode?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="archive.ArchiveEntryInfo">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="archive.html#archive.ArchiveEntryInfo">ArchiveEntryInfo</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="archive.ArchiveEntryInfo.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveEntryInfo.kind">
+<h5><code>kind: ArchiveKind</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveEntryInfo.size">
+<h5><code>size: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveEntryInfo.compressedSize">
+<h5><code>compressedSize: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveEntryInfo.mtime">
+<h5><code>mtime: Date | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.ArchiveEntryInfo.mode">
+<h5><code>mode: <span class="tok-keyword">number</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="archive.ExtractResult">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="archive.html#archive.ExtractResult">ExtractResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="archive.ExtractResult.entries">
+<h5><code>entries: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="archive.Archive">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="archive.html#archive.Archive">Archive</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="archive.Archive.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(path: <span class="tok-keyword">string</span>, format: ArchiveFormat, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="archive.Archive.path">
+<h5><code><span class="tok-keyword">get</span> path(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.format">
+<h5><code><span class="tok-keyword">get</span> format(): ArchiveFormat</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.closed">
+<h5><code><span class="tok-keyword">get</span> closed(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="archive.Archive.create">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> create(path: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.Archive">Archive</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.open">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">async</span> open(path: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.Archive">Archive</a>&gt;</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="archive.Archive._entryInfo">
+<h5><code>_entryInfo(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="archive.html#archive.ArchiveEntryInfo">ArchiveEntryInfo</a></code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.entries">
+<h5><code><span class="tok-keyword">async</span> entries(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.ArchiveEntryInfo">ArchiveEntryInfo</a>[]&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.entry">
+<h5><code><span class="tok-keyword">async</span> entry(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;ArchiveEntryHandle | <span class="tok-keyword">null</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.read">
+<h5><code><span class="tok-keyword">async</span> read(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.readText">
+<h5><code><span class="tok-keyword">async</span> readText(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.write">
+<h5><code><span class="tok-keyword">async</span> write(name: <span class="tok-keyword">string</span>, data: ArchiveInput, options: <a class="tok-type" href="archive.html#archive.ArchiveWriteOptions">ArchiveWriteOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.addFile">
+<h5><code><span class="tok-keyword">async</span> addFile(srcPath: <span class="tok-keyword">string</span>, archivePath: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span> = <span class="tok-keyword">null</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveWriteOptions">ArchiveWriteOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.addDirectory">
+<h5><code><span class="tok-keyword">async</span> addDirectory(srcPath: <span class="tok-keyword">string</span>, archivePath: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.remove">
+<h5><code><span class="tok-keyword">async</span> remove(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.rename">
+<h5><code><span class="tok-keyword">async</span> rename(oldName: <span class="tok-keyword">string</span>, newName: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.extract">
+<h5><code><span class="tok-keyword">async</span> extract(destination: <span class="tok-keyword">string</span>, _options: <span class="tok-keyword">object</span> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.ExtractResult">ExtractResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.save">
+<h5><code><span class="tok-keyword">async</span> save(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="archive.Archive.close">
+<h5><code><span class="tok-keyword">async</span> close(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="archive.openArchive">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> openArchive(path: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.Archive">Archive</a>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="archive.createArchive">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> createArchive(path: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.Archive">Archive</a>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="archive.listArchive">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> listArchive(path: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.ArchiveEntryInfo">ArchiveEntryInfo</a>[]&gt;</code></h3>
+
+
+
+</section>
+
+<section id="archive.extractArchive">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> extractArchive(path: <span class="tok-keyword">string</span>, destination: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="archive.html#archive.ArchiveOpenOptions">ArchiveOpenOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="archive.html#archive.ExtractResult">ExtractResult</a>&gt;</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

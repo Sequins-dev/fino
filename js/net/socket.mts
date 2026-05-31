@@ -663,8 +663,10 @@ export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Prom
  * halves. The underlying fd is closed automatically when both halves close.
  *
  * Use the static factories rather than the constructor directly:
+ * ```ts
  *   const sock = await Socket.connect(lp, { family: 'ipv4', ip: '…', port: 80 });
  *   const server = Socket.listen(lp, { family: 'ipv6', ip: '::', port: 8080 });
+ * ```
  */
 export class Socket {
   #fd: number;

@@ -40,7 +40,7 @@
  * matching the browser API.
  *
  *
- * @example
+ * ```ts
  * // FormData is available via globalThis
  *
  * const fd = new FormData();
@@ -55,6 +55,7 @@
  *
  * for (const [key, value] of fd) { ... }
  * fd.forEach((value, key, fd) => { ... });
+ * ```
  */
 
 import { Blob, File } from './blob.mts';

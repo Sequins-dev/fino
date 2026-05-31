@@ -1,0 +1,180 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - encoding</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:encoding">encoding</h1>
+<p class="muted">js/internal/globals/encoding.mts</p>
+<p>fino:encoding — UTF-8 TextEncoder / TextDecoder (WHATWG Encoding Standard)</p>
+<p>This module provides two layers:</p>
+<ol>
+<li><strong>Internal helpers</strong> (<code>encodeUtf8</code>, <code>decodeUtf8</code>): low-level functions</li>
+</ol>
+<p>used throughout the standard library whenever bytes need to cross the JS↔C boundary. Every module that passes strings to libc (file paths, DNS names, HTTP headers, process arguments, …) uses <code>encodeUtf8</code> to produce null-terminated byte arrays. These are exported so modules can import them directly without going through the WHATWG class wrappers.</p>
+<ol>
+<li><strong>WHATWG API</strong> (<code>TextEncoder</code>, <code>TextDecoder</code>): the web-standard classes</li>
+</ol>
+<p>that userland code expects. <code>TextEncoder.encoding</code> is always <code>&quot;utf-8&quot;</code>. <code>TextDecoder</code> accepts any of the WHATWG-defined UTF-8 label aliases (&quot;utf8&quot;, &quot;unicode-1-1-utf-8&quot;, etc.) but rejects other encodings with a RangeError. The <code>stream: true</code> option for incremental decoding is accepted but ignored — splitting UTF-8 input across multiple calls is not supported; each <code>decode()</code> call treats its input as a complete byte sequence.</p>
+<h3>Why UTF-8 only?</h3>
+<p>The WHATWG Encoding Standard requires implementations to support all legacy encodings (Latin-1, Shift-JIS, etc.) for decoding. We intentionally limit this to UTF-8 only. The vast majority of modern text is UTF-8, and adding full encoding support would require a large lookup table or a C library dependency (libiconv). Contributors who need legacy encoding support can import a pure-JS library via the module loader.</p>
+<h3>Encoder implementation</h3>
+<p><code>encodeUtf8</code> processes each JS code unit. JS strings are UTF-16 internally, so surrogate pairs (U+D800..U+DBFF followed by U+DC00..U+DFFF) must be recombined into a 32-bit code point before encoding as a 4-byte UTF-8 sequence. The algorithm pre-allocates <code>str.length * 4</code> bytes (worst case), writes into that buffer, then calls <code>slice(0, pos)</code> to return a correctly- sized copy. Using <code>slice()</code> rather than <code>subarray()</code> ensures the returned Uint8Array&#39;s <code>.buffer</code> property has the right <code>byteLength</code>, which matters when callers pass <code>.buffer</code> to FFI or <code>Pointer.of()</code>.</p>
+<h3>Decoder implementation</h3>
+<p><code>decodeUtf8</code> validates each multi-byte sequence against three classes of errors (also checked by browsers):</p>
+<ul>
+<li><strong>Invalid lead byte</strong>: a byte whose high bits don&#39;t match any UTF-8</li>
+</ul>
+<p>sequence prefix (e.g. 0xFF).</p>
+<ul>
+<li><strong>Truncated sequence</strong>: a lead byte promises N continuation bytes but</li>
+</ul>
+<p>fewer are available.</p>
+<ul>
+<li><strong>Overlong / surrogate / out-of-range</strong>: a sequence that encodes a code</li>
+</ul>
+<p>point that could have been expressed with fewer bytes (overlong), a code point in the surrogate range (U+D800–U+DFFF, which UTF-8 cannot encode in valid form), or a code point above U+10FFFF.</p>
+<p>In non-fatal mode (default), all three replace the offending byte(s) with U+FFFD (the REPLACEMENT CHARACTER). In fatal mode, a TypeError is thrown.</p>
+<p>The optional BOM strip (U+FEFF at offset 0) is on by default to match browser behavior; set <code>ignoreBOM: true</code> on <code>TextDecoder</code> to preserve it.</p>
+<h3>encodeInto</h3>
+<p><code>TextEncoder.encodeInto(input, destination)</code> writes directly into an existing Uint8Array without allocating. It returns <code>{ read, written }</code>: <code>read</code> is the number of JS code units consumed (note: a surrogate pair counts as 2 code units), <code>written</code> is the number of bytes written. Stops early if the destination would overflow.</p>
+
+
+<h2>Functions</h2>
+
+<section id="encoding.encodeUtf8">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> encodeUtf8(str: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Encode a JS string to a Uint8Array of UTF-8 bytes. Handles the full Unicode range including surrogate pairs.</p>
+<p>Returns a subarray view of an over-allocated backing buffer. Callers that need the exact byte count should use <code>.byteLength</code> on the returned view (not <code>.buffer.byteLength</code>). This avoids a second allocation (slice copy) while keeping the API identical to before.</p>
+
+</section>
+
+<section id="encoding.decodeUtf8">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> decodeUtf8(bytes: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, fatal: <span class="tok-keyword">boolean</span> = <span class="tok-keyword">false</span>, skipBom: <span class="tok-keyword">boolean</span> = <span class="tok-keyword">true</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Decode a Uint8Array of UTF-8 bytes to a JS string. Invalid sequences are replaced with U+FFFD (replacement character).</p>
+
+</section>
+
+<section id="encoding.btoa">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> btoa(data: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Encode a Latin-1 binary string to base64 (web <code>btoa</code>). Throws if any character code is &gt; 255.</p>
+
+</section>
+
+<section id="encoding.atob">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> atob(encodedData: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+<p>Decode a base64 string to a Latin-1 binary string (web <code>atob</code>). Throws on invalid base64 input.</p>
+
+</section>
+
+<section id="encoding._registerBlobCloneHelper">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _registerBlobCloneHelper(helper: BlobCloneHelper): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="encoding.structuredClone">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> structuredClone&lt;T&gt;(value: T, options?: { transfer?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>[] }): T</code></h3>
+
+<p>Deep-clone a value using the structured clone algorithm (subset).</p>
+<p>Supported types: primitives, plain objects, Arrays, Date, RegExp, Map, Set, ArrayBuffer, TypedArrays, DataView, Error (message + name), Blob, File.</p>
+<p>Unsupported (throws DataCloneError): Functions, Symbols, WeakMap, WeakSet.</p>
+<p>Cycles are detected and reproduced correctly.</p>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="encoding.TextEncoder">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="encoding.html#encoding.TextEncoder">TextEncoder</a> {</code></h3>
+
+<p>WHATWG TextEncoder — always UTF-8. <a href="https://encoding.spec.whatwg.org/#interface-textencoder">https://encoding.spec.whatwg.org/#interface-textencoder</a></p>
+
+<h4>Getters</h4>
+
+<section class="member" id="encoding.TextEncoder.encoding">
+<h5><code><span class="tok-keyword">get</span> encoding()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="encoding.TextEncoder.encode">
+<h5><code>encode(input: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h5>
+
+<p>Encode <code>input</code> to a new Uint8Array.</p>
+</section>
+
+<section class="member" id="encoding.TextEncoder.encodeInto">
+<h5><code>encodeInto(input: <span class="tok-keyword">string</span>, destination: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): { read: <span class="tok-keyword">number</span>; written: <span class="tok-keyword">number</span> }</code></h5>
+
+<p>Encode as much of <code>input</code> as fits into <code>destination</code> without allocating.</p>
+</section>
+
+
+</section>
+
+<section id="encoding.TextDecoder">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="encoding.html#encoding.TextDecoder">TextDecoder</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="encoding.TextDecoder.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(label: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;utf-8&#39;</span>, options: { fatal?: <span class="tok-keyword">boolean</span>; ignoreBOM?: <span class="tok-keyword">boolean</span> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="encoding.TextDecoder.encoding">
+<h5><code><span class="tok-keyword">get</span> encoding()</code></h5>
+
+
+</section>
+
+<section class="member" id="encoding.TextDecoder.fatal">
+<h5><code><span class="tok-keyword">get</span> fatal()</code></h5>
+
+
+</section>
+
+<section class="member" id="encoding.TextDecoder.ignoreBOM">
+<h5><code><span class="tok-keyword">get</span> ignoreBOM()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="encoding.TextDecoder.decode">
+<h5><code>decode(input?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a> | ArrayBufferView | <span class="tok-keyword">null</span>, options?: { stream?: <span class="tok-keyword">boolean</span> }): <span class="tok-keyword">string</span></code></h5>
+
+<p>Decode <code>input</code> to a string.</p>
+<p>When <code>stream: true</code>, incomplete multi-byte sequences at the end are buffered and prepended to the next call, enabling chunk-by-chunk decoding.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

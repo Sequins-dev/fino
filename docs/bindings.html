@@ -1,0 +1,329 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Debug - bindings</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:bindings">bindings</h1>
+<p class="muted">js/file/bindings.mts</p>
+<p>internal:file-bindings — shared libc FFI bindings, constants, and helpers for the fino:file sub-modules (stat, handle, entry, fs).</p>
+
+
+<h2>Constants</h2>
+
+<section id="bindings.isDarwin">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> Darwin = os</code></h3>
+
+
+
+</section>
+
+<section id="bindings.lib">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> dlopen</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_RDONLY">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> LY = <span class="tok-number">0</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_WRONLY">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> LY = <span class="tok-number">1</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_RDWR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">2</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_CREAT">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> T = isDarw</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_TRUNC">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> C = isDarw</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_APPEND">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> ND = isDarw</code></h3>
+
+
+
+</section>
+
+<section id="bindings.O_EXCL">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = isDarw</code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFMT">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">0xF000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFREG">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> G = <span class="tok-number">0x8000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFDIR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> R = <span class="tok-number">0x4000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFLNK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> K = <span class="tok-number">0xA000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFSOCK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> CK = <span class="tok-number">0xC000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFIFO">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> O = <span class="tok-number">0x1000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFBLK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> K = <span class="tok-number">0x6000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.S_IFCHR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> R = <span class="tok-number">0x2000</span></code></h3>
+
+
+
+</section>
+
+<section id="bindings.SEEK_SET">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> ET = <span class="tok-number">0</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.SEEK_CUR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> UR = <span class="tok-number">1</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.SEEK_END">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> ND = <span class="tok-number">2</span>; ex</code></h3>
+
+
+
+</section>
+
+<section id="bindings.F_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <span class="tok-number">0</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.R_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <span class="tok-number">4</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.W_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <span class="tok-number">2</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.X_OK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> <span class="tok-number">1</span>; ex</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_UNKNOWN">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> NOWN = <span class="tok-number">0</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_FIFO">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> O = <span class="tok-number">1</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_CHR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">2</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_DIR">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">4</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_BLK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">6</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_REG">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">8</span>; exp</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_LNK">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> = <span class="tok-number">10</span>; ex</code></h3>
+
+
+
+</section>
+
+<section id="bindings.DT_SOCK">
+<h3><code>export const K = 12; /</code></h3>
+
+
+
+</section>
+
+
+<h2>Lets</h2>
+
+<section id="bindings.loopModule">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">let</span> dule: LoopModule | <span class="tok-keyword">null</span> = nul</code></h3>
+
+
+
+</section>
+
+<section id="bindings.asyncOps">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">let</span> ps: AsyncOpsModule | <span class="tok-keyword">null</span> = nul</code></h3>
+
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="bindings.cstr">
+<h3><code>function cstr(s: string): Uint8Array { co</code></h3>
+
+<p>Encode a JS string as a null-terminated UTF-8 buffer.</p>
+
+</section>
+
+<section id="bindings.throwErrno">
+<h3><code>function throwErrno(syscall: string, path: string): never { co</code></h3>
+
+<p>Throw an error annotated with the current errno value.</p>
+
+</section>
+
+<section id="bindings.readCStr">
+<h3><code>function readCStr(ptr: object, offset: number): string { co</code></h3>
+
+<p>Read a null-terminated C string from a pointer at the given byte offset.</p>
+
+</section>
+
+<section id="bindings._toStr">
+<h3><code>function _toStr(p: Path | string): string { re</code></h3>
+
+<p>Coerce a Path or string to a plain string for FFI / error messages.</p>
+
+</section>
+
+<section id="bindings._toPath">
+<h3><code>function _toPath(p: Path | string): Path { re</code></h3>
+
+<p>Coerce a Path or string to a Path instance.</p>
+
+</section>
+
+<section id="bindings.joinPath">
+<h3><code>function joinPath(dir: Path | string, name: string): string { re</code></h3>
+
+<p>Join a directory path and a child name, avoiding double slashes.</p>
+
+</section>
+
+<section id="bindings.modeToFlags">
+<h3><code>unction modeToFlags(mode: string): number { swit</code></h3>
+
+
+
+</section>
+
+<section id="bindings.modeIsReadable">
+<h3><code>unction modeIsReadable(mode: string): boolean { retu</code></h3>
+
+
+
+</section>
+
+<section id="bindings.modeIsWritable">
+<h3><code>unction modeIsWritable(mode: string): boolean { retu</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

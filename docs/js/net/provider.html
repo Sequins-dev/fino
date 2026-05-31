@@ -1,0 +1,306 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/net/provider</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../index.html">API Modules</a></p>
+<h1 id="module:js-net-provider">js/net/provider</h1>
+<p class="muted">js/net/provider.mts</p>
+<p>internal:net/provider — Abstract NetworkProvider interface.</p>
+<p>Defines the contract all network providers must satisfy. The interface operates at the <strong>connection and stream level</strong>, not at the fd/syscall level. Virtual network providers (in-memory channels between Realms) do not have file descriptors — the abstract interface must not expose that detail.</p>
+<p>Concrete implementations include:</p>
+<ul>
+<li>DiskNetworkProvider — real POSIX sockets backed by libc (fino:net/socket)</li>
+<li>VirtualNetworkProvider — in-memory byte channels between Realms (future)</li>
+<li>RestrictedNetworkProvider — host/CIDR allowlist enforcement (future)</li>
+</ul>
+<p>The concrete reader/writer returned by <code>Connection.split()</code> may be backed by real fds (FdReader/FdWriter) or by in-memory channels — callers only see the BufferedBytesReader / BufferedBytesWriter interface from fino:stream.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-net-provider.IPv4Address">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.IPv4Address">IPv4Address</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-provider.IPv4Address.family">
+<h5><code>family: <span class="tok-string">&#39;ipv4&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.IPv4Address.ip">
+<h5><code>ip: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.IPv4Address.port">
+<h5><code>port: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-provider.IPv6Address">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.IPv6Address">IPv6Address</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-provider.IPv6Address.family">
+<h5><code>family: <span class="tok-string">&#39;ipv6&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.IPv6Address.ip">
+<h5><code>ip: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.IPv6Address.port">
+<h5><code>port: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-provider.UnixAddress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.UnixAddress">UnixAddress</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-provider.UnixAddress.family">
+<h5><code>family: <span class="tok-string">&#39;unix&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.UnixAddress.path">
+<h5><code>path: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-provider.ConnectOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.ConnectOptions">ConnectOptions</a> {</code></h3>
+
+<p>Options for outbound TCP connections.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-provider.ConnectOptions.noDelay">
+<h5><code>noDelay?: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Disable Nagle&#39;s algorithm on the connection.</p>
+</section>
+
+
+</section>
+
+<section id="js-net-provider.ListenOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.ListenOptions">ListenOptions</a> {</code></h3>
+
+<p>Options for TCP listeners.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-net-provider.ListenOptions.reuseAddr">
+<h5><code>reuseAddr?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.ListenOptions.reusePort">
+<h5><code>reusePort?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.ListenOptions.backlog">
+<h5><code>backlog?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-net-provider.Connection">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.Connection">Connection</a> {</code></h3>
+
+<p>A connected bidirectional byte stream.</p>
+<p>Backed by a real socket fd (DiskNetworkProvider) or an in-memory channel pair (VirtualNetworkProvider). Callers see only the stream interface.</p>
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="js-net-provider.Connection.remoteAddress">
+<h5><code><span class="tok-keyword">readonly</span> remoteAddress: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.Connection.localAddress">
+<h5><code><span class="tok-keyword">readonly</span> localAddress: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-net-provider.Connection.closed">
+<h5><code><span class="tok-keyword">readonly</span> closed: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-provider.Connection.split">
+<h5><code>split(): [<a class="tok-type" href="stream.html#stream.BufferedBytesReader">BufferedBytesReader</a>, <a class="tok-type" href="stream.html#stream.BufferedBytesWriter">BufferedBytesWriter</a>]</code></h5>
+
+<p>Split the connection into independent read and write halves. After splitting, use <code>reader</code> and <code>writer</code> independently. Close both halves to fully close the connection.</p>
+</section>
+
+<section class="member" id="js-net-provider.Connection.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Close the connection immediately, releasing resources.</p>
+</section>
+
+
+</section>
+
+<section id="js-net-provider.Listener">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.Listener">Listener</a> {</code></h3>
+
+<p>A listening server. Accepts inbound TCP connections.</p>
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="js-net-provider.Listener.address">
+<h5><code><span class="tok-keyword">readonly</span> address: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-provider.Listener.accept">
+<h5><code>accept(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/provider.html#js-net-provider.Connection">Connection</a> | <span class="tok-keyword">null</span>&gt;</code></h5>
+
+<p>Accept the next incoming connection. Returns null when the listener is closed.</p>
+</section>
+
+<section class="member" id="js-net-provider.Listener.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Stop listening and release the bound address.</p>
+</section>
+
+
+</section>
+
+<section id="js-net-provider.DatagramSocket">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.DatagramSocket">DatagramSocket</a> {</code></h3>
+
+<p>A bound UDP socket for sending and receiving datagrams.</p>
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="js-net-provider.DatagramSocket.address">
+<h5><code><span class="tok-keyword">readonly</span> address: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-provider.DatagramSocket.send">
+<h5><code>send(data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, dest: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">number</span>&gt;</code></h5>
+
+<p>Send a datagram to a remote address. Returns bytes sent.</p>
+</section>
+
+<section class="member" id="js-net-provider.DatagramSocket.recv">
+<h5><code>recv(maxBytes?: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;{ data: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>; addr: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a> }&gt;</code></h5>
+
+<p>Receive the next incoming datagram.</p>
+</section>
+
+<section class="member" id="js-net-provider.DatagramSocket.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Close the socket and release the bound address.</p>
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-net-provider.SocketAddress">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a> = <a class="tok-type" href="js/net/provider.html#js-net-provider.IPv4Address">IPv4Address</a> | <a class="tok-type" href="js/net/provider.html#js-net-provider.IPv6Address">IPv6Address</a> | <a class="tok-type" href="js/net/provider.html#js-net-provider.UnixAddress">UnixAddress</a></code></h3>
+
+<p>A resolved network address — TCP/UDP endpoint or Unix socket path.</p>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="js-net-provider.NetworkProvider">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">abstract</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/net/provider.html#js-net-provider.NetworkProvider">NetworkProvider</a> {</code></h3>
+
+<p>Abstract base class for network providers.</p>
+<p>A provider creates Connections, Listeners, and DatagramSockets. The mechanism is provider-specific (real sockets vs in-memory channels vs proxied connections), but the returned types are identical.</p>
+
+<h4>Methods</h4>
+
+<section class="member" id="js-net-provider.NetworkProvider.connect">
+<h5><code><span class="tok-keyword">abstract</span> connect(addr: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a>, opts?: <a class="tok-type" href="js/net/provider.html#js-net-provider.ConnectOptions">ConnectOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/provider.html#js-net-provider.Connection">Connection</a>&gt;</code></h5>
+
+<p>Create an outbound TCP connection to <code>addr</code>.</p>
+</section>
+
+<section class="member" id="js-net-provider.NetworkProvider.listen">
+<h5><code><span class="tok-keyword">abstract</span> listen(addr: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a>, opts?: <a class="tok-type" href="js/net/provider.html#js-net-provider.ListenOptions">ListenOptions</a>): <a class="tok-type" href="js/net/provider.html#js-net-provider.Listener">Listener</a></code></h5>
+
+<p>Start a TCP listener bound to <code>addr</code>.</p>
+</section>
+
+<section class="member" id="js-net-provider.NetworkProvider.datagram">
+<h5><code><span class="tok-keyword">abstract</span> datagram(addr: <a class="tok-type" href="js/net/provider.html#js-net-provider.SocketAddress">SocketAddress</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="js/net/provider.html#js-net-provider.DatagramSocket">DatagramSocket</a>&gt;</code></h5>
+
+<p>Create a bound UDP endpoint at <code>addr</code>.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

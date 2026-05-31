@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - _bootstrap</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:_bootstrap">_bootstrap</h1>
+<p class="muted">js/_bootstrap.mts</p>
+<p>_bootstrap.mts — Shared realm bootstrap.</p>
+<p>Evaluated in every Realm context (root and child) before any user code runs. Sets up web globals, source map stack traces, the module loader hooks, and exports <code>driveLoop</code> — the function that registers a step/onDone callback pair with the Rust host loop.</p>
+<p>The root realm&#39;s entry (<code>_main.mts</code>) imports this module, then runs the CLI. Child realms also evaluate this module as their first step; the child&#39;s entry module is then dynamically imported and driveLoop is called with the child&#39;s own isDone/onDone callbacks.</p>
+
+
+<h2>Functions</h2>
+
+<section id="_bootstrap.driveLoop">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> driveLoop(isDone: () =&gt; <span class="tok-keyword">boolean</span>, onDone: () =&gt; <span class="tok-keyword">void</span>, opts?: DriveLoopOptions): <span class="tok-keyword">void</span></code></h3>
+
+<p>Register step and onDone callbacks with the Rust host loop.</p>
+<p>The host loop calls <code>step()</code> repeatedly until it returns false, then calls <code>onDone()</code>. The step function polls I/O events, drains microtasks, and optionally steps any active child Realms.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

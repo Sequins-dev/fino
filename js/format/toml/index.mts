@@ -13,11 +13,12 @@
  *
  * Integer overflow: throws by default; pass { bigint: true } to receive BigInt.
  *
- * @example
+ * ```ts
  *   import { parse, stringify } from 'fino:format/toml';
  *
  *   const cfg = parse('[server]\nport = 8080\nhosts = ["a", "b"]');
  *   stringify(cfg);
+ * ```
  */
 
 import { Scanner, ParseError } from 'fino:scanner';

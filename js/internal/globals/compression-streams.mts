@@ -152,16 +152,18 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
  * Transforms a stream of bytes by compressing it using gzip, deflate, or
  * deflate-raw (raw DEFLATE without a wrapper).
  *
- * @example
+ * ```ts
  * const cs = new CompressionStream('gzip');
  * readableSource.pipeThrough(cs);  // cs.readable yields compressed chunks
+ * ```
  *
- * @example
+ * ```ts
  * const cs  = new CompressionStream('gzip');
  * const writer = cs.writable.getWriter();
  * await writer.write(data);
  * await writer.close();
  * const compressed = await new Response(cs.readable).bytes();
+ * ```
  */
 export class CompressionStream {
   #readable: ReadableStream;
@@ -187,9 +189,10 @@ export class CompressionStream {
  * Transforms a stream of compressed bytes (gzip, deflate, or deflate-raw)
  * into the original uncompressed data.
  *
- * @example
+ * ```ts
  * const ds = new DecompressionStream('gzip');
  * compressedReadable.pipeThrough(ds);  // ds.readable yields decompressed chunks
+ * ```
  */
 export class DecompressionStream {
   #readable: ReadableStream;

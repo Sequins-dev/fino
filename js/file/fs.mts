@@ -13,7 +13,9 @@
  * Unlike Node.js's implicit global `fs` module, here callers construct a
  * `DiskFileSystem` explicitly and pass their loop handle:
  *
+ * ```ts
  *   const fs = new DiskFileSystem(lp);
+ * ```
  *
  * This is intentional. It makes the event-loop dependency visible, enables
  * future alternative backends (in-memory, zip archive, overlay), and avoids
@@ -70,9 +72,10 @@ export {
 /**
  * A POSIX filesystem backend backed by libc syscalls via FFI.
  *
- * @example
+ * ```ts
  * const fs = new DiskFileSystem(lp);
  * const text = await fs.readFile('/etc/hosts');
+ * ```
  */
 export class DiskFileSystem extends FileSystem {
 
@@ -406,10 +409,11 @@ export class DiskFileSystem extends FileSystem {
    * @param {GlobOptions} [options]
    * @returns {AsyncGenerator<Entry>}
    *
-   * @example
+   * ```ts
    * for await (const entry of fs.glob('**\/*.mts')) {
    *   console.log(entry.path.toString());
    * }
+   * ```
    */
   glob(pattern: string, options?: GlobOptions): AsyncGenerator<Entry> {
     // Provide a listDir function that uses DirEntry.entries() — injected here to

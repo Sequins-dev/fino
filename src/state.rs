@@ -3,14 +3,14 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{atomic::AtomicBool, Arc},
 };
 
 pub use crate::async_rt::bridge::PendingResolution;
 
-use ::v8;
 use oxc_sourcemap::{SourceMap, Token};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use v8;
 
 pub struct SourceMapCache {
     pub map: SourceMap,
@@ -333,6 +333,7 @@ pub struct FinoState {
     // ---------------------------------------------------------------------------
     pub resolve_fn: Option<v8::Global<v8::Function>>,
     pub init_meta_fn: Option<v8::Global<v8::Function>>,
+    pub transpile_fn: Option<v8::Global<v8::Function>>,
 
     // ---------------------------------------------------------------------------
     // V8 event loop callbacks (set by runLoop() from _main.mts via internal:async-context)
@@ -488,6 +489,7 @@ impl FinoState {
             source_maps: HashMap::new(),
             resolve_fn: None,
             init_meta_fn: None,
+            transpile_fn: None,
             loop_step_fn: None,
             on_done_fn: None,
             sync_call_fn: None,
@@ -546,6 +548,7 @@ impl FinoState {
             source_maps: HashMap::new(),
             resolve_fn: None,
             init_meta_fn: None,
+            transpile_fn: None,
             loop_step_fn: None,
             on_done_fn: None,
             sync_call_fn: None,

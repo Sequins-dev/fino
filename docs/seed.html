@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - seed</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:seed">seed</h1>
+<p class="muted">js/internal/cluster/seed.mts</p>
+<p>internal:cluster/seed — seed server routing logic.</p>
+<p>The seed handles three responsibilities:</p>
+<ol>
+<li>Membership: HELLO/WELCOME/PEER_UP/PEER_DOWN, heartbeat monitoring.</li>
+<li>Spawn routing: select target node for SPAWN, track spawnReqId→requester,</li>
+</ol>
+<p>forward SPAWN_ACK back to the spawning node.</p>
+<ol>
+<li>Data routing: forward PORT_MSG to the node that hosts the target portId.</li>
+</ol>
+<p>The registry maps portId → nodeId for O(1) lookup.</p>
+<p>The seed is NOT in the data-plane critical path once ports are established — in future work nodes can establish direct peer connections. For now routing through the seed is correct and sufficient.</p>
+
+
+<h2>Classes</h2>
+
+<section id="seed.SeedServer">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="seed.html#seed.SeedServer">SeedServer</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="seed.SeedServer.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(transport: <a class="tok-type" href="websocket-transport.html#websocket-transport.WebSocketSeedTransport">WebSocketSeedTransport</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="seed.SeedServer.start">
+<h5><code>start(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="seed.SeedServer.stop">
+<h5><code>stop(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

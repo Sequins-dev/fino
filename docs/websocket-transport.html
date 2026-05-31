@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - websocket-transport</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:websocket-transport">websocket-transport</h1>
+<p class="muted">js/internal/cluster/websocket-transport.mts</p>
+<p>internal:cluster/websocket-transport — WebSocket implementations of ClusterTransport.</p>
+<p>Two classes cover the two node roles:</p>
+<p><code>WebSocketSeedTransport</code>   — seed node; accepts incoming WebSocket connections from workers; broadcasts to all peers; routes send(to) by nodeId.</p>
+<p><code>WebSocketWorkerTransport</code> — worker node; connects to the seed URL; all outbound messages go to the seed which routes them.</p>
+<p>Both classes emit synthetic PEER_DOWN messages when a connection drops so the routing and registry layers can react without understanding the transport.</p>
+
+
+<h2>Classes</h2>
+
+<section id="websocket-transport.WebSocketSeedTransport">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="websocket-transport.html#websocket-transport.WebSocketSeedTransport">WebSocketSeedTransport</a> <span class="tok-keyword">implements</span> <a class="tok-type" href="transport.html#transport.ClusterTransport">ClusterTransport</a> {</code></h3>
+
+
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.nodeId">
+<h5><code><span class="tok-keyword">readonly</span> nodeId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(nodeId: <span class="tok-keyword">string</span>, port: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.listen">
+<h5><code>listen(): <span class="tok-keyword">void</span></code></h5>
+
+<p>Start accepting WebSocket connections. Non-blocking (serve loop is async).</p>
+</section>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.send">
+<h5><code>send(to: <span class="tok-keyword">string</span>, msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.broadcast">
+<h5><code>broadcast(msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.broadcastExcept">
+<h5><code>broadcastExcept(exceptNodeId: <span class="tok-keyword">string</span>, msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.on">
+<h5><code>on(handler: (from: <span class="tok-keyword">string</span>, msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketSeedTransport.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="websocket-transport.WebSocketWorkerTransport">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="websocket-transport.html#websocket-transport.WebSocketWorkerTransport">WebSocketWorkerTransport</a> <span class="tok-keyword">implements</span> <a class="tok-type" href="transport.html#transport.ClusterTransport">ClusterTransport</a> {</code></h3>
+
+
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.nodeId">
+<h5><code><span class="tok-keyword">readonly</span> nodeId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(nodeId: <span class="tok-keyword">string</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.connect">
+<h5><code>connect(url: <span class="tok-keyword">string</span>, load: { cpu: <span class="tok-keyword">number</span>; memory: <span class="tok-keyword">number</span> } = { cpu: <span class="tok-number">0</span>, memory: <span class="tok-number">0</span> }): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Connect to the seed at the given URL and send HELLO.</p>
+</section>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.send">
+<h5><code>send(_to: <span class="tok-keyword">string</span>, msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.broadcast">
+<h5><code>broadcast(_msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.on">
+<h5><code>on(handler: (from: <span class="tok-keyword">string</span>, msg: <a class="tok-type" href="js/internal/cluster/protocol.html#js-internal-cluster-protocol.ClusterMessage">ClusterMessage</a>) =&gt; <span class="tok-keyword">void</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket-transport.WebSocketWorkerTransport.close">
+<h5><code>close(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

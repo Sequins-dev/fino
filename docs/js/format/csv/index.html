@@ -1,0 +1,190 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/format/csv/index</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../../index.html">API Modules</a></p>
+<h1 id="module:js-format-csv-index">js/format/csv/index</h1>
+<p class="muted">js/format/csv/index.mts</p>
+<p>fino:format/csv — CSV parsing and serialization (RFC 4180 + dialect options).</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse, stringify } from <span class="tok-string">&#39;fino:format/csv&#39;</span>;
+
+<span class="tok-keyword">const</span> rows = parse(<span class="tok-string">&#39;a,b\n1,2\n3,4&#39;</span>, { header: <span class="tok-keyword">true</span> });
+<span class="tok-comment">// [{ a: &#39;1&#39;, b: &#39;2&#39; }, { a: &#39;3&#39;, b: &#39;4&#39; }]</span>
+
+<span class="tok-keyword">const</span> out = stringify([{ a: <span class="tok-string">&#39;1&#39;</span>, b: <span class="tok-string">&#39;2&#39;</span> }, { a: <span class="tok-string">&#39;3&#39;</span>, b: <span class="tok-string">&#39;4&#39;</span> }]);
+<span class="tok-comment">// &#39;a,b\r\n1,2\r\n3,4\r\n&#39;</span></code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="js-format-csv-index.CsvParseError">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseError">CsvParseError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="scanner.html#scanner.ParseError">ParseError</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-csv-index.CsvParseError.name">
+<h5><code>name</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-format-csv-index.CsvRow">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvRow">CsvRow</a> = <span class="tok-keyword">string</span>[]</code></h3>
+
+
+
+</section>
+
+<section id="js-format-csv-index.CsvRecord">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvRecord">CsvRecord</a> = <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h3>
+
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-format-csv-index.CsvParseOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.delimiter">
+<h5><code>delimiter?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.quote">
+<h5><code>quote?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.comment">
+<h5><code>comment?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.header">
+<h5><code>header?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.columns">
+<h5><code>columns?: <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.skipEmptyLines">
+<h5><code>skipEmptyLines?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.trim">
+<h5><code>trim?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.relaxColumnCount">
+<h5><code>relaxColumnCount?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvParseOptions.cast">
+<h5><code>cast?: <span class="tok-keyword">boolean</span> | CastFn</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-csv-index.CsvStringifyOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvStringifyOptions">CsvStringifyOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-csv-index.CsvStringifyOptions.delimiter">
+<h5><code>delimiter?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvStringifyOptions.quote">
+<h5><code>quote?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvStringifyOptions.lineEnding">
+<h5><code>lineEnding?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-csv-index.CsvStringifyOptions.header">
+<h5><code>header?: <span class="tok-keyword">boolean</span> | <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-format-csv-index.parse">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options?: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a> &amp; { header?: <span class="tok-keyword">false</span>; columns?: <span class="tok-keyword">undefined</span> }): <span class="tok-keyword">string</span>[][]</code></h3>
+<pre><code class="language-ts"><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options?: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a> &amp; { header?: <span class="tok-keyword">false</span>; columns?: <span class="tok-keyword">undefined</span> }): <span class="tok-keyword">string</span>[][]
+<span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a> &amp; { header: <span class="tok-keyword">true</span> }): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;[]
+<span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a> &amp; { columns: <span class="tok-keyword">string</span>[] }): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;[]
+<span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options?: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a>): <span class="tok-keyword">string</span>[][] | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;[]</code></pre>
+<p>Parse a CSV string or bytes into rows.</p>
+
+</section>
+
+<section id="js-format-csv-index.parseStream">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span>* parseStream( src: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;, options: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvParseOptions">CsvParseOptions</a> = {}, ): AsyncIterableIterator&lt;<a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvRow">CsvRow</a> | <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvRecord">CsvRecord</a>&gt;</code></h3>
+
+<p>Parse a CSV byte stream row-by-row without buffering the entire input. Each chunk from <code>src</code> is processed incrementally; quoted fields containing embedded newlines are handled correctly across chunk boundaries.</p>
+
+</section>
+
+<section id="js-format-csv-index.stringify">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> stringify( rows: <span class="tok-keyword">string</span>[][] | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;[], options: <a class="tok-type" href="js/format/csv/index.html#js-format-csv-index.CsvStringifyOptions">CsvStringifyOptions</a> = {}, ): <span class="tok-keyword">string</span></code></h3>
+
+<p>Serialize rows or records to a CSV string.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

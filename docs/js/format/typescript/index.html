@@ -1,0 +1,221 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/format/typescript/index</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../../index.html">API Modules</a></p>
+<h1 id="module:js-format-typescript-index">js/format/typescript/index</h1>
+<p class="muted">js/format/typescript/index.mts</p>
+<p>fino:format/typescript — OXC-backed TypeScript and JavaScript parser.</p>
+<p>Exposes OXC parse results to JavaScript. The AST shape intentionally mirrors OXC&#39;s serialized ESTree output and may change when the bundled OXC version changes.</p>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-format-typescript-index.ParseOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.ParseOptions.filename">
+<h5><code>filename?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseOptions.sourceType">
+<h5><code>sourceType?: <span class="tok-string">&#39;js&#39;</span> | <span class="tok-string">&#39;javascript&#39;</span> | <span class="tok-string">&#39;script&#39;</span> | <span class="tok-string">&#39;jsx&#39;</span> | <span class="tok-string">&#39;ts&#39;</span> | <span class="tok-string">&#39;typescript&#39;</span> | <span class="tok-string">&#39;tsx&#39;</span> | <span class="tok-string">&#39;dts&#39;</span> | <span class="tok-string">&#39;definition&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseOptions.tokens">
+<h5><code>tokens?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-typescript-index.ParseToken">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseToken">ParseToken</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.ParseToken.kind">
+<h5><code>kind: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseToken.text">
+<h5><code>text: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseToken.start">
+<h5><code>start: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseToken.end">
+<h5><code>end: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseToken.onNewLine">
+<h5><code>onNewLine: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-typescript-index.ParseComment">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseComment">ParseComment</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.ParseComment.kind">
+<h5><code>kind: <span class="tok-string">&#39;line&#39;</span> | <span class="tok-string">&#39;block&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.text">
+<h5><code>text: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.start">
+<h5><code>start: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.end">
+<h5><code>end: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.attachedTo">
+<h5><code>attachedTo: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.leading">
+<h5><code>leading: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.trailing">
+<h5><code>trailing: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseComment.jsdoc">
+<h5><code>jsdoc: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-typescript-index.ParseDiagnostic">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.ParseDiagnostic.message">
+<h5><code>message: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-typescript-index.ParseResult">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseResult">ParseResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-typescript-index.ParseResult.ok">
+<h5><code>ok: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseResult.ast">
+<h5><code>ast: <span class="tok-keyword">any</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseResult.comments">
+<h5><code>comments: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseComment">ParseComment</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseResult.tokens">
+<h5><code>tokens: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseToken">ParseToken</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseResult.errors">
+<h5><code>errors: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseDiagnostic">ParseDiagnostic</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-typescript-index.ParseResult.sourceType">
+<h5><code>sourceType: { language: <span class="tok-string">&#39;typescript&#39;</span> | <span class="tok-string">&#39;javascript&#39;</span>; moduleKind: <span class="tok-string">&#39;module&#39;</span> | <span class="tok-string">&#39;script&#39;</span> | <span class="tok-string">&#39;unambiguous&#39;</span> | <span class="tok-string">&#39;commonjs&#39;</span>; jsx: <span class="tok-keyword">boolean</span>; typescriptDefinition: <span class="tok-keyword">boolean</span>; }</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-format-typescript-index.parse">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseOptions">ParseOptions</a> = {}): <a class="tok-type" href="js/format/typescript/index.html#js-format-typescript-index.ParseResult">ParseResult</a></code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - blob</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:blob">blob</h1>
+<p class="muted">js/internal/globals/blob.mts</p>
+<p>fino:blob — Blob and File (WHATWG File API)</p>
+<p><code>Blob</code> is an immutable byte sequence with an associated MIME type. It is the standard way to carry binary data in web APIs: fetch Request/Response bodies, FormData values, and FileReader all work in terms of Blobs. <code>File</code> extends <code>Blob</code> with a <code>name</code> and <code>lastModified</code> timestamp.</p>
+<h3>Internal byte storage</h3>
+<p>All Blob content is eagerly concatenated into a single <code>Uint8Array</code> on construction. The WHATWG spec allows lazy concatenation (Blob objects can reference other Blobs by ref), but eager flattening is simpler and correct for our use case where Blobs are typically small-to-medium in-memory values rather than multi-GB file handles.</p>
+<h3>The BYTES_INIT sentinel</h3>
+<p><code>slice()</code> needs to construct a Blob directly from raw bytes, bypassing the normal <code>parts</code> iteration and normalization logic. Rather than adding a public constructor overload or a static factory, we use a module-private <code>Symbol(&#39;bytes-init&#39;)</code> as a sentinel first argument. When the constructor sees <code>parts === BYTES_INIT</code>, it treats the second argument as <code>{ bytes: Uint8Array, type: string }</code> and uses those values directly. This keeps the fast path clean and invisible to external callers.</p>
+<h3>The _blobBytes WeakMap</h3>
+<p><code>_normalizePart()</code> needs to read the internal bytes of a Blob (or File) that appears as a part in another Blob&#39;s constructor. Since <code>#bytes</code> is a private field only accessible within the class body, module-level helpers can&#39;t reach it directly. The <code>_blobBytes</code> WeakMap is populated in the constructor (<code>_blobBytes.set(this, this.#bytes)</code>) to give module-level code read access to internal bytes without exposing a public getter.</p>
+<h3>arrayBuffer() returns a copy</h3>
+<p><code>blob.arrayBuffer()</code> returns a copy of the internal buffer (via <code>buffer.slice()</code>), not a view into it. This prevents callers from mutating the Blob&#39;s internal state through the returned ArrayBuffer. <code>bytes()</code> similarly returns a fresh <code>new Uint8Array(this.#bytes)</code> copy. The <code>stream()</code> method yields a single chunk (also a copy) as an async iterable — sufficient for piping to a Writer without requiring a streaming infrastructure.</p>
+<h3>slice() semantics</h3>
+<p><code>slice(start, end, contentType)</code> follows the WHATWG spec: negative indices are resolved relative to the blob size, values are clamped to [0, size, and <code>end &lt; start</code> produces an empty Blob. The content type of the resulting Blob is the provided <code>contentType</code> (lowercased), or empty string if omitted.</p>
+<pre><code class="language-ts"><span class="tok-comment">// Blob and File are available via globalThis</span>
+
+<span class="tok-keyword">const</span> blob = <span class="tok-keyword">new</span> Blob([<span class="tok-string">&#39;hello, &#39;</span>, <span class="tok-string">&#39;world&#39;</span>], { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;text/plain&#39;</span> });
+blob.size;                <span class="tok-comment">// 12</span>
+<span class="tok-keyword">await</span> blob.text();        <span class="tok-comment">// &#39;hello, world&#39;</span>
+<span class="tok-keyword">await</span> blob.bytes();       <span class="tok-comment">// Uint8Array</span>
+<span class="tok-keyword">await</span> blob.arrayBuffer(); <span class="tok-comment">// ArrayBuffer</span>
+blob.slice(<span class="tok-number">0</span>, <span class="tok-number">5</span>);         <span class="tok-comment">// new Blob containing &#39;hello&#39;</span>
+
+<span class="tok-keyword">const</span> file = <span class="tok-keyword">new</span> File([blob], <span class="tok-string">&#39;hello.txt&#39;</span>, { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;text/plain&#39;</span> });
+file.name;                <span class="tok-comment">// &#39;hello.txt&#39;</span>
+file.lastModified;        <span class="tok-comment">// number (ms since epoch)</span></code></pre>
+
+
+<h2>Functions</h2>
+
+<section id="blob._getBlobBytes">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> _getBlobBytes(blob: <a class="tok-type" href="blob.html#blob.Blob">Blob</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+<p>Friend-function: returns the internal byte store of a Blob/File for cloning.</p>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="blob.Blob">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="blob.html#blob.Blob">Blob</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="blob.Blob.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(parts?: Iterable&lt;BlobPart&gt; | <span class="tok-keyword">typeof</span> BYTES_INIT | <span class="tok-keyword">null</span>, options?: { <span class="tok-keyword">type</span>?: <span class="tok-keyword">string</span>; bytes?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> } | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="blob.Blob.size">
+<h5><code><span class="tok-keyword">get</span> size()</code></h5>
+
+
+</section>
+
+<section class="member" id="blob.Blob.type">
+<h5><code><span class="tok-keyword">get</span> <span class="tok-keyword">type</span>()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="blob.Blob.slice">
+<h5><code>slice(start?: <span class="tok-keyword">number</span>, end?: <span class="tok-keyword">number</span>, contentType?: <span class="tok-keyword">string</span>): <a class="tok-type" href="blob.html#blob.Blob">Blob</a></code></h5>
+
+
+</section>
+
+<section class="member" id="blob.Blob.text">
+<h5><code><span class="tok-keyword">async</span> text(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="blob.Blob.arrayBuffer">
+<h5><code><span class="tok-keyword">async</span> arrayBuffer(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="blob.Blob.bytes">
+<h5><code><span class="tok-keyword">async</span> bytes(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="blob.Blob.stream">
+<h5><code>stream(): <a class="tok-type" href="webstreams.html#webstreams.ReadableStream">ReadableStream</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="blob.File">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="blob.html#blob.File">File</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="blob.html#blob.Blob">Blob</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="blob.File.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(parts: Iterable&lt;BlobPart&gt; | <span class="tok-keyword">null</span>, name: <span class="tok-keyword">string</span>, options?: { <span class="tok-keyword">type</span>?: <span class="tok-keyword">string</span>; lastModified?: <span class="tok-keyword">number</span> } | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="blob.File.name">
+<h5><code><span class="tok-keyword">get</span> name()</code></h5>
+
+
+</section>
+
+<section class="member" id="blob.File.lastModified">
+<h5><code><span class="tok-keyword">get</span> lastModified()</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

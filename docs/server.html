@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - server</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:server">server</h1>
+<p class="muted">js/net/http2/server.mts</p>
+<p>internal:net/http2/server — H2ServerDriver.</p>
+<h3>Stream lifecycle (server side)</h3>
+<ol>
+<li>onBeginHeaders(streamId, isTrailers=false) — allocate H2ServerStream.</li>
+<li>onHeader — accumulate <code>:method</code>, <code>:path</code>, <code>:scheme</code>, <code>:authority</code> + headers.</li>
+<li>onFrameRecv(HEADERS, END_HEADERS) — initial headers complete.</li>
+</ol>
+<p>If END_STREAM also set → no body, trigger dispatch.</p>
+<ol>
+<li>onDataChunk(bytes) — push bytes to body queue.</li>
+<li>onFrameRecv(DATA, END_STREAM) — body complete, trigger dispatch.</li>
+<li>Handler completes → submit HEADERS response + DATA frame(s).</li>
+</ol>
+<h3>h2c Upgrade (runFromUpgrade)</h3>
+<p>When a connection was upgraded from HTTP/1.1 via the <code>Upgrade: h2c</code> dance, <code>runFromUpgrade</code> is called instead of <code>run</code>. It calls <code>session.upgradeFromH1</code> to tell nghttp2 about the prior-knowledge state, then dispatches the original HTTP/1.1 request as stream 1 without going through the normal header-parsing callbacks (those callbacks only fire for frames received from the wire after the upgrade).</p>
+<h3>RST_STREAM / stream cancellation</h3>
+<p>When the client sends RST_STREAM, <code>onStreamClose</code> fires with a non-zero errorCode. If <code>dispatchStream</code> is still waiting for the request body (triggerDispatch not yet called), it unblocks immediately and returns without sending a response. If the response-submission phase has already started, any nghttp2 error from submitting on a closed stream is caught silently.</p>
+<h3>Concurrency safety</h3>
+<p><code>startDispatch</code> wraps dispatchStream errors so <code>Promise.all(inFlight)</code> in the finally block never rejects. All drainWrite calls are serialized via the drainChain promise-mutex — concurrent session_mem_send2 calls on the same nghttp2_session* would be a data race.</p>
+
+
+<h2>Classes</h2>
+
+<section id="server.H2ServerDriver">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="server.html#server.H2ServerDriver">H2ServerDriver</a> <span class="tok-keyword">implements</span> <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ServerDriver">ServerDriver</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="server.H2ServerDriver.run">
+<h5><code><span class="tok-keyword">async</span> run( reader: <a class="tok-type" href="stream.html#stream.BufferedBytesReader">BufferedBytesReader</a>, writer: <a class="tok-type" href="stream.html#stream.BytesWriter">BytesWriter</a>, handler: <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ServerHandler">ServerHandler</a>, opts: <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ServerDriverOptions">ServerDriverOptions</a>, ): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="server.H2ServerDriver.runFromUpgrade">
+<h5><code><span class="tok-keyword">async</span> runFromUpgrade( reader: <a class="tok-type" href="stream.html#stream.BufferedBytesReader">BufferedBytesReader</a>, writer: <a class="tok-type" href="stream.html#stream.BytesWriter">BytesWriter</a>, handler: <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ServerHandler">ServerHandler</a>, opts: <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ServerDriverOptions">ServerDriverOptions</a>, initialReq: <a class="tok-type" href="http.html#http.Request">Request</a>, settingsPayload: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, headRequest: <span class="tok-keyword">boolean</span>, ): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Run the h2 server after a successful h2c Upgrade handshake.</p>
+<p>Called by the h1 driver after it has written the 101 Switching Protocols response and handed control of reader/writer to us. <code>initialReq</code> is the HTTP/1.1 request that triggered the upgrade; it becomes h2 stream 1. <code>settingsPayload</code> is the base64url-decoded <code>HTTP2-Settings</code> header value.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

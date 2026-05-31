@@ -3,10 +3,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use ::v8;
 use oxc_sourcemap::SourceMap;
+use v8;
 
-use crate::{async_context, async_runtime_module, docgen, ffi, inspector_module, platform, profiler, realm, state::get_state, state::ImportDirective};
+use crate::{
+    async_context, async_runtime_module, ffi, inspector_module, platform, profiler, realm,
+    state::get_state, state::ImportDirective, typescript_format,
+};
 
 // ---------------------------------------------------------------------------
 // Built-in module registry
@@ -107,8 +110,8 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(inspector_module::create_module),
     ),
     (
-        "internal:docgen",
-        BuiltinKind::Synthetic(docgen::create_module),
+        "internal:format/typescript",
+        BuiltinKind::Synthetic(typescript_format::create_module),
     ),
     (
         "internal:loader-hooks",
@@ -163,8 +166,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:openssl", "internal/openssl"),
     // sqlite
     source_builtin!("internal:sqlite/bindings", "sqlite/bindings"),
-    source_builtin!("internal:sqlite/vfs",      "sqlite/vfs"),
-    source_builtin!("fino:sqlite",              "sqlite"),
+    source_builtin!("internal:sqlite/vfs", "sqlite/vfs"),
+    source_builtin!("fino:sqlite", "sqlite"),
     // internal: file sub-modules
     source_builtin!("internal:file/provider", "file/provider"),
     source_builtin!("internal:file/bindings", "file/bindings"),
@@ -276,18 +279,21 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:opentelemetry/sdk", "opentelemetry/sdk"),
     source_builtin!("fino:opentelemetry", "opentelemetry"),
     source_builtin!("fino:scanner", "scanner"),
-    source_builtin!("fino:semver",  "semver"),
-    source_builtin!("fino:uuid",    "uuid"),
+    source_builtin!("fino:semver", "semver"),
+    source_builtin!("fino:uuid", "uuid"),
+    source_builtin!("fino:markdown", "markdown"),
+    source_builtin!("fino:template", "template"),
     // format
-    source_builtin!("fino:format/csv",  "format/csv/index"),
+    source_builtin!("fino:format/csv", "format/csv/index"),
+    source_builtin!("fino:format/typescript", "format/typescript/index"),
     source_builtin!("fino:format/toml", "format/toml/index"),
-    source_builtin!("fino:format/xml",  "format/xml/index"),
+    source_builtin!("fino:format/xml", "format/xml/index"),
     source_builtin!("fino:format/yaml", "format/yaml/index"),
     // test
     source_builtin!("fino:test/assert", "test/assert"),
     source_builtin!("fino:test/test", "test/test"),
     source_builtin!("fino:test/bench", "test/bench"),
-    source_builtin!("fino:bench",       "test/bench"),
+    source_builtin!("fino:bench", "test/bench"),
     source_builtin!("fino:test/mock", "test/mock"),
     // util
     source_builtin!("fino:util/argv", "util/argv"),
@@ -377,6 +383,7 @@ pub fn loader_hooks_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s,
     let export_names: Vec<v8::Local<v8::String>> = [
         "registerResolve",
         "registerInitMeta",
+        "registerTranspile",
         "getPackageMap",
         "lookupOriginalPosition",
     ]
@@ -404,6 +411,7 @@ fn loader_hooks_eval<'a>(
 
     set_fn!("registerResolve", register_resolve);
     set_fn!("registerInitMeta", register_init_meta);
+    set_fn!("registerTranspile", register_transpile);
     set_fn!("getPackageMap", get_package_map);
     set_fn!("lookupOriginalPosition", lookup_original_position);
 
@@ -431,6 +439,18 @@ fn register_init_meta(
     if let Ok(func) = v8::Local::<v8::Function>::try_from(func_val) {
         let global = v8::Global::new(scope, func);
         get_state(scope).borrow_mut().init_meta_fn = Some(global);
+    }
+}
+
+fn register_transpile(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let func_val: v8::Local<v8::Value> = args.get(0);
+    if let Ok(func) = v8::Local::<v8::Function>::try_from(func_val) {
+        let global = v8::Global::new(scope, func);
+        get_state(scope).borrow_mut().transpile_fn = Some(global);
     }
 }
 
@@ -554,10 +574,13 @@ pub fn resolve_module_callback<'s>(
     let has_directive = {
         let st = state_rc.borrow();
         let d = crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec);
-        matches!(d, Some(ImportDirective::Remap { .. })
-                   | Some(ImportDirective::Source { .. })
-                   | Some(ImportDirective::Facade(..))
-                   | Some(ImportDirective::Installed { .. }))
+        matches!(
+            d,
+            Some(ImportDirective::Remap { .. })
+                | Some(ImportDirective::Source { .. })
+                | Some(ImportDirective::Facade(..))
+                | Some(ImportDirective::Installed { .. })
+        )
     };
     if has_directive {
         return get_or_load_builtin(scope, &spec, from_spec.as_deref());
@@ -774,11 +797,15 @@ pub fn dynamic_import_callback<'s>(
             let st = state_rc.borrow();
             let is_builtin_ref = referrer_url.starts_with("fino:")
                 || referrer_url.starts_with("internal:")
-                || st.builtin_specifiers.values().any(|v| v.as_str() == referrer_url.as_str());
+                || st
+                    .builtin_specifiers
+                    .values()
+                    .any(|v| v.as_str() == referrer_url.as_str());
             if is_builtin_ref {
                 false
             } else {
-                let dir = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
+                let dir =
+                    crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
                 matches!(dir, Some(crate::state::ImportDirective::Block))
             }
         };
@@ -794,28 +821,32 @@ pub fn dynamic_import_callback<'s>(
 
     let tc = &mut v8::TryCatch::new(scope);
 
-    let module: Option<v8::Local<v8::Module>> =
-        if spec.starts_with("fino:") || spec.starts_with("internal:") {
+    let module: Option<v8::Local<v8::Module>> = if spec.starts_with("fino:")
+        || spec.starts_with("internal:")
+    {
+        get_or_load_builtin(tc, &spec, Some(&referrer_url))
+    } else {
+        // For non-builtin specifiers, check if there's an import directive
+        // (e.g. Remap) that routes this spec through the builtin resolver.
+        let has_directive = {
+            let state_rc = crate::state::get_state(tc);
+            let st = state_rc.borrow();
+            let d = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
+            matches!(
+                d,
+                Some(ImportDirective::Remap { .. })
+                    | Some(ImportDirective::Source { .. })
+                    | Some(ImportDirective::Facade(..))
+                    | Some(ImportDirective::Installed { .. })
+            )
+        };
+        if has_directive {
             get_or_load_builtin(tc, &spec, Some(&referrer_url))
         } else {
-            // For non-builtin specifiers, check if there's an import directive
-            // (e.g. Remap) that routes this spec through the builtin resolver.
-            let has_directive = {
-                let state_rc = crate::state::get_state(tc);
-                let st = state_rc.borrow();
-                let d = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
-                matches!(d, Some(ImportDirective::Remap { .. })
-                           | Some(ImportDirective::Source { .. })
-                           | Some(ImportDirective::Facade(..))
-                           | Some(ImportDirective::Installed { .. }))
-            };
-            if has_directive {
-                get_or_load_builtin(tc, &spec, Some(&referrer_url))
-            } else {
-                resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
-                    .and_then(|p| get_or_load_fs_module(tc, &p))
-            }
-        };
+            resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
+                .and_then(|p| get_or_load_fs_module(tc, &p))
+        }
+    };
 
     settle_dynamic_import(tc, module, resolver);
     Some(promise)
@@ -1044,11 +1075,18 @@ fn get_or_load_builtin_inner<'s>(
         let d = resolve_directive(&st.import_rules, from, spec).cloned();
         if matches!(d, Some(ImportDirective::Block)) {
             let is_builtin_from = from.map_or(false, |f| {
-                f.starts_with("fino:") || f.starts_with("internal:")
+                f.starts_with("fino:")
+                    || f.starts_with("internal:")
                     || st.builtin_specifiers.values().any(|v| v == f)
             });
-            if is_builtin_from { None } else { d }
-        } else { d }
+            if is_builtin_from {
+                None
+            } else {
+                d
+            }
+        } else {
+            d
+        }
     };
 
     match directive {
@@ -1126,7 +1164,9 @@ fn get_or_load_builtin_inner<'s>(
             return Some(m);
         }
 
-        Some(ImportDirective::Installed { specifier: installed_spec }) => {
+        Some(ImportDirective::Installed {
+            specifier: installed_spec,
+        }) => {
             // Module should be in cache (installed via SyntheticModule.install()).
             // Reaching here means the cache check at step 1 missed — the module
             // was uninstalled without removing the directive (shouldn't happen).
@@ -1218,13 +1258,13 @@ fn load_fs_module_uncached<'s>(
         let src = format!("export default JSON.parse('{escaped}');");
         compile_source_module(scope, &src, &resource_name, None)
     } else if is_typescript(path) {
-        let stripped = strip_types(path, &text).ok()?;
-        register_source_map(scope, &resource_name, stripped.map.clone());
+        let stripped = transpile_typescript(scope, path, &text)?;
+        register_source_map_from_json(scope, &resource_name, &stripped.map);
         compile_source_module(
             scope,
             &stripped.code,
             &resource_name,
-            Some(stripped.map.to_json_string().as_str()),
+            Some(stripped.map.as_str()),
         )
     } else {
         compile_source_module(scope, &text, &resource_name, None)
@@ -1374,61 +1414,77 @@ fn escape_js_string(s: &str) -> String {
 
 struct TranspiledSource {
     code: String,
-    map: SourceMap,
+    map: String,
 }
 
-fn strip_types(path: &Path, source_text: &str) -> Result<TranspiledSource, String> {
-    use oxc_allocator::Allocator;
-    use oxc_codegen::{Codegen, CodegenOptions};
-    use oxc_parser::Parser;
-    use oxc_semantic::SemanticBuilder;
-    use oxc_span::SourceType;
-    use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
-
-    let allocator = Allocator::default();
-    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
-
-    let ret = Parser::new(&allocator, source_text, source_type).parse();
-    if !ret.errors.is_empty() {
-        let msgs: Vec<String> = ret.errors.iter().map(|e| e.message.to_string()).collect();
-        return Err(msgs.join("\n"));
-    }
-
-    let mut program = ret.program;
-
-    let scoping = SemanticBuilder::new()
-        .with_excess_capacity(2.0)
-        .build(&program)
-        .semantic
-        .into_scoping();
-
-    let options = TransformOptions {
-        typescript: TypeScriptOptions::default(),
-        ..TransformOptions::default()
+fn transpile_typescript(
+    scope: &mut v8::HandleScope,
+    path: &Path,
+    source_text: &str,
+) -> Option<TranspiledSource> {
+    let func = {
+        let state_rc = get_state(scope);
+        let state = state_rc.borrow();
+        state
+            .transpile_fn
+            .as_ref()
+            .map(|f| v8::Local::new(scope, f))
+    };
+    let Some(func) = func else {
+        throw_loader_error(
+            scope,
+            "TypeScript transpile hook is not registered; internal:loader did not initialize",
+        );
+        return None;
     };
 
-    let transformer_ret =
-        Transformer::new(&allocator, path, &options).build_with_scoping(scoping, &mut program);
+    let source = v8::String::new(scope, source_text)?;
+    let filename = v8::String::new(scope, &path.to_string_lossy())?;
+    let this = v8::undefined(scope).into();
+    let value = func.call(scope, this, &[source.into(), filename.into()])?;
+    let object = match v8::Local::<v8::Object>::try_from(value) {
+        Ok(object) => object,
+        Err(_) => {
+            throw_loader_error(
+                scope,
+                "TypeScript transpile hook returned a non-object value",
+            );
+            return None;
+        }
+    };
 
-    if !transformer_ret.errors.is_empty() {
-        let msgs: Vec<String> = transformer_ret
-            .errors
-            .iter()
-            .map(|e| e.message.to_string())
-            .collect();
-        return Err(msgs.join("\n"));
+    let Some(code) = get_object_string(scope, object, "code") else {
+        throw_loader_error(scope, "TypeScript transpile hook did not return code");
+        return None;
+    };
+    let Some(map) = get_object_string(scope, object, "map") else {
+        throw_loader_error(
+            scope,
+            "TypeScript transpile hook did not return a source map",
+        );
+        return None;
+    };
+    Some(TranspiledSource { code, map })
+}
+
+fn get_object_string(
+    scope: &mut v8::HandleScope,
+    object: v8::Local<v8::Object>,
+    name: &str,
+) -> Option<String> {
+    let key = v8::String::new(scope, name)?;
+    let value = object.get(scope, key.into())?;
+    if value.is_null_or_undefined() {
+        return None;
     }
+    value
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+}
 
-    let generated = Codegen::new()
-        .with_options(CodegenOptions {
-            source_map_path: Some(path.to_path_buf()),
-            ..CodegenOptions::default()
-        })
-        .with_source_text(source_text)
-        .build(&program);
-
-    Ok(TranspiledSource {
-        code: generated.code,
-        map: generated.map.expect("source map should be generated"),
-    })
+fn throw_loader_error(scope: &mut v8::HandleScope, message: &str) {
+    if let Some(msg) = v8::String::new(scope, message) {
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+    }
 }

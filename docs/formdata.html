@@ -1,0 +1,138 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - formdata</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:formdata">formdata</h1>
+<p class="muted">js/internal/globals/formdata.mts</p>
+<p>fino:formdata — FormData (WHATWG XHR / Fetch spec)</p>
+<p><code>FormData</code> is the standard representation of an HTML form submission. It holds an ordered list of name/value entries where values are either strings or <code>File</code> objects (Blobs with a filename). It is used as a request body in the Fetch API and as the basis for multipart/form-data serialization.</p>
+<h3>Entry normalization (_normalizeEntry)</h3>
+<p>The WHATWG spec requires that values be normalized on insertion:</p>
+<ul>
+<li><strong>String values</strong> are coerced via <code>String(value)</code>. Simple.</li>
+<li><strong>Blob values</strong> are wrapped in a <code>File</code> object. If the caller provides a</li>
+</ul>
+<p><code>filename</code> argument it is used; otherwise the filename defaults to <code>&quot;blob&quot;</code> (per spec), unless the value is already a <code>File</code>, in which case its <code>file.name</code> is used as the default. This ensures that every Blob entry in the FormData has a filename, which is required for multipart encoding.</p>
+<p>The wrapping-in-File step is non-obvious: even if the value is already a <code>File</code>, it gets re-wrapped into a new <code>File</code> if a <code>filename</code> argument is explicitly provided. This matches the spec and allows callers to override the filename at append time.</p>
+<h3>Entry ordering and duplicates</h3>
+<p>FormData is an ordered list, not a map. Multiple entries can share the same name. <code>get()</code> returns only the first match; <code>getAll()</code> returns all matches. <code>set()</code> replaces the first match and removes all subsequent ones, preserving the position of the first occurrence. <code>delete()</code> removes all entries with the given name.</p>
+<h3>Iteration</h3>
+<p>The <code>[Symbol.iterator]()</code> method delegates to <code>entries()</code>, so FormData instances can be iterated with <code>for...of</code> to get <code>[key, value]</code> pairs, matching the browser API.</p>
+<pre><code class="language-ts">// FormData is available via globalThis
+
+const fd = new FormData();
+fd.append(&#39;name&#39;, &#39;Alice&#39;);
+fd.append(&#39;avatar&#39;, blob, &#39;avatar.png&#39;);
+
+fd.get(&#39;name&#39;);     // &#39;Alice&#39;
+fd.getAll(&#39;name&#39;);  // [&#39;Alice&#39;]
+fd.has(&#39;name&#39;);     // true
+fd.set(&#39;name&#39;, &#39;Bob&#39;);
+fd.delete(&#39;name&#39;);
+
+for (const [key, value] of fd) { ... }
+fd.forEach((value, key, fd) =&gt; { ... });</code></pre>
+
+
+<h2>Functions</h2>
+
+<section id="formdata._serializeFormData">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">async</span> <span class="tok-keyword">function</span> _serializeFormData(fd: <a class="tok-type" href="formdata.html#formdata.FormData">FormData</a>, boundary?: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;{ contentType: <span class="tok-keyword">string</span>; body: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> }&gt;</code></h3>
+
+<p>Serialize a FormData instance to multipart/form-data wire format. Returns the boundary string and the combined body bytes.</p>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="formdata.FormData">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="formdata.html#formdata.FormData">FormData</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="formdata.FormData.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(init?: <a class="tok-type" href="formdata.html#formdata.FormData">FormData</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="formdata.FormData.append">
+<h5><code>append(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span> | <a class="tok-type" href="blob.html#blob.Blob">Blob</a>, filename?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.delete">
+<h5><code><span class="tok-keyword">delete</span>(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.get">
+<h5><code><span class="tok-keyword">get</span>(name: <span class="tok-keyword">string</span>): FormDataEntryValue | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.getAll">
+<h5><code>getAll(name: <span class="tok-keyword">string</span>): FormDataEntryValue[]</code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.has">
+<h5><code>has(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.set">
+<h5><code><span class="tok-keyword">set</span>(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span> | <a class="tok-type" href="blob.html#blob.Blob">Blob</a>, filename?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.entries">
+<h5><code>entries()</code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.keys">
+<h5><code>keys()</code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.values">
+<h5><code>values()</code></h5>
+
+
+</section>
+
+<section class="member" id="formdata.FormData.forEach">
+<h5><code>forEach(callback: (value: FormDataEntryValue, name: <span class="tok-keyword">string</span>, parent: <a class="tok-type" href="formdata.html#formdata.FormData">FormData</a>) =&gt; <span class="tok-keyword">void</span>, thisArg?: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - entry</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:entry">entry</h1>
+<p class="muted">js/file/entry.mts</p>
+<p>internal:file-entry — Entry, FileEntry, DirEntry classes for fino:file.</p>
+<p>Entry hierarchy for filesystem directory listing results. DirEntry additionally implements the async iterator protocol.</p>
+
+
+<h2>Classes</h2>
+
+<section id="entry.Entry">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="entry.html#entry.Entry">Entry</a> {</code></h3>
+
+<p>Base handle for a filesystem entry. Holds the name, full path, a reference to the parent FileSystem, and the <code>d_type</code> from the directory listing (used for fast type checks without an extra stat call).</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="entry.Entry.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>, path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, fs: EntryFileSystem | <span class="tok-keyword">null</span>, dtype: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="entry.Entry.name">
+<h5><code><span class="tok-keyword">get</span> name()</code></h5>
+
+
+</section>
+
+<section class="member" id="entry.Entry.path">
+<h5><code><span class="tok-keyword">get</span> path()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="entry.Entry.isFile">
+<h5><code>isFile(): <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Fast type check from dirent d_type — no syscall.</p>
+</section>
+
+<section class="member" id="entry.Entry.isDirectory">
+<h5><code>isDirectory(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="entry.Entry.isSymlink">
+<h5><code>isSymlink(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="entry.Entry.stat">
+<h5><code><span class="tok-keyword">async</span> stat(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="stat.html#stat.Stat">Stat</a>&gt;</code></h5>
+
+<p>Stat this entry, following symlinks.</p>
+</section>
+
+<section class="member" id="entry.Entry.lstat">
+<h5><code><span class="tok-keyword">async</span> lstat(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="stat.html#stat.Stat">Stat</a>&gt;</code></h5>
+
+<p>Lstat this entry, without following symlinks.</p>
+</section>
+
+
+</section>
+
+<section id="entry.FileEntry">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="entry.html#entry.FileEntry">FileEntry</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="entry.html#entry.Entry">Entry</a> {</code></h3>
+
+<p>A filesystem entry that represents a regular file.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="entry.FileEntry.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>, path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, fs: EntryFileSystem | <span class="tok-keyword">null</span>, dtype: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="entry.FileEntry.open">
+<h5><code><span class="tok-keyword">async</span> open(mode: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;r&#39;</span>)</code></h5>
+
+<p>Open this file.</p>
+</section>
+
+
+</section>
+
+<section id="entry.DirEntry">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="entry.html#entry.DirEntry">DirEntry</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="entry.html#entry.Entry">Entry</a> {</code></h3>
+
+<p>A filesystem entry that represents a directory. Implements the async iterator protocol so it can be used directly in <code>for await</code> loops.</p>
+
+<h4>Constructors</h4>
+
+<section class="member" id="entry.DirEntry.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>, path: <a class="tok-type" href="path.html#path.Path">Path</a> | <span class="tok-keyword">string</span>, fs: EntryFileSystem | <span class="tok-keyword">null</span>, dtype: <span class="tok-keyword">number</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="entry.DirEntry.entries">
+<h5><code><span class="tok-keyword">async</span> entries(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="entry.html#entry.Entry">Entry</a>[]&gt;</code></h5>
+
+<p>Read all children of this directory into an array, skipping <code>.</code> and <code>..</code>. Returns FileEntry for regular files, DirEntry for directories, Entry for other types.</p>
+</section>
+
+<section class="member" id="entry.DirEntry.child">
+<h5><code><span class="tok-keyword">async</span> child(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="entry.html#entry.Entry">Entry</a>&gt;</code></h5>
+
+<p>Return an Entry for a named child, determined via lstat. Does not scan the directory — single lstat call.</p>
+</section>
+
+<section class="member" id="entry.DirEntry.childFile">
+<h5><code><span class="tok-keyword">async</span> childFile(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="entry.html#entry.FileEntry">FileEntry</a>&gt;</code></h5>
+
+<p>Return a FileEntry for a named child.</p>
+</section>
+
+<section class="member" id="entry.DirEntry.childDir">
+<h5><code><span class="tok-keyword">async</span> childDir(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="entry.html#entry.DirEntry">DirEntry</a>&gt;</code></h5>
+
+<p>Return a DirEntry for a named child directory.</p>
+</section>
+
+<section class="member" id="entry.DirEntry.mkdir">
+<h5><code><span class="tok-keyword">async</span> mkdir(name: <span class="tok-keyword">string</span>, mode: <span class="tok-keyword">number</span> = <span class="tok-number">0o755</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Create a child directory.</p>
+</section>
+
+<section class="member" id="entry.DirEntry.remove">
+<h5><code><span class="tok-keyword">async</span> remove(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Remove a child entry. Uses unlink for files and rmdir for directories.</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

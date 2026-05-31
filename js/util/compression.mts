@@ -6,19 +6,23 @@
  *
  * ## One-shot API
  *
+ * ```ts
  *   import { gzip, gunzip, deflate, inflate, deflateRaw, inflateRaw,
  *            brotliCompress, brotliDecompress, brotliAvailable } from './compression.mts';
  *
  *   const compressed = gzip(new Uint8Array([...]));          // → Uint8Array
  *   const original   = gunzip(compressed);                  // → Uint8Array
+ * ```
  *
  * ## Streaming API
  *
+ * ```ts
  *   import { createGzip, createGunzip } from './compression.mts';
  *
  *   const gz = createGzip({ level: 6 });
  *   for await (const chunk of gz.transform(source)) { ... }
  *   // or: await writer.pipe(gz.transform(reader));
+ * ```
  *
  * Options: { level } — 0-9 for zlib, 0-11 for brotli.
  */

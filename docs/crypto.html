@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - crypto</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:crypto">crypto</h1>
+<p class="muted">js/internal/globals/crypto.mts</p>
+<p>fino:crypto — Web Crypto API.</p>
+<p>Implements a useful subset of the W3C Web Cryptography API: crypto.getRandomValues(typedArray) crypto.randomUUID() crypto.subtle.digest(algorithm, data) crypto.subtle.sign(algorithm, key, data) crypto.subtle.verify(algorithm, key, signature, data) crypto.subtle.encrypt(algorithm, key, data) crypto.subtle.decrypt(algorithm, key, data) crypto.subtle.importKey(format, keyData, algorithm, extractable, keyUsages) crypto.subtle.exportKey(format, key) crypto.subtle.generateKey(algorithm, extractable, keyUsages)</p>
+<p>Backed by internal:openssl (libcrypto via FFI). If OpenSSL is not installed, every method throws an informative error rather than crashing the process.</p>
+<p>Registers <code>globalThis.crypto</code> at import time.</p>
+
+
+<h2>Constants</h2>
+
+<section id="crypto.crypto">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> crypto</code></h3>
+
+
+
+</section>
+
+<section id="crypto.cryptoAvailable">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> cryptoAvailable</code></h3>
+
+<p>Whether the OpenSSL (libcrypto) backend loaded successfully.</p>
+
+</section>
+
+<section id="crypto.tlsAvailable">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> tlsAvailable</code></h3>
+
+<p>Whether the OpenSSL TLS (libssl) backend loaded successfully.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

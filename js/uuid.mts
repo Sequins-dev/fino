@@ -11,13 +11,14 @@
  * This guarantees strict ascending order within a single process while
  * retaining cryptographic randomness across millisecond boundaries.
  *
- * @example
+ * ```ts
  *   import { UUID, v4, v7, parse, validate, version } from 'fino:uuid';
  *
  *   const id  = v4();                   // UUID
  *   const row = v7();                   // time-ordered UUID for DB primary keys
  *   const ok  = validate(id.toString()); // true
  *   const ver = version(id.toString()); // 4
+ * ```
  */
 
 import { randBytes, cryptoAvailable } from '../internal/openssl.mts';

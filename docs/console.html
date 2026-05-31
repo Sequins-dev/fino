@@ -1,0 +1,59 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - console</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:console">console</h1>
+<p class="muted">js/internal/globals/console.mts</p>
+<p>fino:console — standard Console API implemented in JS via fino:libc.</p>
+<p>Provides <code>console.log</code>, <code>warn</code>, <code>error</code>, <code>info</code>, <code>debug</code>, <code>assert</code>, <code>dir</code>, <code>table</code>, <code>group</code>, <code>groupCollapsed</code>, <code>groupEnd</code>, <code>time</code>, <code>timeEnd</code>, and <code>timeLog</code>. Output goes to stdout (fd 1) or stderr (fd 2) through <code>writeLine()</code> from <code>fino:libc</code>, which calls <code>write(2)</code> directly.</p>
+<p><strong>Why JS instead of Rust?</strong> Implementing console in JS keeps all output on a single path through <code>write(2)</code> via FFI, consistent with the rest of the standard library. It also lets contributors modify console formatting without touching Rust.</p>
+<h3>Value formatting: inspect()</h3>
+<p><code>inspect(value, depth)</code> is a simplified version of Node.js&#39;s <code>util.inspect</code>. It recurses into arrays and plain objects up to <code>depth</code> levels deep, then collapses deeper structures to <code>[Array]</code> or <code>[Object]</code>. At the top level (depth=2, the default for <code>console.log</code>), strings are printed bare (without quotes). Nested strings are quoted with JSON.stringify so the difference between a string and a number is visible.</p>
+<p>Key choices:</p>
+<ul>
+<li><code>-0</code> is rendered as <code>&quot;-0&quot;</code> (not <code>&quot;0&quot;</code>), matching Node.js.</li>
+<li>BigInt values are suffixed with <code>n</code> (e.g. <code>42n</code>).</li>
+<li>Functions show as <code>[Function: name]</code> (or <code>[Function: (anonymous)]</code>).</li>
+<li>Single-line layout is used when the result fits in 72 characters;</li>
+</ul>
+<p>otherwise a multi-line indented layout is used.</p>
+<h3>printf-style substitution: format()</h3>
+<p><code>format(args)</code> handles <code>%s</code>, <code>%d</code>, <code>%i</code>, <code>%f</code>, <code>%o</code>, <code>%O</code>, and <code>%%</code> in the first argument when additional arguments are present. Remaining args after all substitutions are exhausted are appended with <code>inspect()</code>.</p>
+<h3>group / timer state</h3>
+<p><code>_groupDepth</code> is a module-level counter incremented by <code>group()</code> and decremented by <code>groupEnd()</code>. All output is prefixed with <code>INDENT</code> repeated <code>_groupDepth</code> times. <code>groupCollapsed()</code> is identical to <code>group()</code> — the &quot;collapsed&quot; hint is only meaningful for browser DevTools GUIs that fino doesn&#39;t have.</p>
+<p>Timer state is stored in a module-level <code>Map&lt;label, startMs&gt;</code>. <code>time()</code> sets the start, <code>timeEnd()</code> removes it and prints the elapsed time.</p>
+<h3>Contributing</h3>
+<ul>
+<li><code>console.table()</code> currently falls back to JSON.stringify. A proper</li>
+</ul>
+<p>column-aligned table renderer would be a good first contribution.</p>
+<ul>
+<li><code>console.count()</code> / <code>console.countReset()</code> are stubs. Add a counter</li>
+</ul>
+<p>Map if you need them.</p>
+<ul>
+<li>Do not switch output to process.stdout streams — the direct <code>writeLine</code></li>
+</ul>
+<p>call is intentional (no buffering, works before the event loop starts).</p>
+
+
+<h2>Constants</h2>
+
+<section id="console.console">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">const</span> console: ConsoleShape &amp; { <span class="tok-keyword">readonly</span> [Symbol.toStringTag]: <span class="tok-keyword">string</span>; log(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; info(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; debug(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; warn(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; error(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; assert(condition: <span class="tok-keyword">unknown</span>, ...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; dir(obj: <span class="tok-keyword">unknown</span>, opts?: { depth?: <span class="tok-keyword">number</span>; colors?: <span class="tok-keyword">boolean</span> }): <span class="tok-keyword">void</span>; table(data: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">void</span>; group(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; groupCollapsed(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; groupEnd(): <span class="tok-keyword">void</span>; time(label?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span>; timeEnd(label?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span>; timeLog(label?: <span class="tok-keyword">string</span>, ...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; count(label?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span>; countReset(label?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span>; clear(): <span class="tok-keyword">void</span>; trace(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; dirxml(...args: <span class="tok-keyword">unknown</span>[]): <span class="tok-keyword">void</span>; timeStamp(_label?: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span>; }</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

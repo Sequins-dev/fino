@@ -77,7 +77,7 @@
  * requires them.
  *
  *
- * @example
+ * ```ts
  * // URL and URLSearchParams are available via globalThis
  *
  * const url = new URL('https://user:pass@example.com:8080/path?q=1#frag');
@@ -97,6 +97,7 @@
  * const p = new URLSearchParams('a=1&b=hello+world');
  * p.get('b')  // 'hello world'
  * p.toString()  // 'a=1&b=hello+world'
+ * ```
  */
 
 // ---------------------------------------------------------------------------

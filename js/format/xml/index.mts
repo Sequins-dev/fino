@@ -9,13 +9,14 @@
  *   - Tree (DOM-lite):  parse(input)  → XmlDocument
  *   - SAX/streaming:   parseStream(src) → AsyncIterableIterator<XmlEvent>
  *
- * @example
+ * ```ts
  *   import { parse, stringify } from 'fino:format/xml';
  *
  *   const doc = parse('<root attr="v"><child>text</child></root>');
  *   doc.root.name;           // 'root'
  *   doc.root.children[0].type; // 'element'
  *   stringify(doc);
+ * ```
  */
 
 import { Scanner, ParseError } from 'fino:scanner';

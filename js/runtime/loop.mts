@@ -8,11 +8,13 @@
  *
  * ## API
  *
+ * ```ts
  *   import * as loop from './loop.mts';
  *
  *   await loop.readable(fd);   // resolves when fd is readable
  *   await loop.writable(fd);   // resolves when fd is writable
  *   await loop.timeout(500);   // resolves after 500 ms
+ * ```
  *
  *
  * ## Synchronous spinning — spin() and run()
@@ -20,14 +22,18 @@
  * `spin(promise)` blocks the current call stack, polling the loop until the
  * promise settles:
  *
+ * ```ts
  *   const result = loop.spin(someAsyncFn());
+ * ```
  *
  * `run(fn)` is a convenience that calls `fn`, and if it returns a promise,
  * spins to completion:
  *
+ * ```ts
  *   const result = loop.run(async () => {
  *     return await fetch('https://example.com');
  *   });
+ * ```
  *
  *
  * ## Platform abstraction
@@ -283,9 +289,10 @@ export function proc(pid: number): Promise<void> {
  * given completion id. Returns a Promise that resolves with `{ res }` when
  * the CQE fires (res is the syscall return value, negative on error).
  *
- * @example
+ * ```ts
  * const { res } = await loop.submit((raw, id) => uring.asyncRead(raw, fd, buf, len, id));
  * if (res < 0) throw new Error(`read failed: errno ${-res}`);
+ * ```
  */
 export function submit(submitter: (raw: object, id: number) => void): Promise<{ res: number }> {
   if (EVFILT_COMPLETION === null) throw new Error('submit() is not supported on this platform');

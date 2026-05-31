@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - topic</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:topic">topic</h1>
+<p class="muted">js/util/topic.mts</p>
+<p>fino:topic — Named pub/sub channels with Context binding.</p>
+<p>A <code>Topic</code> is a named pub/sub channel. When a <code>Context</code> is bound to a Topic, calling <code>topic.runWithValue(msg, fn)</code> automatically derives and installs the bound context value for the duration of <code>fn</code>. This separates the concerns of <em>publishing</em> (the library/framework) from <em>consuming</em> context (application code).</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { topic } from <span class="tok-string">&#39;./topic.mts&#39;</span>;
+<span class="tok-keyword">import</span> { Context } from <span class="tok-string">&#39;../runtime/context.mts&#39;</span>;
+
+<span class="tok-keyword">const</span> requestCtx = <span class="tok-keyword">new</span> Context(<span class="tok-string">&#39;request&#39;</span>);
+<span class="tok-keyword">const</span> httpTopic = topic(<span class="tok-string">&#39;http.request&#39;</span>);
+
+httpTopic.bindContext(requestCtx, (req) =&gt; req);
+
+<span class="tok-comment">// In a handler:</span>
+httpTopic.runWithValue(request, () =&gt; {
+  <span class="tok-comment">// requestCtx.get() === request here, and in any awaited code</span>
+  handleRequest();
+});</code></pre>
+
+
+<h2>Functions</h2>
+
+<section id="topic.topic">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> topic&lt;T = <span class="tok-keyword">unknown</span>&gt;(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="topic.html#topic.Topic">Topic</a>&lt;T&gt;</code></h3>
+
+<p>Get or create a named <code>Topic</code>. Topics with the same name share state across all imports — useful for cross-cutting bindings between libraries.</p>
+
+</section>
+
+<section id="topic.subscribeMatching">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> subscribeMatching&lt;T = <span class="tok-keyword">unknown</span>&gt;( matcher: (name: <span class="tok-keyword">string</span>) =&gt; <span class="tok-keyword">boolean</span>, fn: (msg: T, topicName: <span class="tok-keyword">string</span>) =&gt; <span class="tok-keyword">void</span>, ): <a class="tok-type" href="topic.html#topic.SubscriptionHandle">SubscriptionHandle</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="topic.Topic">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="topic.html#topic.Topic">Topic</a>&lt;T = <span class="tok-keyword">unknown</span>&gt; {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="topic.Topic.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(name: <span class="tok-keyword">string</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="topic.Topic.name">
+<h5><code><span class="tok-keyword">get</span> name(): <span class="tok-keyword">string</span></code></h5>
+
+<p>The topic name (readonly).</p>
+</section>
+
+<section class="member" id="topic.Topic.hasSubscribers">
+<h5><code><span class="tok-keyword">get</span> hasSubscribers(): <span class="tok-keyword">boolean</span></code></h5>
+
+<p><code>true</code> if there are any active subscribers.</p>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="topic.Topic.subscribe">
+<h5><code>subscribe(fn: (msg: T) =&gt; <span class="tok-keyword">void</span>): <a class="tok-type" href="topic.html#topic.SubscriptionHandle">SubscriptionHandle</a></code></h5>
+
+<p>Register a subscriber callback. Returns a <code>SubscriptionHandle</code> with a <code>dispose()</code> method to remove the subscription.</p>
+<p>The same function can be subscribed multiple times; each call returns an independent handle.</p>
+</section>
+
+<section class="member" id="topic.Topic.unsubscribe">
+<h5><code>unsubscribe(handle: <a class="tok-type" href="topic.html#topic.SubscriptionHandle">SubscriptionHandle</a>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Remove a subscription via its handle.</p>
+</section>
+
+<section class="member" id="topic.Topic.publish">
+<h5><code>publish(msg: T): <span class="tok-keyword">void</span></code></h5>
+
+<p>Fire all subscribers with <code>msg</code>. Each subscriber runs in its own try/catch; errors are forwarded to the <code>&quot;execution-flow:error&quot;</code> topic so a failing subscriber never blocks delivery to others.</p>
+<p>Note: does NOT enter bound context scopes. Use <code>runWithValue()</code> for that.</p>
+</section>
+
+<section class="member" id="topic.Topic.bindContext">
+<h5><code>bindContext&lt;C&gt;(ctx: { runWithValue&lt;R&gt;(val: C, fn: () =&gt; R): R }, transform: (msg: T) =&gt; C): <a class="tok-type" href="topic.html#topic.BindingHandle">BindingHandle</a></code></h5>
+
+<p>Declare that when this topic fires via <code>runWithValue()</code>, <code>ctx</code> should be set to <code>transform(msg)</code> for the duration of the call. Multiple bindings are entered in registration order (outermost first) and restored in reverse.</p>
+</section>
+
+<section class="member" id="topic.Topic.unbindContext">
+<h5><code>unbindContext(handle: <a class="tok-type" href="topic.html#topic.BindingHandle">BindingHandle</a>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Remove a context binding via its handle.</p>
+</section>
+
+<section class="member" id="topic.Topic.runWithValue">
+<h5><code>runWithValue&lt;R&gt;(msg: T, fn: () =&gt; R): R</code></h5>
+
+<p>Enter all bound context scopes (in registration order), publish <code>msg</code> to subscribers, then run <code>fn</code> — all within those scopes. Context values are derived by calling each binding&#39;s <code>transform(msg)</code>. Scopes are restored in reverse order after <code>fn</code> returns or throws.</p>
+</section>
+
+
+</section>
+
+<section id="topic.SubscriptionHandle">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="topic.html#topic.SubscriptionHandle">SubscriptionHandle</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="topic.SubscriptionHandle.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(disposeFn: () =&gt; <span class="tok-keyword">void</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="topic.SubscriptionHandle.dispose">
+<h5><code>dispose(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="topic.BindingHandle">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="topic.html#topic.BindingHandle">BindingHandle</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="topic.BindingHandle.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(disposeFn: () =&gt; <span class="tok-keyword">void</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="topic.BindingHandle.dispose">
+<h5><code>dispose(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>

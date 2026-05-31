@@ -130,11 +130,12 @@ function compileSegment(pat: string): string {
 /**
  * Compiled glob pattern for path matching.
  *
- * @example
+ * ```ts
  * const g = new Glob('**\/*.mts');
  * g.test('src/index.mts');       // true
  * g.test('src/lib/util.mts');    // true
  * g.test('README.md');            // false
+ * ```
  */
 export class Glob {
   #pattern: string;

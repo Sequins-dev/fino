@@ -1,0 +1,155 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - js/format/yaml/index</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="../../../index.html">API Modules</a></p>
+<h1 id="module:js-format-yaml-index">js/format/yaml/index</h1>
+<p class="muted">js/format/yaml/index.mts</p>
+<p>fino:format/yaml — YAML 1.2 core schema parser and serializer.</p>
+<p>Supports the full YAML 1.2 core schema including:</p>
+<ul>
+<li>Block mappings and sequences (indentation-driven)</li>
+<li>Flow mappings {} and sequences [</li>
+<li>Scalars: plain, single-quoted, double-quoted, block literal | and folded &gt;</li>
+<li>Core schema type resolution (null/~, booleans, ints, floats, strings)</li>
+<li>Anchors (&amp;) and aliases (*) with expansion-limit safety</li>
+<li>Explicit tags (!!str, !!int, !!float, !!bool, !!null, !!seq, !!map, !!binary, !!timestamp)</li>
+<li>Merge keys (&lt;&lt;: <em>anchor and &lt;&lt;: [</em>a, *b])</li>
+<li>Complex mapping keys (? key) — mappings with non-string keys return Map&lt;unknown, YamlValue&gt;</li>
+<li>Comments, document markers --- / ..., parseAll for multi-document streams</li>
+</ul>
+<p><strong>Permanently excluded</strong> (security baseline — never executes code):</p>
+<ul>
+<li>Arbitrary type construction (!!ruby/object, etc.)</li>
+<li>Custom user-defined tags</li>
+<li>Local tags (!foo) — use !! core tags only</li>
+</ul>
+<p><strong>Note on merge keys</strong>: merge pairs (&lt;&lt;) are absorbed at parse time into the enclosing mapping. stringify does not re-emit them. The round-trip invariant <code>deepEqual(parse(stringify(parse(x))), parse(x))</code> holds; text-exact round-trip does not for documents with merge keys.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { parse, stringify, parseAll } from <span class="tok-string">&#39;fino:format/yaml&#39;</span>;
+
+<span class="tok-keyword">const</span> cfg = parse(<span class="tok-string">&#39;server:\n  port: 8080\nhosts:\n  - a\n  - b\n&#39;</span>);
+stringify({ x: <span class="tok-number">1</span>, y: [<span class="tok-number">2</span>, <span class="tok-number">3</span>] });</code></pre>
+
+
+<h2>Classes</h2>
+
+<section id="js-format-yaml-index.YamlParseError">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlParseError">YamlParseError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="scanner.html#scanner.ParseError">ParseError</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-yaml-index.YamlParseError.name">
+<h5><code>name</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Types</h2>
+
+<section id="js-format-yaml-index.YamlValue">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a> = | <span class="tok-keyword">null</span> | <span class="tok-keyword">boolean</span> | <span class="tok-keyword">number</span> | <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | Date | <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a>[] | <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlMapping">YamlMapping</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map">Map</a>&lt;<span class="tok-keyword">unknown</span>, <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-format-yaml-index.YamlMapping">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">type</span> <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlMapping">YamlMapping</a> = { [k: <span class="tok-keyword">string</span>]: <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a> }</code></h3>
+
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-format-yaml-index.YamlParseOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlParseOptions">YamlParseOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-yaml-index.YamlParseOptions.allowDuplicateKeys">
+<h5><code>allowDuplicateKeys?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-yaml-index.YamlParseOptions.maxAliasExpansion">
+<h5><code>maxAliasExpansion?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-yaml-index.YamlParseOptions.maxAliasDepth">
+<h5><code>maxAliasDepth?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-format-yaml-index.YamlStringifyOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlStringifyOptions">YamlStringifyOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-format-yaml-index.YamlStringifyOptions.indent">
+<h5><code>indent?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-format-yaml-index.YamlStringifyOptions.lineWidth">
+<h5><code>lineWidth?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-format-yaml-index.parse">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parse(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlParseOptions">YamlParseOptions</a> = {}): <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a></code></h3>
+
+<p>Parse a YAML document (first document if there are multiple).</p>
+
+</section>
+
+<section id="js-format-yaml-index.parseAll">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> parseAll(input: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, options: <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlParseOptions">YamlParseOptions</a> = {}): <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a>[]</code></h3>
+
+<p>Parse all YAML documents from a multi-document stream.</p>
+
+</section>
+
+<section id="js-format-yaml-index.stringify">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">function</span> stringify(value: <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlValue">YamlValue</a>, options: <a class="tok-type" href="js/format/yaml/index.html#js-format-yaml-index.YamlStringifyOptions">YamlStringifyOptions</a> = {}): <span class="tok-keyword">string</span></code></h3>
+
+<p>Serialize a value to YAML.</p>
+
+</section>
+
+
+
+</main>
+</body>
+</html>

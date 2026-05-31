@@ -1,0 +1,574 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Fino JS API - websocket</title>
+<style>body{font-family:system-ui,sans-serif;max-width:1120px;margin:40px auto;padding:0 20px;line-height:1.5;color:#1f2328}a{color:#0969da;text-decoration:none}a:hover{text-decoration:underline}main{display:block}pre{background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:#cf222e}.tok-string{color:#0a3069}.tok-number{color:#0550ae}.tok-comment{color:#6e7781}.tok-regexp{color:#8250df}.tok-type{color:#953800}.tag{color:#57606a}.module-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;list-style:none;padding:0}.module-card{border:1px solid #d0d7de;border-radius:6px;padding:12px}.muted{color:#57606a}.member{border-left:3px solid #d0d7de;padding-left:12px}</style>
+</head>
+<body>
+<main>
+<p><a href="index.html">API Modules</a></p>
+<h1 id="module:websocket">websocket</h1>
+<p class="muted">js/net/websocket.mts</p>
+<p>fino:net/websocket — WebSocket client and server.</p>
+<p>Implements RFC 6455 in two composable layers:</p>
+<h3>WebSocketConnection (lower-level engine)</h3>
+<p>Extends EventTarget. Handles framing, masking, UTF-8 validation, close handshakes, PING/PONG, and subprotocol negotiation. Used directly by server code or wrapped by the WHATWG <code>WebSocket</code> facade.</p>
+<pre><code class="language-ts"><span class="tok-comment">// CLIENT</span>
+<span class="tok-keyword">const</span> conn = WebSocketConnection.connect(<span class="tok-string">&#39;wss://example.com/ws&#39;</span>, {
+  protocols: [<span class="tok-string">&#39;chat.v1&#39;</span>],
+});
+conn.addEventListener(<span class="tok-string">&#39;open&#39;</span>,    () =&gt; conn.send(<span class="tok-string">&#39;hello&#39;</span>));
+conn.addEventListener(<span class="tok-string">&#39;message&#39;</span>, (e) =&gt; console.log(e.data));
+conn.addEventListener(<span class="tok-string">&#39;close&#39;</span>,   (e) =&gt; console.log(e.code));
+
+<span class="tok-comment">// SERVER (inside a serve() handler)</span>
+<span class="tok-keyword">import</span> { serve } from <span class="tok-string">&#39;fino:net/serve&#39;</span>;
+<span class="tok-keyword">import</span> { WebSocketConnection } from <span class="tok-string">&#39;fino:net/websocket&#39;</span>;
+
+serve({ port: <span class="tok-number">3000</span> }, (req) =&gt; {
+  <span class="tok-keyword">if</span> (req.headers.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;upgrade&#39;</span>) === <span class="tok-string">&#39;websocket&#39;</span>) {
+    <span class="tok-keyword">const</span> ws = WebSocketConnection.accept(req, { protocol: <span class="tok-string">&#39;chat.v1&#39;</span> });
+    ws.addEventListener(<span class="tok-string">&#39;message&#39;</span>, (e) =&gt; ws.send(<span class="tok-string">`echo: ${</span>e.data}`));
+    <span class="tok-keyword">return</span> ws;    <span class="tok-comment">// serve() writes the 101 and hands over the socket</span>
+  }
+  <span class="tok-keyword">return</span> <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;hello&#39;</span>);
+});</code></pre>
+<h3>WebSocket (WHATWG facade)</h3>
+<p>Strict spec-compliant global. Wraps a WebSocketConnection. No extra methods — spec surface only.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> ws = <span class="tok-keyword">new</span> WebSocket(<span class="tok-string">&#39;wss://example.com/ws&#39;</span>, [<span class="tok-string">&#39;chat.v1&#39;</span>]);
+ws.binaryType = <span class="tok-string">&#39;arraybuffer&#39;</span>;
+ws.onopen    = () =&gt; ws.send(<span class="tok-string">&#39;hello&#39;</span>);
+ws.onmessage = (e) =&gt; console.log(e.data);
+ws.onclose   = (e) =&gt; console.log(<span class="tok-string">&#39;closed&#39;</span>, e.code, e.wasClean);</code></pre>
+<h3>Close handshake</h3>
+<p>Both sides share the same handshake: the initiator sends a CLOSE frame, the peer echoes one back, then the underlying socket is closed. A 5-second timeout is applied after the initiator sends its CLOSE — if the peer does not echo within that time, the socket is torn down unilaterally.</p>
+<h3>Spec compliance (RFC 6455)</h3>
+<ul>
+<li>RSV bits must be 0 (no extensions negotiated) → 1002</li>
+<li>Unknown/reserved opcodes → 1002</li>
+<li>Control frames must not be fragmented, payload ≤ 125 → 1002</li>
+<li>Client→server frames must be masked; server→client must not → 1002</li>
+<li>CONTINUATION without an active fragment → 1002</li>
+<li>New data frame during an active fragment → 1002</li>
+<li>Payload &gt; maxPayloadSize (default 16 MiB) → 1009</li>
+<li>Invalid UTF-8 in TEXT messages → 1007</li>
+<li>PING → automatic PONG with echoed payload</li>
+</ul>
+
+
+<h2>Classes</h2>
+
+<section id="websocket.CloseEvent">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.CloseEvent">CloseEvent</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="websocket.CloseEvent.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(<span class="tok-keyword">type</span>: <span class="tok-keyword">string</span>, init?: CloseEventInit)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="websocket.CloseEvent.code">
+<h5><code><span class="tok-keyword">get</span> code()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.CloseEvent.reason">
+<h5><code><span class="tok-keyword">get</span> reason()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.CloseEvent.wasClean">
+<h5><code><span class="tok-keyword">get</span> wasClean()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="websocket.ErrorEvent">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.ErrorEvent">ErrorEvent</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="websocket.ErrorEvent.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(<span class="tok-keyword">type</span>: <span class="tok-keyword">string</span>, init?: { error?: <span class="tok-keyword">unknown</span> })</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="websocket.ErrorEvent.error">
+<h5><code><span class="tok-keyword">get</span> error()</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="websocket.WebSocketConnection">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection">WebSocketConnection</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="eventtarget.html#eventtarget.EventTarget">EventTarget</a> <span class="tok-keyword">implements</span> <a class="tok-type" href="js/net/protocol.html#js-net-protocol.ConnectionTakeover">ConnectionTakeover</a> {</code></h3>
+
+<p>A WebSocket connection, client or server side. Extends EventTarget.</p>
+<p>Events dispatched: &#39;open&#39;, &#39;message&#39; (MessageEvent), &#39;close&#39; (CloseEvent), &#39;error&#39; (ErrorEvent), &#39;ping&#39;, &#39;pong&#39;.</p>
+<p>Use the static factories:</p>
+<ul>
+<li><code>WebSocketConnection.connect(url, opts)</code> — client (async via events)</li>
+<li><code>WebSocketConnection.accept(req, opts)</code> — server (from a serve() handler)</li>
+</ul>
+
+<h4>Static Readonly Propertys</h4>
+
+<section class="member" id="websocket.WebSocketConnection.CONNECTING">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.CONNECTING">CONNECTING</a></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.OPEN">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.OPEN">OPEN</a></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.CLOSING">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.CLOSING">CLOSING</a></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.CLOSED">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.CLOSED">CLOSED</a></code></h5>
+
+
+</section>
+
+
+<h4>Readonly Propertys</h4>
+
+<section class="member" id="websocket.WebSocketConnection.compatibleProtocols">
+<h5><code><span class="tok-keyword">readonly</span> compatibleProtocols: ReadonlySet&lt;<span class="tok-keyword">string</span>&gt;</code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="websocket.WebSocketConnection.constructor">
+<h5><code><span class="tok-keyword">constructor</span>()</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="websocket.WebSocketConnection.role">
+<h5><code><span class="tok-keyword">get</span> role(): <span class="tok-string">&#39;client&#39;</span> | <span class="tok-string">&#39;server&#39;</span></code></h5>
+
+<p>Role: &#39;client&#39; sends masked frames; &#39;server&#39; sends unmasked frames.</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.readyState">
+<h5><code><span class="tok-keyword">get</span> readyState(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.url">
+<h5><code><span class="tok-keyword">get</span> url(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.protocol">
+<h5><code><span class="tok-keyword">get</span> protocol(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.extensions">
+<h5><code><span class="tok-keyword">get</span> extensions(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.bufferedAmount">
+<h5><code><span class="tok-keyword">get</span> bufferedAmount(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.socket">
+<h5><code><span class="tok-keyword">get</span> socket(): <a class="tok-type" href="js/net/socket.html#js-net-socket.Socket">Socket</a> | <span class="tok-keyword">null</span></code></h5>
+
+<p>The underlying socket (available once &#39;open&#39; fires, null before that).</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onopen">
+<h5><code><span class="tok-keyword">get</span> onopen()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onmessage">
+<h5><code><span class="tok-keyword">get</span> onmessage()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onerror">
+<h5><code><span class="tok-keyword">get</span> onerror()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onclose">
+<h5><code><span class="tok-keyword">get</span> onclose()</code></h5>
+
+
+</section>
+
+
+<h4>Setters</h4>
+
+<section class="member" id="websocket.WebSocketConnection.onopen:setter">
+<h5><code><span class="tok-keyword">set</span> onopen(fn: ((e: <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onmessage:setter">
+<h5><code><span class="tok-keyword">set</span> onmessage(fn: ((e: <a class="tok-type" href="js/internal/globals/messaging.html#js-internal-globals-messaging.MessageEvent">MessageEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onerror:setter">
+<h5><code><span class="tok-keyword">set</span> onerror(fn: ((e: <a class="tok-type" href="websocket.html#websocket.ErrorEvent">ErrorEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.onclose:setter">
+<h5><code><span class="tok-keyword">set</span> onclose(fn: ((e: <a class="tok-type" href="websocket.html#websocket.CloseEvent">CloseEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="websocket.WebSocketConnection.send">
+<h5><code>send(data: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a> | ArrayBufferView | <a class="tok-type" href="blob.html#blob.Blob">Blob</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Send a text, binary, or Blob message. Returns a Promise that resolves when the frame has been written. Throws if readyState is CONNECTING; silently returns if CLOSING or CLOSED.</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.ping">
+<h5><code>ping(data?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Send a PING control frame. The peer should respond with a PONG. Payload must be ≤ 125 bytes.</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.pong">
+<h5><code>pong(data?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Send a PONG control frame. Payload must be ≤ 125 bytes.</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.close">
+<h5><code><span class="tok-keyword">async</span> close(code: <span class="tok-keyword">number</span> = <span class="tok-number">1000</span>, reason: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Initiate the WebSocket close handshake. Returns a Promise that resolves when the connection is fully closed.</p>
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="websocket.WebSocketConnection.accept">
+<h5><code><span class="tok-keyword">static</span> accept(req: { method: <span class="tok-keyword">string</span>; url: <span class="tok-keyword">string</span>; headers: <a class="tok-type" href="http.html#http.Headers">Headers</a> }, opts: <a class="tok-type" href="websocket.html#websocket.WebSocketAcceptOptions">WebSocketAcceptOptions</a> = {}): <a class="tok-type" href="websocket.html#websocket.WebSocketConnection">WebSocketConnection</a></code></h5>
+
+<p>SERVER FACTORY — Synchronously validate an HTTP upgrade request and return a WebSocketConnection in the CONNECTING state. The &#39;open&#39; event fires after serve() writes the 101 response and hands over the socket.</p>
+<p>Throws a plain Error (name=&#39;SyntaxError&#39;) if the request is not a valid WebSocket upgrade. The handler can catch this and return a 400 Response.</p>
+<pre><code class="language-ts">serve({ port: <span class="tok-number">3000</span> }, (req) =&gt; {
+  <span class="tok-keyword">if</span> (req.headers.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;upgrade&#39;</span>) === <span class="tok-string">&#39;websocket&#39;</span>) {
+    <span class="tok-keyword">const</span> ws = WebSocketConnection.accept(req, { protocol: <span class="tok-string">&#39;chat.v1&#39;</span> });
+    ws.addEventListener(<span class="tok-string">&#39;message&#39;</span>, (e) =&gt; ws.send(<span class="tok-string">`echo: ${</span>e.data}`));
+    <span class="tok-keyword">return</span> ws;
+  }
+  <span class="tok-keyword">return</span> <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;hello&#39;</span>);
+});</code></pre>
+</section>
+
+<section class="member" id="websocket.WebSocketConnection.connect">
+<h5><code><span class="tok-keyword">static</span> connect(url: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>, opts: <a class="tok-type" href="websocket.html#websocket.WebSocketConnectOptions">WebSocketConnectOptions</a> = {}): <a class="tok-type" href="websocket.html#websocket.WebSocketConnection">WebSocketConnection</a></code></h5>
+
+<p>CLIENT FACTORY — Open a WebSocket connection to a remote URL. Returns a WebSocketConnection immediately in the CONNECTING state. The &#39;open&#39; event fires when the handshake completes; &#39;error&#39; + &#39;close&#39; fire if the connection fails.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> ws = WebSocketConnection.connect(<span class="tok-string">&#39;wss://example.com/chat&#39;</span>, {
+  protocols: [<span class="tok-string">&#39;chat.v1&#39;</span>],
+});
+ws.addEventListener(<span class="tok-string">&#39;open&#39;</span>,    () =&gt; ws.send(<span class="tok-string">&#39;hello&#39;</span>));
+ws.addEventListener(<span class="tok-string">&#39;message&#39;</span>, (e) =&gt; console.log(e.data));</code></pre>
+</section>
+
+
+</section>
+
+<section id="websocket.WebSocket">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.WebSocket">WebSocket</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="eventtarget.html#eventtarget.EventTarget">EventTarget</a> {</code></h3>
+
+<p>WHATWG WebSocket — strict spec surface, no runtime extensions.</p>
+<p>For server-side or lower-level control, use <code>WebSocketConnection</code> directly.</p>
+
+<h4>Static Readonly Propertys</h4>
+
+<section class="member" id="websocket.WebSocket.CONNECTING">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.CONNECTING">CONNECTING</a></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.OPEN">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.OPEN">OPEN</a></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.CLOSING">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.CLOSING">CLOSING</a></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.CLOSED">
+<h5><code><span class="tok-keyword">static</span> <span class="tok-keyword">readonly</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection.CLOSED">CLOSED</a></code></h5>
+
+
+</section>
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="websocket.WebSocket.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(url: <span class="tok-keyword">string</span> | <a class="tok-type" href="url.html#url.URL">URL</a>, protocols?: <span class="tok-keyword">string</span> | <span class="tok-keyword">string</span>[])</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="websocket.WebSocket.url">
+<h5><code><span class="tok-keyword">get</span> url(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.readyState">
+<h5><code><span class="tok-keyword">get</span> readyState(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.bufferedAmount">
+<h5><code><span class="tok-keyword">get</span> bufferedAmount(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.extensions">
+<h5><code><span class="tok-keyword">get</span> extensions(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.protocol">
+<h5><code><span class="tok-keyword">get</span> protocol(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.binaryType">
+<h5><code><span class="tok-keyword">get</span> binaryType(): <span class="tok-string">&#39;blob&#39;</span> | <span class="tok-string">&#39;arraybuffer&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onopen">
+<h5><code><span class="tok-keyword">get</span> onopen()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onmessage">
+<h5><code><span class="tok-keyword">get</span> onmessage()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onerror">
+<h5><code><span class="tok-keyword">get</span> onerror()</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onclose">
+<h5><code><span class="tok-keyword">get</span> onclose()</code></h5>
+
+
+</section>
+
+
+<h4>Setters</h4>
+
+<section class="member" id="websocket.WebSocket.binaryType:setter">
+<h5><code><span class="tok-keyword">set</span> binaryType(v: <span class="tok-string">&#39;blob&#39;</span> | <span class="tok-string">&#39;arraybuffer&#39;</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onopen:setter">
+<h5><code><span class="tok-keyword">set</span> onopen(fn: ((e: <a class="tok-type" href="eventtarget.html#eventtarget.Event">Event</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onmessage:setter">
+<h5><code><span class="tok-keyword">set</span> onmessage(fn: ((e: <a class="tok-type" href="js/internal/globals/messaging.html#js-internal-globals-messaging.MessageEvent">MessageEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onerror:setter">
+<h5><code><span class="tok-keyword">set</span> onerror(fn: ((e: <a class="tok-type" href="websocket.html#websocket.ErrorEvent">ErrorEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocket.onclose:setter">
+<h5><code><span class="tok-keyword">set</span> onclose(fn: ((e: <a class="tok-type" href="websocket.html#websocket.CloseEvent">CloseEvent</a>) =&gt; <span class="tok-keyword">void</span>) | <span class="tok-keyword">null</span>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="websocket.WebSocket.send">
+<h5><code>send(data: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a> | ArrayBufferView | <a class="tok-type" href="blob.html#blob.Blob">Blob</a>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Queue data to be sent. Throws InvalidStateError if CONNECTING; silently drops if CLOSING or CLOSED.</p>
+</section>
+
+<section class="member" id="websocket.WebSocket.close">
+<h5><code>close(code: <span class="tok-keyword">number</span> = <span class="tok-number">1000</span>, reason: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <span class="tok-keyword">void</span></code></h5>
+
+<p>Initiate the close handshake.</p>
+</section>
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="websocket.WebSocketMessage">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="websocket.html#websocket.WebSocketMessage">WebSocketMessage</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="websocket.WebSocketMessage.type">
+<h5><code><span class="tok-keyword">type</span>: <span class="tok-string">&#39;text&#39;</span> | <span class="tok-string">&#39;binary&#39;</span></code></h5>
+
+
+</section>
+
+<section class="member" id="websocket.WebSocketMessage.data">
+<h5><code>data: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="websocket.WebSocketAcceptOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="websocket.html#websocket.WebSocketAcceptOptions">WebSocketAcceptOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="websocket.WebSocketAcceptOptions.protocol">
+<h5><code>protocol?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Single subprotocol to accept (must appear in Sec-WebSocket-Protocol header).</p>
+</section>
+
+<section class="member" id="websocket.WebSocketAcceptOptions.selectProtocol">
+<h5><code>selectProtocol?: (offered: <span class="tok-keyword">string</span>[]) =&gt; <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+<p>Callback to select a subprotocol from the list offered by the client.</p>
+</section>
+
+<section class="member" id="websocket.WebSocketAcceptOptions.maxPayloadSize">
+<h5><code>maxPayloadSize?: <span class="tok-keyword">number</span></code></h5>
+
+<p>Maximum payload size in bytes (default 16 MiB). Frames exceeding this cause close 1009.</p>
+</section>
+
+
+</section>
+
+<section id="websocket.WebSocketConnectOptions">
+<h3><code><span class="tok-keyword">export</span> <span class="tok-keyword">interface</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnectOptions">WebSocketConnectOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="websocket.WebSocketConnectOptions.protocols">
+<h5><code>protocols?: <span class="tok-keyword">string</span> | <span class="tok-keyword">string</span>[]</code></h5>
+
+<p>Requested subprotocols (joined as Sec-WebSocket-Protocol header).</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnectOptions.headers">
+<h5><code>headers?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt; | <a class="tok-type" href="http.html#http.Headers">Headers</a></code></h5>
+
+<p>Extra request headers sent with the upgrade request.</p>
+</section>
+
+<section class="member" id="websocket.WebSocketConnectOptions.maxPayloadSize">
+<h5><code>maxPayloadSize?: <span class="tok-keyword">number</span></code></h5>
+
+<p>Maximum incoming payload size in bytes (default 16 MiB).</p>
+</section>
+
+
+</section>
+
+
+
+</main>
+</body>
+</html>
