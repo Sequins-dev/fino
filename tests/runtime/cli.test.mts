@@ -61,6 +61,8 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('Usage: fino'), 'usage mentions fino root command');
     t.ok(stdout.includes('[script]'), 'usage documents script positional fallback');
     t.ok(stdout.includes('Commands:'), 'help lists commands');
+    t.ok(stdout.includes('run'), 'help includes run command');
+    t.ok(stdout.includes('repl'), 'help includes repl command');
     t.ok(stdout.includes('test'), 'help includes test command');
     t.ok(stdout.includes('bench'), 'help includes bench command');
     t.ok(stdout.includes('install'), 'help includes install command');
@@ -74,6 +76,32 @@ describe('CLI commands', () => {
     t.equal(result.code, 0, 'script exits successfully');
     t.equal(stderr, '', 'script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'script was imported and executed');
+  });
+
+  it('runs a script through the run command', async (t) => {
+    const { stdout, stderr, result } = await runCli(['run', './tests/fixtures/cli-script.mts']);
+
+    t.equal(result.code, 0, 'run command script exits successfully');
+    t.equal(stderr, '', 'run command script does not write stderr');
+    t.ok(stdout.includes('cli fixture ran'), 'run command imported and executed the script');
+  });
+
+  it('starts the REPL when no script is given', async (t) => {
+    const { stdout, stderr, result } = await runCli([]);
+
+    t.equal(result.code, 0, 'empty root invocation exits successfully after stdin closes');
+    t.equal(stderr, '', 'empty root invocation does not write stderr');
+    t.ok(stdout.includes('Fino REPL'), 'empty root invocation starts the REPL');
+    t.ok(stdout.includes('> '), 'empty root invocation prints the REPL prompt');
+  });
+
+  it('starts the REPL through the repl command', async (t) => {
+    const { stdout, stderr, result } = await runCli(['repl']);
+
+    t.equal(result.code, 0, 'repl command exits successfully after stdin closes');
+    t.equal(stderr, '', 'repl command does not write stderr');
+    t.ok(stdout.includes('Fino REPL'), 'repl command starts the REPL');
+    t.ok(stdout.includes('> '), 'repl command prints the REPL prompt');
   });
 
   it('runs the test subcommand', async (t) => {

@@ -68,90 +68,92 @@ function isComplete(buf: string): boolean {
   return depth <= 0 && !inString && !inBlockComment;
 }
 
+export async function runReplCommand(): Promise<void> {
+  const realm = new Realm({ repl: true });
+  const port = realm.port as MessagePort;
+  port.start();
+  // Register the realm for stepping — required so the embedded child is
+  // driven by the parent loop. The run() Promise resolves when the realm exits.
+  const runPromise = realm.run();
+
+  let nextId = 1;
+  const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+
+  port.addEventListener('message', function onReplMessage(ev: Event) {
+    const msg = (ev as MessageEvent<Record<string, unknown>>).data;
+    if (!msg || typeof msg !== 'object') return;
+    const id = msg['id'] as number;
+    const entry = pending.get(id);
+    if (!entry) return;
+    pending.delete(id);
+    if (msg['__eval_result'] === true) {
+      entry.resolve(msg['value']);
+    } else if (msg['__eval_error'] === true) {
+      entry.reject(new Error((msg['message'] as string | undefined) ?? 'eval error'));
+    }
+  });
+
+  async function evalCode(code: string): Promise<unknown> {
+    const id = nextId++;
+    return new Promise<unknown>((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      port.postMessage({ __eval: true, id, code });
+    });
+  }
+
+  async function readLine(promptText: string): Promise<string | null> {
+    await prompt(promptText);
+    let line = '';
+    while (true) {
+      const b = await stdin().readByte();
+      if (b === null) return null;
+      if (b === 0x0a || b === 0x0d) break;       // \n or \r
+      if (b === 0x03) return null;                // Ctrl-C
+      if (b === 0x04 && line.length === 0) return null; // Ctrl-D on empty
+      if (b === 0x7f || b === 0x08) {
+        if (line.length > 0) line = line.slice(0, -1);
+      } else {
+        line += String.fromCharCode(b);
+      }
+    }
+    return line;
+  }
+
+  let buffer = '';
+  await prompt('Fino REPL\nType .exit to quit.\n\n');
+
+  while (true) {
+    const line = await readLine(buffer.length === 0 ? '> ' : '... ');
+    if (line === null) break;
+    if (line === '.exit') break;
+
+    buffer += (buffer.length > 0 ? '\n' : '') + line;
+
+    if (!isComplete(buffer)) continue;
+
+    const code = buffer;
+    buffer = '';
+
+    try {
+      const result = await evalCode(code);
+      const formatted = formatResult(result);
+      if (formatted) {
+        await print(formatted + '\n');
+      }
+    } catch (err) {
+      await print((err instanceof Error ? err.message : String(err)) + '\n');
+    }
+  }
+
+  port.postMessage({ __terminate: true });
+  port.close();
+  await runPromise;
+}
+
 export function createReplCommand(): Command {
   return new Command({
     name: 'repl',
     description: 'Start an interactive REPL',
-    run: async function runRepl() {
-      const realm = new Realm({ repl: true });
-      const port = realm.port as MessagePort;
-      port.start();
-      // Register the realm for stepping — required so the embedded child is
-      // driven by the parent loop. The run() Promise resolves when the realm exits.
-      const runPromise = realm.run();
-
-      let nextId = 1;
-      const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-
-      port.addEventListener('message', function onReplMessage(ev: Event) {
-        const msg = (ev as MessageEvent<Record<string, unknown>>).data;
-        if (!msg || typeof msg !== 'object') return;
-        const id = msg['id'] as number;
-        const entry = pending.get(id);
-        if (!entry) return;
-        pending.delete(id);
-        if (msg['__eval_result'] === true) {
-          entry.resolve(msg['value']);
-        } else if (msg['__eval_error'] === true) {
-          entry.reject(new Error((msg['message'] as string | undefined) ?? 'eval error'));
-        }
-      });
-
-      async function evalCode(code: string): Promise<unknown> {
-        const id = nextId++;
-        return new Promise<unknown>((resolve, reject) => {
-          pending.set(id, { resolve, reject });
-          port.postMessage({ __eval: true, id, code });
-        });
-      }
-
-      async function readLine(promptText: string): Promise<string | null> {
-        await prompt(promptText);
-        let line = '';
-        while (true) {
-          const b = await stdin().readByte();
-          if (b === null) return null;
-          if (b === 0x0a || b === 0x0d) break;       // \n or \r
-          if (b === 0x03) return null;                // Ctrl-C
-          if (b === 0x04 && line.length === 0) return null; // Ctrl-D on empty
-          if (b === 0x7f || b === 0x08) {
-            if (line.length > 0) line = line.slice(0, -1);
-          } else {
-            line += String.fromCharCode(b);
-          }
-        }
-        return line;
-      }
-
-      let buffer = '';
-      await prompt('Fino REPL\nType .exit to quit.\n\n');
-
-      while (true) {
-        const line = await readLine(buffer.length === 0 ? '> ' : '... ');
-        if (line === null) break;
-        if (line === '.exit') break;
-
-        buffer += (buffer.length > 0 ? '\n' : '') + line;
-
-        if (!isComplete(buffer)) continue;
-
-        const code = buffer;
-        buffer = '';
-
-        try {
-          const result = await evalCode(code);
-          const formatted = formatResult(result);
-          if (formatted) {
-            await print(formatted + '\n');
-          }
-        } catch (err) {
-          await print((err instanceof Error ? err.message : String(err)) + '\n');
-        }
-      }
-
-      port.postMessage({ __terminate: true });
-      port.close();
-      await runPromise;
-    },
+    run: runReplCommand,
   });
 }
