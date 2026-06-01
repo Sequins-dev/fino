@@ -78,14 +78,16 @@ describe('verifyTarballIntegrity — SRI (dist.integrity)', () => {
     t.ok(true, 'valid sha512 integrity passed');
   });
 
-  it('skips unknown SRI algorithm gracefully', (t) => {
+  it('rejects unknown SRI algorithm without legacy shasum fallback', (t) => {
     if (!openssl.cryptoAvailable) {
       t.ok(true, 'OpenSSL not available — skipping');
       return;
     }
-    // sha3 is not in the supported map — should silently pass
-    verifyTarballIntegrity(PAYLOAD, 'sha3-abc123', undefined, 'test-pkg@1.0.0');
-    t.ok(true, 'unknown algorithm did not throw');
+    t.throws(
+      () => verifyTarballIntegrity(PAYLOAD, 'sha3-abc123', undefined, 'test-pkg@1.0.0'),
+      /unsupported integrity algorithm/,
+      'unknown algorithm rejected',
+    );
   });
 });
 
@@ -145,11 +147,12 @@ describe('verifyTarballIntegrity — malformed / unrecognised SRI (B3)', () => {
     }
   });
 
-  it('skips gracefully when integrity uses unknown algorithm and no shasum', (t) => {
-    // Unknown algorithms are skipped for forward compatibility (same as sha3).
-    // md5 is insecure but since we can't verify it, we skip rather than throw.
-    verifyTarballIntegrity(PAYLOAD, 'md5-deadbeef', undefined, 'test-pkg@1.0.0');
-    t.ok(true, 'unknown algorithm (md5) did not throw when no shasum provided');
+  it('throws when integrity uses an unsupported algorithm and no shasum', (t) => {
+    t.throws(
+      () => verifyTarballIntegrity(PAYLOAD, 'md5-deadbeef', undefined, 'test-pkg@1.0.0'),
+      /unsupported integrity algorithm/,
+      'unknown algorithm rejected without legacy shasum fallback',
+    );
   });
 
   it('falls through to shasum when integrity has unknown algorithm and shasum is correct', (t) => {

@@ -7,6 +7,8 @@
  * and preserved but ignored for precedence comparisons.
  */
 
+import { Scanner } from 'fino:parsing/scanner';
+
 /** Parsed SemVer components with prerelease identifiers split by segment. */
 interface SemVer {
   major: number;
@@ -27,16 +29,51 @@ interface ComparatorSet {
   prereleaseBases: Set<string>;
 }
 
-const VERSION_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-const XRANGE_RE = /^(0|[1-9]\d*|x|X|\*)(?:\.(0|[1-9]\d*|x|X|\*))?(?:\.(0|[1-9]\d*|x|X|\*))?(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-const COMPARATOR_RE = /^(<=|>=|<|>)?\s*([^\s]+)$/;
-
 function isWildcard(part: string | undefined): boolean {
   return part == null || part === '' || part === 'x' || part === 'X' || part === '*';
 }
 
+function isDigit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39;
+}
+
+function isAlphaNumHyphen(code: number): boolean {
+  return isDigit(code) ||
+    (code >= 0x41 && code <= 0x5A) ||
+    (code >= 0x61 && code <= 0x7A) ||
+    code === 0x2D;
+}
+
+function readNumericIdentifier(sc: Scanner, input: string, name: string): string {
+  const value = sc.eatWhile(isDigit);
+  if (value === '') throw new Error(`Invalid semver ${name} '${input}'`);
+  if (value.length > 1 && value.startsWith('0')) throw new Error(`Invalid semver ${name} '${input}'`);
+  return value;
+}
+
+function readXRangePart(sc: Scanner, input: string): string {
+  const code = sc.peekCode();
+  if (code === 0x78 || code === 0x58 || code === 0x2A) return sc.eat();
+  return readNumericIdentifier(sc, input, 'range version');
+}
+
+function readIdentifier(sc: Scanner, input: string, name: string, strictNumeric: boolean): string {
+  const value = sc.eatWhile(isAlphaNumHyphen);
+  if (value === '') throw new Error(`Invalid semver ${name} '${input}'`);
+  if (strictNumeric && value.length > 1 && value.startsWith('0') && [...value].every((ch) => ch >= '0' && ch <= '9')) {
+    throw new Error(`Invalid semver ${name} '${input}'`);
+  }
+  return value;
+}
+
+function readIdentifierList(sc: Scanner, input: string, name: string, strictNumeric: boolean): string[] {
+  const out = [readIdentifier(sc, input, name, strictNumeric)];
+  while (sc.eatChar('.')) out.push(readIdentifier(sc, input, name, strictNumeric));
+  return out;
+}
+
 function parseIdentifier(id: string): string | number {
-  if (/^(0|[1-9]\d*)$/.test(id)) return Number(id);
+  if ([...id].every((ch) => ch >= '0' && ch <= '9')) return Number(id);
   return id;
 }
 
@@ -96,15 +133,28 @@ function parsePartialVersion(input: string): {
   patch?: string;
   prerelease: string[];
 } {
-  const match = String(input).trim().match(XRANGE_RE);
-  if (!match) throw new Error(`Invalid semver range version '${input}'`);
-  const major = match[1];
-  if (major === undefined) throw new Error(`Invalid semver range version '${input}'`);
+  const text = String(input).trim();
+  const sc = new Scanner(text, { encoding: 'ascii', format: 'semver' });
+  let major: string;
+  let minor: string | undefined;
+  let patch: string | undefined;
+  let prerelease: string[] = [];
+  try {
+    major = readXRangePart(sc, input);
+    if (sc.eatChar('.')) {
+      minor = readXRangePart(sc, input);
+      if (sc.eatChar('.')) patch = readXRangePart(sc, input);
+    }
+    if (sc.eatChar('-')) prerelease = readIdentifierList(sc, input, 'range version', true);
+    if (!sc.done) throw new Error();
+  } catch (_) {
+    throw new Error(`Invalid semver range version '${input}'`);
+  }
   return {
     major,
-    ...(match[2] !== undefined ? { minor: match[2] } : {}),
-    ...(match[3] !== undefined ? { patch: match[3] } : {}),
-    prerelease: match[4] ? match[4].split('.') : [],
+    ...(minor !== undefined ? { minor } : {}),
+    ...(patch !== undefined ? { patch } : {}),
+    prerelease,
   };
 }
 
@@ -211,18 +261,36 @@ function expandToken(token: string): Comparator[] {
   if (token === '' || token === '*' || token.toLowerCase() === 'x') return [];
   if (token.startsWith('^')) return caretComparators(token.slice(1));
   if (token.startsWith('~')) return tildeComparators(token.slice(1));
-  const match = token.match(COMPARATOR_RE);
-  if (!match) throw new Error(`Invalid semver comparator '${token}'`);
-  const op = (match[1] ?? '') as '' | '>' | '>=' | '<' | '<=';
-  const value = match[2];
-  if (value === undefined) throw new Error(`Invalid semver comparator '${token}'`);
+  const sc = new Scanner(token, { encoding: 'ascii', format: 'semver' });
+  let op: '' | '>' | '>=' | '<' | '<=' = '';
+  if (sc.match('<=')) op = '<=';
+  else if (sc.match('>=')) op = '>=';
+  else if (sc.match('<')) op = '<';
+  else if (sc.match('>')) op = '>';
+  const start = sc.mark();
+  sc.eatWhile((code) => code !== 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D);
+  const value = sc.text(start);
+  if (value === '' || !sc.done) throw new Error(`Invalid semver comparator '${token}'`);
   return comparatorFromParts(op, value);
+}
+
+function tokenizeRangeSet(text: string): string[] {
+  const sc = new Scanner(text, { encoding: 'ascii', format: 'semver' });
+  const tokens: string[] = [];
+  while (!sc.done) {
+    sc.skipWhitespace();
+    if (sc.done) break;
+    const start = sc.mark();
+    sc.eatWhile((code) => code !== 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D);
+    tokens.push(sc.text(start));
+  }
+  return tokens;
 }
 
 function parseRangeSet(text: string): ComparatorSet {
   const comparators: Comparator[] = [];
   const prereleaseBases = new Set<string>();
-  for (const rawToken of text.trim().split(/\s+/)) {
+  for (const rawToken of tokenizeRangeSet(text.trim())) {
     if (!rawToken) continue;
     for (const comparator of expandToken(rawToken)) {
       comparators.push(comparator);
@@ -233,19 +301,42 @@ function parseRangeSet(text: string): ComparatorSet {
 }
 
 function normalizeHyphenRanges(input: string): string {
-  return input.replace(
-    /([^\s]+)\s+-\s+([^\s]+)/g,
-    (_, lower, upper) => `>=${lower} <=${upper}`,
-  );
+  const tokens = tokenizeRangeSet(input);
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (i + 2 < tokens.length && tokens[i + 1] === '-') {
+      out.push(`>=${tokens[i]}`, `<=${tokens[i + 2]}`);
+      i += 2;
+    } else {
+      out.push(tokens[i]!);
+    }
+  }
+  return out.join(' ');
 }
 
 function parseRange(input: string | null | undefined): ComparatorSet[] {
   const text = String(input ?? '').trim();
   if (text === '' || text === '*' || text.toLowerCase() === 'latest') return [{ comparators: [], prereleaseBases: new Set() }];
-  return normalizeHyphenRanges(text)
-    .split('||')
-    .map((part) => parseRangeSet(part))
-    .filter((set) => set.comparators.length > 0 || partIsWildcard(input));
+  const sc = new Scanner(text, { encoding: 'ascii', format: 'semver' });
+  const sets: ComparatorSet[] = [];
+  let branchStart = sc.mark();
+  while (!sc.done) {
+    if (sc.peek(2) === '||') {
+      const branchEnd = sc.mark();
+      const branch = sc.text(branchStart).trim();
+      if (branch === '') throw new Error(`Invalid semver range '${input}'`);
+      sets.push(parseRangeSet(normalizeHyphenRanges(branch)));
+      sc.restore(branchEnd);
+      sc.expect('||');
+      branchStart = sc.mark();
+      continue;
+    }
+    sc.eat();
+  }
+  const branch = sc.text(branchStart).trim();
+  if (branch === '') throw new Error(`Invalid semver range '${input}'`);
+  sets.push(parseRangeSet(normalizeHyphenRanges(branch)));
+  return sets.filter((set) => set.comparators.length > 0 || partIsWildcard(input));
 }
 
 function partIsWildcard(input: string | null | undefined): boolean {
@@ -272,20 +363,27 @@ function testComparator(version: SemVer, comparator: Comparator): boolean {
  * ```
  */
 export function parse(version: string): SemVer {
-  const match = String(version).trim().match(VERSION_RE);
-  if (!match) throw new Error(`Invalid semver version '${version}'`);
-  const prerelease = match[4] ? match[4].split('.').map(parseIdentifier) : [];
-  const build = match[5] ? match[5].split('.') : [];
-  const parsed: SemVer = {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease,
-    build,
-    version: '',
-  };
-  parsed.version = formatSemVer(parsed);
-  return parsed;
+  const input = String(version).trim();
+  const sc = new Scanner(input, { encoding: 'ascii', format: 'semver' });
+  try {
+    const major = Number(readNumericIdentifier(sc, version, 'version'));
+    sc.expect('.');
+    const minor = Number(readNumericIdentifier(sc, version, 'version'));
+    sc.expect('.');
+    const patch = Number(readNumericIdentifier(sc, version, 'version'));
+    const prerelease = sc.eatChar('-')
+      ? readIdentifierList(sc, version, 'version', true).map(parseIdentifier)
+      : [];
+    const build = sc.eatChar('+')
+      ? readIdentifierList(sc, version, 'version', false)
+      : [];
+    if (!sc.done) throw new Error();
+    const parsed: SemVer = { major, minor, patch, prerelease, build, version: '' };
+    parsed.version = formatSemVer(parsed);
+    return parsed;
+  } catch (_) {
+    throw new Error(`Invalid semver version '${version}'`);
+  }
 }
 
 /**

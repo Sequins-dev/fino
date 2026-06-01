@@ -35,4 +35,12 @@ describe('fino:template — mustache core', () => {
     t.equal(tpl({ items: [{ name: 'one' }, { name: 'two' }] }), 'one;two;');
     t.equal(tpl({ items: [] }), '');
   });
+
+  it('rejects malformed tags and names', (t) => {
+    t.throws(() => compile('{{#}}{{/}}'), /empty section name/, 'empty section name rejected');
+    t.throws(() => compile('{{user..name}}'), /malformed name/, 'empty dotted segment rejected');
+    t.throws(() => compile('{{../}}'), /malformed name/, 'bare parent path rejected');
+    t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partials rejected');
+    t.throws(() => compile('{{#a}}{{/b}}'), /unmatched section close/, 'mismatched close rejected');
+  });
 });

@@ -16,6 +16,8 @@ describe('fino:semver parse', () => {
   it('rejects invalid versions', (t) => {
     t.throws(() => parse('1.2'), /Invalid semver version/, 'missing patch rejected');
     t.throws(() => parse('01.2.3'), /Invalid semver version/, 'leading zero rejected');
+    t.throws(() => parse('1.2.3-01'), /Invalid semver version/, 'numeric prerelease leading zero rejected');
+    t.throws(() => parse('1.2.3-alpha..1'), /Invalid semver version/, 'empty prerelease identifier rejected');
   });
 });
 
@@ -49,6 +51,11 @@ describe('fino:semver satisfies', () => {
   it('applies npm-style prerelease exclusion for stable ranges', (t) => {
     t.equal(satisfies('1.2.3-alpha.1', '^1.2.3'), false, 'stable caret range excludes prereleases');
     t.equal(satisfies('1.2.3-alpha.2', '>=1.2.3-alpha.1 <1.2.3'), true, 'prerelease comparator range admits prereleases');
+  });
+
+  it('rejects malformed disjunctions', (t) => {
+    t.throws(() => satisfies('1.2.3', '^1.0.0 ||'), /Invalid semver range/, 'dangling || rejected');
+    t.throws(() => satisfies('1.2.3', '|| ^1.0.0'), /Invalid semver range/, 'leading || rejected');
   });
 });
 

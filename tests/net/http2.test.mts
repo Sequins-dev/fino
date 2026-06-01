@@ -9,6 +9,7 @@ import { h2Available, h2Version, H2ClientDriver, Nghttp2Session } from 'fino:net
 import { serve } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { Response } from 'fino:net/http';
+import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.mts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,6 +111,21 @@ describe('nghttp2 bindings', () => {
     t.ok(typeof h2Version === 'string', 'h2Version is a string');
     t.ok((h2Version as string).length > 0, 'h2Version is non-empty');
     t.ok(/^\d+\.\d+/.test(h2Version as string), `h2Version = "${h2Version}" looks like semver`);
+  });
+});
+
+describe('H2 scanner-backed header parsers', () => {
+  it('parses status and rejects malformed values', (t) => {
+    t.equal(_parseH2StatusHeader('204'), 204, 'valid three-digit status parsed');
+    t.throws(() => _parseH2StatusHeader('20x'), /:status/, 'non-digit status rejected');
+    t.throws(() => _parseH2StatusHeader('200 OK'), /:status/, 'extra status text rejected');
+  });
+
+  it('parses duplicate content-length strictly', (t) => {
+    t.equal(_parseH2ContentLength('5'), 5, 'single value parsed');
+    t.equal(_parseH2ContentLength('5, 5'), 5, 'identical duplicate accepted');
+    t.throws(() => _parseH2ContentLength('5, 6'), /content-length/, 'conflicting duplicate rejected');
+    t.throws(() => _parseH2ContentLength('5x'), /content-length/, 'malformed length rejected');
   });
 });
 

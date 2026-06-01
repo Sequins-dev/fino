@@ -20,6 +20,7 @@
 import type { BufferedBytesReader, BytesWriter } from '../../../stream.mts';
 import type { ClientDriver, ClientDriverOptions } from '../../../../net/http/driver.mts';
 import { Request, Response, Headers } from '../../../../net/http/index.mts';
+import { Scanner } from '../../../../parsing/scanner.mts';
 import {
   NGHTTP2_FLAG_END_STREAM,
   NGHTTP2_FLAG_END_HEADERS,
@@ -28,6 +29,13 @@ import {
 } from './bindings.mts';
 import { Nghttp2Session } from './session.mts';
 import type { H2StreamCallbacks } from './session.mts';
+
+function _parseStatus(value: string): number {
+  const scanner = new Scanner(value, { encoding: 'ascii', format: 'http2' });
+  const digits = scanner.eatWhile((code) => code >= 0x30 && code <= 0x39);
+  if (digits.length !== 3 || !scanner.done) throw new Error('invalid :status header');
+  return Number(digits);
+}
 
 // ---------------------------------------------------------------------------
 // Per-stream state (client side: one stream per send() call)
@@ -87,7 +95,7 @@ export class H2ClientDriver implements ClientDriver {
           if (!name.startsWith(':')) s.trailerHeaders.append(name, value);
           return;
         }
-        if (name === ':status') { s.status = parseInt(value, 10); }
+        if (name === ':status') { s.status = _parseStatus(value); }
         else if (!name.startsWith(':')) { s.headers.append(name, value); }
       },
 

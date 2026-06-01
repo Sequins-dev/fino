@@ -38,6 +38,7 @@ import type { ConnectionTakeover } from './driver.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
 import { topic } from '../../context/topic.mts';
+import { Scanner } from '../../parsing/scanner.mts';
 import {
   consumeRequestContext,
   otelRuntimeEvent,
@@ -83,8 +84,8 @@ function _decodeBase64Url(s: string): Uint8Array {
 
 function _isH2cUpgrade(req: Request): boolean {
   if ((req.headers.get('upgrade') ?? '').toLowerCase() !== 'h2c') return false;
-  const conn = (req.headers.get('connection') ?? '').toLowerCase();
-  return conn.includes('http2-settings');
+  const scanner = new Scanner(req.headers.get('connection') ?? '', { encoding: 'ascii', format: 'http' });
+  return scanner.readDelimitedList(',').some((token) => token.toLowerCase() === 'http2-settings');
 }
 
 // 101 Switching Protocols response written before handing off to the h2 driver.

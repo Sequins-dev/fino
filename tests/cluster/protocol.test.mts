@@ -83,6 +83,14 @@ describe('ClusterMessage encode/decode', () => {
     t.equal(got.t, 'TERMINATE');
     if (got.t === 'TERMINATE') t.equal(got.realmId, 'nodeB/5');
   });
+
+  it('rejects malformed envelopes', (t) => {
+    t.throws(() => decode('null'), /protocol/, 'non-object JSON rejected');
+    t.throws(() => decode('{"t":"NOPE"}'), /unknown message type/, 'unknown discriminator rejected');
+    t.throws(() => decode('{"t":"HELLO","nodeId":"node/1","load":{"cpu":0,"memory":1}}'), /nodeId/, 'node id with slash rejected');
+    t.throws(() => decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/2","payload":5}'), /payload/, 'non-string payload rejected');
+    t.throws(() => decode('{"t":"WELCOME","nodeId":"seed","peers":[{"nodeId":"bad/node","load":{"cpu":0,"memory":1}}]}'), /peer/, 'malformed peer rejected');
+  });
 });
 
 describe('nodeIdFromId helper', () => {

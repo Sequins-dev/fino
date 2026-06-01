@@ -6,6 +6,8 @@
  * intentionally not implemented yet.
  */
 
+import { Scanner } from 'fino:parsing/scanner';
+
 type Token =
   | { type: 'text'; value: string }
   | { type: 'variable'; name: string; escaped: boolean }
@@ -60,32 +62,26 @@ export function render(template: string, data: unknown = {}, options: RenderOpti
 }
 
 function parseTemplate(template: string): Token[] {
+  const scanner = new Scanner(template, { encoding: 'utf-8', format: 'template' });
   const root: Token[] = [];
   const stack: Array<{ name: string; tokens: Token[]; section: Token & { type: 'section' } }> = [];
   let tokens = root;
-  let index = 0;
 
-  while (index < template.length) {
-    const open = template.indexOf('{{', index);
-    if (open < 0) {
-      tokens.push({ type: 'text', value: template.slice(index) });
-      break;
-    }
-    if (open > index) tokens.push({ type: 'text', value: template.slice(index, open) });
+  while (!scanner.done) {
+    const textStart = scanner.mark();
+    while (!scanner.done && scanner.peek(2) !== '{{') scanner.eat();
+    const text = scanner.text(textStart);
+    if (text !== '') tokens.push({ type: 'text', value: text });
+    if (scanner.done) break;
 
-    if (template.startsWith('{{{', open)) {
-      const close = template.indexOf('}}}', open + 3);
-      if (close < 0) throw new Error('template: unclosed triple mustache');
-      const name = template.slice(open + 3, close).trim();
+    if (scanner.match('{{{')) {
+      const name = validateTemplateName(readUntilSequence(scanner, '}}}', 'template: unclosed triple mustache'), 'variable');
       tokens.push({ type: 'variable', name, escaped: false });
-      index = close + 3;
       continue;
     }
 
-    const close = template.indexOf('}}', open + 2);
-    if (close < 0) throw new Error('template: unclosed tag');
-    let tag = template.slice(open + 2, close).trim();
-    index = close + 2;
+    scanner.expect('{{');
+    let tag = readUntilSequence(scanner, '}}', 'template: unclosed tag').trim();
     if (tag.length === 0) continue;
 
     const sigil = tag[0]!;
@@ -94,31 +90,68 @@ function parseTemplate(template: string): Token[] {
     if (sigil === '!') continue;
     if (sigil === '>') throw new Error('template: partials are not supported yet');
     if (sigil === '#') {
+      const name = validateTemplateName(tag, 'section');
       const section: Token & { type: 'section' } = { type: 'section', name: tag, inverted: false, children: [] };
+      section.name = name;
       tokens.push(section);
-      stack.push({ name: tag, tokens, section });
+      stack.push({ name, tokens, section });
       tokens = section.children;
       continue;
     }
     if (sigil === '^') {
-      const section: Token & { type: 'section' } = { type: 'section', name: tag, inverted: true, children: [] };
+      const name = validateTemplateName(tag, 'section');
+      const section: Token & { type: 'section' } = { type: 'section', name, inverted: true, children: [] };
       tokens.push(section);
-      stack.push({ name: tag, tokens, section });
+      stack.push({ name, tokens, section });
       tokens = section.children;
       continue;
     }
     if (sigil === '/') {
+      const name = validateTemplateName(tag, 'section close');
       const frame = stack.pop();
-      if (frame === undefined || frame.name !== tag) throw new Error(`template: unmatched section close "${tag}"`);
+      if (frame === undefined || frame.name !== name) throw new Error(`template: unmatched section close "${name}"`);
       tokens = frame.tokens;
       continue;
     }
-    tokens.push({ type: 'variable', name: sigil === '&' ? tag : template.slice(open + 2, close).trim(), escaped: sigil !== '&' });
+    tokens.push({ type: 'variable', name: validateTemplateName(sigil === '&' ? tag : tag, 'variable'), escaped: sigil !== '&' });
   }
 
   const unclosed = stack.pop();
   if (unclosed !== undefined) throw new Error(`template: unclosed section "${unclosed.name}"`);
   return root;
+}
+
+function readUntilSequence(scanner: Scanner, close: string, error: string): string {
+  const start = scanner.mark();
+  while (!scanner.done) {
+    if (scanner.peek(close.length) === close) {
+      const out = scanner.text(start);
+      scanner.expect(close);
+      return out;
+    }
+    scanner.eat();
+  }
+  throw new Error(error);
+}
+
+function validateTemplateName(raw: string, kind: string): string {
+  const name = raw.trim();
+  if (name === '') {
+    if (kind.includes('section')) throw new Error('template: empty section name');
+    throw new Error('template: empty variable name');
+  }
+  if (name === '.') return name;
+  const scanner = new Scanner(name, { encoding: 'utf-8', format: 'template-name' });
+  while (scanner.match('../')) {
+    if (scanner.done) throw new Error(`template: malformed name "${name}"`);
+  }
+  const restStart = scanner.mark();
+  scanner.eatWhile(() => true);
+  const rest = scanner.text(restStart);
+  if (rest === '' || rest.startsWith('.') || rest.endsWith('.') || rest.includes('..') || rest.includes('/')) {
+    throw new Error(`template: malformed name "${name}"`);
+  }
+  return name;
 }
 
 function renderTokens(tokens: Token[], context: ContextFrame): string {

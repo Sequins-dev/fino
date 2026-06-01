@@ -12,6 +12,7 @@ import { renderMarkdown, renderMarkdownInline, type MarkdownOptions } from '../.
 import { escapeHtml, render as renderTemplate } from '../../template.mts';
 import { parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.mts';
 import { parse as parseYaml } from '../../format/yaml.mts';
+import { Scanner } from '../../parsing/scanner.mts';
 
 const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
@@ -859,11 +860,7 @@ function docForSpan(comments: ParseComment[], start: number | undefined, source:
 }
 
 function parseDocComment(comment: ParseComment, _source: string): DocBlock {
-  const lines = comment.text.split(/\r?\n/).map((rawLine) => {
-    let line = rawLine.replace(/^\s+/, '');
-    if (line.startsWith('*')) line = line.slice(1).startsWith(' ') ? line.slice(2) : line.slice(1);
-    return line;
-  });
+  const lines = docCommentLines(comment.text);
   const textLines: string[] = [];
   const tags: DocTag[] = [];
   const freeLines: string[] = [];
@@ -871,8 +868,8 @@ function parseDocComment(comment: ParseComment, _source: string): DocBlock {
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
     if (line.startsWith('@')) {
-      const match = /^@(\S+)\s*(.*)$/.exec(line);
-      if (match) tags.push({ name: match[1]!, value: match[2] ?? '' });
+      const tag = parseDocTag(line);
+      if (tag) tags.push(tag);
       continue;
     }
     const visibleLine = stripInlineDirective(line);
@@ -888,8 +885,61 @@ function parseDocComment(comment: ParseComment, _source: string): DocBlock {
   };
 }
 
+function scannerLines(text: string): string[] {
+  const scanner = new Scanner(text, { encoding: 'utf-8', format: 'doc' });
+  const lines: string[] = [];
+  while (!scanner.done) {
+    const start = scanner.mark();
+    scanner.eatUntil((code) => code === 0x0A || code === 0x0D);
+    lines.push(scanner.text(start));
+    if (scanner.match('\r\n')) continue;
+    if (scanner.eatChar('\n') || scanner.eatChar('\r')) continue;
+  }
+  return lines;
+}
+
+function docCommentLines(text: string): string[] {
+  return scannerLines(text).map((rawLine) => {
+    const scanner = new Scanner(rawLine, { encoding: 'utf-8', format: 'doc' });
+    scanner.skipWhitespace();
+    if (scanner.eatChar('*')) {
+      if (scanner.peekCode() === 0x20) scanner.eat();
+    }
+    const start = scanner.mark();
+    scanner.eatWhile(() => true);
+    return scanner.text(start);
+  });
+}
+
+function parseDocTag(line: string): DocTag | undefined {
+  const scanner = new Scanner(line, { encoding: 'utf-8', format: 'doc' });
+  if (!scanner.eatChar('@')) return undefined;
+  const name = scanner.eatWhile((code) => code !== 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D);
+  scanner.skipWhitespace();
+  const valueStart = scanner.mark();
+  scanner.eatWhile(() => true);
+  return name ? { name, value: scanner.text(valueStart) } : undefined;
+}
+
 function stripInlineDirective(line: string): string {
-  return line.replace(/\s@(param|returns?|throws|example|see|deprecated)\b.*$/u, '').trimEnd();
+  const scanner = new Scanner(line, { encoding: 'utf-8', format: 'doc' });
+  let outEnd = scanner.mark();
+  while (!scanner.done) {
+    if ((scanner.peekCode() === 0x20 || scanner.peekCode() === 0x09) && scanner.peek(2).endsWith('@')) {
+      const beforeDirective = scanner.mark();
+      scanner.eat();
+      if (scanner.eatChar('@')) {
+        const name = scanner.eatWhile((code) => code >= 0x61 && code <= 0x7A);
+        if (name === 'param' || name === 'return' || name === 'returns' || name === 'throws' || name === 'example' || name === 'see' || name === 'deprecated') {
+          return scanner.text({ offset: 0, line: 1, column: 1 }, beforeDirective).trimEnd();
+        }
+      }
+      scanner.restore(beforeDirective);
+    }
+    scanner.eat();
+    outEnd = scanner.mark();
+  }
+  return scanner.text({ offset: 0, line: 1, column: 1 }, outEnd).trimEnd();
 }
 
 function emptyDoc(): DocBlock {
@@ -911,7 +961,7 @@ function blocksForFreeText(lines: string[]): DocBlockItem[] {
     const fence = line.trimStart().startsWith('```') ? line.trimStart().slice(3) : null;
     if (fence !== null) {
       pushParagraph();
-      const [lang = '', ...metaParts] = fence.trim().split(/\s+/).filter(Boolean);
+      const { lang, meta } = parseFenceInfo(fence);
       index++;
       const codeLines: string[] = [];
       while (index < lines.length && !lines[index]!.trimStart().startsWith('```')) {
@@ -919,7 +969,7 @@ function blocksForFreeText(lines: string[]): DocBlockItem[] {
         index++;
       }
       if (index < lines.length) index++;
-      blocks.push(codeBlock(lang, metaParts.join(' '), codeLines));
+      blocks.push(codeBlock(lang, meta, codeLines));
       continue;
     }
     if (line.trim() === '') pushParagraph();
@@ -928,6 +978,16 @@ function blocksForFreeText(lines: string[]): DocBlockItem[] {
   }
   pushParagraph();
   return blocks;
+}
+
+function parseFenceInfo(fence: string): { lang: string; meta: string } {
+  const scanner = new Scanner(fence, { encoding: 'utf-8', format: 'doc' });
+  scanner.skipWhitespace();
+  const lang = scanner.eatWhile((code) => code !== 0x20 && code !== 0x09 && code !== 0x0A && code !== 0x0D);
+  scanner.skipWhitespace();
+  const metaStart = scanner.mark();
+  scanner.eatWhile(() => true);
+  return { lang, meta: scanner.text(metaStart).trim() };
 }
 
 function codeBlock(lang: string, meta: string, rawLines: string[]): DocBlockItem {
@@ -1361,7 +1421,12 @@ function resolveSourceGuide(api: ApiDoc, sourcePath: string, hrefPath: string): 
 
 function normalizeRelativePath(path: string): string {
   const out: string[] = [];
-  for (const part of path.split('/')) {
+  const scanner = new Scanner(path, { encoding: 'utf-8', format: 'doc-path' });
+  while (!scanner.done) {
+    const start = scanner.mark();
+    scanner.eatUntil((code) => code === 0x2F);
+    const part = scanner.text(start);
+    scanner.eatChar('/');
     if (!part || part === '.') continue;
     if (part === '..') out.pop();
     else out.push(part);
@@ -1413,11 +1478,12 @@ function rewriteSourceRelativeHref(sourcePath: string, outputHref: string, href:
 }
 
 function firstHrefSuffixIndex(href: string): number {
-  const query = href.indexOf('?');
-  const fragment = href.indexOf('#');
-  if (query < 0) return fragment;
-  if (fragment < 0) return query;
-  return Math.min(query, fragment);
+  const scanner = new Scanner(href, { encoding: 'utf-8', format: 'doc-link' });
+  while (!scanner.done) {
+    if (scanner.peekCode() === 0x3F || scanner.peekCode() === 0x23) return scanner.offset;
+    scanner.eat();
+  }
+  return -1;
 }
 
 function toHtmlExport(item: DocExport, ctx: HtmlRenderContext): HtmlExport {

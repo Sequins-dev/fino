@@ -8,11 +8,37 @@ import { DiskFileSystem } from 'fino:file';
 import { extractArchive } from 'fino:archive';
 import { cwd, env } from 'fino:runtime/process';
 import { compare, maxSatisfying } from 'fino:semver';
+import { Scanner } from 'fino:parsing/scanner';
 import * as openssl from './openssl.mts';
 
 const fs = new DiskFileSystem();
 const DEFAULT_REGISTRY = env.FINO_NPM_REGISTRY ?? 'https://registry.npmjs.org';
 const PROBE_EXTENSIONS = ['.mjs', '.js', '.json', '.mts', '.ts'];
+const SRI_ALGORITHMS: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
+
+function isSriAlgorithmCode(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5A) || (code >= 0x61 && code <= 0x7A);
+}
+
+function isBase64Code(code: number): boolean {
+  return (code >= 0x30 && code <= 0x39) ||
+    (code >= 0x41 && code <= 0x5A) ||
+    (code >= 0x61 && code <= 0x7A) ||
+    code === 0x2B || code === 0x2F || code === 0x3D;
+}
+
+function firstSriToken(integrity: string): { token: string; hashAlias: string; expectedB64: string } {
+  const sc = new Scanner(integrity.trim(), { encoding: 'ascii', format: 'sri' });
+  const tokenStart = sc.mark();
+  const hashAlias = sc.eatWhile(isSriAlgorithmCode).toLowerCase();
+  if (hashAlias === '' || !sc.eatChar('-')) throw new Error('malformed integrity token');
+  const expectedB64 = sc.eatWhile(isBase64Code);
+  if (expectedB64 === '') throw new Error('malformed integrity token');
+  if (!sc.done && sc.peekCode() !== 0x20 && sc.peekCode() !== 0x09 && sc.peekCode() !== 0x0A && sc.peekCode() !== 0x0D) {
+    throw new Error('malformed integrity token');
+  }
+  return { token: sc.text(tokenStart), hashAlias, expectedB64 };
+}
 
 /**
  * Verify a tarball's integrity against the npm packument's `dist.integrity`
@@ -31,16 +57,14 @@ export function verifyTarballIntegrity(
   if (!openssl.cryptoAvailable) return;
 
   if (integrity) {
-    // SRI may be multi-value (space-separated); use only the first token.
-    const token = (integrity.split(/\s+/)[0] ?? '');
-    const dashIdx = token.indexOf('-');
-    if (dashIdx >= 0) {
-      const hashAlias = token.slice(0, dashIdx).toLowerCase();
-      const algMap: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
-      const alg = algMap[hashAlias];
+    let parsedSri: { token: string; hashAlias: string; expectedB64: string } | null = null;
+    try {
+      // SRI may be multi-value (space-separated); use only the first token.
+      parsedSri = firstSriToken(integrity);
+      const { token, hashAlias, expectedB64 } = parsedSri;
+      const alg = SRI_ALGORITHMS[hashAlias];
       if (alg) {
         // Known SRI algorithm — verify and return (don't fall through to shasum).
-        const expectedB64 = token.slice(dashIdx + 1);
         const actual = openssl.digest(alg, bytes);
         let actualB64 = '';
         const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -57,16 +81,17 @@ export function verifyTarballIntegrity(
         }
         return;
       }
-      // Unknown algorithm prefix (e.g. "sha3-…") — skip gracefully for
-      // forward compatibility; fall through to shasum if provided.
-      if (!shasum) return;
-    } else {
-      // Malformed SRI (no "-") — throw if no shasum fallback available.
+    } catch (error) {
       if (!shasum) {
         throw new Error(
-          `Integrity check failed for ${packageId}: unrecognised integrity string "${token.slice(0, 30)}"`,
+          `Integrity check failed for ${packageId}: unrecognised integrity string "${integrity.slice(0, 30)}"`,
         );
       }
+    }
+    if (parsedSri && !SRI_ALGORITHMS[parsedSri.hashAlias] && !shasum) {
+      throw new Error(
+        `Integrity check failed for ${packageId}: unsupported integrity algorithm "${parsedSri.hashAlias}"`,
+      );
     }
   }
 
@@ -82,14 +107,29 @@ export function verifyTarballIntegrity(
 function splitPackageSpec(input: string): { name: string; range: string | null } {
   const text = String(input).trim();
   if (text.length === 0) throw new Error('Package name must not be empty');
-  if (text.startsWith('@')) {
-    const idx = text.lastIndexOf('@');
-    if (idx > 0) return { name: text.slice(0, idx), range: text.slice(idx + 1) || null };
-    return { name: text, range: null };
+  const scanner = new Scanner(text, { encoding: 'utf-8', format: 'package-spec' });
+  if (scanner.eatChar('@')) {
+    const scopeStart = scanner.mark();
+    scanner.eatUntil((code) => code === 0x2F);
+    const scope = scanner.text(scopeStart);
+    if (scope === '' || !scanner.eatChar('/')) throw new Error(`Invalid scoped package spec '${input}'`);
+    const nameStart = scanner.mark();
+    scanner.eatUntil((code) => code === 0x40);
+    const packageName = scanner.text(nameStart);
+    if (packageName === '') throw new Error(`Invalid scoped package spec '${input}'`);
+    if (!scanner.eatChar('@')) return { name: `@${scope}/${packageName}`, range: null };
+    const rangeStart = scanner.mark();
+    scanner.eatWhile(() => true);
+    return { name: `@${scope}/${packageName}`, range: scanner.text(rangeStart) || null };
   }
-  const idx = text.indexOf('@');
-  if (idx < 0) return { name: text, range: null };
-  return { name: text.slice(0, idx), range: text.slice(idx + 1) || null };
+  const nameStart = scanner.mark();
+  scanner.eatUntil((code) => code === 0x40);
+  const name = scanner.text(nameStart);
+  if (name === '') throw new Error(`Invalid package spec '${input}'`);
+  if (!scanner.eatChar('@')) return { name, range: null };
+  const rangeStart = scanner.mark();
+  scanner.eatWhile(() => true);
+  return { name, range: scanner.text(rangeStart) || null };
 }
 
 function encodePackageDirName(name: string, version: string): string {
@@ -98,7 +138,12 @@ function encodePackageDirName(name: string, version: string): string {
 
 function normalizeRelativePath(path: string): string {
   const parts = [];
-  for (const part of String(path).replace(/\\/g, '/').split('/')) {
+  const scanner = new Scanner(String(path).replace(/\\/g, '/'), { encoding: 'utf-8', format: 'package-path' });
+  while (!scanner.done) {
+    const start = scanner.mark();
+    scanner.eatUntil((code) => code === 0x2F);
+    const part = scanner.text(start);
+    scanner.eatChar('/');
     if (!part || part === '.') continue;
     if (part === '..') {
       parts.pop();
@@ -241,16 +286,29 @@ function resolveExportsTarget(target: any): string | null {
 }
 
 function expandPatternEntrypoints(entrypoints: Record<string, string>, key: string, target: string, files: string[]): void {
-  const keyParts = key.split('*');
-  const targetParts = target.split('*');
-  if (keyParts.length !== 2 || targetParts.length !== 2) return;
-  const targetPrefix = normalizeRelativePath(targetParts[0]!);
-  const targetSuffix = normalizeRelativePath(targetParts[1]!);
+  const keyParts = splitExportPattern(key);
+  const targetParts = splitExportPattern(target);
+  if (!keyParts || !targetParts) return;
+  const targetPrefix = normalizeRelativePath(targetParts.prefix);
+  const targetSuffix = normalizeRelativePath(targetParts.suffix);
   for (const file of files) {
     if (!file.startsWith(targetPrefix) || !file.endsWith(targetSuffix)) continue;
     const matched = file.slice(targetPrefix.length, file.length - targetSuffix.length);
-    addEntrypoint(entrypoints, keyParts[0]! + matched + keyParts[1]!, file);
+    addEntrypoint(entrypoints, keyParts.prefix + matched + keyParts.suffix, file);
   }
+}
+
+function splitExportPattern(pattern: string): { prefix: string; suffix: string } | null {
+  const scanner = new Scanner(pattern, { encoding: 'utf-8', format: 'package-exports' });
+  const prefixStart = scanner.mark();
+  scanner.eatUntil((code) => code === 0x2A);
+  const prefix = scanner.text(prefixStart);
+  if (!scanner.eatChar('*')) return null;
+  const suffixStart = scanner.mark();
+  scanner.eatUntil((code) => code === 0x2A);
+  const suffix = scanner.text(suffixStart);
+  if (!scanner.done) return null;
+  return { prefix, suffix };
 }
 
 async function computeEntrypoints(packageDir: string, pkgJson: any): Promise<Record<string, string>> {

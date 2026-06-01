@@ -43,6 +43,7 @@ import type { BytesWriter } from '../../../stream.mts';
 import type { ServerDriver, ServerHandler, ServerDriverOptions } from '../../../../net/http/driver.mts';
 import { isConnectionTakeover } from '../../../../net/http/driver.mts';
 import { Request, Response, Headers } from '../../../../net/http/index.mts';
+import { Scanner } from '../../../../parsing/scanner.mts';
 import {
   NGHTTP2_FLAG_END_STREAM,
   NGHTTP2_FLAG_END_HEADERS,
@@ -84,13 +85,47 @@ interface H2ServerStream {
   headerError: number | null;
 }
 
-// Returns true if the string contains any ASCII uppercase letter (A–Z).
-function _hasUppercase(s: string): boolean {
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if (c >= 65 && c <= 90) return true;
+function isDigit(code: number): boolean {
+  return code >= 0x30 && code <= 0x39;
+}
+
+function readH2StrictUnsigned(scanner: Scanner, name: string): number {
+  const digits = scanner.eatWhile(isDigit);
+  if (digits === '') throw new Error(`invalid ${name}`);
+  if (!Number.isSafeInteger(Number(digits))) throw new Error(`invalid ${name}`);
+  return Number(digits);
+}
+
+export function _parseH2StatusHeader(value: string): number {
+  const scanner = new Scanner(value, { encoding: 'ascii', format: 'http2' });
+  const digits = scanner.eatWhile(isDigit);
+  if (digits.length !== 3 || !scanner.done) throw new Error('invalid :status header');
+  const status = Number(digits);
+  if (status < 100 || status > 999) throw new Error('invalid :status header');
+  return status;
+}
+
+export function _parseH2ContentLength(value: string): number {
+  const scanner = new Scanner(value, { encoding: 'ascii', format: 'http2' });
+  let expected: number | null = null;
+  while (!scanner.done) {
+    scanner.skipSpaceTab();
+    const current = readH2StrictUnsigned(scanner, 'content-length');
+    scanner.skipSpaceTab();
+    if (expected === null) expected = current;
+    else if (expected !== current) throw new Error('conflicting content-length headers');
+    if (scanner.done) break;
+    scanner.expect(',', 'invalid content-length header');
   }
-  return false;
+  if (expected === null) throw new Error('invalid content-length header');
+  return expected;
+}
+
+// Returns true if the string contains any ASCII uppercase letter (A-Z).
+function _hasUppercase(s: string): boolean {
+  const scanner = new Scanner(s, { encoding: 'ascii', format: 'http2' });
+  scanner.eatUntil((code) => code >= 0x41 && code <= 0x5A);
+  return !scanner.done;
 }
 
 // Connection-specific header fields forbidden in HTTP/2 (RFC 7540 §8.1.2.2).
@@ -159,8 +194,14 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     // Validate content-length against actual body size (RFC 7540 §8.1.2.6).
     const clHeader = stream.headers.get('content-length');
     if (clHeader !== null) {
-      const clValue = parseInt(clHeader, 10);
-      if (!Number.isNaN(clValue) && clValue !== totalBodySize) {
+      let clValue = -1;
+      try { clValue = _parseH2ContentLength(clHeader); }
+      catch {
+        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
+        await drainWrite();
+        return;
+      }
+      if (clValue !== totalBodySize) {
         try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
         await drainWrite();
         return;
