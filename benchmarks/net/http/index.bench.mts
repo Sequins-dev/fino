@@ -1,37 +1,26 @@
 
 /**
- * Benchmarks for fino:http
+ * Benchmarks for fino:net/http
  *
  * Run with: cargo run -- --bench benchmarks/http.bench.mts
  */
 
-import { Headers, Request, Response, parseRequest, parseResponse } from 'fino:http';
-import { encodeUtf8 } from 'fino:encoding';
+import {
+  Headers,
+  Request,
+  Response,
+  _buildResponseHead,
+  _headerTokenList,
+  _parseHeaders,
+  _parseResponseLine,
+} from 'fino:net/http';
 import { bench } from 'fino:bench';
 
-// Build a single-chunk async iterable from a pre-encoded Uint8Array.
-// This isolates the cost of parsing from the cost of producing the input.
-function source(data: Uint8Array) {
-  return {
-    [Symbol.asyncIterator]() {
-      let done = false;
-      return {
-        next() {
-          if (done) return Promise.resolve({ done: true as const, value: undefined });
-          done = true;
-          return Promise.resolve({ done: false as const, value: data });
-        },
-      };
-    },
-  };
-}
+const encodeUtf8 = (input: string): Uint8Array => new TextEncoder().encode(input);
 
 // Pre-encoded wire bytes for parsing benchmarks
 const GET_SIMPLE    = encodeUtf8('GET /path HTTP/1.1\r\nHost: example.com\r\nAccept: */*\r\n\r\n');
 const GET_HEADERS   = encodeUtf8('GET /path HTTP/1.1\r\nHost: example.com\r\nAccept: application/json\r\nAccept-Encoding: gzip, deflate\r\nUser-Agent: surge-bench/1.0\r\nConnection: keep-alive\r\nAuthorization: Bearer tok123\r\n\r\n');
-const POST_SMALL    = encodeUtf8('POST /api HTTP/1.1\r\nHost: example.com\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{"hello":"world"}');
-const RESP_200      = encodeUtf8('HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\nok');
-const RESP_JSON     = encodeUtf8('HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\n\r\n{"hello":"world"}');
 const RESP_HEADERS  = encodeUtf8('HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 0\r\nCache-Control: max-age=3600\r\nX-Request-Id: abc123\r\nVary: Accept-Encoding\r\n\r\n');
 
 bench('Headers', (b) => {
@@ -91,16 +80,18 @@ bench('Response construction', (b) => {
   b.measure('404 with headers', () => new Response('Not Found', { status: 404, headers: { 'Content-Type': 'text/plain', 'X-Error': 'true' } }));
 });
 
-bench('parseRequest', (b) => {
-  b.measure('simple GET',        async () => await parseRequest(source(GET_SIMPLE)));
-  b.measure('GET many headers',  async () => await parseRequest(source(GET_HEADERS)));
-  b.measure('POST small body',   async () => await parseRequest(source(POST_SMALL)));
+bench('HTTP header parsing helpers', (b) => {
+  b.measure('request headers', () => _parseHeaders(GET_SIMPLE));
+  b.measure('many request headers', () => _parseHeaders(GET_HEADERS));
+  b.measure('response headers', () => _parseHeaders(RESP_HEADERS));
+  b.measure('token list', () => _headerTokenList('keep-alive, upgrade'));
 });
 
-bench('parseResponse', (b) => {
-  b.measure('200 small body',    async () => await parseResponse(source(RESP_200)));
-  b.measure('200 JSON body',     async () => await parseResponse(source(RESP_JSON)));
-  b.measure('200 many headers',  async () => await parseResponse(source(RESP_HEADERS)));
+bench('HTTP response helpers', (b) => {
+  b.measure('parse status line', () => _parseResponseLine('HTTP/1.1 200 OK'));
+  b.measure('build response head', () => _buildResponseHead(new Response('ok', {
+    headers: { 'content-type': 'text/plain' },
+  })));
 });
 
 // Note: serializeRequest / serializeResponse return async iterables whose

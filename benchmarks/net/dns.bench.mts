@@ -1,5 +1,5 @@
 /**
- * Benchmarks for fino:dns (packet encoding/decoding only — no network)
+ * Benchmarks for fino:net/dns (packet encoding/decoding only — no network)
  *
  * Run with: cargo run -- --bench benchmarks/dns.bench.mts
  *
@@ -8,7 +8,7 @@
  * the parsing benchmarks.
  */
 
-import { _encodeName, _buildQuery, _parseResponse, RECORD_TYPES } from 'fino:dns';
+import { _encodeName, _buildQuery, _parseResponse, RECORD_TYPES } from 'fino:net/dns';
 import { bench } from 'fino:bench';
 
 // ---------------------------------------------------------------------------

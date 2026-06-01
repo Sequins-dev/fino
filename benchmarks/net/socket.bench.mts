@@ -1,6 +1,6 @@
 
 /**
- * Benchmarks for fino:socket (low-level syscall wrappers)
+ * Benchmarks for fino:net/socket (low-level syscall wrappers)
  *
  * Run with: cargo run -- --bench benchmarks/socket.bench.mjs
  *
@@ -11,7 +11,7 @@
 import {
   socket, close, encodeAddr, decodeAddr,
   AF_INET, AF_INET6, AF_UNIX, SOCK_STREAM, SOCK_DGRAM,
-} from 'fino:socket';
+} from 'fino:net/socket';
 import { bench } from 'fino:bench';
 
 bench('socket() + close()', (b) => {

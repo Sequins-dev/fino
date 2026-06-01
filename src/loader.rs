@@ -288,6 +288,9 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:uuid", "uuid"),
     source_builtin!("fino:format/markdown", "format/markdown"),
     source_builtin!("fino:template", "template"),
+    source_builtin!("fino:log", "log"),
+    source_builtin!("fino:validate", "validate"),
+    source_builtin!("fino:config", "config"),
     // format
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/typescript", "format/typescript"),

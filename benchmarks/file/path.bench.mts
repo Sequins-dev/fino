@@ -1,11 +1,11 @@
 
 /**
- * Benchmarks for fino:path
+ * Benchmarks for fino:file/path
  *
  * Run with: cargo run -- --bench benchmarks/path.bench.mjs
  */
 
-import { Path, join, resolve, normalize, relative, dirname, basename, extname, isAbsolute } from 'fino:path';
+import { Path, join, resolve, normalize, relative, dirname, basename, extname, isAbsolute } from 'fino:file/path';
 import { bench } from 'fino:bench';
 
 bench('module-level functions', (b) => {

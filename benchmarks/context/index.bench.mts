@@ -45,20 +45,3 @@ bench('Snapshot.runWithValue()', (b) => {
   b.measure('run with one-ctx snapshot',   () => oneCtxSnap.runWithValue(() => ctx1.get()));
   b.measure('run with snapshot + nesting', () => oneCtxSnap.runWithValue(() => ctx1.runWithValue(99, () => ctx1.get())));
 });
-
-bench('async context propagation', (b) => {
-  b.measure('propagate through await', async () => {
-    await ctx1.runWithValue('hello', async () => {
-      await Promise.resolve();
-      return ctx1.get();
-    });
-  });
-
-  b.measure('propagate through two awaits', async () => {
-    await ctx1.runWithValue('world', async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      return ctx1.get();
-    });
-  });
-});

@@ -1,11 +1,11 @@
 
 /**
- * Benchmarks for fino:process
+ * Benchmarks for fino:runtime/process
  *
  * Run with: cargo run -- --bench benchmarks/process.bench.mjs
  */
 
-import { pid, ppid, argv, env, execPath, cwd, exit, os, arch } from 'fino:process';
+import { pid, ppid, argv, env, execPath, cwd, os, arch } from 'fino:runtime/process';
 import { bench } from 'fino:bench';
 
 bench('static properties', (b) => {
