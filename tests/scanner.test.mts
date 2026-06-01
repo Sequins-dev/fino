@@ -433,6 +433,70 @@ describe('Scanner — mixed binary/text (HTTP/1-style)', () => {
   });
 });
 
+// ── Parser toolkit helpers ─────────────────────────────────────────────────
+
+describe('Scanner — parser toolkit helpers', () => {
+  it('readLineCRLF reads CRLF-terminated lines and rejects bare LF', (t) => {
+    const s = new Scanner('alpha\r\nbeta\r\n', { encoding: 'ascii', format: 'lines' });
+    t.equal(s.readLineCRLF(), 'alpha');
+    t.equal(s.readLineCRLF(), 'beta');
+    t.equal(s.done, true);
+
+    const bad = new Scanner('alpha\n', { encoding: 'ascii', format: 'lines' });
+    t.throws(() => bad.readLineCRLF(), /expected CRLF/);
+  });
+
+  it('readHeaderBlock reads until an empty CRLF line', (t) => {
+    const s = new Scanner('GET / HTTP/1.1\r\nHost: example.com\r\n\r\nbody', { encoding: 'ascii' });
+    t.deepEqual(s.readHeaderBlock(), ['GET / HTTP/1.1', 'Host: example.com']);
+    t.equal(s.eat(4), 'body');
+  });
+
+  it('readAsciiSpanUntilByte returns a zero-copy byte span', (t) => {
+    const bytes = new TextEncoder().encode('token:value');
+    const s = new Scanner(bytes, { encoding: 'ascii' });
+    const span = s.readAsciiSpanUntilByte(0x3A);
+    t.equal(new TextDecoder().decode(span), 'token');
+    t.equal(span.buffer, bytes.buffer, 'span shares backing buffer');
+    t.equal(s.peekByte(), 0x3A, 'delimiter is not consumed by default');
+  });
+
+  it('readDelimitedList trims and omits empty values', (t) => {
+    const s = new Scanner(' keep-alive, Upgrade, , close ', { encoding: 'ascii' });
+    t.deepEqual(s.readDelimitedList(','), ['keep-alive', 'Upgrade', 'close']);
+    t.equal(s.done, true);
+  });
+
+  it('readToken and expectToken parse protocol tokens', (t) => {
+    const s = new Scanner('HTTP/1.1 200', { encoding: 'ascii' });
+    t.equal(s.readToken('version'), 'HTTP/1.1');
+    s.expect(' ');
+    t.equal(s.readStrictInt({ name: 'status', min: 100, max: 999 }), 200);
+
+    const bad = new Scanner('20x', { encoding: 'ascii' });
+    t.throws(() => bad.readStrictInt({ name: 'status' }), /invalid status/);
+  });
+
+  it('subScanner bounds nested reads and advances parent', (t) => {
+    const s = new Scanner(new Uint8Array([0, 4, 1, 2, 3, 4, 9]));
+    const len = s.readU16BEField('length');
+    const sub = s.subScanner(len, { format: 'field' });
+    t.deepEqual(Array.from(sub.eatBytes(4)), [1, 2, 3, 4]);
+    t.equal(sub.done, true);
+    t.equal(s.readU8(), 9);
+  });
+
+  it('jump moves to absolute offsets for pointer-based protocols', (t) => {
+    const s = new Scanner(new Uint8Array([0xC0, 0x04, 3, 1, 2, 3]));
+    const pointer = s.readU16BEField('pointer') & 0x3FFF;
+    const back = s.snapshot();
+    s.jump(pointer);
+    t.deepEqual(Array.from(s.eatBytes(2)), [2, 3]);
+    s.restore(back);
+    t.equal(s.offset, 2);
+  });
+});
+
 // ── Encodings ─────────────────────────────────────────────────────────────
 
 describe('Scanner — latin1 encoding', () => {

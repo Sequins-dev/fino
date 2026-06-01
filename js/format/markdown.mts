@@ -24,6 +24,11 @@ export interface MarkdownOptions {
    * Rewrite link URLs while rendering.
    */
   resolveLink?: (href: string, label: string) => string | undefined;
+
+  /**
+   * Render fenced code blocks.
+   */
+  renderCode?: (code: string, lang: string, meta: string) => string;
 }
 
 export type MarkdownNode =
@@ -304,8 +309,12 @@ export function renderMarkdown(markdown: string | MarkdownDocument, options: Mar
       for (const item of node.items) output.push(`<li>${renderMarkdownInline(item, renderOptions)}</li>`);
       output.push(`</${tag}>`);
     } else if (node.kind === 'code') {
-      const className = node.lang ? ` class="language-${escapeAttribute(node.lang)}"` : '';
-      output.push(`<pre><code${className}>${escapeHtml(node.code)}</code></pre>`);
+      if (options.renderCode) {
+        output.push(options.renderCode(node.code, node.lang, node.meta));
+      } else {
+        const className = node.lang ? ` class="language-${escapeAttribute(node.lang)}"` : '';
+        output.push(`<pre><code${className}>${escapeHtml(node.code)}</code></pre>`);
+      }
     }
   }
 

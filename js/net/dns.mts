@@ -108,6 +108,7 @@ import * as loop from '../runtime/loop.mts';
 import { DiskFileSystem } from '../file/fs.mts';
 import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
 import { os } from 'internal:process';
+import { Scanner } from '../parsing/scanner.mts';
 
 type DnsServerFamily = 'ipv4' | 'ipv6';
 type RecordTypeName = keyof typeof RECORD_TYPES;
@@ -177,24 +178,6 @@ const DEFAULT_SERVERS = [
   { ip: '8.8.8.8', family: 'ipv4', port: 53 },
   { ip: '8.8.4.4', family: 'ipv4', port: 53 },
 ] satisfies DnsServer[];
-
-// ---------------------------------------------------------------------------
-// Binary read helpers (big-endian, operating on Uint8Array)
-// ---------------------------------------------------------------------------
-
-function readU16(buf: Uint8Array, offset: number): number {
-  const a = buf[offset] ?? 0;
-  const b = buf[offset + 1] ?? 0;
-  return (a << 8) | b;
-}
-
-function readU32(buf: Uint8Array, offset: number): number {
-  const a = buf[offset] ?? 0;
-  const b = buf[offset + 1] ?? 0;
-  const c = buf[offset + 2] ?? 0;
-  const d = buf[offset + 3] ?? 0;
-  return ((a << 24) | (b << 16) | (c << 8) | d) >>> 0;
-}
 
 // ---------------------------------------------------------------------------
 // DNS wire protocol — encoder
@@ -277,35 +260,45 @@ export function _buildQuery(id: number, name: string, qtype: number): Uint8Array
  */
 export function _decodeName(msg: Uint8Array, startOffset: number): { name: string; nextOffset: number } {
   const parts: string[] = [];
-  let offset    = startOffset;
-  let hops      = 0;
+  const scanner = new Scanner(msg, { format: 'dns' });
+  const seen = new Set<number>();
+  let hops = 0;
   let endOffset = -1;
 
+  scanner.jump(startOffset);
+
   while (true) {
-    if (offset >= msg.length) break;
-    const len = msg[offset];
-    if (len === undefined) break;
+    if (scanner.remainingBytes < 1) throw new Error('DNS: truncated name');
+    const labelOffset = scanner.offset;
+    if (seen.has(labelOffset)) throw new Error('DNS: compression pointer loop detected');
+    seen.add(labelOffset);
+
+    const len = scanner.readU8();
 
     if ((len & 0xC0) === 0xC0) {
       // Compression pointer (2 bytes): remaining 14 bits = offset into msg
-      if (endOffset === -1) endOffset = offset + 2;
+      if (scanner.remainingBytes < 1) throw new Error('DNS: truncated compression pointer');
+      const lo = scanner.readU8();
+      if (endOffset === -1) endOffset = scanner.offset;
       if (hops++ > 128) throw new Error('DNS: compression pointer loop detected');
-      offset = ((len & 0x3F) << 8) | (msg[offset + 1] ?? 0);
+      const pointer = ((len & 0x3F) << 8) | lo;
+      if (pointer >= msg.length) throw new Error('DNS: compression pointer out of range');
+      scanner.jump(pointer);
       continue;
     }
 
+    if ((len & 0xC0) !== 0) throw new Error('DNS: invalid label length');
+
     if (len === 0) {
       // Root label — end of name
-      if (endOffset === -1) endOffset = offset + 1;
+      if (endOffset === -1) endOffset = scanner.offset;
       break;
     }
 
-    offset++;
-    parts.push(decodeUtf8(msg.subarray(offset, offset + len)));
-    offset += len;
+    if (scanner.remainingBytes < len) throw new Error('DNS: truncated label');
+    parts.push(scanner.eatText(len, 'utf-8'));
   }
 
-  if (endOffset === -1) endOffset = offset;
   return { name: parts.join('.'), nextOffset: endOffset };
 }
 
@@ -315,24 +308,28 @@ export function _decodeName(msg: Uint8Array, startOffset: number): { name: strin
  */
 function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsResourceRecord; nextOffset: number } {
   const { name, nextOffset: afterName } = _decodeName(msg, offset);
-  offset = afterName;
+  const scanner = new Scanner(msg, { format: 'dns' });
+  scanner.jump(afterName);
+  if (scanner.remainingBytes < 10) throw new Error('DNS: truncated resource record header');
 
-  const type     = readU16(msg, offset);
-  // class at offset+2 is almost always IN=1, not needed
-  const ttl      = readU32(msg, offset + 4);
-  const rdlength = readU16(msg, offset + 8);
-  offset += 10;
+  const type = scanner.readU16BEField('resource record type');
+  scanner.readU16BEField('resource record class');
+  const ttl = scanner.readU32BEField('resource record ttl');
+  const rdlength = scanner.readU16BEField('resource record data length');
 
-  const rdataStart = offset;
-  const rdataEnd   = offset + rdlength;
+  const rdataStart = scanner.offset;
+  const rdataEnd   = rdataStart + rdlength;
+  if (rdataEnd > msg.length) throw new Error('DNS: truncated resource record data');
 
   let data: DnsRecordData;
   switch (type) {
     case QTYPE_A: {
+      if (rdlength !== 4) throw new Error('DNS: invalid A record length');
       data = `${msg[rdataStart]}.${msg[rdataStart+1]}.${msg[rdataStart+2]}.${msg[rdataStart+3]}`;
       break;
     }
     case QTYPE_AAAA: {
+      if (rdlength !== 16) throw new Error('DNS: invalid AAAA record length');
       data = formatIPv6(msg.subarray(rdataStart, rdataStart + 16));
       break;
     }
@@ -343,7 +340,9 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
       break;
     }
     case QTYPE_MX: {
-      const priority = readU16(msg, rdataStart);
+      if (rdlength < 3) throw new Error('DNS: truncated MX record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      const priority = rdata.readU16BEField('MX priority');
       const exchange   = _decodeName(msg, rdataStart + 2).name;
       data = { priority, exchange };
       break;
@@ -354,6 +353,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
       while (pos < rdataEnd) {
         const slen = msg[pos++];
         if (slen === undefined) break;
+        if (pos + slen > rdataEnd) throw new Error('DNS: truncated TXT record data');
         strings.push(decodeUtf8(msg.subarray(pos, pos + slen)));
         pos += slen;
       }
@@ -363,21 +363,25 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
     case QTYPE_SOA: {
       const { name: mname, nextOffset: afterMname } = _decodeName(msg, rdataStart);
       const { name: rname, nextOffset: afterRname  } = _decodeName(msg, afterMname);
+      if (afterRname + 20 > rdataEnd) throw new Error('DNS: truncated SOA record data');
+      const soa = new Scanner(msg.subarray(afterRname, rdataEnd), { format: 'dns' });
       data = {
         nsname:     mname,
         hostmaster: rname,
-        serial:     readU32(msg, afterRname),
-        refresh:    readU32(msg, afterRname + 4),
-        retry:      readU32(msg, afterRname + 8),
-        expire:     readU32(msg, afterRname + 12),
-        minttl:     readU32(msg, afterRname + 16),
+        serial:     soa.readU32BEField('SOA serial'),
+        refresh:    soa.readU32BEField('SOA refresh'),
+        retry:      soa.readU32BEField('SOA retry'),
+        expire:     soa.readU32BEField('SOA expire'),
+        minttl:     soa.readU32BEField('SOA minimum ttl'),
       };
       break;
     }
     case QTYPE_SRV: {
-      const priority = readU16(msg, rdataStart);
-      const weight   = readU16(msg, rdataStart + 2);
-      const port     = readU16(msg, rdataStart + 4);
+      if (rdlength < 7) throw new Error('DNS: truncated SRV record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      const priority = rdata.readU16BEField('SRV priority');
+      const weight   = rdata.readU16BEField('SRV weight');
+      const port     = rdata.readU16BEField('SRV port');
       const target   = _decodeName(msg, rdataStart + 6).name;
       data = { priority, weight, port, name: target };
       break;
@@ -406,33 +410,34 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
 export function _parseResponse(msg: Uint8Array): DnsResponse {
   if (msg.length < 12) throw new Error('DNS: response too short');
 
-  const id      = readU16(msg, 0);
-  const flags   = readU16(msg, 2);
-  const qdcount = readU16(msg, 4);
-  const ancount = readU16(msg, 6);
-  const nscount = readU16(msg, 8);
-  const arcount = readU16(msg, 10);
+  const scanner = new Scanner(msg, { format: 'dns' });
+  const id      = scanner.readU16BEField('id');
+  const flags   = scanner.readU16BEField('flags');
+  const qdcount = scanner.readU16BEField('question count');
+  const ancount = scanner.readU16BEField('answer count');
+  const nscount = scanner.readU16BEField('authority count');
+  const arcount = scanner.readU16BEField('additional count');
 
   const rcode     = flags & 0xF;
   const truncated = Boolean((flags >> 9) & 1);
 
-  let offset = 12;
-
   // Skip question section (we trust the response matches our query)
   for (let i = 0; i < qdcount; i++) {
-    const { nextOffset } = _decodeName(msg, offset);
-    offset = nextOffset + 4; // +4: QTYPE(2) + QCLASS(2)
+    const { nextOffset } = _decodeName(msg, scanner.offset);
+    scanner.jump(nextOffset);
+    if (scanner.remainingBytes < 4) throw new Error('DNS: truncated question');
+    scanner.eatBytes(4); // QTYPE(2) + QCLASS(2)
   }
 
   const answers: DnsResourceRecord[] = [];
   const authorities: DnsResourceRecord[] = [];
   const additionals: DnsResourceRecord[] = [];
 
-  // Closure captures and mutates `offset`
+  // Closure advances the shared response scanner past each RR.
   function readRRs(out: DnsResourceRecord[], count: number) {
     for (let i = 0; i < count; i++) {
-      const { record, nextOffset } = parseResourceRecord(msg, offset);
-      offset = nextOffset;
+      const { record, nextOffset } = parseResourceRecord(msg, scanner.offset);
+      scanner.jump(nextOffset);
       out.push(record);
     }
   }

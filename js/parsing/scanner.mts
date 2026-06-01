@@ -123,6 +123,7 @@ export class Scanner {
   get offset(): number   { return this.#offset; }
   get done(): boolean    { return this.#offset >= this.#buf.length; }
   get encoding(): Encoding | null { return this.#encoding; }
+  get remainingBytes(): number { return this.#buf.length - this.#offset; }
 
   get line(): number {
     if (this.#encoding === null) throw new Error('Scanner.line: text ops require encoding');
@@ -205,6 +206,9 @@ export class Scanner {
   readU64LE(): bigint { return this.#readNum(8, false, true,  false, true)  as bigint; }
   readI64BE(): bigint { return this.#readNum(8, false, false, true,  true)  as bigint; }
   readI64LE(): bigint { return this.#readNum(8, false, true,  true,  true)  as bigint; }
+
+  readU16BEField(name: string): number { return this.#readField(name, 2, () => this.readU16BE()) as number; }
+  readU32BEField(name: string): number { return this.#readField(name, 4, () => this.readU32BE()) as number; }
 
   eatText(byteLength: number, encoding?: Encoding): string {
     const bytes = this.eatBytes(byteLength);
@@ -305,6 +309,114 @@ export class Scanner {
     );
   }
 
+  readLineCRLF(): string {
+    this.#requireText('readLineCRLF');
+    const start = this.#offset;
+    while (this.#offset < this.#buf.length) {
+      const b = this.#buf[this.#offset]!;
+      if (b === 0x0A) throw this.error('expected CRLF line ending, got bare LF', { offset: this.#offset, line: this.#line, column: this.#col });
+      if (b === 0x0D) {
+        if (this.#offset + 1 >= this.#buf.length || this.#buf[this.#offset + 1] !== 0x0A) {
+          throw this.error('expected CRLF line ending');
+        }
+        const line = _decodeBytes(this.#buf.subarray(start, this.#offset), this.#encoding!);
+        this.#offset += 2;
+        this.#line++;
+        this.#col = 1;
+        return line;
+      }
+      const [cp, bw] = this.#peekCpAt(this.#offset);
+      if (cp === -1) break;
+      this.#advanceText(cp, bw);
+    }
+    throw this.error('expected CRLF line ending before end of input');
+  }
+
+  readHeaderBlock(): string[] {
+    const lines: string[] = [];
+    while (true) {
+      const line = this.readLineCRLF();
+      if (line === '') return lines;
+      lines.push(line);
+    }
+  }
+
+  readAsciiSpanUntilByte(delimiter: number, consumeDelimiter: boolean = false): Uint8Array {
+    const start = this.#offset;
+    while (this.#offset < this.#buf.length && this.#buf[this.#offset] !== delimiter) {
+      const b = this.#buf[this.#offset]!;
+      if (b > 0x7F) throw this.error('expected ASCII byte');
+      this.#offset++;
+    }
+    const span = this.#buf.subarray(start, this.#offset);
+    if (consumeDelimiter && this.#offset < this.#buf.length) this.#offset++;
+    if (this.#encoding !== null && this.#offset > start) this.#lineColValid = false;
+    return span;
+  }
+
+  readDelimitedList(delimiter: string): string[] {
+    this.#requireText('readDelimitedList');
+    const raw = this.eatWhile(() => true);
+    const out: string[] = [];
+    for (const part of raw.split(delimiter)) {
+      const trimmed = _trimAscii(part);
+      if (trimmed !== '') out.push(trimmed);
+    }
+    return out;
+  }
+
+  readToken(name: string = 'token'): string {
+    this.#requireText('readToken');
+    const token = this.eatWhile(_isProtocolTokenCode);
+    if (token === '') throw this.error(`expected ${name}`);
+    return token;
+  }
+
+  expectToken(expected: string, options?: { caseInsensitive?: boolean; name?: string }): void {
+    const actual = this.readToken(options?.name ?? 'token');
+    const ok = options?.caseInsensitive
+      ? actual.toLowerCase() === expected.toLowerCase()
+      : actual === expected;
+    if (!ok) throw this.error(`expected ${options?.name ?? 'token'} '${expected}', got '${actual}'`);
+  }
+
+  readStrictInt(options?: {
+    radix?: 10 | 16;
+    name?: string;
+    min?: number;
+    max?: number;
+    allowSign?: boolean;
+  }): number {
+    this.#requireText('readStrictInt');
+    const radix = options?.radix ?? 10;
+    const name = options?.name ?? 'integer';
+    const token = this.readToken(name);
+    const sign = options?.allowSign ? '[+-]?' : '';
+    const digits = radix === 16 ? '[0-9A-Fa-f]+' : '[0-9]+';
+    const re = new RegExp(`^${sign}${digits}$`);
+    if (!re.test(token)) throw this.error(`invalid ${name}: '${token}'`);
+    const value = parseInt(token, radix);
+    if (options?.min !== undefined && value < options.min) throw this.error(`invalid ${name}: ${value} < ${options.min}`);
+    if (options?.max !== undefined && value > options.max) throw this.error(`invalid ${name}: ${value} > ${options.max}`);
+    return value;
+  }
+
+  subScanner(byteLength: number, options?: ScannerOptions): Scanner {
+    const bytes = this.eatBytes(byteLength);
+    return new Scanner(bytes, {
+      encoding: options?.encoding ?? this.#encoding ?? undefined,
+      format: options?.format ?? this.#format,
+      filename: options?.filename ?? this.#filename,
+    });
+  }
+
+  jump(offset: number): void {
+    if (!Number.isInteger(offset) || offset < 0 || offset > this.#buf.length)
+      throw this.error(`invalid jump offset ${offset}`);
+    this.#offset = offset;
+    if (this.#encoding !== null) this.#lineColValid = false;
+  }
+
   // ── SPANS + BACKTRACK ─────────────────────────────────────────────────────
 
   mark(): ScannerMark {
@@ -379,6 +491,13 @@ export class Scanner {
     if (byteLen === 1) return signed ? v.getInt8(o)  : v.getUint8(o);
     if (byteLen === 2) return signed ? v.getInt16(o, le) : v.getUint16(o, le);
     return signed ? v.getInt32(o, le) : v.getUint32(o, le);
+  }
+
+  #readField(name: string, byteLen: number, fn: () => number | bigint): number | bigint {
+    if (this.#offset + byteLen > this.#buf.length) {
+      throw this.error(`unexpected end of input while reading ${name} (need ${byteLen} bytes, got ${this.#buf.length - this.#offset})`);
+    }
+    return fn();
   }
 
   #peekCpAt(offset: number): [number, number] {
@@ -471,6 +590,30 @@ function _decodeBytes(bytes: Uint8Array, encoding: Encoding): string {
   for (let i = 0; i + 1 < bytes.length; i += 2)
     s += String.fromCharCode(dv.getUint16(i, le));
   return s;
+}
+
+function _trimAscii(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end) {
+    const c = value.charCodeAt(start);
+    if (c !== 0x20 && c !== 0x09) break;
+    start++;
+  }
+  while (end > start) {
+    const c = value.charCodeAt(end - 1);
+    if (c !== 0x20 && c !== 0x09) break;
+    end--;
+  }
+  return value.slice(start, end);
+}
+
+function _isProtocolTokenCode(code: number): boolean {
+  return code > 0x20
+    && code < 0x7F
+    && code !== 0x2C   // ,
+    && code !== 0x3A   // :
+    && code !== 0x3B;  // ;
 }
 
 function _textSnippet(

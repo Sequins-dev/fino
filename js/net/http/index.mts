@@ -105,6 +105,7 @@ import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';
 import { ReadableStream } from '../../internal/globals/webstreams.mts';
 import { Blob } from '../../internal/globals/blob.mts';
 import { FormData, _serializeFormData } from '../../internal/globals/formdata.mts';
+import { Scanner } from '../../parsing/scanner.mts';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -472,13 +473,7 @@ function _createReader(source: AsyncByteSource) {
 
       // Read the chunk-size line.
       const sizeLine = await readLine();
-      const sizeStr = decodeUtf8(sizeLine).trim();
-      // chunk-extensions (after ';') are ignored.
-      const semi = sizeStr.indexOf(';');
-      const hexStr = semi >= 0 ? sizeStr.substring(0, semi) : sizeStr;
-      const chunkSize = parseInt(hexStr, 16);
-
-      if (isNaN(chunkSize)) throw new Error('Invalid chunk size: ' + sizeStr);
+      const chunkSize = _parseChunkSizeLine(sizeLine);
 
       if (chunkSize === 0) {
         // Terminal chunk — parse optional trailer headers, then consume the
@@ -490,13 +485,8 @@ function _createReader(source: AsyncByteSource) {
           const trailerLine = await readLine();
           if (trailerLine.byteLength === 0) break;
           if (trailerHeaders !== null) {
-            const line = decodeUtf8(trailerLine);
-            const colonIdx = line.indexOf(':');
-            if (colonIdx > 0) {
-              const name  = line.substring(0, colonIdx).trim().toLowerCase();
-              const value = line.substring(colonIdx + 1).trim();
-              trailerHeaders.append(name, value);
-            }
+            const { name, value } = _parseHeaderLine(decodeUtf8(trailerLine));
+            trailerHeaders.append(name, value);
           }
         }
         finished = true;
@@ -747,50 +737,92 @@ function _normalizeHeaderValue(value: string): string {
  * @param {Uint8Array} raw
  * @returns {{ firstLine: string, headers: Headers }}
  */
-function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers } {
-  const text = decodeUtf8(raw);
-  let lineEnd = text.indexOf('\r\n');
-  if (lineEnd < 0) lineEnd = text.length;
-  const firstLine = text.substring(0, lineEnd);
-
+export function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers } {
+  const scanner = new Scanner(raw, { encoding: 'ascii', format: 'http' });
+  const lines = scanner.readHeaderBlock();
+  const firstLine = lines.shift() ?? '';
   const headers = new Headers();
-  let pos = lineEnd + 2;
-  while (pos < text.length) {
-    const nextLineEnd = text.indexOf('\r\n', pos);
-    if (nextLineEnd < 0 || nextLineEnd === pos) break;
 
-    const firstChar = text.charCodeAt(pos);
+  for (const line of lines) {
+    const firstChar = line.charCodeAt(0);
     if (firstChar === SPACE || firstChar === 0x09) {
-      pos = nextLineEnd + 2;
-      continue;
+      throw new Error('Malformed header line: obsolete line folding is not supported');
     }
-
-    const colonIdx = text.indexOf(':', pos);
-    if (colonIdx > pos && colonIdx < nextLineEnd) {
-      const name = text.substring(pos, colonIdx).toLowerCase().trim();
-      if (name) {
-        let valueStart = colonIdx + 1;
-        while (valueStart < nextLineEnd) {
-          const ch = text.charCodeAt(valueStart);
-          if (ch !== SPACE && ch !== 0x09) break;
-          valueStart++;
-        }
-
-        let valueEnd = nextLineEnd;
-        while (valueEnd > valueStart) {
-          const ch = text.charCodeAt(valueEnd - 1);
-          if (ch !== SPACE && ch !== 0x09) break;
-          valueEnd--;
-        }
-
-        headers._appendTrusted(name, text.substring(valueStart, valueEnd));
-      }
-    }
-
-    pos = nextLineEnd + 2;
+    const parsed = _parseHeaderLine(line);
+    headers._appendTrusted(parsed.name, parsed.value);
   }
 
   return { firstLine, headers };
+}
+
+function _parseHeaderLine(line: string): { name: string; value: string } {
+  const scanner = new Scanner(line, { encoding: 'ascii', format: 'http' });
+  const name = scanner.readToken('header name').toLowerCase();
+  if (!scanner.eatChar(':')) throw new Error('Malformed header line: missing colon');
+  scanner.skipSpaceTab();
+  const valueStart = scanner.mark();
+  scanner.eatWhile(() => true);
+  let value = scanner.text(valueStart);
+  value = _trimAscii(value);
+  return { name, value };
+}
+
+function _trimAscii(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end) {
+    const c = value.charCodeAt(start);
+    if (c !== SPACE && c !== 0x09) break;
+    start++;
+  }
+  while (end > start) {
+    const c = value.charCodeAt(end - 1);
+    if (c !== SPACE && c !== 0x09) break;
+    end--;
+  }
+  return value.slice(start, end);
+}
+
+export function _headerTokenList(value: string | null): string[] {
+  if (value === null || value === '') return [];
+  const scanner = new Scanner(value, { encoding: 'ascii', format: 'http' });
+  return scanner.readDelimitedList(',');
+}
+
+function _parseRequestLine(firstLine: string): { method: string; path: string; version: string } {
+  const scanner = new Scanner(firstLine, { encoding: 'ascii', format: 'http' });
+  const method = scanner.readToken('method').toUpperCase();
+  scanner.expect(' ', 'expected space after request method');
+  const path = scanner.eatUntil(c => c === SPACE);
+  if (path === '') throw new Error('Malformed request line: missing request target');
+  scanner.expect(' ', 'expected space after request target');
+  const version = scanner.readToken('HTTP version');
+  if (!scanner.done) throw new Error('Malformed request line: unexpected data after HTTP version');
+  return { method, path, version };
+}
+
+function _urlFromRequestTarget(path: string, headers: Headers): string {
+  const host = headers.get('host');
+  // RFC 7230 §5.3.4: asterisk-form ('*') is used by OPTIONS and must not be
+  // combined with a host to form a URL. Use a synthetic absolute URL so the
+  // Request object is always parseable, but expose the raw target via pathname.
+  if (path === '*') return host ? 'http://' + host + '/*' : 'http://unknown/*';
+  return host ? 'http://' + host + path : path;
+}
+
+export function _parseResponseLine(firstLine: string): { version: string; status: number; statusText: string } {
+  const scanner = new Scanner(firstLine, { encoding: 'ascii', format: 'http' });
+  const version = scanner.readToken('HTTP version');
+  scanner.expect(' ', 'expected space after HTTP version');
+  const status = scanner.readStrictInt({ name: 'status', min: 100, max: 999 });
+  let statusText = '';
+  if (!scanner.done) {
+    scanner.expect(' ', 'expected space after status code');
+    const mark = scanner.mark();
+    scanner.eatWhile(() => true);
+    statusText = scanner.text(mark);
+  }
+  return { version, status, statusText };
 }
 
 /**
@@ -811,7 +843,8 @@ function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number):
 
   const te = headers.get('transfer-encoding');
   if (te) {
-    const last = (te.split(',').pop() ?? '').trim().toLowerCase();
+    const tokens = _headerTokenList(te).map(t => t.toLowerCase());
+    const last = tokens[tokens.length - 1] ?? '';
     if (last === 'chunked') {
       // RFC 9112 §6.3.3: when chunked is present, Content-Length MUST be
       // removed to prevent request-smuggling via the two-field ambiguity.
@@ -824,17 +857,19 @@ function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number):
   if (cl !== null) {
     // headers.get() joins multiple values with ", " when duplicates exist.
     // RFC 7230 §3.3.2: conflicting Content-Length values are a framing error.
-    if (cl.includes(',')) {
-      const parts = cl.split(',').map(s => s.trim());
-      const first = parseInt(parts[0] ?? '', 10);
-      if (parts.some(p => parseInt(p, 10) !== first)) {
+    const values = _headerTokenList(cl);
+    if (values.length === 0) throw new Error('Invalid Content-Length: empty');
+    let first: number | null = null;
+    for (const value of values) {
+      const scanner = new Scanner(value, { encoding: 'ascii', format: 'http' });
+      const length = scanner.readStrictInt({ name: 'Content-Length', min: 0 });
+      if (!scanner.done) throw new Error(`Invalid Content-Length: "${value}"`);
+      if (first === null) first = length;
+      else if (length !== first) {
         throw new Error(`Conflicting Content-Length values: "${cl}"`);
       }
-      // All values are equal — use the common value.
-      if (!isNaN(first)) return { type: 'fixed', length: first };
     }
-    const len = parseInt(cl, 10);
-    if (!isNaN(len)) return { type: 'fixed', length: len };
+    return { type: 'fixed', length: first ?? 0 };
   }
 
   // Requests with no Content-Length and no Transfer-Encoding have no body.
@@ -842,6 +877,21 @@ function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number):
 
   // Responses without either header: read until EOF.
   return { type: 'eof' };
+}
+
+function _parseChunkSizeLine(lineBytes: Uint8Array): number {
+  const scanner = new Scanner(lineBytes, { encoding: 'ascii', format: 'http' });
+  let size: number;
+  try {
+    size = scanner.readStrictInt({ radix: 16, name: 'chunk size', min: 0 });
+    scanner.skipSpaceTab();
+  } catch (_) {
+    throw new Error('Invalid chunk size: ' + decodeUtf8(lineBytes));
+  }
+  if (!scanner.done && scanner.peekCode() !== 0x3B) throw new Error('Invalid chunk size: ' + decodeUtf8(lineBytes));
+  // Chunk extensions are intentionally ignored, but the size itself must be a
+  // complete hexadecimal token rather than parseInt's permissive prefix parse.
+  return size;
 }
 
 // Empty async iterable — used as the body sentinel for bodyless messages.
@@ -1300,22 +1350,8 @@ export async function parseRequest(source: AsyncIterable<Uint8Array | ArrayBuffe
   const raw = await reader.readUntilDoubleCRLF();
   const { firstLine, headers } = _parseHeaders(raw);
 
-  // Request-Line: METHOD SP Request-URI SP HTTP-Version
-  const parts = firstLine.split(' ');
-  const method  = (parts[0] || 'GET').toUpperCase();
-  const path    = parts[1] || '/';
-  const version = parts.slice(2).join(' ') || 'HTTP/1.1';
-
-  const host = headers.get('host');
-  // RFC 7230 §5.3.4: asterisk-form ('*') is used by OPTIONS and must not be
-  // combined with a host to form a URL. Use a synthetic absolute URL so the
-  // Request object is always parseable, but expose the raw target via pathname.
-  let url: string;
-  if (path === '*') {
-    url = host ? 'http://' + host + '/*' : 'http://unknown/*';
-  } else {
-    url = host ? 'http://' + host + path : path;
-  }
+  const { method, path, version } = _parseRequestLine(firstLine);
+  const url = _urlFromRequestTarget(path, headers);
 
   const framing = _bodyFraming(headers, true, 0);
   let body;
@@ -1354,11 +1390,7 @@ export async function parseResponse(
   const raw = await reader.readUntilDoubleCRLF();
   const { firstLine, headers } = _parseHeaders(raw);
 
-  // Status-Line: HTTP-Version SP Status-Code SP Reason-Phrase
-  const parts = firstLine.split(' ');
-  const version    = parts[0] || 'HTTP/1.1';
-  const status     = parseInt(parts[1] ?? '0', 10) || 0;
-  const statusText = parts.slice(2).join(' ') || '';
+  const { version, status, statusText } = _parseResponseLine(firstLine);
 
   // RFC 7230 §3.3: HEAD responses MUST NOT include a body even when
   // Content-Length or Transfer-Encoding is present.
@@ -1498,7 +1530,7 @@ function _chunkedFrame(bytes: Uint8Array, arena?: Arena): Uint8Array {
 export async function* serializeResponse(res: Response, arena?: Arena): AsyncGenerator<Uint8Array> {
   const hasOutTrailers = res._hasOutTrailers();
   const te = (res.headers.get('transfer-encoding') || '').toLowerCase();
-  const alreadyChunked = te.split(',').map(function trimPart(s) { return s.trim(); }).includes('chunked');
+  const alreadyChunked = _headerTokenList(te).map(t => t.toLowerCase()).includes('chunked');
   const isChunked = alreadyChunked || hasOutTrailers;
 
   // When out-trailers force chunked but TE header isn't set, emit a modified head.
@@ -1605,15 +1637,8 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext
   function _requestFromRaw(raw: Uint8Array): Request {
     const { firstLine, headers } = _parseHeaders(raw);
 
-    // Parse request line manually — avoids split() array + slice(2).join() allocations.
-    const sp1     = firstLine.indexOf(' ');
-    const sp2     = sp1 >= 0 ? firstLine.indexOf(' ', sp1 + 1) : -1;
-    const method  = sp1 > 0 ? firstLine.substring(0, sp1).toUpperCase() : 'GET';
-    const path    = sp1 >= 0 && sp2 > sp1 ? firstLine.substring(sp1 + 1, sp2) : '/';
-    const version = sp2 >= 0 ? firstLine.substring(sp2 + 1) : 'HTTP/1.1';
-
-    const host = headers.get('host');
-    const url  = host ? 'http://' + host + path : path;
+    const { method, path, version } = _parseRequestLine(firstLine);
+    const url = _urlFromRequestTarget(path, headers);
 
     const framing = _bodyFraming(headers, true, 0);
     let body;

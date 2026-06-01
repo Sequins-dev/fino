@@ -71,7 +71,7 @@
 
 import { encodeUtf8, btoa }  from '../../internal/globals/encoding.mts';
 import { digest }             from '../../internal/openssl.mts';
-import { Headers } from './index.mts';
+import { Headers, _headerTokenList, _parseHeaders, _parseResponseLine } from './index.mts';
 import { Socket }             from '../socket.mts';
 import { TlsSocket }          from '../tls.mts';
 import { lookup }             from '../dns.mts';
@@ -356,18 +356,13 @@ async function _readUpgradeResponse(
       preamble.push(new Uint8Array(assembled.subarray(headerEnd)));
     }
 
-    // Parse status line and headers from the ASCII text.
-    const text    = new TextDecoder().decode(assembled.subarray(0, headerEnd));
-    const lines   = text.split('\r\n');
-    const parts2  = (lines[0] ?? '').split(' ');
-    const status  = parseInt(parts2[1] ?? '0', 10) || 0;
+    // Parse status line and headers through the shared scanner-backed HTTP
+    // parser used by the regular HTTP/1 path.
+    const parsed = _parseHeaders(assembled.subarray(0, headerEnd));
+    const { status } = _parseResponseLine(parsed.firstLine);
     const headers = new Map<string, string>();
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      if (!line) continue;
-      const colon = line.indexOf(':');
-      if (colon < 0) continue;
-      headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+    for (const [name, value] of parsed.headers) {
+      headers.set(name, value);
     }
     return { status, headers };
   }
@@ -662,8 +657,8 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
       throw Object.assign(new Error('Missing or invalid Upgrade: websocket header'), { name: 'SyntaxError' });
     }
 
-    const connection = (req.headers.get('connection') ?? '').toLowerCase();
-    if (!connection.split(',').some((t: string) => t.trim() === 'upgrade')) {
+    const connection = req.headers.get('connection');
+    if (!_headerTokenList(connection).some((t: string) => t.toLowerCase() === 'upgrade')) {
       throw Object.assign(new Error('Missing Connection: Upgrade header'), { name: 'SyntaxError' });
     }
 
@@ -678,8 +673,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
     }
 
     // Negotiate subprotocol
-    const offeredHeader  = req.headers.get('sec-websocket-protocol') ?? '';
-    const offered        = offeredHeader ? offeredHeader.split(',').map((p: string) => p.trim()).filter(Boolean) : [];
+    const offered = _headerTokenList(req.headers.get('sec-websocket-protocol'));
     let   negotiated: string | null = null;
 
     if (opts.selectProtocol) {
@@ -901,8 +895,8 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
         throw new Error('WebSocket handshake failed: missing or invalid Upgrade header');
       }
 
-      const connHdr = (respHeaders.get('connection') ?? '').toLowerCase();
-      if (!connHdr.split(',').some((t: string) => t.trim() === 'upgrade')) {
+      const connHdr = respHeaders.get('connection');
+      if (!_headerTokenList(connHdr).some((t: string) => t.toLowerCase() === 'upgrade')) {
         throw new Error('WebSocket handshake failed: missing Connection: Upgrade');
       }
 

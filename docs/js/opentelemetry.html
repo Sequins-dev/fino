@@ -1,0 +1,3168 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fino - js/opentelemetry</title>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../index.html">fino</a></p>
+<ul><li><div class="docs-sidebar-directory">Docs</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="getting-started.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Getting Started</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="runtime-model.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Runtime Model</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="cli.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>CLI</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="modules-and-packages.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Modules and Packages</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="testing-and-benchmarking.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Testing and Benchmarking</span></a></li><li><div class="docs-sidebar-directory">database</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="database/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Database Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="file/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>File Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="format/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Format Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">net/http</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="net/http/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>HTTP Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">runtime/realm</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="runtime/realm/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Realm Guide</span></a></li></ul></li></ul></li><li><div class="docs-sidebar-directory">API Reference</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="archive.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>archive</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="context.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>context</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="context/topic.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>topic</span></a></li></ul></li><li><div class="docs-sidebar-directory">database</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="database/sqlite.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>sqlite</span></a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="file/fs.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>fs</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="file/path.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>path</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="file/watch.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>watch</span></a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="format/csv.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>csv</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="format/markdown.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>markdown</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="format/toml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>toml</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="format/typescript.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>typescript</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="format/xml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>xml</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="format/yaml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>yaml</span></a></li></ul></li><li><div class="docs-sidebar-directory">net</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/dns.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>dns</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>http</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http/driver.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>driver</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http/eventsource.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>eventsource</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http/h1.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>h1</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http/h2.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>h2</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http/server.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>server</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/http/websocket.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>websocket</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/socket.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>socket</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="net/tls.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>tls</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="opentelemetry.html" aria-current="page"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>opentelemetry</span></a></li><li><div class="docs-sidebar-directory">parsing</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="parsing/scanner.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>scanner</span></a></li></ul></li><li><div class="docs-sidebar-directory">runtime</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/cluster.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cluster</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/loop.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>loop</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/messaging.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>messaging</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/module.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>module</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/process.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>process</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/realm.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>realm</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/realm/pool.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>pool</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="runtime/realm/self.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>self</span></a></li></ul></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="semver.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>semver</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="template.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>template</span></a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="test/assert.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>assert</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="test/bench.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>bench</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="test/mock.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>mock</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="test/test.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>test</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="tty.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>tty</span></a></li><li><div class="docs-sidebar-directory">util</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="util/argv.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>argv</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="util/compression.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>compression</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="util/prompt.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>prompt</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="uuid.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>uuid</span></a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:js-opentelemetry">js/opentelemetry</h1>
+<p class="muted">js/opentelemetry/index.mts</p>
+<p>fino:opentelemetry — tracing, metrics, logs, and SDK helpers.</p>
+<p>This module re-exports the public OpenTelemetry surface used by runtime instrumentation and application code. It includes context propagation, span/log/metric model types, exporters, and SDK wiring helpers.</p>
+
+
+<h2>Types</h2>
+
+<section id="js-opentelemetry.Attributes">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.ScopeInfo">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a> = { name: <span class="tok-keyword">string</span>; version?: <span class="tok-keyword">string</span>; schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>; attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>; droppedAttributesCount?: <span class="tok-keyword">number</span>; }</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.SignalName">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SignalName">SignalName</a> = <span class="tok-string">&#39;trace&#39;</span> | <span class="tok-string">&#39;log&#39;</span> | <span class="tok-string">&#39;metric&#39;</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.MetricTemporality">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricTemporality">MetricTemporality</a> = <span class="tok-string">&#39;delta&#39;</span> | <span class="tok-string">&#39;cumulative&#39;</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.MetricAggregationType">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricAggregationType">MetricAggregationType</a> = <span class="tok-string">&#39;histogram&#39;</span> | <span class="tok-string">&#39;lastValue&#39;</span> | <span class="tok-string">&#39;sum&#39;</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.CarrierLike">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a> = { [key: <span class="tok-keyword">string</span>]: <span class="tok-keyword">unknown</span>; <span class="tok-keyword">get</span>?(key: <span class="tok-keyword">string</span>): <span class="tok-keyword">unknown</span>; <span class="tok-keyword">set</span>?(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">unknown</span>; keys?(): Iterable&lt;<span class="tok-keyword">string</span>&gt;; }</code></h3>
+
+
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="js-opentelemetry.CarrierApi">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt; {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.CarrierApi.get">
+<h5><code><span class="tok-keyword">get</span>(target: TCarrier, key: <span class="tok-keyword">string</span>): <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.CarrierApi.set">
+<h5><code><span class="tok-keyword">set</span>(target: TCarrier, key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.CarrierApi.keys">
+<h5><code>keys(target: TCarrier): <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.TraceContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.TraceContext.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.TraceContext.spanId">
+<h5><code>spanId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.TraceContext.traceFlags">
+<h5><code>traceFlags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.TraceContext.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.TraceContext.baggage">
+<h5><code>baggage?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanStatus">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStatus">SpanStatus</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanStatus.code">
+<h5><code>code?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanStatus.message">
+<h5><code>message?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanLinkContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLinkContext">SpanLinkContext</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanLinkContext.traceId">
+<h5><code>traceId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLinkContext.spanId">
+<h5><code>spanId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLinkContext.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLinkContext.flags">
+<h5><code>flags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanLinkRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLinkRecord">SpanLinkRecord</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLinkContext">SpanLinkContext</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanLinkRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLinkRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanEventRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanEventRecord">SpanEventRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanEventRecord.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanEventRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanEventRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanEventRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanRecord.schemaVersion">
+<h5><code>schemaVersion?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.operation">
+<h5><code>operation?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.name">
+<h5><code>name?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.traceId">
+<h5><code>traceId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.spanId">
+<h5><code>spanId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.parentSpanId">
+<h5><code>parentSpanId?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.startTimeUnixNano">
+<h5><code>startTimeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.endTimeUnixNano">
+<h5><code>endTimeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.scope">
+<h5><code>scope?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.kind">
+<h5><code>kind?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.status">
+<h5><code>status?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.events">
+<h5><code>events?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanEventRecord">SpanEventRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.links">
+<h5><code>links?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLinkRecord">SpanLinkRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.droppedEventsCount">
+<h5><code>droppedEventsCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.droppedLinksCount">
+<h5><code>droppedLinksCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.flags">
+<h5><code>flags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanRecord.injectedHeaders">
+<h5><code>injectedHeaders?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.LogRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.LogRecord.schemaVersion">
+<h5><code>schemaVersion?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.body">
+<h5><code>body?: <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.severityText">
+<h5><code>severityText?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.severityNumber">
+<h5><code>severityNumber?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.observedTimeUnixNano">
+<h5><code>observedTimeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.scope">
+<h5><code>scope?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.spanId">
+<h5><code>spanId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.traceFlags">
+<h5><code>traceFlags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.baggage">
+<h5><code>baggage?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.eventName">
+<h5><code>eventName?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.categoryName">
+<h5><code>categoryName?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecord.flags">
+<h5><code>flags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ExemplarRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExemplarRecord">ExemplarRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.spanId">
+<h5><code>spanId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.value">
+<h5><code>value?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.asInt">
+<h5><code>asInt?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.asDouble">
+<h5><code>asDouble?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExemplarRecord.filteredAttributes">
+<h5><code>filteredAttributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.QuantileValueRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.QuantileValueRecord">QuantileValueRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.QuantileValueRecord.quantile">
+<h5><code>quantile: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.QuantileValueRecord.value">
+<h5><code>value: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ExponentialBuckets">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExponentialBuckets">ExponentialBuckets</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ExponentialBuckets.offset">
+<h5><code>offset?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ExponentialBuckets.bucketCounts">
+<h5><code>bucketCounts?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<span class="tok-keyword">number</span> | <span class="tok-number">bigint</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.MetricExemplarContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricExemplarContext">MetricExemplarContext</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.MetricExemplarContext.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricExemplarContext.spanId">
+<h5><code>spanId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricExemplarContext.traceFlags">
+<h5><code>traceFlags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.MetricRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.MetricRecord.schemaVersion">
+<h5><code>schemaVersion?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.value">
+<h5><code>value?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.count">
+<h5><code>count?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.sum">
+<h5><code>sum?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.min">
+<h5><code>min?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.max">
+<h5><code>max?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.unit">
+<h5><code>unit?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.kind">
+<h5><code>kind?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.aggregationKind">
+<h5><code>aggregationKind?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.aggregationTemporality">
+<h5><code>aggregationTemporality?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.isMonotonic">
+<h5><code>isMonotonic?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.metadata">
+<h5><code>metadata?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.scope">
+<h5><code>scope?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.startTimeUnixNano">
+<h5><code>startTimeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.explicitBounds">
+<h5><code>explicitBounds?: <span class="tok-keyword">number</span>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.bucketCounts">
+<h5><code>bucketCounts?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<span class="tok-keyword">number</span> | <span class="tok-number">bigint</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.quantileValues">
+<h5><code>quantileValues?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.QuantileValueRecord">QuantileValueRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.exemplars">
+<h5><code>exemplars?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExemplarRecord">ExemplarRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.flags">
+<h5><code>flags?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.exemplarContext">
+<h5><code>exemplarContext?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricExemplarContext">MetricExemplarContext</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.scale">
+<h5><code>scale?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.zeroCount">
+<h5><code>zeroCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.zeroThreshold">
+<h5><code>zeroThreshold?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.positive">
+<h5><code>positive?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExponentialBuckets">ExponentialBuckets</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricRecord.negative">
+<h5><code>negative?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExponentialBuckets">ExponentialBuckets</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ObservableMetricObservation">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricObservation">ObservableMetricObservation</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ObservableMetricObservation.value">
+<h5><code>value: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricObservation.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricObservation.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ObservableMetricRegistration">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricRegistration">ObservableMetricRegistration</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.kind">
+<h5><code>kind: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.unit">
+<h5><code>unit: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.description">
+<h5><code>description: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.scope">
+<h5><code>scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.resource">
+<h5><code>resource: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ObservableMetricRegistration.callback">
+<h5><code>callback: () =&gt; <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricObservation">ObservableMetricObservation</a> | <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricObservation">ObservableMetricObservation</a>[] | <span class="tok-keyword">null</span> | <span class="tok-keyword">undefined</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.MetricInstrumentOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.MetricInstrumentOptions.unit">
+<h5><code>unit?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricInstrumentOptions.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricInstrumentOptions.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricInstrumentOptions.kind">
+<h5><code>kind?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.MetricView">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricView">MetricView</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.MetricView.instrumentName">
+<h5><code>instrumentName?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricView.name">
+<h5><code>name?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricView.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricView.attributeKeys">
+<h5><code>attributeKeys?: <span class="tok-keyword">string</span>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricView.aggregation">
+<h5><code>aggregation?: { <span class="tok-keyword">type</span>: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricAggregationType">MetricAggregationType</a>; boundaries?: <span class="tok-keyword">number</span>[]; monotonic?: <span class="tok-keyword">boolean</span>; }</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.PartialSuccessResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.PartialSuccessResult">PartialSuccessResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.PartialSuccessResult.rejectedSpans">
+<h5><code>rejectedSpans: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.PartialSuccessResult.rejectedLogs">
+<h5><code>rejectedLogs: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.PartialSuccessResult.rejectedDataPoints">
+<h5><code>rejectedDataPoints: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.PartialSuccessResult.errorMessage">
+<h5><code>errorMessage: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ExportResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ExportResult.code">
+<h5><code>code: <span class="tok-string">&#39;success&#39;</span> | <span class="tok-string">&#39;failure&#39;</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.OtelExporter">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelExporter">OtelExporter</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.OtelExporter.exportSpans">
+<h5><code>exportSpans(spans: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelExporter.exportLogs">
+<h5><code>exportLogs(logs: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelExporter.exportMetrics">
+<h5><code>exportMetrics(metrics: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelExporter.shutdown">
+<h5><code>shutdown?(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.OtelSdkLike">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelSdkLike">OtelSdkLike</a> {</code></h3>
+
+
+
+<h4>Readonly Properties</h4>
+
+<section class="member" id="js-opentelemetry.OtelSdkLike.propagator">
+<h5><code><span class="tok-keyword">readonly</span> propagator: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.OtelSdkLike.recordSpanStart">
+<h5><code>recordSpanStart(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSdkLike.recordSpan">
+<h5><code>recordSpan(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSdkLike.recordLog">
+<h5><code>recordLog(log: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSdkLike.recordMetric">
+<h5><code>recordMetric(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Disposable">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Disposable">Disposable</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Disposable.dispose">
+<h5><code>dispose(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Instrumentation">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Instrumentation">Instrumentation</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Instrumentation.enable">
+<h5><code>enable(sdk: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelSdkLike">OtelSdkLike</a>): <span class="tok-keyword">void</span> | <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Disposable">Disposable</a> | <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Disposable">Disposable</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.RuntimeHttpRequestEvent">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.RuntimeHttpRequestEvent">RuntimeHttpRequestEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.requestId">
+<h5><code>requestId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.method">
+<h5><code>method?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.route">
+<h5><code>route?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.url">
+<h5><code>url?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.headers">
+<h5><code>headers?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.statusCode">
+<h5><code>statusCode?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.error">
+<h5><code>error?: <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeHttpRequestEvent.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.RuntimeDnsEvent">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.RuntimeDnsEvent">RuntimeDnsEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.lookupId">
+<h5><code>lookupId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.requestId">
+<h5><code>requestId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.hop">
+<h5><code>hop?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.hostname">
+<h5><code>hostname?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.address">
+<h5><code>address?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.family">
+<h5><code>family?: <span class="tok-keyword">string</span> | <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.error">
+<h5><code>error?: <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeDnsEvent.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.RuntimeSocketEvent">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.RuntimeSocketEvent">RuntimeSocketEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.connectId">
+<h5><code>connectId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.requestId">
+<h5><code>requestId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.hop">
+<h5><code>hop?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.host">
+<h5><code>host?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.port">
+<h5><code>port?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.transport">
+<h5><code>transport?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.error">
+<h5><code>error?: <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeSocketEvent.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.RuntimeTlsEvent">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.RuntimeTlsEvent">RuntimeTlsEvent</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.handshakeId">
+<h5><code>handshakeId: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.requestId">
+<h5><code>requestId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.hop">
+<h5><code>hop?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.hostname">
+<h5><code>hostname?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.port">
+<h5><code>port?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.protocol">
+<h5><code>protocol?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.error">
+<h5><code>error?: <span class="tok-keyword">unknown</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RuntimeTlsEvent.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ResourceOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ResourceOptions">ResourceOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ResourceOptions.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ResourceOptions.entityRefs">
+<h5><code>entityRefs?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;{ schemaUrl?: <span class="tok-keyword">string</span>; <span class="tok-keyword">type</span>?: <span class="tok-keyword">string</span>; idKeys?: <span class="tok-keyword">string</span>[] }&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ResourceOptions.schemaUrl">
+<h5><code>schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ProviderOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ProviderOptions">ProviderOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.ProviderOptions.resource">
+<h5><code>resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a> | <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanStartOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStartOptions">SpanStartOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanStartOptions.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanStartOptions.parentSpanId">
+<h5><code>parentSpanId?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanStartOptions.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanStartOptions.links">
+<h5><code>links?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLinkRecord">SpanLinkRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanStartOptions.kind">
+<h5><code>kind?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanEndOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanEndOptions">SpanEndOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanEndOptions.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanEndOptions.status">
+<h5><code>status?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ActiveTelemetryContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ActiveTelemetryContext">ActiveTelemetryContext</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> {</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.SamplingResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SamplingResult">SamplingResult</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SamplingResult.sample">
+<h5><code>sample: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SamplingResult.attributes">
+<h5><code>attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SamplingResult.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanLimits">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLimits">SpanLimits</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.SpanLimits.attributeCountLimit">
+<h5><code>attributeCountLimit?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLimits.attributeValueLengthLimit">
+<h5><code>attributeValueLengthLimit?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLimits.eventCountLimit">
+<h5><code>eventCountLimit?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanLimits.linkCountLimit">
+<h5><code>linkCountLimit?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.RetryOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.RetryOptions">RetryOptions</a> {</code></h3>
+
+
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry.RetryOptions.maxAttempts">
+<h5><code>maxAttempts?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.RetryOptions.initialBackoffMillis">
+<h5><code>initialBackoffMillis?: <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="js-opentelemetry.requireRecord">
+<h3><code><span class="tok-keyword">function</span> requireRecord(kind: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.nowUnixNano">
+<h3><code><span class="tok-keyword">function</span> nowUnixNano(): <span class="tok-keyword">number</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.randomHex">
+<h3><code><span class="tok-keyword">function</span> randomHex(length: <span class="tok-keyword">number</span>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.encodeSegment">
+<h3><code><span class="tok-keyword">function</span> encodeSegment(value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.requireNonEmptyName">
+<h3><code><span class="tok-keyword">function</span> requireNonEmptyName(kind: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.scopeSegment">
+<h3><code><span class="tok-keyword">function</span> scopeSegment(scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.normalizeScope">
+<h3><code><span class="tok-keyword">function</span> normalizeScope( name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>, attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>, droppedAttributesCount?: <span class="tok-keyword">number</span>, ): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.topicNames">
+<h3><code><span class="tok-keyword">function</span> topicNames(signal: <span class="tok-keyword">string</span>, scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>, ...suffixes: <span class="tok-keyword">string</span>[]): <span class="tok-keyword">string</span>[]</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.publishScoped">
+<h3><code><span class="tok-keyword">function</span> publishScoped&lt;TPayload&gt;(signal: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SignalName">SignalName</a>, scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>, suffixes: <span class="tok-keyword">string</span>[], payload: TPayload): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.hexToBytes">
+<h3><code><span class="tok-keyword">function</span> hexToBytes(hex: <span class="tok-keyword">string</span>, size: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.bytesEqual">
+<h3><code><span class="tok-keyword">function</span> bytesEqual(a: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, b: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.normalizeResource">
+<h3><code><span class="tok-keyword">function</span> normalizeResource(resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a> | <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> | <span class="tok-keyword">null</span>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.mergeAttributes">
+<h3><code><span class="tok-keyword">function</span> mergeAttributes(a?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>, b?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.defaultCarrierApiFor">
+<h3><code><span class="tok-keyword">function</span> defaultCarrierApiFor&lt;TCarrier <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;(carrier: TCarrier): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.carrierApiFor">
+<h3><code><span class="tok-keyword">function</span> carrierApiFor&lt;TCarrier&gt;(carrier: TCarrier, carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.snapshotCarrier">
+<h3><code><span class="tok-keyword">function</span> snapshotCarrier&lt;TCarrier <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;(carrier: TCarrier, carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.registerActiveSpanContextGetter">
+<h3><code><span class="tok-keyword">function</span> registerActiveSpanContextGetter(getter: () =&gt; <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.getActiveBaggage">
+<h3><code><span class="tok-keyword">function</span> getActiveBaggage(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.currentActiveTelemetryContext">
+<h3><code><span class="tok-keyword">function</span> currentActiveTelemetryContext(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ActiveTelemetryContext">ActiveTelemetryContext</a> | <span class="tok-keyword">undefined</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithActiveContext">
+<h3><code><span class="tok-keyword">function</span> runWithActiveContext&lt;R&gt;(context: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ActiveTelemetryContext">ActiveTelemetryContext</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithBaggage">
+<h3><code><span class="tok-keyword">function</span> runWithBaggage&lt;R&gt;(baggage: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.installRequestContext">
+<h3><code><span class="tok-keyword">function</span> installRequestContext(requestId: <span class="tok-keyword">string</span>, context: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ActiveTelemetryContext">ActiveTelemetryContext</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.consumeRequestContext">
+<h3><code><span class="tok-keyword">function</span> consumeRequestContext(requestId: <span class="tok-keyword">string</span>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ActiveTelemetryContext">ActiveTelemetryContext</a> | <span class="tok-keyword">null</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.truncateAttributeValue">
+<h3><code><span class="tok-keyword">function</span> truncateAttributeValue(value: <span class="tok-keyword">unknown</span>, limit: <span class="tok-keyword">number</span>): <span class="tok-keyword">unknown</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.limitAttributeEntries">
+<h3><code><span class="tok-keyword">function</span> limitAttributeEntries( attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>, limits: { attributeCountLimit?: <span class="tok-keyword">number</span>; attributeValueLengthLimit?: <span class="tok-keyword">number</span> }, ): { attrs: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>; dropped: <span class="tok-keyword">number</span> }</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.otelTopic">
+<h3><code><span class="tok-keyword">function</span> otelTopic(signal: <span class="tok-keyword">string</span>, scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>, ...suffixes: <span class="tok-keyword">string</span>[]): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.otelRuntimeTopic">
+<h3><code><span class="tok-keyword">function</span> otelRuntimeTopic(domain: <span class="tok-keyword">string</span>, operation: <span class="tok-keyword">string</span>, phase: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.otelRuntimeEvent">
+<h3><code><span class="tok-keyword">function</span> otelRuntimeEvent&lt;TPayload <span class="tok-keyword">extends</span> <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;&gt;( domain: <span class="tok-keyword">string</span>, operation: <span class="tok-keyword">string</span>, phase: <span class="tok-keyword">string</span>, payload: TPayload = {} <span class="tok-keyword">as</span> TPayload, ): TPayload &amp; { schemaVersion: <span class="tok-keyword">number</span>; topic: <span class="tok-keyword">string</span>; family: <span class="tok-keyword">string</span>; domain: <span class="tok-keyword">string</span>; operation: <span class="tok-keyword">string</span>; phase: <span class="tok-keyword">string</span>; correlationId: <span class="tok-keyword">unknown</span>; }</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.topic">
+<h3><code><span class="tok-keyword">function</span> topic&lt;T = <span class="tok-keyword">unknown</span>&gt;(name: <span class="tok-keyword">string</span>): <a class="tok-type" href="context/topic.html#topic.Topic">Topic</a>&lt;T&gt;</code></h3>
+
+<p class="muted">Re-exported from <a href="context/topic.html#topic.topic">topic.topic</a>.</p>
+
+</section>
+
+<section id="js-opentelemetry.applySpanLimits">
+<h3><code><span class="tok-keyword">function</span> applySpanLimits(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>, limits: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLimits">SpanLimits</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.isScopedTraceTopic">
+<h3><code><span class="tok-keyword">function</span> isScopedTraceTopic( name: <span class="tok-keyword">string</span>, phase: <span class="tok-string">&#39;start&#39;</span> | <span class="tok-string">&#39;end&#39;</span> | <span class="tok-string">&#39;event&#39;</span> | <span class="tok-string">&#39;attribute&#39;</span> | <span class="tok-string">&#39;link&#39;</span> | <span class="tok-string">&#39;status&#39;</span> | <span class="tok-string">&#39;rename&#39;</span>, ): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.getTracerProvider">
+<h3><code><span class="tok-keyword">function</span> getTracerProvider(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TracerProvider">TracerProvider</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.setTracerProvider">
+<h3><code><span class="tok-keyword">function</span> setTracerProvider(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TracerProvider">TracerProvider</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithTracerProvider">
+<h3><code><span class="tok-keyword">function</span> runWithTracerProvider&lt;R&gt;(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TracerProvider">TracerProvider</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithoutTracerProvider">
+<h3><code><span class="tok-keyword">function</span> runWithoutTracerProvider&lt;R&gt;(fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.isTracerProviderContextEnabled">
+<h3><code><span class="tok-keyword">function</span> isTracerProviderContextEnabled(): <span class="tok-keyword">boolean</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.getActiveSpan">
+<h3><code><span class="tok-keyword">function</span> getActiveSpan(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Span">Span</a> | <span class="tok-keyword">undefined</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.getActiveSpanContext">
+<h3><code><span class="tok-keyword">function</span> getActiveSpanContext(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithActiveSpan">
+<h3><code><span class="tok-keyword">function</span> runWithActiveSpan&lt;R&gt;(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Span">Span</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.applyLogLimits">
+<h3><code><span class="tok-keyword">function</span> applyLogLimits( log: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>, limits: { attributeCountLimit?: <span class="tok-keyword">number</span>; attributeValueLengthLimit?: <span class="tok-keyword">number</span> } = {}, ): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.getLoggerProvider">
+<h3><code><span class="tok-keyword">function</span> getLoggerProvider(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LoggerProvider">LoggerProvider</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.setLoggerProvider">
+<h3><code><span class="tok-keyword">function</span> setLoggerProvider(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LoggerProvider">LoggerProvider</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithLoggerProvider">
+<h3><code><span class="tok-keyword">function</span> runWithLoggerProvider&lt;R&gt;(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LoggerProvider">LoggerProvider</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithoutLoggerProvider">
+<h3><code><span class="tok-keyword">function</span> runWithoutLoggerProvider&lt;R&gt;(fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.cloneMetric">
+<h3><code><span class="tok-keyword">function</span> cloneMetric(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.zeroMetric">
+<h3><code><span class="tok-keyword">function</span> zeroMetric(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.attributesKey">
+<h3><code><span class="tok-keyword">function</span> attributesKey(attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.normalizeMetricKind">
+<h3><code><span class="tok-keyword">function</span> normalizeMetricKind(kind: <span class="tok-keyword">string</span> | <span class="tok-keyword">undefined</span>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.metricInstrumentKey">
+<h3><code><span class="tok-keyword">function</span> metricInstrumentKey(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.metricSeriesKey">
+<h3><code><span class="tok-keyword">function</span> metricSeriesKey(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <span class="tok-keyword">string</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.accumulateMetric">
+<h3><code><span class="tok-keyword">function</span> accumulateMetric(store: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map">Map</a>&lt;<span class="tok-keyword">string</span>, <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>&gt;, key: <span class="tok-keyword">string</span>, metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.applyMetricView">
+<h3><code><span class="tok-keyword">function</span> applyMetricView(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>, views: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricView">MetricView</a>[]): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.getMeterProvider">
+<h3><code><span class="tok-keyword">function</span> getMeterProvider(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MeterProvider">MeterProvider</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.setMeterProvider">
+<h3><code><span class="tok-keyword">function</span> setMeterProvider(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MeterProvider">MeterProvider</a>): <span class="tok-keyword">void</span></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithMeterProvider">
+<h3><code><span class="tok-keyword">function</span> runWithMeterProvider&lt;R&gt;(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MeterProvider">MeterProvider</a>, fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.runWithoutMeterProvider">
+<h3><code><span class="tok-keyword">function</span> runWithoutMeterProvider&lt;R&gt;(fn: () =&gt; R): R</code></h3>
+
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="js-opentelemetry.OTEL_SCHEMA_VERSION">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OTEL_SCHEMA_VERSION">OTEL_SCHEMA_VERSION</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.OTEL_TOPIC_SUFFIXES">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OTEL_TOPIC_SUFFIXES">OTEL_TOPIC_SUFFIXES</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.Propagation">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Propagation">Propagation</a></code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Propagation.getPropagator">
+<h5><code>getPropagator(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Propagation.setPropagator">
+<h5><code>setPropagator(propagator: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Propagation.inject">
+<h5><code>inject&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;( carrier: TCarrier, context?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span>, carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;, ): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Propagation.extract">
+<h5><code>extract&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;(carrier: TCarrier, carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Histogram">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Histogram">Histogram</a></code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.PeriodicExportingMetricReader">
+<h3><code><span class="tok-keyword">const</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.PeriodicExportingMetricReader">PeriodicExportingMetricReader</a></code></h3>
+
+
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="js-opentelemetry.Resource">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Resource.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ResourceOptions">ResourceOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.Resource.attributes">
+<h5><code><span class="tok-keyword">get</span> attributes(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Resource.droppedAttributesCount">
+<h5><code><span class="tok-keyword">get</span> droppedAttributesCount(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Resource.entityRefs">
+<h5><code><span class="tok-keyword">get</span> entityRefs(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;{ schemaUrl?: <span class="tok-keyword">string</span>; <span class="tok-keyword">type</span>?: <span class="tok-keyword">string</span>; idKeys: <span class="tok-keyword">string</span>[] }&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Resource.schemaUrl">
+<h5><code><span class="tok-keyword">get</span> schemaUrl(): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Baggage">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Baggage.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(entries: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt; = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Baggage.get">
+<h5><code><span class="tok-keyword">get</span>(key: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span> | <span class="tok-keyword">undefined</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Baggage.set">
+<h5><code><span class="tok-keyword">set</span>(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Baggage.delete">
+<h5><code><span class="tok-keyword">delete</span>(key: <span class="tok-keyword">string</span>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Baggage.entries">
+<h5><code>entries()</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Baggage.toString">
+<h5><code><a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage.toString">toString</a>(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+<h4>Static Methods</h4>
+
+<section class="member" id="js-opentelemetry.Baggage.fromString">
+<h5><code><span class="tok-keyword">static</span> fromString(text: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span> | <span class="tok-keyword">undefined</span>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Baggage">Baggage</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.TextMapPropagator">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.TextMapPropagator.inject">
+<h5><code>inject&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;( _carrier: TCarrier, _context: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span> | <span class="tok-keyword">undefined</span>, _carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;, ): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.TextMapPropagator.extract">
+<h5><code>extract&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;(_carrier: TCarrier, _carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.W3CTraceContextPropagator">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.W3CTraceContextPropagator">W3CTraceContextPropagator</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.W3CTraceContextPropagator.inject">
+<h5><code>inject&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;( carrier: TCarrier, context: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span> | <span class="tok-keyword">undefined</span>, carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;, ): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.W3CTraceContextPropagator.extract">
+<h5><code>extract&lt;TCarrier = <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierLike">CarrierLike</a>&gt;(carrier: TCarrier, carrierApi?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.CarrierApi">CarrierApi</a>&lt;TCarrier&gt;): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.BaseProvider">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.BaseProvider">BaseProvider</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.BaseProvider.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ProviderOptions">ProviderOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.BaseProvider.resource">
+<h5><code><span class="tok-keyword">get</span> resource(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Sampler">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Sampler">Sampler</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Sampler.shouldSample">
+<h5><code>shouldSample(_record: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SamplingResult">SamplingResult</a> | <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.AlwaysOnSampler">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.AlwaysOnSampler">AlwaysOnSampler</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Sampler">Sampler</a> {</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.TracerProvider">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TracerProvider">TracerProvider</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.BaseProvider">BaseProvider</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.TracerProvider.getTracer">
+<h5><code>getTracer( name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, options?: { schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>; attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>; droppedAttributesCount?: <span class="tok-keyword">number</span> }, ): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Tracer">Tracer</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Span">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Span">Span</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Span.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(tracer: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Tracer">Tracer</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStartOptions">SpanStartOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.Span.traceId">
+<h5><code><span class="tok-keyword">get</span> traceId(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.spanId">
+<h5><code><span class="tok-keyword">get</span> spanId(): <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Span.setAttribute">
+<h5><code>setAttribute(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.setAttributes">
+<h5><code>setAttributes(attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.addEvent">
+<h5><code>addEvent(name: <span class="tok-keyword">string</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}, timeUnixNano: <span class="tok-keyword">number</span> = nowUnixNano()): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.addLink">
+<h5><code>addLink(linkContext: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLinkContext">SpanLinkContext</a>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.setStatus">
+<h5><code>setStatus(status: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.recordException">
+<h5><code>recordException(error: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.updateName">
+<h5><code>updateName(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.isRecording">
+<h5><code>isRecording(): <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Span.end">
+<h5><code>end(options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanEndOptions">SpanEndOptions</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Tracer">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Tracer">Tracer</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Tracer.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TracerProvider">TracerProvider</a>, scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.Tracer.scope">
+<h5><code><span class="tok-keyword">get</span> scope(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Tracer.publishTrace">
+<h5><code>publishTrace(kind: <span class="tok-string">&#39;start&#39;</span> | <span class="tok-string">&#39;end&#39;</span> | <span class="tok-string">&#39;event&#39;</span> | <span class="tok-string">&#39;attribute&#39;</span> | <span class="tok-string">&#39;link&#39;</span> | <span class="tok-string">&#39;status&#39;</span> | <span class="tok-string">&#39;rename&#39;</span>, payload: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a> &amp; <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Tracer.startSpan">
+<h5><code>startSpan(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanStartOptions">SpanStartOptions</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Span">Span</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.LoggerProvider">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LoggerProvider">LoggerProvider</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.BaseProvider">BaseProvider</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.LoggerProvider.getLogger">
+<h5><code>getLogger( name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, options?: { schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>; attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>; droppedAttributesCount?: <span class="tok-keyword">number</span> }, ): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Logger">Logger</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Logger">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Logger">Logger</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Logger.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LoggerProvider">LoggerProvider</a>, scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.Logger.scope">
+<h5><code><span class="tok-keyword">get</span> scope(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Logger.emit">
+<h5><code>emit(body: <span class="tok-keyword">unknown</span>, options: { severityText?: <span class="tok-keyword">string</span>; severityNumber?: <span class="tok-keyword">number</span>; attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> } = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Logger.emitRecord">
+<h5><code>emitRecord(builder: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecordBuilder">LogRecordBuilder</a> | Partial&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>&gt;): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Logger.debug">
+<h5><code>debug(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Logger.info">
+<h5><code>info(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Logger.warn">
+<h5><code>warn(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Logger.error">
+<h5><code>error(body: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.LogRecordBuilder">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecordBuilder">LogRecordBuilder</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.constructor">
+<h5><code><span class="tok-keyword">constructor</span>()</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setBody">
+<h5><code>setBody(body: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setTextBody">
+<h5><code>setTextBody(body: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setJsonBody">
+<h5><code>setJsonBody(body: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setSeverity">
+<h5><code>setSeverity(severityText: <span class="tok-keyword">string</span>, severityNumber?: <span class="tok-keyword">number</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setAttribute">
+<h5><code>setAttribute(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setAttributes">
+<h5><code>setAttributes(attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setEventName">
+<h5><code>setEventName(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setCategory">
+<h5><code>setCategory(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setDroppedAttributesCount">
+<h5><code>setDroppedAttributesCount(count: <span class="tok-keyword">number</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.setContext">
+<h5><code>setContext(context: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span> | <span class="tok-keyword">undefined</span>): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordBuilder.build">
+<h5><code>build(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.MeterProvider">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MeterProvider">MeterProvider</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.BaseProvider">BaseProvider</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.MeterProvider.getMeter">
+<h5><code>getMeter( name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, options?: { schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>; attributes?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a>; droppedAttributesCount?: <span class="tok-keyword">number</span> }, ): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Meter">Meter</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Counter">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Counter">Counter</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Counter.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(meter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Meter">Meter</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Counter.add">
+<h5><code>add(value: <span class="tok-keyword">number</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.UpDownCounter">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.UpDownCounter">UpDownCounter</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.UpDownCounter.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(meter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Meter">Meter</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.UpDownCounter.add">
+<h5><code>add(value: <span class="tok-keyword">number</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.HistogramInstrument">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.HistogramInstrument">HistogramInstrument</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.HistogramInstrument.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(meter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Meter">Meter</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> &amp; { advice?: { explicitBucketBoundaries?: <span class="tok-keyword">number</span>[] } } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.HistogramInstrument.record">
+<h5><code>record(value: <span class="tok-keyword">number</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ObservableGauge">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableGauge">ObservableGauge</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.ObservableGauge.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(handle: { dispose(): <span class="tok-keyword">void</span> })</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.ObservableGauge.dispose">
+<h5><code>dispose(): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.Gauge">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Gauge">Gauge</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Gauge.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(meter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Meter">Meter</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Gauge.record">
+<h5><code>record(value: <span class="tok-keyword">number</span>, attributes: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ObservableCounter">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableCounter">ObservableCounter</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableGauge">ObservableGauge</a> {</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.ObservableUpDownCounter">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableUpDownCounter">ObservableUpDownCounter</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableGauge">ObservableGauge</a> {</code></h3>
+
+
+
+</section>
+
+<section id="js-opentelemetry.Meter">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Meter">Meter</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.Meter.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(provider: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MeterProvider">MeterProvider</a>, scope: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ScopeInfo">ScopeInfo</a>)</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.Meter.record">
+<h5><code>record(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">number</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> &amp; { explicitBounds?: <span class="tok-keyword">number</span>[] } = {}): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createCounter">
+<h5><code>createCounter(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Counter">Counter</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createUpDownCounter">
+<h5><code>createUpDownCounter(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.UpDownCounter">UpDownCounter</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createHistogram">
+<h5><code>createHistogram(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> &amp; { advice?: { explicitBucketBoundaries?: <span class="tok-keyword">number</span>[] } } = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.HistogramInstrument">HistogramInstrument</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createGauge">
+<h5><code>createGauge(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Gauge">Gauge</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createObservableCounter">
+<h5><code>createObservableCounter(name: <span class="tok-keyword">string</span>, callback: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricRegistration">ObservableMetricRegistration</a>[<span class="tok-string">&#39;callback&#39;</span>], options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableCounter">ObservableCounter</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createObservableUpDownCounter">
+<h5><code>createObservableUpDownCounter( name: <span class="tok-keyword">string</span>, callback: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricRegistration">ObservableMetricRegistration</a>[<span class="tok-string">&#39;callback&#39;</span>], options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {}, ): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableUpDownCounter">ObservableUpDownCounter</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.Meter.createObservableGauge">
+<h5><code>createObservableGauge(name: <span class="tok-keyword">string</span>, callback: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableMetricRegistration">ObservableMetricRegistration</a>[<span class="tok-string">&#39;callback&#39;</span>], options: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricInstrumentOptions">MetricInstrumentOptions</a> = {}): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ObservableGauge">ObservableGauge</a></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.InMemoryExporter">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.InMemoryExporter">InMemoryExporter</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.InMemoryExporter.exportSpans">
+<h5><code><span class="tok-keyword">async</span> exportSpans(spans: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.InMemoryExporter.exportLogs">
+<h5><code><span class="tok-keyword">async</span> exportLogs(logs: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.InMemoryExporter.exportMetrics">
+<h5><code><span class="tok-keyword">async</span> exportMetrics(metrics: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="opentelemetry.html#js-opentelemetry.ExportResult">ExportResult</a>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.InMemoryExporter.getFinishedSpans">
+<h5><code>getFinishedSpans(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.InMemoryExporter.getFinishedLogs">
+<h5><code>getFinishedLogs(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.InMemoryExporter.getFinishedMetrics">
+<h5><code>getFinishedMetrics(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.SpanProcessor">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanProcessor">SpanProcessor</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.SpanProcessor.onStart">
+<h5><code>onStart(_span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanProcessor.onEnd">
+<h5><code>onEnd(_span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.SpanProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.LogRecordProcessor">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecordProcessor">LogRecordProcessor</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.LogRecordProcessor.onEmit">
+<h5><code>onEmit(_log: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.LogRecordProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.MetricReader">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricReader">MetricReader</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.MetricReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: { temporality?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricTemporality">MetricTemporality</a> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.MetricReader.temporality">
+<h5><code><span class="tok-keyword">get</span> temporality(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricTemporality">MetricTemporality</a></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.MetricReader.record">
+<h5><code>record(_metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricReader.receive">
+<h5><code>receive(_metrics: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricReader.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.MetricReader.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.ManualMetricReader">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.ManualMetricReader">ManualMetricReader</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricReader">MetricReader</a> {</code></h3>
+
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.ManualMetricReader.receive">
+<h5><code>receive(metrics: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.ManualMetricReader.collect">
+<h5><code>collect(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.BatchSpanProcessor">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.BatchSpanProcessor">BatchSpanProcessor</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanProcessor">SpanProcessor</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.BatchSpanProcessor.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(exporter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelExporter">OtelExporter</a>, options: { maxQueueSize?: <span class="tok-keyword">number</span>; maxExportBatchSize?: <span class="tok-keyword">number</span>; scheduledDelayMillis?: <span class="tok-keyword">number</span> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.BatchSpanProcessor.droppedSpanCount">
+<h5><code><span class="tok-keyword">get</span> droppedSpanCount(): <span class="tok-keyword">number</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.BatchSpanProcessor.onEnd">
+<h5><code>onEnd(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.BatchSpanProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.BatchSpanProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.BatchLogRecordProcessor">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.BatchLogRecordProcessor">BatchLogRecordProcessor</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecordProcessor">LogRecordProcessor</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.BatchLogRecordProcessor.constructor">
+<h5><code><span class="tok-keyword">constructor</span>( exporter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelExporter">OtelExporter</a>, options: { maxQueueSize?: <span class="tok-keyword">number</span>; maxExportBatchSize?: <span class="tok-keyword">number</span>; scheduledDelayMillis?: <span class="tok-keyword">number</span>; attributeCountLimit?: <span class="tok-keyword">number</span>; attributeValueLengthLimit?: <span class="tok-keyword">number</span>; } = {}, )</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.BatchLogRecordProcessor.onEmit">
+<h5><code>onEmit(log: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.BatchLogRecordProcessor.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.BatchLogRecordProcessor.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.PeriodicMetricReader">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.PeriodicMetricReader">PeriodicMetricReader</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricReader">MetricReader</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.PeriodicMetricReader.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(exporter: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelExporter">OtelExporter</a>, options: { temporality?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricTemporality">MetricTemporality</a>; intervalMs?: <span class="tok-keyword">number</span> } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.PeriodicMetricReader._startPeriodicCollection">
+<h5><code>_startPeriodicCollection(collectAndFlush: () =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;): <span class="tok-keyword">void</span></code></h5>
+
+<p>Called by OtelSDK.start() to wire up a periodic collection cycle. <code>collectAndFlush</code> calls back into the SDK to collect accumulated metrics, deliver them via receive(), and then calls forceFlush() to export.</p>
+</section>
+
+<section class="member" id="js-opentelemetry.PeriodicMetricReader.receive">
+<h5><code>receive(metrics: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>[]): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.PeriodicMetricReader.forceFlush">
+<h5><code><span class="tok-keyword">async</span> forceFlush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.PeriodicMetricReader.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section id="js-opentelemetry.OtelSDK">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelSDK">OtelSDK</a> {</code></h3>
+
+
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry.OtelSDK.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: { exporters?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.OtelExporter">OtelExporter</a>[]; instrumentations?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Instrumentation">Instrumentation</a>[]; spanProcessors?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanProcessor">SpanProcessor</a>[]; logRecordProcessors?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecordProcessor">LogRecordProcessor</a>[]; metricReaders?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricReader">MetricReader</a>[]; sampler?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Sampler">Sampler</a>; propagator?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a>; views?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricView">MetricView</a>[]; metricCardinalityLimit?: <span class="tok-keyword">number</span>; spanLimits?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanLimits">SpanLimits</a>; resource?: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a> | <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt; | <span class="tok-keyword">null</span>; } = {})</code></h5>
+
+
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry.OtelSDK.propagator">
+<h5><code><span class="tok-keyword">get</span> propagator(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.TextMapPropagator">TextMapPropagator</a></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.resource">
+<h5><code><span class="tok-keyword">get</span> resource(): <a class="tok-type" href="opentelemetry.html#js-opentelemetry.Resource">Resource</a> | <span class="tok-keyword">null</span></code></h5>
+
+
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry.OtelSDK.start">
+<h5><code>start(): <span class="tok-keyword">this</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.recordSpanStart">
+<h5><code>recordSpanStart(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.recordSpan">
+<h5><code>recordSpan(span: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SpanRecord">SpanRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.recordLog">
+<h5><code>recordLog(log: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.LogRecord">LogRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.recordMetric">
+<h5><code>recordMetric(metric: <a class="tok-type" href="opentelemetry.html#js-opentelemetry.MetricRecord">MetricRecord</a>): <span class="tok-keyword">void</span></code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.flush">
+<h5><code><span class="tok-keyword">async</span> flush(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+<section class="member" id="js-opentelemetry.OtelSDK.shutdown">
+<h5><code><span class="tok-keyword">async</span> shutdown(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+
+</section>
+
+
+</section>
+
+
+<h2>Enums</h2>
+
+<section id="js-opentelemetry.SeverityNumber">
+<h3><code><span class="tok-keyword">enum</span> <a class="tok-type" href="opentelemetry.html#js-opentelemetry.SeverityNumber">SeverityNumber</a> { TRACE = <span class="tok-number">1</span>, TRACE2 = <span class="tok-number">2</span>, TRACE3 = <span class="tok-number">3</span>, TRACE4 = <span class="tok-number">4</span>, DEBUG = <span class="tok-number">5</span>, DEBUG2 = <span class="tok-number">6</span>, DEBUG3 = <span class="tok-number">7</span>, DEBUG4 = <span class="tok-number">8</span>, INFO = <span class="tok-number">9</span>, INFO2 = <span class="tok-number">10</span>, INFO3 = <span class="tok-number">11</span>, INFO4 = <span class="tok-number">12</span>, WARN = <span class="tok-number">13</span>, WARN2 = <span class="tok-number">14</span>, WARN3 = <span class="tok-number">15</span>, WARN4 = <span class="tok-number">16</span>, ERROR = <span class="tok-number">17</span>, ERROR2 = <span class="tok-number">18</span>, ERROR3 = <span class="tok-number">19</span>, ERROR4 = <span class="tok-number">20</span>, FATAL = <span class="tok-number">21</span>, FATAL2 = <span class="tok-number">22</span>, FATAL3 = <span class="tok-number">23</span>, FATAL4 = <span class="tok-number">24</span>, }</code></h3>
+
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

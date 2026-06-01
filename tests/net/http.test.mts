@@ -201,6 +201,25 @@ describe('Chunked body', () => {
     const data = await collectBody(req.body);
     t.equal(decodeUtf8(data), 'hello');
   });
+
+  it('chunked body accepts extensions and parses trailers', async (t) => {
+    const raw =
+      'POST /upload HTTP/1.1\r\nTransfer-Encoding: gzip, chunked\r\n\r\n' +
+      '5;sig=abc\r\nhello\r\n' +
+      '0\r\nX-Checksum: ok\r\n\r\n';
+    const req = await parseRequest(source(raw));
+    t.equal(await req.text(), 'hello');
+    const trailers = await req.trailers;
+    t.equal(trailers.get('x-checksum'), 'ok');
+  });
+
+  it('invalid chunk sizes are rejected strictly', async (t) => {
+    const req = await parseRequest(source(
+      'POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      '5x\r\nhello\r\n0\r\n\r\n'
+    ));
+    await t.rejects(() => req.text(), /Invalid chunk size/);
+  });
 });
 
 describe('Small chunks', () => {
@@ -333,6 +352,20 @@ describe('Response parsing — edge cases', () => {
     ));
     const data = await collectBody(res.body);
     t.equal(new TextDecoder().decode(data), 'hello', 'body correct with duplicate identical CL');
+  });
+
+  it('malformed header lines are rejected', async (t) => {
+    await t.rejects(
+      () => parseRequest(source('GET / HTTP/1.1\r\nBad-Header\r\n\r\n')),
+      /malformed header/i,
+    );
+  });
+
+  it('invalid Content-Length values are rejected strictly', async (t) => {
+    await t.rejects(
+      () => parseRequest(source('POST / HTTP/1.1\r\nContent-Length: 5x\r\n\r\nhello')),
+      /invalid Content-Length/i,
+    );
   });
 });
 

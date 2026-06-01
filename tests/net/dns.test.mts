@@ -72,6 +72,15 @@ describe('Wire protocol', () => {
     t.equal(name, 'example.com', 'pointer resolves to correct name');
   });
 
+  it('_decodeName — rejects truncated compression pointers', (t) => {
+    t.throws(() => _decodeName(new Uint8Array([0xC0]), 0), /truncated compression pointer/i);
+  });
+
+  it('_decodeName — rejects compression pointer loops', (t) => {
+    const msg = new Uint8Array([0xC0, 0x00]);
+    t.throws(() => _decodeName(msg, 0), /pointer loop/i);
+  });
+
   it('_parseResponse — synthetic A record response', (t) => {
     const qname    = _encodeName('example.com');
     const totalLen = 12 + qname.length + 4 +
@@ -98,6 +107,27 @@ describe('Wire protocol', () => {
     t.equal(parsed.answers.length, 1, 'one answer');
     t.equal(parsed.answers[0]!.data, '93.184.216.34', 'A record data');
     t.equal(parsed.answers[0]!.ttl,  300, 'TTL');
+  });
+
+  it('_parseResponse — rejects truncated packets', (t) => {
+    t.throws(() => _parseResponse(new Uint8Array([0, 1, 2])), /response too short/i);
+  });
+
+  it('_parseResponse — rejects truncated resource records', (t) => {
+    const qname = _encodeName('example.com');
+    const msg = new Uint8Array(12 + qname.length + 4 + 2);
+    const view = new DataView(msg.buffer);
+    view.setUint16(0, 0xABCD, false);
+    view.setUint16(2, 0x8180, false);
+    view.setUint16(4, 1, false);
+    view.setUint16(6, 1, false);
+    let off = 12;
+    msg.set(qname, off); off += qname.length;
+    view.setUint16(off, RECORD_TYPES.A, false); off += 2;
+    view.setUint16(off, 1, false); off += 2;
+    msg[off] = 0xC0;
+    msg[off + 1] = 0x0C;
+    t.throws(() => _parseResponse(msg), /resource record/i);
   });
 
   it('_reverseIP — IPv4', (t) => {

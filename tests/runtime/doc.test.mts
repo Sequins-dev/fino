@@ -15,6 +15,12 @@ interface DocJsonMember {
   kind?: string;
   signatures?: string[];
   doc?: { text: string; blocks?: Array<{ kind: string; [key: string]: unknown }> };
+  reExport?: {
+    mode: string;
+    sourceModule: string;
+    sourceName: string;
+    sourceId?: string;
+  };
 }
 
 interface DocJsonExport extends DocJsonMember {
@@ -30,8 +36,18 @@ interface DocJsonModule {
   exports: DocJsonExport[];
 }
 
+interface DocJsonGuide {
+  title: string;
+  path: string;
+  href: string;
+  summary: string;
+  text: string;
+  weight?: number;
+}
+
 interface DocJsonOutput {
   modules: DocJsonModule[];
+  guides?: DocJsonGuide[];
 }
 
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
@@ -109,6 +125,43 @@ This README becomes the documentation home page.
 
 - It should render Markdown lists.
 - It should leave the module index to the sidebar.
+`);
+    await fs.writeFile(appDir + '/package.json', JSON.stringify({
+      name: 'fixture-project',
+      version: '1.0.0',
+    }, null, 2) + '\n');
+    await ensureDir(fs, appDir + '/guides');
+    await fs.writeFile(appDir + '/guides/start.md', `---
+weight: 10
+---
+# Getting Started
+
+Start with the [advanced guide](./advanced.md), then open the [advanced API](../advanced.mts#open).
+
+This guide explains first steps for fixture users.
+
+\`\`\`ts
+import { open } from '../advanced.mts';
+
+const value = open('primary');
+\`\`\`
+`);
+    await fs.writeFile(appDir + '/guides/advanced.md', `---
+weight: 20
+---
+# Advanced Guide
+
+Advanced workflows use [ResourceBox](../advanced.mts#ResourceBox) and return to [getting started](./start.md).
+
+Use this guide when examples need more intent than API references.
+`);
+    await fs.writeFile(appDir + '/guides/virtual.md', `---
+path: docs/concepts/virtual.md
+weight: 15
+---
+# Virtual Guide
+
+This guide keeps its source file in guides but appears under docs concepts.
 `);
     await fs.writeFile(appDir + '/api.mts', `/**
  * Example API module.
@@ -294,6 +347,10 @@ export interface Client {
   name: string;
 }
 `);
+    await fs.writeFile(appDir + '/alpha/guide.md', `# Alpha Guide
+
+Use this guide before opening the [client API](./client.mts#Client).
+`);
     await fs.writeFile(appDir + '/beta/client.mts', `/**
  * Beta client docs.
  *
@@ -314,6 +371,102 @@ export interface Client {
 export function hiddenApi(): string {
   return 'hidden';
 }
+`);
+    await fs.writeFile(appDir + '/hidden-source.mts', `/**
+ * Hidden re-export source.
+ *
+ * @internal
+ */
+
+/**
+ * Hidden class docs copied into public facades.
+ */
+export class HiddenThing {
+  /**
+   * Hidden value docs copied with the class.
+   */
+  value(): string {
+    return 'hidden';
+  }
+}
+
+/**
+ * Hidden options docs copied into public facades.
+ */
+export interface HiddenOptions {
+  /**
+   * Hidden option flag.
+   */
+  enabled: boolean;
+}
+
+/**
+ * Internal-only symbol should not leak through star exports.
+ *
+ * @internal
+ */
+export function privateHelper(): string {
+  return 'private';
+}
+`);
+    await fs.writeFile(appDir + '/public-source.mts', `/**
+ * Public re-export source.
+ */
+
+/**
+ * Public target docs stay canonical in the source module.
+ */
+export function publicTarget(input: string): string {
+  return input;
+}
+`);
+    await fs.writeFile(appDir + '/hidden-star.mts', `/**
+ * Hidden star source.
+ *
+ * @internal
+ */
+
+/**
+ * Hidden star docs copied into public facades.
+ */
+export interface StarThing {
+  /**
+   * Star value docs.
+   */
+  value: string;
+}
+
+/**
+ * Internal star helper should not leak.
+ *
+ * @internal
+ */
+export function privateStar(): string {
+  return 'private';
+}
+`);
+    await fs.writeFile(appDir + '/public-star.mts', `/**
+ * Public star source.
+ */
+
+/**
+ * Public star docs stay canonical in the source module.
+ */
+export interface PublicStar {
+  /**
+   * Public star id.
+   */
+  id: string;
+}
+`);
+    await fs.writeFile(appDir + '/facade.mts', `/**
+ * Public facade docs.
+ */
+
+export { HiddenThing as PublicThing, type HiddenOptions } from './hidden-source.mts';
+export { publicTarget as linkedTarget } from './public-source.mts';
+export * from './hidden-star.mts';
+export * from './public-star.mts';
 `);
     await fs.writeFile(appDir + '/surface.mts', `/**
  * Public surface module.
@@ -450,6 +603,9 @@ export function afterEnum(): string {
     t.ok(html.includes('<main'), 'html uses the shared docs template layout');
     t.ok(html.includes('.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh'), 'layout uses fixed viewport height');
     t.ok(html.includes('main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto'), 'content area scrolls independently');
+    t.ok(html.includes('color-scheme:light dark'), 'template advertises light and dark color schemes');
+    t.ok(html.includes('@media(prefers-color-scheme:dark)'), 'template automatically follows dark mode preference');
+    t.ok(html.includes('--bg:#0d1117'), 'template defines dark background color');
     t.ok(html.includes('<h2>Overview</h2>'), 'module markdown headings are offset below module title');
     t.ok(html.includes('<h2>Functions</h2>'), 'html groups exports by kind');
     t.ok(html.includes('<h3><code><span class="tok-keyword">function</span> open(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span></code></h3>'), 'html uses highlighted signatures as item headings without export prefix');
@@ -554,18 +710,20 @@ export function afterEnum(): string {
     t.equal(index.includes('module-card'), false, 'root index no longer renders a flat module card list');
     t.ok(index.includes('<nav class="docs-sidebar"'), 'root index includes sidebar navigation');
     t.ok(index.includes('href="advanced.html"'), 'sidebar links regular root modules');
-    t.ok(index.includes('href="pkg/index.html"'), 'sidebar links index modules at path-based locations');
+    t.ok(index.includes('href="pkg.html"'), 'sidebar folds index modules into parent pages');
+    t.equal(index.includes('href="pkg/index.html"'), false, 'sidebar does not expose index module pages as index.html');
     t.ok(index.includes('href="alpha/client.html"'), 'sidebar links first same-basename module by source path');
     t.ok(index.includes('href="beta/client.html"'), 'sidebar links second same-basename module by source path');
     t.equal(index.includes('internal-only.html'), false, 'sidebar excludes file-level internal modules by default');
     t.ok(!index.includes('<h1 id="module:index">index</h1>'), 'root index is not an index module page');
     t.equal(await exists(fs, docsDir + '/internal-only.html'), false, 'build excludes file-level internal module pages by default');
 
-    const indexModule = await fs.readFile(docsDir + '/pkg/index.html');
-    t.ok(indexModule.includes('<title>Docs Site - pkg/index</title>'), 'index module gets path-based output page');
+    t.equal(await exists(fs, docsDir + '/pkg/index.html'), false, 'index module does not write a nested index.html page');
+    const indexModule = await fs.readFile(docsDir + '/pkg.html');
+    t.ok(indexModule.includes('<title>Docs Site - pkg</title>'), 'index module gets parent output page');
     t.ok(indexModule.includes('Package index docs.'), 'index module page renders docs');
-    t.ok(indexModule.includes('href="../index.html"'), 'nested module links back to root index');
-    t.ok(indexModule.includes('href="../alpha/client.html"'), 'nested sidebar uses relative links to sibling folders');
+    t.ok(indexModule.includes('href="index.html"'), 'folded index module links back to root index');
+    t.ok(indexModule.includes('href="alpha/client.html"'), 'folded index module sidebar uses relative links to sibling folders');
 
     const alphaClient = await fs.readFile(docsDir + '/alpha/client.html');
     const betaClient = await fs.readFile(docsDir + '/beta/client.html');
@@ -581,6 +739,250 @@ export function afterEnum(): string {
     t.equal(await exists(fs, docsDir + '/internal-only.html'), true, 'include-private includes file-level internal module pages');
     const internalHtml = await fs.readFile(docsDir + '/internal-only.html');
     t.ok(internalHtml.includes('Internal-only module docs.'), 'include-private renders file-level internal module docs');
+  });
+
+  it('uses the project package name as the default html title', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    const run = await runCli(['doc', 'build', './advanced.mts', '--format', 'html'], appDir);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+
+    const index = await fs.readFile(docsDir + '/index.html');
+    const html = await fs.readFile(docsDir + '/advanced.html');
+    t.ok(index.includes('<title>fixture-project</title>'), 'root index uses inferred project title');
+    t.ok(index.includes('<p class="docs-sidebar-title"><a href="index.html">fixture-project</a></p>'), 'sidebar home link uses inferred project title');
+    t.ok(html.includes('<title>fixture-project - advanced</title>'), 'module page uses inferred project title');
+  });
+
+  it('renders directory-discovered markdown guides as sidebar and search pages', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    const run = await runCli(['doc', 'build', '.', '--format', 'both', '--title', 'Guide Docs'], appDir);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+    t.ok(run.stdout.includes('/docs/guides/start.html'), 'doc build reports guide html');
+    t.ok(run.stdout.includes('/docs/guides/start.md'), 'doc build reports guide markdown');
+    t.equal(await exists(fs, docsDir + '/README.html'), false, 'root README is not duplicated as a guide page');
+
+    const index = await fs.readFile(docsDir + '/index.html');
+    t.ok(index.includes('href="guides/start.html"'), 'root README links to generated guide pages');
+    t.ok(index.includes('class="docs-sidebar-link docs-sidebar-link-api"'), 'sidebar marks API reference links');
+    t.ok(index.includes('class="docs-sidebar-link docs-sidebar-link-guide"'), 'sidebar marks guide links');
+    t.ok(index.includes('<p class="docs-sidebar-title"><a href="index.html">Guide Docs</a></p>'), 'sidebar title links home using project title');
+    t.equal(index.includes('API Documentation'), false, 'sidebar does not use generic API Documentation title');
+    t.ok(index.includes('<div class="docs-sidebar-directory">Docs</div>'), 'sidebar renders a separate docs tree');
+    t.ok(index.includes('<div class="docs-sidebar-directory">API Reference</div>'), 'sidebar renders a separate API reference tree');
+    t.ok(index.indexOf('<div class="docs-sidebar-directory">Docs</div>') < index.indexOf('<div class="docs-sidebar-directory">API Reference</div>'), 'guide tree appears before API reference tree');
+    t.ok(index.includes('docs-sidebar-icon docs-sidebar-icon-api'), 'sidebar renders API icons');
+    t.ok(index.includes('docs-sidebar-icon docs-sidebar-icon-guide'), 'sidebar renders guide icons');
+    t.ok(index.includes('opacity:.62'), 'sidebar icons use subdued opacity');
+    t.equal(index.includes('.docs-sidebar-link-guide .docs-sidebar-icon{color:#8250df}'), false, 'guide icons do not use a saturated accent color');
+    t.ok(index.includes('viewBox="0 0 24 24"'), 'sidebar uses a cleaner 24px guide icon shape');
+    t.ok(index.indexOf('href="alpha/guide.html"') < index.indexOf('<div class="docs-sidebar-directory">API Reference</div>'), 'sidebar separates guides from API pages');
+    t.ok(index.indexOf('href="guides/start.html"') < index.indexOf('href="guides/advanced.html"'), 'sidebar sorts weighted guides by ascending weight');
+    t.ok(index.includes('href="docs/concepts/virtual.html"'), 'sidebar uses virtual guide paths from frontmatter');
+
+    const guideHtml = await fs.readFile(docsDir + '/guides/start.html');
+    t.ok(guideHtml.includes('<title>Guide Docs - Getting Started</title>'), 'guide html uses markdown title');
+    t.ok(guideHtml.includes('<p class="muted">guides/start.md</p>'), 'guide html shows source path');
+    t.equal(guideHtml.includes('weight: 10'), false, 'guide html strips frontmatter');
+    t.ok(guideHtml.includes('<a href="advanced.html">advanced guide</a>'), 'guide links resolve to other generated guides');
+    t.ok(guideHtml.includes('<a href="../advanced.html#advanced.open">advanced API</a>'), 'guide links resolve to generated API anchors');
+    t.ok(guideHtml.includes('<span class="tok-keyword">import</span>'), 'guide fenced code uses syntax highlighting');
+    t.ok(guideHtml.includes('<span class="tok-keyword">const</span> value'), 'guide code highlighting preserves code text');
+    t.ok(guideHtml.includes('href="start.html" aria-current="page"'), 'guide page marks current sidebar entry');
+
+    const advancedGuideHtml = await fs.readFile(docsDir + '/guides/advanced.html');
+    t.ok(advancedGuideHtml.includes('<a href="../advanced.html#advanced.ResourceBox">ResourceBox</a>'), 'sibling guide resolves API type links');
+    t.ok(advancedGuideHtml.includes('<a href="start.html">getting started</a>'), 'sibling guide resolves guide links');
+
+    const virtualGuideHtml = await fs.readFile(docsDir + '/docs/concepts/virtual.html');
+    t.ok(virtualGuideHtml.includes('<p class="muted">guides/virtual.md</p>'), 'guide html shows source path even when output path is virtualized');
+    t.equal(virtualGuideHtml.includes('path: docs/concepts/virtual.md'), false, 'virtual guide html strips path frontmatter');
+
+    const guideMarkdown = await fs.readFile(docsDir + '/guides/start.md');
+    t.ok(guideMarkdown.includes('# Getting Started'), 'markdown output copies guide markdown');
+    t.equal(guideMarkdown.includes('weight: 10'), false, 'markdown output strips guide frontmatter');
+
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const startGuide = json.guides?.find((guide) => guide.path === 'guides/start.md');
+    t.ok(startGuide, 'json records guide metadata');
+    t.equal(startGuide!.href, 'guides/start.html', 'json records guide output href');
+    t.equal(startGuide!.weight, 10, 'json records guide weight');
+    t.ok(startGuide!.summary.includes('Start with the'), 'json records guide summary');
+    t.ok(startGuide!.text.includes('fixture users'), 'json records searchable guide text');
+    t.equal(startGuide!.text.includes('weight: 10'), false, 'json guide text strips frontmatter');
+    const virtualGuide = json.guides?.find((guide) => guide.path === 'guides/virtual.md');
+    t.ok(virtualGuide, 'json records virtual guide metadata');
+    t.equal(virtualGuide!.href, 'docs/concepts/virtual.html', 'json records virtual guide output href');
+
+    const found = await runCli(['doc', 'search', 'fixture users'], appDir);
+    t.equal(found.result.code, 0, 'doc search exits successfully');
+    t.ok(found.stdout.includes('guide:guides/start'), 'sqlite search finds guide pages');
+    t.ok(found.stdout.includes('(guide)'), 'sqlite search reports guide kind');
+
+    const collisionDir = appDir + '/collision';
+    await ensureDir(fs, collisionDir);
+    await fs.writeFile(collisionDir + '/index.mts', `/** Collision module. */
+export const collision = true;
+`);
+    await fs.writeFile(appDir + '/collision.md', '# Collision Guide\n');
+    const collisionRun = await runCli(['doc', 'build', './collision/index.mts', './collision.md', '--format', 'html'], appDir);
+    t.notEqual(collisionRun.result.code, 0, 'doc build rejects guide and API output collisions');
+    t.ok(collisionRun.stderr.includes('output path collision'), 'collision failure explains the duplicated output path');
+  });
+
+  it('renders separate docs and API reference trees for a shared source base', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    const sectionDir = appDir + '/section';
+    await ensureDir(fs, sectionDir + '/nested');
+    await ensureDir(fs, sectionDir + '/net/http');
+    await fs.writeFile(sectionDir + '/start.md', `---
+weight: 10
+---
+# Start Here
+
+Begin with this guide.
+`);
+    await fs.writeFile(sectionDir + '/concepts.md', `---
+weight: 20
+---
+# Concepts
+
+Understand the ideas behind the API.
+`);
+    await fs.writeFile(sectionDir + '/nested/api.mts', `/** Nested API. */
+export function run(): void {}
+`);
+    await fs.writeFile(sectionDir + '/net/http/guide.md', `---
+weight: 30
+---
+# HTTP
+
+Handle HTTP requests.
+`);
+    await fs.writeFile(sectionDir + '/net/http/server.mts', `/** HTTP server API. */
+export function serve(): void {}
+`);
+
+    const run = await runCli([
+      'doc', 'build',
+      './section/start.md',
+      './section/concepts.md',
+      './section/nested/api.mts',
+      './section/net/http/guide.md',
+      './section/net/http/server.mts',
+      '--format', 'html',
+      '--title', 'Section Docs',
+    ], appDir);
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+
+    const startHtml = await fs.readFile(docsDir + '/section/start.html');
+    t.ok(startHtml.includes('<p class="docs-sidebar-title"><a href="../index.html">Section Docs</a></p>'), 'sidebar title links home using project title');
+    t.ok(startHtml.includes('<div class="docs-sidebar-directory">Docs</div>'), 'sidebar renders docs section');
+    t.ok(startHtml.includes('<div class="docs-sidebar-directory">API Reference</div>'), 'sidebar renders API reference section');
+    t.equal(startHtml.includes('<div class="docs-sidebar-directory">section</div>'), false, 'sidebar renames the shared input base instead of rendering it');
+    t.ok(startHtml.includes('href="start.html"'), 'sidebar keeps guide link valid in docs tree');
+    t.ok(startHtml.includes('href="nested/api.html"'), 'sidebar keeps nested API link valid in API reference tree');
+    t.ok(startHtml.indexOf('href="start.html"') < startHtml.indexOf('href="concepts.html"'), 'docs tree still sorts guides by weight');
+    t.ok(startHtml.indexOf('<div class="docs-sidebar-directory">Docs</div>') < startHtml.indexOf('<div class="docs-sidebar-directory">API Reference</div>'), 'docs tree appears before API reference tree');
+    t.ok(startHtml.includes('<div class="docs-sidebar-directory">nested</div>'), 'API reference tree keeps directories below the renamed base');
+    t.ok(startHtml.includes('<div class="docs-sidebar-directory">net/http</div>'), 'sidebar collapses empty intermediate directories');
+    t.equal(startHtml.includes('<div class="docs-sidebar-directory">net</div>'), false, 'sidebar does not render empty parent directory separately');
+    t.equal(startHtml.includes('<div class="docs-sidebar-directory">http</div>'), false, 'sidebar does not render empty child directory separately after collapse');
+    t.ok(startHtml.includes('href="net/http/guide.html"'), 'collapsed docs directory keeps guide link valid');
+    t.ok(startHtml.includes('href="net/http/server.html"'), 'collapsed API directory keeps module link valid');
+  });
+
+  it('rejects invalid guide frontmatter', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    const invalidDir = appDir + '/invalid-guides';
+    await ensureDir(fs, invalidDir);
+    await fs.writeFile(invalidDir + '/bad-yaml.md', `---
+weight: [
+---
+# Bad YAML
+`);
+    await fs.writeFile(invalidDir + '/bad-weight.md', `---
+weight: first
+---
+# Bad Weight
+`);
+    await fs.writeFile(invalidDir + '/bad-path.md', `---
+path: ../escape.md
+---
+# Bad Path
+`);
+
+    const yamlRun = await runCli(['doc', 'build', './invalid-guides/bad-yaml.md', '--format', 'html'], appDir);
+    t.notEqual(yamlRun.result.code, 0, 'doc build rejects malformed guide frontmatter');
+    t.ok(yamlRun.stderr.includes('bad-yaml.md'), 'malformed frontmatter error includes guide path');
+
+    const weightRun = await runCli(['doc', 'build', './invalid-guides/bad-weight.md', '--format', 'html'], appDir);
+    t.notEqual(weightRun.result.code, 0, 'doc build rejects non-numeric guide weight');
+    t.ok(weightRun.stderr.includes('bad-weight.md'), 'invalid weight error includes guide path');
+
+    const pathRun = await runCli(['doc', 'build', './invalid-guides/bad-path.md', '--format', 'html'], appDir);
+    t.notEqual(pathRun.result.code, 0, 'doc build rejects unsafe virtual guide path');
+    t.ok(pathRun.stderr.includes('bad-path.md'), 'invalid virtual path error includes guide path');
+  });
+
+  it('documents re-exports from hidden modules and links documented source modules', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    const run = await runCli(['doc', 'build', './facade.mts', './hidden-source.mts', './hidden-star.mts', './public-source.mts', './public-star.mts', '--format', 'html', '--title', 'Facade Docs'], appDir);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+    t.equal(await exists(fs, docsDir + '/hidden-source.html'), false, 'internal source module remains hidden by default');
+
+    const facadeHtml = await fs.readFile(docsDir + '/facade.html');
+    t.ok(facadeHtml.includes('Hidden class docs copied into public facades.'), 'html inlines class docs from hidden source module');
+    t.ok(facadeHtml.includes('Hidden value docs copied with the class.'), 'html inlines members from hidden source module');
+    t.ok(facadeHtml.includes('Hidden options docs copied into public facades.'), 'html inlines type docs from hidden source module');
+    t.ok(facadeHtml.includes('Hidden star docs copied into public facades.'), 'html inlines star re-exports from hidden source module');
+    t.ok(facadeHtml.includes('Star value docs.'), 'html inlines star re-export members from hidden source module');
+    t.equal(facadeHtml.includes('privateHelper'), false, 'html does not leak internal source symbols through re-exports');
+    t.equal(facadeHtml.includes('privateStar'), false, 'html does not leak internal source symbols through star re-exports');
+    t.ok(facadeHtml.includes('Re-exported from <a href="public-source.html#public-source.publicTarget">public-source.publicTarget</a>.'), 'html links re-exports from documented public modules');
+    t.ok(facadeHtml.includes('Re-exported from <a href="public-star.html#public-star.PublicStar">public-star.PublicStar</a>.'), 'html links star re-exports from documented public modules');
+    t.equal(facadeHtml.includes('Public target docs stay canonical in the source module.'), false, 'html does not duplicate public source docs in the facade');
+    t.equal(facadeHtml.includes('Public star docs stay canonical in the source module.'), false, 'html does not duplicate public star docs in the facade');
+
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const facade = json.modules.find((moduleDoc) => moduleDoc.name === 'facade')!;
+    const publicSource = json.modules.find((moduleDoc) => moduleDoc.name === 'public-source')!;
+    t.ok(facade, 'json includes facade module');
+    t.ok(publicSource, 'json includes public source module');
+    t.equal(json.modules.some((moduleDoc) => moduleDoc.name === 'hidden-source'), false, 'json excludes hidden source module by default');
+
+    const publicThing = facade.exports.find((item) => item.name === 'PublicThing')!;
+    const hiddenOptions = facade.exports.find((item) => item.name === 'HiddenOptions')!;
+    const linkedTarget = facade.exports.find((item) => item.name === 'linkedTarget')!;
+    const starThing = facade.exports.find((item) => item.name === 'StarThing')!;
+    const publicStar = facade.exports.find((item) => item.name === 'PublicStar')!;
+    t.ok(publicThing.doc!.text.includes('Hidden class docs copied'), 'json inlines hidden class docs under facade alias');
+    t.equal(publicThing.members.some((member) => member.name === 'value'), true, 'json inlines hidden class members under facade alias');
+    t.ok(hiddenOptions.doc!.text.includes('Hidden options docs copied'), 'json inlines hidden type docs under facade alias');
+    t.ok(starThing.doc!.text.includes('Hidden star docs copied'), 'json inlines hidden star export docs');
+    t.equal(linkedTarget.reExport?.mode, 'link', 'json marks public-source re-export as linked');
+    t.equal(linkedTarget.reExport?.sourceId, 'public-source.publicTarget', 'json records linked source symbol id');
+    t.equal(publicStar.reExport?.mode, 'link', 'json marks public star re-export as linked');
+    t.equal(publicStar.reExport?.sourceId, 'public-star.PublicStar', 'json records linked star source symbol id');
+
+    await removeTree(fs, docsDir);
+    const privateRun = await runCli(['doc', 'build', './facade.mts', './hidden-source.mts', './hidden-star.mts', './public-source.mts', './public-star.mts', '--format', 'html', '--include-private', '--title', 'Facade Docs'], appDir);
+    t.equal(privateRun.result.code, 0, 'private doc build exits successfully');
+    const privateFacadeHtml = await fs.readFile(docsDir + '/facade.html');
+    t.ok(await exists(fs, docsDir + '/hidden-source.html'), 'include-private emits hidden source page');
+    t.ok(privateFacadeHtml.includes('Re-exported from <a href="hidden-source.html#hidden-source.HiddenThing">hidden-source.HiddenThing</a>.'), 'include-private links internal-source re-exports once the source page exists');
+    t.equal(privateFacadeHtml.includes('Hidden class docs copied into public facades.'), false, 'include-private does not duplicate hidden source docs in facade');
   });
 
   it('documents exported object literal members and cleans stale output', async (t) => {
