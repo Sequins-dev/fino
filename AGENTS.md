@@ -18,7 +18,12 @@ Use 2-space indentation in `.mts` files and standard Rust formatting conventions
 Add or update tests with every behavior change, especially for networking, parsing, and FFI paths. Name JS tests `*.test.mts` and place them in the closest domain folder. Favor focused regression tests over broad end-to-end additions. For server work, run at least the affected suite, for example `tests/net/serve.test.mts` and `tests/net/socket-class.test.mts`.
 
 ## Commit & Pull Request Guidelines
-Recent history is short and informal (`wip`, `Dual Boa + V8 support`), so prefer concise imperative commit subjects with clear scope, such as `Batch HTTP response writes`. Keep commits narrow and logically grouped. PRs should include a short summary, affected areas, test coverage, and benchmark or profiling notes for performance-sensitive changes.
+Keep commits narrow and logically grouped. Write commit messages with a concise
+imperative subject, a blank line, and a descriptive body when the change is not
+trivial. Keep the subject under 50 characters when possible and wrap body lines
+at about 72 characters. The body should explain what changed and why, not repeat
+the diff. PRs should include a short summary, affected areas, test coverage, and
+benchmark or profiling notes for performance-sensitive changes.
 
 ## Performance & Profiling Notes
 Benchmark with unique ports to avoid stale local servers: `PORT=3031 cargo run -- example.mts` plus `autocannon -c 100 -d 10 http://127.0.0.1:3031/`. Use debug builds for symbolized native profiling and `example_profile.mts` for built-in JS pprof output.
