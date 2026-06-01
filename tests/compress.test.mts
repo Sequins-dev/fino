@@ -1,0 +1,162 @@
+/**
+ * Tests for fino:compress.
+ */
+
+import { describe, it } from 'fino:test/test';
+import {
+  compress,
+  decompress,
+  createCompressor,
+  createDecompressor,
+  brotliAvailable,
+} from 'fino:compress';
+
+const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
+
+type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli';
+
+function str(u8: Uint8Array): string { return decodeUtf8(u8); }
+function bytes(s: string): Uint8Array { return encodeUtf8(s); }
+
+async function* asAsyncIterable(chunks: Array<Uint8Array | ArrayBuffer>): AsyncGenerator<Uint8Array | ArrayBuffer> {
+  for (const chunk of chunks) yield chunk;
+}
+
+async function collect(iter: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of iter) { parts.push(chunk); total += chunk.byteLength; }
+  if (parts.length === 0) return new Uint8Array(0);
+  if (parts.length === 1) return parts[0]!;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const p of parts) { out.set(p, pos); pos += p.byteLength; }
+  return out;
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.byteLength;
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const part of parts) { out.set(part, pos); pos += part.byteLength; }
+  return out;
+}
+
+function supportedFormats(): CompressionFormat[] {
+  return brotliAvailable
+    ? ['gzip', 'deflate', 'deflate-raw', 'brotli']
+    : ['gzip', 'deflate', 'deflate-raw'];
+}
+
+const HELLO = bytes('Hello, fino:compress!');
+const LONG  = bytes('A'.repeat(100_000));
+
+describe('fino:compress layout', () => {
+  it('resolves the new builtin specifier', async (t) => {
+    const module = await import('fino:compress');
+    t.equal(typeof module.compress, 'function', 'compress exported');
+    t.equal(typeof module.createCompressor, 'function', 'createCompressor exported');
+  });
+
+  it('does not resolve the old util specifier', async (t) => {
+    await t.rejects(() => import('fino:util/compression'), /dynamic import failed|Cannot resolve module|not found|unknown/i, 'legacy specifier removed');
+  });
+});
+
+describe('one-shot compression', () => {
+  for (const format of supportedFormats()) {
+    it(`${format} roundtrip`, (t) => {
+      const compressed = compress(HELLO, { format });
+      t.ok(compressed instanceof Uint8Array, 'compress returns Uint8Array');
+      t.ok(compressed.byteLength > 0, 'compressed is not empty');
+      const decompressed = decompress(compressed, { format });
+      t.equal(str(decompressed), str(HELLO), 'decompress recovers original data');
+    });
+  }
+
+  it('gzip with custom level', (t) => {
+    const c1 = compress(LONG, { format: 'gzip', level: 1 });
+    const c9 = compress(LONG, { format: 'gzip', level: 9 });
+    t.equal(decompress(c1, { format: 'gzip' }).byteLength, LONG.byteLength, 'level 1 decompresses correctly');
+    t.equal(decompress(c9, { format: 'gzip' }).byteLength, LONG.byteLength, 'level 9 decompresses correctly');
+  });
+
+  it('gzip produces valid gzip header', (t) => {
+    const compressed = compress(HELLO, { format: 'gzip' });
+    t.equal(compressed[0], 0x1f, 'first byte is 0x1f');
+    t.equal(compressed[1], 0x8b, 'second byte is 0x8b');
+  });
+
+  it('rejects corrupt compressed data', (t) => {
+    t.throws(() => decompress(new Uint8Array([0, 1, 2, 3]), { format: 'gzip' }), /inflate error/, 'throws on corrupt gzip');
+    t.throws(() => decompress(new Uint8Array([0, 1, 2, 3]), { format: 'deflate' }), /inflate error/, 'throws on corrupt deflate');
+  });
+
+  it('validates format', (t) => {
+    t.throws(() => compress(HELLO, { format: 'zip' as CompressionFormat }), /unsupported compression format/i, 'compress rejects invalid format');
+    t.throws(() => decompress(HELLO, { format: 'zip' as CompressionFormat }), /unsupported compression format/i, 'decompress rejects invalid format');
+  });
+
+  it('reports brotli availability consistently', (t) => {
+    if (brotliAvailable) {
+      const compressed = compress(HELLO, { format: 'brotli' });
+      t.equal(str(decompress(compressed, { format: 'brotli' })), str(HELLO), 'brotli works when available');
+    } else {
+      t.throws(() => compress(HELLO, { format: 'brotli' }), /brotli library not available/, 'brotli compress throws when unavailable');
+      t.throws(() => decompress(HELLO, { format: 'brotli' }), /brotli library not available/, 'brotli decompress throws when unavailable');
+    }
+  });
+});
+
+describe('iterative compression', () => {
+  for (const format of supportedFormats()) {
+    it(`${format} write/finish roundtrip`, (t) => {
+      const chunks = [bytes('chunk one '), bytes('chunk two '), bytes('chunk three')];
+      const compressor = createCompressor({ format });
+      const compressed = concat([
+        ...compressor.write(chunks[0]!),
+        ...compressor.write(chunks[1]!),
+        ...compressor.write(chunks[2]!),
+        ...compressor.finish(),
+      ]);
+
+      const decompressor = createDecompressor({ format });
+      const restored = concat([
+        ...decompressor.write(compressed.slice(0, Math.floor(compressed.byteLength / 2))),
+        ...decompressor.write(compressed.slice(Math.floor(compressed.byteLength / 2))),
+        ...decompressor.finish(),
+      ]);
+
+      t.equal(str(restored), 'chunk one chunk two chunk three', 'multi-chunk roundtrip');
+    });
+  }
+
+  it('close prevents further writes', (t) => {
+    const compressor = createCompressor({ format: 'gzip' });
+    compressor.close();
+    t.throws(() => compressor.write(HELLO), /closed/i, 'write after close rejected');
+    t.throws(() => compressor.finish(), /closed/i, 'finish after close rejected');
+  });
+});
+
+describe('async iterable transforms', () => {
+  for (const format of supportedFormats()) {
+    it(`${format} transform roundtrip`, async (t) => {
+      const compressed = await collect(createCompressor({ format }).transform(asAsyncIterable([
+        bytes('Hello, '),
+        bytes('streaming '),
+        bytes('world!').buffer,
+      ])));
+      const restored = await collect(createDecompressor({ format }).transform(asAsyncIterable([compressed])));
+      t.equal(str(restored), 'Hello, streaming world!', 'transform recovers original data');
+    });
+  }
+
+  it('empty input produces valid gzip output', (t) => {
+    const compressed = compress(new Uint8Array(0), { format: 'gzip' });
+    const decompressed = decompress(compressed, { format: 'gzip' });
+    t.equal(decompressed.byteLength, 0, 'empty gzip roundtrip');
+  });
+});

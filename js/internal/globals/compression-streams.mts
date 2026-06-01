@@ -2,7 +2,7 @@
  * internal:compression-streams — CompressionStream and DecompressionStream.
  *
  * WHATWG Compression Streams specification implementation.
- * Wraps the streaming compression API from fino:compression in the
+ * Wraps the streaming compression API from fino:compress in the
  * standard Web Streams interface (ReadableStream / WritableStream pair).
  *
  * Supported formats: 'gzip', 'deflate', 'deflate-raw'
@@ -11,7 +11,7 @@
  *
  * ## Bridging the two streaming APIs
  *
- * fino:compression provides streaming via factories: `createGzip(opts)` returns
+ * fino:compress provides streaming via factories: `createCompressor(opts)` returns
  * an object with `transform(asyncIterable) → asyncIterable`. This does not speak
  * Web Streams. To bridge:
  *
@@ -27,11 +27,7 @@
  */
 
 import { ReadableStream, WritableStream } from './webstreams.mts';
-import {
-  createGzip, createGunzip,
-  createDeflate, createInflate,
-  createDeflateRaw, createInflateRaw,
-} from 'fino:util/compression';
+import { createCompressor, createDecompressor } from 'fino:compress';
 
 // ---------------------------------------------------------------------------
 // Format maps
@@ -40,15 +36,15 @@ import {
 type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw';
 
 const COMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> }> = {
-  'gzip':        createGzip,
-  'deflate':     createDeflate,
-  'deflate-raw': createDeflateRaw,
+  'gzip':        () => createCompressor({ format: 'gzip' }),
+  'deflate':     () => createCompressor({ format: 'deflate' }),
+  'deflate-raw': () => createCompressor({ format: 'deflate-raw' }),
 };
 
 const DECOMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> }> = {
-  'gzip':        createGunzip,
-  'deflate':     createInflate,
-  'deflate-raw': createInflateRaw,
+  'gzip':        () => createDecompressor({ format: 'gzip' }),
+  'deflate':     () => createDecompressor({ format: 'deflate' }),
+  'deflate-raw': () => createDecompressor({ format: 'deflate-raw' }),
 };
 
 // ---------------------------------------------------------------------------
@@ -57,9 +53,9 @@ const DECOMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<
 
 /**
  * Create a (readable, writable) Web Streams pair backed by one of the
- * fino:compression streaming factories.
+ * fino:compress streaming factories.
  *
- * @param {Function} factory — e.g. createGzip, createGunzip
+ * @param {Function} factory — e.g. createCompressor/createDecompressor wrapper
  * @returns {{ readable: ReadableStream, writable: WritableStream }}
  */
 function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> }): { readable: ReadableStream; writable: WritableStream } {

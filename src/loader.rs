@@ -162,6 +162,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/globals/broadcast-channel"
     ),
     source_builtin!("internal:globals/global", "internal/globals/global"),
+    // internal: compression
+    source_builtin!("internal:compress/common", "internal/compress/common"),
+    source_builtin!("internal:compress/zlib", "internal/compress/zlib"),
+    source_builtin!("internal:compress/brotli", "internal/compress/brotli"),
     // internal: stream and openssl
     source_builtin!("internal:stream", "internal/stream"),
     source_builtin!("internal:openssl", "internal/openssl"),
@@ -297,8 +301,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:bench", "test/bench"),
     source_builtin!("fino:test/mock", "test/mock"),
     // util
+    source_builtin!("fino:compress", "compress"),
     source_builtin!("fino:util/argv", "util/argv"),
-    source_builtin!("fino:util/compression", "util/compression"),
     source_builtin!("fino:util/prompt", "util/prompt"),
     source_builtin!("fino:context/topic", "context/topic"),
     // profiler

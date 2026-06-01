@@ -77,11 +77,8 @@ import { h2Available } from '../net/http/h2/bindings.mts';
 import type { Address } from 'fino:net/socket';
 import {
   brotliAvailable,
-  createGunzip,
-  createInflate,
-  createInflateRaw,
-  createBrotliDecompress,
-} from 'fino:util/compression';
+  createDecompressor,
+} from 'fino:compress';
 import { topic } from 'fino:context/topic';
 import { otelRuntimeEvent, otelRuntimeTopic } from '../opentelemetry/common.mts';
 import * as openssl from '../openssl.mts';
@@ -504,13 +501,13 @@ function _buildFinalResponse(
   if (encoding && encoding !== 'identity') {
     let decompressor;
     if (encoding === 'gzip' || encoding === 'x-gzip') {
-      decompressor = createGunzip();
+      decompressor = createDecompressor({ format: 'gzip' });
     } else if (encoding === 'deflate') {
-      decompressor = createInflate();
+      decompressor = createDecompressor({ format: 'deflate' });
     } else if (encoding === 'deflate-raw') {
-      decompressor = createInflateRaw();
+      decompressor = createDecompressor({ format: 'deflate-raw' });
     } else if (encoding === 'br' && brotliAvailable) {
-      decompressor = createBrotliDecompress();
+      decompressor = createDecompressor({ format: 'brotli' });
     }
 
     if (decompressor) {

@@ -5,7 +5,7 @@
  * @internal
  */
 
-import { brotliAvailable, brotliCompress, deflate, gzip } from '../../util/compression.mts';
+import { brotliAvailable, compress } from 'fino:compress';
 import {
   Baggage,
   Resource,
@@ -112,9 +112,9 @@ function withoutProviderContexts<R>(fn: () => R): R {
 }
 
 function encodeCompressedBody(body: Uint8Array, compression: CompressionKind): { body: Uint8Array; encoding: CompressionKind } {
-  if (compression === 'gzip') return { body: gzip(body), encoding: 'gzip' };
-  if (compression === 'deflate') return { body: deflate(body), encoding: 'deflate' };
-  if (compression === 'br' && brotliAvailable) return { body: brotliCompress(body), encoding: 'br' };
+  if (compression === 'gzip') return { body: compress(body, { format: 'gzip' }), encoding: 'gzip' };
+  if (compression === 'deflate') return { body: compress(body, { format: 'deflate' }), encoding: 'deflate' };
+  if (compression === 'br' && brotliAvailable) return { body: compress(body, { format: 'brotli' }), encoding: 'br' };
   return { body, encoding: null };
 }
 

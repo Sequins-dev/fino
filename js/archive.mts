@@ -3,7 +3,7 @@
  */
 
 import { DiskFileSystem } from './file/fs.mts';
-import { deflateRaw, gzip, gunzip, inflateRaw } from './util/compression.mts';
+import { compress, decompress } from 'fino:compress';
 
 const fs = new DiskFileSystem();
 const textEncoder = new TextEncoder();
@@ -411,7 +411,7 @@ export class Archive {
       return;
     }
     let tarBytes = bytes;
-    if (this.#format === 'tar.gz') tarBytes = gunzip(bytes);
+    if (this.#format === 'tar.gz') tarBytes = decompress(bytes, { format: 'gzip' });
     for (const entry of parseTar(tarBytes)) this.#setEntry(entry);
   }
 
@@ -573,7 +573,7 @@ export class Archive {
     const orderedEntries = this.#entryNames().map((name: string) => this.#entries.get(name)!);
     if (this.#format === 'zip') return serializeZip(orderedEntries);
     const tar = await serializeTar(orderedEntries);
-    if (this.#format === 'tar.gz') return gzip(tar);
+    if (this.#format === 'tar.gz') return compress(tar, { format: 'gzip' });
     return tar;
   }
 }
@@ -633,7 +633,7 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
         if (kind === 'directory') return new Uint8Array(0);
         if (method === ZIP_METHOD_STORE) return compressed;
         if (method === ZIP_METHOD_DEFLATE) {
-          const decompressed = inflateRaw(compressed);
+          const decompressed = decompress(compressed, { format: 'deflate-raw' });
           if (decompressed.byteLength > MAX_DECOMPRESSED_BYTES) {
             throw new Error(
               `Archive entry '${name}' decompressed to ${decompressed.byteLength} bytes, ` +
@@ -659,7 +659,7 @@ async function serializeZip(entries: LoadedArchiveEntry[]): Promise<Uint8Array> 
     const nameBytes = textEncoder.encode(name);
     const bytes = entry.kind === 'directory' ? new Uint8Array(0) : (entry.data ? entry.data : await entry.loader!());
     const method = entry.kind === 'directory' ? ZIP_METHOD_STORE : (entry.method ?? ZIP_METHOD_DEFLATE);
-    const compressed = method === ZIP_METHOD_STORE ? bytes : deflateRaw(bytes);
+    const compressed = method === ZIP_METHOD_STORE ? bytes : compress(bytes, { format: 'deflate-raw' });
     const crc = crc32(bytes);
     const { dosTime, dosDate } = dateToDos(entry.mtime);
     const mode = entry.kind === 'directory' ? (entry.mode ?? DEFAULT_DIR_MODE) : (entry.mode ?? DEFAULT_MODE);

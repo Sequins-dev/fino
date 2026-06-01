@@ -8,7 +8,7 @@
 import { describe, it } from 'fino:test/test';
 import { serve } from 'fino:net/http/server';
 import { Request, Response, Headers } from 'fino:net/http';
-import { gzip, brotliAvailable, brotliCompress } from 'fino:util/compression';
+import { compress, brotliAvailable } from 'fino:compress';
 
 type Server = ReturnType<typeof serve>;
 type Handler = (req: Request) => Response | Promise<Response>;
@@ -531,7 +531,7 @@ describe('Compression', () => {
     const original = 'Hello, compressed world!';
     await withServer(19821,
       () => {
-        const compressed = gzip(new TextEncoder().encode(original));
+        const compressed = compress(new TextEncoder().encode(original), { format: 'gzip' });
         return new Response(compressed, {
           headers: {
             'content-type':     'text/plain',
@@ -621,7 +621,7 @@ describe('Compression', () => {
     const original = 'brotli compressed content';
     await withServer(19827,
       () => {
-        const compressed = brotliCompress(new TextEncoder().encode(original));
+        const compressed = compress(new TextEncoder().encode(original), { format: 'brotli' });
         return new Response(compressed, {
           headers: {
             'content-type': 'text/plain',

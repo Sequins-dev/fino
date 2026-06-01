@@ -9,6 +9,7 @@ describe('builtin module layout', () => {
     await import('fino:format/yaml');
     await import('fino:format/typescript');
     await import('fino:parsing/scanner');
+    await import('fino:compress');
     await import('fino:database/sqlite');
     await import('fino:context');
     await import('fino:context/topic');

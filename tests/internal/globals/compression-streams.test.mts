@@ -5,12 +5,12 @@
  *   - Format support: 'gzip', 'deflate', 'deflate-raw'
  *   - Invalid format rejection
  *   - Roundtrip identity (compress → decompress recovers original data)
- *   - Interop with fino:compression one-shot API
+ *   - Interop with fino:compress one-shot API
  *   - pipeThrough integration with ReadableStream
  */
 
 import { describe, it } from 'fino:test/test';
-import { gzip, gunzip, deflate, inflate } from 'fino:util/compression';
+import { compress, decompress } from 'fino:compress';
 
 /** Encode a string to Uint8Array. */
 function enc(str: string): Uint8Array {
@@ -106,13 +106,13 @@ describe('interop', () => {
     const original   = enc('interop test data');
     const compressed = await pipe(new CompressionStream('gzip'), original);
 
-    const decompressed = gunzip(compressed);
+    const decompressed = decompress(compressed, { format: 'gzip' });
     t.equal(dec(decompressed), dec(original), 'gunzip() can decode CompressionStream output');
   });
 
   it('DecompressionStream gzip decodes one-shot gzip() output', async (t) => {
     const original   = enc('one-shot gzip then streaming decompress');
-    const compressed = gzip(original);
+    const compressed = compress(original, { format: 'gzip' });
 
     const decompressed = await pipe(new DecompressionStream('gzip'), compressed);
     t.equal(dec(decompressed), dec(original), 'DecompressionStream can decode gzip() output');
@@ -147,7 +147,7 @@ describe('interop', () => {
     await writer.close();
 
     const compressed   = await collect(cs.readable);
-    const decompressed = gunzip(compressed);
+    const decompressed = decompress(compressed, { format: 'gzip' });
     t.equal(dec(decompressed), dec(original), 'multi-chunk compress roundtrip');
   });
 });
@@ -190,7 +190,7 @@ describe('ArrayBuffer input', () => {
     await writer.close();
 
     const compressed   = await collect(cs.readable);
-    const decompressed = gunzip(compressed);
+    const decompressed = decompress(compressed, { format: 'gzip' });
     t.equal(dec(decompressed), dec(original), 'ArrayBuffer input roundtrip');
   });
 });
@@ -234,7 +234,7 @@ describe('non-buffer data written to writable side', () => {
     await writer.write(view as any);
     await writer.close();
     const compressed   = await collect(cs.readable);
-    const decompressed = gunzip(compressed);
+    const decompressed = decompress(compressed, { format: 'gzip' });
     t.equal(dec(decompressed), dec(original), 'DataView input roundtrip');
   });
 
@@ -249,7 +249,7 @@ describe('non-buffer data written to writable side', () => {
     await writer.write(i32 as any);
     await writer.close();
     const compressed   = await collect(cs.readable);
-    const decompressed = gunzip(compressed);
+    const decompressed = decompress(compressed, { format: 'gzip' });
     t.equal(dec(decompressed.slice(0, original.byteLength)), dec(original), 'Int32Array input accepted');
   });
 });
