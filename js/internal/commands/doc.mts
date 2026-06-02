@@ -33,7 +33,7 @@ import { Command, type CommandContext } from '../../process/argv.mts';
 import { cwd } from '../../process.mts';
 import { renderMarkdown, renderMarkdownInline, type MarkdownOptions } from '../../format/markdown.mts';
 import { escapeHtml, render as renderTemplate } from '../../template.mts';
-import { parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.mts';
+import { format as formatTypeScript, parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.mts';
 import { parse as parseYaml } from '../../format/yaml.mts';
 import { Scanner } from '../../parsing/scanner.mts';
 import * as sqlite from '../../database/sqlite.mts';
@@ -42,6 +42,7 @@ const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
 const API_JSON_NAME = 'api.json';
 const DOCS_DB_NAME = 'docs.db';
+const SIGNATURE_WRAP_COLUMN = 100;
 
 interface DocTag {
   name: string;
@@ -235,7 +236,7 @@ const DOCS_INDEX_SCHEMA_STATEMENTS = DOCS_INDEX_SCHEMA
   .map((statement) => statement.trim())
   .filter(Boolean);
 
-const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}`;
+const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}`;
 
 const HTML_PAGE_TEMPLATE = `<!doctype html>
 <html>
@@ -262,7 +263,7 @@ const MODULE_PAGE_TEMPLATE = `<h1 id="{{id}}">{{name}}</h1>
 {{#groups}}
 <h2>{{title}}</h2>
 {{#items}}
-<section id="{{id}}">
+<section class="docs-symbol" id="{{id}}">
 <h3>{{{titleHtml}}}</h3>
 {{{overloadsHtml}}}
 {{{docHtml}}}
@@ -1111,13 +1112,193 @@ function sourceSlice(source: string, start: number, end: number): string {
 }
 
 function cleanSignature(value: string): string {
-  return value.trim()
+  const signature = compactSignature(stripSignatureComments(value)
     .replace(/^export\s+default\s+/, '')
     .replace(/^export\s+/, '')
-    .replace(/;+\s*$/, '')
+    .replace(/;+\s*$/, ''));
+  return formatDocSignature(signature);
+}
+
+function compactSignature(value: string): string {
+  return value.trim()
     .replace(/\n/g, ' ')
     .split(/\s+/)
     .join(' ');
+}
+
+function formatDocSignature(signature: string): string {
+  const formatted = formatCompleteSignature(signature)
+    ?? formatOpenDeclarationSignature(signature)
+    ?? formatObjectMemberSignature(signature)
+    ?? formatClassMemberSignature(signature)
+    ?? signature;
+  return wrapLongSignature(formatted);
+}
+
+function formatCompleteSignature(signature: string): string | undefined {
+  const source = needsAmbientSignature(signature) ? `declare ${signature};` : `${signature};`;
+  const code = formattedTypeScript(source, 'dts');
+  if (!code) return undefined;
+  const cleaned = stripDeclarePrefix(trimTrailingSemicolons(code));
+  return cleaned || undefined;
+}
+
+function formatOpenDeclarationSignature(signature: string): string | undefined {
+  if (!signature.endsWith('{')) return undefined;
+  const code = formattedTypeScript(`${signature}\n}`, 'ts');
+  if (!code?.endsWith('\n}')) return undefined;
+  return code.slice(0, -2).trimEnd();
+}
+
+function formatObjectMemberSignature(signature: string): string | undefined {
+  const code = formattedTypeScript(`type __DocSignature = {\n${signature};\n};`, 'dts');
+  if (!code) return undefined;
+  return extractFormattedBody(code, 'type __DocSignature = {', '\n};');
+}
+
+function formatClassMemberSignature(signature: string): string | undefined {
+  const code = formattedTypeScript(`declare class __DocSignature {\n${signature};\n}`, 'dts');
+  if (!code) return undefined;
+  return extractFormattedBody(code, 'declare class __DocSignature {', '\n}');
+}
+
+function formattedTypeScript(source: string, sourceType: 'ts' | 'dts'): string | undefined {
+  const result = formatTypeScript(source, { sourceType });
+  if (!result.ok || !result.code) return undefined;
+  return result.code.trim();
+}
+
+function needsAmbientSignature(signature: string): boolean {
+  return /^(?:async\s+)?function\b/.test(signature) || /^(?:const|let|var)\s+\w/.test(signature);
+}
+
+function stripDeclarePrefix(signature: string): string {
+  return signature.replace(/^declare\s+/, '');
+}
+
+function trimTrailingSemicolons(signature: string): string {
+  return signature.replace(/;+\s*$/, '');
+}
+
+function extractFormattedBody(code: string, prefix: string, suffix: string): string | undefined {
+  if (!code.startsWith(prefix) || !code.endsWith(suffix)) return undefined;
+  const body = dedentText(code.slice(prefix.length, code.length - suffix.length)).trim();
+  return body ? trimTrailingSemicolons(body) : undefined;
+}
+
+function dedentText(value: string): string {
+  const lines = value.replace(/^\n/, '').replace(/\n$/, '').split('\n');
+  const indents = lines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => line.match(/^ */)?.[0].length ?? 0);
+  const indent = indents.length === 0 ? 0 : Math.min(...indents);
+  return indent > 0 ? lines.map((line) => line.slice(Math.min(indent, line.length))).join('\n') : lines.join('\n');
+}
+
+function wrapLongSignature(signature: string): string {
+  if (signature.includes('\n') || signature.length <= SIGNATURE_WRAP_COLUMN) return signature;
+  if (!/[{},();]/.test(signature)) return signature;
+
+  const lines: string[] = [];
+  let current = '';
+  let indent = 0;
+  let parenDepth = 0;
+  let angleDepth = 0;
+
+  const append = (text: string) => {
+    current += text;
+  };
+  const newline = (nextIndent = indent) => {
+    const line = current.trimEnd();
+    if (line.length > 0) lines.push('  '.repeat(Math.max(0, nextIndent)) + line.trimStart());
+    current = '';
+  };
+
+  for (let index = 0; index < signature.length; index++) {
+    const ch = signature[index]!;
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const end = skipQuoted(signature, index, ch);
+      append(signature.slice(index, end + 1));
+      index = end;
+      continue;
+    }
+
+    if (ch === '<') {
+      angleDepth++;
+      append(ch);
+      continue;
+    }
+    if (ch === '>' && angleDepth > 0) {
+      angleDepth--;
+      append(ch);
+      continue;
+    }
+    if (ch === '(') {
+      parenDepth++;
+      append(ch);
+      newline(indent);
+      indent++;
+      continue;
+    }
+    if (ch === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+      if (current.trim().length > 0) newline(indent);
+      indent = Math.max(0, indent - 1);
+      append(ch);
+      continue;
+    }
+    if (ch === '{') {
+      append(ch);
+      newline(indent);
+      indent++;
+      continue;
+    }
+    if (ch === '}') {
+      if (current.trim().length > 0) newline(indent);
+      indent = Math.max(0, indent - 1);
+      append(ch);
+      continue;
+    }
+    if (ch === ';') {
+      append(ch);
+      newline(indent);
+      continue;
+    }
+    if (ch === ',' && angleDepth === 0 && (parenDepth > 0 || indent > 0)) {
+      append(ch);
+      newline(indent);
+      continue;
+    }
+    append(ch);
+  }
+  if (current.trim().length > 0) newline(indent);
+  return lines.join('\n');
+}
+
+function stripSignatureComments(source: string): string {
+  let out = '';
+  for (let index = 0; index < source.length; index++) {
+    const ch = source[index]!;
+    const next = source[index + 1] ?? '';
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const end = skipQuoted(source, index, ch);
+      out += source.slice(index, end + 1);
+      index = end;
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      const lineEnd = source.indexOf('\n', index + 2);
+      index = lineEnd >= 0 ? lineEnd - 1 : source.length;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      const blockEnd = source.indexOf('*/', index + 2);
+      index = blockEnd >= 0 ? blockEnd + 1 : source.length;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 function locationFor(source: string, offset: number): Location {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - driver</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -32,7 +32,7 @@
 
 <h2>Types</h2>
 
-<section id="driver.ServerResult">
+<section class="docs-symbol" id="driver.ServerResult">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="driver.html#driver.ServerResult">ServerResult</a> = <a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a></code></h3>
 
 <p>Value returned from an HTTP server handler.</p>
@@ -41,7 +41,7 @@
 
 </section>
 
-<section id="driver.ServerHandler">
+<section class="docs-symbol" id="driver.ServerHandler">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="driver.html#driver.ServerHandler">ServerHandler</a> = (req: <a class="tok-type" href="../http.html#js-net-http.Request">Request</a>) =&gt; <a class="tok-type" href="driver.html#driver.ServerResult">ServerResult</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="driver.html#driver.ServerResult">ServerResult</a>&gt;</code></h3>
 
 <p>Function invoked for each server-side HTTP request.</p>
@@ -53,7 +53,7 @@
 
 <h2>Interfaces</h2>
 
-<section id="driver.ServerDriverOptions">
+<section class="docs-symbol" id="driver.ServerDriverOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="driver.html#driver.ServerDriverOptions">ServerDriverOptions</a> {</code></h3>
 
 <p>Shared server driver options supplied by <code>serve</code>.</p>
@@ -78,7 +78,7 @@
 
 </section>
 
-<section id="driver.ServerDriver">
+<section class="docs-symbol" id="driver.ServerDriver">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="driver.html#driver.ServerDriver">ServerDriver</a> {</code></h3>
 
 <p>Server protocol driver contract for HTTP/1 and HTTP/2.</p>
@@ -88,7 +88,12 @@
 <h4>Methods</h4>
 
 <section class="member" id="driver.ServerDriver.run">
-<h5><code>run( reader: BytesReader, writer: BytesWriter, handler: <a class="tok-type" href="driver.html#driver.ServerHandler">ServerHandler</a>, opts: <a class="tok-type" href="driver.html#driver.ServerDriverOptions">ServerDriverOptions</a>, ): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+<h5><code>run(
+  reader: BytesReader,
+  writer: BytesWriter,
+  handler: <a class="tok-type" href="driver.html#driver.ServerHandler">ServerHandler</a>,
+  opts: <a class="tok-type" href="driver.html#driver.ServerDriverOptions">ServerDriverOptions</a>
+): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
 
 <p>Process one accepted connection. Resolves when the connection is fully closed (all in-flight requests done, buffers flushed).</p>
 <pre><code class="language-ts"><span class="tok-keyword">await</span> driver.run(reader, writer, <span class="tok-keyword">async</span> () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;ok&#39;</span>), { maxConcurrent: <span class="tok-number">8</span> });</code></pre>
@@ -97,7 +102,7 @@
 
 </section>
 
-<section id="driver.CancelSignal">
+<section class="docs-symbol" id="driver.CancelSignal">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="driver.html#driver.CancelSignal">CancelSignal</a> {</code></h3>
 
 <p>Minimal abort signal contract accepted by client drivers.</p>
@@ -124,7 +129,9 @@
 <h4>Methods</h4>
 
 <section class="member" id="driver.CancelSignal.addEventListener">
-<h5><code>addEventListener(<span class="tok-keyword">type</span>: <span class="tok-keyword">string</span>, fn: () =&gt; <span class="tok-keyword">void</span>, opts?: { once?: <span class="tok-keyword">boolean</span> }): <span class="tok-keyword">void</span></code></h5>
+<h5><code>addEventListener(<span class="tok-keyword">type</span>: <span class="tok-keyword">string</span>, fn: () =&gt; <span class="tok-keyword">void</span>, opts?: {
+  once?: <span class="tok-keyword">boolean</span>;
+}): <span class="tok-keyword">void</span></code></h5>
 
 <p>Subscribe to cancellation events.</p>
 <pre><code class="language-ts">signal.addEventListener(<span class="tok-string">&#39;abort&#39;</span>, onAbort, { once: <span class="tok-keyword">true</span> });</code></pre>
@@ -140,7 +147,7 @@
 
 </section>
 
-<section id="driver.ClientDriverOptions">
+<section class="docs-symbol" id="driver.ClientDriverOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="driver.html#driver.ClientDriverOptions">ClientDriverOptions</a> {</code></h3>
 
 <p>Shared client driver options supplied by fetch and pool callers.</p>
@@ -158,7 +165,7 @@
 
 </section>
 
-<section id="driver.ClientDriver">
+<section class="docs-symbol" id="driver.ClientDriver">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="driver.html#driver.ClientDriver">ClientDriver</a> {</code></h3>
 
 <p>Client protocol driver contract for HTTP/1 and HTTP/2.</p>
@@ -168,7 +175,12 @@
 <h4>Methods</h4>
 
 <section class="member" id="driver.ClientDriver.send">
-<h5><code>send( req: <a class="tok-type" href="../http.html#js-net-http.Request">Request</a>, reader: BytesReader, writer: BytesWriter, opts: <a class="tok-type" href="driver.html#driver.ClientDriverOptions">ClientDriverOptions</a>, ): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="../http.html#js-net-http.Response">Response</a>&gt;</code></h5>
+<h5><code>send(
+  req: <a class="tok-type" href="../http.html#js-net-http.Request">Request</a>,
+  reader: BytesReader,
+  writer: BytesWriter,
+  opts: <a class="tok-type" href="driver.html#driver.ClientDriverOptions">ClientDriverOptions</a>
+): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="../http.html#js-net-http.Response">Response</a>&gt;</code></h5>
 
 <p>Send one logical request on an already-connected reader/writer pair. Resolves with the parsed Response. Does NOT close the connection — the caller decides lifetime (for pooling).</p>
 <pre><code class="language-ts"><span class="tok-keyword">const</span> response = <span class="tok-keyword">await</span> driver.send(request, reader, writer, { signal: <span class="tok-keyword">null</span> });</code></pre>
@@ -187,7 +199,7 @@
 
 </section>
 
-<section id="driver.ConnectionTakeover">
+<section class="docs-symbol" id="driver.ConnectionTakeover">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a> {</code></h3>
 
 <p>Interface for anything that hijacks a connection at the protocol level. serve() detects <code>result instanceof ConnectionTakeover</code> via isConnectionTakeover() and calls _takeOver(reader, writer).</p>
@@ -219,7 +231,7 @@
 
 <h2>Functions</h2>
 
-<section id="driver.isConnectionTakeover">
+<section class="docs-symbol" id="driver.isConnectionTakeover">
 <h3><code><span class="tok-keyword">function</span> isConnectionTakeover(v: <span class="tok-keyword">unknown</span>): v is <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a></code></h3>
 
 <p>Duck-type check for ConnectionTakeover. Use instead of instanceof since ConnectionTakeover is an interface.</p>

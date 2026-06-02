@@ -406,7 +406,10 @@ const thumbprint = await jwkThumbprint(jwk);
 ## selectJwk
 
 ```ts
-function selectJwk(jwks: JsonWebKeySet | JsonWebKeyLike[], selector: JwkSelector): JsonWebKeyLike | undefined
+function selectJwk(
+  jwks: JsonWebKeySet | JsonWebKeyLike[],
+  selector: JwkSelector
+): JsonWebKeyLike | undefined
 ```
 
 Select the first matching key from a JWKS or key array.

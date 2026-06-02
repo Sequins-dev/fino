@@ -7,7 +7,7 @@
  * *publishing* (the library/framework) from *consuming* context (application code).
  *
  * ```ts no_run
- *   import { topic } from './topic.mts';
+ *   import { topic } from 'fino:context/topic';
  *   import { Context } from 'fino:context';
  *
  *   const requestCtx = new Context('request');

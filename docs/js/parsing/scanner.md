@@ -340,7 +340,16 @@ scanner.error('bad span', { from, to: scanner.mark() }).length;
 ### constructor
 
 ```ts
-constructor( message: string, opts: { detail: string; format: string; filename?: string; offset: number; line?: number; column?: number; length?: number; source: Uint8Array; }, )
+constructor(message: string, opts: {
+  detail: string;
+  format: string;
+  filename?: string;
+  offset: number;
+  line?: number;
+  column?: number;
+  length?: number;
+  source: Uint8Array;
+})
 ```
 
 Create a parse error with explicit source and location metadata.
@@ -363,7 +372,10 @@ const error = new ParseError('demo: bad at offset 0', {
 ### render
 
 ```ts
-render(options?: { color?: boolean; contextLines?: number }): string
+render(options?: {
+  color?: boolean;
+  contextLines?: number;
+}): string
 ```
 
 Render a diagnostic snippet for humans.
@@ -1229,7 +1241,10 @@ scanner.readToken('header name'); // 'Content-Type'
 ### expectToken
 
 ```ts
-expectToken(expected: string, options?: { caseInsensitive?: boolean; name?: string }): void
+expectToken(expected: string, options?: {
+  caseInsensitive?: boolean;
+  name?: string;
+}): void
 ```
 
 Require a specific protocol token.
@@ -1247,7 +1262,13 @@ scanner.expectToken('get', { caseInsensitive: true, name: 'method' });
 ### readStrictInt
 
 ```ts
-readStrictInt(options?: { radix?: 10 | 16; name?: string; min?: number; max?: number; allowSign?: boolean; }): number
+readStrictInt(options?: {
+  radix?: 10 | 16;
+  name?: string;
+  min?: number;
+  max?: number;
+  allowSign?: boolean;
+}): number
 ```
 
 Read a strictly formatted decimal or hexadecimal integer token.
@@ -1364,7 +1385,10 @@ scanner.peek(); // 'a'
 ### error
 
 ```ts
-error(detail: string, span?: ScannerMark | { from: ScannerMark; to: ScannerMark }): ParseError
+error(detail: string, span?: ScannerMark | {
+  from: ScannerMark;
+  to: ScannerMark;
+}): ParseError
 ```
 
 Create a `ParseError` at the current position or an explicit span.

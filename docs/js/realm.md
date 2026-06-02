@@ -26,7 +26,24 @@ await realm.terminate();
 ## ImportDirectiveSer
 
 ```ts
-type ImportDirectiveSer = | 'inherit' | 'block' | { type: 'inherit' } | { type: 'block' } | { type: 'remap'; target: string } | { type: 'source'; code: string; source_map: string } | { type: 'facade'; specifier: string; exports: string[]; streams?: string[]; sinks?: string[] }
+type ImportDirectiveSer = 'inherit' | 'block' | {
+  type: 'inherit';
+} | {
+  type: 'block';
+} | {
+  type: 'remap';
+  target: string;
+} | {
+  type: 'source';
+  code: string;
+  source_map: string;
+} | {
+  type: 'facade';
+  specifier: string;
+  exports: string[];
+  streams?: string[];
+  sinks?: string[];
+}
 ```
 
 Wire-format representation of an import directive.
@@ -233,7 +250,20 @@ facade.handle('open', async (path) => {
 ### constructor
 
 ```ts
-constructor( scalar: Record<string, (...args: unknown[]) => unknown> = {}, streams: Record<string, (...args: unknown[]) => AsyncIterable<unknown>> = {}, sinks: Record<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>> = {}, )
+constructor(
+  scalar: Record<string, (
+    ...args: unknown[]
+  ) => unknown> = {
+  },
+  streams: Record<string, (
+    ...args: unknown[]
+  ) => AsyncIterable<unknown>> = {
+  },
+  sinks: Record<string, (
+    args: unknown[], source: AsyncIterable<unknown>
+  ) => Promise<unknown>> = {
+  }
+)
 ```
 
 Create a stateful handle with scalar, read-stream, and write-stream methods.
@@ -298,7 +328,9 @@ const facade = new Facade('app:math', ['double'])
 ### from
 
 ```ts
-static from(obj: object, opts: { specifier: string }): Facade
+static from(obj: object, opts: {
+  specifier: string;
+}): Facade
 ```
 
 Create a facade from callable properties on an object or class instance.
@@ -358,7 +390,13 @@ facade.stream('tail', async function* () {
 ### sendStream
 
 ```ts
-sendStream(method: string, fn: (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>): this
+sendStream(
+  method: string,
+  fn: (
+    args: unknown[],
+    source: AsyncIterable<unknown>
+  ) => Promise<unknown>
+): this
 ```
 
 Register a write-stream (sink) handler - the child sends chunks to the
@@ -1081,7 +1119,11 @@ realm.port.start();
 ### fromSource
 
 ```ts
-static fromSource<F extends RealmFn = RealmFn>( source: string, options: RealmSourceOptions = {}, ): Realm<F>
+static fromSource<F extends RealmFn = RealmFn>(
+  source: string,
+  options: RealmSourceOptions = {
+  }
+): Realm<F>
 ```
 
 Create a Realm whose entrypoint is in-memory module source.

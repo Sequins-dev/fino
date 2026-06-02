@@ -8,7 +8,7 @@ bound context value for the duration of `fn`. This separates the concerns of
 *publishing* (the library/framework) from *consuming* context (application code).
 
 ```ts
-import { topic } from './topic.mts';
+import { topic } from 'fino:context/topic';
 import { Context } from 'fino:context';
 
 const requestCtx = new Context('request');
@@ -46,7 +46,15 @@ requests.publish({ id: 'req-1' });
 ## subscribeMatching
 
 ```ts
-function subscribeMatching<T = unknown>( matcher: (name: string) => boolean, fn: (msg: T, topicName: string) => void, ): SubscriptionHandle
+function subscribeMatching<T = unknown>(
+  matcher: (
+    name: string
+  ) => boolean,
+  fn: (
+    msg: T,
+    topicName: string
+  ) => void
+): SubscriptionHandle
 ```
 
 Subscribe to all existing and future topics whose names match `matcher`.
@@ -212,7 +220,9 @@ events.publish({ ok: true });
 ### bindContext
 
 ```ts
-bindContext<C>(ctx: { runWithValue<R>(val: C, fn: () => R): R }, transform: (msg: T) => C): BindingHandle
+bindContext<C>(ctx: {
+  runWithValue<R>(val: C, fn: () => R): R;
+}, transform: (msg: T) => C): BindingHandle
 ```
 
 Declare that when this topic fires via `runWithValue()`, `ctx` should

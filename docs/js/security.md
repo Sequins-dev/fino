@@ -168,7 +168,12 @@ Re-exported from `token.VerifyTokenOptions`.
 ## issueToken
 
 ```ts
-function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string
+function issueToken(
+  payload: Record<string, unknown>,
+  secret: BufferLike,
+  options: IssueTokenOptions = {
+  }
+): string
 ```
 
 Re-exported from `token.issueToken`.
@@ -176,7 +181,12 @@ Re-exported from `token.issueToken`.
 ## verifyToken
 
 ```ts
-function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null
+function verifyToken(
+  token: string,
+  secret: BufferLike,
+  options: VerifyTokenOptions = {
+  }
+): Record<string, unknown> | null
 ```
 
 Re-exported from `token.verifyToken`.
@@ -272,7 +282,10 @@ Re-exported from `jwk.jwkThumbprint`.
 ## selectJwk
 
 ```ts
-function selectJwk(jwks: JsonWebKeySet | JsonWebKeyLike[], selector: JwkSelector): JsonWebKeyLike | undefined
+function selectJwk(
+  jwks: JsonWebKeySet | JsonWebKeyLike[],
+  selector: JwkSelector
+): JsonWebKeyLike | undefined
 ```
 
 Re-exported from `jwk.selectJwk`.
@@ -288,7 +301,7 @@ Re-exported from `jwk.jwkFromSecret`.
 ## JwtAlgorithm
 
 ```ts
-type JwtAlgorithm = | 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'
+type JwtAlgorithm = 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'
 ```
 
 Re-exported from `jwt.JwtAlgorithm`.
@@ -352,7 +365,11 @@ Re-exported from `jwt.JwtResult`.
 ## jwtSign
 
 ```ts
-async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string>
+async function jwtSign(
+  payload: Record<string, unknown>,
+  key: JsonWebKeyLike,
+  options: JwtSignOptions
+): Promise<string>
 ```
 
 Re-exported from `jwt.jwtSign`.
@@ -360,7 +377,12 @@ Re-exported from `jwt.jwtSign`.
 ## jwtVerify
 
 ```ts
-async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult>
+async function jwtVerify(
+  token: string,
+  keys: JwtKeyInput,
+  options: JwtVerifyOptions = {
+  }
+): Promise<JwtResult>
 ```
 
 Re-exported from `jwt.jwtVerify`.
@@ -368,7 +390,11 @@ Re-exported from `jwt.jwtVerify`.
 ## jwtEncrypt
 
 ```ts
-async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string>
+async function jwtEncrypt(
+  payload: Record<string, unknown>,
+  key: JsonWebKeyLike,
+  options: JwtEncryptOptions
+): Promise<string>
 ```
 
 Re-exported from `jwt.jwtEncrypt`.

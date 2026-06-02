@@ -1170,9 +1170,9 @@
               "id": "archive.Archive.addFile",
               "name": "addFile",
               "kind": "method",
-              "signature": "async addFile(srcPath: string, archivePath: string | null = null, options: ArchiveWriteOptions = {}): Promise<void>",
+              "signature": "async addFile(\n  srcPath: string,\n  archivePath: string | null = null,\n  options: ArchiveWriteOptions = {\n  }\n): Promise<void>",
               "signatures": [
-                "async addFile(srcPath: string, archivePath: string | null = null, options: ArchiveWriteOptions = {}): Promise<void>"
+                "async addFile(\n  srcPath: string,\n  archivePath: string | null = null,\n  options: ArchiveWriteOptions = {\n  }\n): Promise<void>"
               ],
               "aliases": [],
               "doc": {
@@ -1594,9 +1594,9 @@
           "id": "archive.listArchive",
           "name": "listArchive",
           "kind": "function",
-          "signature": "async function listArchive(path: string, options: ArchiveOpenOptions = {}): Promise<ArchiveEntryInfo[]>",
+          "signature": "async function listArchive(\n  path: string,\n  options: ArchiveOpenOptions = {\n  }\n): Promise<ArchiveEntryInfo[]>",
           "signatures": [
-            "async function listArchive(path: string, options: ArchiveOpenOptions = {}): Promise<ArchiveEntryInfo[]>"
+            "async function listArchive(\n  path: string,\n  options: ArchiveOpenOptions = {\n  }\n): Promise<ArchiveEntryInfo[]>"
           ],
           "aliases": [],
           "doc": {
@@ -1643,9 +1643,9 @@
           "id": "archive.extractArchive",
           "name": "extractArchive",
           "kind": "function",
-          "signature": "async function extractArchive(path: string, destination: string, options: ArchiveOpenOptions = {}): Promise<ExtractResult>",
+          "signature": "async function extractArchive(\n  path: string,\n  destination: string,\n  options: ArchiveOpenOptions = {\n  }\n): Promise<ExtractResult>",
           "signatures": [
-            "async function extractArchive(path: string, destination: string, options: ArchiveOpenOptions = {}): Promise<ExtractResult>"
+            "async function extractArchive(\n  path: string,\n  destination: string,\n  options: ArchiveOpenOptions = {\n  }\n): Promise<ExtractResult>"
           ],
           "aliases": [],
           "doc": {
@@ -2904,9 +2904,9 @@
           "id": "config.ConfigSource",
           "name": "ConfigSource",
           "kind": "type",
-          "signature": "type ConfigSource = | { /** * Select an inline default-value source. * * Defaults are usually placed early in the source list so later sources * can override them. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'defaults', value: { debug: false } }], * }); * ``` */ type: 'defaults'; /** * Inline default values to merge into the config object. * * The value is cloned before merging, so later loader work does not mutate * the caller's object. Non-object nested values are replaced by later * sources. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig<{ server: { port: number } }>({ * schema: { * type: 'object', * properties: { server: { type: 'object', properties: { port: { type: 'integer' } } } }, * }, * sources: [{ type: 'defaults', value: { server: { port: 3000 } } }], * }); * loaded.value.server.port; * ``` */ value: ConfigValue; } | { /** * Select a JSON or TOML file source. * * File sources are parsed into objects and then merged. A missing file, * invalid JSON, or invalid TOML causes `loadConfig()` to reject. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'file', path: './app.toml' }], * }); * ``` */ type: 'file'; /** * Path to the JSON or TOML config file. * * Relative paths are resolved by the runtime filesystem provider in the * usual way. The loader reads the entire file as UTF-8 text. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'file', path: './config.json' }], * }); * loaded.sources[0].path; * ``` */ path: string; /** * Optional file format override. * * When omitted, `.toml` selects TOML and all other extensions default to * JSON. Use this when a file extension does not match its contents. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'file', path: './settings', format: 'json' }], * }); * ``` */ format?: 'json' | 'toml'; } | { /** * Select a dotenv file source. * * The loader supports common `.env` syntax with comments, blank lines, * and quoted values. Parsed keys are mapped into nested config paths. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }], * }); * ``` */ type: 'dotenv'; /** * Path to the dotenv file. * * The file is read as UTF-8. Missing files or read errors reject * `loadConfig()`. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'dotenv', path: './.env.local' }], * }); * loaded.sources[0].path; * ``` */ path: string; /** * Explicit source-key to config-path mapping. * * Map keys are raw dotenv variable names. Values are dotted config paths, * such as `server.port`. Explicit mappings take precedence over prefix * based default mapping. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ * type: 'dotenv', * path: './.env', * map: { PORT: 'server.port' }, * }], * }); * ``` */ map?: Record<string, string>; /** * Optional variable prefix for default dotenv mapping. * * Variables outside the prefix are ignored. Matching names have the * prefix removed, are lowercased, and `_` separators become dotted path * separators. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }], * }); * ``` */ prefix?: string; } | { /** * Select an environment variable source. * * When `values` is omitted, the process environment is used. Values are * strings until schema-guided coercion runs during `loadConfig()`. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'env', prefix: 'APP_' }], * }); * ``` */ type: 'env'; /** * Environment-like key/value object to read instead of process env. * * Supplying this is useful for tests or embedding. Keys and values are * treated the same way as real environment variables. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'env', values: { APP_PORT: '8080' }, prefix: 'APP_' }], * }); * ``` */ values?: Record<string, string>; /** * Explicit environment-key to config-path mapping. * * Map keys are raw environment names. Values are dotted config paths. * Explicit mappings are applied before prefix-based default mapping. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ * type: 'env', * values: { DATABASE_URL: 'sqlite://app.db' }, * map: { DATABASE_URL: 'database.url' }, * }], * }); * ``` */ map?: Record<string, string>; /** * Optional variable prefix for default environment mapping. * * Variables without the prefix are ignored. For matching variables, the * prefix is stripped, names are lowercased, and underscores become dots. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'env', values: { APP_DEBUG: 'true' }, prefix: 'APP_' }], * }); * ``` */ prefix?: string; } | { /** * Select a command-line argument source. * * The parser accepts `--path value`, `--path=value`, and bare boolean * flags. Parsed values are merged as strings or booleans before schema * coercion. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'argv', args: ['--server.port', '8080'] }], * }); * ``` */ type: 'argv'; /** * Argument tokens to parse instead of process arguments. * * When omitted, `loadConfig()` uses process arguments after the executable * and script name. Supplying tokens is useful for tests. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'argv', args: ['--debug'] }], * }); * ``` */ args?: string[]; /** * Explicit flag to config-path mapping. * * Map keys include the leading `--`, for example `--port`. Values are * dotted config paths. Unmapped flags use their flag name without `--`. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'argv', args: ['--port', '8080'], map: { '--port': 'server.port' } }], * }); * ``` */ map?: Record<string, string>; } | { /** * Select an inline override source. * * Overrides are usually placed last because later sources take * precedence over earlier sources. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'override', value: { debug: true } }], * }); * ``` */ type: 'override'; /** * Inline override values to merge into the config object. * * Values are cloned before merging. Since source order controls * precedence, this object replaces earlier scalar and array values at the * same paths. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig<{ server: { port: number } }>({ * schema: { type: 'object' }, * sources: [ * { type: 'defaults', value: { server: { port: 3000 } } }, * { type: 'override', value: { server: { port: 0 } } }, * ], * }); * loaded.value.server.port; * ``` */ value: ConfigValue; }",
+          "signature": "type ConfigSource = {\n  type: 'defaults';\n  value: ConfigValue;\n} | {\n  type: 'file';\n  path: string;\n  format?: 'json' | 'toml';\n} | {\n  type: 'dotenv';\n  path: string;\n  map?: Record<string, string>;\n  prefix?: string;\n} | {\n  type: 'env';\n  values?: Record<string, string>;\n  map?: Record<string, string>;\n  prefix?: string;\n} | {\n  type: 'argv';\n  args?: string[];\n  map?: Record<string, string>;\n} | {\n  type: 'override';\n  value: ConfigValue;\n}",
           "signatures": [
-            "type ConfigSource = | { /** * Select an inline default-value source. * * Defaults are usually placed early in the source list so later sources * can override them. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'defaults', value: { debug: false } }], * }); * ``` */ type: 'defaults'; /** * Inline default values to merge into the config object. * * The value is cloned before merging, so later loader work does not mutate * the caller's object. Non-object nested values are replaced by later * sources. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig<{ server: { port: number } }>({ * schema: { * type: 'object', * properties: { server: { type: 'object', properties: { port: { type: 'integer' } } } }, * }, * sources: [{ type: 'defaults', value: { server: { port: 3000 } } }], * }); * loaded.value.server.port; * ``` */ value: ConfigValue; } | { /** * Select a JSON or TOML file source. * * File sources are parsed into objects and then merged. A missing file, * invalid JSON, or invalid TOML causes `loadConfig()` to reject. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'file', path: './app.toml' }], * }); * ``` */ type: 'file'; /** * Path to the JSON or TOML config file. * * Relative paths are resolved by the runtime filesystem provider in the * usual way. The loader reads the entire file as UTF-8 text. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'file', path: './config.json' }], * }); * loaded.sources[0].path; * ``` */ path: string; /** * Optional file format override. * * When omitted, `.toml` selects TOML and all other extensions default to * JSON. Use this when a file extension does not match its contents. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'file', path: './settings', format: 'json' }], * }); * ``` */ format?: 'json' | 'toml'; } | { /** * Select a dotenv file source. * * The loader supports common `.env` syntax with comments, blank lines, * and quoted values. Parsed keys are mapped into nested config paths. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }], * }); * ``` */ type: 'dotenv'; /** * Path to the dotenv file. * * The file is read as UTF-8. Missing files or read errors reject * `loadConfig()`. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'dotenv', path: './.env.local' }], * }); * loaded.sources[0].path; * ``` */ path: string; /** * Explicit source-key to config-path mapping. * * Map keys are raw dotenv variable names. Values are dotted config paths, * such as `server.port`. Explicit mappings take precedence over prefix * based default mapping. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ * type: 'dotenv', * path: './.env', * map: { PORT: 'server.port' }, * }], * }); * ``` */ map?: Record<string, string>; /** * Optional variable prefix for default dotenv mapping. * * Variables outside the prefix are ignored. Matching names have the * prefix removed, are lowercased, and `_` separators become dotted path * separators. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'dotenv', path: './.env', prefix: 'APP_' }], * }); * ``` */ prefix?: string; } | { /** * Select an environment variable source. * * When `values` is omitted, the process environment is used. Values are * strings until schema-guided coercion runs during `loadConfig()`. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'env', prefix: 'APP_' }], * }); * ``` */ type: 'env'; /** * Environment-like key/value object to read instead of process env. * * Supplying this is useful for tests or embedding. Keys and values are * treated the same way as real environment variables. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'env', values: { APP_PORT: '8080' }, prefix: 'APP_' }], * }); * ``` */ values?: Record<string, string>; /** * Explicit environment-key to config-path mapping. * * Map keys are raw environment names. Values are dotted config paths. * Explicit mappings are applied before prefix-based default mapping. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ * type: 'env', * values: { DATABASE_URL: 'sqlite://app.db' }, * map: { DATABASE_URL: 'database.url' }, * }], * }); * ``` */ map?: Record<string, string>; /** * Optional variable prefix for default environment mapping. * * Variables without the prefix are ignored. For matching variables, the * prefix is stripped, names are lowercased, and underscores become dots. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'env', values: { APP_DEBUG: 'true' }, prefix: 'APP_' }], * }); * ``` */ prefix?: string; } | { /** * Select a command-line argument source. * * The parser accepts `--path value`, `--path=value`, and bare boolean * flags. Parsed values are merged as strings or booleans before schema * coercion. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'argv', args: ['--server.port', '8080'] }], * }); * ``` */ type: 'argv'; /** * Argument tokens to parse instead of process arguments. * * When omitted, `loadConfig()` uses process arguments after the executable * and script name. Supplying tokens is useful for tests. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'argv', args: ['--debug'] }], * }); * ``` */ args?: string[]; /** * Explicit flag to config-path mapping. * * Map keys include the leading `--`, for example `--port`. Values are * dotted config paths. Unmapped flags use their flag name without `--`. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'argv', args: ['--port', '8080'], map: { '--port': 'server.port' } }], * }); * ``` */ map?: Record<string, string>; } | { /** * Select an inline override source. * * Overrides are usually placed last because later sources take * precedence over earlier sources. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * await loadConfig({ * schema: { type: 'object' }, * sources: [{ type: 'override', value: { debug: true } }], * }); * ``` */ type: 'override'; /** * Inline override values to merge into the config object. * * Values are cloned before merging. Since source order controls * precedence, this object replaces earlier scalar and array values at the * same paths. * * ```ts no_run * import { loadConfig } from 'fino:config'; * * const loaded = await loadConfig<{ server: { port: number } }>({ * schema: { type: 'object' }, * sources: [ * { type: 'defaults', value: { server: { port: 3000 } } }, * { type: 'override', value: { server: { port: 0 } } }, * ], * }); * loaded.value.server.port; * ``` */ value: ConfigValue; }"
+            "type ConfigSource = {\n  type: 'defaults';\n  value: ConfigValue;\n} | {\n  type: 'file';\n  path: string;\n  format?: 'json' | 'toml';\n} | {\n  type: 'dotenv';\n  path: string;\n  map?: Record<string, string>;\n  prefix?: string;\n} | {\n  type: 'env';\n  values?: Record<string, string>;\n  map?: Record<string, string>;\n  prefix?: string;\n} | {\n  type: 'argv';\n  args?: string[];\n  map?: Record<string, string>;\n} | {\n  type: 'override';\n  value: ConfigValue;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -4114,7 +4114,7 @@
       "name": "topic",
       "sourceModule": "topic",
       "doc": {
-        "text": "fino:topic - Named pub/sub channels with Context binding.\n\nA `Topic` is a named pub/sub channel. When a `Context` is bound to a Topic,\ncalling `topic.runWithValue(msg, fn)` automatically derives and installs the\nbound context value for the duration of `fn`. This separates the concerns of\n*publishing* (the library/framework) from *consuming* context (application code).\n\n```ts no_run\n  import { topic } from './topic.mts';\n  import { Context } from 'fino:context';\n\n  const requestCtx = new Context('request');\n  const httpTopic = topic('http.request');\n\n  httpTopic.bindContext(requestCtx, (req) => req);\n\n  // In a handler:\n  httpTopic.runWithValue(request, () => {\n    // requestCtx.get() === request here, and in any awaited code\n    handleRequest();\n  });\n```",
+        "text": "fino:topic - Named pub/sub channels with Context binding.\n\nA `Topic` is a named pub/sub channel. When a `Context` is bound to a Topic,\ncalling `topic.runWithValue(msg, fn)` automatically derives and installs the\nbound context value for the duration of `fn`. This separates the concerns of\n*publishing* (the library/framework) from *consuming* context (application code).\n\n```ts no_run\n  import { topic } from 'fino:context/topic';\n  import { Context } from 'fino:context';\n\n  const requestCtx = new Context('request');\n  const httpTopic = topic('http.request');\n\n  httpTopic.bindContext(requestCtx, (req) => req);\n\n  // In a handler:\n  httpTopic.runWithValue(request, () => {\n    // requestCtx.get() === request here, and in any awaited code\n    handleRequest();\n  });\n```",
         "tags": [],
         "blocks": [
           {
@@ -4129,8 +4129,8 @@
             "kind": "code",
             "lang": "ts",
             "meta": "no_run",
-            "code": "import { topic } from './topic.mts';\nimport { Context } from 'fino:context';\n\nconst requestCtx = new Context('request');\nconst httpTopic = topic('http.request');\n\nhttpTopic.bindContext(requestCtx, (req) => req);\n\n// In a handler:\nhttpTopic.runWithValue(request, () => {\n  // requestCtx.get() === request here, and in any awaited code\n  handleRequest();\n});",
-            "hiddenCode": "import { topic } from './topic.mts';\nimport { Context } from 'fino:context';\n\nconst requestCtx = new Context('request');\nconst httpTopic = topic('http.request');\n\nhttpTopic.bindContext(requestCtx, (req) => req);\n\n// In a handler:\nhttpTopic.runWithValue(request, () => {\n  // requestCtx.get() === request here, and in any awaited code\n  handleRequest();\n});"
+            "code": "import { topic } from 'fino:context/topic';\nimport { Context } from 'fino:context';\n\nconst requestCtx = new Context('request');\nconst httpTopic = topic('http.request');\n\nhttpTopic.bindContext(requestCtx, (req) => req);\n\n// In a handler:\nhttpTopic.runWithValue(request, () => {\n  // requestCtx.get() === request here, and in any awaited code\n  handleRequest();\n});",
+            "hiddenCode": "import { topic } from 'fino:context/topic';\nimport { Context } from 'fino:context';\n\nconst requestCtx = new Context('request');\nconst httpTopic = topic('http.request');\n\nhttpTopic.bindContext(requestCtx, (req) => req);\n\n// In a handler:\nhttpTopic.runWithValue(request, () => {\n  // requestCtx.get() === request here, and in any awaited code\n  handleRequest();\n});"
           }
         ]
       },
@@ -4184,9 +4184,9 @@
           "id": "topic.subscribeMatching",
           "name": "subscribeMatching",
           "kind": "function",
-          "signature": "function subscribeMatching<T = unknown>( matcher: (name: string) => boolean, fn: (msg: T, topicName: string) => void, ): SubscriptionHandle",
+          "signature": "function subscribeMatching<T = unknown>(\n  matcher: (\n    name: string\n  ) => boolean,\n  fn: (\n    msg: T,\n    topicName: string\n  ) => void\n): SubscriptionHandle",
           "signatures": [
-            "function subscribeMatching<T = unknown>( matcher: (name: string) => boolean, fn: (msg: T, topicName: string) => void, ): SubscriptionHandle"
+            "function subscribeMatching<T = unknown>(\n  matcher: (\n    name: string\n  ) => boolean,\n  fn: (\n    msg: T,\n    topicName: string\n  ) => void\n): SubscriptionHandle"
           ],
           "aliases": [],
           "doc": {
@@ -4506,9 +4506,9 @@
               "id": "topic.Topic.bindContext",
               "name": "bindContext",
               "kind": "method",
-              "signature": "bindContext<C>(ctx: { runWithValue<R>(val: C, fn: () => R): R }, transform: (msg: T) => C): BindingHandle",
+              "signature": "bindContext<C>(ctx: {\n  runWithValue<R>(val: C, fn: () => R): R;\n}, transform: (msg: T) => C): BindingHandle",
               "signatures": [
-                "bindContext<C>(ctx: { runWithValue<R>(val: C, fn: () => R): R }, transform: (msg: T) => C): BindingHandle"
+                "bindContext<C>(ctx: {\n  runWithValue<R>(val: C, fn: () => R): R;\n}, transform: (msg: T) => C): BindingHandle"
               ],
               "aliases": [],
               "doc": {
@@ -5154,9 +5154,9 @@
               "id": "sqlite.Statement.run",
               "name": "run",
               "kind": "method",
-              "signature": "async run(...params: SqlValue[]): Promise<{ changes: number; lastInsertRowid: bigint }>",
+              "signature": "async run(...params: SqlValue[]): Promise<{\n  changes: number;\n  lastInsertRowid: bigint;\n}>",
               "signatures": [
-                "async run(...params: SqlValue[]): Promise<{ changes: number; lastInsertRowid: bigint }>"
+                "async run(...params: SqlValue[]): Promise<{\n  changes: number;\n  lastInsertRowid: bigint;\n}>"
               ],
               "aliases": [],
               "doc": {
@@ -6230,9 +6230,9 @@
               "id": "fs.DiskFileSystem.mkdir",
               "name": "mkdir",
               "kind": "method",
-              "signature": "async mkdir(path: Path | string, mode: number = 0o755): Promise<void>",
+              "signature": "async mkdir(path: Path | string, mode: number = 493): Promise<void>",
               "signatures": [
-                "async mkdir(path: Path | string, mode: number = 0o755): Promise<void>"
+                "async mkdir(path: Path | string, mode: number = 493): Promise<void>"
               ],
               "aliases": [],
               "doc": {
@@ -9148,12 +9148,12 @@
           "id": "csv.parse",
           "name": "parse",
           "kind": "function",
-          "signature": "function parse(input: string | Uint8Array, options?: CsvParseOptions & { header?: false; columns?: undefined }): string[][]",
+          "signature": "function parse(input: string | Uint8Array, options?: CsvParseOptions & {\n  header?: false;\n  columns?: undefined;\n}): string[][]",
           "signatures": [
-            "function parse(input: string | Uint8Array, options?: CsvParseOptions & { header?: false; columns?: undefined }): string[][]",
-            "function parse(input: string | Uint8Array, options: CsvParseOptions & { header: true }): Record<string, string>[]",
-            "function parse(input: string | Uint8Array, options: CsvParseOptions & { columns: string[] }): Record<string, string>[]",
-            "function parse(input: string | Uint8Array, options?: CsvParseOptions): string[][] | Record<string, string>[]"
+            "function parse(input: string | Uint8Array, options?: CsvParseOptions & {\n  header?: false;\n  columns?: undefined;\n}): string[][]",
+            "function parse(input: string | Uint8Array, options: CsvParseOptions & {\n  header: true;\n}): Record<string, string>[]",
+            "function parse(input: string | Uint8Array, options: CsvParseOptions & {\n  columns: string[];\n}): Record<string, string>[]",
+            "function parse(\n  input: string | Uint8Array,\n  options?: CsvParseOptions\n): string[][] | Record<string, string>[]"
           ],
           "aliases": [],
           "doc": {
@@ -9187,9 +9187,9 @@
           "id": "csv.parseStream",
           "name": "parseStream",
           "kind": "function",
-          "signature": "async function* parseStream( src: AsyncIterable<Uint8Array>, options: CsvParseOptions = {}, ): AsyncIterableIterator<CsvRow | CsvRecord>",
+          "signature": "async function* parseStream(\n  src: AsyncIterable<Uint8Array>,\n  options: CsvParseOptions = {\n  },\n): AsyncIterableIterator<CsvRow | CsvRecord>",
           "signatures": [
-            "async function* parseStream( src: AsyncIterable<Uint8Array>, options: CsvParseOptions = {}, ): AsyncIterableIterator<CsvRow | CsvRecord>"
+            "async function* parseStream(\n  src: AsyncIterable<Uint8Array>,\n  options: CsvParseOptions = {\n  },\n): AsyncIterableIterator<CsvRow | CsvRecord>"
           ],
           "aliases": [],
           "doc": {
@@ -9223,9 +9223,9 @@
           "id": "csv.stringify",
           "name": "stringify",
           "kind": "function",
-          "signature": "function stringify( rows: string[][] | Record<string, unknown>[], options: CsvStringifyOptions = {}, ): string",
+          "signature": "function stringify(\n  rows: string[][] | Record<string, unknown>[],\n  options: CsvStringifyOptions = {\n  }\n): string",
           "signatures": [
-            "function stringify( rows: string[][] | Record<string, unknown>[], options: CsvStringifyOptions = {}, ): string"
+            "function stringify(\n  rows: string[][] | Record<string, unknown>[],\n  options: CsvStringifyOptions = {\n  }\n): string"
           ],
           "aliases": [],
           "doc": {
@@ -9519,9 +9519,9 @@
           "id": "markdown.MarkdownNode",
           "name": "MarkdownNode",
           "kind": "type",
-          "signature": "type MarkdownNode = | { /** * Discriminator for paragraph nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('Body').nodes[0]?.kind; * ``` */ kind: 'paragraph'; /** * Paragraph text with source lines joined by spaces. * * Inline Markdown remains unrendered until `renderMarkdownInline()` or * `renderMarkdown()` is called. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('Hello **world**').nodes[0]; * if (node?.kind === 'paragraph') node.text; * ``` */ text: string; } | { /** * Discriminator for heading nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('# Title').nodes[0]?.kind; * ``` */ kind: 'heading'; /** * Heading level from 1 through 6 before render-time offsetting. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('## Title').nodes[0]; * if (node?.kind === 'heading') node.level; * ``` */ level: number; /** * Heading text without the leading hash markers. * * Inline Markdown remains unrendered until HTML rendering. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('# Title').nodes[0]; * if (node?.kind === 'heading') node.text; * ``` */ text: string; } | { /** * Discriminator for list nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('- item').nodes[0]?.kind; * ``` */ kind: 'list'; /** * Whether the list was parsed from ordered markers. * * `true` renders as `<ol>` and `false` renders as `<ul>`. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('1. item').nodes[0]; * if (node?.kind === 'list') node.ordered; * ``` */ ordered: boolean; /** * List item text values in source order. * * Nested lists are not represented by this compact parser. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('- a\\n- b').nodes[0]; * if (node?.kind === 'list') node.items; * ``` */ items: string[]; } | { /** * Discriminator for fenced code block nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('```ts\\nx\\n```').nodes[0]?.kind; * ``` */ kind: 'code'; /** * Fence language identifier, or `\"\"` when none is provided. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```ts\\nx\\n```').nodes[0]; * if (node?.kind === 'code') node.lang; * ``` */ lang: string; /** * Remaining fence info string after the language identifier. * * The value is trimmed and may be `\"\"`. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```ts title=demo\\nx\\n```').nodes[0]; * if (node?.kind === 'code') node.meta; * ``` */ meta: string; /** * Code block contents without the opening or closing fence. * * The parser preserves internal newlines and does not syntax-highlight. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```\\nconst x = 1;\\n```').nodes[0]; * if (node?.kind === 'code') node.code; * ``` */ code: string; }",
+          "signature": "type MarkdownNode = {\n  kind: 'paragraph';\n  text: string;\n} | {\n  kind: 'heading';\n  level: number;\n  text: string;\n} | {\n  kind: 'list';\n  ordered: boolean;\n  items: string[];\n} | {\n  kind: 'code';\n  lang: string;\n  meta: string;\n  code: string;\n}",
           "signatures": [
-            "type MarkdownNode = | { /** * Discriminator for paragraph nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('Body').nodes[0]?.kind; * ``` */ kind: 'paragraph'; /** * Paragraph text with source lines joined by spaces. * * Inline Markdown remains unrendered until `renderMarkdownInline()` or * `renderMarkdown()` is called. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('Hello **world**').nodes[0]; * if (node?.kind === 'paragraph') node.text; * ``` */ text: string; } | { /** * Discriminator for heading nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('# Title').nodes[0]?.kind; * ``` */ kind: 'heading'; /** * Heading level from 1 through 6 before render-time offsetting. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('## Title').nodes[0]; * if (node?.kind === 'heading') node.level; * ``` */ level: number; /** * Heading text without the leading hash markers. * * Inline Markdown remains unrendered until HTML rendering. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('# Title').nodes[0]; * if (node?.kind === 'heading') node.text; * ``` */ text: string; } | { /** * Discriminator for list nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('- item').nodes[0]?.kind; * ``` */ kind: 'list'; /** * Whether the list was parsed from ordered markers. * * `true` renders as `<ol>` and `false` renders as `<ul>`. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('1. item').nodes[0]; * if (node?.kind === 'list') node.ordered; * ``` */ ordered: boolean; /** * List item text values in source order. * * Nested lists are not represented by this compact parser. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('- a\\n- b').nodes[0]; * if (node?.kind === 'list') node.items; * ``` */ items: string[]; } | { /** * Discriminator for fenced code block nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('```ts\\nx\\n```').nodes[0]?.kind; * ``` */ kind: 'code'; /** * Fence language identifier, or `\"\"` when none is provided. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```ts\\nx\\n```').nodes[0]; * if (node?.kind === 'code') node.lang; * ``` */ lang: string; /** * Remaining fence info string after the language identifier. * * The value is trimmed and may be `\"\"`. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```ts title=demo\\nx\\n```').nodes[0]; * if (node?.kind === 'code') node.meta; * ``` */ meta: string; /** * Code block contents without the opening or closing fence. * * The parser preserves internal newlines and does not syntax-highlight. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```\\nconst x = 1;\\n```').nodes[0]; * if (node?.kind === 'code') node.code; * ``` */ code: string; }"
+            "type MarkdownNode = {\n  kind: 'paragraph';\n  text: string;\n} | {\n  kind: 'heading';\n  level: number;\n  text: string;\n} | {\n  kind: 'list';\n  ordered: boolean;\n  items: string[];\n} | {\n  kind: 'code';\n  lang: string;\n  meta: string;\n  code: string;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -10640,9 +10640,9 @@
           "id": "toml.TomlValue",
           "name": "TomlValue",
           "kind": "type",
-          "signature": "type TomlValue = | string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | { /** * TOML table key mapped to another TOML-compatible value. * * Nested objects become TOML tables or inline tables depending on * stringifier context. * * ```ts no_run * import type { TomlValue } from 'fino:format/toml'; * * const table: TomlValue = { server: { port: 8080 } }; * ``` */ [k: string]: TomlValue; }",
+          "signature": "type TomlValue = string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | {\n  [k: string]: TomlValue;\n}",
           "signatures": [
-            "type TomlValue = | string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | { /** * TOML table key mapped to another TOML-compatible value. * * Nested objects become TOML tables or inline tables depending on * stringifier context. * * ```ts no_run * import type { TomlValue } from 'fino:format/toml'; * * const table: TomlValue = { server: { port: 8080 } }; * ``` */ [k: string]: TomlValue; }"
+            "type TomlValue = string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | {\n  [k: string]: TomlValue;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -10820,9 +10820,9 @@
           "id": "toml.parse",
           "name": "parse",
           "kind": "function",
-          "signature": "function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue>",
+          "signature": "function parse(\n  input: string | Uint8Array,\n  options: TomlParseOptions = {\n  }\n): Record<string, TomlValue>",
           "signatures": [
-            "function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue>"
+            "function parse(\n  input: string | Uint8Array,\n  options: TomlParseOptions = {\n  }\n): Record<string, TomlValue>"
           ],
           "aliases": [],
           "doc": {
@@ -11639,6 +11639,30 @@
           },
           "members": [
             {
+              "id": "typescript.ParseDiagnostic.code",
+              "name": "code",
+              "kind": "property",
+              "signature": "code?: string",
+              "signatures": [
+                "code?: string"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "Stable diagnostic code from the parser, transformer, formatter, or linter.",
+                "tags": [],
+                "blocks": [
+                  {
+                    "kind": "paragraph",
+                    "text": "Stable diagnostic code from the parser, transformer, formatter, or linter."
+                  }
+                ]
+              },
+              "location": {
+                "line": 316,
+                "column": 3
+              }
+            },
+            {
               "id": "typescript.ParseDiagnostic.message",
               "name": "message",
               "kind": "property",
@@ -11669,7 +11693,127 @@
                 ]
               },
               "location": {
-                "line": 325,
+                "line": 329,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.ParseDiagnostic.severity",
+              "name": "severity",
+              "kind": "property",
+              "signature": "severity?: 'error' | 'warning'",
+              "signatures": [
+                "severity?: 'error' | 'warning'"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "Diagnostic severity.",
+                "tags": [],
+                "blocks": [
+                  {
+                    "kind": "paragraph",
+                    "text": "Diagnostic severity."
+                  }
+                ]
+              },
+              "location": {
+                "line": 333,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.ParseDiagnostic.line",
+              "name": "line",
+              "kind": "property",
+              "signature": "line?: number",
+              "signatures": [
+                "line?: number"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "One-based source line for the diagnostic start when available.",
+                "tags": [],
+                "blocks": [
+                  {
+                    "kind": "paragraph",
+                    "text": "One-based source line for the diagnostic start when available."
+                  }
+                ]
+              },
+              "location": {
+                "line": 337,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.ParseDiagnostic.column",
+              "name": "column",
+              "kind": "property",
+              "signature": "column?: number",
+              "signatures": [
+                "column?: number"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "One-based source column for the diagnostic start when available.",
+                "tags": [],
+                "blocks": [
+                  {
+                    "kind": "paragraph",
+                    "text": "One-based source column for the diagnostic start when available."
+                  }
+                ]
+              },
+              "location": {
+                "line": 341,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.ParseDiagnostic.endLine",
+              "name": "endLine",
+              "kind": "property",
+              "signature": "endLine?: number",
+              "signatures": [
+                "endLine?: number"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "One-based source line for the diagnostic end when available.",
+                "tags": [],
+                "blocks": [
+                  {
+                    "kind": "paragraph",
+                    "text": "One-based source line for the diagnostic end when available."
+                  }
+                ]
+              },
+              "location": {
+                "line": 345,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.ParseDiagnostic.endColumn",
+              "name": "endColumn",
+              "kind": "property",
+              "signature": "endColumn?: number",
+              "signatures": [
+                "endColumn?: number"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "One-based source column for the diagnostic end when available.",
+                "tags": [],
+                "blocks": [
+                  {
+                    "kind": "paragraph",
+                    "text": "One-based source column for the diagnostic end when available."
+                  }
+                ]
+              },
+              "location": {
+                "line": 349,
                 "column": 3
               }
             }
@@ -11741,7 +11885,7 @@
                 ]
               },
               "location": {
-                "line": 354,
+                "line": 378,
                 "column": 3
               }
             },
@@ -11776,7 +11920,7 @@
                 ]
               },
               "location": {
-                "line": 367,
+                "line": 391,
                 "column": 3
               }
             },
@@ -11811,7 +11955,7 @@
                 ]
               },
               "location": {
-                "line": 379,
+                "line": 403,
                 "column": 3
               }
             },
@@ -11846,7 +11990,7 @@
                 ]
               },
               "location": {
-                "line": 391,
+                "line": 415,
                 "column": 3
               }
             },
@@ -11881,7 +12025,7 @@
                 ]
               },
               "location": {
-                "line": 404,
+                "line": 428,
                 "column": 3
               }
             },
@@ -11889,9 +12033,9 @@
               "id": "typescript.ParseResult.sourceType",
               "name": "sourceType",
               "kind": "property",
-              "signature": "sourceType: { /** * Detected source language. * * TypeScript mode is selected for TypeScript, TSX, and declaration-file * inputs; JavaScript mode is selected for JS and JSX inputs. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('const x: number = 1;', { sourceType: 'ts' }).sourceType.language; * ``` */ language: 'typescript' | 'javascript'; /** * Detected module mode. * * OXC reports whether the source is a module, script, unambiguous input, or * CommonJS-shaped source according to parser mode and syntax. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('export const x = 1;').sourceType.moduleKind; * ``` */ moduleKind: 'module' | 'script' | 'unambiguous' | 'commonjs'; /** * Whether JSX syntax was enabled for the parse. * * This is true for JSX and TSX source modes. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('const el = <div />;', { sourceType: 'tsx' }).sourceType.jsx; * ``` */ jsx: boolean; /** * Whether the source was parsed as a TypeScript declaration file. * * This is true for `dts` or definition-file modes inferred from filenames * such as `types.d.ts`. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('declare const x: string;', { filename: 'types.d.ts' }).sourceType.typescriptDefinition; * ``` */ typescriptDefinition: boolean; }",
+              "signature": "sourceType: {\n  language: 'typescript' | 'javascript';\n  moduleKind: 'module' | 'script' | 'unambiguous' | 'commonjs';\n  jsx: boolean;\n  typescriptDefinition: boolean;\n}\n",
               "signatures": [
-                "sourceType: { /** * Detected source language. * * TypeScript mode is selected for TypeScript, TSX, and declaration-file * inputs; JavaScript mode is selected for JS and JSX inputs. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('const x: number = 1;', { sourceType: 'ts' }).sourceType.language; * ``` */ language: 'typescript' | 'javascript'; /** * Detected module mode. * * OXC reports whether the source is a module, script, unambiguous input, or * CommonJS-shaped source according to parser mode and syntax. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('export const x = 1;').sourceType.moduleKind; * ``` */ moduleKind: 'module' | 'script' | 'unambiguous' | 'commonjs'; /** * Whether JSX syntax was enabled for the parse. * * This is true for JSX and TSX source modes. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('const el = <div />;', { sourceType: 'tsx' }).sourceType.jsx; * ``` */ jsx: boolean; /** * Whether the source was parsed as a TypeScript declaration file. * * This is true for `dts` or definition-file modes inferred from filenames * such as `types.d.ts`. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('declare const x: string;', { filename: 'types.d.ts' }).sourceType.typescriptDefinition; * ``` */ typescriptDefinition: boolean; }"
+                "sourceType: {\n  language: 'typescript' | 'javascript';\n  moduleKind: 'module' | 'script' | 'unambiguous' | 'commonjs';\n  jsx: boolean;\n  typescriptDefinition: boolean;\n}\n"
               ],
               "aliases": [],
               "doc": {
@@ -11916,13 +12060,13 @@
                 ]
               },
               "location": {
-                "line": 417,
+                "line": 441,
                 "column": 3
               }
             }
           ],
           "location": {
-            "line": 341,
+            "line": 365,
             "column": 1
           }
         },
@@ -11988,7 +12132,7 @@
                 ]
               },
               "location": {
-                "line": 498,
+                "line": 522,
                 "column": 3
               }
             },
@@ -12023,13 +12167,13 @@
                 ]
               },
               "location": {
-                "line": 511,
+                "line": 535,
                 "column": 3
               }
             }
           ],
           "location": {
-            "line": 485,
+            "line": 509,
             "column": 1
           }
         },
@@ -12095,7 +12239,7 @@
                 ]
               },
               "location": {
-                "line": 541,
+                "line": 565,
                 "column": 3
               }
             },
@@ -12130,7 +12274,7 @@
                 ]
               },
               "location": {
-                "line": 554,
+                "line": 578,
                 "column": 3
               }
             },
@@ -12165,7 +12309,7 @@
                 ]
               },
               "location": {
-                "line": 567,
+                "line": 591,
                 "column": 3
               }
             },
@@ -12200,13 +12344,249 @@
                 ]
               },
               "location": {
-                "line": 580,
+                "line": 604,
                 "column": 3
               }
             }
           ],
           "location": {
-            "line": 529,
+            "line": 553,
+            "column": 1
+          }
+        },
+        {
+          "id": "typescript.FormatOptions",
+          "name": "FormatOptions",
+          "kind": "interface",
+          "signature": "interface FormatOptions extends TranspileOptions {",
+          "signatures": [
+            "interface FormatOptions extends TranspileOptions {"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Options controlling source formatting.",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Options controlling source formatting."
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 610,
+            "column": 1
+          }
+        },
+        {
+          "id": "typescript.FormatResult",
+          "name": "FormatResult",
+          "kind": "interface",
+          "signature": "interface FormatResult {",
+          "signatures": [
+            "interface FormatResult {"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Result returned by `format()`.",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Result returned by `format()`."
+              }
+            ]
+          },
+          "members": [
+            {
+              "id": "typescript.FormatResult.ok",
+              "name": "ok",
+              "kind": "property",
+              "signature": "ok: boolean",
+              "signatures": [
+                "ok: boolean"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 616,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.FormatResult.code",
+              "name": "code",
+              "kind": "property",
+              "signature": "code: string",
+              "signatures": [
+                "code: string"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 617,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.FormatResult.errors",
+              "name": "errors",
+              "kind": "property",
+              "signature": "errors: ParseDiagnostic[]",
+              "signatures": [
+                "errors: ParseDiagnostic[]"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 618,
+                "column": 3
+              }
+            }
+          ],
+          "location": {
+            "line": 615,
+            "column": 1
+          }
+        },
+        {
+          "id": "typescript.LintOptions",
+          "name": "LintOptions",
+          "kind": "interface",
+          "signature": "interface LintOptions extends TranspileOptions {",
+          "signatures": [
+            "interface LintOptions extends TranspileOptions {"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Options controlling source linting.",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Options controlling source linting."
+              }
+            ]
+          },
+          "members": [
+            {
+              "id": "typescript.LintOptions.fix",
+              "name": "fix",
+              "kind": "property",
+              "signature": "fix?: boolean",
+              "signatures": [
+                "fix?: boolean"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 625,
+                "column": 3
+              }
+            }
+          ],
+          "location": {
+            "line": 624,
+            "column": 1
+          }
+        },
+        {
+          "id": "typescript.LintResult",
+          "name": "LintResult",
+          "kind": "interface",
+          "signature": "interface LintResult {",
+          "signatures": [
+            "interface LintResult {"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Result returned by `lint()`.",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Result returned by `lint()`."
+              }
+            ]
+          },
+          "members": [
+            {
+              "id": "typescript.LintResult.ok",
+              "name": "ok",
+              "kind": "property",
+              "signature": "ok: boolean",
+              "signatures": [
+                "ok: boolean"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 632,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.LintResult.diagnostics",
+              "name": "diagnostics",
+              "kind": "property",
+              "signature": "diagnostics: ParseDiagnostic[]",
+              "signatures": [
+                "diagnostics: ParseDiagnostic[]"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 633,
+                "column": 3
+              }
+            },
+            {
+              "id": "typescript.LintResult.fixedCode",
+              "name": "fixedCode",
+              "kind": "property",
+              "signature": "fixedCode?: string",
+              "signatures": [
+                "fixedCode?: string"
+              ],
+              "aliases": [],
+              "doc": {
+                "text": "",
+                "tags": [],
+                "blocks": []
+              },
+              "location": {
+                "line": 634,
+                "column": 3
+              }
+            }
+          ],
+          "location": {
+            "line": 631,
             "column": 1
           }
         },
@@ -12242,7 +12622,7 @@
           },
           "members": [],
           "location": {
-            "line": 596,
+            "line": 650,
             "column": 1
           }
         },
@@ -12278,7 +12658,57 @@
           },
           "members": [],
           "location": {
-            "line": 613,
+            "line": 667,
+            "column": 1
+          }
+        },
+        {
+          "id": "typescript.format",
+          "name": "format",
+          "kind": "function",
+          "signature": "function format(source: string, options: FormatOptions = {}): FormatResult",
+          "signatures": [
+            "function format(source: string, options: FormatOptions = {}): FormatResult"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Format JavaScript or TypeScript source with the runtime's OXC-backed tooling.",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Format JavaScript or TypeScript source with the runtime's OXC-backed tooling."
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 674,
+            "column": 1
+          }
+        },
+        {
+          "id": "typescript.lint",
+          "name": "lint",
+          "kind": "function",
+          "signature": "function lint(source: string, options: LintOptions = {}): LintResult",
+          "signatures": [
+            "function lint(source: string, options: LintOptions = {}): LintResult"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Lint JavaScript or TypeScript source with the runtime's default rule set.",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Lint JavaScript or TypeScript source with the runtime's default rule set."
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 681,
             "column": 1
           }
         }
@@ -13406,9 +13836,9 @@
           "id": "xml.XmlEvent",
           "name": "XmlEvent",
           "kind": "type",
-          "signature": "type XmlEvent = | { /** * Discriminator for start-element events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} }; * event.type; * ``` */ type: 'startElement'; /** * Element name for the start tag. * * With namespaces enabled, this is the local name. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} }; * event.name; * ``` */ name: string; /** * Source namespace prefix, or `null`. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: 'x', namespace: 'urn:x', attributes: {} }; * event.prefix; * ``` */ prefix: string | null; /** * Resolved namespace URI, or `null` when none is in scope. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: 'urn:x', attributes: {} }; * event.namespace; * ``` */ namespace: string | null; /** * Start-tag attributes as expanded string values. * * Namespace declaration attributes are omitted when namespace processing is * enabled. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: { id: 'a' } }; * event.attributes.id; * ``` */ attributes: Record<string, string>; } | { /** * Discriminator for end-element events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'endElement', name: 'root' }; * event.type; * ``` */ type: 'endElement'; /** * Element name for the closing tag. * * With namespaces enabled, this is the local name. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'endElement', name: 'root' }; * event.name; * ``` */ name: string; } | { /** * Discriminator for text events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'text', data: 'hello' }; * event.type; * ``` */ type: 'text'; /** * Text data after entity expansion. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'text', data: 'hello' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for CDATA events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'cdata', data: '<raw>' }; * event.type; * ``` */ type: 'cdata'; /** * Raw CDATA section content. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'cdata', data: '<raw>' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for comment events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'comment', data: 'note' }; * event.type; * ``` */ type: 'comment'; /** * Comment text without XML comment delimiters. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'comment', data: 'note' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for processing-instruction events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.type; * ``` */ type: 'pi'; /** * Processing instruction target. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.target; * ``` */ target: string; /** * Processing instruction data after the target. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.data; * ``` */ data: string; }",
+          "signature": "type XmlEvent = {\n  type: 'startElement';\n  name: string;\n  prefix: string | null;\n  namespace: string | null;\n  attributes: Record<string, string>;\n} | {\n  type: 'endElement';\n  name: string;\n} | {\n  type: 'text';\n  data: string;\n} | {\n  type: 'cdata';\n  data: string;\n} | {\n  type: 'comment';\n  data: string;\n} | {\n  type: 'pi';\n  target: string;\n  data: string;\n}",
           "signatures": [
-            "type XmlEvent = | { /** * Discriminator for start-element events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} }; * event.type; * ``` */ type: 'startElement'; /** * Element name for the start tag. * * With namespaces enabled, this is the local name. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} }; * event.name; * ``` */ name: string; /** * Source namespace prefix, or `null`. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: 'x', namespace: 'urn:x', attributes: {} }; * event.prefix; * ``` */ prefix: string | null; /** * Resolved namespace URI, or `null` when none is in scope. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: 'urn:x', attributes: {} }; * event.namespace; * ``` */ namespace: string | null; /** * Start-tag attributes as expanded string values. * * Namespace declaration attributes are omitted when namespace processing is * enabled. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: { id: 'a' } }; * event.attributes.id; * ``` */ attributes: Record<string, string>; } | { /** * Discriminator for end-element events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'endElement', name: 'root' }; * event.type; * ``` */ type: 'endElement'; /** * Element name for the closing tag. * * With namespaces enabled, this is the local name. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'endElement', name: 'root' }; * event.name; * ``` */ name: string; } | { /** * Discriminator for text events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'text', data: 'hello' }; * event.type; * ``` */ type: 'text'; /** * Text data after entity expansion. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'text', data: 'hello' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for CDATA events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'cdata', data: '<raw>' }; * event.type; * ``` */ type: 'cdata'; /** * Raw CDATA section content. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'cdata', data: '<raw>' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for comment events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'comment', data: 'note' }; * event.type; * ``` */ type: 'comment'; /** * Comment text without XML comment delimiters. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'comment', data: 'note' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for processing-instruction events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.type; * ``` */ type: 'pi'; /** * Processing instruction target. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.target; * ``` */ target: string; /** * Processing instruction data after the target. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.data; * ``` */ data: string; }"
+            "type XmlEvent = {\n  type: 'startElement';\n  name: string;\n  prefix: string | null;\n  namespace: string | null;\n  attributes: Record<string, string>;\n} | {\n  type: 'endElement';\n  name: string;\n} | {\n  type: 'text';\n  data: string;\n} | {\n  type: 'cdata';\n  data: string;\n} | {\n  type: 'comment';\n  data: string;\n} | {\n  type: 'pi';\n  target: string;\n  data: string;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -13797,9 +14227,9 @@
           "id": "xml.parseStream",
           "name": "parseStream",
           "kind": "function",
-          "signature": "async function* parseStream( src: AsyncIterable<Uint8Array>, options: XmlParseOptions = {}, ): AsyncIterableIterator<XmlEvent>",
+          "signature": "async function* parseStream(\n  src: AsyncIterable<Uint8Array>,\n  options: XmlParseOptions = {\n  },\n): AsyncIterableIterator<XmlEvent>",
           "signatures": [
-            "async function* parseStream( src: AsyncIterable<Uint8Array>, options: XmlParseOptions = {}, ): AsyncIterableIterator<XmlEvent>"
+            "async function* parseStream(\n  src: AsyncIterable<Uint8Array>,\n  options: XmlParseOptions = {\n  },\n): AsyncIterableIterator<XmlEvent>"
           ],
           "aliases": [],
           "doc": {
@@ -13991,9 +14421,9 @@
           "id": "yaml.YamlValue",
           "name": "YamlValue",
           "kind": "type",
-          "signature": "type YamlValue = | null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>",
+          "signature": "type YamlValue = null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>",
           "signatures": [
-            "type YamlValue = | null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>"
+            "type YamlValue = null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>"
           ],
           "aliases": [],
           "doc": {
@@ -14027,9 +14457,9 @@
           "id": "yaml.YamlMapping",
           "name": "YamlMapping",
           "kind": "type",
-          "signature": "type YamlMapping = { /** * YAML mapping key with a string-compatible key name. * * Parser output uses this object shape only when every key can be represented * as a JavaScript string. Complex keys are returned as `Map` instead. * * ```ts no_run * import type { YamlMapping } from 'fino:format/yaml'; * * const mapping: YamlMapping = { server: { port: 8080 } }; * ``` */ [k: string]: YamlValue; }",
+          "signature": "type YamlMapping = {\n  [k: string]: YamlValue;\n}",
           "signatures": [
-            "type YamlMapping = { /** * YAML mapping key with a string-compatible key name. * * Parser output uses this object shape only when every key can be represented * as a JavaScript string. Complex keys are returned as `Map` instead. * * ```ts no_run * import type { YamlMapping } from 'fino:format/yaml'; * * const mapping: YamlMapping = { server: { port: 8080 } }; * ``` */ [k: string]: YamlValue; }"
+            "type YamlMapping = {\n  [k: string]: YamlValue;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -14678,9 +15108,9 @@
               "id": "log.LogRecord.error",
               "name": "error",
               "kind": "property",
-              "signature": "error?: { name: string; message: string; stack?: string; }",
+              "signature": "error?: {\n  name: string;\n  message: string;\n  stack?: string;\n}",
               "signatures": [
-                "error?: { name: string; message: string; stack?: string; }"
+                "error?: {\n  name: string;\n  message: string;\n  stack?: string;\n}"
               ],
               "aliases": [],
               "doc": {
@@ -15274,9 +15704,9 @@
               "id": "log.Logger.child",
               "name": "child",
               "kind": "method",
-              "signature": "child(options: Fields | (Partial<LoggerOptions> & { name?: string }) = {}): Logger",
+              "signature": "child(options: Fields | (Partial<LoggerOptions> & {\n  name?: string;\n}) = {}): Logger",
               "signatures": [
-                "child(options: Fields | (Partial<LoggerOptions> & { name?: string }) = {}): Logger"
+                "child(options: Fields | (Partial<LoggerOptions> & {\n  name?: string;\n}) = {}): Logger"
               ],
               "aliases": [],
               "doc": {
@@ -17366,9 +17796,9 @@
           "id": "js/net/dns._decodeName",
           "name": "_decodeName",
           "kind": "function",
-          "signature": "function _decodeName(msg: Uint8Array, startOffset: number): { name: string; nextOffset: number }",
+          "signature": "function _decodeName(msg: Uint8Array, startOffset: number): {\n  name: string;\n  nextOffset: number;\n}",
           "signatures": [
-            "function _decodeName(msg: Uint8Array, startOffset: number): { name: string; nextOffset: number }"
+            "function _decodeName(msg: Uint8Array, startOffset: number): {\n  name: string;\n  nextOffset: number;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -18279,9 +18709,9 @@
           "id": "app.Middleware",
           "name": "Middleware",
           "kind": "type",
-          "signature": "type Middleware = (ctx: HttpContext, next: () => Promise<Response | ConnectionTakeover>) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>",
+          "signature": "type Middleware = (\n  ctx: HttpContext,\n  next: (\n  ) => Promise<Response | ConnectionTakeover>\n) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>",
           "signatures": [
-            "type Middleware = (ctx: HttpContext, next: () => Promise<Response | ConnectionTakeover>) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>"
+            "type Middleware = (\n  ctx: HttpContext,\n  next: (\n  ) => Promise<Response | ConnectionTakeover>\n) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>"
           ],
           "aliases": [],
           "doc": {
@@ -18315,9 +18745,9 @@
           "id": "app.Handler",
           "name": "Handler",
           "kind": "type",
-          "signature": "type Handler = (ctx: HttpContext) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>",
+          "signature": "type Handler = (\n  ctx: HttpContext\n) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>",
           "signatures": [
-            "type Handler = (ctx: HttpContext) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>"
+            "type Handler = (\n  ctx: HttpContext\n) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>"
           ],
           "aliases": [],
           "doc": {
@@ -18932,9 +19362,9 @@
               "id": "app.App.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(options: { name?: string } = {})",
+              "signature": "constructor(options: {\n  name?: string;\n} = {})",
               "signatures": [
-                "constructor(options: { name?: string } = {})"
+                "constructor(options: {\n  name?: string;\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -20228,9 +20658,9 @@
               "id": "app.schema.response",
               "name": "response",
               "kind": "method",
-              "signature": "response(schemaValue: unknown, opts: { status?: number; description?: string; contentType?: string } = {}): Middleware",
+              "signature": "response(schemaValue: unknown, opts: {\n  status?: number;\n  description?: string;\n  contentType?: string;\n} = {}): Middleware",
               "signatures": [
-                "response(schemaValue: unknown, opts: { status?: number; description?: string; contentType?: string } = {}): Middleware"
+                "response(schemaValue: unknown, opts: {\n  status?: number;\n  description?: string;\n  contentType?: string;\n} = {}): Middleware"
               ],
               "aliases": [],
               "doc": {
@@ -20970,9 +21400,9 @@
           "id": "app.sessions",
           "name": "sessions",
           "kind": "function",
-          "signature": "function sessions(opts: { store: SessionStore; cookie?: string; cookieOptions?: CookieOptions }): Producer",
+          "signature": "function sessions(opts: {\n  store: SessionStore;\n  cookie?: string;\n  cookieOptions?: CookieOptions;\n}): Producer",
           "signatures": [
-            "function sessions(opts: { store: SessionStore; cookie?: string; cookieOptions?: CookieOptions }): Producer"
+            "function sessions(opts: {\n  store: SessionStore;\n  cookie?: string;\n  cookieOptions?: CookieOptions;\n}): Producer"
           ],
           "aliases": [],
           "doc": {
@@ -21006,9 +21436,9 @@
           "id": "app.errorHandler",
           "name": "errorHandler",
           "kind": "function",
-          "signature": "function errorHandler(opts: { expose?: boolean } = {}): Middleware",
+          "signature": "function errorHandler(opts: {\n  expose?: boolean;\n} = {}): Middleware",
           "signatures": [
-            "function errorHandler(opts: { expose?: boolean } = {}): Middleware"
+            "function errorHandler(opts: {\n  expose?: boolean;\n} = {}): Middleware"
           ],
           "aliases": [],
           "doc": {
@@ -21042,9 +21472,9 @@
           "id": "app.staticFiles",
           "name": "staticFiles",
           "kind": "function",
-          "signature": "function staticFiles(root: string, opts: { index?: string; prefix?: string } = {}): Middleware",
+          "signature": "function staticFiles(root: string, opts: {\n  index?: string;\n  prefix?: string;\n} = {}): Middleware",
           "signatures": [
-            "function staticFiles(root: string, opts: { index?: string; prefix?: string } = {}): Middleware"
+            "function staticFiles(root: string, opts: {\n  index?: string;\n  prefix?: string;\n} = {}): Middleware"
           ],
           "aliases": [],
           "doc": {
@@ -21314,9 +21744,9 @@
               "id": "driver.ServerDriver.run",
               "name": "run",
               "kind": "method",
-              "signature": "run( reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions, ): Promise<void>",
+              "signature": "run(\n  reader: BytesReader,\n  writer: BytesWriter,\n  handler: ServerHandler,\n  opts: ServerDriverOptions\n): Promise<void>",
               "signatures": [
-                "run( reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions, ): Promise<void>"
+                "run(\n  reader: BytesReader,\n  writer: BytesWriter,\n  handler: ServerHandler,\n  opts: ServerDriverOptions\n): Promise<void>"
               ],
               "aliases": [],
               "doc": {
@@ -21444,9 +21874,9 @@
               "id": "driver.CancelSignal.addEventListener",
               "name": "addEventListener",
               "kind": "method",
-              "signature": "addEventListener(type: string, fn: () => void, opts?: { once?: boolean }): void",
+              "signature": "addEventListener(type: string, fn: () => void, opts?: {\n  once?: boolean;\n}): void",
               "signatures": [
-                "addEventListener(type: string, fn: () => void, opts?: { once?: boolean }): void"
+                "addEventListener(type: string, fn: () => void, opts?: {\n  once?: boolean;\n}): void"
               ],
               "aliases": [],
               "doc": {
@@ -21607,9 +22037,9 @@
               "id": "driver.ClientDriver.send",
               "name": "send",
               "kind": "method",
-              "signature": "send( req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions, ): Promise<Response>",
+              "signature": "send(\n  req: Request,\n  reader: BytesReader,\n  writer: BytesWriter,\n  opts: ClientDriverOptions\n): Promise<Response>",
               "signatures": [
-                "send( req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions, ): Promise<Response>"
+                "send(\n  req: Request,\n  reader: BytesReader,\n  writer: BytesWriter,\n  opts: ClientDriverOptions\n): Promise<Response>"
               ],
               "aliases": [],
               "doc": {
@@ -22994,9 +23424,9 @@
               "id": "h1.H1ServerDriver.run",
               "name": "run",
               "kind": "method",
-              "signature": "async run( reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions, ): Promise<void>",
+              "signature": "async run(\n  reader: BytesReader,\n  writer: BytesWriter,\n  handler: ServerHandler,\n  opts: ServerDriverOptions\n): Promise<void>",
               "signatures": [
-                "async run( reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions, ): Promise<void>"
+                "async run(\n  reader: BytesReader,\n  writer: BytesWriter,\n  handler: ServerHandler,\n  opts: ServerDriverOptions\n): Promise<void>"
               ],
               "aliases": [],
               "doc": {
@@ -23097,9 +23527,9 @@
               "id": "h1.H1ClientDriver.send",
               "name": "send",
               "kind": "method",
-              "signature": "async send( req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions, ): Promise<Response>",
+              "signature": "async send(\n  req: Request,\n  reader: BytesReader,\n  writer: BytesWriter,\n  opts: ClientDriverOptions\n): Promise<Response>",
               "signatures": [
-                "async send( req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions, ): Promise<Response>"
+                "async send(\n  req: Request,\n  reader: BytesReader,\n  writer: BytesWriter,\n  opts: ClientDriverOptions\n): Promise<Response>"
               ],
               "aliases": [],
               "doc": {
@@ -23921,9 +24351,9 @@
           "id": "js/net/http._parseHeaders",
           "name": "_parseHeaders",
           "kind": "function",
-          "signature": "function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers }",
+          "signature": "function _parseHeaders(raw: Uint8Array): {\n  firstLine: string;\n  headers: Headers;\n}",
           "signatures": [
-            "function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers }"
+            "function _parseHeaders(raw: Uint8Array): {\n  firstLine: string;\n  headers: Headers;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -25333,9 +25763,9 @@
           "id": "js/net/http.parseResponse",
           "name": "parseResponse",
           "kind": "function",
-          "signature": "async function parseResponse( source: AsyncIterable<Uint8Array | ArrayBuffer>, method?: string, ): Promise<Response>",
+          "signature": "async function parseResponse(\n  source: AsyncIterable<Uint8Array | ArrayBuffer>,\n  method?: string\n): Promise<Response>",
           "signatures": [
-            "async function parseResponse( source: AsyncIterable<Uint8Array | ArrayBuffer>, method?: string, ): Promise<Response>"
+            "async function parseResponse(\n  source: AsyncIterable<Uint8Array | ArrayBuffer>,\n  method?: string\n): Promise<Response>"
           ],
           "aliases": [],
           "doc": {
@@ -25481,9 +25911,9 @@
           "id": "js/net/http.connectionParser",
           "name": "connectionParser",
           "kind": "function",
-          "signature": "function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext(): Promise<Request>, parseBufferedNext(): Request | null }",
+          "signature": "function connectionParser(source: AsyncIterable<Uint8Array>): {\n  parseNext(): Promise<Request>;\n  parseBufferedNext(): Request | null;\n}",
           "signatures": [
-            "function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext(): Promise<Request>, parseBufferedNext(): Request | null }"
+            "function connectionParser(source: AsyncIterable<Uint8Array>): {\n  parseNext(): Promise<Request>;\n  parseBufferedNext(): Request | null;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -25521,9 +25951,9 @@
           "id": "js/net/http.buildWireResponse",
           "name": "buildWireResponse",
           "kind": "function",
-          "signature": "function buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): Response",
+          "signature": "function buildWireResponse(\n  {\n    version,\n    status,\n    statusText,\n    headers,\n    body,\n    url,\n    redirected,\n    outTrailers,\n    inTrailers\n  }: WireResponseInit\n): Response",
           "signatures": [
-            "function buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): Response"
+            "function buildWireResponse(\n  {\n    version,\n    status,\n    statusText,\n    headers,\n    body,\n    url,\n    redirected,\n    outTrailers,\n    inTrailers\n  }: WireResponseInit\n): Response"
           ],
           "aliases": [],
           "doc": {
@@ -25650,9 +26080,9 @@
           "id": "js/net/http/server.serve",
           "name": "serve",
           "kind": "function",
-          "signature": "function serve( options: ServeOptions, handler: (req: Request) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>, ): ServeServer",
+          "signature": "function serve(\n  options: ServeOptions,\n  handler: (\n    req: Request\n  ) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>\n): ServeServer",
           "signatures": [
-            "function serve( options: ServeOptions, handler: (req: Request) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>, ): ServeServer"
+            "function serve(\n  options: ServeOptions,\n  handler: (\n    req: Request\n  ) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>\n): ServeServer"
           ],
           "aliases": [],
           "doc": {
@@ -25954,9 +26384,9 @@
               "id": "websocket.ErrorEvent.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(type: string, init?: { error?: unknown })",
+              "signature": "constructor(type: string, init?: {\n  error?: unknown;\n})",
               "signatures": [
-                "constructor(type: string, init?: { error?: unknown })"
+                "constructor(type: string, init?: {\n  error?: unknown;\n})"
               ],
               "aliases": [],
               "doc": {
@@ -27176,9 +27606,9 @@
               "id": "websocket.WebSocketConnection.close",
               "name": "close",
               "kind": "method",
-              "signature": "async close(code: number = 1000, reason: string = ''): Promise<void>",
+              "signature": "async close(code: number = 1e3, reason: string = ''): Promise<void>",
               "signatures": [
-                "async close(code: number = 1000, reason: string = ''): Promise<void>"
+                "async close(code: number = 1e3, reason: string = ''): Promise<void>"
               ],
               "aliases": [],
               "doc": {
@@ -27211,9 +27641,9 @@
               "id": "websocket.WebSocketConnection.accept",
               "name": "accept",
               "kind": "static-method",
-              "signature": "static accept(req: { method: string; url: string; headers: Headers }, opts: WebSocketAcceptOptions = {}): WebSocketConnection",
+              "signature": "static accept(req: {\n  method: string;\n  url: string;\n  headers: Headers;\n}, opts: WebSocketAcceptOptions = {}): WebSocketConnection",
               "signatures": [
-                "static accept(req: { method: string; url: string; headers: Headers }, opts: WebSocketAcceptOptions = {}): WebSocketConnection"
+                "static accept(req: {\n  method: string;\n  url: string;\n  headers: Headers;\n}, opts: WebSocketAcceptOptions = {}): WebSocketConnection"
               ],
               "aliases": [],
               "doc": {
@@ -29547,9 +29977,9 @@
           "id": "js/net/socket.encodeAddr",
           "name": "encodeAddr",
           "kind": "function",
-          "signature": "function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number }",
+          "signature": "function encodeAddr(addr: Address): {\n  buf: ArrayBuffer;\n  len: number;\n}",
           "signatures": [
-            "function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number }"
+            "function encodeAddr(addr: Address): {\n  buf: ArrayBuffer;\n  len: number;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -29691,9 +30121,9 @@
           "id": "js/net/socket.setsockopt",
           "name": "setsockopt",
           "kind": "function",
-          "signature": "function setsockopt(fd: number, level: number, optname: number, value: boolean | number | ArrayBuffer): void",
+          "signature": "function setsockopt(\n  fd: number,\n  level: number,\n  optname: number,\n  value: boolean | number | ArrayBuffer\n): void",
           "signatures": [
-            "function setsockopt(fd: number, level: number, optname: number, value: boolean | number | ArrayBuffer): void"
+            "function setsockopt(\n  fd: number,\n  level: number,\n  optname: number,\n  value: boolean | number | ArrayBuffer\n): void"
           ],
           "aliases": [],
           "doc": {
@@ -29871,9 +30301,9 @@
           "id": "js/net/socket.accept",
           "name": "accept",
           "kind": "function",
-          "signature": "function accept(serverFd: number, setNonblock: boolean = true): { fd: number; addr: Address | UnknownAddress } | null",
+          "signature": "function accept(serverFd: number, setNonblock: boolean = true): {\n  fd: number;\n  addr: Address | UnknownAddress;\n} | null",
           "signatures": [
-            "function accept(serverFd: number, setNonblock: boolean = true): { fd: number; addr: Address | UnknownAddress } | null"
+            "function accept(serverFd: number, setNonblock: boolean = true): {\n  fd: number;\n  addr: Address | UnknownAddress;\n} | null"
           ],
           "aliases": [],
           "doc": {
@@ -30015,9 +30445,9 @@
           "id": "js/net/socket.sendto",
           "name": "sendto",
           "kind": "function",
-          "signature": "function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Address, flags: number = 0): number",
+          "signature": "function sendto(\n  fd: number,\n  data: Uint8Array | ArrayBuffer,\n  destAddr: Address,\n  flags: number = 0\n): number",
           "signatures": [
-            "function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Address, flags: number = 0): number"
+            "function sendto(\n  fd: number,\n  data: Uint8Array | ArrayBuffer,\n  destAddr: Address,\n  flags: number = 0\n): number"
           ],
           "aliases": [],
           "doc": {
@@ -30051,9 +30481,9 @@
           "id": "js/net/socket.recvfrom",
           "name": "recvfrom",
           "kind": "function",
-          "signature": "function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | UnknownAddress } | number",
+          "signature": "function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): {\n  data: Uint8Array;\n  addr: Address | UnknownAddress;\n} | number",
           "signatures": [
-            "function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | UnknownAddress } | number"
+            "function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): {\n  data: Uint8Array;\n  addr: Address | UnknownAddress;\n} | number"
           ],
           "aliases": [],
           "doc": {
@@ -31505,9 +31935,9 @@
           "id": "opentelemetry.ScopeInfo",
           "name": "ScopeInfo",
           "kind": "type",
-          "signature": "type ScopeInfo = { /** * name property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['name']; * ``` */ name: string; /** * version property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['version']; * ``` */ version?: string; /** * schemaUrl property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['schemaUrl']; * ``` */ schemaUrl?: string | null; /** * attributes property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['attributes']; * ``` */ attributes?: Attributes; /** * droppedAttributesCount property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['droppedAttributesCount']; * ``` */ droppedAttributesCount?: number; }",
+          "signature": "type ScopeInfo = {\n  name: string;\n  version?: string;\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}",
           "signatures": [
-            "type ScopeInfo = { /** * name property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['name']; * ``` */ name: string; /** * version property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['version']; * ``` */ version?: string; /** * schemaUrl property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['schemaUrl']; * ``` */ schemaUrl?: string | null; /** * attributes property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['attributes']; * ``` */ attributes?: Attributes; /** * droppedAttributesCount property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['droppedAttributesCount']; * ``` */ droppedAttributesCount?: number; }"
+            "type ScopeInfo = {\n  name: string;\n  version?: string;\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -31673,9 +32103,9 @@
           "id": "opentelemetry.CarrierLike",
           "name": "CarrierLike",
           "kind": "type",
-          "signature": "type CarrierLike = { [key: string]: unknown; /** * get method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['get'] = undefined as never; * ``` */ get?(key: string): unknown; /** * set method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['set'] = undefined as never; * ``` */ set?(key: string, value: unknown): unknown; /** * keys method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['keys'] = undefined as never; * ``` */ keys?(): Iterable<string>; }",
+          "signature": "type CarrierLike = {\n  [key: string]: unknown;\n  get?(key: string): unknown;\n  set?(key: string, value: unknown): unknown;\n  keys?(): Iterable<string>;\n}",
           "signatures": [
-            "type CarrierLike = { [key: string]: unknown; /** * get method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['get'] = undefined as never; * ``` */ get?(key: string): unknown; /** * set method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['set'] = undefined as never; * ``` */ set?(key: string, value: unknown): unknown; /** * keys method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['keys'] = undefined as never; * ``` */ keys?(): Iterable<string>; }"
+            "type CarrierLike = {\n  [key: string]: unknown;\n  get?(key: string): unknown;\n  set?(key: string, value: unknown): unknown;\n  keys?(): Iterable<string>;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -36669,9 +37099,9 @@
               "id": "opentelemetry.MetricView.aggregation",
               "name": "aggregation",
               "kind": "property",
-              "signature": "aggregation?: { type: MetricAggregationType; boundaries?: number[]; monotonic?: boolean; }",
+              "signature": "aggregation?: {\n  type: MetricAggregationType;\n  boundaries?: number[];\n  monotonic?: boolean;\n}",
               "signatures": [
-                "aggregation?: { type: MetricAggregationType; boundaries?: number[]; monotonic?: boolean; }"
+                "aggregation?: {\n  type: MetricAggregationType;\n  boundaries?: number[];\n  monotonic?: boolean;\n}"
               ],
               "aliases": [],
               "doc": {
@@ -39032,9 +39462,9 @@
               "id": "opentelemetry.ResourceOptions.entityRefs",
               "name": "entityRefs",
               "kind": "property",
-              "signature": "entityRefs?: Array<{ schemaUrl?: string; type?: string; idKeys?: string[] }>",
+              "signature": "entityRefs?: Array<{\n  schemaUrl?: string;\n  type?: string;\n  idKeys?: string[];\n}>",
               "signatures": [
-                "entityRefs?: Array<{ schemaUrl?: string; type?: string; idKeys?: string[] }>"
+                "entityRefs?: Array<{\n  schemaUrl?: string;\n  type?: string;\n  idKeys?: string[];\n}>"
               ],
               "aliases": [],
               "doc": {
@@ -40345,9 +40775,9 @@
           "id": "opentelemetry.normalizeScope",
           "name": "normalizeScope",
           "kind": "function",
-          "signature": "function normalizeScope( name: string, version?: string, schemaUrl?: string | null, attributes?: Attributes, droppedAttributesCount?: number, ): ScopeInfo",
+          "signature": "function normalizeScope(\n  name: string,\n  version?: string,\n  schemaUrl?: string | null,\n  attributes?: Attributes,\n  droppedAttributesCount?: number\n): ScopeInfo",
           "signatures": [
-            "function normalizeScope( name: string, version?: string, schemaUrl?: string | null, attributes?: Attributes, droppedAttributesCount?: number, ): ScopeInfo"
+            "function normalizeScope(\n  name: string,\n  version?: string,\n  schemaUrl?: string | null,\n  attributes?: Attributes,\n  droppedAttributesCount?: number\n): ScopeInfo"
           ],
           "aliases": [],
           "doc": {
@@ -40429,9 +40859,9 @@
           "id": "opentelemetry.publishScoped",
           "name": "publishScoped",
           "kind": "function",
-          "signature": "function publishScoped<TPayload>(signal: SignalName, scope: ScopeInfo, suffixes: string[], payload: TPayload): void",
+          "signature": "function publishScoped<TPayload>(\n  signal: SignalName,\n  scope: ScopeInfo,\n  suffixes: string[],\n  payload: TPayload\n): void",
           "signatures": [
-            "function publishScoped<TPayload>(signal: SignalName, scope: ScopeInfo, suffixes: string[], payload: TPayload): void"
+            "function publishScoped<TPayload>(\n  signal: SignalName,\n  scope: ScopeInfo,\n  suffixes: string[],\n  payload: TPayload\n): void"
           ],
           "aliases": [],
           "doc": {
@@ -40691,9 +41121,9 @@
               "id": "opentelemetry.Resource.entityRefs",
               "name": "entityRefs",
               "kind": "getter",
-              "signature": "get entityRefs(): Array<{ schemaUrl?: string; type?: string; idKeys: string[] }>",
+              "signature": "get entityRefs(): Array<{\n  schemaUrl?: string;\n  type?: string;\n  idKeys: string[];\n}>",
               "signatures": [
-                "get entityRefs(): Array<{ schemaUrl?: string; type?: string; idKeys: string[] }>"
+                "get entityRefs(): Array<{\n  schemaUrl?: string;\n  type?: string;\n  idKeys: string[];\n}>"
               ],
               "aliases": [],
               "doc": {
@@ -41176,9 +41606,9 @@
               "id": "opentelemetry.TextMapPropagator.inject",
               "name": "inject",
               "kind": "method",
-              "signature": "inject<TCarrier = CarrierLike>( _carrier: TCarrier, _context: TraceContext | null | undefined, _carrierApi?: CarrierApi<TCarrier>, ): void",
+              "signature": "inject<TCarrier = CarrierLike>(\n  _carrier: TCarrier,\n  _context: TraceContext | null | undefined,\n  _carrierApi?: CarrierApi<TCarrier>\n): void",
               "signatures": [
-                "inject<TCarrier = CarrierLike>( _carrier: TCarrier, _context: TraceContext | null | undefined, _carrierApi?: CarrierApi<TCarrier>, ): void"
+                "inject<TCarrier = CarrierLike>(\n  _carrier: TCarrier,\n  _context: TraceContext | null | undefined,\n  _carrierApi?: CarrierApi<TCarrier>\n): void"
               ],
               "aliases": [],
               "doc": {
@@ -41211,9 +41641,9 @@
               "id": "opentelemetry.TextMapPropagator.extract",
               "name": "extract",
               "kind": "method",
-              "signature": "extract<TCarrier = CarrierLike>(_carrier: TCarrier, _carrierApi?: CarrierApi<TCarrier>): TraceContext | null",
+              "signature": "extract<TCarrier = CarrierLike>(\n  _carrier: TCarrier,\n  _carrierApi?: CarrierApi<TCarrier>\n): TraceContext | null",
               "signatures": [
-                "extract<TCarrier = CarrierLike>(_carrier: TCarrier, _carrierApi?: CarrierApi<TCarrier>): TraceContext | null"
+                "extract<TCarrier = CarrierLike>(\n  _carrier: TCarrier,\n  _carrierApi?: CarrierApi<TCarrier>\n): TraceContext | null"
               ],
               "aliases": [],
               "doc": {
@@ -41300,9 +41730,9 @@
           "id": "opentelemetry.carrierApiFor",
           "name": "carrierApiFor",
           "kind": "function",
-          "signature": "function carrierApiFor<TCarrier>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): CarrierApi<TCarrier>",
+          "signature": "function carrierApiFor<TCarrier>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): CarrierApi<TCarrier>",
           "signatures": [
-            "function carrierApiFor<TCarrier>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): CarrierApi<TCarrier>"
+            "function carrierApiFor<TCarrier>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): CarrierApi<TCarrier>"
           ],
           "aliases": [],
           "doc": {
@@ -41342,9 +41772,9 @@
           "id": "opentelemetry.snapshotCarrier",
           "name": "snapshotCarrier",
           "kind": "function",
-          "signature": "function snapshotCarrier<TCarrier extends CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): Record<string, unknown>",
+          "signature": "function snapshotCarrier<TCarrier extends CarrierLike>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): Record<string, unknown>",
           "signatures": [
-            "function snapshotCarrier<TCarrier extends CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): Record<string, unknown>"
+            "function snapshotCarrier<TCarrier extends CarrierLike>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): Record<string, unknown>"
           ],
           "aliases": [],
           "doc": {
@@ -41779,9 +42209,9 @@
               "id": "opentelemetry.Propagation.inject",
               "name": "inject",
               "kind": "method",
-              "signature": "inject<TCarrier = CarrierLike>( carrier: TCarrier, context?: TraceContext | null, carrierApi?: CarrierApi<TCarrier>, ): void",
+              "signature": "inject<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  context?: TraceContext | null,\n  carrierApi?: CarrierApi<TCarrier>\n): void",
               "signatures": [
-                "inject<TCarrier = CarrierLike>( carrier: TCarrier, context?: TraceContext | null, carrierApi?: CarrierApi<TCarrier>, ): void"
+                "inject<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  context?: TraceContext | null,\n  carrierApi?: CarrierApi<TCarrier>\n): void"
               ],
               "aliases": [],
               "doc": {
@@ -41814,9 +42244,9 @@
               "id": "opentelemetry.Propagation.extract",
               "name": "extract",
               "kind": "method",
-              "signature": "extract<TCarrier = CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): TraceContext | null",
+              "signature": "extract<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): TraceContext | null",
               "signatures": [
-                "extract<TCarrier = CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): TraceContext | null"
+                "extract<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): TraceContext | null"
               ],
               "aliases": [],
               "doc": {
@@ -41892,9 +42322,9 @@
               "id": "opentelemetry.W3CTraceContextPropagator.inject",
               "name": "inject",
               "kind": "method",
-              "signature": "inject<TCarrier = CarrierLike>( carrier: TCarrier, context: TraceContext | null | undefined, carrierApi?: CarrierApi<TCarrier>, ): void",
+              "signature": "inject<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  context: TraceContext | null | undefined,\n  carrierApi?: CarrierApi<TCarrier>\n): void",
               "signatures": [
-                "inject<TCarrier = CarrierLike>( carrier: TCarrier, context: TraceContext | null | undefined, carrierApi?: CarrierApi<TCarrier>, ): void"
+                "inject<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  context: TraceContext | null | undefined,\n  carrierApi?: CarrierApi<TCarrier>\n): void"
               ],
               "aliases": [],
               "doc": {
@@ -41927,9 +42357,9 @@
               "id": "opentelemetry.W3CTraceContextPropagator.extract",
               "name": "extract",
               "kind": "method",
-              "signature": "extract<TCarrier = CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): TraceContext | null",
+              "signature": "extract<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): TraceContext | null",
               "signatures": [
-                "extract<TCarrier = CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): TraceContext | null"
+                "extract<TCarrier = CarrierLike>(\n  carrier: TCarrier,\n  carrierApi?: CarrierApi<TCarrier>\n): TraceContext | null"
               ],
               "aliases": [],
               "doc": {
@@ -42129,9 +42559,9 @@
           "id": "opentelemetry.limitAttributeEntries",
           "name": "limitAttributeEntries",
           "kind": "function",
-          "signature": "function limitAttributeEntries( attributes: Attributes, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number }, ): { attrs: Attributes; dropped: number }",
+          "signature": "function limitAttributeEntries(attributes: Attributes, limits: {\n  attributeCountLimit?: number;\n  attributeValueLengthLimit?: number;\n}): {\n  attrs: Attributes;\n  dropped: number;\n}",
           "signatures": [
-            "function limitAttributeEntries( attributes: Attributes, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number }, ): { attrs: Attributes; dropped: number }"
+            "function limitAttributeEntries(attributes: Attributes, limits: {\n  attributeCountLimit?: number;\n  attributeValueLengthLimit?: number;\n}): {\n  attrs: Attributes;\n  dropped: number;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -42255,9 +42685,9 @@
           "id": "opentelemetry.otelRuntimeEvent",
           "name": "otelRuntimeEvent",
           "kind": "function",
-          "signature": "function otelRuntimeEvent<TPayload extends Record<string, unknown>>( domain: string, operation: string, phase: string, payload: TPayload = {} as TPayload, ): TPayload & { schemaVersion: number; topic: string; family: string; domain: string; operation: string; phase: string; correlationId: unknown; }",
+          "signature": "function otelRuntimeEvent<TPayload extends Record<string, unknown>>(domain: string, operation: string, phase: string, payload: TPayload = {} as TPayload): TPayload & {\n  schemaVersion: number;\n  topic: string;\n  family: string;\n  domain: string;\n  operation: string;\n  phase: string;\n  correlationId: unknown;\n}",
           "signatures": [
-            "function otelRuntimeEvent<TPayload extends Record<string, unknown>>( domain: string, operation: string, phase: string, payload: TPayload = {} as TPayload, ): TPayload & { schemaVersion: number; topic: string; family: string; domain: string; operation: string; phase: string; correlationId: unknown; }"
+            "function otelRuntimeEvent<TPayload extends Record<string, unknown>>(domain: string, operation: string, phase: string, payload: TPayload = {} as TPayload): TPayload & {\n  schemaVersion: number;\n  topic: string;\n  family: string;\n  domain: string;\n  operation: string;\n  phase: string;\n  correlationId: unknown;\n}"
           ],
           "aliases": [],
           "doc": {
@@ -42474,9 +42904,9 @@
               "id": "opentelemetry.TracerProvider.getTracer",
               "name": "getTracer",
               "kind": "method",
-              "signature": "getTracer( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Tracer",
+              "signature": "getTracer(name: string, version?: string, options?: {\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}): Tracer",
               "signatures": [
-                "getTracer( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Tracer"
+                "getTracer(name: string, version?: string, options?: {\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}): Tracer"
               ],
               "aliases": [],
               "doc": {
@@ -43085,9 +43515,9 @@
               "id": "opentelemetry.Tracer.publishTrace",
               "name": "publishTrace",
               "kind": "method",
-              "signature": "publishTrace(kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', payload: SpanRecord & Record<string, unknown>): void",
+              "signature": "publishTrace(\n  kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename',\n  payload: SpanRecord & Record<string, unknown>\n): void",
               "signatures": [
-                "publishTrace(kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', payload: SpanRecord & Record<string, unknown>): void"
+                "publishTrace(\n  kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename',\n  payload: SpanRecord & Record<string, unknown>\n): void"
               ],
               "aliases": [],
               "doc": {
@@ -43209,9 +43639,9 @@
           "id": "opentelemetry.isScopedTraceTopic",
           "name": "isScopedTraceTopic",
           "kind": "function",
-          "signature": "function isScopedTraceTopic( name: string, phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', ): boolean",
+          "signature": "function isScopedTraceTopic(\n  name: string,\n  phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename'\n): boolean",
           "signatures": [
-            "function isScopedTraceTopic( name: string, phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', ): boolean"
+            "function isScopedTraceTopic(\n  name: string,\n  phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename'\n): boolean"
           ],
           "aliases": [],
           "doc": {
@@ -43587,9 +44017,9 @@
           "id": "opentelemetry.SeverityNumber",
           "name": "SeverityNumber",
           "kind": "enum",
-          "signature": "enum SeverityNumber { /** * TRACE numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE; * ``` */ TRACE = 1, /** * TRACE2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE2; * ``` */ TRACE2 = 2, /** * TRACE3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE3; * ``` */ TRACE3 = 3, /** * TRACE4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE4; * ``` */ TRACE4 = 4, /** * DEBUG numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG; * ``` */ DEBUG = 5, /** * DEBUG2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG2; * ``` */ DEBUG2 = 6, /** * DEBUG3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG3; * ``` */ DEBUG3 = 7, /** * DEBUG4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG4; * ``` */ DEBUG4 = 8, /** * INFO numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO; * ``` */ INFO = 9, /** * INFO2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO2; * ``` */ INFO2 = 10, /** * INFO3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO3; * ``` */ INFO3 = 11, /** * INFO4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO4; * ``` */ INFO4 = 12, /** * WARN numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN; * ``` */ WARN = 13, /** * WARN2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN2; * ``` */ WARN2 = 14, /** * WARN3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN3; * ``` */ WARN3 = 15, /** * WARN4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN4; * ``` */ WARN4 = 16, /** * ERROR numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR; * ``` */ ERROR = 17, /** * ERROR2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR2; * ``` */ ERROR2 = 18, /** * ERROR3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR3; * ``` */ ERROR3 = 19, /** * ERROR4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR4; * ``` */ ERROR4 = 20, /** * FATAL numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL; * ``` */ FATAL = 21, /** * FATAL2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL2; * ``` */ FATAL2 = 22, /** * FATAL3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL3; * ``` */ FATAL3 = 23, /** * FATAL4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL4; * ``` */ FATAL4 = 24, }",
+          "signature": "enum SeverityNumber {\n  TRACE = 1,\n  TRACE2 = 2,\n  TRACE3 = 3,\n  TRACE4 = 4,\n  DEBUG = 5,\n  DEBUG2 = 6,\n  DEBUG3 = 7,\n  DEBUG4 = 8,\n  INFO = 9,\n  INFO2 = 10,\n  INFO3 = 11,\n  INFO4 = 12,\n  WARN = 13,\n  WARN2 = 14,\n  WARN3 = 15,\n  WARN4 = 16,\n  ERROR = 17,\n  ERROR2 = 18,\n  ERROR3 = 19,\n  ERROR4 = 20,\n  FATAL = 21,\n  FATAL2 = 22,\n  FATAL3 = 23,\n  FATAL4 = 24\n}\n",
           "signatures": [
-            "enum SeverityNumber { /** * TRACE numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE; * ``` */ TRACE = 1, /** * TRACE2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE2; * ``` */ TRACE2 = 2, /** * TRACE3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE3; * ``` */ TRACE3 = 3, /** * TRACE4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE4; * ``` */ TRACE4 = 4, /** * DEBUG numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG; * ``` */ DEBUG = 5, /** * DEBUG2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG2; * ``` */ DEBUG2 = 6, /** * DEBUG3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG3; * ``` */ DEBUG3 = 7, /** * DEBUG4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG4; * ``` */ DEBUG4 = 8, /** * INFO numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO; * ``` */ INFO = 9, /** * INFO2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO2; * ``` */ INFO2 = 10, /** * INFO3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO3; * ``` */ INFO3 = 11, /** * INFO4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO4; * ``` */ INFO4 = 12, /** * WARN numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN; * ``` */ WARN = 13, /** * WARN2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN2; * ``` */ WARN2 = 14, /** * WARN3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN3; * ``` */ WARN3 = 15, /** * WARN4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN4; * ``` */ WARN4 = 16, /** * ERROR numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR; * ``` */ ERROR = 17, /** * ERROR2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR2; * ``` */ ERROR2 = 18, /** * ERROR3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR3; * ``` */ ERROR3 = 19, /** * ERROR4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR4; * ``` */ ERROR4 = 20, /** * FATAL numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL; * ``` */ FATAL = 21, /** * FATAL2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL2; * ``` */ FATAL2 = 22, /** * FATAL3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL3; * ``` */ FATAL3 = 23, /** * FATAL4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL4; * ``` */ FATAL4 = 24, }"
+            "enum SeverityNumber {\n  TRACE = 1,\n  TRACE2 = 2,\n  TRACE3 = 3,\n  TRACE4 = 4,\n  DEBUG = 5,\n  DEBUG2 = 6,\n  DEBUG3 = 7,\n  DEBUG4 = 8,\n  INFO = 9,\n  INFO2 = 10,\n  INFO3 = 11,\n  INFO4 = 12,\n  WARN = 13,\n  WARN2 = 14,\n  WARN3 = 15,\n  WARN4 = 16,\n  ERROR = 17,\n  ERROR2 = 18,\n  ERROR3 = 19,\n  ERROR4 = 20,\n  FATAL = 21,\n  FATAL2 = 22,\n  FATAL3 = 23,\n  FATAL4 = 24\n}\n"
           ],
           "aliases": [],
           "doc": {
@@ -43660,9 +44090,9 @@
               "id": "opentelemetry.LoggerProvider.getLogger",
               "name": "getLogger",
               "kind": "method",
-              "signature": "getLogger( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Logger",
+              "signature": "getLogger(name: string, version?: string, options?: {\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}): Logger",
               "signatures": [
-                "getLogger( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Logger"
+                "getLogger(name: string, version?: string, options?: {\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}): Logger"
               ],
               "aliases": [],
               "doc": {
@@ -43808,9 +44238,9 @@
               "id": "opentelemetry.Logger.emit",
               "name": "emit",
               "kind": "method",
-              "signature": "emit(body: unknown, options: { severityText?: string; severityNumber?: number; attributes?: Attributes } = {}): void",
+              "signature": "emit(body: unknown, options: {\n  severityText?: string;\n  severityNumber?: number;\n  attributes?: Attributes;\n} = {}): void",
               "signatures": [
-                "emit(body: unknown, options: { severityText?: string; severityNumber?: number; attributes?: Attributes } = {}): void"
+                "emit(body: unknown, options: {\n  severityText?: string;\n  severityNumber?: number;\n  attributes?: Attributes;\n} = {}): void"
               ],
               "aliases": [],
               "doc": {
@@ -44493,9 +44923,9 @@
           "id": "opentelemetry.applyLogLimits",
           "name": "applyLogLimits",
           "kind": "function",
-          "signature": "function applyLogLimits( log: LogRecord, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number } = {}, ): LogRecord",
+          "signature": "function applyLogLimits(log: LogRecord, limits: {\n  attributeCountLimit?: number;\n  attributeValueLengthLimit?: number;\n} = {}): LogRecord",
           "signatures": [
-            "function applyLogLimits( log: LogRecord, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number } = {}, ): LogRecord"
+            "function applyLogLimits(log: LogRecord, limits: {\n  attributeCountLimit?: number;\n  attributeValueLengthLimit?: number;\n} = {}): LogRecord"
           ],
           "aliases": [],
           "doc": {
@@ -44734,9 +45164,9 @@
               "id": "opentelemetry.MeterProvider.getMeter",
               "name": "getMeter",
               "kind": "method",
-              "signature": "getMeter( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Meter",
+              "signature": "getMeter(name: string, version?: string, options?: {\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}): Meter",
               "signatures": [
-                "getMeter( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Meter"
+                "getMeter(name: string, version?: string, options?: {\n  schemaUrl?: string | null;\n  attributes?: Attributes;\n  droppedAttributesCount?: number;\n}): Meter"
               ],
               "aliases": [],
               "doc": {
@@ -45038,9 +45468,9 @@
               "id": "opentelemetry.HistogramInstrument.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(meter: Meter, name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {})",
+              "signature": "constructor(meter: Meter, name: string, options: MetricInstrumentOptions & {\n  advice?: {\n    explicitBucketBoundaries?: number[];\n  };\n} = {})",
               "signatures": [
-                "constructor(meter: Meter, name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {})"
+                "constructor(meter: Meter, name: string, options: MetricInstrumentOptions & {\n  advice?: {\n    explicitBucketBoundaries?: number[];\n  };\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -45151,9 +45581,9 @@
               "id": "opentelemetry.ObservableGauge.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(handle: { dispose(): void })",
+              "signature": "constructor(handle: {\n  dispose(): void;\n})",
               "signatures": [
-                "constructor(handle: { dispose(): void })"
+                "constructor(handle: {\n  dispose(): void;\n})"
               ],
               "aliases": [],
               "doc": {
@@ -45538,9 +45968,9 @@
               "id": "opentelemetry.Meter.record",
               "name": "record",
               "kind": "method",
-              "signature": "record(name: string, value: number, options: MetricInstrumentOptions & { explicitBounds?: number[] } = {}): void",
+              "signature": "record(name: string, value: number, options: MetricInstrumentOptions & {\n  explicitBounds?: number[];\n} = {}): void",
               "signatures": [
-                "record(name: string, value: number, options: MetricInstrumentOptions & { explicitBounds?: number[] } = {}): void"
+                "record(name: string, value: number, options: MetricInstrumentOptions & {\n  explicitBounds?: number[];\n} = {}): void"
               ],
               "aliases": [],
               "doc": {
@@ -45643,9 +46073,9 @@
               "id": "opentelemetry.Meter.createHistogram",
               "name": "createHistogram",
               "kind": "method",
-              "signature": "createHistogram(name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {}): HistogramInstrument",
+              "signature": "createHistogram(name: string, options: MetricInstrumentOptions & {\n  advice?: {\n    explicitBucketBoundaries?: number[];\n  };\n} = {}): HistogramInstrument",
               "signatures": [
-                "createHistogram(name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {}): HistogramInstrument"
+                "createHistogram(name: string, options: MetricInstrumentOptions & {\n  advice?: {\n    explicitBucketBoundaries?: number[];\n  };\n} = {}): HistogramInstrument"
               ],
               "aliases": [],
               "doc": {
@@ -45713,9 +46143,9 @@
               "id": "opentelemetry.Meter.createObservableCounter",
               "name": "createObservableCounter",
               "kind": "method",
-              "signature": "createObservableCounter(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableCounter",
+              "signature": "createObservableCounter(\n  name: string,\n  callback: ObservableMetricRegistration['callback'],\n  options: MetricInstrumentOptions = {\n  }\n): ObservableCounter",
               "signatures": [
-                "createObservableCounter(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableCounter"
+                "createObservableCounter(\n  name: string,\n  callback: ObservableMetricRegistration['callback'],\n  options: MetricInstrumentOptions = {\n  }\n): ObservableCounter"
               ],
               "aliases": [],
               "doc": {
@@ -45748,9 +46178,9 @@
               "id": "opentelemetry.Meter.createObservableUpDownCounter",
               "name": "createObservableUpDownCounter",
               "kind": "method",
-              "signature": "createObservableUpDownCounter( name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}, ): ObservableUpDownCounter",
+              "signature": "createObservableUpDownCounter(\n  name: string,\n  callback: ObservableMetricRegistration['callback'],\n  options: MetricInstrumentOptions = {\n  }\n): ObservableUpDownCounter",
               "signatures": [
-                "createObservableUpDownCounter( name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}, ): ObservableUpDownCounter"
+                "createObservableUpDownCounter(\n  name: string,\n  callback: ObservableMetricRegistration['callback'],\n  options: MetricInstrumentOptions = {\n  }\n): ObservableUpDownCounter"
               ],
               "aliases": [],
               "doc": {
@@ -45783,9 +46213,9 @@
               "id": "opentelemetry.Meter.createObservableGauge",
               "name": "createObservableGauge",
               "kind": "method",
-              "signature": "createObservableGauge(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableGauge",
+              "signature": "createObservableGauge(\n  name: string,\n  callback: ObservableMetricRegistration['callback'],\n  options: MetricInstrumentOptions = {\n  }\n): ObservableGauge",
               "signatures": [
-                "createObservableGauge(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableGauge"
+                "createObservableGauge(\n  name: string,\n  callback: ObservableMetricRegistration['callback'],\n  options: MetricInstrumentOptions = {\n  }\n): ObservableGauge"
               ],
               "aliases": [],
               "doc": {
@@ -46949,9 +47379,9 @@
               "id": "opentelemetry.MetricReader.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(options: { temporality?: MetricTemporality } = {})",
+              "signature": "constructor(options: {\n  temporality?: MetricTemporality;\n} = {})",
               "signatures": [
-                "constructor(options: { temporality?: MetricTemporality } = {})"
+                "constructor(options: {\n  temporality?: MetricTemporality;\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -47315,9 +47745,9 @@
               "id": "opentelemetry.BatchSpanProcessor.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number } = {})",
+              "signature": "constructor(exporter: OtelExporter, options: {\n  maxQueueSize?: number;\n  maxExportBatchSize?: number;\n  scheduledDelayMillis?: number;\n} = {})",
               "signatures": [
-                "constructor(exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number } = {})"
+                "constructor(exporter: OtelExporter, options: {\n  maxQueueSize?: number;\n  maxExportBatchSize?: number;\n  scheduledDelayMillis?: number;\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -47533,9 +47963,9 @@
               "id": "opentelemetry.BatchLogRecordProcessor.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor( exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number; attributeCountLimit?: number; attributeValueLengthLimit?: number; } = {}, )",
+              "signature": "constructor(exporter: OtelExporter, options: {\n  maxQueueSize?: number;\n  maxExportBatchSize?: number;\n  scheduledDelayMillis?: number;\n  attributeCountLimit?: number;\n  attributeValueLengthLimit?: number;\n} = {})",
               "signatures": [
-                "constructor( exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number; attributeCountLimit?: number; attributeValueLengthLimit?: number; } = {}, )"
+                "constructor(exporter: OtelExporter, options: {\n  maxQueueSize?: number;\n  maxExportBatchSize?: number;\n  scheduledDelayMillis?: number;\n  attributeCountLimit?: number;\n  attributeValueLengthLimit?: number;\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -47716,9 +48146,9 @@
               "id": "opentelemetry.PeriodicMetricReader.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(exporter: OtelExporter, options: { temporality?: MetricTemporality; intervalMs?: number } = {})",
+              "signature": "constructor(exporter: OtelExporter, options: {\n  temporality?: MetricTemporality;\n  intervalMs?: number;\n} = {})",
               "signatures": [
-                "constructor(exporter: OtelExporter, options: { temporality?: MetricTemporality; intervalMs?: number } = {})"
+                "constructor(exporter: OtelExporter, options: {\n  temporality?: MetricTemporality;\n  intervalMs?: number;\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -47976,9 +48406,9 @@
               "id": "opentelemetry.OtelSDK.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(options: { exporters?: OtelExporter[]; instrumentations?: Instrumentation[]; spanProcessors?: SpanProcessor[]; logRecordProcessors?: LogRecordProcessor[]; metricReaders?: MetricReader[]; sampler?: Sampler; propagator?: TextMapPropagator; views?: MetricView[]; metricCardinalityLimit?: number; spanLimits?: SpanLimits; resource?: Resource | Record<string, unknown> | null; } = {})",
+              "signature": "constructor(options: {\n  exporters?: OtelExporter[];\n  instrumentations?: Instrumentation[];\n  spanProcessors?: SpanProcessor[];\n  logRecordProcessors?: LogRecordProcessor[];\n  metricReaders?: MetricReader[];\n  sampler?: Sampler;\n  propagator?: TextMapPropagator;\n  views?: MetricView[];\n  metricCardinalityLimit?: number;\n  spanLimits?: SpanLimits;\n  resource?: Resource | Record<string, unknown> | null;\n} = {})",
               "signatures": [
-                "constructor(options: { exporters?: OtelExporter[]; instrumentations?: Instrumentation[]; spanProcessors?: SpanProcessor[]; logRecordProcessors?: LogRecordProcessor[]; metricReaders?: MetricReader[]; sampler?: Sampler; propagator?: TextMapPropagator; views?: MetricView[]; metricCardinalityLimit?: number; spanLimits?: SpanLimits; resource?: Resource | Record<string, unknown> | null; } = {})"
+                "constructor(options: {\n  exporters?: OtelExporter[];\n  instrumentations?: Instrumentation[];\n  spanProcessors?: SpanProcessor[];\n  logRecordProcessors?: LogRecordProcessor[];\n  metricReaders?: MetricReader[];\n  sampler?: Sampler;\n  propagator?: TextMapPropagator;\n  views?: MetricView[];\n  metricCardinalityLimit?: number;\n  spanLimits?: SpanLimits;\n  resource?: Resource | Record<string, unknown> | null;\n} = {})"
               ],
               "aliases": [],
               "doc": {
@@ -48971,9 +49401,9 @@
               "id": "scanner.ParseError.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor( message: string, opts: { detail: string; format: string; filename?: string; offset: number; line?: number; column?: number; length?: number; source: Uint8Array; }, )",
+              "signature": "constructor(message: string, opts: {\n  detail: string;\n  format: string;\n  filename?: string;\n  offset: number;\n  line?: number;\n  column?: number;\n  length?: number;\n  source: Uint8Array;\n})",
               "signatures": [
-                "constructor( message: string, opts: { detail: string; format: string; filename?: string; offset: number; line?: number; column?: number; length?: number; source: Uint8Array; }, )"
+                "constructor(message: string, opts: {\n  detail: string;\n  format: string;\n  filename?: string;\n  offset: number;\n  line?: number;\n  column?: number;\n  length?: number;\n  source: Uint8Array;\n})"
               ],
               "aliases": [],
               "doc": {
@@ -49006,9 +49436,9 @@
               "id": "scanner.ParseError.render",
               "name": "render",
               "kind": "method",
-              "signature": "render(options?: { color?: boolean; contextLines?: number }): string",
+              "signature": "render(options?: {\n  color?: boolean;\n  contextLines?: number;\n}): string",
               "signatures": [
-                "render(options?: { color?: boolean; contextLines?: number }): string"
+                "render(options?: {\n  color?: boolean;\n  contextLines?: number;\n}): string"
               ],
               "aliases": [],
               "doc": {
@@ -50760,9 +51190,9 @@
               "id": "scanner.Scanner.expectToken",
               "name": "expectToken",
               "kind": "method",
-              "signature": "expectToken(expected: string, options?: { caseInsensitive?: boolean; name?: string }): void",
+              "signature": "expectToken(expected: string, options?: {\n  caseInsensitive?: boolean;\n  name?: string;\n}): void",
               "signatures": [
-                "expectToken(expected: string, options?: { caseInsensitive?: boolean; name?: string }): void"
+                "expectToken(expected: string, options?: {\n  caseInsensitive?: boolean;\n  name?: string;\n}): void"
               ],
               "aliases": [],
               "doc": {
@@ -50795,9 +51225,9 @@
               "id": "scanner.Scanner.readStrictInt",
               "name": "readStrictInt",
               "kind": "method",
-              "signature": "readStrictInt(options?: { radix?: 10 | 16; name?: string; min?: number; max?: number; allowSign?: boolean; }): number",
+              "signature": "readStrictInt(options?: {\n  radix?: 10 | 16;\n  name?: string;\n  min?: number;\n  max?: number;\n  allowSign?: boolean;\n}): number",
               "signatures": [
-                "readStrictInt(options?: { radix?: 10 | 16; name?: string; min?: number; max?: number; allowSign?: boolean; }): number"
+                "readStrictInt(options?: {\n  radix?: 10 | 16;\n  name?: string;\n  min?: number;\n  max?: number;\n  allowSign?: boolean;\n}): number"
               ],
               "aliases": [],
               "doc": {
@@ -51005,9 +51435,9 @@
               "id": "scanner.Scanner.error",
               "name": "error",
               "kind": "method",
-              "signature": "error(detail: string, span?: ScannerMark | { from: ScannerMark; to: ScannerMark }): ParseError",
+              "signature": "error(detail: string, span?: ScannerMark | {\n  from: ScannerMark;\n  to: ScannerMark;\n}): ParseError",
               "signatures": [
-                "error(detail: string, span?: ScannerMark | { from: ScannerMark; to: ScannerMark }): ParseError"
+                "error(detail: string, span?: ScannerMark | {\n  from: ScannerMark;\n  to: ScannerMark;\n}): ParseError"
               ],
               "aliases": [],
               "doc": {
@@ -53849,9 +54279,9 @@
               "id": "argv.CommandInvocation.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor(command: Command, parent: CommandInvocation | null, args: Record<string, unknown>, options: Record<string, unknown>, positionals: unknown[], providedOptions: Set<string>)",
+              "signature": "constructor(\n  command: Command,\n  parent: CommandInvocation | null,\n  args: Record<string, unknown>,\n  options: Record<string, unknown>,\n  positionals: unknown[],\n  providedOptions: Set<string>\n)",
               "signatures": [
-                "constructor(command: Command, parent: CommandInvocation | null, args: Record<string, unknown>, options: Record<string, unknown>, positionals: unknown[], providedOptions: Set<string>)"
+                "constructor(\n  command: Command,\n  parent: CommandInvocation | null,\n  args: Record<string, unknown>,\n  options: Record<string, unknown>,\n  positionals: unknown[],\n  providedOptions: Set<string>\n)"
               ],
               "aliases": [],
               "doc": {
@@ -54381,9 +54811,9 @@
           "id": "js/realm.ImportDirectiveSer",
           "name": "ImportDirectiveSer",
           "kind": "type",
-          "signature": "type ImportDirectiveSer = | 'inherit' | 'block' | { type: 'inherit' } | { type: 'block' } | { type: 'remap'; target: string } | { type: 'source'; code: string; source_map: string } | { type: 'facade'; specifier: string; exports: string[]; streams?: string[]; sinks?: string[] }",
+          "signature": "type ImportDirectiveSer = 'inherit' | 'block' | {\n  type: 'inherit';\n} | {\n  type: 'block';\n} | {\n  type: 'remap';\n  target: string;\n} | {\n  type: 'source';\n  code: string;\n  source_map: string;\n} | {\n  type: 'facade';\n  specifier: string;\n  exports: string[];\n  streams?: string[];\n  sinks?: string[];\n}",
           "signatures": [
-            "type ImportDirectiveSer = | 'inherit' | 'block' | { type: 'inherit' } | { type: 'block' } | { type: 'remap'; target: string } | { type: 'source'; code: string; source_map: string } | { type: 'facade'; specifier: string; exports: string[]; streams?: string[]; sinks?: string[] }"
+            "type ImportDirectiveSer = 'inherit' | 'block' | {\n  type: 'inherit';\n} | {\n  type: 'block';\n} | {\n  type: 'remap';\n  target: string;\n} | {\n  type: 'source';\n  code: string;\n  source_map: string;\n} | {\n  type: 'facade';\n  specifier: string;\n  exports: string[];\n  streams?: string[];\n  sinks?: string[];\n}"
           ],
           "aliases": [],
           "doc": {
@@ -54746,9 +55176,9 @@
               "id": "js/realm.FacadeHandle.constructor",
               "name": "constructor",
               "kind": "constructor",
-              "signature": "constructor( scalar: Record<string, (...args: unknown[]) => unknown> = {}, streams: Record<string, (...args: unknown[]) => AsyncIterable<unknown>> = {}, sinks: Record<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>> = {}, )",
+              "signature": "constructor(\n  scalar: Record<string, (\n    ...args: unknown[]\n  ) => unknown> = {\n  },\n  streams: Record<string, (\n    ...args: unknown[]\n  ) => AsyncIterable<unknown>> = {\n  },\n  sinks: Record<string, (\n    args: unknown[], source: AsyncIterable<unknown>\n  ) => Promise<unknown>> = {\n  }\n)",
               "signatures": [
-                "constructor( scalar: Record<string, (...args: unknown[]) => unknown> = {}, streams: Record<string, (...args: unknown[]) => AsyncIterable<unknown>> = {}, sinks: Record<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>> = {}, )"
+                "constructor(\n  scalar: Record<string, (\n    ...args: unknown[]\n  ) => unknown> = {\n  },\n  streams: Record<string, (\n    ...args: unknown[]\n  ) => AsyncIterable<unknown>> = {\n  },\n  sinks: Record<string, (\n    args: unknown[], source: AsyncIterable<unknown>\n  ) => Promise<unknown>> = {\n  }\n)"
               ],
               "aliases": [],
               "doc": {
@@ -54875,9 +55305,9 @@
               "id": "js/realm.Facade.from",
               "name": "from",
               "kind": "static-method",
-              "signature": "static from(obj: object, opts: { specifier: string }): Facade",
+              "signature": "static from(obj: object, opts: {\n  specifier: string;\n}): Facade",
               "signatures": [
-                "static from(obj: object, opts: { specifier: string }): Facade"
+                "static from(obj: object, opts: {\n  specifier: string;\n}): Facade"
               ],
               "aliases": [],
               "doc": {
@@ -55019,9 +55449,9 @@
               "id": "js/realm.Facade.sendStream",
               "name": "sendStream",
               "kind": "method",
-              "signature": "sendStream(method: string, fn: (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>): this",
+              "signature": "sendStream(\n  method: string,\n  fn: (\n    args: unknown[],\n    source: AsyncIterable<unknown>\n  ) => Promise<unknown>\n): this",
               "signatures": [
-                "sendStream(method: string, fn: (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>): this"
+                "sendStream(\n  method: string,\n  fn: (\n    args: unknown[],\n    source: AsyncIterable<unknown>\n  ) => Promise<unknown>\n): this"
               ],
               "aliases": [],
               "doc": {
@@ -56468,9 +56898,9 @@
               "id": "js/realm.Realm.fromSource",
               "name": "fromSource",
               "kind": "static-method",
-              "signature": "static fromSource<F extends RealmFn = RealmFn>( source: string, options: RealmSourceOptions = {}, ): Realm<F>",
+              "signature": "static fromSource<F extends RealmFn = RealmFn>(\n  source: string,\n  options: RealmSourceOptions = {\n  }\n): Realm<F>",
               "signatures": [
-                "static fromSource<F extends RealmFn = RealmFn>( source: string, options: RealmSourceOptions = {}, ): Realm<F>"
+                "static fromSource<F extends RealmFn = RealmFn>(\n  source: string,\n  options: RealmSourceOptions = {\n  }\n): Realm<F>"
               ],
               "aliases": [],
               "doc": {
@@ -59552,9 +59982,9 @@
           "id": "js/security.issueToken",
           "name": "issueToken",
           "kind": "function",
-          "signature": "function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string",
+          "signature": "function issueToken(\n  payload: Record<string, unknown>,\n  secret: BufferLike,\n  options: IssueTokenOptions = {\n  }\n): string",
           "signatures": [
-            "function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string"
+            "function issueToken(\n  payload: Record<string, unknown>,\n  secret: BufferLike,\n  options: IssueTokenOptions = {\n  }\n): string"
           ],
           "aliases": [],
           "doc": {
@@ -59578,9 +60008,9 @@
           "id": "js/security.verifyToken",
           "name": "verifyToken",
           "kind": "function",
-          "signature": "function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null",
+          "signature": "function verifyToken(\n  token: string,\n  secret: BufferLike,\n  options: VerifyTokenOptions = {\n  }\n): Record<string, unknown> | null",
           "signatures": [
-            "function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null"
+            "function verifyToken(\n  token: string,\n  secret: BufferLike,\n  options: VerifyTokenOptions = {\n  }\n): Record<string, unknown> | null"
           ],
           "aliases": [],
           "doc": {
@@ -59890,9 +60320,9 @@
           "id": "js/security.selectJwk",
           "name": "selectJwk",
           "kind": "function",
-          "signature": "function selectJwk(jwks: JsonWebKeySet | JsonWebKeyLike[], selector: JwkSelector): JsonWebKeyLike | undefined",
+          "signature": "function selectJwk(\n  jwks: JsonWebKeySet | JsonWebKeyLike[],\n  selector: JwkSelector\n): JsonWebKeyLike | undefined",
           "signatures": [
-            "function selectJwk(jwks: JsonWebKeySet | JsonWebKeyLike[], selector: JwkSelector): JsonWebKeyLike | undefined"
+            "function selectJwk(\n  jwks: JsonWebKeySet | JsonWebKeyLike[],\n  selector: JwkSelector\n): JsonWebKeyLike | undefined"
           ],
           "aliases": [],
           "doc": {
@@ -59942,9 +60372,9 @@
           "id": "js/security.JwtAlgorithm",
           "name": "JwtAlgorithm",
           "kind": "type",
-          "signature": "type JwtAlgorithm = | 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'",
+          "signature": "type JwtAlgorithm = 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'",
           "signatures": [
-            "type JwtAlgorithm = | 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'"
+            "type JwtAlgorithm = 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'"
           ],
           "aliases": [],
           "doc": {
@@ -60150,9 +60580,9 @@
           "id": "js/security.jwtSign",
           "name": "jwtSign",
           "kind": "function",
-          "signature": "async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string>",
+          "signature": "async function jwtSign(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtSignOptions\n): Promise<string>",
           "signatures": [
-            "async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string>"
+            "async function jwtSign(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtSignOptions\n): Promise<string>"
           ],
           "aliases": [],
           "doc": {
@@ -60176,9 +60606,9 @@
           "id": "js/security.jwtVerify",
           "name": "jwtVerify",
           "kind": "function",
-          "signature": "async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult>",
+          "signature": "async function jwtVerify(\n  token: string,\n  keys: JwtKeyInput,\n  options: JwtVerifyOptions = {\n  }\n): Promise<JwtResult>",
           "signatures": [
-            "async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult>"
+            "async function jwtVerify(\n  token: string,\n  keys: JwtKeyInput,\n  options: JwtVerifyOptions = {\n  }\n): Promise<JwtResult>"
           ],
           "aliases": [],
           "doc": {
@@ -60202,9 +60632,9 @@
           "id": "js/security.jwtEncrypt",
           "name": "jwtEncrypt",
           "kind": "function",
-          "signature": "async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string>",
+          "signature": "async function jwtEncrypt(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtEncryptOptions\n): Promise<string>",
           "signatures": [
-            "async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string>"
+            "async function jwtEncrypt(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtEncryptOptions\n): Promise<string>"
           ],
           "aliases": [],
           "doc": {
@@ -61073,9 +61503,9 @@
           "id": "jwk.selectJwk",
           "name": "selectJwk",
           "kind": "function",
-          "signature": "function selectJwk(jwks: JsonWebKeySet | JsonWebKeyLike[], selector: JwkSelector): JsonWebKeyLike | undefined",
+          "signature": "function selectJwk(\n  jwks: JsonWebKeySet | JsonWebKeyLike[],\n  selector: JwkSelector\n): JsonWebKeyLike | undefined",
           "signatures": [
-            "function selectJwk(jwks: JsonWebKeySet | JsonWebKeyLike[], selector: JwkSelector): JsonWebKeyLike | undefined"
+            "function selectJwk(\n  jwks: JsonWebKeySet | JsonWebKeyLike[],\n  selector: JwkSelector\n): JsonWebKeyLike | undefined"
           ],
           "aliases": [],
           "doc": {
@@ -61183,9 +61613,9 @@
           "id": "jwt.JwtAlgorithm",
           "name": "JwtAlgorithm",
           "kind": "type",
-          "signature": "type JwtAlgorithm = | 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'",
+          "signature": "type JwtAlgorithm = 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'",
           "signatures": [
-            "type JwtAlgorithm = | 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'"
+            "type JwtAlgorithm = 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'"
           ],
           "aliases": [],
           "doc": {
@@ -62000,9 +62430,9 @@
           "id": "jwt.jwtSign",
           "name": "jwtSign",
           "kind": "function",
-          "signature": "async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string>",
+          "signature": "async function jwtSign(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtSignOptions\n): Promise<string>",
           "signatures": [
-            "async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string>"
+            "async function jwtSign(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtSignOptions\n): Promise<string>"
           ],
           "aliases": [],
           "doc": {
@@ -62036,9 +62466,9 @@
           "id": "jwt.jwtVerify",
           "name": "jwtVerify",
           "kind": "function",
-          "signature": "async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult>",
+          "signature": "async function jwtVerify(\n  token: string,\n  keys: JwtKeyInput,\n  options: JwtVerifyOptions = {\n  }\n): Promise<JwtResult>",
           "signatures": [
-            "async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult>"
+            "async function jwtVerify(\n  token: string,\n  keys: JwtKeyInput,\n  options: JwtVerifyOptions = {\n  }\n): Promise<JwtResult>"
           ],
           "aliases": [],
           "doc": {
@@ -62072,9 +62502,9 @@
           "id": "jwt.jwtEncrypt",
           "name": "jwtEncrypt",
           "kind": "function",
-          "signature": "async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string>",
+          "signature": "async function jwtEncrypt(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtEncryptOptions\n): Promise<string>",
           "signatures": [
-            "async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string>"
+            "async function jwtEncrypt(\n  payload: Record<string, unknown>,\n  key: JsonWebKeyLike,\n  options: JwtEncryptOptions\n): Promise<string>"
           ],
           "aliases": [],
           "doc": {
@@ -62900,9 +63330,9 @@
           "id": "token.issueToken",
           "name": "issueToken",
           "kind": "function",
-          "signature": "function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string",
+          "signature": "function issueToken(\n  payload: Record<string, unknown>,\n  secret: BufferLike,\n  options: IssueTokenOptions = {\n  }\n): string",
           "signatures": [
-            "function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string"
+            "function issueToken(\n  payload: Record<string, unknown>,\n  secret: BufferLike,\n  options: IssueTokenOptions = {\n  }\n): string"
           ],
           "aliases": [],
           "doc": {
@@ -62936,9 +63366,9 @@
           "id": "token.verifyToken",
           "name": "verifyToken",
           "kind": "function",
-          "signature": "function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null",
+          "signature": "function verifyToken(\n  token: string,\n  secret: BufferLike,\n  options: VerifyTokenOptions = {\n  }\n): Record<string, unknown> | null",
           "signatures": [
-            "function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null"
+            "function verifyToken(\n  token: string,\n  secret: BufferLike,\n  options: VerifyTokenOptions = {\n  }\n): Record<string, unknown> | null"
           ],
           "aliases": [],
           "doc": {
@@ -64829,9 +65259,9 @@
           "id": "js/test/bench.run",
           "name": "run",
           "kind": "function",
-          "signature": "async function run(options: { filter?: string } = {})",
+          "signature": "async function run(options: {\n  filter?: string;\n} = {})",
           "signatures": [
-            "async function run(options: { filter?: string } = {})"
+            "async function run(options: {\n  filter?: string;\n} = {})"
           ],
           "aliases": [],
           "doc": {
@@ -65416,9 +65846,9 @@
               "id": "mock.MockFetchExpectation.reply",
               "name": "reply",
               "kind": "method",
-              "signature": "reply(status = 200, body?: unknown, init: { headers?: unknown; statusText?: string } = {}): this",
+              "signature": "reply(status = 200, body?: unknown, init: {\n  headers?: unknown;\n  statusText?: string;\n} = {}): this",
               "signatures": [
-                "reply(status = 200, body?: unknown, init: { headers?: unknown; statusText?: string } = {}): this"
+                "reply(status = 200, body?: unknown, init: {\n  headers?: unknown;\n  statusText?: string;\n} = {}): this"
               ],
               "aliases": [],
               "doc": {
@@ -65886,9 +66316,9 @@
           "id": "mock.mockFetch",
           "name": "mockFetch",
           "kind": "function",
-          "signature": "async function mockFetch<T>( baseUrlOrFn: string | URL | ((mock: MockFetchScope) => T | Promise<T>), maybeFn?: (mock: MockFetchScope) => T | Promise<T>, ): Promise<T>",
+          "signature": "async function mockFetch<T>(\n  baseUrlOrFn: string | URL | (\n    (\n      mock: MockFetchScope\n    ) => T | Promise<T>\n  ),\n  maybeFn?: (\n    mock: MockFetchScope\n  ) => T | Promise<T>\n): Promise<T>",
           "signatures": [
-            "async function mockFetch<T>( baseUrlOrFn: string | URL | ((mock: MockFetchScope) => T | Promise<T>), maybeFn?: (mock: MockFetchScope) => T | Promise<T>, ): Promise<T>"
+            "async function mockFetch<T>(\n  baseUrlOrFn: string | URL | (\n    (\n      mock: MockFetchScope\n    ) => T | Promise<T>\n  ),\n  maybeFn?: (\n    mock: MockFetchScope\n  ) => T | Promise<T>\n): Promise<T>"
           ],
           "aliases": [],
           "doc": {
@@ -69338,9 +69768,9 @@
           "id": "validate.safeParse",
           "name": "safeParse",
           "kind": "function",
-          "signature": "function safeParse<T = unknown>(schema: unknown, value: unknown): SafeParseSuccess<T> | SafeParseFailure",
+          "signature": "function safeParse<T = unknown>(\n  schema: unknown,\n  value: unknown\n): SafeParseSuccess<T> | SafeParseFailure",
           "signatures": [
-            "function safeParse<T = unknown>(schema: unknown, value: unknown): SafeParseSuccess<T> | SafeParseFailure"
+            "function safeParse<T = unknown>(\n  schema: unknown,\n  value: unknown\n): SafeParseSuccess<T> | SafeParseFailure"
           ],
           "aliases": [],
           "doc": {

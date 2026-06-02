@@ -177,6 +177,13 @@ export function add(a: number, b: number): number {
 }
 
 /**
+ * Build a runtime configuration object.
+ */
+export function buildRuntimeConfig(options: { name: string; file?: { path: string; format?: 'json' | 'toml' }; env?: { prefix: string; required?: boolean }; defaults?: Record<string, string | number | boolean> }, overrides?: { debug?: boolean; tags?: string[] }): Promise<{ ok: boolean; source: ConfigSource }> {
+  return Promise.resolve({ ok: true, source: { inline: { name: options.name, enabled: true } } });
+}
+
+/**
  * Response shape returned by the service.
  */
 export interface ApiResponse<T> {
@@ -229,6 +236,32 @@ export class SecretBox {
  * Current API version string.
  */
 export const VERSION: string = '1.0.0';
+
+/**
+ * Configuration source accepted by the runtime.
+ */
+export type ConfigSource =
+  | {
+      inline?: {
+        name: string;
+        /* internal marker */
+        enabled: boolean;
+        tags?: string[];
+      };
+    }
+  | {
+      file?: {
+        path: string;
+        format: 'json' | 'yaml' | 'toml';
+        watch?: boolean;
+      };
+    }
+  | {
+      env?: {
+        prefix: string;
+        required?: boolean;
+      };
+    };
 `);
     await fs.writeFile(appDir + '/advanced.mts', `/**
  * Advanced module docs.
@@ -536,7 +569,13 @@ export const surface = {
  */
 export enum Mode {
   Fast = 'fast',
+  /**
+   * Internal enum member docs should not be copied into the signature.
+   */
   Safe = 'safe',
+  Balanced = 'balanced',
+  Thorough = 'thorough',
+  Experimental = 'experimental',
 }
 
 /**
@@ -579,6 +618,10 @@ export function afterEnum(): string {
     t.ok(!markdown.includes('### #token'), 'markdown excludes private class property');
     t.ok(!markdown.includes('### #peek'), 'markdown excludes private class method');
     t.ok(markdown.includes('## VERSION'), 'markdown includes const section');
+    t.ok(markdown.includes('## ConfigSource'), 'markdown includes long type alias section');
+    t.ok(markdown.includes('type ConfigSource = {\n'), 'markdown formats long type alias across lines');
+    t.ok(markdown.includes("format: 'json' | 'yaml' | 'toml';"), 'markdown preserves nested literal union in formatted signature');
+    t.equal(markdown.includes('internal marker'), false, 'markdown strips comments from formatted signatures');
 
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const firstModule = json.modules[0]!;
@@ -586,9 +629,16 @@ export function afterEnum(): string {
     t.equal(json.modules.length, 1, 'json includes one module');
     t.equal(firstModule.name, 'api', 'json records module name');
     t.equal(firstModule.doc.text.includes('Example API module.'), true, 'json records module prelude');
-    t.equal(firstModule.exports.length, 4, 'json includes exported declarations');
+    t.equal(firstModule.exports.length, 6, 'json includes exported declarations');
     t.equal(firstExport.name, 'add', 'json records function export');
     t.equal(firstExport.signature, 'function add(a: number, b: number): number', 'json records function signature without export prefix');
+    const buildRuntimeConfig = firstModule.exports.find((item: DocJsonExport) => item.name === 'buildRuntimeConfig');
+    t.ok(buildRuntimeConfig, 'json includes long function export');
+    t.ok(buildRuntimeConfig!.signature.includes('\n'), 'json records formatted multiline function signature');
+    const configSource = firstModule.exports.find((item: DocJsonExport) => item.name === 'ConfigSource');
+    t.ok(configSource, 'json includes type alias export');
+    t.ok(configSource!.signature.includes('\n'), 'json records formatted multiline type signature');
+    t.equal(configSource!.signature.includes('internal marker'), false, 'json strips comments from formatted signatures');
     const secretBox = firstModule.exports.find((item: DocJsonExport) => item.name === 'SecretBox');
     t.ok(secretBox, 'json includes class export');
     t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === '#token'), false, 'json excludes private class property');
@@ -616,6 +666,8 @@ export function afterEnum(): string {
     t.ok(html.includes('<main'), 'html uses the shared docs template layout');
     t.ok(html.includes('.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh'), 'layout uses fixed viewport height');
     t.ok(html.includes('main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto'), 'content area scrolls independently');
+    t.ok(html.includes('.docs-symbol{margin:0 0 72px}'), 'template separates symbols with enough whitespace after descriptions and examples');
+    t.ok(html.includes('.docs-symbol>h3+p,.member>h5+p{margin-top:0}'), 'template keeps descriptions close to their signatures');
     t.ok(html.includes('color-scheme:light dark'), 'template advertises light and dark color schemes');
     t.ok(html.includes('@media(prefers-color-scheme:dark)'), 'template automatically follows dark mode preference');
     t.ok(html.includes('--bg:#0d1117'), 'template defines dark background color');
@@ -1016,7 +1068,7 @@ path: ../escape.md
     t.ok(html.includes('<h3><code><span class="tok-keyword">const</span> surface</code></h3>'), 'html renders exported object signature without export prefix');
     t.ok(html.includes('id="surface.surface.run"'), 'html documents exported object method');
     t.ok(html.includes('run(input: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span>'), 'html renders object method type signature');
-    t.ok(html.includes('configure(options: { enabled: <span class="tok-keyword">boolean</span> }): { enabled: <span class="tok-keyword">boolean</span> }'), 'html keeps object type annotations in object method signatures');
+    t.ok(html.includes('configure(options: {\n  enabled: <span class="tok-keyword">boolean</span>;\n}): {\n  enabled: <span class="tok-keyword">boolean</span>;\n}'), 'html formats object type annotations in object method signatures');
     t.ok(html.includes('Run with a string input.'), 'html includes object method docs');
     t.ok(html.includes('id="surface.surface.nested.ping"'), 'html follows exported object references to local object members');
     t.ok(html.includes('Ping a named target.'), 'html includes nested object member docs');
@@ -1031,12 +1083,14 @@ path: ../escape.md
     t.equal(moduleDoc.path, 'surface.mts', 'json stores project-relative module path');
     t.equal(surface.signature, 'const surface', 'json signature omits export prefix');
     t.equal(surface.members.some((member) => member.name === 'run' && member.kind === 'method'), true, 'json includes exported object method');
-    t.equal(surface.members.some((member) => member.name === 'configure' && member.signature === 'configure(options: { enabled: boolean }): { enabled: boolean }'), true, 'json keeps object type annotations in object method signature');
+    t.equal(surface.members.some((member) => member.name === 'configure' && member.signature === 'configure(options: {\n  enabled: boolean;\n}): {\n  enabled: boolean;\n}'), true, 'json formats object type annotations in object method signature');
     t.equal(surface.members.some((member) => member.name === 'nested.ping'), true, 'json includes nested referenced object method');
     t.equal(moduleDoc.exports.some((item) => item.name === 'localHelper'), false, 'json excludes unexported local helper');
     const mode = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'Mode')!;
     t.ok(mode, 'json includes exported enum');
     t.equal(mode.signature!.includes('export function afterEnum'), false, 'enum signature stops before following exports');
+    t.ok(mode.signature!.includes('\n'), 'json records formatted multiline enum signature');
+    t.equal(mode.signature!.includes('Internal enum member docs'), false, 'json strips comments from enum signatures');
 
     const found = await runCli(['doc', 'search', 'nested ping'], appDir);
     t.equal(found.result.code, 0, 'doc search exits successfully');

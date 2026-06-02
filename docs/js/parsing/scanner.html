@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - scanner</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -34,7 +34,7 @@
 
 <h2>Types</h2>
 
-<section id="scanner.Encoding">
+<section class="docs-symbol" id="scanner.Encoding">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="scanner.html#scanner.Encoding">Encoding</a> = <span class="tok-string">&#39;utf-8&#39;</span> | <span class="tok-string">&#39;ascii&#39;</span> | <span class="tok-string">&#39;latin1&#39;</span> | <span class="tok-string">&#39;utf-16le&#39;</span> | <span class="tok-string">&#39;utf-16be&#39;</span></code></h3>
 
 <p>Text encodings supported by scanner text operations.</p>
@@ -47,7 +47,7 @@ scanner.eat(); <span class="tok-comment">// &#39;A&#39;</span></code></pre>
 
 </section>
 
-<section id="scanner.ScannerSnapshot">
+<section class="docs-symbol" id="scanner.ScannerSnapshot">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="scanner.html#scanner.ScannerSnapshot">ScannerSnapshot</a> = <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a></code></h3>
 
 <p>Alias for a saved scanner position.</p>
@@ -64,7 +64,7 @@ scanner.restore(snapshot);</code></pre>
 
 <h2>Interfaces</h2>
 
-<section id="scanner.ScannerOptions">
+<section class="docs-symbol" id="scanner.ScannerOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="scanner.html#scanner.ScannerOptions">ScannerOptions</a> {</code></h3>
 
 <p>Options controlling scanner text decoding and error labels.</p>
@@ -111,7 +111,7 @@ scanner.error(<span class="tok-string">&#39;bad token&#39;</span>).filename;</co
 
 </section>
 
-<section id="scanner.ScannerMark">
+<section class="docs-symbol" id="scanner.ScannerMark">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a> {</code></h3>
 
 <p>Saved scanner position, including line and column when text tracking is active.</p>
@@ -166,7 +166,7 @@ scanner.mark().column;</code></pre>
 
 <h2>Classes</h2>
 
-<section id="scanner.ParseError">
+<section class="docs-symbol" id="scanner.ParseError">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="scanner.html#scanner.ParseError">ParseError</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error">Error</a> {</code></h3>
 
 <p>Parse error with source location and renderable text or binary context.</p>
@@ -248,7 +248,16 @@ scanner.error(<span class="tok-string">&#39;bad span&#39;</span>, { from, to: sc
 <h4>Constructors</h4>
 
 <section class="member" id="scanner.ParseError.constructor">
-<h5><code><span class="tok-keyword">constructor</span>( message: <span class="tok-keyword">string</span>, opts: { detail: <span class="tok-keyword">string</span>; format: <span class="tok-keyword">string</span>; filename?: <span class="tok-keyword">string</span>; offset: <span class="tok-keyword">number</span>; line?: <span class="tok-keyword">number</span>; column?: <span class="tok-keyword">number</span>; length?: <span class="tok-keyword">number</span>; source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>; }, )</code></h5>
+<h5><code><span class="tok-keyword">constructor</span>(message: <span class="tok-keyword">string</span>, opts: {
+  detail: <span class="tok-keyword">string</span>;
+  format: <span class="tok-keyword">string</span>;
+  filename?: <span class="tok-keyword">string</span>;
+  offset: <span class="tok-keyword">number</span>;
+  line?: <span class="tok-keyword">number</span>;
+  column?: <span class="tok-keyword">number</span>;
+  length?: <span class="tok-keyword">number</span>;
+  source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>;
+})</code></h5>
 
 <p>Create a parse error with explicit source and location metadata.</p>
 <p>Most parsers should call <code>Scanner.error()</code> instead so offsets and line tracking are filled from the current scanner state. Construct directly when adapting diagnostics from another parser.</p>
@@ -266,7 +275,10 @@ scanner.error(<span class="tok-string">&#39;bad span&#39;</span>, { from, to: sc
 <h4>Methods</h4>
 
 <section class="member" id="scanner.ParseError.render">
-<h5><code>render(options?: { color?: <span class="tok-keyword">boolean</span>; contextLines?: <span class="tok-keyword">number</span> }): <span class="tok-keyword">string</span></code></h5>
+<h5><code>render(options?: {
+  color?: <span class="tok-keyword">boolean</span>;
+  contextLines?: <span class="tok-keyword">number</span>;
+}): <span class="tok-keyword">string</span></code></h5>
 
 <p>Render a diagnostic snippet for humans.</p>
 <p>Text errors render line context and a caret. Binary errors render a small hex dump around the failing byte. <code>color</code> defaults to <code>false</code> and <code>contextLines</code> defaults to <code>0</code>.</p>
@@ -279,7 +291,7 @@ console.log(error.render({ contextLines: <span class="tok-number">1</span> }));<
 
 </section>
 
-<section id="scanner.Scanner">
+<section class="docs-symbol" id="scanner.Scanner">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="scanner.html#scanner.Scanner">Scanner</a> {</code></h3>
 
 <p>Cursor-based scanner for mixed binary and text parsers.</p>
@@ -820,7 +832,10 @@ scanner.readToken(<span class="tok-string">&#39;header name&#39;</span>); <span 
 </section>
 
 <section class="member" id="scanner.Scanner.expectToken">
-<h5><code>expectToken(expected: <span class="tok-keyword">string</span>, options?: { caseInsensitive?: <span class="tok-keyword">boolean</span>; name?: <span class="tok-keyword">string</span> }): <span class="tok-keyword">void</span></code></h5>
+<h5><code>expectToken(expected: <span class="tok-keyword">string</span>, options?: {
+  caseInsensitive?: <span class="tok-keyword">boolean</span>;
+  name?: <span class="tok-keyword">string</span>;
+}): <span class="tok-keyword">void</span></code></h5>
 
 <p>Require a specific protocol token.</p>
 <p>Reads one token and throws when it does not match <code>expected</code>. Set <code>caseInsensitive</code> for ASCII case-insensitive comparisons.</p>
@@ -831,7 +846,13 @@ scanner.expectToken(<span class="tok-string">&#39;get&#39;</span>, { caseInsensi
 </section>
 
 <section class="member" id="scanner.Scanner.readStrictInt">
-<h5><code>readStrictInt(options?: { radix?: <span class="tok-number">10</span> | <span class="tok-number">16</span>; name?: <span class="tok-keyword">string</span>; min?: <span class="tok-keyword">number</span>; max?: <span class="tok-keyword">number</span>; allowSign?: <span class="tok-keyword">boolean</span>; }): <span class="tok-keyword">number</span></code></h5>
+<h5><code>readStrictInt(options?: {
+  radix?: <span class="tok-number">10</span> | <span class="tok-number">16</span>;
+  name?: <span class="tok-keyword">string</span>;
+  min?: <span class="tok-keyword">number</span>;
+  max?: <span class="tok-keyword">number</span>;
+  allowSign?: <span class="tok-keyword">boolean</span>;
+}): <span class="tok-keyword">number</span></code></h5>
 
 <p>Read a strictly formatted decimal or hexadecimal integer token.</p>
 <p>Defaults to unsigned base-10. Range checks throw <code>ParseError</code> with the provided field name when the parsed value is outside <code>min</code> or <code>max</code>.</p>
@@ -906,7 +927,10 @@ scanner.peek(); <span class="tok-comment">// &#39;a&#39;</span></code></pre>
 </section>
 
 <section class="member" id="scanner.Scanner.error">
-<h5><code>error(detail: <span class="tok-keyword">string</span>, span?: <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a> | { from: <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a>; to: <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a> }): <a class="tok-type" href="scanner.html#scanner.ParseError">ParseError</a></code></h5>
+<h5><code>error(detail: <span class="tok-keyword">string</span>, span?: <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a> | {
+  from: <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a>;
+  to: <a class="tok-type" href="scanner.html#scanner.ScannerMark">ScannerMark</a>;
+}): <a class="tok-type" href="scanner.html#scanner.ParseError">ParseError</a></code></h5>
 
 <p>Create a <code>ParseError</code> at the current position or an explicit span.</p>
 <p>The error message includes the scanner&#39;s format and either line/column or byte offset. Passing a <code>{ from, to }</code> span sets the diagnostic highlight length. The method does not throw; callers usually <code>throw scanner.error(...)</code>.</p>

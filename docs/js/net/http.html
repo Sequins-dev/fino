@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - js/net/http</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -93,7 +93,7 @@
 
 <h2>Classes</h2>
 
-<section id="js-net-http.Arena">
+<section class="docs-symbol" id="js-net-http.Arena">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="http.html#js-net-http.Arena">Arena</a> {</code></h3>
 
 <p>Bump allocator backed by a single ArrayBuffer.</p>
@@ -135,7 +135,7 @@ arena.reset();</code></pre>
 
 </section>
 
-<section id="js-net-http.Headers">
+<section class="docs-symbol" id="js-net-http.Headers">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="http.html#js-net-http.Headers">Headers</a> {</code></h3>
 
 <p>WHATWG-compatible Headers class.</p>
@@ -237,7 +237,7 @@ headers.append(<span class="tok-string">&#39;Set-Cookie&#39;</span>, <span class
 
 </section>
 
-<section id="js-net-http.Request">
+<section class="docs-symbol" id="js-net-http.Request">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="http.html#js-net-http.Request">Request</a> {</code></h3>
 
 <p>Fetch API-compatible Request class.</p>
@@ -385,7 +385,7 @@ headers.append(<span class="tok-string">&#39;Set-Cookie&#39;</span>, <span class
 
 </section>
 
-<section id="js-net-http.Response">
+<section class="docs-symbol" id="js-net-http.Response">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="http.html#js-net-http.Response">Response</a> {</code></h3>
 
 <p>Fetch API-compatible Response class.</p>
@@ -573,8 +573,11 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 <h2>Functions</h2>
 
-<section id="js-net-http._parseHeaders">
-<h3><code><span class="tok-keyword">function</span> _parseHeaders(raw: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): { firstLine: <span class="tok-keyword">string</span>; headers: <a class="tok-type" href="http.html#js-net-http.Headers">Headers</a> }</code></h3>
+<section class="docs-symbol" id="js-net-http._parseHeaders">
+<h3><code><span class="tok-keyword">function</span> _parseHeaders(raw: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>): {
+  firstLine: <span class="tok-keyword">string</span>;
+  headers: <a class="tok-type" href="http.html#js-net-http.Headers">Headers</a>;
+}</code></h3>
 
 <p>Parse a raw header block (everything up to and including &quot;\r\n\r\n&quot;) into a Headers instance.  Header names are lowercased; values are trimmed.</p>
 <p>Throws on obsolete folded header lines or malformed header syntax.</p>
@@ -582,7 +585,7 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http.parseRequest">
+<section class="docs-symbol" id="js-net-http.parseRequest">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> parseRequest(source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>&gt;): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="http.html#js-net-http.Request">Request</a>&gt;</code></h3>
 
 <p>Parse an HTTP/1.x request from an async iterable of byte chunks.</p>
@@ -592,8 +595,11 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http.parseResponse">
-<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> parseResponse( source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>&gt;, method?: <span class="tok-keyword">string</span>, ): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="http.html#js-net-http.Response">Response</a>&gt;</code></h3>
+<section class="docs-symbol" id="js-net-http.parseResponse">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> parseResponse(
+  source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer">ArrayBuffer</a>&gt;,
+  method?: <span class="tok-keyword">string</span>
+): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="http.html#js-net-http.Response">Response</a>&gt;</code></h3>
 
 <p>Parse an HTTP response from a byte stream.</p>
 <p><code>method</code> is the original request method; pass <code>&#39;HEAD&#39;</code> so the parser knows the response must not expose a body even if framing headers are present. Throws on malformed status lines, headers, or body framing.</p>
@@ -601,7 +607,7 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http._buildResponseHead">
+<section class="docs-symbol" id="js-net-http._buildResponseHead">
 <h3><code><span class="tok-keyword">function</span> _buildResponseHead(res: <a class="tok-type" href="http.html#js-net-http.Response">Response</a>): <span class="tok-keyword">string</span></code></h3>
 
 <p>Serialize HTTP response headers to a string (status-line + headers + CRLF).</p>
@@ -610,7 +616,7 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http.serializeResponse">
+<section class="docs-symbol" id="js-net-http.serializeResponse">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span>* serializeResponse(res: <a class="tok-type" href="http.html#js-net-http.Response">Response</a>, arena?: <a class="tok-type" href="http.html#js-net-http.Arena">Arena</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator">AsyncGenerator</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h3>
 
 <p>Serialize a Response to an async iterable of Uint8Array chunks suitable for piping to a TCP connection: status-line + headers first, then body chunks.</p>
@@ -621,7 +627,7 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http.serializeRequest">
+<section class="docs-symbol" id="js-net-http.serializeRequest">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span>* serializeRequest(req: <a class="tok-type" href="http.html#js-net-http.Request">Request</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncGenerator">AsyncGenerator</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;</code></h3>
 
 <p>Serialize a Request to an async iterable of Uint8Array chunks suitable for piping to a TCP connection: request-line + headers first, then body chunks.</p>
@@ -638,8 +644,11 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http.connectionParser">
-<h3><code><span class="tok-keyword">function</span> connectionParser(source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;): { parseNext(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="http.html#js-net-http.Request">Request</a>&gt;, parseBufferedNext(): <a class="tok-type" href="http.html#js-net-http.Request">Request</a> | <span class="tok-keyword">null</span> }</code></h3>
+<section class="docs-symbol" id="js-net-http.connectionParser">
+<h3><code><span class="tok-keyword">function</span> connectionParser(source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>&gt;): {
+  parseNext(): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="http.html#js-net-http.Request">Request</a>&gt;;
+  parseBufferedNext(): <a class="tok-type" href="http.html#js-net-http.Request">Request</a> | <span class="tok-keyword">null</span>;
+}</code></h3>
 
 <p>Create a persistent HTTP/1.x request parser for a single connection. Returns an object with a <code>parseNext()</code> method that parses one request at a time from a shared buffered reader, preserving leftover bytes between requests — required for correct keep-alive (pipelined) behavior.</p>
 <p>Used by <code>fino:serve</code> so that multiple requests on the same TCP connection share a single <code>_createReader</code> instance. Calling <code>parseRequest()</code> directly would create a fresh reader each time and lose bytes between requests.</p>
@@ -649,8 +658,20 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http.buildWireResponse">
-<h3><code><span class="tok-keyword">function</span> buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): <a class="tok-type" href="http.html#js-net-http.Response">Response</a></code></h3>
+<section class="docs-symbol" id="js-net-http.buildWireResponse">
+<h3><code><span class="tok-keyword">function</span> buildWireResponse(
+  {
+    version,
+    status,
+    statusText,
+    headers,
+    body,
+    url,
+    redirected,
+    outTrailers,
+    inTrailers
+  }: WireResponseInit
+): <a class="tok-type" href="http.html#js-net-http.Response">Response</a></code></h3>
 
 <p>Build a Response from already-prepared wire components. Used by <code>fino:serve</code> to inject <code>Connection</code> and <code>Content-Length</code> headers and set the HTTP version without exposing the <code>INTERNAL</code> sentinel publicly.</p>
 <p>Missing <code>version</code> defaults to HTTP/1.1, missing <code>status</code> defaults to 200, and missing body becomes a bodyless response.</p>
@@ -658,7 +679,7 @@ console.log(res.<span class="tok-keyword">type</span>, res.status);</code></pre>
 
 </section>
 
-<section id="js-net-http._concat">
+<section class="docs-symbol" id="js-net-http._concat">
 <h3><code><span class="tok-keyword">function</span> _concat(parts: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>[], totalLen: <span class="tok-keyword">number</span>, arena?: <a class="tok-type" href="http.html#js-net-http.Arena">Arena</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
 
 <p>Concatenate an array of Uint8Array slices into a single Uint8Array.</p>

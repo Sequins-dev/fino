@@ -110,7 +110,12 @@ await driver.run(reader, writer, handler, { maxConcurrent: 32 });
 ### run
 
 ```ts
-run( reader: BytesReader, writer: BytesWriter, handler: ServerHandler, opts: ServerDriverOptions, ): Promise<void>
+run(
+  reader: BytesReader,
+  writer: BytesWriter,
+  handler: ServerHandler,
+  opts: ServerDriverOptions
+): Promise<void>
 ```
 
 Process one accepted connection. Resolves when the connection is fully
@@ -162,7 +167,9 @@ console.log(signal.reason);
 ### addEventListener
 
 ```ts
-addEventListener(type: string, fn: () => void, opts?: { once?: boolean }): void
+addEventListener(type: string, fn: () => void, opts?: {
+  once?: boolean;
+}): void
 ```
 
 Subscribe to cancellation events.
@@ -225,7 +232,12 @@ const res = await driver.send(req, reader, writer, { signal: null });
 ### send
 
 ```ts
-send( req: Request, reader: BytesReader, writer: BytesWriter, opts: ClientDriverOptions, ): Promise<Response>
+send(
+  req: Request,
+  reader: BytesReader,
+  writer: BytesWriter,
+  opts: ClientDriverOptions
+): Promise<Response>
 ```
 
 Send one logical request on an already-connected reader/writer pair.

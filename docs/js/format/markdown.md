@@ -165,7 +165,23 @@ renderMarkdown('```ts title=demo\nconst x = 1;\n```', {
 ## MarkdownNode
 
 ```ts
-type MarkdownNode = | { /** * Discriminator for paragraph nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('Body').nodes[0]?.kind; * ``` */ kind: 'paragraph'; /** * Paragraph text with source lines joined by spaces. * * Inline Markdown remains unrendered until `renderMarkdownInline()` or * `renderMarkdown()` is called. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('Hello **world**').nodes[0]; * if (node?.kind === 'paragraph') node.text; * ``` */ text: string; } | { /** * Discriminator for heading nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('# Title').nodes[0]?.kind; * ``` */ kind: 'heading'; /** * Heading level from 1 through 6 before render-time offsetting. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('## Title').nodes[0]; * if (node?.kind === 'heading') node.level; * ``` */ level: number; /** * Heading text without the leading hash markers. * * Inline Markdown remains unrendered until HTML rendering. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('# Title').nodes[0]; * if (node?.kind === 'heading') node.text; * ``` */ text: string; } | { /** * Discriminator for list nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('- item').nodes[0]?.kind; * ``` */ kind: 'list'; /** * Whether the list was parsed from ordered markers. * * `true` renders as `<ol>` and `false` renders as `<ul>`. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('1. item').nodes[0]; * if (node?.kind === 'list') node.ordered; * ``` */ ordered: boolean; /** * List item text values in source order. * * Nested lists are not represented by this compact parser. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('- a\n- b').nodes[0]; * if (node?.kind === 'list') node.items; * ``` */ items: string[]; } | { /** * Discriminator for fenced code block nodes. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * parseMarkdown('```ts\nx\n```').nodes[0]?.kind; * ``` */ kind: 'code'; /** * Fence language identifier, or `""` when none is provided. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```ts\nx\n```').nodes[0]; * if (node?.kind === 'code') node.lang; * ``` */ lang: string; /** * Remaining fence info string after the language identifier. * * The value is trimmed and may be `""`. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```ts title=demo\nx\n```').nodes[0]; * if (node?.kind === 'code') node.meta; * ``` */ meta: string; /** * Code block contents without the opening or closing fence. * * The parser preserves internal newlines and does not syntax-highlight. * * ```ts no_run * import { parseMarkdown } from 'fino:format/markdown'; * * const node = parseMarkdown('```\nconst x = 1;\n```').nodes[0]; * if (node?.kind === 'code') node.code; * ``` */ code: string; }
+type MarkdownNode = {
+  kind: 'paragraph';
+  text: string;
+} | {
+  kind: 'heading';
+  level: number;
+  text: string;
+} | {
+  kind: 'list';
+  ordered: boolean;
+  items: string[];
+} | {
+  kind: 'code';
+  lang: string;
+  meta: string;
+  code: string;
+}
 ```
 
 Block-level node returned by the Markdown parser.

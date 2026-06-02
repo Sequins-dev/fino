@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - argv</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -80,7 +80,7 @@ cli.parse([<span class="tok-string">&#39;user&#39;</span>, <span class="tok-stri
 
 <h2>Interfaces</h2>
 
-<section id="argv.CommandConfig">
+<section class="docs-symbol" id="argv.CommandConfig">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.CommandConfig">CommandConfig</a> {</code></h3>
 
 <p>Configuration object used to construct a command tree.</p>
@@ -170,7 +170,7 @@ cli.parse([<span class="tok-string">&#39;user&#39;</span>, <span class="tok-stri
 
 </section>
 
-<section id="argv.OptionConfig">
+<section class="docs-symbol" id="argv.OptionConfig">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.OptionConfig">OptionConfig</a> {</code></h3>
 
 <p>Command-line option definition, including flags, type, multiplicity, and defaults.</p>
@@ -243,7 +243,7 @@ cli.parse([<span class="tok-string">&#39;user&#39;</span>, <span class="tok-stri
 
 </section>
 
-<section id="argv.PositionalConfig">
+<section class="docs-symbol" id="argv.PositionalConfig">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.PositionalConfig">PositionalConfig</a> {</code></h3>
 
 <p>Positional argument definition for a command.</p>
@@ -305,7 +305,7 @@ cli.parse([<span class="tok-string">&#39;user&#39;</span>, <span class="tok-stri
 
 </section>
 
-<section id="argv.CommandContext">
+<section class="docs-symbol" id="argv.CommandContext">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="argv.html#argv.CommandContext">CommandContext</a> {</code></h3>
 
 <p>Runtime context passed to a command handler.</p>
@@ -469,7 +469,7 @@ cli.parse([<span class="tok-string">&#39;user&#39;</span>, <span class="tok-stri
 
 <h2>Classes</h2>
 
-<section id="argv.CommandInvocation">
+<section class="docs-symbol" id="argv.CommandInvocation">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> {</code></h3>
 
 <p>Parsed invocation node for one command in a nested command chain.</p>
@@ -548,7 +548,14 @@ console.log(invocation.providedOptions.has(<span class="tok-string">&#39;env&#39
 <h4>Constructors</h4>
 
 <section class="member" id="argv.CommandInvocation.constructor">
-<h5><code><span class="tok-keyword">constructor</span>(command: <a class="tok-type" href="argv.html#argv.Command">Command</a>, parent: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> | <span class="tok-keyword">null</span>, args: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, options: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, positionals: <span class="tok-keyword">unknown</span>[], providedOptions: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set">Set</a>&lt;<span class="tok-keyword">string</span>&gt;)</code></h5>
+<h5><code><span class="tok-keyword">constructor</span>(
+  command: <a class="tok-type" href="argv.html#argv.Command">Command</a>,
+  parent: <a class="tok-type" href="argv.html#argv.CommandInvocation">CommandInvocation</a> | <span class="tok-keyword">null</span>,
+  args: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;,
+  options: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;,
+  positionals: <span class="tok-keyword">unknown</span>[],
+  providedOptions: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Set">Set</a>&lt;<span class="tok-keyword">string</span>&gt;
+)</code></h5>
 
 <p>Create a parsed invocation node.</p>
 <p>The constructor stores its arguments directly. It does not validate that the values match the command&#39;s definitions.</p>
@@ -585,7 +592,7 @@ console.log(child.path.join(<span class="tok-string">&#39; &#39;</span>));</code
 
 </section>
 
-<section id="argv.Command">
+<section class="docs-symbol" id="argv.Command">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="argv.html#argv.Command">Command</a> {</code></h3>
 
 <p>Config-based command with nested subcommands, options, and positionals.</p>

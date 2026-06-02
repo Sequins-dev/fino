@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - js/realm</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -32,8 +32,25 @@
 
 <h2>Types</h2>
 
-<section id="js-realm.ImportDirectiveSer">
-<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="realm.html#js-realm.ImportDirectiveSer">ImportDirectiveSer</a> = | <span class="tok-string">&#39;inherit&#39;</span> | <span class="tok-string">&#39;block&#39;</span> | { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;inherit&#39;</span> } | { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;block&#39;</span> } | { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;remap&#39;</span>; target: <span class="tok-keyword">string</span> } | { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;source&#39;</span>; code: <span class="tok-keyword">string</span>; source_map: <span class="tok-keyword">string</span> } | { <span class="tok-keyword">type</span>: <span class="tok-string">&#39;facade&#39;</span>; specifier: <span class="tok-keyword">string</span>; exports: <span class="tok-keyword">string</span>[]; streams?: <span class="tok-keyword">string</span>[]; sinks?: <span class="tok-keyword">string</span>[] }</code></h3>
+<section class="docs-symbol" id="js-realm.ImportDirectiveSer">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="realm.html#js-realm.ImportDirectiveSer">ImportDirectiveSer</a> = <span class="tok-string">&#39;inherit&#39;</span> | <span class="tok-string">&#39;block&#39;</span> | {
+  <span class="tok-keyword">type</span>: <span class="tok-string">&#39;inherit&#39;</span>;
+} | {
+  <span class="tok-keyword">type</span>: <span class="tok-string">&#39;block&#39;</span>;
+} | {
+  <span class="tok-keyword">type</span>: <span class="tok-string">&#39;remap&#39;</span>;
+  target: <span class="tok-keyword">string</span>;
+} | {
+  <span class="tok-keyword">type</span>: <span class="tok-string">&#39;source&#39;</span>;
+  code: <span class="tok-keyword">string</span>;
+  source_map: <span class="tok-keyword">string</span>;
+} | {
+  <span class="tok-keyword">type</span>: <span class="tok-string">&#39;facade&#39;</span>;
+  specifier: <span class="tok-keyword">string</span>;
+  exports: <span class="tok-keyword">string</span>[];
+  streams?: <span class="tok-keyword">string</span>[];
+  sinks?: <span class="tok-keyword">string</span>[];
+}</code></h3>
 
 <p>Wire-format representation of an import directive.</p>
 <p>Directives control how a child realm resolves an import that matches an <code>ImportRule</code>. String forms are accepted for convenience and normalized to the Rust serde layout before crossing the native bridge. <code>source</code> injects an in-memory module, <code>remap</code> redirects to another specifier, and <code>facade</code> exposes parent-side RPC handlers.</p>
@@ -46,7 +63,7 @@
 
 </section>
 
-<section id="js-realm.RealmFn">
+<section class="docs-symbol" id="js-realm.RealmFn">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a> = (...args: <span class="tok-keyword">any</span>[]) =&gt; <span class="tok-keyword">any</span></code></h3>
 
 <p>Function shape used by <code>Realm.call()</code> and <code>RealmPool.call()</code>.</p>
@@ -61,7 +78,7 @@
 
 <h2>Interfaces</h2>
 
-<section id="js-realm.ImportRule">
+<section class="docs-symbol" id="js-realm.ImportRule">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="realm.html#js-realm.ImportRule">ImportRule</a> {</code></h3>
 
 <p>Import rule applied to module resolution inside a child realm.</p>
@@ -115,7 +132,7 @@
 
 </section>
 
-<section id="js-realm.RealmProviders">
+<section class="docs-symbol" id="js-realm.RealmProviders">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="realm.html#js-realm.RealmProviders">RealmProviders</a> {</code></h3>
 
 <p>Legacy provider overrides installed in a child realm.</p>
@@ -161,7 +178,7 @@
 
 </section>
 
-<section id="js-realm.RealmOptions">
+<section class="docs-symbol" id="js-realm.RealmOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="realm.html#js-realm.RealmOptions">RealmOptions</a> {</code></h3>
 
 <p>Options for constructing and running a child realm.</p>
@@ -301,7 +318,7 @@
 
 </section>
 
-<section id="js-realm.RealmSourceOptions">
+<section class="docs-symbol" id="js-realm.RealmSourceOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="realm.html#js-realm.RealmSourceOptions">RealmSourceOptions</a> <span class="tok-keyword">extends</span> Omit&lt;<a class="tok-type" href="realm.html#js-realm.RealmOptions">RealmOptions</a>, <span class="tok-string">&#39;entry&#39;</span> | <span class="tok-string">&#39;watch&#39;</span>&gt; {</code></h3>
 
 <p>Options for creating a Realm from in-memory entrypoint source.</p>
@@ -339,7 +356,7 @@
 
 <h2>Classes</h2>
 
-<section id="js-realm.ImportMap">
+<section class="docs-symbol" id="js-realm.ImportMap">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.ImportMap">ImportMap</a> {</code></h3>
 
 <p>An ordered list of import rules to apply to a child Realm.</p>
@@ -392,7 +409,7 @@ console.log(documentedClass);</code></pre>
 
 </section>
 
-<section id="js-realm.FacadeHandle">
+<section class="docs-symbol" id="js-realm.FacadeHandle">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.FacadeHandle">FacadeHandle</a> {</code></h3>
 
 <p>A stateful object handle returned from a Facade handler.</p>
@@ -408,7 +425,20 @@ console.log(documentedClass);</code></pre>
 <h4>Constructors</h4>
 
 <section class="member" id="js-realm.FacadeHandle.constructor">
-<h5><code><span class="tok-keyword">constructor</span>( scalar: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, (...args: <span class="tok-keyword">unknown</span>[]) =&gt; <span class="tok-keyword">unknown</span>&gt; = {}, streams: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, (...args: <span class="tok-keyword">unknown</span>[]) =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">unknown</span>&gt;&gt; = {}, sinks: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, (args: <span class="tok-keyword">unknown</span>[], source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">unknown</span>&gt;) =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">unknown</span>&gt;&gt; = {}, )</code></h5>
+<h5><code><span class="tok-keyword">constructor</span>(
+  scalar: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, (
+    ...args: <span class="tok-keyword">unknown</span>[]
+  ) =&gt; <span class="tok-keyword">unknown</span>&gt; = {
+  },
+  streams: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, (
+    ...args: <span class="tok-keyword">unknown</span>[]
+  ) =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">unknown</span>&gt;&gt; = {
+  },
+  sinks: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, (
+    args: <span class="tok-keyword">unknown</span>[], source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">unknown</span>&gt;
+  ) =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">unknown</span>&gt;&gt; = {
+  }
+)</code></h5>
 
 <p>Create a stateful handle with scalar, read-stream, and write-stream methods.</p>
 <p>Scalar methods return one response, stream methods return an <code>AsyncIterable</code>, and sink methods receive chunks from the child as an <code>AsyncIterable</code>. Empty maps are allowed.</p>
@@ -423,7 +453,7 @@ console.log(documentedClass);</code></pre>
 
 </section>
 
-<section id="js-realm.Facade">
+<section class="docs-symbol" id="js-realm.Facade">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.Facade">Facade</a> {</code></h3>
 
 <p>Public facade exposed to a child realm as a synthetic module.</p>
@@ -455,7 +485,9 @@ console.log(documentedClass);</code></pre>
 <h4>Static Methods</h4>
 
 <section class="member" id="js-realm.Facade.from">
-<h5><code><span class="tok-keyword">static</span> from(obj: <span class="tok-keyword">object</span>, opts: { specifier: <span class="tok-keyword">string</span> }): <a class="tok-type" href="realm.html#js-realm.Facade">Facade</a></code></h5>
+<h5><code><span class="tok-keyword">static</span> from(obj: <span class="tok-keyword">object</span>, opts: {
+  specifier: <span class="tok-keyword">string</span>;
+}): <a class="tok-type" href="realm.html#js-realm.Facade">Facade</a></code></h5>
 
 <p>Create a facade from callable properties on an object or class instance.</p>
 <p>Own functions and prototype methods are exported. Non-function properties are ignored. Each generated handler calls the original method with the original object as the receiver expression.</p>
@@ -493,7 +525,13 @@ facade.stream(<span class="tok-string">&#39;tail&#39;</span>, <span class="tok-k
 </section>
 
 <section class="member" id="js-realm.Facade.sendStream">
-<h5><code>sendStream(method: <span class="tok-keyword">string</span>, fn: (args: <span class="tok-keyword">unknown</span>[], source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">unknown</span>&gt;) =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">unknown</span>&gt;): <span class="tok-keyword">this</span></code></h5>
+<h5><code>sendStream(
+  method: <span class="tok-keyword">string</span>,
+  fn: (
+    args: <span class="tok-keyword">unknown</span>[],
+    source: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/AsyncIterator">AsyncIterable</a>&lt;<span class="tok-keyword">unknown</span>&gt;
+  ) =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">unknown</span>&gt;
+): <span class="tok-keyword">this</span></code></h5>
 
 <p>Register a write-stream (sink) handler - the child sends chunks to the parent via <code>__rpc_send_chunk</code> envelopes (child-&gt;parent, no per-chunk ack).</p>
 <p>The handler receives <code>(args, source: AsyncIterable&lt;unknown&gt;)</code> and should drain <code>source</code> to completion before returning the final result.</p>
@@ -511,7 +549,7 @@ facade.sendStream(<span class="tok-string">&#39;write&#39;</span>, <span class="
 
 </section>
 
-<section id="js-realm.DiskFsConfig">
+<section class="docs-symbol" id="js-realm.DiskFsConfig">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.DiskFsConfig">DiskFsConfig</a> {</code></h3>
 
 <p>Use the real on-disk filesystem for this realm.</p>
@@ -587,7 +625,7 @@ console.log(config.options.root);</code></pre>
 
 </section>
 
-<section id="js-realm.SystemNetConfig">
+<section class="docs-symbol" id="js-realm.SystemNetConfig">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.SystemNetConfig">SystemNetConfig</a> {</code></h3>
 
 <p>Use the system network stack for this realm.</p>
@@ -636,7 +674,7 @@ console.log(<span class="tok-keyword">new</span> SystemNetConfig().<span class="
 
 </section>
 
-<section id="js-realm.SystemDnsConfig">
+<section class="docs-symbol" id="js-realm.SystemDnsConfig">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.SystemDnsConfig">SystemDnsConfig</a> {</code></h3>
 
 <p>Use the system DNS resolver for this realm.</p>
@@ -685,7 +723,7 @@ console.log(<span class="tok-keyword">new</span> SystemDnsConfig().<span class="
 
 </section>
 
-<section id="js-realm.ProcessPort">
+<section class="docs-symbol" id="js-realm.ProcessPort">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.ProcessPort">ProcessPort</a> <span class="tok-keyword">extends</span> BaseTransportPort {</code></h3>
 
 <p>ProcessPort wraps the process realm native functions with the same event-loop integration as ThreadPort: register the wake-fd with loop.readable(), drain messages on each wake, dispatch as MessageEvents.</p>
@@ -726,7 +764,7 @@ realm.port.postMessage({ job: <span class="tok-string">&#39;start&#39;</span> })
 
 </section>
 
-<section id="js-realm.Realm">
+<section class="docs-symbol" id="js-realm.Realm">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="realm.html#js-realm.Realm">Realm</a>&lt;F <span class="tok-keyword">extends</span> <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a> = <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a>&gt; {</code></h3>
 
 <p>Isolated child realm with its own module graph and communication port.</p>
@@ -755,7 +793,11 @@ realm.port.start();</code></pre>
 <h4>Static Methods</h4>
 
 <section class="member" id="js-realm.Realm.fromSource">
-<h5><code><span class="tok-keyword">static</span> fromSource&lt;F <span class="tok-keyword">extends</span> <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a> = <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a>&gt;( source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="realm.html#js-realm.RealmSourceOptions">RealmSourceOptions</a> = {}, ): <a class="tok-type" href="realm.html#js-realm.Realm">Realm</a>&lt;F&gt;</code></h5>
+<h5><code><span class="tok-keyword">static</span> fromSource&lt;F <span class="tok-keyword">extends</span> <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a> = <a class="tok-type" href="realm.html#js-realm.RealmFn">RealmFn</a>&gt;(
+  source: <span class="tok-keyword">string</span>,
+  options: <a class="tok-type" href="realm.html#js-realm.RealmSourceOptions">RealmSourceOptions</a> = {
+  }
+): <a class="tok-type" href="realm.html#js-realm.Realm">Realm</a>&lt;F&gt;</code></h5>
 
 <p>Create a Realm whose entrypoint is in-memory module source.</p>
 <p>The source is installed as an import-rule-backed entry module and then evaluated by the same Realm machinery used for file entries. Caller import rules, provider overrides, blocked specifiers, and execution mode options are preserved. Source entries cannot use <code>watch</code> because there is no entry file to monitor for changes.</p>

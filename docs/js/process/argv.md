@@ -787,7 +787,14 @@ console.log(invocation.providedOptions.has('env'));
 ### constructor
 
 ```ts
-constructor(command: Command, parent: CommandInvocation | null, args: Record<string, unknown>, options: Record<string, unknown>, positionals: unknown[], providedOptions: Set<string>)
+constructor(
+  command: Command,
+  parent: CommandInvocation | null,
+  args: Record<string, unknown>,
+  options: Record<string, unknown>,
+  positionals: unknown[],
+  providedOptions: Set<string>
+)
 ```
 
 Create a parsed invocation node.

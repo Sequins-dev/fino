@@ -132,7 +132,11 @@ const requestId = record.context.requestId;
 ### error
 
 ```ts
-error?: { name: string; message: string; stack?: string; }
+error?: {
+  name: string;
+  message: string;
+  stack?: string;
+}
 ```
 
 Normalized error details when the message or `fields.error` is an Error.
@@ -409,7 +413,9 @@ createLogger({ name: 'api', level: 'warn' }).level; // 'warn'
 ### child
 
 ```ts
-child(options: Fields | (Partial<LoggerOptions> & { name?: string }) = {}): Logger
+child(options: Fields | (Partial<LoggerOptions> & {
+  name?: string;
+}) = {}): Logger
 ```
 
 Create a child logger.

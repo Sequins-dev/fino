@@ -382,6 +382,14 @@ import { parse, type ParseDiagnostic } from 'fino:format/typescript';
 const diagnostic: ParseDiagnostic | undefined = parse('const =').errors[0];
 ```
 
+### code
+
+```ts
+code?: string
+```
+
+Stable diagnostic code from the parser, transformer, formatter, or linter.
+
 ### message
 
 ```ts
@@ -398,6 +406,46 @@ import { parse } from 'fino:format/typescript';
 
 const message = parse('const =').errors[0]?.message;
 ```
+
+### severity
+
+```ts
+severity?: 'error' | 'warning'
+```
+
+Diagnostic severity.
+
+### line
+
+```ts
+line?: number
+```
+
+One-based source line for the diagnostic start when available.
+
+### column
+
+```ts
+column?: number
+```
+
+One-based source column for the diagnostic start when available.
+
+### endLine
+
+```ts
+endLine?: number
+```
+
+One-based source line for the diagnostic end when available.
+
+### endColumn
+
+```ts
+endColumn?: number
+```
+
+One-based source column for the diagnostic end when available.
 
 ## ParseResult
 
@@ -503,7 +551,13 @@ const errors = parse('const =').errors;
 ### sourceType
 
 ```ts
-sourceType: { /** * Detected source language. * * TypeScript mode is selected for TypeScript, TSX, and declaration-file * inputs; JavaScript mode is selected for JS and JSX inputs. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('const x: number = 1;', { sourceType: 'ts' }).sourceType.language; * ``` */ language: 'typescript' | 'javascript'; /** * Detected module mode. * * OXC reports whether the source is a module, script, unambiguous input, or * CommonJS-shaped source according to parser mode and syntax. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('export const x = 1;').sourceType.moduleKind; * ``` */ moduleKind: 'module' | 'script' | 'unambiguous' | 'commonjs'; /** * Whether JSX syntax was enabled for the parse. * * This is true for JSX and TSX source modes. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('const el = <div />;', { sourceType: 'tsx' }).sourceType.jsx; * ``` */ jsx: boolean; /** * Whether the source was parsed as a TypeScript declaration file. * * This is true for `dts` or definition-file modes inferred from filenames * such as `types.d.ts`. * * ```ts no_run * import { parse } from 'fino:format/typescript'; * * parse('declare const x: string;', { filename: 'types.d.ts' }).sourceType.typescriptDefinition; * ``` */ typescriptDefinition: boolean; }
+sourceType: {
+  language: 'typescript' | 'javascript';
+  moduleKind: 'module' | 'script' | 'unambiguous' | 'commonjs';
+  jsx: boolean;
+  typescriptDefinition: boolean;
+}
+
 ```
 
 Source mode detected or selected by OXC.
@@ -656,6 +710,80 @@ import { transpile } from 'fino:format/typescript';
 const errors = transpile('const =', { sourceType: 'ts' }).errors;
 ```
 
+## FormatOptions
+
+```ts
+interface FormatOptions extends TranspileOptions {
+```
+
+Options controlling source formatting.
+
+## FormatResult
+
+```ts
+interface FormatResult {
+```
+
+Result returned by `format()`.
+
+### ok
+
+```ts
+ok: boolean
+```
+
+### code
+
+```ts
+code: string
+```
+
+### errors
+
+```ts
+errors: ParseDiagnostic[]
+```
+
+## LintOptions
+
+```ts
+interface LintOptions extends TranspileOptions {
+```
+
+Options controlling source linting.
+
+### fix
+
+```ts
+fix?: boolean
+```
+
+## LintResult
+
+```ts
+interface LintResult {
+```
+
+Result returned by `lint()`.
+
+### ok
+
+```ts
+ok: boolean
+```
+
+### diagnostics
+
+```ts
+diagnostics: ParseDiagnostic[]
+```
+
+### fixedCode
+
+```ts
+fixedCode?: string
+```
+
 ## parse
 
 ```ts
@@ -691,3 +819,19 @@ import { transpile } from 'fino:format/typescript';
 
 const { code } = transpile('const x: number = 1;', { sourceType: 'ts' });
 ```
+
+## format
+
+```ts
+function format(source: string, options: FormatOptions = {}): FormatResult
+```
+
+Format JavaScript or TypeScript source with the runtime's OXC-backed tooling.
+
+## lint
+
+```ts
+function lint(source: string, options: LintOptions = {}): LintResult
+```
+
+Lint JavaScript or TypeScript source with the runtime's default rule set.

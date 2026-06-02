@@ -256,7 +256,10 @@ mock.get('https://api.example/ping').twice().reply(204);
 ### reply
 
 ```ts
-reply(status = 200, body?: unknown, init: { headers?: unknown; statusText?: string } = {}): this
+reply(status = 200, body?: unknown, init: {
+  headers?: unknown;
+  statusText?: string;
+} = {}): this
 ```
 
 Respond with a new `Response` using the provided status, body, and init.
@@ -468,7 +471,16 @@ await scope.run(async () => {
 ## mockFetch
 
 ```ts
-async function mockFetch<T>( baseUrlOrFn: string | URL | ((mock: MockFetchScope) => T | Promise<T>), maybeFn?: (mock: MockFetchScope) => T | Promise<T>, ): Promise<T>
+async function mockFetch<T>(
+  baseUrlOrFn: string | URL | (
+    (
+      mock: MockFetchScope
+    ) => T | Promise<T>
+  ),
+  maybeFn?: (
+    mock: MockFetchScope
+  ) => T | Promise<T>
+): Promise<T>
 ```
 
 Temporarily replace global `fetch` while `fn` runs and verify expectations afterwards.

@@ -167,7 +167,7 @@ console.log(entry.name, entry.isFile());
 ### mkdir
 
 ```ts
-async mkdir(path: Path | string, mode: number = 0o755): Promise<void>
+async mkdir(path: Path | string, mode: number = 493): Promise<void>
 ```
 
 Create a directory.

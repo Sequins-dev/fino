@@ -148,7 +148,9 @@ ws.onerror = (event) => console.log(event.error);
 ### constructor
 
 ```ts
-constructor(type: string, init?: { error?: unknown })
+constructor(type: string, init?: {
+  error?: unknown;
+})
 ```
 
 Create an error event.
@@ -635,7 +637,7 @@ await conn.pong();
 ### close
 
 ```ts
-async close(code: number = 1000, reason: string = ''): Promise<void>
+async close(code: number = 1e3, reason: string = ''): Promise<void>
 ```
 
 Initiate the WebSocket close handshake.
@@ -651,7 +653,11 @@ await conn.close(1000, 'done');
 ### accept
 
 ```ts
-static accept(req: { method: string; url: string; headers: Headers }, opts: WebSocketAcceptOptions = {}): WebSocketConnection
+static accept(req: {
+  method: string;
+  url: string;
+  headers: Headers;
+}, opts: WebSocketAcceptOptions = {}): WebSocketConnection
 ```
 
 SERVER FACTORY — Synchronously validate an HTTP upgrade request and return

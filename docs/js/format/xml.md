@@ -560,7 +560,29 @@ if (node?.type === 'text') console.log(node.data);
 ## XmlEvent
 
 ```ts
-type XmlEvent = | { /** * Discriminator for start-element events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} }; * event.type; * ``` */ type: 'startElement'; /** * Element name for the start tag. * * With namespaces enabled, this is the local name. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} }; * event.name; * ``` */ name: string; /** * Source namespace prefix, or `null`. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: 'x', namespace: 'urn:x', attributes: {} }; * event.prefix; * ``` */ prefix: string | null; /** * Resolved namespace URI, or `null` when none is in scope. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: 'urn:x', attributes: {} }; * event.namespace; * ``` */ namespace: string | null; /** * Start-tag attributes as expanded string values. * * Namespace declaration attributes are omitted when namespace processing is * enabled. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: { id: 'a' } }; * event.attributes.id; * ``` */ attributes: Record<string, string>; } | { /** * Discriminator for end-element events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'endElement', name: 'root' }; * event.type; * ``` */ type: 'endElement'; /** * Element name for the closing tag. * * With namespaces enabled, this is the local name. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'endElement', name: 'root' }; * event.name; * ``` */ name: string; } | { /** * Discriminator for text events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'text', data: 'hello' }; * event.type; * ``` */ type: 'text'; /** * Text data after entity expansion. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'text', data: 'hello' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for CDATA events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'cdata', data: '<raw>' }; * event.type; * ``` */ type: 'cdata'; /** * Raw CDATA section content. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'cdata', data: '<raw>' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for comment events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'comment', data: 'note' }; * event.type; * ``` */ type: 'comment'; /** * Comment text without XML comment delimiters. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'comment', data: 'note' }; * event.data; * ``` */ data: string; } | { /** * Discriminator for processing-instruction events. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.type; * ``` */ type: 'pi'; /** * Processing instruction target. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.target; * ``` */ target: string; /** * Processing instruction data after the target. * * ```ts no_run * import type { XmlEvent } from 'fino:format/xml'; * * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' }; * event.data; * ``` */ data: string; }
+type XmlEvent = {
+  type: 'startElement';
+  name: string;
+  prefix: string | null;
+  namespace: string | null;
+  attributes: Record<string, string>;
+} | {
+  type: 'endElement';
+  name: string;
+} | {
+  type: 'text';
+  data: string;
+} | {
+  type: 'cdata';
+  data: string;
+} | {
+  type: 'comment';
+  data: string;
+} | {
+  type: 'pi';
+  target: string;
+  data: string;
+}
 ```
 
 SAX-style parse event emitted by `parseStream()`.
@@ -754,7 +776,11 @@ const doc = parse('<root><child /></root>');
 ## parseStream
 
 ```ts
-async function* parseStream( src: AsyncIterable<Uint8Array>, options: XmlParseOptions = {}, ): AsyncIterableIterator<XmlEvent>
+async function* parseStream(
+  src: AsyncIterable<Uint8Array>,
+  options: XmlParseOptions = {
+  },
+): AsyncIterableIterator<XmlEvent>
 ```
 
 Parse XML bytes into SAX-style events.

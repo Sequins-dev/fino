@@ -140,7 +140,11 @@ console.log(ctx.params?.id);
 ## Middleware
 
 ```ts
-type Middleware = (ctx: HttpContext, next: () => Promise<Response | ConnectionTakeover>) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>
+type Middleware = (
+  ctx: HttpContext,
+  next: (
+  ) => Promise<Response | ConnectionTakeover>
+) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>
 ```
 
 Koa-style middleware. Return a response to short-circuit or call `next()`.
@@ -159,7 +163,9 @@ const timing: Middleware = async (ctx, next) => {
 ## Handler
 
 ```ts
-type Handler = (ctx: HttpContext) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>
+type Handler = (
+  ctx: HttpContext
+) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>
 ```
 
 Terminal route handler.
@@ -410,7 +416,9 @@ app.get('/', () => new Response('ok'));
 ### constructor
 
 ```ts
-constructor(options: { name?: string } = {})
+constructor(options: {
+  name?: string;
+} = {})
 ```
 
 Create an application. `name` becomes the default OpenAPI title.
@@ -921,7 +929,11 @@ app.get('/secure', schema.headers(v.object({ authorization: v.string() })), hand
 ### response
 
 ```ts
-response(schemaValue: unknown, opts: { status?: number; description?: string; contentType?: string } = {}): Middleware
+response(schemaValue: unknown, opts: {
+  status?: number;
+  description?: string;
+  contentType?: string;
+} = {}): Middleware
 ```
 
 Validate downstream response bodies and contribute OpenAPI responses.
@@ -1217,7 +1229,11 @@ app.value('session', sessions({ store }));
 ## sessions
 
 ```ts
-function sessions(opts: { store: SessionStore; cookie?: string; cookieOptions?: CookieOptions }): Producer
+function sessions(opts: {
+  store: SessionStore;
+  cookie?: string;
+  cookieOptions?: CookieOptions;
+}): Producer
 ```
 
 Producer that loads a cookie-backed session and saves it after response creation.
@@ -1233,7 +1249,9 @@ app.value('cookies', cookies()).value('session', sessions({ store: memorySession
 ## errorHandler
 
 ```ts
-function errorHandler(opts: { expose?: boolean } = {}): Middleware
+function errorHandler(opts: {
+  expose?: boolean;
+} = {}): Middleware
 ```
 
 Middleware that converts uncaught errors to a JSON error response.
@@ -1248,7 +1266,10 @@ app.use(errorHandler({ expose: false }));
 ## staticFiles
 
 ```ts
-function staticFiles(root: string, opts: { index?: string; prefix?: string } = {}): Middleware
+function staticFiles(root: string, opts: {
+  index?: string;
+  prefix?: string;
+} = {}): Middleware
 ```
 
 Serve files from a local root directory, short-circuiting matched requests.

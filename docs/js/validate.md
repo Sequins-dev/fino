@@ -827,7 +827,10 @@ const value = parse<string>(v.string().min(1), 'ok');
 ## safeParse
 
 ```ts
-function safeParse<T = unknown>(schema: unknown, value: unknown): SafeParseSuccess<T> | SafeParseFailure
+function safeParse<T = unknown>(
+  schema: unknown,
+  value: unknown
+): SafeParseSuccess<T> | SafeParseFailure
 ```
 
 Parse a value once and return a tagged result instead of throwing.

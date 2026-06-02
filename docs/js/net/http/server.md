@@ -44,7 +44,12 @@ appropriate responses.
 ## serve
 
 ```ts
-function serve( options: ServeOptions, handler: (req: Request) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>, ): ServeServer
+function serve(
+  options: ServeOptions,
+  handler: (
+    req: Request
+  ) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>
+): ServeServer
 ```
 
 Start an HTTP server.

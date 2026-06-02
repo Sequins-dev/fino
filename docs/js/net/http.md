@@ -349,7 +349,10 @@ headers.forEach((value, name) => console.log(name, value));
 ## _parseHeaders
 
 ```ts
-function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers }
+function _parseHeaders(raw: Uint8Array): {
+  firstLine: string;
+  headers: Headers;
+}
 ```
 
 Parse a raw header block (everything up to and including "\r\n\r\n") into
@@ -932,7 +935,10 @@ const req = await parseRequest(reader);
 ## parseResponse
 
 ```ts
-async function parseResponse( source: AsyncIterable<Uint8Array | ArrayBuffer>, method?: string, ): Promise<Response>
+async function parseResponse(
+  source: AsyncIterable<Uint8Array | ArrayBuffer>,
+  method?: string
+): Promise<Response>
 ```
 
 Parse an HTTP response from a byte stream.
@@ -1003,7 +1009,10 @@ for await (const chunk of serializeRequest(req)) {
 ## connectionParser
 
 ```ts
-function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext(): Promise<Request>, parseBufferedNext(): Request | null }
+function connectionParser(source: AsyncIterable<Uint8Array>): {
+  parseNext(): Promise<Request>;
+  parseBufferedNext(): Request | null;
+}
 ```
 
 Create a persistent HTTP/1.x request parser for a single connection.
@@ -1026,7 +1035,19 @@ const req = await parser.parseNext();
 ## buildWireResponse
 
 ```ts
-function buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): Response
+function buildWireResponse(
+  {
+    version,
+    status,
+    statusText,
+    headers,
+    body,
+    url,
+    redirected,
+    outTrailers,
+    inTrailers
+  }: WireResponseInit
+): Response
 ```
 
 Build a Response from already-prepared wire components.

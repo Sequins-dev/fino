@@ -153,7 +153,10 @@ await db.close();
 ### run
 
 ```ts
-async run(...params: SqlValue[]): Promise<{ changes: number; lastInsertRowid: bigint }>
+async run(...params: SqlValue[]): Promise<{
+  changes: number;
+  lastInsertRowid: bigint;
+}>
 ```
 
 Execute the statement and return write metadata.

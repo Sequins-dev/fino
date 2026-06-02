@@ -41,7 +41,13 @@ const value: Attributes = {} as Attributes;
 ## ScopeInfo
 
 ```ts
-type ScopeInfo = { /** * name property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['name']; * ``` */ name: string; /** * version property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['version']; * ``` */ version?: string; /** * schemaUrl property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['schemaUrl']; * ``` */ schemaUrl?: string | null; /** * attributes property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['attributes']; * ``` */ attributes?: Attributes; /** * droppedAttributesCount property on ScopeInfo. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * let value: ScopeInfo['droppedAttributesCount']; * ``` */ droppedAttributesCount?: number; }
+type ScopeInfo = {
+  name: string;
+  version?: string;
+  schemaUrl?: string | null;
+  attributes?: Attributes;
+  droppedAttributesCount?: number;
+}
 ```
 
 ScopeInfo type used by the internal OpenTelemetry runtime.
@@ -97,7 +103,12 @@ const value: MetricAggregationType = {} as MetricAggregationType;
 ## CarrierLike
 
 ```ts
-type CarrierLike = { [key: string]: unknown; /** * get method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['get'] = undefined as never; * ``` */ get?(key: string): unknown; /** * set method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['set'] = undefined as never; * ``` */ set?(key: string, value: unknown): unknown; /** * keys method on CarrierLike. * * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads. * * ```typescript no_run * const member: CarrierLike['keys'] = undefined as never; * ``` */ keys?(): Iterable<string>; }
+type CarrierLike = {
+  [key: string]: unknown;
+  get?(key: string): unknown;
+  set?(key: string, value: unknown): unknown;
+  keys?(): Iterable<string>;
+}
 ```
 
 CarrierLike type used by the internal OpenTelemetry runtime.
@@ -2043,7 +2054,11 @@ let value: MetricView['attributeKeys'];
 ### aggregation
 
 ```ts
-aggregation?: { type: MetricAggregationType; boundaries?: number[]; monotonic?: boolean; }
+aggregation?: {
+  type: MetricAggregationType;
+  boundaries?: number[];
+  monotonic?: boolean;
+}
 ```
 
 aggregation property on MetricView.
@@ -2953,7 +2968,11 @@ let value: ResourceOptions['droppedAttributesCount'];
 ### entityRefs
 
 ```ts
-entityRefs?: Array<{ schemaUrl?: string; type?: string; idKeys?: string[] }>
+entityRefs?: Array<{
+  schemaUrl?: string;
+  type?: string;
+  idKeys?: string[];
+}>
 ```
 
 entityRefs property on ResourceOptions.
@@ -3429,7 +3448,13 @@ const fn = scopeSegment;
 ## normalizeScope
 
 ```ts
-function normalizeScope( name: string, version?: string, schemaUrl?: string | null, attributes?: Attributes, droppedAttributesCount?: number, ): ScopeInfo
+function normalizeScope(
+  name: string,
+  version?: string,
+  schemaUrl?: string | null,
+  attributes?: Attributes,
+  droppedAttributesCount?: number
+): ScopeInfo
 ```
 
 normalizeScope function used by the internal OpenTelemetry runtime.
@@ -3457,7 +3482,12 @@ const fn = topicNames;
 ## publishScoped
 
 ```ts
-function publishScoped<TPayload>(signal: SignalName, scope: ScopeInfo, suffixes: string[], payload: TPayload): void
+function publishScoped<TPayload>(
+  signal: SignalName,
+  scope: ScopeInfo,
+  suffixes: string[],
+  payload: TPayload
+): void
 ```
 
 publishScoped function used by the internal OpenTelemetry runtime.
@@ -3555,7 +3585,11 @@ const getter = Resource.prototype.droppedAttributesCount;
 ### entityRefs
 
 ```ts
-get entityRefs(): Array<{ schemaUrl?: string; type?: string; idKeys: string[] }>
+get entityRefs(): Array<{
+  schemaUrl?: string;
+  type?: string;
+  idKeys: string[];
+}>
 ```
 
 entityRefs member on Resource.
@@ -3739,7 +3773,11 @@ const ctor = TextMapPropagator;
 ### inject
 
 ```ts
-inject<TCarrier = CarrierLike>( _carrier: TCarrier, _context: TraceContext | null | undefined, _carrierApi?: CarrierApi<TCarrier>, ): void
+inject<TCarrier = CarrierLike>(
+  _carrier: TCarrier,
+  _context: TraceContext | null | undefined,
+  _carrierApi?: CarrierApi<TCarrier>
+): void
 ```
 
 Injects trace context into a carrier.
@@ -3755,7 +3793,10 @@ new TextMapPropagator().inject({}, null);
 ### extract
 
 ```ts
-extract<TCarrier = CarrierLike>(_carrier: TCarrier, _carrierApi?: CarrierApi<TCarrier>): TraceContext | null
+extract<TCarrier = CarrierLike>(
+  _carrier: TCarrier,
+  _carrierApi?: CarrierApi<TCarrier>
+): TraceContext | null
 ```
 
 Extracts trace context from a carrier.
@@ -3785,7 +3826,10 @@ const fn = defaultCarrierApiFor;
 ## carrierApiFor
 
 ```ts
-function carrierApiFor<TCarrier>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): CarrierApi<TCarrier>
+function carrierApiFor<TCarrier>(
+  carrier: TCarrier,
+  carrierApi?: CarrierApi<TCarrier>
+): CarrierApi<TCarrier>
 ```
 
 carrierApiFor function used by the internal OpenTelemetry runtime.
@@ -3799,7 +3843,10 @@ const fn = carrierApiFor;
 ## snapshotCarrier
 
 ```ts
-function snapshotCarrier<TCarrier extends CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): Record<string, unknown>
+function snapshotCarrier<TCarrier extends CarrierLike>(
+  carrier: TCarrier,
+  carrierApi?: CarrierApi<TCarrier>
+): Record<string, unknown>
 ```
 
 snapshotCarrier function used by the internal OpenTelemetry runtime.
@@ -3953,7 +4000,11 @@ const member = Propagation.setPropagator;
 ### inject
 
 ```ts
-inject<TCarrier = CarrierLike>( carrier: TCarrier, context?: TraceContext | null, carrierApi?: CarrierApi<TCarrier>, ): void
+inject<TCarrier = CarrierLike>(
+  carrier: TCarrier,
+  context?: TraceContext | null,
+  carrierApi?: CarrierApi<TCarrier>
+): void
 ```
 
 Injects the active or provided context through the configured propagator.
@@ -3969,7 +4020,10 @@ Propagation.inject({}, { traceId: '0'.repeat(32), spanId: '1'.repeat(16) });
 ### extract
 
 ```ts
-extract<TCarrier = CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): TraceContext | null
+extract<TCarrier = CarrierLike>(
+  carrier: TCarrier,
+  carrierApi?: CarrierApi<TCarrier>
+): TraceContext | null
 ```
 
 Extracts context through the configured propagator.
@@ -3998,7 +4052,11 @@ const ctor = W3CTraceContextPropagator;
 ### inject
 
 ```ts
-inject<TCarrier = CarrierLike>( carrier: TCarrier, context: TraceContext | null | undefined, carrierApi?: CarrierApi<TCarrier>, ): void
+inject<TCarrier = CarrierLike>(
+  carrier: TCarrier,
+  context: TraceContext | null | undefined,
+  carrierApi?: CarrierApi<TCarrier>
+): void
 ```
 
 Writes W3C `traceparent` and optional `tracestate` values into a carrier.
@@ -4013,7 +4071,10 @@ new W3CTraceContextPropagator().inject({}, { traceId: '0'.repeat(31) + '1', span
 ### extract
 
 ```ts
-extract<TCarrier = CarrierLike>(carrier: TCarrier, carrierApi?: CarrierApi<TCarrier>): TraceContext | null
+extract<TCarrier = CarrierLike>(
+  carrier: TCarrier,
+  carrierApi?: CarrierApi<TCarrier>
+): TraceContext | null
 ```
 
 Reads W3C trace context from `traceparent` and optional `tracestate`.
@@ -4085,7 +4146,13 @@ const fn = truncateAttributeValue;
 ## limitAttributeEntries
 
 ```ts
-function limitAttributeEntries( attributes: Attributes, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number }, ): { attrs: Attributes; dropped: number }
+function limitAttributeEntries(attributes: Attributes, limits: {
+  attributeCountLimit?: number;
+  attributeValueLengthLimit?: number;
+}): {
+  attrs: Attributes;
+  dropped: number;
+}
 ```
 
 limitAttributeEntries function used by the internal OpenTelemetry runtime.
@@ -4127,7 +4194,15 @@ const fn = otelRuntimeTopic;
 ## otelRuntimeEvent
 
 ```ts
-function otelRuntimeEvent<TPayload extends Record<string, unknown>>( domain: string, operation: string, phase: string, payload: TPayload = {} as TPayload, ): TPayload & { schemaVersion: number; topic: string; family: string; domain: string; operation: string; phase: string; correlationId: unknown; }
+function otelRuntimeEvent<TPayload extends Record<string, unknown>>(domain: string, operation: string, phase: string, payload: TPayload = {} as TPayload): TPayload & {
+  schemaVersion: number;
+  topic: string;
+  family: string;
+  domain: string;
+  operation: string;
+  phase: string;
+  correlationId: unknown;
+}
 ```
 
 otelRuntimeEvent function used by the internal OpenTelemetry runtime.
@@ -4205,7 +4280,11 @@ const ctor = TracerProvider;
 ### getTracer
 
 ```ts
-getTracer( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Tracer
+getTracer(name: string, version?: string, options?: {
+  schemaUrl?: string | null;
+  attributes?: Attributes;
+  droppedAttributesCount?: number;
+}): Tracer
 ```
 
 getTracer member on TracerProvider.
@@ -4443,7 +4522,10 @@ const getter = Tracer.prototype.scope;
 ### publishTrace
 
 ```ts
-publishTrace(kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', payload: SpanRecord & Record<string, unknown>): void
+publishTrace(
+  kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename',
+  payload: SpanRecord & Record<string, unknown>
+): void
 ```
 
 publishTrace member on Tracer.
@@ -4485,7 +4567,10 @@ const fn = applySpanLimits;
 ## isScopedTraceTopic
 
 ```ts
-function isScopedTraceTopic( name: string, phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', ): boolean
+function isScopedTraceTopic(
+  name: string,
+  phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename'
+): boolean
 ```
 
 isScopedTraceTopic function used by the internal OpenTelemetry runtime.
@@ -4611,7 +4696,33 @@ const fn = runWithActiveSpan;
 ## SeverityNumber
 
 ```ts
-enum SeverityNumber { /** * TRACE numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE; * ``` */ TRACE = 1, /** * TRACE2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE2; * ``` */ TRACE2 = 2, /** * TRACE3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE3; * ``` */ TRACE3 = 3, /** * TRACE4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.TRACE4; * ``` */ TRACE4 = 4, /** * DEBUG numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG; * ``` */ DEBUG = 5, /** * DEBUG2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG2; * ``` */ DEBUG2 = 6, /** * DEBUG3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG3; * ``` */ DEBUG3 = 7, /** * DEBUG4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.DEBUG4; * ``` */ DEBUG4 = 8, /** * INFO numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO; * ``` */ INFO = 9, /** * INFO2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO2; * ``` */ INFO2 = 10, /** * INFO3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO3; * ``` */ INFO3 = 11, /** * INFO4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.INFO4; * ``` */ INFO4 = 12, /** * WARN numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN; * ``` */ WARN = 13, /** * WARN2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN2; * ``` */ WARN2 = 14, /** * WARN3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN3; * ``` */ WARN3 = 15, /** * WARN4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.WARN4; * ``` */ WARN4 = 16, /** * ERROR numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR; * ``` */ ERROR = 17, /** * ERROR2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR2; * ``` */ ERROR2 = 18, /** * ERROR3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR3; * ``` */ ERROR3 = 19, /** * ERROR4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.ERROR4; * ``` */ ERROR4 = 20, /** * FATAL numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL; * ``` */ FATAL = 21, /** * FATAL2 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL2; * ``` */ FATAL2 = 22, /** * FATAL3 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL3; * ``` */ FATAL3 = 23, /** * FATAL4 numeric severity value in SeverityNumber. * * The value follows the OpenTelemetry severity-number range. It is a stable numeric marker and does not perform validation by itself. * * ```typescript no_run * const severity = SeverityNumber.FATAL4; * ``` */ FATAL4 = 24, }
+enum SeverityNumber {
+  TRACE = 1,
+  TRACE2 = 2,
+  TRACE3 = 3,
+  TRACE4 = 4,
+  DEBUG = 5,
+  DEBUG2 = 6,
+  DEBUG3 = 7,
+  DEBUG4 = 8,
+  INFO = 9,
+  INFO2 = 10,
+  INFO3 = 11,
+  INFO4 = 12,
+  WARN = 13,
+  WARN2 = 14,
+  WARN3 = 15,
+  WARN4 = 16,
+  ERROR = 17,
+  ERROR2 = 18,
+  ERROR3 = 19,
+  ERROR4 = 20,
+  FATAL = 21,
+  FATAL2 = 22,
+  FATAL3 = 23,
+  FATAL4 = 24
+}
+
 ```
 
 SeverityNumber enum used by the internal OpenTelemetry runtime.
@@ -4639,7 +4750,11 @@ const ctor = LoggerProvider;
 ### getLogger
 
 ```ts
-getLogger( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Logger
+getLogger(name: string, version?: string, options?: {
+  schemaUrl?: string | null;
+  attributes?: Attributes;
+  droppedAttributesCount?: number;
+}): Logger
 ```
 
 getLogger member on LoggerProvider.
@@ -4695,7 +4810,11 @@ const getter = Logger.prototype.scope;
 ### emit
 
 ```ts
-emit(body: unknown, options: { severityText?: string; severityNumber?: number; attributes?: Attributes } = {}): void
+emit(body: unknown, options: {
+  severityText?: string;
+  severityNumber?: number;
+  attributes?: Attributes;
+} = {}): void
 ```
 
 emit member on Logger.
@@ -4961,7 +5080,10 @@ const member = LogRecordBuilder.prototype.build;
 ## applyLogLimits
 
 ```ts
-function applyLogLimits( log: LogRecord, limits: { attributeCountLimit?: number; attributeValueLengthLimit?: number } = {}, ): LogRecord
+function applyLogLimits(log: LogRecord, limits: {
+  attributeCountLimit?: number;
+  attributeValueLengthLimit?: number;
+} = {}): LogRecord
 ```
 
 applyLogLimits function used by the internal OpenTelemetry runtime.
@@ -5045,7 +5167,11 @@ const ctor = MeterProvider;
 ### getMeter
 
 ```ts
-getMeter( name: string, version?: string, options?: { schemaUrl?: string | null; attributes?: Attributes; droppedAttributesCount?: number }, ): Meter
+getMeter(name: string, version?: string, options?: {
+  schemaUrl?: string | null;
+  attributes?: Attributes;
+  droppedAttributesCount?: number;
+}): Meter
 ```
 
 getMeter member on MeterProvider.
@@ -5157,7 +5283,11 @@ const ctor = HistogramInstrument;
 ### constructor
 
 ```ts
-constructor(meter: Meter, name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {})
+constructor(meter: Meter, name: string, options: MetricInstrumentOptions & {
+  advice?: {
+    explicitBucketBoundaries?: number[];
+  };
+} = {})
 ```
 
 constructor member on HistogramInstrument.
@@ -5199,7 +5329,9 @@ const ctor = ObservableGauge;
 ### constructor
 
 ```ts
-constructor(handle: { dispose(): void })
+constructor(handle: {
+  dispose(): void;
+})
 ```
 
 constructor member on ObservableGauge.
@@ -5339,7 +5471,9 @@ const instance = new Meter();
 ### record
 
 ```ts
-record(name: string, value: number, options: MetricInstrumentOptions & { explicitBounds?: number[] } = {}): void
+record(name: string, value: number, options: MetricInstrumentOptions & {
+  explicitBounds?: number[];
+} = {}): void
 ```
 
 record member on Meter.
@@ -5381,7 +5515,11 @@ const member = Meter.prototype.createUpDownCounter;
 ### createHistogram
 
 ```ts
-createHistogram(name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {}): HistogramInstrument
+createHistogram(name: string, options: MetricInstrumentOptions & {
+  advice?: {
+    explicitBucketBoundaries?: number[];
+  };
+} = {}): HistogramInstrument
 ```
 
 createHistogram member on Meter.
@@ -5409,7 +5547,12 @@ const member = Meter.prototype.createGauge;
 ### createObservableCounter
 
 ```ts
-createObservableCounter(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableCounter
+createObservableCounter(
+  name: string,
+  callback: ObservableMetricRegistration['callback'],
+  options: MetricInstrumentOptions = {
+  }
+): ObservableCounter
 ```
 
 createObservableCounter member on Meter.
@@ -5423,7 +5566,12 @@ const member = Meter.prototype.createObservableCounter;
 ### createObservableUpDownCounter
 
 ```ts
-createObservableUpDownCounter( name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}, ): ObservableUpDownCounter
+createObservableUpDownCounter(
+  name: string,
+  callback: ObservableMetricRegistration['callback'],
+  options: MetricInstrumentOptions = {
+  }
+): ObservableUpDownCounter
 ```
 
 createObservableUpDownCounter member on Meter.
@@ -5437,7 +5585,12 @@ const member = Meter.prototype.createObservableUpDownCounter;
 ### createObservableGauge
 
 ```ts
-createObservableGauge(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableGauge
+createObservableGauge(
+  name: string,
+  callback: ObservableMetricRegistration['callback'],
+  options: MetricInstrumentOptions = {
+  }
+): ObservableGauge
 ```
 
 createObservableGauge member on Meter.
@@ -5857,7 +6010,9 @@ const ctor = MetricReader;
 ### constructor
 
 ```ts
-constructor(options: { temporality?: MetricTemporality } = {})
+constructor(options: {
+  temporality?: MetricTemporality;
+} = {})
 ```
 
 constructor member on MetricReader.
@@ -5997,7 +6152,11 @@ const ctor = BatchSpanProcessor;
 ### constructor
 
 ```ts
-constructor(exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number } = {})
+constructor(exporter: OtelExporter, options: {
+  maxQueueSize?: number;
+  maxExportBatchSize?: number;
+  scheduledDelayMillis?: number;
+} = {})
 ```
 
 constructor member on BatchSpanProcessor.
@@ -6081,7 +6240,13 @@ const ctor = BatchLogRecordProcessor;
 ### constructor
 
 ```ts
-constructor( exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number; attributeCountLimit?: number; attributeValueLengthLimit?: number; } = {}, )
+constructor(exporter: OtelExporter, options: {
+  maxQueueSize?: number;
+  maxExportBatchSize?: number;
+  scheduledDelayMillis?: number;
+  attributeCountLimit?: number;
+  attributeValueLengthLimit?: number;
+} = {})
 ```
 
 constructor member on BatchLogRecordProcessor.
@@ -6151,7 +6316,10 @@ const ctor = PeriodicMetricReader;
 ### constructor
 
 ```ts
-constructor(exporter: OtelExporter, options: { temporality?: MetricTemporality; intervalMs?: number } = {})
+constructor(exporter: OtelExporter, options: {
+  temporality?: MetricTemporality;
+  intervalMs?: number;
+} = {})
 ```
 
 constructor member on PeriodicMetricReader.
@@ -6253,7 +6421,19 @@ const ctor = OtelSDK;
 ### constructor
 
 ```ts
-constructor(options: { exporters?: OtelExporter[]; instrumentations?: Instrumentation[]; spanProcessors?: SpanProcessor[]; logRecordProcessors?: LogRecordProcessor[]; metricReaders?: MetricReader[]; sampler?: Sampler; propagator?: TextMapPropagator; views?: MetricView[]; metricCardinalityLimit?: number; spanLimits?: SpanLimits; resource?: Resource | Record<string, unknown> | null; } = {})
+constructor(options: {
+  exporters?: OtelExporter[];
+  instrumentations?: Instrumentation[];
+  spanProcessors?: SpanProcessor[];
+  logRecordProcessors?: LogRecordProcessor[];
+  metricReaders?: MetricReader[];
+  sampler?: Sampler;
+  propagator?: TextMapPropagator;
+  views?: MetricView[];
+  metricCardinalityLimit?: number;
+  spanLimits?: SpanLimits;
+  resource?: Resource | Record<string, unknown> | null;
+} = {})
 ```
 
 constructor member on OtelSDK.

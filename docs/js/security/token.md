@@ -146,7 +146,12 @@ const options: VerifyTokenOptions = { clockTolerance: 30 };
 ## issueToken
 
 ```ts
-function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string
+function issueToken(
+  payload: Record<string, unknown>,
+  secret: BufferLike,
+  options: IssueTokenOptions = {
+  }
+): string
 ```
 
 Issue a signed opaque JSON token as `payload.signature`.
@@ -167,7 +172,12 @@ const token = issueToken({ sub: 'user-123' }, 'secret', {
 ## verifyToken
 
 ```ts
-function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null
+function verifyToken(
+  token: string,
+  secret: BufferLike,
+  options: VerifyTokenOptions = {
+  }
+): Record<string, unknown> | null
 ```
 
 Verify a signed opaque JSON token and return its JSON payload.

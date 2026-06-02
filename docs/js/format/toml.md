@@ -435,7 +435,9 @@ JSON.stringify({
 ## TomlValue
 
 ```ts
-type TomlValue = | string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | { /** * TOML table key mapped to another TOML-compatible value. * * Nested objects become TOML tables or inline tables depending on * stringifier context. * * ```ts no_run * import type { TomlValue } from 'fino:format/toml'; * * const table: TomlValue = { server: { port: 8080 } }; * ``` */ [k: string]: TomlValue; }
+type TomlValue = string | number | bigint | boolean | Date | TomlLocalDate | TomlLocalTime | TomlLocalDateTime | TomlValue[] | {
+  [k: string]: TomlValue;
+}
 ```
 
 Value types produced by the TOML parser and accepted by the stringifier.
@@ -524,7 +526,11 @@ stringify({ server: { port: 8080 } }, { indent: '' });
 ## parse
 
 ```ts
-function parse(input: string | Uint8Array, options: TomlParseOptions = {}): Record<string, TomlValue>
+function parse(
+  input: string | Uint8Array,
+  options: TomlParseOptions = {
+  }
+): Record<string, TomlValue>
 ```
 
 Parse a TOML document into a plain object.

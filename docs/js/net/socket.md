@@ -654,7 +654,10 @@ shutdown(fd, SHUT_RDWR);
 ## encodeAddr
 
 ```ts
-function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number }
+function encodeAddr(addr: Address): {
+  buf: ArrayBuffer;
+  len: number;
+}
 ```
 
 Encode a JS socket address into a native `sockaddr` buffer and byte length.
@@ -719,7 +722,12 @@ setNonblocking(fd);
 ## setsockopt
 
 ```ts
-function setsockopt(fd: number, level: number, optname: number, value: boolean | number | ArrayBuffer): void
+function setsockopt(
+  fd: number,
+  level: number,
+  optname: number,
+  value: boolean | number | ArrayBuffer
+): void
 ```
 
 Set socket option. Value can be a boolean/number (written as 4-byte int)
@@ -797,7 +805,10 @@ listen(fd, 128);
 ## accept
 
 ```ts
-function accept(serverFd: number, setNonblock: boolean = true): { fd: number; addr: Address | UnknownAddress } | null
+function accept(serverFd: number, setNonblock: boolean = true): {
+  fd: number;
+  addr: Address | UnknownAddress;
+} | null
 ```
 
 Accept a pending connection. Returns `{ fd, addr }`.
@@ -862,7 +873,12 @@ if (chunk === null) console.log('peer closed');
 ## sendto
 
 ```ts
-function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Address, flags: number = 0): number
+function sendto(
+  fd: number,
+  data: Uint8Array | ArrayBuffer,
+  destAddr: Address,
+  flags: number = 0
+): number
 ```
 
 Send a datagram to a specific address (UDP).
@@ -877,7 +893,10 @@ sendto(fd, packet, { family: 'ipv4', ip: '8.8.8.8', port: 53 });
 ## recvfrom
 
 ```ts
-function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | UnknownAddress } | number
+function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): {
+  data: Uint8Array;
+  addr: Address | UnknownAddress;
+} | number
 ```
 
 Receive a datagram (UDP). Returns `{ data, addr }` or null on EAGAIN.

@@ -27,7 +27,7 @@ const { payload } = await jwtVerify(token, key, { clockTolerance: 30 });
 ## JwtAlgorithm
 
 ```ts
-type JwtAlgorithm = | 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'
+type JwtAlgorithm = 'HS256' | 'HS384' | 'HS512' | 'RS256' | 'RS384' | 'RS512' | 'PS256' | 'PS384' | 'PS512' | 'ES256' | 'ES384' | 'ES512'
 ```
 
 Supported compact JWS algorithms.
@@ -415,7 +415,11 @@ const sub = result.payload.sub;
 ## jwtSign
 
 ```ts
-async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string>
+async function jwtSign(
+  payload: Record<string, unknown>,
+  key: JsonWebKeyLike,
+  options: JwtSignOptions
+): Promise<string>
 ```
 
 Sign a compact JWS/JWT.
@@ -435,7 +439,12 @@ const token = await jwtSign({ sub: 'user-123' }, key, { algorithm: 'HS256' });
 ## jwtVerify
 
 ```ts
-async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult>
+async function jwtVerify(
+  token: string,
+  keys: JwtKeyInput,
+  options: JwtVerifyOptions = {
+  }
+): Promise<JwtResult>
 ```
 
 Verify a compact JWS/JWT and return decoded header and payload.
@@ -456,7 +465,11 @@ const result = await jwtVerify(token, key, { subject: 'user-123' });
 ## jwtEncrypt
 
 ```ts
-async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string>
+async function jwtEncrypt(
+  payload: Record<string, unknown>,
+  key: JsonWebKeyLike,
+  options: JwtEncryptOptions
+): Promise<string>
 ```
 
 Encrypt a compact JWE with a JSON payload using AES-GCM content encryption.

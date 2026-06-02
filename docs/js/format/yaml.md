@@ -85,7 +85,7 @@ console.log(error.name);
 ## YamlValue
 
 ```ts
-type YamlValue = | null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>
+type YamlValue = null | boolean | number | string | Uint8Array | Date | YamlValue[] | YamlMapping | Map<unknown, YamlValue>
 ```
 
 Value types produced by the YAML core schema parser and accepted by stringify.
@@ -104,7 +104,9 @@ stringify(value);
 ## YamlMapping
 
 ```ts
-type YamlMapping = { /** * YAML mapping key with a string-compatible key name. * * Parser output uses this object shape only when every key can be represented * as a JavaScript string. Complex keys are returned as `Map` instead. * * ```ts no_run * import type { YamlMapping } from 'fino:format/yaml'; * * const mapping: YamlMapping = { server: { port: 8080 } }; * ``` */ [k: string]: YamlValue; }
+type YamlMapping = {
+  [k: string]: YamlValue;
+}
 ```
 
 Plain-object YAML mapping with string keys.

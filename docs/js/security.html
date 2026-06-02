@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - js/security</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -24,189 +24,215 @@
 
 <h2>Functions</h2>
 
-<section id="js-security.randomBytes">
+<section class="docs-symbol" id="js-security.randomBytes">
 <h3><code><span class="tok-keyword">function</span> randomBytes(length: <span class="tok-keyword">number</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a></code></h3>
 
 <p class="muted">Re-exported from <a href="security/random.html#random.randomBytes">random.randomBytes</a>.</p>
 
 </section>
 
-<section id="js-security.randomBase64Url">
+<section class="docs-symbol" id="js-security.randomBase64Url">
 <h3><code><span class="tok-keyword">function</span> randomBase64Url(length = <span class="tok-number">32</span>): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/random.html#random.randomBase64Url">random.randomBase64Url</a>.</p>
 
 </section>
 
-<section id="js-security.randomToken">
+<section class="docs-symbol" id="js-security.randomToken">
 <h3><code><span class="tok-keyword">function</span> randomToken(bytes = <span class="tok-number">32</span>): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/random.html#random.randomToken">random.randomToken</a>.</p>
 
 </section>
 
-<section id="js-security.randomInt">
+<section class="docs-symbol" id="js-security.randomInt">
 <h3><code><span class="tok-keyword">function</span> randomInt(min: <span class="tok-keyword">number</span>, max: <span class="tok-keyword">number</span>): <span class="tok-keyword">number</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/random.html#random.randomInt">random.randomInt</a>.</p>
 
 </section>
 
-<section id="js-security.createSecurityHeaders">
+<section class="docs-symbol" id="js-security.createSecurityHeaders">
 <h3><code><span class="tok-keyword">function</span> createSecurityHeaders(options: <a class="tok-type" href="security.html#js-security.SecurityHeadersOptions">SecurityHeadersOptions</a> = {}): <a class="tok-type" href="security.html#js-security.HeaderMap">HeaderMap</a></code></h3>
 
 <p class="muted">Re-exported from <a href="security/headers.html#headers.createSecurityHeaders">headers.createSecurityHeaders</a>.</p>
 
 </section>
 
-<section id="js-security.mergeHeaders">
+<section class="docs-symbol" id="js-security.mergeHeaders">
 <h3><code><span class="tok-keyword">function</span> mergeHeaders(...sets: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="security.html#js-security.HeaderMap">HeaderMap</a> | <span class="tok-keyword">undefined</span>&gt;): <a class="tok-type" href="security.html#js-security.HeaderMap">HeaderMap</a></code></h3>
 
 <p class="muted">Re-exported from <a href="security/headers.html#headers.mergeHeaders">headers.mergeHeaders</a>.</p>
 
 </section>
 
-<section id="js-security.buildCorsHeaders">
+<section class="docs-symbol" id="js-security.buildCorsHeaders">
 <h3><code><span class="tok-keyword">function</span> buildCorsHeaders(options: <a class="tok-type" href="security.html#js-security.CorsOptions">CorsOptions</a>): <a class="tok-type" href="security.html#js-security.HeaderMap">HeaderMap</a></code></h3>
 
 <p class="muted">Re-exported from <a href="security/cors.html#cors.buildCorsHeaders">cors.buildCorsHeaders</a>.</p>
 
 </section>
 
-<section id="js-security.serializeCookie">
+<section class="docs-symbol" id="js-security.serializeCookie">
 <h3><code><span class="tok-keyword">function</span> serializeCookie(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="security.html#js-security.CookieOptions">CookieOptions</a> = {}): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.serializeCookie">cookie.serializeCookie</a>.</p>
 
 </section>
 
-<section id="js-security.parseCookieHeader">
+<section class="docs-symbol" id="js-security.parseCookieHeader">
 <h3><code><span class="tok-keyword">function</span> parseCookieHeader(header: <span class="tok-keyword">string</span>): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.parseCookieHeader">cookie.parseCookieHeader</a>.</p>
 
 </section>
 
-<section id="js-security.signCookie">
+<section class="docs-symbol" id="js-security.signCookie">
 <h3><code><span class="tok-keyword">function</span> signCookie(value: <span class="tok-keyword">string</span>, secret: BufferLike): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.signCookie">cookie.signCookie</a>.</p>
 
 </section>
 
-<section id="js-security.verifyCookie">
+<section class="docs-symbol" id="js-security.verifyCookie">
 <h3><code><span class="tok-keyword">function</span> verifyCookie(signed: <span class="tok-keyword">string</span>, secret: BufferLike): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.verifyCookie">cookie.verifyCookie</a>.</p>
 
 </section>
 
-<section id="js-security.sealCookie">
+<section class="docs-symbol" id="js-security.sealCookie">
 <h3><code><span class="tok-keyword">function</span> sealCookie(value: <span class="tok-keyword">string</span>, secret: BufferLike): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.sealCookie">cookie.sealCookie</a>.</p>
 
 </section>
 
-<section id="js-security.unsealCookie">
+<section class="docs-symbol" id="js-security.unsealCookie">
 <h3><code><span class="tok-keyword">function</span> unsealCookie(sealed: <span class="tok-keyword">string</span>, secret: BufferLike): <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.unsealCookie">cookie.unsealCookie</a>.</p>
 
 </section>
 
-<section id="js-security.issueToken">
-<h3><code><span class="tok-keyword">function</span> issueToken(payload: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, secret: BufferLike, options: <a class="tok-type" href="security.html#js-security.IssueTokenOptions">IssueTokenOptions</a> = {}): <span class="tok-keyword">string</span></code></h3>
+<section class="docs-symbol" id="js-security.issueToken">
+<h3><code><span class="tok-keyword">function</span> issueToken(
+  payload: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;,
+  secret: BufferLike,
+  options: <a class="tok-type" href="security.html#js-security.IssueTokenOptions">IssueTokenOptions</a> = {
+  }
+): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/token.html#token.issueToken">token.issueToken</a>.</p>
 
 </section>
 
-<section id="js-security.verifyToken">
-<h3><code><span class="tok-keyword">function</span> verifyToken(token: <span class="tok-keyword">string</span>, secret: BufferLike, options: <a class="tok-type" href="security.html#js-security.VerifyTokenOptions">VerifyTokenOptions</a> = {}): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt; | <span class="tok-keyword">null</span></code></h3>
+<section class="docs-symbol" id="js-security.verifyToken">
+<h3><code><span class="tok-keyword">function</span> verifyToken(
+  token: <span class="tok-keyword">string</span>,
+  secret: BufferLike,
+  options: <a class="tok-type" href="security.html#js-security.VerifyTokenOptions">VerifyTokenOptions</a> = {
+  }
+): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt; | <span class="tok-keyword">null</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/token.html#token.verifyToken">token.verifyToken</a>.</p>
 
 </section>
 
-<section id="js-security.hashPassword">
+<section class="docs-symbol" id="js-security.hashPassword">
 <h3><code><span class="tok-keyword">function</span> hashPassword(password: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="security.html#js-security.HashPasswordOptions">HashPasswordOptions</a> = {}): <span class="tok-keyword">string</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/password.html#password.hashPassword">password.hashPassword</a>.</p>
 
 </section>
 
-<section id="js-security.verifyPassword">
+<section class="docs-symbol" id="js-security.verifyPassword">
 <h3><code><span class="tok-keyword">function</span> verifyPassword(password: <span class="tok-keyword">string</span>, record: <span class="tok-keyword">string</span>): <span class="tok-keyword">boolean</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/password.html#password.verifyPassword">password.verifyPassword</a>.</p>
 
 </section>
 
-<section id="js-security.generateJwk">
+<section class="docs-symbol" id="js-security.generateJwk">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> generateJwk(options: <a class="tok-type" href="security.html#js-security.GenerateJwkOptions">GenerateJwkOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.generateJwk">jwk.generateJwk</a>.</p>
 
 </section>
 
-<section id="js-security.importJwk">
+<section class="docs-symbol" id="js-security.importJwk">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> importJwk(jwk: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>, usages: <span class="tok-keyword">string</span>[] = []): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;CryptoKey&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.importJwk">jwk.importJwk</a>.</p>
 
 </section>
 
-<section id="js-security.exportPublicJwk">
+<section class="docs-symbol" id="js-security.exportPublicJwk">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> exportPublicJwk(key: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a> | CryptoKey): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.exportPublicJwk">jwk.exportPublicJwk</a>.</p>
 
 </section>
 
-<section id="js-security.jwkThumbprint">
+<section class="docs-symbol" id="js-security.jwkThumbprint">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwkThumbprint(jwk: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.jwkThumbprint">jwk.jwkThumbprint</a>.</p>
 
 </section>
 
-<section id="js-security.selectJwk">
-<h3><code><span class="tok-keyword">function</span> selectJwk(jwks: <a class="tok-type" href="security.html#js-security.JsonWebKeySet">JsonWebKeySet</a> | <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>[], selector: <a class="tok-type" href="security.html#js-security.JwkSelector">JwkSelector</a>): <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a> | <span class="tok-keyword">undefined</span></code></h3>
+<section class="docs-symbol" id="js-security.selectJwk">
+<h3><code><span class="tok-keyword">function</span> selectJwk(
+  jwks: <a class="tok-type" href="security.html#js-security.JsonWebKeySet">JsonWebKeySet</a> | <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>[],
+  selector: <a class="tok-type" href="security.html#js-security.JwkSelector">JwkSelector</a>
+): <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a> | <span class="tok-keyword">undefined</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.selectJwk">jwk.selectJwk</a>.</p>
 
 </section>
 
-<section id="js-security.jwkFromSecret">
+<section class="docs-symbol" id="js-security.jwkFromSecret">
 <h3><code><span class="tok-keyword">function</span> jwkFromSecret(secret: <span class="tok-keyword">string</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Uint8Array">Uint8Array</a>, alg = <span class="tok-string">&#39;HS256&#39;</span>, kid?: <span class="tok-keyword">string</span>): <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a></code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.jwkFromSecret">jwk.jwkFromSecret</a>.</p>
 
 </section>
 
-<section id="js-security.jwtSign">
-<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtSign(payload: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, key: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>, options: <a class="tok-type" href="security.html#js-security.JwtSignOptions">JwtSignOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h3>
+<section class="docs-symbol" id="js-security.jwtSign">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtSign(
+  payload: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;,
+  key: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>,
+  options: <a class="tok-type" href="security.html#js-security.JwtSignOptions">JwtSignOptions</a>
+): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.jwtSign">jwt.jwtSign</a>.</p>
 
 </section>
 
-<section id="js-security.jwtVerify">
-<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtVerify(token: <span class="tok-keyword">string</span>, keys: <a class="tok-type" href="security.html#js-security.JwtKeyInput">JwtKeyInput</a>, options: <a class="tok-type" href="security.html#js-security.JwtVerifyOptions">JwtVerifyOptions</a> = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="security.html#js-security.JwtResult">JwtResult</a>&gt;</code></h3>
+<section class="docs-symbol" id="js-security.jwtVerify">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtVerify(
+  token: <span class="tok-keyword">string</span>,
+  keys: <a class="tok-type" href="security.html#js-security.JwtKeyInput">JwtKeyInput</a>,
+  options: <a class="tok-type" href="security.html#js-security.JwtVerifyOptions">JwtVerifyOptions</a> = {
+  }
+): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="security.html#js-security.JwtResult">JwtResult</a>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.jwtVerify">jwt.jwtVerify</a>.</p>
 
 </section>
 
-<section id="js-security.jwtEncrypt">
-<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtEncrypt(payload: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;, key: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>, options: <a class="tok-type" href="security.html#js-security.JwtEncryptOptions">JwtEncryptOptions</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h3>
+<section class="docs-symbol" id="js-security.jwtEncrypt">
+<h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtEncrypt(
+  payload: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;,
+  key: <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>,
+  options: <a class="tok-type" href="security.html#js-security.JwtEncryptOptions">JwtEncryptOptions</a>
+): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">string</span>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.jwtEncrypt">jwt.jwtEncrypt</a>.</p>
 
 </section>
 
-<section id="js-security.jwtDecrypt">
+<section class="docs-symbol" id="js-security.jwtDecrypt">
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> jwtDecrypt(token: <span class="tok-keyword">string</span>, keys: <a class="tok-type" href="security.html#js-security.JwtKeyInput">JwtKeyInput</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="security.html#js-security.JwtResult">JwtResult</a>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.jwtDecrypt">jwt.jwtDecrypt</a>.</p>
@@ -216,42 +242,42 @@
 
 <h2>Types</h2>
 
-<section id="js-security.HeaderMap">
+<section class="docs-symbol" id="js-security.HeaderMap">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.HeaderMap">HeaderMap</a> = <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/headers.html#headers.HeaderMap">headers.HeaderMap</a>.</p>
 
 </section>
 
-<section id="js-security.JsonWebKeyLike">
+<section class="docs-symbol" id="js-security.JsonWebKeyLike">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a> = <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.JsonWebKeyLike">jwk.JsonWebKeyLike</a>.</p>
 
 </section>
 
-<section id="js-security.JwtAlgorithm">
-<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.JwtAlgorithm">JwtAlgorithm</a> = | <span class="tok-string">&#39;HS256&#39;</span> | <span class="tok-string">&#39;HS384&#39;</span> | <span class="tok-string">&#39;HS512&#39;</span> | <span class="tok-string">&#39;RS256&#39;</span> | <span class="tok-string">&#39;RS384&#39;</span> | <span class="tok-string">&#39;RS512&#39;</span> | <span class="tok-string">&#39;PS256&#39;</span> | <span class="tok-string">&#39;PS384&#39;</span> | <span class="tok-string">&#39;PS512&#39;</span> | <span class="tok-string">&#39;ES256&#39;</span> | <span class="tok-string">&#39;ES384&#39;</span> | <span class="tok-string">&#39;ES512&#39;</span></code></h3>
+<section class="docs-symbol" id="js-security.JwtAlgorithm">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.JwtAlgorithm">JwtAlgorithm</a> = <span class="tok-string">&#39;HS256&#39;</span> | <span class="tok-string">&#39;HS384&#39;</span> | <span class="tok-string">&#39;HS512&#39;</span> | <span class="tok-string">&#39;RS256&#39;</span> | <span class="tok-string">&#39;RS384&#39;</span> | <span class="tok-string">&#39;RS512&#39;</span> | <span class="tok-string">&#39;PS256&#39;</span> | <span class="tok-string">&#39;PS384&#39;</span> | <span class="tok-string">&#39;PS512&#39;</span> | <span class="tok-string">&#39;ES256&#39;</span> | <span class="tok-string">&#39;ES384&#39;</span> | <span class="tok-string">&#39;ES512&#39;</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JwtAlgorithm">jwt.JwtAlgorithm</a>.</p>
 
 </section>
 
-<section id="js-security.JweAlgorithm">
+<section class="docs-symbol" id="js-security.JweAlgorithm">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.JweAlgorithm">JweAlgorithm</a> = <span class="tok-string">&#39;dir&#39;</span> | <span class="tok-string">&#39;RSA-OAEP&#39;</span> | <span class="tok-string">&#39;RSA-OAEP-256&#39;</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JweAlgorithm">jwt.JweAlgorithm</a>.</p>
 
 </section>
 
-<section id="js-security.JweEncryption">
+<section class="docs-symbol" id="js-security.JweEncryption">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.JweEncryption">JweEncryption</a> = <span class="tok-string">&#39;A128GCM&#39;</span> | <span class="tok-string">&#39;A256GCM&#39;</span></code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JweEncryption">jwt.JweEncryption</a>.</p>
 
 </section>
 
-<section id="js-security.JwtKeyInput">
+<section class="docs-symbol" id="js-security.JwtKeyInput">
 <h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="security.html#js-security.JwtKeyInput">JwtKeyInput</a> = <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a> | <a class="tok-type" href="security.html#js-security.JsonWebKeySet">JsonWebKeySet</a> | <a class="tok-type" href="security.html#js-security.JsonWebKeyLike">JsonWebKeyLike</a>[]</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JwtKeyInput">jwt.JwtKeyInput</a>.</p>
@@ -261,91 +287,91 @@
 
 <h2>Interfaces</h2>
 
-<section id="js-security.SecurityHeadersOptions">
+<section class="docs-symbol" id="js-security.SecurityHeadersOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.SecurityHeadersOptions">SecurityHeadersOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/headers.html#headers.SecurityHeadersOptions">headers.SecurityHeadersOptions</a>.</p>
 
 </section>
 
-<section id="js-security.CorsOptions">
+<section class="docs-symbol" id="js-security.CorsOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.CorsOptions">CorsOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/cors.html#cors.CorsOptions">cors.CorsOptions</a>.</p>
 
 </section>
 
-<section id="js-security.CookieOptions">
+<section class="docs-symbol" id="js-security.CookieOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.CookieOptions">CookieOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/cookie.html#cookie.CookieOptions">cookie.CookieOptions</a>.</p>
 
 </section>
 
-<section id="js-security.IssueTokenOptions">
+<section class="docs-symbol" id="js-security.IssueTokenOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.IssueTokenOptions">IssueTokenOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/token.html#token.IssueTokenOptions">token.IssueTokenOptions</a>.</p>
 
 </section>
 
-<section id="js-security.VerifyTokenOptions">
+<section class="docs-symbol" id="js-security.VerifyTokenOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.VerifyTokenOptions">VerifyTokenOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/token.html#token.VerifyTokenOptions">token.VerifyTokenOptions</a>.</p>
 
 </section>
 
-<section id="js-security.HashPasswordOptions">
+<section class="docs-symbol" id="js-security.HashPasswordOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.HashPasswordOptions">HashPasswordOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/password.html#password.HashPasswordOptions">password.HashPasswordOptions</a>.</p>
 
 </section>
 
-<section id="js-security.JsonWebKeySet">
+<section class="docs-symbol" id="js-security.JsonWebKeySet">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.JsonWebKeySet">JsonWebKeySet</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.JsonWebKeySet">jwk.JsonWebKeySet</a>.</p>
 
 </section>
 
-<section id="js-security.GenerateJwkOptions">
+<section class="docs-symbol" id="js-security.GenerateJwkOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.GenerateJwkOptions">GenerateJwkOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.GenerateJwkOptions">jwk.GenerateJwkOptions</a>.</p>
 
 </section>
 
-<section id="js-security.JwkSelector">
+<section class="docs-symbol" id="js-security.JwkSelector">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.JwkSelector">JwkSelector</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwk.html#jwk.JwkSelector">jwk.JwkSelector</a>.</p>
 
 </section>
 
-<section id="js-security.JwtSignOptions">
+<section class="docs-symbol" id="js-security.JwtSignOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.JwtSignOptions">JwtSignOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JwtSignOptions">jwt.JwtSignOptions</a>.</p>
 
 </section>
 
-<section id="js-security.JwtVerifyOptions">
+<section class="docs-symbol" id="js-security.JwtVerifyOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.JwtVerifyOptions">JwtVerifyOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JwtVerifyOptions">jwt.JwtVerifyOptions</a>.</p>
 
 </section>
 
-<section id="js-security.JwtEncryptOptions">
+<section class="docs-symbol" id="js-security.JwtEncryptOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.JwtEncryptOptions">JwtEncryptOptions</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JwtEncryptOptions">jwt.JwtEncryptOptions</a>.</p>
 
 </section>
 
-<section id="js-security.JwtResult">
+<section class="docs-symbol" id="js-security.JwtResult">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="security.html#js-security.JwtResult">JwtResult</a> {</code></h3>
 
 <p class="muted">Re-exported from <a href="security/jwt.html#jwt.JwtResult">jwt.JwtResult</a>.</p>

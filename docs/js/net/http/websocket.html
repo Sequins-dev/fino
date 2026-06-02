@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - websocket</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -63,7 +63,7 @@ ws.onclose   = (e) =&gt; console.log(<span class="tok-string">&#39;closed&#39;</
 
 <h2>Classes</h2>
 
-<section id="websocket.CloseEvent">
+<section class="docs-symbol" id="websocket.CloseEvent">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.CloseEvent">CloseEvent</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/API/Event">Event</a> {</code></h3>
 
 <p>WebSocket close event carrying close code, reason, and cleanliness.</p>
@@ -107,7 +107,7 @@ ws.onclose   = (e) =&gt; console.log(<span class="tok-string">&#39;closed&#39;</
 
 </section>
 
-<section id="websocket.ErrorEvent">
+<section class="docs-symbol" id="websocket.ErrorEvent">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.ErrorEvent">ErrorEvent</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/API/Event">Event</a> {</code></h3>
 
 <p>WebSocket error event carrying the underlying error value when available.</p>
@@ -117,7 +117,9 @@ ws.onclose   = (e) =&gt; console.log(<span class="tok-string">&#39;closed&#39;</
 <h4>Constructors</h4>
 
 <section class="member" id="websocket.ErrorEvent.constructor">
-<h5><code><span class="tok-keyword">constructor</span>(<span class="tok-keyword">type</span>: <span class="tok-keyword">string</span>, init?: { error?: <span class="tok-keyword">unknown</span> })</code></h5>
+<h5><code><span class="tok-keyword">constructor</span>(<span class="tok-keyword">type</span>: <span class="tok-keyword">string</span>, init?: {
+  error?: <span class="tok-keyword">unknown</span>;
+})</code></h5>
 
 <p>Create an error event.</p>
 <pre><code class="language-ts"><span class="tok-keyword">const</span> event = <span class="tok-keyword">new</span> ErrorEvent(<span class="tok-string">&#39;error&#39;</span>, { error: <span class="tok-keyword">new</span> Error(<span class="tok-string">&#39;failed&#39;</span>) });</code></pre>
@@ -136,7 +138,7 @@ ws.onclose   = (e) =&gt; console.log(<span class="tok-string">&#39;closed&#39;</
 
 </section>
 
-<section id="websocket.WebSocketConnection">
+<section class="docs-symbol" id="websocket.WebSocketConnection">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnection">WebSocketConnection</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/API/EventTarget">EventTarget</a> <span class="tok-keyword">implements</span> <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a> {</code></h3>
 
 <p>A WebSocket connection, client or server side. Extends EventTarget.</p>
@@ -338,7 +340,7 @@ conn.onmessage = (event) =&gt; console.log(event.data);</code></pre>
 </section>
 
 <section class="member" id="websocket.WebSocketConnection.close">
-<h5><code><span class="tok-keyword">async</span> close(code: <span class="tok-keyword">number</span> = <span class="tok-number">1000</span>, reason: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+<h5><code><span class="tok-keyword">async</span> close(code: <span class="tok-keyword">number</span> = <span class="tok-number">1e3</span>, reason: <span class="tok-keyword">string</span> = <span class="tok-string">&#39;&#39;</span>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
 
 <p>Initiate the WebSocket close handshake.</p>
 <p><code>code</code> defaults to 1000 and must be 1000 or 3000-4999. <code>reason</code> must encode to at most 123 UTF-8 bytes. Resolves when the peer close arrives or the close timeout tears down the socket.</p>
@@ -349,7 +351,11 @@ conn.onmessage = (event) =&gt; console.log(event.data);</code></pre>
 <h4>Static Methods</h4>
 
 <section class="member" id="websocket.WebSocketConnection.accept">
-<h5><code><span class="tok-keyword">static</span> accept(req: { method: <span class="tok-keyword">string</span>; url: <span class="tok-keyword">string</span>; headers: <a class="tok-type" href="../http.html#js-net-http.Headers">Headers</a> }, opts: <a class="tok-type" href="websocket.html#websocket.WebSocketAcceptOptions">WebSocketAcceptOptions</a> = {}): <a class="tok-type" href="websocket.html#websocket.WebSocketConnection">WebSocketConnection</a></code></h5>
+<h5><code><span class="tok-keyword">static</span> accept(req: {
+  method: <span class="tok-keyword">string</span>;
+  url: <span class="tok-keyword">string</span>;
+  headers: <a class="tok-type" href="../http.html#js-net-http.Headers">Headers</a>;
+}, opts: <a class="tok-type" href="websocket.html#websocket.WebSocketAcceptOptions">WebSocketAcceptOptions</a> = {}): <a class="tok-type" href="websocket.html#websocket.WebSocketConnection">WebSocketConnection</a></code></h5>
 
 <p>SERVER FACTORY — Synchronously validate an HTTP upgrade request and return a WebSocketConnection in the CONNECTING state. The &#39;open&#39; event fires after serve() writes the 101 response and hands over the socket.</p>
 <p>Throws a plain Error (name=&#39;SyntaxError&#39;) if the request is not a valid WebSocket upgrade. The handler can catch this and return a 400 Response.</p>
@@ -377,7 +383,7 @@ ws.addEventListener(<span class="tok-string">&#39;message&#39;</span>, (e) =&gt;
 
 </section>
 
-<section id="websocket.WebSocket">
+<section class="docs-symbol" id="websocket.WebSocket">
 <h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="websocket.html#websocket.WebSocket">WebSocket</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/API/EventTarget">EventTarget</a> {</code></h3>
 
 <p>WHATWG WebSocket — strict spec surface, no runtime extensions.</p>
@@ -565,7 +571,7 @@ ws.send(<span class="tok-keyword">new</span> Uint8Array([<span class="tok-number
 
 <h2>Interfaces</h2>
 
-<section id="websocket.WebSocketMessage">
+<section class="docs-symbol" id="websocket.WebSocketMessage">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="websocket.html#websocket.WebSocketMessage">WebSocketMessage</a> {</code></h3>
 
 <p>Parsed WebSocket message payload used by lower-level connection helpers.</p>
@@ -591,7 +597,7 @@ ws.send(<span class="tok-keyword">new</span> Uint8Array([<span class="tok-number
 
 </section>
 
-<section id="websocket.WebSocketAcceptOptions">
+<section class="docs-symbol" id="websocket.WebSocketAcceptOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="websocket.html#websocket.WebSocketAcceptOptions">WebSocketAcceptOptions</a> {</code></h3>
 
 <p>Options used when accepting a WebSocket upgrade from an HTTP handler.</p>
@@ -626,7 +632,7 @@ ws.send(<span class="tok-keyword">new</span> Uint8Array([<span class="tok-number
 
 </section>
 
-<section id="websocket.WebSocketConnectOptions">
+<section class="docs-symbol" id="websocket.WebSocketConnectOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="websocket.html#websocket.WebSocketConnectOptions">WebSocketConnectOptions</a> {</code></h3>
 
 <p>Options used when opening a WebSocket client connection.</p>

@@ -659,7 +659,10 @@ Exported for unit testing.
 ## _decodeName
 
 ```ts
-function _decodeName(msg: Uint8Array, startOffset: number): { name: string; nextOffset: number }
+function _decodeName(msg: Uint8Array, startOffset: number): {
+  name: string;
+  nextOffset: number;
+}
 ```
 
 Decode a DNS name from wire format, following compression pointers.

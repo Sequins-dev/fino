@@ -394,10 +394,20 @@ stringify([{ b: 2, a: 1 }], { header: ['a', 'b'] });
 ## parse
 
 ```ts
-function parse(input: string | Uint8Array, options?: CsvParseOptions & { header?: false; columns?: undefined }): string[][]
-function parse(input: string | Uint8Array, options: CsvParseOptions & { header: true }): Record<string, string>[]
-function parse(input: string | Uint8Array, options: CsvParseOptions & { columns: string[] }): Record<string, string>[]
-function parse(input: string | Uint8Array, options?: CsvParseOptions): string[][] | Record<string, string>[]
+function parse(input: string | Uint8Array, options?: CsvParseOptions & {
+  header?: false;
+  columns?: undefined;
+}): string[][]
+function parse(input: string | Uint8Array, options: CsvParseOptions & {
+  header: true;
+}): Record<string, string>[]
+function parse(input: string | Uint8Array, options: CsvParseOptions & {
+  columns: string[];
+}): Record<string, string>[]
+function parse(
+  input: string | Uint8Array,
+  options?: CsvParseOptions
+): string[][] | Record<string, string>[]
 ```
 
 Parse a CSV string or UTF-8 byte buffer into positional rows or records.
@@ -416,7 +426,11 @@ parse('a,b\n1,2\n', { header: true }); // [{ a: '1', b: '2' }]
 ## parseStream
 
 ```ts
-async function* parseStream( src: AsyncIterable<Uint8Array>, options: CsvParseOptions = {}, ): AsyncIterableIterator<CsvRow | CsvRecord>
+async function* parseStream(
+  src: AsyncIterable<Uint8Array>,
+  options: CsvParseOptions = {
+  },
+): AsyncIterableIterator<CsvRow | CsvRecord>
 ```
 
 Parse a CSV byte stream row-by-row without buffering the entire input.
@@ -443,7 +457,11 @@ for await (const row of parseStream(bytes(), { header: true })) {
 ## stringify
 
 ```ts
-function stringify( rows: string[][] | Record<string, unknown>[], options: CsvStringifyOptions = {}, ): string
+function stringify(
+  rows: string[][] | Record<string, unknown>[],
+  options: CsvStringifyOptions = {
+  }
+): string
 ```
 
 Serialize rows or records to CSV.

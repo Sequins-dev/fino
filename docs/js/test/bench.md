@@ -312,7 +312,9 @@ bench('strings', (b) => {
 ## run
 
 ```ts
-async function run(options: { filter?: string } = {})
+async function run(options: {
+  filter?: string;
+} = {})
 ```
 
 Run all registered benchmark suites and print results.

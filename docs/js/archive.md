@@ -626,7 +626,12 @@ await archive.close();
 ### addFile
 
 ```ts
-async addFile(srcPath: string, archivePath: string | null = null, options: ArchiveWriteOptions = {}): Promise<void>
+async addFile(
+  srcPath: string,
+  archivePath: string | null = null,
+  options: ArchiveWriteOptions = {
+  }
+): Promise<void>
 ```
 
 Add a host filesystem file to the archive.
@@ -808,7 +813,11 @@ await archive.close();
 ## listArchive
 
 ```ts
-async function listArchive(path: string, options: ArchiveOpenOptions = {}): Promise<ArchiveEntryInfo[]>
+async function listArchive(
+  path: string,
+  options: ArchiveOpenOptions = {
+  }
+): Promise<ArchiveEntryInfo[]>
 ```
 
 Open an archive, return its entry list, and close it.
@@ -826,7 +835,12 @@ console.log(entries.map((entry) => entry.name));
 ## extractArchive
 
 ```ts
-async function extractArchive(path: string, destination: string, options: ArchiveOpenOptions = {}): Promise<ExtractResult>
+async function extractArchive(
+  path: string,
+  destination: string,
+  options: ArchiveOpenOptions = {
+  }
+): Promise<ExtractResult>
 ```
 
 Open an archive, extract it to a destination directory, and close it.

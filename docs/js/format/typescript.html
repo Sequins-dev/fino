@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>fino - typescript</title>
-<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
 </head>
 <body>
 <div class="docs-layout">
@@ -40,7 +40,7 @@
 
 <h2>Interfaces</h2>
 
-<section id="typescript.ParseOptions">
+<section class="docs-symbol" id="typescript.ParseOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.ParseOptions">ParseOptions</a> {</code></h3>
 
 <p>Options controlling source grammar detection and parser output.</p>
@@ -85,7 +85,7 @@ parse(<span class="tok-string">&#39;const x: number = 1;&#39;</span>, { sourceTy
 
 </section>
 
-<section id="typescript.ParseToken">
+<section class="docs-symbol" id="typescript.ParseToken">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.ParseToken">ParseToken</a> {</code></h3>
 
 <p>Token returned when <code>ParseOptions.tokens</code> is enabled.</p>
@@ -154,7 +154,7 @@ parse(<span class="tok-string">&#39;a\nb&#39;</span>, { tokens: <span class="tok
 
 </section>
 
-<section id="typescript.ParseComment">
+<section class="docs-symbol" id="typescript.ParseComment">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.ParseComment">ParseComment</a> {</code></h3>
 
 <p>Source comment with attachment metadata from OXC.</p>
@@ -248,7 +248,7 @@ parse(<span class="tok-string">&#39;// docs\nconst x = 1;&#39;</span>).comments[
 
 </section>
 
-<section id="typescript.ParseDiagnostic">
+<section class="docs-symbol" id="typescript.ParseDiagnostic">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.ParseDiagnostic">ParseDiagnostic</a> {</code></h3>
 
 <p>Parser or transpiler diagnostic.</p>
@@ -258,6 +258,12 @@ parse(<span class="tok-string">&#39;// docs\nconst x = 1;&#39;</span>).comments[
 <span class="tok-keyword">const</span> diagnostic: ParseDiagnostic | <span class="tok-keyword">undefined</span> = parse(<span class="tok-string">&#39;const =&#39;</span>).errors[<span class="tok-number">0</span>];</code></pre>
 
 <h4>Properties</h4>
+
+<section class="member" id="typescript.ParseDiagnostic.code">
+<h5><code>code?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Stable diagnostic code from the parser, transformer, formatter, or linter.</p>
+</section>
 
 <section class="member" id="typescript.ParseDiagnostic.message">
 <h5><code>message: <span class="tok-keyword">string</span></code></h5>
@@ -269,10 +275,40 @@ parse(<span class="tok-string">&#39;// docs\nconst x = 1;&#39;</span>).comments[
 <span class="tok-keyword">const</span> message = parse(<span class="tok-string">&#39;const =&#39;</span>).errors[<span class="tok-number">0</span>]?.message;</code></pre>
 </section>
 
+<section class="member" id="typescript.ParseDiagnostic.severity">
+<h5><code>severity?: <span class="tok-string">&#39;error&#39;</span> | <span class="tok-string">&#39;warning&#39;</span></code></h5>
+
+<p>Diagnostic severity.</p>
+</section>
+
+<section class="member" id="typescript.ParseDiagnostic.line">
+<h5><code>line?: <span class="tok-keyword">number</span></code></h5>
+
+<p>One-based source line for the diagnostic start when available.</p>
+</section>
+
+<section class="member" id="typescript.ParseDiagnostic.column">
+<h5><code>column?: <span class="tok-keyword">number</span></code></h5>
+
+<p>One-based source column for the diagnostic start when available.</p>
+</section>
+
+<section class="member" id="typescript.ParseDiagnostic.endLine">
+<h5><code>endLine?: <span class="tok-keyword">number</span></code></h5>
+
+<p>One-based source line for the diagnostic end when available.</p>
+</section>
+
+<section class="member" id="typescript.ParseDiagnostic.endColumn">
+<h5><code>endColumn?: <span class="tok-keyword">number</span></code></h5>
+
+<p>One-based source column for the diagnostic end when available.</p>
+</section>
+
 
 </section>
 
-<section id="typescript.ParseResult">
+<section class="docs-symbol" id="typescript.ParseResult">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.ParseResult">ParseResult</a> {</code></h3>
 
 <p>Complete parse result, including AST, comments, tokens, and diagnostics.</p>
@@ -335,7 +371,13 @@ parse(<span class="tok-string">&#39;// docs\nconst x = 1;&#39;</span>).comments[
 </section>
 
 <section class="member" id="typescript.ParseResult.sourceType">
-<h5><code>sourceType: { <span class="tok-comment">/** * Detected source language. * * TypeScript mode is selected for TypeScript, TSX, and declaration-file * inputs; JavaScript mode is selected for JS and JSX inputs. * * ```ts no_run * import { parse } from &#39;fino:format/typescript&#39;; * * parse(&#39;const x: number = 1;&#39;, { sourceType: &#39;ts&#39; }).sourceType.language; * ``` */</span> language: <span class="tok-string">&#39;typescript&#39;</span> | <span class="tok-string">&#39;javascript&#39;</span>; <span class="tok-comment">/** * Detected module mode. * * OXC reports whether the source is a module, script, unambiguous input, or * CommonJS-shaped source according to parser mode and syntax. * * ```ts no_run * import { parse } from &#39;fino:format/typescript&#39;; * * parse(&#39;export const x = 1;&#39;).sourceType.moduleKind; * ``` */</span> moduleKind: <span class="tok-string">&#39;module&#39;</span> | <span class="tok-string">&#39;script&#39;</span> | <span class="tok-string">&#39;unambiguous&#39;</span> | <span class="tok-string">&#39;commonjs&#39;</span>; <span class="tok-comment">/** * Whether JSX syntax was enabled for the parse. * * This is true for JSX and TSX source modes. * * ```ts no_run * import { parse } from &#39;fino:format/typescript&#39;; * * parse(&#39;const el = &lt;div /&gt;;&#39;, { sourceType: &#39;tsx&#39; }).sourceType.jsx; * ``` */</span> jsx: <span class="tok-keyword">boolean</span>; <span class="tok-comment">/** * Whether the source was parsed as a TypeScript declaration file. * * This is true for `dts` or definition-file modes inferred from filenames * such as `types.d.ts`. * * ```ts no_run * import { parse } from &#39;fino:format/typescript&#39;; * * parse(&#39;declare const x: string;&#39;, { filename: &#39;types.d.ts&#39; }).sourceType.typescriptDefinition; * ``` */</span> typescriptDefinition: <span class="tok-keyword">boolean</span>; }</code></h5>
+<h5><code>sourceType: {
+  language: <span class="tok-string">&#39;typescript&#39;</span> | <span class="tok-string">&#39;javascript&#39;</span>;
+  moduleKind: <span class="tok-string">&#39;module&#39;</span> | <span class="tok-string">&#39;script&#39;</span> | <span class="tok-string">&#39;unambiguous&#39;</span> | <span class="tok-string">&#39;commonjs&#39;</span>;
+  jsx: <span class="tok-keyword">boolean</span>;
+  typescriptDefinition: <span class="tok-keyword">boolean</span>;
+}
+</code></h5>
 
 <p>Source mode detected or selected by OXC.</p>
 <p>The nested object describes language, module mode, JSX support, and declaration-file parsing. It is useful when <code>filename</code> inference was used.</p>
@@ -347,7 +389,7 @@ parse(<span class="tok-string">&#39;// docs\nconst x = 1;&#39;</span>).comments[
 
 </section>
 
-<section id="typescript.TranspileOptions">
+<section class="docs-symbol" id="typescript.TranspileOptions">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.TranspileOptions">TranspileOptions</a> {</code></h3>
 
 <p>Options controlling TypeScript-to-JavaScript transpilation.</p>
@@ -382,7 +424,7 @@ transpile(<span class="tok-string">&#39;const el = &lt;div /&gt;;&#39;</span>, {
 
 </section>
 
-<section id="typescript.TranspileResult">
+<section class="docs-symbol" id="typescript.TranspileResult">
 <h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.TranspileResult">TranspileResult</a> {</code></h3>
 
 <p>JavaScript output, source map text, and diagnostics from transpilation.</p>
@@ -438,10 +480,89 @@ transpile(<span class="tok-string">&#39;const el = &lt;div /&gt;;&#39;</span>, {
 
 </section>
 
+<section class="docs-symbol" id="typescript.FormatOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.FormatOptions">FormatOptions</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="typescript.html#typescript.TranspileOptions">TranspileOptions</a> {</code></h3>
+
+<p>Options controlling source formatting.</p>
+
+</section>
+
+<section class="docs-symbol" id="typescript.FormatResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.FormatResult">FormatResult</a> {</code></h3>
+
+<p>Result returned by <code>format()</code>.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="typescript.FormatResult.ok">
+<h5><code>ok: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="typescript.FormatResult.code">
+<h5><code>code: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+<section class="member" id="typescript.FormatResult.errors">
+<h5><code>errors: <a class="tok-type" href="typescript.html#typescript.ParseDiagnostic">ParseDiagnostic</a>[]</code></h5>
+
+
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="typescript.LintOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.LintOptions">LintOptions</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="typescript.html#typescript.TranspileOptions">TranspileOptions</a> {</code></h3>
+
+<p>Options controlling source linting.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="typescript.LintOptions.fix">
+<h5><code>fix?: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="typescript.LintResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="typescript.html#typescript.LintResult">LintResult</a> {</code></h3>
+
+<p>Result returned by <code>lint()</code>.</p>
+
+<h4>Properties</h4>
+
+<section class="member" id="typescript.LintResult.ok">
+<h5><code>ok: <span class="tok-keyword">boolean</span></code></h5>
+
+
+</section>
+
+<section class="member" id="typescript.LintResult.diagnostics">
+<h5><code>diagnostics: <a class="tok-type" href="typescript.html#typescript.ParseDiagnostic">ParseDiagnostic</a>[]</code></h5>
+
+
+</section>
+
+<section class="member" id="typescript.LintResult.fixedCode">
+<h5><code>fixedCode?: <span class="tok-keyword">string</span></code></h5>
+
+
+</section>
+
+
+</section>
+
 
 <h2>Functions</h2>
 
-<section id="typescript.parse">
+<section class="docs-symbol" id="typescript.parse">
 <h3><code><span class="tok-keyword">function</span> parse(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="typescript.html#typescript.ParseOptions">ParseOptions</a> = {}): <a class="tok-type" href="typescript.html#typescript.ParseResult">ParseResult</a></code></h3>
 
 <p>Parse JavaScript or TypeScript source with OXC.</p>
@@ -453,7 +574,7 @@ transpile(<span class="tok-string">&#39;const el = &lt;div /&gt;;&#39;</span>, {
 
 </section>
 
-<section id="typescript.transpile">
+<section class="docs-symbol" id="typescript.transpile">
 <h3><code><span class="tok-keyword">function</span> transpile(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="typescript.html#typescript.TranspileOptions">TranspileOptions</a> = {}): <a class="tok-type" href="typescript.html#typescript.TranspileResult">TranspileResult</a></code></h3>
 
 <p>Transpile TypeScript or JSX syntax to JavaScript.</p>
@@ -461,6 +582,20 @@ transpile(<span class="tok-string">&#39;const el = &lt;div /&gt;;&#39;</span>, {
 <pre><code class="language-ts"><span class="tok-keyword">import</span> { transpile } from <span class="tok-string">&#39;fino:format/typescript&#39;</span>;
 
 <span class="tok-keyword">const</span> { code } = transpile(<span class="tok-string">&#39;const x: number = 1;&#39;</span>, { sourceType: <span class="tok-string">&#39;ts&#39;</span> });</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="typescript.format">
+<h3><code><span class="tok-keyword">function</span> format(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="typescript.html#typescript.FormatOptions">FormatOptions</a> = {}): <a class="tok-type" href="typescript.html#typescript.FormatResult">FormatResult</a></code></h3>
+
+<p>Format JavaScript or TypeScript source with the runtime&#39;s OXC-backed tooling.</p>
+
+</section>
+
+<section class="docs-symbol" id="typescript.lint">
+<h3><code><span class="tok-keyword">function</span> lint(source: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="typescript.html#typescript.LintOptions">LintOptions</a> = {}): <a class="tok-type" href="typescript.html#typescript.LintResult">LintResult</a></code></h3>
+
+<p>Lint JavaScript or TypeScript source with the runtime&#39;s default rule set.</p>
 
 </section>
 
