@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { parse, transpile } from 'fino:format/typescript';
+import { parse, transpile, format, lint } from 'fino:format/typescript';
 
 describe('fino:format/typescript', () => {
   it('parses TypeScript and exposes the full AST, comments, and tokens', (t) => {
@@ -55,5 +55,33 @@ export function read<T extends Shape>(shape: T): number {
     t.equal(result.code, '', 'invalid source does not emit code');
     t.equal(result.map, '', 'invalid source does not emit a source map');
     t.ok(result.errors.length > 0, 'transpile diagnostics are returned');
+  });
+
+  it('formats TypeScript source with stable defaults', (t) => {
+    const result = format('const value = "hello";\nif (value) { console.log(value); }\n', { filename: 'sample.ts' });
+
+    t.equal(result.ok, true, 'valid source formats successfully');
+    t.equal(result.errors.length, 0, 'valid source has no format errors');
+    t.equal(result.code, "const value = 'hello';\nif (value) {\n  console.log(value);\n}\n", 'formatter normalizes quotes, indentation, and final newline');
+  });
+
+  it('returns format diagnostics for invalid TypeScript', (t) => {
+    const result = format('export function broken( {', { filename: 'broken.ts' });
+
+    t.equal(result.ok, false, 'invalid source is marked unsuccessful');
+    t.equal(result.code, '', 'invalid source does not emit formatted code');
+    t.ok(result.errors.length > 0, 'format diagnostics are returned');
+    t.ok(result.errors[0]!.line !== undefined, 'diagnostics include a line');
+    t.ok(result.errors[0]!.column !== undefined, 'diagnostics include a column');
+  });
+
+  it('lints parse errors and default suspicious rules', (t) => {
+    const parsed = lint('export function broken( {', { filename: 'broken.ts' });
+    const suspicious = lint('debugger;\n', { filename: 'debugger.ts' });
+
+    t.equal(parsed.ok, false, 'parse errors fail lint');
+    t.ok(parsed.diagnostics.some((diagnostic) => diagnostic.code === 'parse'), 'parse diagnostics are included');
+    t.equal(suspicious.ok, false, 'suspicious source fails lint');
+    t.ok(suspicious.diagnostics.some((diagnostic) => diagnostic.code === 'no-debugger'), 'default rules include no-debugger');
   });
 });

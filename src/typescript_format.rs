@@ -4,15 +4,16 @@ use std::path::Path;
 use oxc_allocator::Allocator;
 use oxc_ast::{ast::CommentKind, Comment};
 use oxc_codegen::{Codegen, CodegenOptions};
+use oxc_data_structures::code_buffer::IndentChar;
 use oxc_parser::{config::RuntimeParserConfig, Parser};
 use oxc_semantic::SemanticBuilder;
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
 use serde::Serialize;
 use v8;
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["parse", "transpile"]
+    let export_names: Vec<v8::Local<v8::String>> = ["parse", "transpile", "format", "lint"]
         .iter()
         .map(|name| v8::String::new(scope, name).unwrap())
         .collect();
@@ -32,6 +33,14 @@ fn eval_steps<'a>(
     let tmpl = v8::FunctionTemplate::new(scope, transpile_callback);
     let func = tmpl.get_function(scope)?;
     let key = v8::String::new(scope, "transpile")?;
+    module.set_synthetic_module_export(scope, key, func.into())?;
+    let tmpl = v8::FunctionTemplate::new(scope, format_callback);
+    let func = tmpl.get_function(scope)?;
+    let key = v8::String::new(scope, "format")?;
+    module.set_synthetic_module_export(scope, key, func.into())?;
+    let tmpl = v8::FunctionTemplate::new(scope, lint_callback);
+    let func = tmpl.get_function(scope)?;
+    let key = v8::String::new(scope, "lint")?;
     module.set_synthetic_module_export(scope, key, func.into())?;
     Some(v8::undefined(scope).into())
 }
@@ -70,6 +79,42 @@ fn transpile_callback(
     let options = parse_options(scope, args.get(1), false);
     let result = catch_unwind(AssertUnwindSafe(|| transpile_source(&source, &options)));
     set_json_result(scope, rv, "transpile", result);
+}
+
+fn format_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    rv: v8::ReturnValue,
+) {
+    let source = match args.get(0).to_string(scope) {
+        Some(s) => s.to_rust_string_lossy(scope),
+        None => {
+            throw_error(scope, "format: expected source string");
+            return;
+        }
+    };
+
+    let options = parse_options(scope, args.get(1), false);
+    let result = catch_unwind(AssertUnwindSafe(|| format_source(&source, &options)));
+    set_json_result(scope, rv, "format", result);
+}
+
+fn lint_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    rv: v8::ReturnValue,
+) {
+    let source = match args.get(0).to_string(scope) {
+        Some(s) => s.to_rust_string_lossy(scope),
+        None => {
+            throw_error(scope, "lint: expected source string");
+            return;
+        }
+    };
+
+    let options = parse_options(scope, args.get(1), false);
+    let result = catch_unwind(AssertUnwindSafe(|| lint_source(&source, &options)));
+    set_json_result(scope, rv, "lint", result);
 }
 
 fn set_json_result(
@@ -208,7 +253,13 @@ struct TokenResult {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiagnosticResult {
+    code: String,
     message: String,
+    severity: String,
+    line: u32,
+    column: u32,
+    end_line: Option<u32>,
+    end_column: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -218,6 +269,22 @@ struct TranspileResult {
     code: String,
     map: String,
     errors: Vec<DiagnosticResult>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FormatResult {
+    ok: bool,
+    code: String,
+    errors: Vec<DiagnosticResult>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LintResult {
+    ok: bool,
+    diagnostics: Vec<DiagnosticResult>,
+    fixed_code: Option<String>,
 }
 
 fn parse_source(source: &str, options: &ParseOptions) -> Result<String, String> {
@@ -250,9 +317,7 @@ fn parse_source(source: &str, options: &ParseOptions) -> Result<String, String> 
     let errors = ret
         .errors
         .iter()
-        .map(|error| DiagnosticResult {
-            message: error.message.to_string(),
-        })
+        .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
         .collect::<Vec<_>>();
     let result = ParseResult {
         ok: errors.is_empty() && !ret.panicked,
@@ -277,9 +342,7 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
             errors: ret
                 .errors
                 .iter()
-                .map(|error| DiagnosticResult {
-                    message: error.message.to_string(),
-                })
+                .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
                 .collect(),
         };
         return serde_json::to_string(&result)
@@ -311,9 +374,7 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
             errors: transformer_ret
                 .errors
                 .iter()
-                .map(|error| DiagnosticResult {
-                    message: error.message.to_string(),
-                })
+                .map(|error| diagnostic_result(source, "transform", &error.message.to_string(), None, "error"))
                 .collect(),
         };
         return serde_json::to_string(&result)
@@ -338,6 +399,75 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
     };
     serde_json::to_string(&result)
         .map_err(|err| format!("failed to serialize transpile result: {err}"))
+}
+
+fn format_source(source: &str, options: &ParseOptions) -> Result<String, String> {
+    let allocator = Allocator::default();
+    let source_type = resolve_source_type(options);
+    let ret = Parser::new(&allocator, source, source_type).parse();
+    if !ret.errors.is_empty() || ret.panicked {
+        let result = FormatResult {
+            ok: false,
+            code: String::new(),
+            errors: ret
+                .errors
+                .iter()
+                .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
+                .collect(),
+        };
+        return serde_json::to_string(&result)
+            .map_err(|err| format!("failed to serialize format result: {err}"));
+    }
+
+    let generated = Codegen::new()
+        .with_options(CodegenOptions {
+            single_quote: true,
+            indent_char: IndentChar::Space,
+            indent_width: 2,
+            ..CodegenOptions::default()
+        })
+        .with_source_text(source)
+        .build(&ret.program);
+    let result = FormatResult {
+        ok: true,
+        code: normalize_formatted_code(generated.code),
+        errors: Vec::new(),
+    };
+    serde_json::to_string(&result)
+        .map_err(|err| format!("failed to serialize format result: {err}"))
+}
+
+fn lint_source(source: &str, options: &ParseOptions) -> Result<String, String> {
+    let allocator = Allocator::default();
+    let source_type = resolve_source_type(options);
+    let ret = Parser::new(&allocator, source, source_type).parse();
+    let mut diagnostics: Vec<DiagnosticResult> = ret
+        .errors
+        .iter()
+        .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
+        .collect();
+
+    if ret.errors.is_empty() && !ret.panicked {
+        for stmt in &ret.program.body {
+            if matches!(stmt, oxc_ast::ast::Statement::DebuggerStatement(_)) {
+                diagnostics.push(diagnostic_result(
+                    source,
+                    "no-debugger",
+                    "Unexpected debugger statement.",
+                    Some(stmt.span()),
+                    "error",
+                ));
+            }
+        }
+    }
+
+    let result = LintResult {
+        ok: diagnostics.is_empty() && !ret.panicked,
+        diagnostics,
+        fixed_code: None,
+    };
+    serde_json::to_string(&result)
+        .map_err(|err| format!("failed to serialize lint result: {err}"))
 }
 
 fn resolve_source_type(options: &ParseOptions) -> SourceType {
@@ -402,4 +532,57 @@ fn source_slice(source: &str, start: u32, end: u32) -> String {
         .get(start as usize..end as usize)
         .unwrap_or_default()
         .to_string()
+}
+
+fn normalize_formatted_code(mut code: String) -> String {
+    code = code.replace("\r\n", "\n").replace('\r', "\n");
+    while code.ends_with('\n') {
+        code.pop();
+    }
+    code.push('\n');
+    code
+}
+
+fn diagnostic_result(
+    source: &str,
+    code: &str,
+    message: &str,
+    span: Option<oxc_span::Span>,
+    severity: &str,
+) -> DiagnosticResult {
+    let (line, column, end_line, end_column) = match span {
+        Some(span) => {
+            let (line, column) = line_column(source, span.start);
+            let (end_line, end_column) = line_column(source, span.end);
+            (line, column, Some(end_line), Some(end_column))
+        }
+        None => (1, 1, None, None),
+    };
+    DiagnosticResult {
+        code: code.to_string(),
+        message: message.to_string(),
+        severity: severity.to_string(),
+        line,
+        column,
+        end_line,
+        end_column,
+    }
+}
+
+fn line_column(source: &str, offset: u32) -> (u32, u32) {
+    let mut line = 1;
+    let mut column = 1;
+    let limit = offset as usize;
+    for (index, ch) in source.char_indices() {
+        if index >= limit {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (line, column)
 }

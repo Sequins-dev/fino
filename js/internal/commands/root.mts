@@ -20,6 +20,8 @@ import { createBenchCommand } from './bench.mts';
 import { createInstallCommand } from './install.mts';
 import { createInitCommand } from './init.mts';
 import { createDocCommand } from './doc.mts';
+import { createFmtCommand } from './fmt.mts';
+import { createLintCommand } from './lint.mts';
 import { createReplCommand, runReplCommand } from './repl.mts';
 import { createRunCommand, runScriptCommand } from './run.mts';
 
@@ -71,6 +73,8 @@ export function createRootCommand(): Command {
       createInstallCommand(),
       createInitCommand(),
       createDocCommand(),
+      createFmtCommand(),
+      createLintCommand(),
       createReplCommand(),
     ],
   });

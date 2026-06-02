@@ -40,7 +40,7 @@
  *   - TypeScript language: https://www.typescriptlang.org/docs/
  */
 
-import { parse as parseNative, transpile as transpileNative } from 'internal:format/typescript';
+import { parse as parseNative, transpile as transpileNative, format as formatNative, lint as lintNative } from 'internal:format/typescript';
 
 /**
  * Options controlling source grammar detection and parser output.
@@ -311,6 +311,10 @@ export interface ParseComment {
  */
 export interface ParseDiagnostic {
   /**
+   * Stable diagnostic code from the parser, transformer, formatter, or linter.
+   */
+  code?: string;
+  /**
    * Human-readable diagnostic message from OXC.
    *
    * The message is suitable for logs but should not be treated as a stable
@@ -323,6 +327,26 @@ export interface ParseDiagnostic {
    * ```
    */
   message: string;
+  /**
+   * Diagnostic severity.
+   */
+  severity?: 'error' | 'warning';
+  /**
+   * One-based source line for the diagnostic start when available.
+   */
+  line?: number;
+  /**
+   * One-based source column for the diagnostic start when available.
+   */
+  column?: number;
+  /**
+   * One-based source line for the diagnostic end when available.
+   */
+  endLine?: number;
+  /**
+   * One-based source column for the diagnostic end when available.
+   */
+  endColumn?: number;
 }
 
 /**
@@ -581,6 +605,36 @@ export interface TranspileResult {
 }
 
 /**
+ * Options controlling source formatting.
+ */
+export interface FormatOptions extends TranspileOptions {}
+
+/**
+ * Result returned by `format()`.
+ */
+export interface FormatResult {
+  ok: boolean;
+  code: string;
+  errors: ParseDiagnostic[];
+}
+
+/**
+ * Options controlling source linting.
+ */
+export interface LintOptions extends TranspileOptions {
+  fix?: boolean;
+}
+
+/**
+ * Result returned by `lint()`.
+ */
+export interface LintResult {
+  ok: boolean;
+  diagnostics: ParseDiagnostic[];
+  fixedCode?: string;
+}
+
+/**
  * Parse JavaScript or TypeScript source with OXC.
  *
  * Returns parser output and diagnostics without type-checking. Normal syntax
@@ -612,4 +666,18 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
  */
 export function transpile(source: string, options: TranspileOptions = {}): TranspileResult {
   return transpileNative(String(source), options) as TranspileResult;
+}
+
+/**
+ * Format JavaScript or TypeScript source with the runtime's OXC-backed tooling.
+ */
+export function format(source: string, options: FormatOptions = {}): FormatResult {
+  return formatNative(String(source), options) as FormatResult;
+}
+
+/**
+ * Lint JavaScript or TypeScript source with the runtime's default rule set.
+ */
+export function lint(source: string, options: LintOptions = {}): LintResult {
+  return lintNative(String(source), options) as LintResult;
 }
