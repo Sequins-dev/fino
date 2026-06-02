@@ -1,7 +1,7 @@
 //! Shared V8 isolate bootstrap + host loop for isolated child Realms.
 //!
 //! Both thread Realms and process Realms run the same sequence: create a fresh
-//! V8 Isolate, evaluate `_bootstrap.mjs`, drive the host loop, then teardown.
+//! V8 Isolate, evaluate `internal/bootstrap.mjs`, drive the host loop, then teardown.
 //! This module houses that shared code so neither `thread.rs` nor `process.rs`
 //! duplicates it.
 
@@ -60,7 +60,7 @@ pub struct ChildConfig {
 
 /// Bootstrap a fresh V8 Isolate and run its event loop to completion.
 ///
-/// Handles: isolate creation, `_bootstrap.mjs` evaluation, the host loop, and
+/// Handles: isolate creation, `internal/bootstrap.mjs` evaluation, the host loop, and
 /// teardown.  The caller is responsible only for setting up the IPC channel and
 /// any RAII guards (e.g. `OwnedFd`) before calling here.
 pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
@@ -129,23 +129,23 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
-        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs"));
-        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs.map"));
+        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
+        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
 
         let t = timing_enabled().then(Instant::now);
         let bootstrap_module = {
             let tc = &mut v8::TryCatch::new(scope);
-            loader::register_source_map_from_json(tc, "_bootstrap.mjs", bootstrap_map);
+            loader::register_source_map_from_json(tc, "internal/bootstrap.mjs", bootstrap_map);
             match loader::compile_source_module(
                 tc,
                 bootstrap_src,
-                "_bootstrap.mjs",
+                "internal/bootstrap.mjs",
                 Some(bootstrap_map),
             ) {
                 Some(m) => m,
                 None => {
                     return Err(catch_message(tc)
-                        .unwrap_or_else(|| "Failed to compile _bootstrap.mjs".to_string()));
+                        .unwrap_or_else(|| "Failed to compile internal/bootstrap.mjs".to_string()));
                 }
             }
         };
@@ -166,7 +166,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 .is_none()
             {
                 return Err(catch_message(tc)
-                    .unwrap_or_else(|| "Failed to instantiate _bootstrap.mjs".to_string()));
+                    .unwrap_or_else(|| "Failed to instantiate internal/bootstrap.mjs".to_string()));
             }
         }
         if let Some(t) = t {
@@ -181,7 +181,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             let tc = &mut v8::TryCatch::new(scope);
             if bootstrap_module.evaluate(tc).is_none() {
                 return Err(catch_message(tc)
-                    .unwrap_or_else(|| "Failed to evaluate _bootstrap.mjs".to_string()));
+                    .unwrap_or_else(|| "Failed to evaluate internal/bootstrap.mjs".to_string()));
             }
         }
         pump_and_checkpoint(scope);
@@ -197,7 +197,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             return Err(exc
                 .to_string(scope)
                 .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in _bootstrap.mjs".to_string()));
+                .unwrap_or_else(|| "Unknown error in internal/bootstrap.mjs".to_string()));
         }
 
         state_rc = get_state(scope);
@@ -312,7 +312,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             return Err(exc
                 .to_string(scope)
                 .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in _bootstrap.mjs".to_string()));
+                .unwrap_or_else(|| "Unknown error in internal/bootstrap.mjs".to_string()));
         }
 
         // If the entry module threw at top-level, propagate the error so the

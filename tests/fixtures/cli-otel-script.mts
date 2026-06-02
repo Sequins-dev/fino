@@ -3,7 +3,7 @@ import {
   getMeterProvider,
   getTracerProvider,
 } from 'fino:opentelemetry';
-import { argv } from 'fino:runtime/process';
+import { argv } from 'fino:process';
 
 async function readBodyText(body: unknown): Promise<string> {
   if (body == null) return '';

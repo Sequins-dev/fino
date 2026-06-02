@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { os, arch, argv } from 'fino:runtime/process';
+import { os, arch, argv } from 'fino:process';
 
 describe('platform info', () => {
   it('os is a non-empty string', (t) => {

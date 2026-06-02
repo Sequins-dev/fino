@@ -2,7 +2,7 @@
 //! Thread Realm infrastructure.
 //!
 //! Spawns a separate OS thread with its own `v8::Isolate`, bootstrapping
-//! `_bootstrap.mjs` and running a full host loop.  Bidirectional messaging
+//! `internal/bootstrap.mjs` and running a full host loop.  Bidirectional messaging
 //! uses `mpsc` channels paired with POSIX wake pipes for kqueue/io_uring
 //! integration: after each `channel_tx.send()` the sender writes 1 byte to
 //! the receiver's wake pipe, which the receiver's event loop watches via
@@ -14,7 +14,7 @@
 //! 2. `spawn_thread_realm` creates two mpsc channel pairs and two wake pipes,
 //!    packages everything into `IsolateConfig`, and spawns a thread that runs
 //!    `run_thread_isolate`.
-//! 3. The thread bootstraps its own `v8::Isolate`, evaluates `_bootstrap.mjs`
+//! 3. The thread bootstraps its own `v8::Isolate`, evaluates `internal/bootstrap.mjs`
 //!    (same as same-Isolate child realms), and runs its own host loop.
 //! 4. When the thread's loop exits it returns `Ok(())` (or `Err(msg)` on error).
 //! 5. The parent retains a `ThreadRealmHandle` with the send half of the

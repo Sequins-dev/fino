@@ -61,7 +61,7 @@
  * strings and don't want to construct a `Path` just to call one method.
  *
  *
- * ```ts
+ * ```ts no_run
  * import { Path, join, resolve, relative, dirname, basename } from './path.mts';
  *
  * const p = new Path('/usr/local/bin');

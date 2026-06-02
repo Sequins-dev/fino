@@ -30,12 +30,13 @@
  */
 
 import * as openssl from '../internal/openssl.mts';
-import * as loop from '../runtime/loop.mts';
+import * as loop from '../internal/runtime/loop.mts';
 import { BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.mts';
 import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.mts';
 import type { Address } from './socket.mts';
 import type { ConnectOptions } from './socket.mts';
 
+/** Options for opening or upgrading a TLS socket. */
 export interface TlsConnectOptions extends ConnectOptions {
   hostname?:           string;
   ca?:                 string;
@@ -205,7 +206,7 @@ export class TlsWriter extends BufferedBytesWriter {
  * `tls instanceof Socket` is true.
  *
  * Use the static factories rather than the constructor directly:
- * ```ts
+ * ```ts no_run
  *   const tls = await TlsSocket.connect(lp, { family: 'ipv4', ip: '…', port: 443 });
  *   const [reader, writer] = tls.split();
  * ```

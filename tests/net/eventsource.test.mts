@@ -6,7 +6,7 @@ import { describe, it } from 'fino:test/test';
 import { EventSourceReader, EventSourceWriter, EventSource } from 'fino:net/http/eventsource';
 import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 type EventSourceMessage = { type: string; data: string; lastEventId: string };
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);

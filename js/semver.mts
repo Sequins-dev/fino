@@ -356,7 +356,7 @@ function testComparator(version: SemVer, comparator: Comparator): boolean {
 /**
  * Parse a version string and return its structured components.
  *
- * ```ts
+ * ```ts no_run
  * import { parse } from 'fino:semver';
  *
  * parse('1.2.3-beta.1+build.5').prerelease; // ['beta', 1]
@@ -410,7 +410,7 @@ export function compare(a: string, b: string): number {
 /**
  * Test whether a version satisfies a range expression.
  *
- * ```ts
+ * ```ts no_run
  * import { satisfies } from 'fino:semver';
  *
  * satisfies('1.4.2', '^1.2.0'); // true

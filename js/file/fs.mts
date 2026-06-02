@@ -13,7 +13,7 @@
  * Unlike Node.js's implicit global `fs` module, here callers construct a
  * `DiskFileSystem` explicitly and pass their loop handle:
  *
- * ```ts
+ * ```ts no_run
  *   const fs = new DiskFileSystem(lp);
  * ```
  *
@@ -72,7 +72,7 @@ export {
 /**
  * A POSIX filesystem backend backed by libc syscalls via FFI.
  *
- * ```ts
+ * ```ts no_run
  * const fs = new DiskFileSystem(lp);
  * const text = await fs.readFile('/etc/hosts');
  * ```
@@ -409,7 +409,7 @@ export class DiskFileSystem extends FileSystem {
    * @param {GlobOptions} [options]
    * @returns {AsyncGenerator<Entry>}
    *
-   * ```ts
+   * ```ts no_run
    * for await (const entry of fs.glob('**\/*.mts')) {
    *   console.log(entry.path.toString());
    * }

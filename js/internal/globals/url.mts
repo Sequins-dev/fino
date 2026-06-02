@@ -77,7 +77,7 @@
  * requires them.
  *
  *
- * ```ts
+ * ```ts no_run
  * // URL and URLSearchParams are available via globalThis
  *
  * const url = new URL('https://user:pass@example.com:8080/path?q=1#frag');

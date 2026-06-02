@@ -24,8 +24,11 @@ import type { BufferedBytesReader, BufferedBytesWriter } from '../stream.mts';
 // Address types
 // ---------------------------------------------------------------------------
 
+/** @internal IPv4 endpoint address. */
 export interface IPv4Address { family: 'ipv4'; ip: string; port: number; }
+/** @internal IPv6 endpoint address. */
 export interface IPv6Address { family: 'ipv6'; ip: string; port: number; }
+/** @internal Unix domain socket path address. */
 export interface UnixAddress  { family: 'unix'; path: string; }
 
 /** A resolved network address — TCP/UDP endpoint or Unix socket path. */

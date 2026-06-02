@@ -7,14 +7,13 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | Builtin specifier | Benchmark coverage |
 | --- | --- |
 | `fino:ffi` | `benchmarks/ffi.bench.mts` |
-| `fino:realm` | `benchmarks/runtime/realm/index.bench.mts` |
-| `fino:module` | `benchmarks/runtime/module.bench.mts` |
-| `fino:realm/pool` | `benchmarks/runtime/realm/pool.bench.mts` |
-| `fino:realm/self` | `benchmarks/runtime/realm/self.bench.mts` |
-| `fino:messaging` | `benchmarks/runtime/messaging.bench.mts` |
+| `fino:realm` | `benchmarks/realm/index.bench.mts` |
+| `fino:module` | `benchmarks/module.bench.mts` |
+| `fino:realm/pool` | `benchmarks/realm/pool.bench.mts` |
+| `fino:realm/self` | `benchmarks/realm/self.bench.mts` |
+| `fino:realm/messaging` | `benchmarks/realm/messaging.bench.mts` |
 | `fino:database/sqlite` | `benchmarks/database/sqlite.bench.mts` |
-| `fino:runtime/loop` | No direct benchmark; the event loop is benchmark infrastructure used by `fino:bench` and direct timer/poll measurements are intentionally omitted. |
-| `fino:runtime/process` | `benchmarks/runtime/process.bench.mts` |
+| `fino:process` | `benchmarks/process.bench.mts` |
 | `fino:context` | `benchmarks/context/index.bench.mts` |
 | `fino:tty` | `benchmarks/tty.bench.mts` |
 | `fino:net/socket` | `benchmarks/net/socket.bench.mts` |
@@ -31,8 +30,8 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:file/path` | `benchmarks/file/path.bench.mts` |
 | `fino:file/watch` | `benchmarks/file/watch.bench.mts` |
 | `fino:archive` | `benchmarks/archive.bench.mts` |
-| `fino:cluster` | `benchmarks/runtime/cluster.bench.mts` |
-| `fino:opentelemetry` | `benchmarks/opentelemetry/index.bench.mts` |
+| `fino:cluster` | `benchmarks/cluster.bench.mts` |
+| `fino:opentelemetry` | `benchmarks/opentelemetry.bench.mts` |
 | `fino:parsing/scanner` | `benchmarks/parsing/scanner.bench.mts` |
 | `fino:semver` | `benchmarks/semver.bench.mts` |
 | `fino:uuid` | `benchmarks/uuid.bench.mts` |
@@ -41,6 +40,15 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:log` | `benchmarks/log.bench.mts` |
 | `fino:validate` | `benchmarks/validate.bench.mts` |
 | `fino:config` | `benchmarks/config.bench.mts` |
+| `fino:security` | `benchmarks/security/index.bench.mts` |
+| `fino:security/random` | `benchmarks/security/random.bench.mts` |
+| `fino:security/headers` | `benchmarks/security/headers.bench.mts` |
+| `fino:security/cors` | `benchmarks/security/cors.bench.mts` |
+| `fino:security/cookie` | `benchmarks/security/cookie.bench.mts` |
+| `fino:security/token` | `benchmarks/security/token.bench.mts` |
+| `fino:security/password` | `benchmarks/security/password.bench.mts` |
+| `fino:security/jwk` | `benchmarks/security/jwk.bench.mts` |
+| `fino:security/jwt` | `benchmarks/security/jwt.bench.mts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.mts` |
 | `fino:format/typescript` | `benchmarks/format/typescript.bench.mts` |
 | `fino:format/toml` | `benchmarks/format/toml.bench.mts` |
@@ -52,7 +60,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:bench` | `benchmarks/test/bench.bench.mts` |
 | `fino:test/mock` | `benchmarks/test/mock.bench.mts` |
 | `fino:compress` | `benchmarks/compress.bench.mts` |
-| `fino:util/argv` | `benchmarks/util/argv.bench.mts` |
-| `fino:util/prompt` | `benchmarks/util/prompt.bench.mts` |
+| `fino:process/argv` | `benchmarks/process/argv.bench.mts` |
+| `fino:tty/prompt` | `benchmarks/tty/prompt.bench.mts` |
 | `fino:context/topic` | `benchmarks/context/topic.bench.mts` |
 | `fino:profiler` | `benchmarks/profiler.bench.mts` |

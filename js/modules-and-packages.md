@@ -36,7 +36,7 @@ Examples:
 
 - `js/net/http/server.mts` is imported as `fino:net/http/server`.
 - `js/database/sqlite.mts` is imported as `fino:database/sqlite`.
-- `js/runtime/realm/index.mts` is imported as `fino:runtime/realm`.
+- `js/realm/index.mts` is imported as `fino:realm`.
 
 Only import documented public modules from applications. Other runtime
 specifier forms are not part of the supported application API.
@@ -94,7 +94,7 @@ Child realms inherit or restrict imports through explicit import rules. This
 means package and built-in access can be controlled per child:
 
 ```ts
-import { ImportMap, Realm } from 'fino:runtime/realm';
+import { ImportMap, Realm } from 'fino:realm';
 
 const realm = new Realm({
   entry: './worker.mts',

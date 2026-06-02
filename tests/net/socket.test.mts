@@ -4,7 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import * as sock from 'fino:net/socket';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 

@@ -7,7 +7,7 @@
  * work transparently.
  *
  * Usage:
- * ```ts
+ * ```ts no_run
  *   import { Database } from 'fino:database/sqlite';
  *   const db = await Database.open('/path/to.db');
  *   await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
@@ -30,6 +30,7 @@ import {
 } from 'internal:database/sqlite/bindings';
 import { FinoVFS } from 'internal:database/sqlite/vfs';
 
+/** `true` when the SQLite native bindings are available in this runtime. */
 export { sqliteAvailable };
 
 // SQLITE_TRANSIENT = (sqlite3_destructor_type)(-1): tells sqlite to copy the value.
@@ -43,6 +44,7 @@ const _TRANSIENT = (() => {
 // Options
 // ---------------------------------------------------------------------------
 
+/** Options for opening a SQLite database. */
 export interface DatabaseOptions {
   /** FileSystem provider. Defaults to DiskFileSystem. */
   fs?: FileSystem;
@@ -56,6 +58,7 @@ export interface DatabaseOptions {
 // Type mapping helpers
 // ---------------------------------------------------------------------------
 
+/** Values accepted for SQLite parameter binding and returned from result rows. */
 export type SqlValue = null | undefined | bigint | number | string | Uint8Array;
 
 function _readColumn(stmtPtr: ArrayBuffer, col: number, safeIntegers: boolean): SqlValue {
@@ -107,6 +110,7 @@ function _bindParam(stmtPtr: ArrayBuffer, idx: number, val: SqlValue): void {
 // Statement
 // ---------------------------------------------------------------------------
 
+/** Prepared SQLite statement with lazy compilation and typed row helpers. */
 export class Statement {
   readonly #db: Database;
   readonly #sql: string;

@@ -13,7 +13,7 @@
  *   Pointer.copyFrom(ptr, n)  → copy n bytes from the C address in ptr into a new Uint8Array
  *
  * Out-parameters (e.g. nghttp2_session**, nghttp2_session_callbacks**):
- * ```ts
+ * ```ts no_run
  *   const handle = new ArrayBuffer(8);  // 8 bytes to receive the written pointer
  *   sym.foo(Pointer.of(handle), ...);   // pass address of those 8 bytes
  *   // Now handle's 8 bytes contain the allocated C pointer — use handle directly.
@@ -48,12 +48,14 @@ import {
   buildSettingsArray,
 } from './bindings.mts';
 
+/** @internal Helpers for building nghttp2 name/value and settings arrays. */
 export { buildNvArray, buildSettingsArray };
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/** @internal Callbacks invoked by nghttp2 session events for one HTTP/2 stream. */
 export interface H2StreamCallbacks {
   onBeginHeaders(streamId: number, isTrailers: boolean): void;
   onHeader(streamId: number, name: string, value: string, flags: number): void;
@@ -72,6 +74,7 @@ const _dec = new _TextDecoder();
 // Nghttp2Session
 // ---------------------------------------------------------------------------
 
+/** @internal Stateful wrapper around an nghttp2 session pointer. */
 export class Nghttp2Session {
   // 8-byte ArrayBuffer whose bytes hold the nghttp2_session* address.
   #sessionHandle: ArrayBuffer;

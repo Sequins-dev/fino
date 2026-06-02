@@ -1,7 +1,7 @@
 import {
   getTracerProvider,
 } from 'fino:opentelemetry';
-import { argv } from 'fino:runtime/process';
+import { argv } from 'fino:process';
 
 if (argv[1] !== '--test' && argv[1] !== 'test') {
   globalThis.fetch = async function otelCliFetch() {

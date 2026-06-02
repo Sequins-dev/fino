@@ -4,7 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { dlopen } from 'fino:ffi';
-import { os } from 'fino:runtime/process';
+import { os } from 'fino:process';
 
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const lib = dlopen(LIBC, {

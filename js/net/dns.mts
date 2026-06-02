@@ -104,7 +104,7 @@
  */
 
 import * as sock from './socket.mts';
-import * as loop from '../runtime/loop.mts';
+import * as loop from '../internal/runtime/loop.mts';
 import { DiskFileSystem } from '../file/fs.mts';
 import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
 import { os } from 'internal:process';
@@ -116,12 +116,19 @@ type RecordTypeName = keyof typeof RECORD_TYPES;
 interface DnsServer { ip: string; family: DnsServerFamily; port: number; }
 interface DnsError extends Error { code?: string; hostname?: string; }
 
+/** Mail-exchanger DNS record data. */
 export interface MxRecord   { priority: number; exchange: string; }
+
+/** Start-of-authority DNS record data. */
 export interface SoaRecord  { nsname: string; hostmaster: string; serial: number; refresh: number; retry: number; expire: number; minttl: number; }
+
+/** Service-location DNS record data. */
 export interface SrvRecord  { priority: number; weight: number; port: number; name: string; }
 
+/** Decoded DNS record payload for supported record types; unknown data is raw bytes. */
 export type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord | Uint8Array | null;
 
+/** Decoded DNS resource record from a response section. */
 export interface DnsResourceRecord {
   name: string;
   type: number;
@@ -129,6 +136,7 @@ export interface DnsResourceRecord {
   data: DnsRecordData;
 }
 
+/** Parsed DNS response packet. */
 export interface DnsResponse {
   id:          number;
   flags:       number;
@@ -139,8 +147,13 @@ export interface DnsResponse {
   additionals: DnsResourceRecord[];
 }
 
+/** Resolver timeout and retry controls. */
 export interface ResolverOptions { timeout?: number; retries?: number; }
+
+/** Address-family preference for `lookup`. */
 export interface LookupOptions   { family?: 4 | 6; }
+
+/** Primary address returned by `lookup`. */
 export interface LookupResult    { address: string; family: 4 | 6; }
 
 const isDarwin = os === 'darwin';
@@ -548,6 +561,7 @@ function formatRecords(records: DnsResourceRecord[], rrtype: RecordTypeName): Dn
 // Resolver
 // ---------------------------------------------------------------------------
 
+/** UDP DNS resolver with configurable nameservers, timeout, and retries. */
 export class Resolver {
   #servers: DnsServer[] | null;
   #serversLoaded: Promise<void> | null;

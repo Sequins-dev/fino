@@ -220,6 +220,7 @@ function createChannel(): Channel {
 // Queuing strategies
 // ---------------------------------------------------------------------------
 
+/** WHATWG count queuing strategy with constant chunk size of 1. */
 export class CountQueuingStrategy {
   highWaterMark: number;
   get [Symbol.toStringTag]() { return 'CountQueuingStrategy'; }
@@ -230,6 +231,7 @@ export class CountQueuingStrategy {
   size(): number { return 1; }
 }
 
+/** WHATWG byte-length queuing strategy using `chunk.byteLength` as size. */
 export class ByteLengthQueuingStrategy {
   highWaterMark: number;
   get [Symbol.toStringTag]() { return 'ByteLengthQueuingStrategy'; }

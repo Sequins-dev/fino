@@ -60,7 +60,7 @@
  * default export and also as named free functions (`ok`, `equal`, `throws`,
  * etc.). This lets callers choose between:
  *
- * ```ts
+ * ```ts no_run
  *   import assert from './assert.mts';        // default instance
  *   assert.ok(value);
  *
@@ -70,7 +70,7 @@
  * ```
  *
  *
- * ```ts
+ * ```ts no_run
  * import { Assert, AssertionError } from './assert.mts';
  *
  * const assert = new Assert({
@@ -117,6 +117,7 @@ function _messageOf(err: unknown): string {
   return String(err);
 }
 
+/** Error thrown by failed assertions, including actual, expected, and operator metadata. */
 export class AssertionError extends Error {
   #actual: unknown;
   #expected: unknown;
@@ -344,11 +345,19 @@ const _default = new Assert();
 
 export default _default;
 
+/** Assert that a value is truthy. */
 export const ok = (value: unknown, msg?: string): void => _default.ok(value, msg);
+/** Assert that a value is falsy. */
 export const notOk = (value: unknown, msg?: string): void => _default.notOk(value, msg);
+/** Assert strict equality with `Object.is` semantics. */
 export const equal = (actual: unknown, expected: unknown, msg?: string): void => _default.equal(actual, expected, msg);
+/** Assert strict inequality with `Object.is` semantics. */
 export const notEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.notEqual(actual, expected, msg);
+/** Assert structural equality for plain object and array-like values. */
 export const deepEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.deepEqual(actual, expected, msg);
+/** Unconditionally fail an assertion. */
 export const fail = (msg?: string): void => _default.fail(msg);
+/** Assert that a synchronous function throws, optionally matching the error. */
 export const throws = (fn: () => void, check?: ErrorCheck, msg?: string): void => _default.throws(fn, check, msg);
+/** Assert that an async function rejects, optionally matching the error. */
 export const rejects = (fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> => _default.rejects(fn, check, msg);

@@ -8,7 +8,7 @@
  *
  * API mirrors the execution-flow library (closure-based):
  *
- * ```ts
+ * ```ts no_run
  *   import { Context } from './context.mts';
  *
  *   const requestId = new Context('requestId');
@@ -68,6 +68,7 @@ function restore(state: unknown): void {
   setCPED(state);
 }
 
+/** Async-local context slot whose value follows promise continuations. */
 export class Context<T = unknown> {
   #id: number;
   #name: string;

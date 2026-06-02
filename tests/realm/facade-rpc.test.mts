@@ -26,7 +26,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeCallFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
@@ -42,7 +42,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeCallFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
@@ -67,7 +67,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeUnknownFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-unknown-method.mts', import.meta.url).pathname,
@@ -97,7 +97,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeStreamFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-fn.mts', import.meta.url).pathname,
@@ -116,7 +116,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeStreamErrorFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-error-fn.mts', import.meta.url).pathname,
@@ -136,7 +136,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeStreamFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-fn.mts', import.meta.url).pathname,
@@ -154,7 +154,7 @@ describe('Facade RPC — thread realm', () => {
     const realm = new Realm<typeof facadeCallFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
@@ -175,7 +175,7 @@ describe('Facade RPC — embedded realm', () => {
 
     const realm = new Realm<typeof facadeCallFn>({
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
@@ -190,7 +190,7 @@ describe('Facade RPC — embedded realm', () => {
 
     const realm = new Realm<typeof facadeCallFn>({
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-call.mts', import.meta.url).pathname,
@@ -214,7 +214,7 @@ describe('Facade RPC — embedded realm', () => {
 
     const realm = new Realm<typeof facadeStreamFn>({
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-stream-fn.mts', import.meta.url).pathname,
@@ -248,7 +248,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
     const realm = new Realm<typeof facadeHandleFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-handle-fn.mts', import.meta.url).pathname,
@@ -272,7 +272,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
     const realm = new Realm<typeof facadeHandleFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-handle-fn.mts', import.meta.url).pathname,
@@ -300,7 +300,7 @@ describe('Facade RPC — FacadeHandle (thread realm)', () => {
     const realm = new Realm<typeof facadeHandleFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-handle-fn.mts', import.meta.url).pathname,
@@ -335,7 +335,7 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
     const realm = new Realm<typeof facadeSinkFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-sink-fn.mts', import.meta.url).pathname,
@@ -354,7 +354,7 @@ describe('Facade RPC — callSink / sendStream (thread realm)', () => {
     const realm = new Realm<typeof facadeSinkFn>({
       thread: true,
       overrides: ImportMap.deny([
-        { pattern: 'fino:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
         { pattern: 'fino:test-facade', directive: facade },
       ]),
       entry: new URL('./fixtures/facade-sink-fn.mts', import.meta.url).pathname,

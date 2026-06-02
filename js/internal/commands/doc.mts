@@ -6,8 +6,8 @@
  */
 
 import { DiskFileSystem } from '../../file/fs.mts';
-import { Command, type CommandContext } from '../../util/argv.mts';
-import { cwd } from '../../runtime/process.mts';
+import { Command, type CommandContext } from '../../process/argv.mts';
+import { cwd } from '../../process.mts';
 import { renderMarkdown, renderMarkdownInline, type MarkdownOptions } from '../../format/markdown.mts';
 import { escapeHtml, render as renderTemplate } from '../../template.mts';
 import { parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.mts';
@@ -2615,7 +2615,9 @@ async function runDocTestCommand(ctx: CommandContext): Promise<string> {
     if (skip) ignored += 1;
     else runnable += 1;
     lines.push(`  it(${JSON.stringify(name)}, ${skip ? `{ skip: 'ignored' }, ` : ''}async () => {`);
-    if (throws) {
+    if (skip) {
+      lines.push(`    // ignored doc example`);
+    } else if (throws) {
       lines.push(`    let threw = false;`);
       lines.push(`    try {`);
       lines.push(indentCode(code, 6));

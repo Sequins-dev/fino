@@ -1,6 +1,6 @@
 /**
  * Tests for AbortController and AbortSignal (fino:abort / globalThis).
- * Uses the global instances registered by _main.mjs.
+ * Uses the global instances registered by internal/main.mjs.
  */
 
 import { describe, it } from 'fino:test/test';

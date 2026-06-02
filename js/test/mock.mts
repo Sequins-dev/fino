@@ -7,7 +7,7 @@
  *
  * The API is closure-scoped on purpose:
  *
- * ```ts
+ * ```ts no_run
  *   await mockFetch(async (mock) => {
  *     mock.get('https://example.com/data').reply(200, 'ok');
  *     const res = await fetch('https://example.com/data');
@@ -35,6 +35,7 @@ type HeaderMatcher = string | RegExp | ((value: string | null, call: MockFetchCa
 type BodyMatcher = string | Uint8Array | RegExp | ((body: Uint8Array, text: string, call: MockFetchCall) => boolean);
 type MockResponseFactory = Response | ((call: MockFetchCall) => Response | Promise<Response>);
 
+/** Captured fetch call passed to mock matchers and response factories. */
 export interface MockFetchCall {
   callIndex: number;
   input: FetchInput;
@@ -110,6 +111,7 @@ async function _withScopedFetch<T>(
   }
 }
 
+/** Chainable expectation for one mocked fetch call pattern. */
 export class MockFetchExpectation {
   #expectation: FetchExpectation;
 
@@ -154,6 +156,7 @@ export class MockFetchExpectation {
   }
 }
 
+/** Scoped fetch mock that records calls and verifies queued expectations. */
 export class MockFetchScope {
   #baseUrl: string | null;
   #expectations: FetchExpectation[] = [];
@@ -256,6 +259,7 @@ export class MockFetchScope {
   }
 }
 
+/** Temporarily replace global `fetch` while `fn` runs and verify expectations afterwards. */
 export async function mockFetch<T>(
   baseUrlOrFn: string | URL | ((mock: MockFetchScope) => T | Promise<T>),
   maybeFn?: (mock: MockFetchScope) => T | Promise<T>,

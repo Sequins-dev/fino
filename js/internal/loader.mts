@@ -7,11 +7,11 @@
  *   - `initImportMeta(importMeta, filename, root)` → populates import.meta
  *
  * This module must remain synchronous (no top-level `await`) so it can be
- * statically imported from `_main.mjs`.
+ * statically imported from `internal/main.mjs`.
  *
  * We open our own libc handle for `realpath` rather than reusing
  * `internal:file/bindings` because that module uses `await import(...)`,
- * which would make this module (and `_main.mjs`) async.
+ * which would make this module (and `internal/main.mjs`) async.
  *
  * @internal
  */

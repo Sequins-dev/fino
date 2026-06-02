@@ -2,7 +2,7 @@
  * internal:file/watch-bindings — Platform-specific bindings for file watching.
  *
  * On Linux: exposes inotify syscalls and event constants via libc FFI.
- * On macOS: stubs only — watching uses kqueue EVFILT_VNODE via fino:runtime/loop.
+ * On macOS: stubs only — watching uses kqueue EVFILT_VNODE via internal:runtime/loop.
  *
  *
  * ## inotify overview (Linux)

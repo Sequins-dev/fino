@@ -147,7 +147,7 @@ fn schedule_sync(
     rv.set(promise.into());
 }
 
-/// Called by `_main.mts` with `(step, onDone)` to hand off host-safe loop
+/// Called by `internal/main.mts` with `(step, onDone)` to hand off host-safe loop
 /// stepping to Rust. JS owns scheduling policy; Rust only calls `step()`
 /// outside checkpoints and services deferred sync work between calls.
 fn run_loop(

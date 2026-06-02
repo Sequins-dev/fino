@@ -5,7 +5,7 @@
  * @internal
  */
 
-import { cwd } from '../../runtime/process.mts';
+import { cwd } from '../../process.mts';
 import { DiskFileSystem } from '../../file/fs.mts';
 import {
   BatchLogRecordProcessor,
@@ -23,7 +23,7 @@ import {
   TraceTopicInstrumentation,
   TlsInstrumentation,
   TracerProvider,
-} from '../../opentelemetry/index.mts';
+} from '../../opentelemetry.mts';
 import { registerShutdownHook } from '../shutdown.mts';
 
 function logOtelDebug(prefix: string, value: unknown): void {

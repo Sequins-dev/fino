@@ -783,6 +783,7 @@ function _trimAscii(value: string): string {
   return value.slice(start, end);
 }
 
+/** @internal Parse a comma-delimited HTTP header token list. */
 export function _headerTokenList(value: string | null): string[] {
   if (value === null || value === '') return [];
   const scanner = new Scanner(value, { encoding: 'ascii', format: 'http' });
@@ -810,6 +811,7 @@ function _urlFromRequestTarget(path: string, headers: Headers): string {
   return host ? 'http://' + host + path : path;
 }
 
+/** @internal Parse an HTTP response status line into version, status, and text. */
 export function _parseResponseLine(firstLine: string): { version: string; status: number; statusText: string } {
   const scanner = new Scanner(firstLine, { encoding: 'ascii', format: 'http' });
   const version = scanner.readToken('HTTP version');

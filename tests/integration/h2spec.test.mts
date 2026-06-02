@@ -45,7 +45,7 @@
 import { describe, it, before, after } from 'fino:test/test';
 import { serve } from 'fino:net/http/server';
 import { DiskFileSystem } from 'fino:file';
-import { Process } from 'fino:runtime/process';
+import { Process } from 'fino:process';
 import { h2Available } from 'fino:net/http/h2';
 
 const decodeUtf8 = (b: Uint8Array) => new TextDecoder().decode(b);

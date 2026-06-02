@@ -12,7 +12,7 @@
  * No connection or reconnection logic — purely a wire-format parser, analogous
  * to how `parseResponse()` consumes a byte stream.
  *
- * ```ts
+ * ```ts no_run
  *   import { EventSourceReader } from './eventsource.mts';
  *
  *   const reader = new EventSourceReader(response.body);
@@ -28,7 +28,7 @@
  * Formats and writes SSE events to any Writer (from fino:stream).
  * Server-side counterpart to EventSourceReader.
  *
- * ```ts
+ * ```ts no_run
  *   import { EventSourceWriter } from './eventsource.mts';
  *
  *   const esw = new EventSourceWriter(writer);
@@ -45,7 +45,7 @@
  * Last-Event-ID resumption, and EventTarget-based event dispatch. Extends
  * EventTarget so `addEventListener` / `removeEventListener` work as expected.
  *
- * ```ts
+ * ```ts no_run
  *   import { EventSource } from './eventsource.mts';
  *
  *   const es = new EventSource('http://localhost:3000/events');
@@ -100,7 +100,7 @@
  * - EventSourceReader is a single-use async iterator — do not call
  *   `[Symbol.asyncIterator]()` more than once on the same instance.
  * - EventSourceWriter does not own the Writer; callers are responsible
- * ```ts
+ * ```ts no_run
  *   for closing it.
  * ```
  * - EventSource connects immediately upon construction.
@@ -113,12 +113,13 @@ import { Headers, parseResponse } from './index.mts';
 import { Socket } from '../socket.mts';
 import { TlsSocket } from '../tls.mts';
 import { lookup } from '../dns.mts';
-import * as loop from '../../runtime/loop.mts';
+import * as loop from '../../internal/runtime/loop.mts';
 import { EventTarget, Event } from '../../internal/globals/eventtarget.mts';
 import { MessageEvent } from '../../internal/globals/messaging.mts';
 import { URL } from '../../internal/globals/url.mts';
 import type { Address, IPv4Address, IPv6Address } from '../socket.mts';
 
+/** Parsed server-sent event yielded by `EventSourceReader`. */
 export interface SseEvent {
   type:  string;
   data:  string;
@@ -126,6 +127,7 @@ export interface SseEvent {
   retry: number | null;
 }
 
+/** Options for the EventSource client connection. */
 export interface EventSourceInit {
   headers?: Record<string, string> | Headers;
 }
@@ -157,7 +159,7 @@ interface ClosableAsyncByteReader extends AsyncIterable<Uint8Array | ArrayBuffer
  *
  * Implements `[Symbol.asyncIterator]` for `for await` consumption.
  *
- * ```ts
+ * ```ts no_run
  * const reader = new EventSourceReader(response.body);
  * for await (const event of reader) {
  *   console.log(event.type, event.data);
@@ -281,7 +283,7 @@ export class EventSourceReader {
  * The writer must have an async `write(Uint8Array)` method compatible with
  * the Writer interface from fino:stream.
  *
- * ```ts
+ * ```ts no_run
  * const esw = new EventSourceWriter(writer);
  * await esw.event({ data: 'hello' });
  * await esw.event({ event: 'update', data: 'line1\nline2', id: '42' });
@@ -381,7 +383,7 @@ const DEFAULT_RETRY_MS = 3000;
  * events through the EventTarget interface.
  *
  *
- * ```ts
+ * ```ts no_run
  * loop.run(async () => {
  *   const es = new EventSource('http://localhost:3000/events');
  *   es.onmessage = (e) => console.log(e.data);

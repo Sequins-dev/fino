@@ -382,16 +382,16 @@ operational-maturity investments each requires.
 
 For readers verifying claims against the code:
 
-- Realms / modes / lifecycle: `js/runtime/realm/index.mts`, `src/realm/{mod,native,child,bridge}.rs`
+- Realms / modes / lifecycle: `js/realm/index.mts`, `src/realm/{mod,native,child,bridge}.rs`
 - Capability narrowing: `src/state.rs` (directives), `src/realm/native.rs` (`narrowing_check`),
   `src/loader.rs` (block/remap enforcement)
-- RPC / Facade / streaming / handles: `js/runtime/realm/index.mts`, `js/internal/.../parent-rpc.mts`,
+- RPC / Facade / streaming / handles: `js/realm/index.mts`, `js/internal/.../parent-rpc.mts`,
   `src/realm/synthetic.rs`; cross-thread port transfer: `src/realm/transit.rs`
 - Cluster / remote realms / transport: `js/cluster/*`, `docs/research/cluster.md`
 - Networking: `js/net/{dns,socket,tls}.mts`, `js/net/http/*.mts`,
   `js/internal/openssl.mts`, `js/net/socket.mts`; gaps noted in §1
 - FFI / callbacks: `src/ffi/{mod,call,closure,pointer,fast}.rs`
-- Async / event loop: `src/async_rt/*`, `src/runtime.rs`, `js/runtime/loop.mts`
+- Async / event loop: `src/async_rt/*`, `src/runtime.rs`, `js/internal/runtime/loop.mts`
 - SQLite / vector / VFS: `js/sqlite/*`, `js/sqlite.mts`
 - Observability: `fino:opentelemetry`, `internal:inspector` (`src/inspector_module.rs`)
 - Existing roadmap and research: `docs/roadmap.md`,

@@ -5,8 +5,8 @@
  * @internal
  */
 
-import { cwd } from '../../runtime/process.mts';
-import { Command, type CommandContext } from '../../util/argv.mts';
+import { cwd } from '../../process.mts';
+import { Command, type CommandContext } from '../../process/argv.mts';
 import { DiskFileSystem } from '../../file/fs.mts';
 
 function normalizeModuleSpecifier(path: string): string {

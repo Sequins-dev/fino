@@ -5,7 +5,7 @@
  * @internal
  */
 
-import { Command, type CommandContext } from '../../util/argv.mts';
+import { Command, type CommandContext } from '../../process/argv.mts';
 
 export function createInstallCommand(): Command {
   return new Command({

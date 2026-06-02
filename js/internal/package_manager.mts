@@ -6,7 +6,7 @@
 
 import { DiskFileSystem } from 'fino:file';
 import { extractArchive } from 'fino:archive';
-import { cwd, env } from 'fino:runtime/process';
+import { cwd, env } from 'fino:process';
 import { compare, maxSatisfying } from 'fino:semver';
 import { Scanner } from 'fino:parsing/scanner';
 import * as openssl from './openssl.mts';

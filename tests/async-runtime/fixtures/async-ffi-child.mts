@@ -3,7 +3,7 @@
  * Used to verify that embedded child realms share the parent's executor.
  */
 import { dlopen } from 'fino:ffi';
-import { os } from 'fino:runtime/process';
+import { os } from 'fino:process';
 
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const lib = dlopen(LIBC, {

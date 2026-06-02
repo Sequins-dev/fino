@@ -101,7 +101,7 @@
  *     - template (663.07% slower)
  *
  *
- * ```ts
+ * ```ts no_run
  * import { bench } from './bench.mts';
  *
  * bench('string ops', (b) => {
@@ -121,7 +121,7 @@
 import console from '../internal/globals/console.mts';
 import { os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
-import * as loopModule from '../runtime/loop.mts';
+import * as loopModule from '../internal/runtime/loop.mts';
 
 // ---------------------------------------------------------------------------
 // High-resolution timer (nanoseconds) — mirrors benc.h bench_now()
@@ -230,6 +230,7 @@ function formatStats(stats: Stats): string {
 // Group — a named collection of measurements with optional sub-groups
 // ---------------------------------------------------------------------------
 
+/** Options for registering a benchmark measurement with setup and teardown hooks. */
 export interface MeasureOptions<T = unknown> {
   setup?: () => T;
   fn: (ctx: T) => unknown;
@@ -252,6 +253,7 @@ interface PendingGroup {
 
 type PendingSpec = PendingMeasurement | PendingGroup;
 
+/** Benchmark group containing deferred measurements and nested groups. */
 export class Group {
   #name: string;
   #indent: number;
@@ -276,7 +278,7 @@ export class Group {
    *
    * Accepts either a function or an options object:
    *
-   * ```ts
+   * ```ts no_run
    *   b.measure('name', fn)
    *   b.measure('name', { setup, fn, teardown })
    * ```

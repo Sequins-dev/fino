@@ -9,7 +9,7 @@ import { describe, it } from 'fino:test/test';
 import { serve } from 'fino:net/http/server';
 import { Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 

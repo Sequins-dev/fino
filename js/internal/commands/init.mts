@@ -5,10 +5,10 @@
  * @internal
  */
 
-import { Command } from '../../util/argv.mts';
+import { Command } from '../../process/argv.mts';
 import { DiskFileSystem } from '../../file/fs.mts';
-import type { CommandContext } from '../../util/argv.mts';
-import { cwd, env, Process } from '../../runtime/process.mts';
+import type { CommandContext } from '../../process/argv.mts';
+import { cwd, env, Process } from '../../process.mts';
 
 const fs = new DiskFileSystem();
 

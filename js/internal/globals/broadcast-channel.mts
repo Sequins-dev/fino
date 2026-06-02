@@ -14,7 +14,7 @@
 import { Event, EventTarget } from './eventtarget.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { subscribe, publish, receive, unsubscribe, wakeSubscriber } from 'internal:broadcast';
-import { readable, removeRead } from 'fino:runtime/loop';
+import { readable, removeRead } from 'internal:runtime/loop';
 import { MessageEvent } from './messaging.mts';
 
 // ---------------------------------------------------------------------------

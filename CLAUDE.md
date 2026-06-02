@@ -76,7 +76,7 @@ The runtime is V8-based, not Boa. Key primitives:
 - **`internal:async-context`** exposes `drainMicrotasks`, `scheduleSync`, `runLoop`, and CPED helpers to JS.
 - The host loop (`runtime.rs:184`) calls a JS step function (`loop_step_fn`) each iteration; the step function drives kqueue/io_uring I/O.
 
-kqueue (macOS) and io_uring (Linux) backends are in `js/internal/runtime/kqueue.mts` and `js/internal/runtime/io_uring.mts`. `fino:runtime/loop` abstracts over both.
+kqueue (macOS) and io_uring (Linux) backends are in `js/internal/runtime/kqueue.mts` and `js/internal/runtime/io_uring.mts`. `internal:runtime/loop` abstracts over both.
 
 ### FFI (`fino:ffi`)
 

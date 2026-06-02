@@ -1,9 +1,43 @@
 /**
  * fino:format/typescript — OXC-backed TypeScript and JavaScript parser.
  *
- * Exposes OXC parse results to JavaScript. The AST shape intentionally mirrors
- * OXC's serialized ESTree output and may change when the bundled OXC version
- * changes.
+ * This module exposes the runtime's OXC parser and transformer to JavaScript.
+ * Use it for tooling-oriented tasks such as inspecting TypeScript/JavaScript
+ * source, collecting comments and tokens, validating syntax, or stripping
+ * TypeScript syntax before evaluation. It is not a type checker.
+ *
+ * `parse()` returns OXC's serialized ESTree-compatible AST, comments, optional
+ * tokens, diagnostics, and the detected source mode. The AST shape follows the
+ * bundled OXC version and can change as OXC evolves. `transpile()` returns
+ * JavaScript code plus source map text and diagnostics for TypeScript/JSX
+ * syntax lowering.
+ *
+ * Source grammar is inferred from `filename` when possible. Pass `sourceType`
+ * to force JavaScript, JSX, TypeScript, TSX, declaration-file, module, or
+ * script parsing behavior.
+ *
+ * ```ts no_run
+ * import { parse } from 'fino:format/typescript';
+ *
+ * const result = parse('export const answer: number = 42;', {
+ *   sourceType: 'ts',
+ *   tokens: true,
+ * });
+ * if (!result.ok) throw new Error(result.errors[0]?.message);
+ * ```
+ *
+ * ```ts no_run
+ * import { transpile } from 'fino:format/typescript';
+ *
+ * const { code, map } = transpile('const x: number = 1;', {
+ *   filename: 'example.ts',
+ * });
+ * ```
+ *
+ * Useful references:
+ *   - OXC project: https://oxc.rs/
+ *   - ESTree specification: https://github.com/estree/estree
+ *   - TypeScript language: https://www.typescriptlang.org/docs/
  */
 
 import { parse as parseNative, transpile as transpileNative } from 'internal:format/typescript';
@@ -78,7 +112,7 @@ export interface TranspileResult {
 /**
  * Parse JavaScript or TypeScript source with OXC.
  *
- * ```ts
+ * ```ts no_run
  * import { parse } from 'fino:format/typescript';
  *
  * const result = parse('export const answer: number = 42;', { sourceType: 'ts' });
@@ -92,7 +126,7 @@ export function parse(source: string, options: ParseOptions = {}): ParseResult {
 /**
  * Transpile TypeScript or JSX syntax to JavaScript.
  *
- * ```ts
+ * ```ts no_run
  * import { transpile } from 'fino:format/typescript';
  *
  * const { code } = transpile('const x: number = 1;', { sourceType: 'ts' });

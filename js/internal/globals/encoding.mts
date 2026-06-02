@@ -361,6 +361,7 @@ type BlobCloneHelper = {
 };
 let _blobCloneHelper: BlobCloneHelper | null = null;
 
+/** @internal Register Blob/File clone helpers without creating an import cycle. */
 export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
   _blobCloneHelper = helper;
 }
@@ -679,6 +680,7 @@ function _findIncompleteEnd(bytes: Uint8Array): number {
   return len;
 }
 
+/** WHATWG `TextDecoder` facade for UTF-8 decoding with optional fatal mode and BOM handling. */
 export class TextDecoder {
   #encoding: string;
   #fatal: boolean;

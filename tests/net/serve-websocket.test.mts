@@ -15,7 +15,7 @@ import type { Event, EventTarget } from 'internal:globals/eventtarget';
 // Helper: wait for a named event on an EventTarget
 // ---------------------------------------------------------------------------
 
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 
 function waitForEvent<T extends Event>(target: EventTarget, name: string, timeoutMs = 5000): Promise<T> {
   return new Promise((resolve, reject) => {

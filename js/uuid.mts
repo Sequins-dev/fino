@@ -11,7 +11,7 @@
  * This guarantees strict ascending order within a single process while
  * retaining cryptographic randomness across millisecond boundaries.
  *
- * ```ts
+ * ```ts no_run
  *   import { UUID, v4, v7, parse, validate, version } from 'fino:uuid';
  *
  *   const id  = v4();                   // UUID
@@ -206,17 +206,24 @@ export class UUID {
 // Module-level function surface
 // ---------------------------------------------------------------------------
 
+/** Generate a random UUID version 4. */
 export function v4(): UUID { return UUID.v4(); }
+/** Generate a time-ordered UUID version 7. */
 export function v7(): UUID { return UUID.v7(); }
+/** Parse a UUID string into a `UUID` instance, throwing on invalid input. */
 export function parse(str: string): UUID { return UUID.parse(str); }
 
+/** Return `true` when `str` is a valid canonical UUID string. */
 export function validate(str: string): boolean {
   try { _parse(str); return true; } catch { return false; }
 }
 
+/** Return the UUID version number parsed from `str`. */
 export function version(str: string): number {
   return UUID.parse(str).version;
 }
 
+/** Nil UUID string (`00000000-0000-0000-0000-000000000000`). */
 export const NIL: string = UUID.NIL.toString();
+/** Max UUID string (`ffffffff-ffff-ffff-ffff-ffffffffffff`). */
 export const MAX: string = UUID.MAX.toString();

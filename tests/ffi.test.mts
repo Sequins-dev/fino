@@ -4,7 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { dlopen, Pointer } from 'fino:ffi';
-import { os } from 'fino:runtime/process';
+import { os } from 'fino:process';
 
 describe('Pointer helpers', () => {
   it('Pointer.null() returns JS null', (t) => {

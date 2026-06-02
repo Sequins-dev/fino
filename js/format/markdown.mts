@@ -1,9 +1,46 @@
 /**
  * fino:format/markdown - safe Markdown parser and HTML renderer for documentation and templates.
+ *
+ * This module provides a deliberately small Markdown surface for generated
+ * documentation, templates, and user-facing text where predictable HTML output
+ * matters more than implementing every extension in the Markdown ecosystem.
+ * It parses Markdown into a reusable block tree and renders escaped HTML with
+ * safe link handling by default.
+ *
+ * Supported block nodes include paragraphs, ATX headings, ordered and
+ * unordered lists, fenced code blocks, and reference-style link definitions.
+ * Inline rendering handles emphasis-style text as plain escaped content plus
+ * links and code spans used by the documentation generator. Link URLs are
+ * limited to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
+ *
+ * The renderer is not a CommonMark compliance target and does not execute or
+ * sanitize arbitrary embedded HTML. Treat Markdown as content input and use
+ * `resolveLink` or `renderCode` to adapt it to an application's routing and
+ * syntax-highlighting needs.
+ *
+ * ```ts no_run
+ * import { parseMarkdown, renderMarkdown } from 'fino:format/markdown';
+ *
+ * const doc = parseMarkdown('# Title\n\nSee [docs](/docs).\n');
+ * const html = renderMarkdown(doc, { headingOffset: 1 });
+ * ```
+ *
+ * ```ts no_run
+ * import { renderMarkdown } from 'fino:format/markdown';
+ *
+ * const html = renderMarkdown('```ts\nconst x = 1;\n```', {
+ *   renderCode: (code, lang) => `<pre data-lang="${lang}">${code}</pre>`,
+ * });
+ * ```
+ *
+ * Useful references:
+ *   - CommonMark overview: https://commonmark.org/
+ *   - Markdown original syntax: https://daringfireball.net/projects/markdown/syntax
  */
 
 import { Scanner } from '../parsing/scanner.mts';
 
+/** Options controlling Markdown HTML rendering and link safety. */
 export interface MarkdownOptions {
   /**
    * Allow link URLs outside the default safe set.
@@ -31,12 +68,14 @@ export interface MarkdownOptions {
   renderCode?: (code: string, lang: string, meta: string) => string;
 }
 
+/** Block-level node returned by the Markdown parser. */
 export type MarkdownNode =
   | { kind: 'paragraph'; text: string }
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'list'; ordered: boolean; items: string[] }
   | { kind: 'code'; lang: string; meta: string; code: string };
 
+/** Parsed Markdown tree and reference-style link definitions. */
 export interface MarkdownDocument {
   nodes: MarkdownNode[];
   references: Record<string, string>;

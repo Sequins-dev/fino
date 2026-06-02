@@ -55,7 +55,7 @@
  * Blob is the provided `contentType` (lowercased), or empty string if omitted.
  *
  *
- * ```ts
+ * ```ts no_run
  * // Blob and File are available via globalThis
  *
  * const blob = new Blob(['hello, ', 'world'], { type: 'text/plain' });
@@ -128,6 +128,7 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 // Blob
 // ---------------------------------------------------------------------------
 
+/** Web `Blob` facade backed by an immutable in-memory byte store. */
 export class Blob {
   #bytes: Uint8Array;
   #type: string;

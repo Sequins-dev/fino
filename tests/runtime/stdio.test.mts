@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { stdin, stdout, stderr, Process } from 'fino:runtime/process';
+import { stdin, stdout, stderr, Process } from 'fino:process';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

@@ -4,10 +4,10 @@
  *
  * Used to test cross-Isolate MessagePort transfer via ThreadPort.
  *
- * `realmPort` is set on globalThis by _bootstrap.mts for all child realms.
+ * `realmPort` is set on globalThis by internal/bootstrap.mts for all child realms.
  */
 
-// realmPort is set by _bootstrap.mts on globalThis.
+// realmPort is set by internal/bootstrap.mts on globalThis.
 const port = (globalThis as any).realmPort as ThreadPort | undefined;
 if (!port) {
   throw new Error('port-echo-transfer: expected a realmPort');

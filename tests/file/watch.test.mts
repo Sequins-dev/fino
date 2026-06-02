@@ -5,7 +5,7 @@
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Watcher } from 'fino:file/watch';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 
 const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1_000_000);
 

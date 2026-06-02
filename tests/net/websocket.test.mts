@@ -18,7 +18,7 @@ import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent } from 'fino:n
 import { serve } from 'fino:net/http/server';
 import { Headers, Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
 
 // ---------------------------------------------------------------------------

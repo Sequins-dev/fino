@@ -1,3 +1,14 @@
+/**
+ * Brotli compression backend for `fino:compress`.
+ *
+ * This module loads platform Brotli libraries through `fino:ffi` and provides
+ * the one-shot and streaming implementation used by the public compression
+ * module. It is hidden from generated application docs; public availability and
+ * option details are documented on `fino:compress`.
+ *
+ * @internal
+ */
+
 import { dlopen, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
 import { concat, toU8, type ByteInput, type CompressionTransform } from './common.mts';

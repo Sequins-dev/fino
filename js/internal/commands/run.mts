@@ -5,9 +5,9 @@
  * @internal
  */
 
-import { Command, type CommandContext } from '../../util/argv.mts';
-import { cwd, env } from '../../runtime/process.mts';
-import { Realm } from '../../runtime/realm/index.mts';
+import { Command, type CommandContext } from '../../process/argv.mts';
+import { cwd, env } from '../../process.mts';
+import { Realm } from '../../realm/index.mts';
 import {
   LoggerProvider,
   MeterProvider,
@@ -15,7 +15,7 @@ import {
   runWithLoggerProvider,
   runWithMeterProvider,
   runWithTracerProvider,
-} from '../../opentelemetry/index.mts';
+} from '../../opentelemetry.mts';
 import { createCliOtelRuntime } from '../opentelemetry/bootstrap.mts';
 
 function normalizeScriptSpecifier(script: string): string {

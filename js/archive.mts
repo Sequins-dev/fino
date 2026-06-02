@@ -1,5 +1,61 @@
 /**
  * fino:archive — zip, tar, and tar.gz archive helpers implemented in JS.
+ *
+ * This module reads, edits, creates, lists, and extracts common archive files
+ * without shelling out to platform tools. It is intended for application-level
+ * packaging workflows: bundling generated files, accepting uploaded archives,
+ * unpacking fixture data, or producing portable build artifacts from Fino code.
+ *
+ * Supported formats:
+ *   - `zip`: local file headers plus a central directory, with stored or raw
+ *     DEFLATE-compressed file entries.
+ *   - `tar`: POSIX ustar-style 512-byte records with regular files and
+ *     directories.
+ *   - `tar.gz`: tar content wrapped in gzip compression via `fino:compress`.
+ *
+ * Format detection is based on the destination path extension unless
+ * `ArchiveOpenOptions.format` is supplied. Writable archive handles keep an
+ * in-memory entry table and write the whole archive atomically through a
+ * temporary file on `save()` or `close()`. Read-only helpers such as
+ * `listArchive()` and `extractArchive()` open the archive, perform the single
+ * operation, and close it for you.
+ *
+ * ## Safety model
+ *
+ * Extraction rejects absolute paths and parent-directory escapes before writing
+ * to disk, removes pre-existing symlinks at output paths, and ignores tar
+ * hardlink/symlink entries. ZIP and tar parsing also enforce a maximum
+ * decompressed entry size to reduce zip-bomb style expansion risks. Archives
+ * are still untrusted input: callers should extract into a dedicated directory
+ * and apply their own file-count, total-size, and business-policy limits.
+ *
+ * ## Examples
+ *
+ * ```ts no_run
+ * import { Archive, extractArchive, listArchive } from 'fino:archive';
+ *
+ * const archive = await Archive.create('bundle.zip');
+ * await archive.write('README.md', '# Project\n');
+ * await archive.addFile('dist/app.js', 'app.js');
+ * await archive.close();
+ *
+ * const entries = await listArchive('bundle.zip');
+ * await extractArchive('bundle.zip', 'unpacked');
+ * ```
+ *
+ * ```ts no_run
+ * import { createArchive } from 'fino:archive';
+ *
+ * const archive = await createArchive('release.tar.gz');
+ * await archive.addDirectory('dist', 'package');
+ * await archive.save();
+ * await archive.close();
+ * ```
+ *
+ * Useful references:
+ *   - ZIP APPNOTE: https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT
+ *   - POSIX pax/tar format: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html
+ *   - gzip file format: https://www.rfc-editor.org/rfc/rfc1952
  */
 
 import { DiskFileSystem } from './file/fs.mts';
@@ -318,7 +374,7 @@ class ArchiveEntryHandle {
  * Archives created with `Archive.create()` are written when `save()` or
  * `close()` is called. Archives opened read-only reject mutating operations.
  *
- * ```ts
+ * ```ts no_run
  * import { Archive } from 'fino:archive';
  *
  * const archive = await Archive.create('bundle.zip');

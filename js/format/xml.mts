@@ -1,22 +1,43 @@
 /**
  * fino:format/xml — XML 1.0 + Namespaces parser and serializer.
  *
- * Well-formedness + Namespaces in XML 1.0. Internal DTD parsing for entity
- * definitions. External entities are **disabled by default** (XXE prevention).
- * Entity expansion is bounded against billion-laughs attacks.
+ * XML is a structured markup format used for documents, feeds, config files,
+ * protocols, and interchange with older systems. This module parses XML into a
+ * compact document tree, streams SAX-style events from async byte sources, and
+ * serializes document trees back to XML text.
+ *
+ * The parser enforces XML well-formedness and XML Namespaces rules. It parses
+ * internal DTD entity definitions but disables external entities by default to
+ * avoid XXE vulnerabilities. Entity expansion and nesting depth are bounded to
+ * reduce billion-laughs style attacks. Callers that supply
+ * `resolveExternalEntities` are responsible for their own network, filesystem,
+ * and trust boundaries.
  *
  * Two output surfaces:
  *   - Tree (DOM-lite):  parse(input)  → XmlDocument
  *   - SAX/streaming:   parseStream(src) → AsyncIterableIterator<XmlEvent>
  *
- * ```ts
- *   import { parse, stringify } from 'fino:format/xml';
+ * ```ts no_run
+ * import { parse, stringify } from 'fino:format/xml';
  *
- *   const doc = parse('<root attr="v"><child>text</child></root>');
- *   doc.root.name;           // 'root'
- *   doc.root.children[0].type; // 'element'
- *   stringify(doc);
+ * const doc = parse('<root attr="v"><child>text</child></root>');
+ * doc.root.name;             // 'root'
+ * doc.root.children[0].type; // 'element'
+ * const xml = stringify(doc, { xmlDeclaration: true });
  * ```
+ *
+ * ```ts no_run
+ * import { parseStream } from 'fino:format/xml';
+ *
+ * for await (const event of parseStream(byteSource)) {
+ *   if (event.type === 'startElement') console.log(event.name);
+ * }
+ * ```
+ *
+ * Useful references:
+ *   - XML 1.0: https://www.w3.org/TR/xml/
+ *   - Namespaces in XML: https://www.w3.org/TR/xml-names/
+ *   - OWASP XXE guidance: https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing
  */
 
 import { Scanner, ParseError } from 'fino:parsing/scanner';
@@ -90,7 +111,7 @@ export interface XmlStringifyOptions {
 /**
  * Parse XML input into a document tree.
  *
- * ```ts
+ * ```ts no_run
  * import { parse } from 'fino:format/xml';
  *
  * const doc = parse('<root><child /></root>');

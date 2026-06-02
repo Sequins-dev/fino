@@ -267,7 +267,7 @@ pub struct PendingRealm {
     pub watch_mode: bool,
 
     /// Whether this embedded child realm runs in REPL mode. Exposed to JS via
-    /// `internal:realm-bridge.getReplMode()` so `_bootstrap.mts` can activate
+    /// `internal:realm-bridge.getReplMode()` so `internal/bootstrap.mts` can activate
     /// the REPL message loop instead of importing an entry module.
     pub repl_mode: bool,
 }
@@ -315,7 +315,7 @@ pub struct FinoState {
     pub fs_cache: HashMap<PathBuf, v8::Global<v8::Module>>,
     /// Reverse lookup from V8 script id to builtin specifier.
     /// Used for relative-import resolution from builtins (e.g. `./loop.mts`
-    /// from `fino:runtime/loop`) and as the `from` specifier for import-rule
+    /// from `internal:runtime/loop`) and as the `from` specifier for import-rule
     /// matching. Static BUILTINS and dynamic `Source` overrides are both stored.
     pub builtin_specifiers: HashMap<i32, String>,
 
@@ -336,7 +336,7 @@ pub struct FinoState {
     pub transpile_fn: Option<v8::Global<v8::Function>>,
 
     // ---------------------------------------------------------------------------
-    // V8 event loop callbacks (set by runLoop() from _main.mts via internal:async-context)
+    // V8 event loop callbacks (set by runLoop() from internal/main.mts via internal:async-context)
     // ---------------------------------------------------------------------------
     /// One host-safe loop step callback. Returns true to continue, false to exit.
     pub loop_step_fn: Option<v8::Global<v8::Function>>,
@@ -404,7 +404,7 @@ pub struct FinoState {
     pub process_contexts: Vec<Option<crate::realm::process::ProcessRealmHandle>>,
 
     /// Entry module path for child Realms. Set by `createContext` before
-    /// evaluating `_bootstrap.mjs` in the child context. The child's bootstrap
+    /// evaluating `internal/bootstrap.mjs` in the child context. The child's bootstrap
     /// reads this via `internal:realm-bridge.getEntryPath()`.
     pub entry_path: Option<String>,
 
@@ -419,12 +419,12 @@ pub struct FinoState {
     pub reload_requested: bool,
 
     /// `true` when this realm was started with `watch: true`. Exposed to JS
-    /// via `internal:realm-bridge.getWatchMode()` so `_bootstrap.mts` can
+    /// via `internal:realm-bridge.getWatchMode()` so `internal/bootstrap.mts` can
     /// start the file-watch loop.
     pub watch_mode: bool,
 
     /// `true` when this realm was started with `repl: true`. Exposed to JS
-    /// via `internal:realm-bridge.getReplMode()` so `_bootstrap.mts` can
+    /// via `internal:realm-bridge.getReplMode()` so `internal/bootstrap.mts` can
     /// activate the REPL message loop instead of importing an entry module.
     pub repl_mode: bool,
 
@@ -757,5 +757,17 @@ mod tests {
         let rules = default_import_rules();
         // fino:* specifiers are not explicitly covered → fall through to BUILTINS
         assert!(resolve_directive(&rules, Some("/app/main.mts"), "fino:file").is_none());
+    }
+
+    #[test]
+    fn child_block_rule_restricts_bootstrap_dynamic_public_import() {
+        let mut rules = default_import_rules();
+        rules.push(rule("*", ImportDirective::Block));
+        rules.push(rule("fino:realm/pool", ImportDirective::Block));
+
+        assert!(matches!(
+            resolve_directive(&rules, Some("internal/bootstrap.mjs"), "fino:realm/pool"),
+            Some(&ImportDirective::Block)
+        ));
     }
 }

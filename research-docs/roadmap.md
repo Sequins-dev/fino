@@ -19,7 +19,7 @@ The single largest practical barrier to adoption is the inability to use npm pac
 ### 2.4 globalThis.process Compat Shim
 
 - **Why**: Virtually every npm package that touches Node.js APIs checks `process.env`, `process.platform`, `process.version`, `process.exit()`, or `process.argv`. Without a `process` global they fail at startup.
-- **Approach**: In `js/_main.mts`, construct a `globalThis.process` object mapping to existing `fino:runtime/process` exports: `env`, `argv`, `platform`, `version` (static string matching a recent Node.js version for compat), `exit()`, `cwd()`, `chdir()`, `pid`, `ppid`, `stdin`, `stdout`, `stderr`. The signal handlers also hang off this object.
+- **Approach**: In `js/_main.mts`, construct a `globalThis.process` object mapping to existing `fino:process` exports: `env`, `argv`, `platform`, `version` (static string matching a recent Node.js version for compat), `exit()`, `cwd()`, `chdir()`, `pid`, `ppid`, `stdin`, `stdout`, `stderr`. The signal handlers also hang off this object.
 - **Complexity**: Small (1 day). Pure wiring of already-implemented capabilities.
 
 ---

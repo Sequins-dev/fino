@@ -7,7 +7,7 @@ import { DiskFileSystem } from 'fino:file';
 import { createArchive } from 'fino:archive';
 import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
-import { Process, execPath, env } from 'fino:runtime/process';
+import { Process, execPath, env } from 'fino:process';
 
 const TEST_DIR = '/tmp/fino-install-test-' + Math.floor(Math.random() * 1_000_000);
 const BASE_PORT = 30000 + Math.floor(Math.random() * 20000);

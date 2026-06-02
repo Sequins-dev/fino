@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 import * as sock from 'fino:net/socket';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
@@ -13,45 +13,54 @@ function requireRecv(value: number | Uint8Array | null): Uint8Array {
   return value;
 }
 
+function wait<T>(promise: Promise<T>): T {
+  return loop.spin(promise);
+}
+
+function listenOnEphemeralPort(): { fd: number; port: number } {
+  const fd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+  sock.setsockopt(fd, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
+  sock.bind(fd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
+  sock.listen(fd, 5);
+  sock.setNonblocking(fd);
+  const address = sock.getsockname(fd);
+  if (address.family !== 'ipv4') throw new Error('expected IPv4 socket address');
+  return { fd, port: address.port };
+}
+
 describe('Basic operations', () => {
-  it('timeout() resolves after delay', async (t) => {
+  it('timeout() resolves after delay', (t) => {
     const t0 = Date.now();
-    await loop.timeout(50);
+    wait(loop.timeout(50));
     const elapsed = Date.now() - t0;
     t.ok(elapsed >= 40, 'at least 40ms elapsed (' + elapsed + 'ms)');
   });
 
-  it('multiple sequential timeouts', async (t) => {
+  it('multiple sequential timeouts', (t) => {
     for (let i = 0; i < 3; i++) {
-      await loop.timeout(20);
+      wait(loop.timeout(20));
     }
     t.ok(true, '3 sequential timeouts resolved');
   });
 });
 
 describe('I/O watchers', () => {
-  it('readable() resolves when fd has data', async (t) => {
-    const PORT = 19950;
-
-    const server = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
-    sock.setsockopt(server, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
-    sock.bind(server, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    sock.listen(server, 5);
-    sock.setNonblocking(server);
+  it('readable() resolves when fd has data', (t) => {
+    const { fd: server, port } = listenOnEphemeralPort();
 
     const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
     sock.setNonblocking(client);
-    sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port });
 
-    await loop.readable(server);
+    wait(loop.readable(server));
     const accepted = sock.accept(server);
     if (!accepted) throw new Error('accept() returned null');
     const { fd: peer } = accepted;
     sock.setNonblocking(peer);
 
-    await loop.writable(client);
+    wait(loop.writable(client));
     sock.send(client, encodeUtf8('ping'), 0);
-    await loop.readable(peer);
+    wait(loop.readable(peer));
     const data = requireRecv(sock.recv(peer, 64, 0));
     t.equal(decodeUtf8(data), 'ping', 'data received correctly');
 
@@ -60,20 +69,14 @@ describe('I/O watchers', () => {
     sock.close(server);
   });
 
-  it('writable() resolves when connected socket is writable', async (t) => {
-    const PORT = 19951;
-
-    const server = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
-    sock.setsockopt(server, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
-    sock.bind(server, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    sock.listen(server, 5);
-    sock.setNonblocking(server);
+  it('writable() resolves when connected socket is writable', (t) => {
+    const { fd: server, port } = listenOnEphemeralPort();
 
     const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
     sock.setNonblocking(client);
-    sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port });
 
-    await loop.writable(client);
+    wait(loop.writable(client));
     const errBuf = sock.getsockopt(client, sock.SOL_SOCKET, sock.SO_ERROR);
     const errno  = new DataView(errBuf).getInt32(0, true);
     t.equal(errno, 0, 'connect succeeded (SO_ERROR is 0)');
@@ -82,32 +85,26 @@ describe('I/O watchers', () => {
     sock.close(server);
   });
 
-  it('readable() can be awaited repeatedly on the same fd', async (t) => {
-    const PORT = 19953;
-
-    const server = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
-    sock.setsockopt(server, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
-    sock.bind(server, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    sock.listen(server, 5);
-    sock.setNonblocking(server);
+  it('readable() can be awaited repeatedly on the same fd', (t) => {
+    const { fd: server, port } = listenOnEphemeralPort();
 
     const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
     sock.setNonblocking(client);
-    sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port });
 
-    await loop.readable(server);
+    wait(loop.readable(server));
     const accepted = sock.accept(server);
     if (!accepted) throw new Error('accept() returned null');
     const { fd: peer } = accepted;
     sock.setNonblocking(peer);
 
-    await loop.writable(client);
+    wait(loop.writable(client));
     sock.send(client, encodeUtf8('one'), 0);
-    await loop.readable(peer);
+    wait(loop.readable(peer));
     t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'one', 'first payload received');
 
     sock.send(client, encodeUtf8('two'), 0);
-    await loop.readable(peer);
+    wait(loop.readable(peer));
     t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'two', 'second payload received');
 
     sock.close(peer);
@@ -116,13 +113,7 @@ describe('I/O watchers', () => {
   });
 
   it('removeRead cancels a pending watch silently', (t) => {
-    const PORT = 19952;
-
-    const server = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
-    sock.setsockopt(server, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
-    sock.bind(server, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
-    sock.listen(server, 5);
-    sock.setNonblocking(server);
+    const { fd: server } = listenOnEphemeralPort();
 
     const p = loop.readable(server);
     loop.removeRead(server);

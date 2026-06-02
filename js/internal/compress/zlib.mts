@@ -1,3 +1,14 @@
+/**
+ * zlib-backed compression backend for `fino:compress`.
+ *
+ * This module loads the platform zlib library through `fino:ffi` and implements
+ * gzip, zlib-wrapped deflate, and raw deflate support for the public
+ * compression module. It is hidden from generated application docs; public
+ * formats and usage are documented on `fino:compress`.
+ *
+ * @internal
+ */
+
 import { dlopen, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
 import {

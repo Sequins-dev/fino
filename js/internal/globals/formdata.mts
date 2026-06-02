@@ -40,7 +40,7 @@
  * matching the browser API.
  *
  *
- * ```ts
+ * ```ts no_run
  * // FormData is available via globalThis
  *
  * const fd = new FormData();

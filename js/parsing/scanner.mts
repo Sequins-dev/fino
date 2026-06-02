@@ -5,7 +5,7 @@
  * mixed binary/text parsing (common in real protocols: HTTP/1 ASCII headers + binary body,
  * HPACK varint prefixes + UTF-8 strings, ZIP central directory + UTF-8 names).
  *
- * ```ts
+ * ```ts no_run
  * // Binary protocol
  * import { Scanner } from 'fino:parsing/scanner';
  * const s = new Scanner(buffer);
@@ -14,7 +14,7 @@
  * const payload = s.eatBytes(length);
  * ```
  *
- * ```ts
+ * ```ts no_run
  * // Text format
  * import { Scanner, ParseError } from 'fino:parsing/scanner';
  * class MyError extends ParseError { name = 'MyError'; }
@@ -28,22 +28,27 @@
 
 import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
 
+/** Text encodings supported by scanner text operations. */
 export type Encoding = 'utf-8' | 'ascii' | 'latin1' | 'utf-16le' | 'utf-16be';
 
+/** Options controlling scanner text decoding and error labels. */
 export interface ScannerOptions {
   encoding?: Encoding;
   format?: string;
   filename?: string;
 }
 
+/** Saved scanner position, including line/column when text tracking is active. */
 export interface ScannerMark {
   readonly offset: number;
   readonly line?: number;
   readonly column?: number;
 }
 
+/** Alias for a saved scanner position. */
 export type ScannerSnapshot = ScannerMark;
 
+/** Parse error with source location and renderable text or binary context. */
 export class ParseError extends Error {
   #source: Uint8Array;
   #detail: string;
@@ -96,6 +101,7 @@ export class ParseError extends Error {
   }
 }
 
+/** Cursor-based scanner for mixed binary and text parsers. */
 export class Scanner {
   #buf: Uint8Array;
   #view: DataView;

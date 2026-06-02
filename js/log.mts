@@ -20,7 +20,7 @@
  * identifiers are copied onto the record and can be forwarded with
  * `createOtelSink()`.
  *
- * ```ts
+ * ```ts no_run
  * import { createJsonSink, createLogger, runWithLogContext } from 'fino:log';
  *
  * const sink = createJsonSink();
@@ -37,7 +37,7 @@
 import { Context } from './context/index.mts';
 import { topic } from './context/topic.mts';
 import { writeLine } from 'internal:runtime/libc';
-import { getActiveSpanContext, getLoggerProvider, SeverityNumber } from './opentelemetry/index.mts';
+import { getActiveSpanContext, getLoggerProvider, SeverityNumber } from './opentelemetry.mts';
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 type Fields = Record<string, unknown>;

@@ -4,7 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
-import { os } from 'fino:runtime/process';
+import { os } from 'fino:process';
 
 const libcPath = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 

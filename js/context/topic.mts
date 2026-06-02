@@ -6,7 +6,7 @@
  * bound context value for the duration of `fn`. This separates the concerns of
  * *publishing* (the library/framework) from *consuming* context (application code).
  *
- * ```ts
+ * ```ts no_run
  *   import { topic } from './topic.mts';
  *   import { Context } from 'fino:context';
  *
@@ -47,6 +47,11 @@ export function topic<T = unknown>(name: string): Topic<T> {
   return t;
 }
 
+/**
+ * Subscribe to all existing and future topics whose names match `matcher`.
+ *
+ * Returns a handle that removes every attached subscription when disposed.
+ */
 export function subscribeMatching<T = unknown>(
   matcher: (name: string) => boolean,
   fn: (msg: T, topicName: string) => void,
@@ -79,6 +84,7 @@ export function subscribeMatching<T = unknown>(
 // Topic
 // ---------------------------------------------------------------------------
 
+/** Named publish/subscribe channel that can bind messages into async contexts. */
 export class Topic<T = unknown> {
   #name: string;
   #subscribers: Map<symbol, (msg: T) => void> = new Map();
@@ -140,7 +146,7 @@ export class Topic<T = unknown> {
    * out of the loop (or calling `return()` on the iterator) disposes the
    * subscription automatically.
    *
-   * ```ts
+   * ```ts no_run
    * for await (const { signal } of signal('SIGTERM')) {
    *   console.log('received', signal);
    *   break; // disposes the subscription
@@ -281,6 +287,7 @@ export class Topic<T = unknown> {
 // Handle types
 // ---------------------------------------------------------------------------
 
+/** Disposable handle returned from topic subscriptions. */
 export class SubscriptionHandle {
   #dispose: () => void;
 
@@ -288,11 +295,13 @@ export class SubscriptionHandle {
     this.#dispose = disposeFn;
   }
 
+  /** Remove the subscription; calling more than once is safe for current implementations. */
   dispose(): void {
     this.#dispose();
   }
 }
 
+/** Disposable handle returned from context bindings. */
 export class BindingHandle {
   #dispose: () => void;
 
@@ -300,6 +309,7 @@ export class BindingHandle {
     this.#dispose = disposeFn;
   }
 
+  /** Remove the context binding; calling more than once is safe for current implementations. */
   dispose(): void {
     this.#dispose();
   }

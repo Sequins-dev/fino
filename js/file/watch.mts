@@ -10,7 +10,7 @@
  *
  * ## Platform details
  *
- * **macOS** — uses kqueue EVFILT_VNODE (via `fino:runtime/loop`'s `vnode()`
+ * **macOS** — uses kqueue EVFILT_VNODE (via `internal:runtime/loop`'s `vnode()`
  * API). One open fd is required per watched path. EV_CLEAR auto-re-arms the
  * filter after each delivery. Events report which flags fired (NOTE_WRITE,
  * NOTE_DELETE, etc.) but not which specific file changed within a directory —
@@ -34,7 +34,7 @@
  *
  * ## Usage
  *
- * ```ts
+ * ```ts no_run
  * import { Watcher } from './watch.mts';
  *
  * const watcher = new Watcher();
@@ -50,7 +50,7 @@
 
 import { lib, cstr, isDarwin, O_RDONLY, DT_DIR } from '../internal/file/bindings.mts';
 import { DirEntry } from '../internal/file/entry.mts';
-import * as loopMod from '../runtime/loop.mts';
+import * as loopMod from '../internal/runtime/loop.mts';
 import {
   isDarwin as _watchIsDarwin,
   inotifyInit, inotifyAddWatch, inotifyRmWatch, inotifyRead, inotifyClose,
@@ -85,8 +85,10 @@ const O_EVTONLY = 0x8000;
 // Event types
 // ---------------------------------------------------------------------------
 
+/** Normalized filesystem event names emitted by `Watcher`. */
 export type WatchEventType = 'create' | 'modify' | 'delete' | 'rename';
 
+/** Filesystem event yielded by a watcher. */
 export interface WatchEvent {
   /** Type of filesystem event. */
   type:  WatchEventType;
@@ -115,7 +117,7 @@ export interface WatchOptions {
  * Async-iterable filesystem watcher. Construct, call `watch()` for each path,
  * then iterate events with `for await`.
  *
- * ```ts
+ * ```ts no_run
  * const watcher = new Watcher(lp, { recursive: true });
  * watcher.watch('/tmp/mydir');
  * for await (const { type, path } of watcher) {

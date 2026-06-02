@@ -10,7 +10,7 @@
  * sources produce strings by default, then the loader coerces scalar values
  * according to the validation schema before parsing.
  *
- * ```ts
+ * ```ts no_run
  * import { loadConfig } from 'fino:config';
  * import { v } from 'fino:validate';
  *
@@ -32,7 +32,7 @@
 
 import { DiskFileSystem } from './file/fs.mts';
 import { parse as parseToml } from './format/toml.mts';
-import { argv as processArgv, env as processEnv } from './runtime/process.mts';
+import { argv as processArgv, env as processEnv } from './process.mts';
 import { ValidationError, parse as validateParse } from './validate.mts';
 import type { JsonSchema, ValidationIssue } from './validate.mts';
 

@@ -15,17 +15,23 @@
 // Result types
 // ---------------------------------------------------------------------------
 
+/** @internal Primary address returned by DNS provider lookup. */
 export interface LookupResult {
   address: string;
   family: 4 | 6;
 }
 
+/** @internal Mail-exchanger DNS record data. */
 export interface MxRecord   { priority: number; exchange: string; }
+/** @internal Start-of-authority DNS record data. */
 export interface SoaRecord  { nsname: string; hostmaster: string; serial: number; refresh: number; retry: number; expire: number; minttl: number; }
+/** @internal Service-location DNS record data. */
 export interface SrvRecord  { priority: number; weight: number; port: number; name: string; }
 
+/** @internal Decoded DNS record payload used by provider implementations. */
 export type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord | Uint8Array | null;
 
+/** @internal DNS record types accepted by provider implementations. */
 export type RRType = 'A' | 'NS' | 'CNAME' | 'SOA' | 'PTR' | 'MX' | 'TXT' | 'AAAA' | 'SRV';
 
 // ---------------------------------------------------------------------------

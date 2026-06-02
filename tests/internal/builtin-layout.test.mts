@@ -13,9 +13,16 @@ describe('builtin module layout', () => {
     await import('fino:database/sqlite');
     await import('fino:context');
     await import('fino:context/topic');
+    await import('fino:process');
+    await import('fino:process/argv');
+    await import('fino:tty');
+    await import('fino:tty/prompt');
     await import('fino:realm');
     await import('fino:realm/pool');
     await import('fino:realm/self');
+    await import('fino:realm/messaging');
+    await import('fino:module');
+    await import('fino:cluster');
     await import('fino:net/http');
     await import('fino:net/http/h1');
     await import('fino:net/http/h2');

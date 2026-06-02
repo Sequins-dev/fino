@@ -117,5 +117,5 @@ See [modules and packages](./modules-and-packages.md) for the import model.
 - [Files](./file/guide.md), [HTTP](./net/http/guide.md),
   [formats](./format/guide.md), and [SQLite](./database/guide.md) cover common
   application building blocks.
-- [Realms](./runtime/realm/guide.md) covers isolation, worker-style execution,
+- [Realms](./realm/guide.md) covers isolation, worker-style execution,
   import rules, and parent-child communication.

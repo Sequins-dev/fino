@@ -88,7 +88,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
     let state_rc: Rc<RefCell<FinoState>>;
 
     // -----------------------------------------------------------------------
-    // Setup: initialise FinoState, compile+evaluate _main.mjs, first pump.
+    // Setup: initialise FinoState, compile+evaluate internal/main.mjs, first pump.
     // -----------------------------------------------------------------------
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
@@ -109,24 +109,24 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
-        // Compile and evaluate _main.mjs.
-        let main_src = include_str!(concat!(env!("OUT_DIR"), "/js/_main.mjs"));
-        let main_map = include_str!(concat!(env!("OUT_DIR"), "/js/_main.mjs.map"));
+        // Compile and evaluate internal/main.mjs.
+        let main_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs"));
+        let main_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs.map"));
 
         let main_module = {
             let tc = &mut v8::TryCatch::new(scope);
-            loader::register_source_map_from_json(tc, "_main.mjs", main_map);
-            match loader::compile_source_module(tc, main_src, "_main.mjs", Some(main_map)) {
+            loader::register_source_map_from_json(tc, "internal:main", main_map);
+            match loader::compile_source_module(tc, main_src, "internal:main", Some(main_map)) {
                 Some(m) => m,
                 None => {
                     let msg = catch_message(tc)
-                        .unwrap_or_else(|| "Failed to compile _main.mjs".to_string());
+                        .unwrap_or_else(|| "Failed to compile internal/main.mjs".to_string());
                     return Err(msg);
                 }
             }
         };
 
-        // Register _main.mjs so its specifier is known for import-rule `from` matching.
+        // Register internal/main.mjs so its specifier is known for import-rule `from` matching.
         // Using "internal:main" places it in the internal: namespace so the default
         // rules allow it to import other internal: modules.
         loader::register_as_builtin(scope, main_module, "internal:main");
@@ -139,7 +139,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
                 .is_none()
             {
                 let msg = catch_message(tc)
-                    .unwrap_or_else(|| "Failed to instantiate _main.mjs".to_string());
+                    .unwrap_or_else(|| "Failed to instantiate internal/main.mjs".to_string());
                 return Err(msg);
             }
         }
@@ -150,12 +150,12 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             let tc = &mut v8::TryCatch::new(scope);
             if main_module.evaluate(tc).is_none() {
                 let msg =
-                    catch_message(tc).unwrap_or_else(|| "Failed to evaluate _main.mjs".to_string());
+                    catch_message(tc).unwrap_or_else(|| "Failed to evaluate internal/main.mjs".to_string());
                 return Err(msg);
             }
         }
 
-        // First pump + checkpoint: runs _main.mts module body as a microtask.
+        // First pump + checkpoint: runs internal/main.mts module body as a microtask.
         // The module body calls runLoop(step, onDone) from internal:async-context,
         // storing those callbacks in FinoState for the loop below.
         pump_and_checkpoint(scope);
@@ -166,7 +166,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             let msg = exc
                 .to_string(scope)
                 .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in _main.mjs".to_string());
+                .unwrap_or_else(|| "Unknown error in internal/main.mjs".to_string());
             return Err(msg);
         }
 
@@ -192,7 +192,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             // Extract stored JS step callback without holding the borrow during call.
             let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
                 Some(f) => f,
-                // _main.mts never called runLoop (e.g. argv.length < 2).
+                // internal/main.mts never called runLoop (e.g. argv.length < 2).
                 None => break 'main,
             };
 
@@ -278,7 +278,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         // the flag and call their on_done_fn if any).
         realm::terminate_all_children(scope);
 
-        // Call onDone() — runs the post-loop error check from _main.mts (e.g.
+        // Call onDone() — runs the post-loop error check from internal/main.mts (e.g.
         // `if (caughtError) { exit(1); }`).  If onDone calls exit(), we never
         // return from here; otherwise it returns normally.
         let on_done_fn = state_rc.borrow().on_done_fn.clone();
@@ -306,7 +306,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             let msg = exc
                 .to_string(scope)
                 .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in _main.mjs".to_string());
+                .unwrap_or_else(|| "Unknown error in internal/main.mjs".to_string());
             return Err(msg);
         }
     }

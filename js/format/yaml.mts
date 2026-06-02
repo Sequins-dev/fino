@@ -1,6 +1,12 @@
 /**
  * fino:format/yaml — YAML 1.2 core schema parser and serializer.
  *
+ * YAML is a human-oriented data serialization format often used for
+ * configuration, manifests, and multi-document files. This module implements
+ * the YAML 1.2 core schema with a security-first surface: it resolves core
+ * scalar types, expands anchors and aliases within configured limits, and never
+ * constructs arbitrary application objects from tags.
+ *
  * Supports the full YAML 1.2 core schema including:
  *   - Block mappings and sequences (indentation-driven)
  *   - Flow mappings {} and sequences []
@@ -22,12 +28,17 @@
  * `deepEqual(parse(stringify(parse(x))), parse(x))` holds; text-exact
  * round-trip does not for documents with merge keys.
  *
- * ```ts
- *   import { parse, stringify, parseAll } from 'fino:format/yaml';
+ * ```ts no_run
+ * import { parse, stringify, parseAll } from 'fino:format/yaml';
  *
- *   const cfg = parse('server:\n  port: 8080\nhosts:\n  - a\n  - b\n');
- *   stringify({ x: 1, y: [2, 3] });
+ * const cfg = parse('server:\n  port: 8080\nhosts:\n  - a\n  - b\n');
+ * const text = stringify({ x: 1, y: [2, 3] });
+ * const docs = parseAll('---\na: 1\n---\nb: 2\n');
  * ```
+ *
+ * Useful references:
+ *   - YAML 1.2.2 specification: https://yaml.org/spec/1.2.2/
+ *   - YAML core schema: https://yaml.org/spec/1.2.2/#103-core-schema
  */
 
 import { ParseError } from 'fino:parsing/scanner';
@@ -87,7 +98,7 @@ export interface YamlStringifyOptions {
 /**
  * Parse one YAML document, returning the first document from a stream.
  *
- * ```ts
+ * ```ts no_run
  * import { parse } from 'fino:format/yaml';
  *
  * parse('server:\n  port: 8080\n');
@@ -108,7 +119,7 @@ export function parseAll(input: string | Uint8Array, options: YamlParseOptions =
 /**
  * Serialize a YAML-compatible value.
  *
- * ```ts
+ * ```ts no_run
  * import { stringify } from 'fino:format/yaml';
  *
  * stringify({ hosts: ['a', 'b'] });

@@ -118,12 +118,12 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(loader_hooks_module),
     ),
     source_builtin!("internal:loader", "internal/loader"),
-    source_builtin!("internal:bootstrap", "_bootstrap"),
-    source_builtin!("fino:realm", "runtime/realm/index"),
-    source_builtin!("fino:module", "runtime/module"),
-    source_builtin!("fino:realm/pool", "runtime/realm/pool"),
-    source_builtin!("fino:realm/self", "runtime/realm/self"),
-    source_builtin!("fino:messaging", "runtime/messaging"),
+    source_builtin!("internal:bootstrap", "internal/bootstrap"),
+    source_builtin!("fino:realm", "realm/index"),
+    source_builtin!("fino:module", "module"),
+    source_builtin!("fino:realm/pool", "realm/pool"),
+    source_builtin!("fino:realm/self", "realm/self"),
+    source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!("internal:globals/messaging", "internal/globals/messaging"),
     // internal: CLI commands
     source_builtin!("internal:commands/root", "internal/commands/root"),
@@ -198,8 +198,8 @@ static BUILTINS: &[BuiltinEntry] = &[
             path: "internal/runtime/loop-backend",
         },
     ),
-    source_builtin!("fino:runtime/loop", "runtime/loop"),
-    source_builtin!("fino:runtime/process", "runtime/process"),
+    source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
+    source_builtin!("fino:process", "process"),
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:tty", "tty"),
     // net
@@ -235,7 +235,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
-    source_builtin!("fino:cluster", "runtime/cluster"),
+    source_builtin!("fino:cluster", "cluster"),
     source_builtin!("internal:opentelemetry/core", "internal/opentelemetry/core"),
     source_builtin!("internal:opentelemetry/common", "internal/opentelemetry/common"),
     source_builtin!("internal:opentelemetry/traces", "internal/opentelemetry/traces"),
@@ -282,7 +282,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/opentelemetry/instrumentations/tls"
     ),
     source_builtin!("internal:opentelemetry/sdk", "internal/opentelemetry/sdk"),
-    source_builtin!("fino:opentelemetry", "opentelemetry/index"),
+    source_builtin!("fino:opentelemetry", "opentelemetry"),
     source_builtin!("fino:parsing/scanner", "parsing/scanner"),
     source_builtin!("fino:semver", "semver"),
     source_builtin!("fino:uuid", "uuid"),
@@ -291,6 +291,16 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:log", "log"),
     source_builtin!("fino:validate", "validate"),
     source_builtin!("fino:config", "config"),
+    source_builtin!("internal:security/encoding", "internal/security/encoding"),
+    source_builtin!("fino:security", "security/index"),
+    source_builtin!("fino:security/random", "security/random"),
+    source_builtin!("fino:security/headers", "security/headers"),
+    source_builtin!("fino:security/cors", "security/cors"),
+    source_builtin!("fino:security/cookie", "security/cookie"),
+    source_builtin!("fino:security/token", "security/token"),
+    source_builtin!("fino:security/password", "security/password"),
+    source_builtin!("fino:security/jwk", "security/jwk"),
+    source_builtin!("fino:security/jwt", "security/jwt"),
     // format
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/typescript", "format/typescript"),
@@ -305,8 +315,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:test/mock", "test/mock"),
     // util
     source_builtin!("fino:compress", "compress"),
-    source_builtin!("fino:util/argv", "util/argv"),
-    source_builtin!("fino:util/prompt", "util/prompt"),
+    source_builtin!("fino:process/argv", "process/argv"),
+    source_builtin!("fino:tty/prompt", "tty/prompt"),
     source_builtin!("fino:context/topic", "context/topic"),
     // profiler
     (
@@ -325,9 +335,9 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
     static MAP: OnceLock<std::collections::HashMap<&'static str, &'static str>> = OnceLock::new();
     let map = MAP.get_or_init(|| {
         let mut m = std::collections::HashMap::new();
-        // Entries registered outside the BUILTINS slice (e.g. _main.mjs
+        // Entries registered outside the BUILTINS slice (e.g. internal/main.mjs
         // compiled inline in runtime.rs and re-registered as "internal:main").
-        m.insert("internal:main", "");
+        m.insert("internal:main", "internal/main");
         for (specifier, kind) in BUILTINS {
             if let BuiltinKind::Source { path, .. } = kind {
                 m.insert(specifier, path);
@@ -809,7 +819,7 @@ pub fn dynamic_import_callback<'s>(
                     .builtin_specifiers
                     .values()
                     .any(|v| v.as_str() == referrer_url.as_str());
-            if is_builtin_ref {
+            if is_builtin_ref && spec.starts_with("internal:") {
                 false
             } else {
                 let dir =

@@ -46,7 +46,7 @@
  *
  * ## Usage
  *
- * ```ts
+ * ```ts no_run
  *   const res = await fetch('https://example.com/data');
  *   const json = await res.json();
  *

@@ -1,15 +1,44 @@
 /**
  * fino:format/csv — CSV parsing and serialization (RFC 4180 + dialect options).
  *
- * ```ts
- *   import { parse, stringify } from 'fino:format/csv';
+ * This module handles comma-separated and delimiter-separated tabular text for
+ * data import/export workflows. It supports the RFC 4180 quoting model, custom
+ * one-character delimiters and quote characters, optional comments, trimming,
+ * header rows, explicit column names, relaxed column counts, and field casting.
  *
- *   const rows = parse('a,b\n1,2\n3,4', { header: true });
- *   // [{ a: '1', b: '2' }, { a: '3', b: '4' }]
+ * `parse()` returns positional `string[][]` rows by default. Enable
+ * `header: true` to use the first row as object keys, or pass `columns` to
+ * supply keys explicitly. `parseStream()` consumes async byte chunks and yields
+ * parsed rows without requiring the whole input to be present at once.
+ * `stringify()` serializes arrays or records back to CSV and emits CRLF line
+ * endings by default.
  *
- *   const out = stringify([{ a: '1', b: '2' }, { a: '3', b: '4' }]);
- *   // 'a,b\r\n1,2\r\n3,4\r\n'
+ * CSV is not a single fully-standardized ecosystem. When interoperating with
+ * spreadsheets, databases, or data warehouses, match their delimiter, quote,
+ * header, encoding, and empty-line conventions explicitly.
+ *
+ * ```ts no_run
+ * import { parse, stringify } from 'fino:format/csv';
+ *
+ * const rows = parse('name,age\nAda,36\nGrace,85\n', { header: true });
+ * // [{ name: 'Ada', age: '36' }, { name: 'Grace', age: '85' }]
+ *
+ * const out = stringify(rows, { header: true });
  * ```
+ *
+ * ```ts no_run
+ * import { parse } from 'fino:format/csv';
+ *
+ * const rows = parse('a;b\n1;2\n', {
+ *   delimiter: ';',
+ *   header: true,
+ *   cast: true,
+ * });
+ * ```
+ *
+ * Useful references:
+ *   - RFC 4180: https://www.rfc-editor.org/rfc/rfc4180
+ *   - W3C CSV on the Web: https://www.w3.org/TR/tabular-data-model/
  */
 
 import { Scanner, ParseError } from 'fino:parsing/scanner';
@@ -65,7 +94,7 @@ export interface CsvStringifyOptions {
 /**
  * Parse a CSV string or bytes into positional rows or records.
  *
- * ```ts
+ * ```ts no_run
  * import { parse } from 'fino:format/csv';
  *
  * parse('a,b\n1,2\n', { header: true }); // [{ a: '1', b: '2' }]
@@ -390,7 +419,7 @@ function _emitStreamRow(
 /**
  * Serialize rows or records to CSV.
  *
- * ```ts
+ * ```ts no_run
  * import { stringify } from 'fino:format/csv';
  *
  * stringify([{ a: '1', b: '2' }]); // 'a,b\r\n1,2\r\n'

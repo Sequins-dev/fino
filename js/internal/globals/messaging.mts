@@ -1,5 +1,5 @@
 /**
- * fino:messaging internals — MessageEvent, MessagePort, MessageChannel,
+ * fino:realm/messaging internals — MessageEvent, MessagePort, MessageChannel,
  * ThreadPort.
  *
  * IntraPort transport: same-Isolate Realms exchange messages via direct JS
@@ -27,7 +27,7 @@ import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
 import { threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { createTransitChannel, transitSend, transitRecv } from 'internal:transit-port';
-import { readable, removeRead } from 'fino:runtime/loop';
+import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 
 // ---------------------------------------------------------------------------
@@ -447,7 +447,7 @@ function _recvThreadMessages(handle: number | null): [Uint8Array[], [number, num
  * channel when it does, and re-arms for the next message.
  *
  * Mirrors the public MessagePort API so existing realm bootstrap code
- * (`_bootstrap.mts`) works with both IntraPort and ThreadPort.
+ * (`internal/bootstrap.mts`) works with both IntraPort and ThreadPort.
  */
 export class ThreadPort extends BaseTransportPort {
   #wakeReadFd: number;

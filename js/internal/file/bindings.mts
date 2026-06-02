@@ -66,7 +66,7 @@ const _ERRNO_CODES: Record<number, string> = {
 //   loop.readable() call to avoid hanging at EOF.
 export let loopModule: LoopModule | null = null;
 export let asyncOps: AsyncOpsModule | null = null;
-loopModule = await import('fino:runtime/loop');
+loopModule = await import('internal:runtime/loop');
 if (!isDarwin) {
   asyncOps = await import('internal:runtime/io_uring');
 }

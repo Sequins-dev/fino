@@ -5,7 +5,7 @@
  * @internal
  */
 
-import { Command } from '../../util/argv.mts';
+import { Command } from '../../process/argv.mts';
 import { createTestCommand } from './test.mts';
 import { createBenchCommand } from './bench.mts';
 import { createInstallCommand } from './install.mts';

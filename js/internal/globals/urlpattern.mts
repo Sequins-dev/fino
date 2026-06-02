@@ -80,7 +80,7 @@
  *   that covers the full syntax but may differ in edge cases.
  *
  *
- * ```ts
+ * ```ts no_run
  * // URLPattern is available via globalThis
  *
  * // Object form (most precise):

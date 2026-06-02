@@ -64,7 +64,7 @@ when needed.
 The parent controls what a child can import:
 
 ```ts
-import { ImportMap, Realm } from 'fino:runtime/realm';
+import { ImportMap, Realm } from 'fino:realm';
 
 const realm = new Realm({
   entry: './worker.mts',
@@ -77,7 +77,7 @@ const realm = new Realm({
 await realm.run();
 ```
 
-Use the [realms guide](./runtime/realm/guide.md) for import rules, message
+Use the [realms guide](./realm/guide.md) for import rules, message
 ports, facades, threads, processes, and pools.
 
 ## Context and Topics

@@ -115,20 +115,27 @@
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
-import * as loop from '../runtime/loop.mts';
+import * as loop from '../internal/runtime/loop.mts';
 import { FdReader, FdWriter, BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.mts';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
+/** IPv4 socket address. */
 export interface IPv4Address { family: 'ipv4'; ip: string; port: number; }
+/** IPv6 socket address. */
 export interface IPv6Address { family: 'ipv6'; ip: string; port: number; }
+/** Unix domain socket address. */
 export interface UnixAddress  { family: 'unix'; path: string; }
+/** Supported socket address shapes. */
 export type Address = IPv4Address | IPv6Address | UnixAddress;
+/** Address returned when the native family is not recognized by this module. */
 export interface UnknownAddress { family: string; }
 
+/** Options for high-level TCP connection setup. */
 export interface ConnectOptions { noDelay?: boolean; }
+/** Options for high-level server socket setup. */
 export interface ListenOptions  { reuseAddr?: boolean; reusePort?: boolean; backlog?: number; }
 
 /** Server object returned by Socket.listen(). */
@@ -188,30 +195,47 @@ function getErrno(): number {
 // Constants — platform-specific where they differ
 // ---------------------------------------------------------------------------
 
+/** IPv4 address family constant. */
 export const AF_INET  = 2;
+/** IPv6 address family constant. */
 export const AF_INET6 = isDarwin ? 30 : 10;
+/** Unix domain socket address family constant. */
 export const AF_UNIX  = 1;
 
+/** Stream socket type, typically TCP. */
 export const SOCK_STREAM = 1;
+/** Datagram socket type, typically UDP. */
 export const SOCK_DGRAM  = 2;
 
 // Linux-only: OR into socket type to set non-blocking at creation time
 export const SOCK_NONBLOCK = isLinux ? 0x80000 : 0;
 
+/** TCP protocol number. */
 export const IPPROTO_TCP = 6;
+/** UDP protocol number. */
 export const IPPROTO_UDP = 17;
 
+/** Socket option level for `setsockopt` and `getsockopt`. */
 export const SOL_SOCKET   = isDarwin ? 0xFFFF : 1;
+/** Allow reusing a recently-bound local address. */
 export const SO_REUSEADDR = isDarwin ? 0x0004 : 2;
+/** Allow multiple listeners to share a local address where supported. */
 export const SO_REUSEPORT = isDarwin ? 0x0200 : 15;
+/** Enable TCP keepalive probes. */
 export const SO_KEEPALIVE = isDarwin ? 0x0008 : 9;
+/** Socket option used to read pending connection errors. */
 export const SO_ERROR     = isDarwin ? 0x1007 : 4;
 
+/** TCP option level used with `setsockopt`. */
 export const IPPROTO_TCP_LEVEL = 6;   // same as IPPROTO_TCP, used with setsockopt
+/** Disable Nagle's algorithm for TCP sockets. */
 export const TCP_NODELAY = 1;
 
+/** Shut down the read side of a socket. */
 export const SHUT_RD   = 0;
+/** Shut down the write side of a socket. */
 export const SHUT_WR   = 1;
+/** Shut down both sides of a socket. */
 export const SHUT_RDWR = 2;
 
 // fcntl constants
@@ -263,6 +287,7 @@ function readFamily(view: DataView): number {
   return isDarwin ? view.getUint8(1) : view.getUint16(0, true);
 }
 
+/** Encode a JS socket address into a native `sockaddr` buffer and byte length. */
 export function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number } {
   if (addr.family === 'ipv4') {
     const buf  = new ArrayBuffer(SOCKADDR_IN_SIZE);
@@ -420,6 +445,7 @@ export function getsockopt(fd: number, level: number, optname: number, bufSize: 
   return buf;
 }
 
+/** Return the local address currently bound to a socket fd. */
 export function getsockname(fd: number): Address | UnknownAddress {
   const addrBuf = new ArrayBuffer(128);
   const lenBuf = new ArrayBuffer(4);
@@ -606,11 +632,17 @@ export function close(fd: number): void {
 // Convenience: errno constants (returned as negative values by the above)
 // ---------------------------------------------------------------------------
 
+/** Negative errno returned when a non-blocking operation would block. */
 export const EAGAIN      = isDarwin ? -35  : -11;
+/** Negative errno returned while a non-blocking connect is in progress. */
 export const EINPROGRESS = isDarwin ? -36  : -115;
+/** Negative errno returned when a peer resets the connection. */
 export const ECONNRESET  = isDarwin ? -54  : -104;
+/** Negative errno returned when writing to a closed pipe/socket. */
 export const EPIPE       = isDarwin ? -32  : -32;
+/** Negative errno returned when a local address is already in use. */
 export const EADDRINUSE  = isDarwin ? -48  : -98;
+/** Negative errno returned when a remote endpoint refuses a connection. */
 export const ECONNREFUSED = isDarwin ? -61 : -111;
 
 
@@ -663,7 +695,7 @@ export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Prom
  * halves. The underlying fd is closed automatically when both halves close.
  *
  * Use the static factories rather than the constructor directly:
- * ```ts
+ * ```ts no_run
  *   const sock = await Socket.connect(lp, { family: 'ipv4', ip: '…', port: 80 });
  *   const server = Socket.listen(lp, { family: 'ipv6', ip: '::', port: 8080 });
  * ```

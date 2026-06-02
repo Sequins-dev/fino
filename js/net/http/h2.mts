@@ -11,12 +11,17 @@
  */
 
 import { h2Available as _h2Available, sym, readCStr, Pointer } from '../../internal/net/http/h2/bindings.mts';
+/** HTTP/2 client driver implementation used by the HTTP client pool. */
 export { H2ClientDriver } from '../../internal/net/http/h2/client.mts';
+/** Low-level nghttp2 session wrapper used by HTTP/2 drivers. */
 export { Nghttp2Session } from '../../internal/net/http/h2/session.mts';
+/** Create a pooled HTTP/2 client connection entry. */
 export { createPoolEntry } from '../../internal/net/http/pool.mts';
 
+/** `true` when libnghttp2 was loaded successfully. */
 export const h2Available: boolean = _h2Available;
 
+/** Loaded libnghttp2 version string, or `null` when HTTP/2 is unavailable. */
 export const h2Version: string | null = (() => {
   if (!_h2Available || sym === null) return null;
   try {

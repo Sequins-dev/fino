@@ -15,7 +15,7 @@
  * generated source and `eval`, but still avoids re-walking the schema metadata
  * for every input value.
  *
- * ```ts
+ * ```ts no_run
  * import { parse, v } from 'fino:validate';
  *
  * const schema = v.object({

@@ -19,10 +19,13 @@ import type { Request, Response, Headers } from './index.mts';
 // Server side
 // ---------------------------------------------------------------------------
 
+/** Value returned from an HTTP server handler. */
 export type ServerResult = Response | ConnectionTakeover;
 
+/** Function invoked for each server-side HTTP request. */
 export type ServerHandler = (req: Request) => ServerResult | Promise<ServerResult>;
 
+/** Shared server driver options supplied by `serve`. */
 export interface ServerDriverOptions {
   /** Max concurrent in-flight requests / streams. */
   maxConcurrent: number;
@@ -30,6 +33,7 @@ export interface ServerDriverOptions {
   allowH2cUpgrade?: boolean;
 }
 
+/** Server protocol driver contract for HTTP/1 and HTTP/2. */
 export interface ServerDriver {
   /**
    * Process one accepted connection. Resolves when the connection is fully
@@ -47,6 +51,7 @@ export interface ServerDriver {
 // Client side
 // ---------------------------------------------------------------------------
 
+/** Minimal abort signal contract accepted by client drivers. */
 export interface CancelSignal {
   readonly aborted: boolean;
   readonly reason: unknown;
@@ -54,10 +59,12 @@ export interface CancelSignal {
   removeEventListener(type: string, fn: () => void): void;
 }
 
+/** Shared client driver options supplied by fetch/pool callers. */
 export interface ClientDriverOptions {
   signal: CancelSignal | null;
 }
 
+/** Client protocol driver contract for HTTP/1 and HTTP/2. */
 export interface ClientDriver {
   /**
    * Send one logical request on an already-connected reader/writer pair.

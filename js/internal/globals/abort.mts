@@ -41,7 +41,7 @@
  * triggers the output. The first input to fire wins (idempotent closure).
  *
  *
- * ```ts
+ * ```ts no_run
  * // AbortController and AbortSignal are available via globalThis
  *
  * const controller = new AbortController();
@@ -140,7 +140,7 @@ export class AbortSignal extends EventTarget {
   static timeout(ms: number): AbortSignal {
     const signal = _createSignal();
     const fireAbort = _signalAbort.get(signal);
-    import('fino:runtime/loop').then(function (loop) {
+    import('internal:runtime/loop').then(function (loop) {
       loop.timeout(ms).then(function () {
         fireAbort?.(defaultAbortError('The operation timed out.', 'TimeoutError'));
       });

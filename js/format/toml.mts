@@ -1,9 +1,16 @@
 /**
  * fino:format/toml — TOML 1.0.0 parser and serializer.
  *
- * Full TOML 1.0.0 conformance: all scalar types (strings, integers, floats,
- * booleans, datetimes), tables, arrays, arrays-of-tables, inline tables.
- * Key uniqueness and structural rules from the spec are enforced.
+ * TOML is a configuration format optimized for human-edited files with typed
+ * values and predictable table structure. This module parses TOML 1.0.0 into
+ * JavaScript values and serializes compatible JavaScript objects back to TOML.
+ * It is a good fit for application config, project manifests, and small
+ * settings files where comments and stable textual shape matter to users.
+ *
+ * The parser covers TOML scalar types, basic and literal strings, integers,
+ * floats, booleans, offset datetimes, local datetimes, local dates, local
+ * times, arrays, inline tables, tables, and arrays of tables. Key uniqueness
+ * and structural rules from the spec are enforced.
  *
  * Datetime types:
  *   - Offset datetime   → native Date
@@ -11,14 +18,25 @@
  *   - Local date        → TomlLocalDate
  *   - Local time        → TomlLocalTime
  *
- * Integer overflow: throws by default; pass { bigint: true } to receive BigInt.
+ * Integer overflow throws by default; pass `{ bigint: true }` to receive
+ * `BigInt` values for integers outside JavaScript's safe integer range.
  *
- * ```ts
- *   import { parse, stringify } from 'fino:format/toml';
+ * ```ts no_run
+ * import { parse, stringify } from 'fino:format/toml';
  *
- *   const cfg = parse('[server]\nport = 8080\nhosts = ["a", "b"]');
- *   stringify(cfg);
+ * const cfg = parse('[server]\nport = 8080\nhosts = ["a", "b"]');
+ * const text = stringify(cfg);
  * ```
+ *
+ * ```ts no_run
+ * import { parse, TomlLocalDate } from 'fino:format/toml';
+ *
+ * const cfg = parse('released = 2026-06-02');
+ * cfg.released instanceof TomlLocalDate; // true
+ * ```
+ *
+ * Useful references:
+ *   - TOML 1.0.0 specification: https://toml.io/en/v1.0.0
  */
 
 import { Scanner, ParseError } from 'fino:parsing/scanner';
@@ -84,7 +102,7 @@ export interface TomlStringifyOptions { indent?: string; }
 /**
  * Parse a TOML document into a plain object.
  *
- * ```ts
+ * ```ts no_run
  * import { parse } from 'fino:format/toml';
  *
  * parse('title = "Fino"\n[server]\nport = 8080\n');
@@ -503,7 +521,7 @@ class TomlParser {
 /**
  * Serialize a TOML-compatible object.
  *
- * ```ts
+ * ```ts no_run
  * import { stringify } from 'fino:format/toml';
  *
  * stringify({ server: { port: 8080 } });

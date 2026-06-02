@@ -1,8 +1,8 @@
 /**
- * Tests for signal handling via fino:runtime/process signal() Topic API.
+ * Tests for signal handling via fino:process signal() Topic API.
  */
 import { describe, it } from 'fino:test/test';
-import { signal, SIGUSR1, SIGUSR2, SIGTERM, pid, kill } from 'fino:runtime/process';
+import { signal, SIGUSR1, SIGUSR2, SIGTERM, pid, kill } from 'fino:process';
 
 /** Wrap a one-shot topic delivery in a Promise. */
 function nextSignal(name: string): Promise<unknown> {

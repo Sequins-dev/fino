@@ -3,13 +3,13 @@
  *
  * This module is intentionally low-level. It exposes the process standard
  * streams as text helpers while leaving richer prompt behavior to
- * `fino:util/prompt`.
+ * `fino:tty/prompt`.
  */
 
 import { dlopen } from 'fino:ffi';
 import { encodeUtf8, decodeUtf8 } from './internal/globals/encoding.mts';
 import { os } from 'internal:process';
-import { stdout as processStdout, stderr as processStderr } from './runtime/process.mts';
+import { stdout as processStdout, stderr as processStderr } from './process.mts';
 import type { BytesWriter } from './internal/stream.mts';
 
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';

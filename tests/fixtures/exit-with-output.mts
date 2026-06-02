@@ -3,7 +3,7 @@
  * Used to verify that exit() flushes the stdout coalesce buffer before exiting
  * so the output is not silently lost.
  */
-import { stdout, exit } from 'fino:runtime/process';
+import { stdout, exit } from 'fino:process';
 
 // Write without a trailing newline to ensure the coalesce buffer is not empty.
 const w = stdout();

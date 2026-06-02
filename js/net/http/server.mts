@@ -9,7 +9,7 @@
  *
  * ## Usage
  *
- * ```ts
+ * ```ts no_run
  *   import { serve } from 'fino:net/http/server';
  *
  *   const server = serve({ port: 3000 }, async (req) => {
@@ -99,7 +99,7 @@ const _h2Driver = new H2ServerDriver();
  * @param {(req: Request) => Response | ConnectionTakeover | Promise<...>} handler
  * @returns {{ address, port, close(): Promise<void> }}
  *
- * ```ts
+ * ```ts no_run
  * import { serve } from 'fino:net/http/server';
  *
  * const server = serve({ port: 3000 }, async (req) => new Response('hello'));

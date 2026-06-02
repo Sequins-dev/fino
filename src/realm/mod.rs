@@ -296,12 +296,12 @@ fn create_child_context(
         let initial_frame = v8::Array::new(child_scope, 0);
         child_scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
-        // 5. Compile and evaluate _bootstrap.mjs in the child context.
-        //    _bootstrap.mts detects it's in a child Realm (entry_path is set),
+        // 5. Compile and evaluate internal/bootstrap.mjs in the child context.
+        //    internal/bootstrap.mts detects it's in a child Realm (entry_path is set),
         //    auto-imports the entry module, and calls driveLoop — so
         //    loop_step_fn is registered by the time pump_and_checkpoint returns.
-        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs"));
-        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/_bootstrap.mjs.map"));
+        let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
+        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
 
         let compile_start = if realm_timing_enabled() {
             Some(Instant::now())
@@ -310,17 +310,17 @@ fn create_child_context(
         };
         let bootstrap_module = {
             let tc = &mut v8::TryCatch::new(child_scope);
-            loader::register_source_map_from_json(tc, "internal:bootstrap", bootstrap_map);
+            loader::register_source_map_from_json(tc, "internal/bootstrap.mjs", bootstrap_map);
             match loader::compile_source_module(
                 tc,
                 bootstrap_src,
-                "internal:bootstrap",
+                "internal/bootstrap.mjs",
                 Some(bootstrap_map),
             ) {
                 Some(m) => m,
                 None => {
                     let msg = catch_js_message(tc)
-                        .unwrap_or_else(|| "Failed to compile _bootstrap.mjs".to_string());
+                        .unwrap_or_else(|| "Failed to compile internal/bootstrap.mjs".to_string());
                     return Err(msg);
                 }
             }
@@ -349,7 +349,7 @@ fn create_child_context(
                 .is_none()
             {
                 let msg = catch_js_message(tc)
-                    .unwrap_or_else(|| "Failed to instantiate _bootstrap.mjs".to_string());
+                    .unwrap_or_else(|| "Failed to instantiate internal/bootstrap.mjs".to_string());
                 return Err(msg);
             }
         }
@@ -369,7 +369,7 @@ fn create_child_context(
             let tc = &mut v8::TryCatch::new(child_scope);
             if bootstrap_module.evaluate(tc).is_none() {
                 let msg = catch_js_message(tc)
-                    .unwrap_or_else(|| "Failed to evaluate _bootstrap.mjs".to_string());
+                    .unwrap_or_else(|| "Failed to evaluate internal/bootstrap.mjs".to_string());
                 return Err(msg);
             }
         }
@@ -388,7 +388,7 @@ fn create_child_context(
             let msg = exc
                 .to_string(child_scope)
                 .map(|s| s.to_rust_string_lossy(child_scope))
-                .unwrap_or_else(|| "Error in _bootstrap.mjs".to_string());
+                .unwrap_or_else(|| "Error in internal/bootstrap.mjs".to_string());
             return Err(msg);
         }
     }

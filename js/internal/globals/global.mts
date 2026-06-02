@@ -4,7 +4,7 @@
  * This module is a barrel re-export that collects all web-platform APIs that
  * should be available as globals. It serves two purposes:
  *
- * 1. **globalThis registration** — `js/_main.mjs` imports `fino:global` and
+ * 1. **globalThis registration** — `internal/main.mjs` imports this module and
  *    assigns each export onto `globalThis`, making them available without an
  *    explicit import in user scripts (just like browsers and Node.js).
  *
@@ -20,13 +20,13 @@
  * keeps each module self-contained and independently importable. `fino:url`
  * doesn't know or care that `URL` ends up on `globalThis` — that is
  * `fino:global`'s concern. This also makes it easy to add or remove globals:
- * add an export here and `_main.mjs`'s assignment loop picks it up.
+ * add an export here and `internal/main.mjs`'s assignment loop picks it up.
  *
  *
  * ## What is NOT here
  *
  * - `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` — also
- *   set on globalThis by `_main.mjs` but come from `fino:loop` directly, not
+ *   set on globalThis by `internal/main.mjs` but come from `fino:loop` directly, not
  *   this module, because they're wired to a specific loop handle.
  * - `process` — available as `fino:process` but not on globalThis (fino is
  *   not Node.js; prefer explicit imports for process-level APIs).

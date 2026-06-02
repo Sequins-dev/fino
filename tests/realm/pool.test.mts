@@ -237,7 +237,7 @@ describe('RealmPool — close() drain timeout', () => {
 describe('RealmPool — pool module import failure', () => {
   it('pool.call() rejects with descriptive message when fino:realm/pool is blocked for the worker', async (t) => {
     // Block fino:realm/pool inside the worker realm so the lazy import in
-    // _bootstrap.mts triggers _poolImportFailed instead of hanging forever.
+    // internal/bootstrap.mts triggers _poolImportFailed instead of hanging forever.
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('./fixtures/sum-fn.mts', import.meta.url).pathname,
       size: 1,

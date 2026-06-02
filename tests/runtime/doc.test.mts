@@ -4,7 +4,7 @@
 
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Process, execPath } from 'fino:runtime/process';
+import { Process, execPath } from 'fino:process';
 import { sqliteAvailable } from 'fino:database/sqlite';
 
 const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1_000_000);

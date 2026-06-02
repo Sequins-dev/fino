@@ -132,7 +132,7 @@ function compileSegment(pat: string): string {
 /**
  * Compiled glob pattern for path matching.
  *
- * ```ts
+ * ```ts no_run
  * const g = new Glob('**\/*.mts');
  * g.test('src/index.mts');       // true
  * g.test('src/lib/util.mts');    // true
@@ -188,6 +188,7 @@ export class Glob {
 // Directory walker (push queue / pull iterator pattern)
 // ---------------------------------------------------------------------------
 
+/** @internal Directory entry shape consumed and yielded by the glob walker. */
 export interface GlobEntry {
   name: string;
   path: any;
@@ -196,8 +197,10 @@ export interface GlobEntry {
   isSymlink(): boolean;
 }
 
+/** @internal Async directory listing callback used by provider-specific globbing. */
 export type ListDir = (path: string) => Promise<GlobEntry[]>;
 
+/** @internal Options for provider-backed glob traversal. */
 export interface GlobOptions {
   cwd?: string;
   dot?: boolean;

@@ -1,10 +1,10 @@
 /**
- * Tests for the fino CLI command tree defined by js/_main.mts.
+ * Tests for the fino CLI command tree defined by js/internal/main.mts.
  */
 
 import { describe, it } from 'fino:test/test';
 import type { Assert } from 'fino:test/assert';
-import { Process, env, execPath } from 'fino:runtime/process';
+import { Process, env, execPath } from 'fino:process';
 
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 

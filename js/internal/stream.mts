@@ -63,7 +63,7 @@
 
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 
 const LIBC    = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';

@@ -405,7 +405,7 @@ fn terminate_child(
 
 /// JS: `createThreadContext(root, entryPath, serializedRules): number`
 ///
-/// Spawns a new OS thread with its own `v8::Isolate` running `_bootstrap.mjs`.
+/// Spawns a new OS thread with its own `v8::Isolate` running `internal/bootstrap.mjs`.
 /// Returns a handle index into the parent's `thread_contexts` Vec.
 fn create_thread_context(
     scope: &mut v8::HandleScope,

@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'fino:runtime/process';
+import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'fino:process';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 

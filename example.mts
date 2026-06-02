@@ -11,7 +11,7 @@
 
 import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
-import { env } from 'fino:runtime/process';
+import { env } from 'fino:process';
 
 const HOST = '127.0.0.1';
 const PORT = Number(env.PORT || '3000');

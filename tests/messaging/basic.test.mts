@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { MessageChannel, MessagePort, MessageEvent } from 'fino:messaging';
+import { MessageChannel, MessagePort, MessageEvent } from 'fino:realm/messaging';
 
 describe('MessageChannel', () => {
   it('creates two entangled ports', (t) => {

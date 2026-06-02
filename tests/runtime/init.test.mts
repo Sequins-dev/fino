@@ -4,7 +4,7 @@
 
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Process, execPath } from 'fino:runtime/process';
+import { Process, execPath } from 'fino:process';
 
 const TEST_DIR = '/tmp/fino-init-test-' + Math.floor(Math.random() * 1_000_000);
 

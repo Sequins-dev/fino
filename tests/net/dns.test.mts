@@ -230,7 +230,7 @@ describe('Integration', () => {
     // Using 192.0.2.1:53 fails on macOS where mDNSResponder intercepts all
     // port-53 traffic and returns real DNS answers.
     const { dlopen } = await import('fino:ffi');
-    const { os } = await import('fino:runtime/process');
+    const { os } = await import('fino:process');
     const libc = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
     const ffi = dlopen(libc, {
       socket:      { parameters: ['i32', 'i32', 'i32'], result: 'i32' },

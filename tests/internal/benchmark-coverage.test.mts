@@ -38,12 +38,16 @@ describe('benchmark coverage map', () => {
     const expected = [
       '`fino:log` | `benchmarks/log.bench.mts`',
       '`fino:config` | `benchmarks/config.bench.mts`',
+      '`fino:cluster` | `benchmarks/cluster.bench.mts`',
       '`fino:validate` | `benchmarks/validate.bench.mts`',
       '`fino:database/sqlite` | `benchmarks/database/sqlite.bench.mts`',
       '`fino:file/path` | `benchmarks/file/path.bench.mts`',
       '`fino:format/csv` | `benchmarks/format/csv.bench.mts`',
       '`fino:net/http` | `benchmarks/net/http/index.bench.mts`',
-      '`fino:runtime/process` | `benchmarks/runtime/process.bench.mts`',
+      '`fino:module` | `benchmarks/module.bench.mts`',
+      '`fino:process` | `benchmarks/process.bench.mts`',
+      '`fino:realm/pool` | `benchmarks/realm/pool.bench.mts`',
+      '`fino:security/jwt` | `benchmarks/security/jwt.bench.mts`',
       '`fino:test/assert` | `benchmarks/test/assert.bench.mts`',
     ];
 

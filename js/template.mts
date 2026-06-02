@@ -36,7 +36,7 @@ export function escapeHtml(value: unknown): string {
 /**
  * Compile a template string into a reusable render function.
  *
- * ```ts
+ * ```ts no_run
  * import { compile } from 'fino:template';
  *
  * const renderUser = compile('Hello, {{name}}');
@@ -51,7 +51,7 @@ export function compile(template: string, _options: CompileOptions = {}): (data?
 /**
  * Render a template once with the provided data.
  *
- * ```ts
+ * ```ts no_run
  * import { render } from 'fino:template';
  *
  * render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });

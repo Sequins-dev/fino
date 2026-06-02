@@ -12,7 +12,7 @@
  * All timer functions are automatically installed on `globalThis` when this
  * module is first imported, so importing the module is sufficient:
  *
- * ```ts
+ * ```ts no_run
  *   import 'fino:time';
  *   setTimeout(() => console.log('hi'), 500);
  * ```
@@ -45,7 +45,7 @@
  * @internal
  */
 
-import * as loop from 'fino:runtime/loop';
+import * as loop from 'internal:runtime/loop';
 import { os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
 

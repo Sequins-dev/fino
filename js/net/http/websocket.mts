@@ -10,7 +10,7 @@
  * handshakes, PING/PONG, and subprotocol negotiation. Used directly by
  * server code or wrapped by the WHATWG `WebSocket` facade.
  *
- * ```ts
+ * ```ts no_run
  *   // CLIENT
  *   const conn = WebSocketConnection.connect('wss://example.com/ws', {
  *     protocols: ['chat.v1'],
@@ -39,7 +39,7 @@
  * Strict spec-compliant global. Wraps a WebSocketConnection.
  * No extra methods — spec surface only.
  *
- * ```ts
+ * ```ts no_run
  *   const ws = new WebSocket('wss://example.com/ws', ['chat.v1']);
  *   ws.binaryType = 'arraybuffer';
  *   ws.onopen    = () => ws.send('hello');
@@ -75,7 +75,7 @@ import { Headers, _headerTokenList, _parseHeaders, _parseResponseLine } from './
 import { Socket }             from '../socket.mts';
 import { TlsSocket }          from '../tls.mts';
 import { lookup }             from '../dns.mts';
-import * as loop              from '../../runtime/loop.mts';
+import * as loop              from '../../internal/runtime/loop.mts';
 import { EventTarget, Event } from '../../internal/globals/eventtarget.mts';
 import { MessageEvent } from '../../internal/globals/messaging.mts';
 import { URL }                from '../../internal/globals/url.mts';
@@ -110,6 +110,7 @@ const CLOSE_TIMEOUT_MS    = 5_000;
 // Event classes (CloseEvent, ErrorEvent — MessageEvent imported from shared module)
 // ---------------------------------------------------------------------------
 
+/** Web-compatible message event used for WebSocket `message` events. */
 export { MessageEvent };
 
 interface CloseEventInit {
@@ -118,6 +119,7 @@ interface CloseEventInit {
   wasClean?: boolean;
 }
 
+/** WebSocket close event carrying close code, reason, and cleanliness. */
 export class CloseEvent extends Event {
   #code:     number;
   #reason:   string;
@@ -135,6 +137,7 @@ export class CloseEvent extends Event {
   get wasClean() { return this.#wasClean; }
 }
 
+/** WebSocket error event carrying the underlying error value when available. */
 export class ErrorEvent extends Event {
   #error: unknown;
 
@@ -150,6 +153,7 @@ export class ErrorEvent extends Event {
 // Internal: WebSocket message type
 // ---------------------------------------------------------------------------
 
+/** Parsed WebSocket message payload used by lower-level connection helpers. */
 export interface WebSocketMessage {
   type: 'text' | 'binary';
   data: string | Uint8Array;
@@ -372,6 +376,7 @@ async function _readUpgradeResponse(
 // WebSocketConnection options interfaces
 // ---------------------------------------------------------------------------
 
+/** Options used when accepting a WebSocket upgrade from an HTTP handler. */
 export interface WebSocketAcceptOptions {
   /** Single subprotocol to accept (must appear in Sec-WebSocket-Protocol header). */
   protocol?:       string;
@@ -381,6 +386,7 @@ export interface WebSocketAcceptOptions {
   maxPayloadSize?: number;
 }
 
+/** Options used when opening a WebSocket client connection. */
 export interface WebSocketConnectOptions {
   /** Requested subprotocols (joined as Sec-WebSocket-Protocol header). */
   protocols?:      string | string[];
@@ -635,7 +641,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * Throws a plain Error (name='SyntaxError') if the request is not a valid
    * WebSocket upgrade. The handler can catch this and return a 400 Response.
    *
-   * ```ts
+   * ```ts no_run
    * serve({ port: 3000 }, (req) => {
    *   if (req.headers.get('upgrade') === 'websocket') {
    *     const ws = WebSocketConnection.accept(req, { protocol: 'chat.v1' });
@@ -721,7 +727,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * The 'open' event fires when the handshake completes; 'error' + 'close'
    * fire if the connection fails.
    *
-   * ```ts
+   * ```ts no_run
    * const ws = WebSocketConnection.connect('wss://example.com/chat', {
    *   protocols: ['chat.v1'],
    * });
