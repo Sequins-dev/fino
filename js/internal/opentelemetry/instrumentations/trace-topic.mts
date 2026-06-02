@@ -1,7 +1,16 @@
 /**
  * internal/opentelemetry/instrumentations/trace-topic — internal runtime module.
  *
- * 
+ * Bridges user-facing trace topic events into OpenTelemetry span records.
+ * Scoped trace topics can start spans, mutate attributes, append events and
+ * links, update status, rename operations, and end spans.
+ *
+ * ```js
+ * const { TraceTopicInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/trace-topic';
+ * console.log(new TraceTopicInstrumentation().constructor.name);
+ * ```
+ *
  * @internal
  */
 
@@ -9,7 +18,50 @@ import { subscribeMatching } from '../../../context/topic.mts';
 import type { Disposable, OtelSdkLike, SpanEventRecord, SpanLinkRecord, SpanRecord } from '../common.mts';
 import { isScopedTraceTopic } from '../traces.mts';
 
+/**
+ * Runtime trace-topic instrumentation.
+ *
+ * The instrumentation subscribes to all scoped trace topics and keeps active
+ * spans in memory until an end event arrives. Active spans older than five
+ * minutes are evicted to avoid unbounded growth if an end event is missing.
+ * Dispose clears subscriptions, the eviction timer, and active span state.
+ *
+ * ```js
+ * const { TraceTopicInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/trace-topic';
+ * const disposable = new TraceTopicInstrumentation().enable({
+ *   recordSpanStart() {},
+ *   recordSpan() {},
+ * });
+ * disposable.dispose();
+ * ```
+ *
+ * @internal
+ */
 export class TraceTopicInstrumentation {
+  /**
+   * Enable scoped trace-topic subscriptions.
+   *
+   * Start events call `recordSpanStart()`. Attribute, event, link, status, and
+   * rename events mutate the stored span record. End events merge the stored
+   * state with final fields and call `recordSpan()`. Unknown span ids on
+   * mutation events are ignored; an end event without a start still records a
+   * best-effort span from the end payload.
+   *
+   * ```js
+   * const { TraceTopicInstrumentation } =
+   *   import 'internal:opentelemetry/instrumentations/trace-topic';
+   * const disposable = new TraceTopicInstrumentation().enable({
+   *   recordSpanStart(span) { console.log(span.spanId); },
+   *   recordSpan(span) { console.log(span.name); },
+   * });
+   * disposable.dispose();
+   * ```
+   *
+   * @param sdk SDK-like sink that accepts span starts and completed spans.
+   * @returns A disposable that removes subscriptions and clears buffered spans.
+   * @internal
+   */
   enable(sdk: OtelSdkLike): Disposable {
     const SPAN_TTL_MS = 5 * 60 * 1_000;
     const EVICTION_INTERVAL_MS = 60 * 1_000;

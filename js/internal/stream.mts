@@ -58,6 +58,11 @@
  * or extend BufferedBytesWriter and implement doFlush(). The structural API,
  * coalescing, and async-iterator protocol are all inherited.
  *
+ * ```js
+ * import { BufferedBytesReader } from 'internal:stream';
+ * console.log(typeof BufferedBytesReader.over);
+ * ```
+ *
  * @internal
  */
 
@@ -93,34 +98,176 @@ function getErrno(): number {
 type ReaderCloseCallback = () => void | Promise<void>;
 
 /**
- * Abstract base class for any async producer of values of type T.
+ * Abstract base class for asynchronous producers.
  *
- * Provides:
- *   - async iterator protocol (for await … of reader)
- *   - async close() that invokes the onClose callback
+ * Subclasses implement `read()` and return either the next value or `null` for
+ * EOF. The base class provides idempotent asynchronous close handling plus the
+ * async iterator protocol. `close()` awaits the optional `onClose` callback, so
+ * callers should always await it when resources are involved.
  *
- * Subclasses implement read() to produce the next value or null on EOF.
+ * ```js
+ * import { Reader } from 'internal:stream';
+ * class OnceReader extends Reader {
+ *   value = 'hello';
+ *   async read() {
+ *     const value = this.value;
+ *     this.value = null;
+ *     return value;
+ *   }
+ * }
+ * const reader = new OnceReader();
+ * for await (const value of reader) console.log(value);
+ * ```
+ *
+ * @typeParam T Value type produced by `read()`.
+ * @internal
  */
 export abstract class Reader<T> implements AsyncIterator<T> {
+  /**
+   * Private property `#closed` used by `Reader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closed = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closed;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closed  = false;
+  /**
+   * Private property `#onClose` used by `Reader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onClose = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onClose;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onClose: ReaderCloseCallback;
 
+  /**
+   * Create a reader with an optional close callback.
+   *
+   * The callback defaults to a no-op and is invoked at most once, the first time
+   * `close()` is awaited or when iteration reaches EOF. Callback errors reject
+   * the close operation.
+   *
+   * ```js
+   * import { Reader } from 'internal:stream';
+   * class EmptyReader extends Reader { async read() { return null; } }
+   * const reader = new EmptyReader(() => console.log('closed'));
+   * await reader.close();
+   * ```
+   *
+   * @param onClose Optional cleanup callback.
+   * @internal
+   */
   constructor(onClose: ReaderCloseCallback = () => {}) {
     this.#onClose = onClose;
   }
 
+  /**
+   * Whether the reader has been closed.
+   *
+   * The flag flips before the close callback is awaited. It remains false while
+   * the reader is open, even if EOF has not yet been checked.
+   *
+   * ```js
+   * import { Reader } from 'internal:stream';
+   * class EmptyReader extends Reader { async read() { return null; } }
+   * const reader = new EmptyReader();
+   * console.log(reader.closed);
+   * await reader.close();
+   * console.log(reader.closed);
+   * ```
+   *
+   * @returns True after `close()` starts.
+   * @internal
+   */
   get closed(): boolean { return this.#closed; }
 
-  /** Produce the next value, or null on EOF. */
+  /**
+   * Produce the next value from the stream.
+   *
+   * Subclasses must return `null` to signal EOF. Returning `undefined` is a
+   * value, not EOF, for generic readers. Implementations may throw for source
+   * errors; the async iterator forwards those errors to the caller.
+   *
+   * ```js
+   * import { Reader } from 'internal:stream';
+   * class EmptyReader extends Reader { async read() { return null; } }
+   * console.log(await new EmptyReader().read());
+   * ```
+   *
+   * @returns The next value, or `null` on EOF.
+   * @internal
+   */
   abstract read(): Promise<T | null>;
 
-  /** Close this reader. Idempotent; awaits the onClose callback. */
+  /**
+   * Close the reader and run its close callback once.
+   *
+   * Multiple calls are safe; only the first one invokes `onClose`. The method
+   * does not call `read()` and does not require EOF. Callback failures reject
+   * the returned promise.
+   *
+   * ```js
+   * import { Reader } from 'internal:stream';
+   * class EmptyReader extends Reader { async read() { return null; } }
+   * const reader = new EmptyReader();
+   * await reader.close();
+   * await reader.close();
+   * ```
+   *
+   * @returns A promise that resolves after cleanup.
+   * @internal
+   */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
     await this.#onClose();
   }
 
+  /**
+   * Advance the async iterator.
+   *
+   * `next()` calls `read()`. When `read()` returns `null`, the reader is closed
+   * and the iterator result is `{ done: true }`. Source errors or close callback
+   * errors reject the returned promise.
+   *
+   * ```js
+   * import { Reader } from 'internal:stream';
+   * class EmptyReader extends Reader { async read() { return null; } }
+   * const result = await new EmptyReader().next();
+   * console.log(result.done);
+   * ```
+   *
+   * @returns The next iterator result.
+   * @internal
+   */
   async next(): Promise<IteratorResult<T>> {
     const v = await this.read();
     if (v === null) {
@@ -130,6 +277,21 @@ export abstract class Reader<T> implements AsyncIterator<T> {
     return { done: false, value: v };
   }
 
+  /**
+   * Return this reader as its own async iterator.
+   *
+   * This enables `for await` consumption without allocating a wrapper iterator.
+   *
+   * ```js
+   * import { Reader } from 'internal:stream';
+   * class EmptyReader extends Reader { async read() { return null; } }
+   * const reader = new EmptyReader();
+   * console.log(reader[Symbol.asyncIterator]() === reader);
+   * ```
+   *
+   * @returns This reader.
+   * @internal
+   */
   [Symbol.asyncIterator](): AsyncIterator<T> {
     return this;
   }
@@ -140,27 +302,104 @@ export abstract class Reader<T> implements AsyncIterator<T> {
 // ---------------------------------------------------------------------------
 
 /**
- * Abstract byte-stream reader. Adds structural-read primitives on top of
- * a single template method, doRead(maxBytes).
+ * Abstract byte-stream reader with structural read helpers.
  *
- * doRead(maxBytes) returns AT MOST maxBytes bytes; it may return fewer.
- * The structural methods (readExactly, readUntil, readByte) call doRead
- * with only as many bytes as they still need, so no bytes are ever
- * over-fetched or buffered at this layer.
+ * Subclasses implement `doRead(maxBytes)` and must return at most `maxBytes`
+ * bytes or `null` on EOF. `readExactly()`, `readUntil()`, and `readByte()` are
+ * built on that hook and avoid over-fetching. If EOF interrupts an unbuffered
+ * structural read, partially consumed bytes are stashed and replayed on the
+ * next read operation.
+ *
+ * ```js
+ * import { BytesReader } from 'internal:stream';
+ * class MemoryReader extends BytesReader {
+ *   data = new Uint8Array([65, 10]);
+ *   async doRead(maxBytes) {
+ *     if (this.data.byteLength === 0) return null;
+ *     const out = this.data.subarray(0, maxBytes);
+ *     this.data = this.data.subarray(out.byteLength);
+ *     return out;
+ *   }
+ * }
+ * console.log(await new MemoryReader().readByte());
+ * ```
+ *
+ * @internal
  */
 export abstract class BytesReader extends Reader<Uint8Array> {
   // Bytes stashed by readExactly/readUntil on EOF before their condition was
   // met. Returned on the next doRead call so no data is lost. BufferedBytesReader
   // overrides readExactly/readUntil with peek-based semantics that don't need
   // this, but the stash ensures correctness for any unbuffered BytesReader subclass.
+  /**
+   * Private property `#stash` used by `BytesReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #stash = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#stash;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #stash: Uint8Array | null = null;
 
-  /** Read up to maxBytes from the underlying source. May return fewer.
-   *  Returns null on EOF. */
+  /**
+   * Read bytes from the underlying source.
+   *
+   * Implementations must return at most `maxBytes` bytes, may return fewer, and
+   * must return `null` on EOF. Empty chunks are allowed but can cause structural
+   * helpers to loop, so backends should avoid returning them when possible.
+   *
+   * ```js
+   * import { BytesReader } from 'internal:stream';
+   * class EmptyBytes extends BytesReader {
+   *   async doRead(_maxBytes) { return null; }
+   * }
+   * console.log(await new EmptyBytes().read());
+   * ```
+   *
+   * @param maxBytes Maximum number of bytes requested by the caller.
+   * @returns A byte chunk, or `null` on EOF.
+   * @internal
+   */
   protected abstract doRead(maxBytes: number): Promise<Uint8Array | null>;
 
   // Internal: drain the stash before calling doRead. Used by all structural
   // read methods so that bytes saved on a previous partial failure are replayed.
+  /**
+   * Private method `#fetch` used by `BytesReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fetch() {
+   *     return 'fetch';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#fetch();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fetch(maxBytes: number): Promise<Uint8Array | null> {
     if (this.#stash !== null) {
       const s = this.#stash;
@@ -174,18 +413,54 @@ export abstract class BytesReader extends Reader<Uint8Array> {
     return this.doRead(maxBytes);
   }
 
-  /** Read one chunk of arbitrary size (default: up to 64 KiB). */
+  /**
+   * Read one byte chunk.
+   *
+   * The default request size is 64 KiB, but subclasses may return fewer bytes.
+   * Any bytes stashed by an earlier partial structural read are returned before
+   * the underlying `doRead()` hook is called. `null` means EOF.
+   *
+   * ```js
+   * import { BytesReader } from 'internal:stream';
+   * class EmptyBytes extends BytesReader {
+   *   async doRead(_maxBytes) { return null; }
+   * }
+   * console.log(await new EmptyBytes().read());
+   * ```
+   *
+   * @returns A byte chunk, or `null` on EOF.
+   * @internal
+   */
   async read(): Promise<Uint8Array | null> {
     return this.#fetch(65536);
   }
 
   /**
-   * Read exactly n bytes. Returns null if EOF arrives before n bytes are
-   * available. On null return, any bytes already read are stashed and will
-   * be returned by the next read operation — no data is lost.
+   * Read exactly `n` bytes.
    *
-   * BufferedBytesReader overrides this with a more efficient peek-based
-   * implementation that avoids intermediate copies.
+   * Returns an empty array for `n === 0`. If EOF arrives before `n` bytes are
+   * available, returns `null` and stashes bytes already read so the next read
+   * operation can replay them. Buffered readers override this with atomic,
+   * non-consuming failure semantics.
+   *
+   * ```js
+   * import { BytesReader } from 'internal:stream';
+   * class MemoryReader extends BytesReader {
+   *   data = new Uint8Array([1, 2]);
+   *   async doRead(maxBytes) {
+   *     if (!this.data.byteLength) return null;
+   *     const out = this.data.subarray(0, maxBytes);
+   *     this.data = this.data.subarray(out.byteLength);
+   *     return out;
+   *   }
+   * }
+   * const reader = new MemoryReader();
+   * console.log((await reader.readExactly(2))?.byteLength);
+   * ```
+   *
+   * @param n Number of bytes required.
+   * @returns Exactly `n` bytes, or `null` if EOF arrives first.
+   * @internal
    */
   async readExactly(n: number): Promise<Uint8Array | null> {
     if (n === 0) return new Uint8Array(0);
@@ -204,7 +479,29 @@ export abstract class BytesReader extends Reader<Uint8Array> {
     return out;
   }
 
-  /** Read one byte. Returns null on EOF. */
+  /**
+   * Read a single byte.
+   *
+   * The returned number is in the range 0 through 255. `null` indicates EOF.
+   * Stashed bytes from a previous partial structural read are consumed before
+   * the underlying source is queried.
+   *
+   * ```js
+   * import { BytesReader } from 'internal:stream';
+   * class OneByte extends BytesReader {
+   *   done = false;
+   *   async doRead(_maxBytes) {
+   *     if (this.done) return null;
+   *     this.done = true;
+   *     return new Uint8Array([97]);
+   *   }
+   * }
+   * console.log(await new OneByte().readByte());
+   * ```
+   *
+   * @returns One byte as a number, or `null` on EOF.
+   * @internal
+   */
   async readByte(): Promise<number | null> {
     const c = await this.#fetch(1);
     if (c === null || c.byteLength === 0) return null;
@@ -212,15 +509,31 @@ export abstract class BytesReader extends Reader<Uint8Array> {
   }
 
   /**
-   * Read until and including `delim`. Returns the bytes read, including the
-   * delimiter. Returns null on EOF before the delimiter is found; any bytes
-   * already scanned are stashed and available to the next read operation.
-   * Throws if `max` bytes are scanned without finding the delimiter.
+   * Read through the first delimiter occurrence.
    *
-   * Internally reads byte-by-byte via readByte(). With a BufferedBytesReader
-   * below, each readByte() is a cheap chunk-list pop. BufferedBytesReader
-   * overrides this with a scan-based implementation that avoids byte-at-a-time
-   * overhead and uses its internal chunk list directly.
+   * The returned bytes include `delim`. An empty delimiter throws. EOF before
+   * the delimiter returns `null`; bytes scanned before EOF are stashed for the
+   * next read. Scanning more than `max` bytes without a delimiter throws.
+   *
+   * ```js
+   * import { BytesReader } from 'internal:stream';
+   * class MemoryReader extends BytesReader {
+   *   data = new TextEncoder().encode('ok\\nrest');
+   *   async doRead(maxBytes) {
+   *     if (!this.data.byteLength) return null;
+   *     const out = this.data.subarray(0, maxBytes);
+   *     this.data = this.data.subarray(out.byteLength);
+   *     return out;
+   *   }
+   * }
+   * const line = await new MemoryReader().readUntil(new Uint8Array([10]));
+   * console.log(new TextDecoder().decode(line));
+   * ```
+   *
+   * @param delim Delimiter bytes to include in the returned chunk.
+   * @param max Maximum bytes to scan before throwing. Defaults to 1 MiB.
+   * @returns Bytes through the delimiter, or `null` on EOF before a match.
+   * @internal
    */
   async readUntil(delim: Uint8Array, max: number = 1 << 20): Promise<Uint8Array | null> {
     if (delim.byteLength === 0) throw new Error('readUntil: empty delimiter');
@@ -259,35 +572,128 @@ export abstract class BytesReader extends Reader<Uint8Array> {
 // ---------------------------------------------------------------------------
 
 /**
- * Byte reader with an internal chunk-list buffer and upstream pull coalescing.
+ * Byte reader with a chunk-list buffer and upstream pull coalescing.
  *
- * Overrides doRead(maxBytes) to serve from the buffer, pulling a new chunk
- * from doPull() only when the buffer is empty. Because doPull() typically
- * returns 64 KiB at a time, callers making many small doRead(1) calls (as
- * readUntil does) pay only one syscall per large chunk.
+ * The base `doRead()` implementation serves from buffered chunks and calls
+ * `doPull()` only when the buffer is empty. Structural reads can therefore scan
+ * cheaply while upstream backends pull larger chunks. `peek()`,
+ * `scanBuffered()`, and `takeBuffered()` expose the current buffer for parsers
+ * that need to inspect pipelined data without forcing another read.
  *
- * Also exposes peek / scanBuffered / takeBuffered for callers that need
- * synchronous buffer inspection without pulling from upstream (e.g. the
- * HTTP pipelined-request fast path).
+ * ```js
+ * import { BufferedBytesReader, BytesReader } from 'internal:stream';
+ * class EmptyBytes extends BytesReader { async doRead() { return null; } }
+ * const reader = BufferedBytesReader.over(new EmptyBytes());
+ * console.log(await reader.peek(1));
+ * ```
  *
- * Subclasses implement doPull() to fetch one chunk from the underlying
- * resource. Use BufferedBytesReader.over(source) to wrap an existing
- * BytesReader without subclassing.
+ * @internal
  */
 export abstract class BufferedBytesReader extends BytesReader {
+  /**
+   * Private property `#chunks` used by `BufferedBytesReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #chunks = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#chunks;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #chunks:       Uint8Array[] = [];
+  /**
+   * Private property `#bufferedBytes` used by `BufferedBytesReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bufferedBytes = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bufferedBytes;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bufferedBytes             = 0;
+  /**
+   * Private property `#upstreamDone` used by `BufferedBytesReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #upstreamDone = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#upstreamDone;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #upstreamDone              = false;
 
   /**
-   * Subclass: pull one raw chunk from the underlying resource.
-   * May return any size. Returns null on EOF.
+   * Pull one raw chunk from the underlying resource.
+   *
+   * Subclasses may return any positive chunk size and must return `null` on
+   * EOF. Empty chunks are ignored by the buffering layer and should be rare to
+   * avoid busy loops.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class EmptyBuffered extends BufferedBytesReader {
+   *   async doPull() { return null; }
+   * }
+   * console.log(await new EmptyBuffered().read());
+   * ```
+   *
+   * @returns A raw byte chunk, or `null` on EOF.
+   * @internal
    */
   protected abstract doPull(): Promise<Uint8Array | null>;
 
   /**
-   * Wrap an existing BytesReader as a BufferedBytesReader without subclassing.
-   * Useful for tests or for layering buffering over a non-fd byte source.
+   * Wrap an existing byte reader in a buffered reader.
+   *
+   * The wrapper pulls from `source.read()` and closes the source when the
+   * buffered reader closes. This is useful for tests and for adding non-
+   * consuming `peek()` and `readUntil()` behavior to an unbuffered source.
+   *
+   * ```js
+   * import { BufferedBytesReader, BytesReader } from 'internal:stream';
+   * class EmptyBytes extends BytesReader { async doRead() { return null; } }
+   * const buffered = BufferedBytesReader.over(new EmptyBytes());
+   * console.log(buffered.buffered);
+   * ```
+   *
+   * @param source Source byte reader to buffer.
+   * @returns A buffered wrapper around `source`.
+   * @internal
    */
   static over(source: BytesReader): BufferedBytesReader {
     return new (class WrappedBufferedReader extends BufferedBytesReader {
@@ -297,7 +703,26 @@ export abstract class BufferedBytesReader extends BytesReader {
     })(() => source.close());
   }
 
-  // BytesReader.doRead override: serve from buffer; pull on miss.
+  /**
+   * Serve a bounded read from the internal buffer.
+   *
+   * The method pulls upstream only while the buffer is empty, skips empty pulls,
+   * and returns at most `maxBytes`. It returns `null` after upstream EOF and
+   * does not over-read from the buffered chunk list.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class OneChunk extends BufferedBytesReader {
+   *   done = false;
+   *   async doPull() { if (this.done) return null; this.done = true; return new Uint8Array([1, 2]); }
+   * }
+   * console.log((await new OneChunk().read())?.byteLength);
+   * ```
+   *
+   * @param maxBytes Maximum bytes to return.
+   * @returns A byte chunk, or `null` on EOF.
+   * @internal
+   */
   protected async doRead(maxBytes: number): Promise<Uint8Array | null> {
     while (this.#chunks.length === 0) {
       if (this.#upstreamDone) return null;
@@ -321,15 +746,67 @@ export abstract class BufferedBytesReader extends BytesReader {
 
   // ── extra methods: only available on the buffered variant ─────────
 
-  /** Number of bytes currently buffered (available without a pull). */
+  /**
+   * Number of bytes currently buffered.
+   *
+   * These bytes can be consumed by `takeBuffered()` without awaiting upstream
+   * I/O. The value does not include bytes that may still be available from the
+   * underlying resource.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class EmptyBuffered extends BufferedBytesReader { async doPull() { return null; } }
+   * console.log(new EmptyBuffered().buffered);
+   * ```
+   *
+   * @returns Buffered byte count.
+   * @internal
+   */
   get buffered(): number { return this.#bufferedBytes; }
 
-  /** True once upstream has returned EOF and the buffer is fully drained. */
+  /**
+   * Whether upstream EOF has been reached and all buffered bytes are drained.
+   *
+   * The value is false before the first EOF-producing pull, even if no bytes are
+   * currently buffered. Use `peek()` or `read()` to discover EOF.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class EmptyBuffered extends BufferedBytesReader { async doPull() { return null; } }
+   * const reader = new EmptyBuffered();
+   * await reader.peek(1);
+   * console.log(reader.eof);
+   * ```
+   *
+   * @returns True after EOF and buffer drain.
+   * @internal
+   */
   get eof(): boolean { return this.#upstreamDone && this.#bufferedBytes === 0; }
 
   /**
-   * Ensure at least n bytes are buffered (pulling from upstream if needed),
-   * then return the first min(n, buffered) bytes without consuming them.
+   * Return up to `n` buffered bytes without consuming them.
+   *
+   * The method pulls upstream until at least `n` bytes are buffered or EOF is
+   * reached. It returns a copy of the first `min(n, buffered)` bytes, so callers
+   * can mutate the returned array without changing the internal buffer.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class OneChunk extends BufferedBytesReader {
+   *   done = false;
+   *   async doPull() {
+   *     if (this.done) return null;
+   *     this.done = true;
+   *     return new Uint8Array([1, 2]);
+   *   }
+   * }
+   * const reader = new OneChunk();
+   * console.log((await reader.peek(1))[0]);
+   * ```
+   *
+   * @param n Desired number of bytes.
+   * @returns A non-consuming copy of available bytes.
+   * @internal
    */
   async peek(n: number): Promise<Uint8Array> {
     while (this.#bufferedBytes < n && !this.#upstreamDone) {
@@ -345,9 +822,26 @@ export abstract class BufferedBytesReader extends BytesReader {
   }
 
   /**
-   * Synchronous: scan the currently-buffered chunks for `delim`.
-   * No upstream pulls. Returns the offset one past the end of the first
-   * match, or -1 if not found.
+   * Scan currently buffered bytes for a delimiter without pulling upstream.
+   *
+   * Returns the offset one past the first delimiter match, or `-1` if the
+   * delimiter is absent from the current buffer. Empty delimiters return `-1`.
+   * The method can match delimiters that cross chunk boundaries.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class Chunked extends BufferedBytesReader {
+   *   chunks = [new Uint8Array([65]), new Uint8Array([10])];
+   *   async doPull() { return this.chunks.shift() ?? null; }
+   * }
+   * const reader = new Chunked();
+   * await reader.peek(2);
+   * console.log(reader.scanBuffered(new Uint8Array([10])));
+   * ```
+   *
+   * @param delim Delimiter bytes to find.
+   * @returns Offset after the match, or `-1` when not found.
+   * @internal
    */
   scanBuffered(delim: Uint8Array): number {
     if (delim.byteLength === 0 || this.#bufferedBytes < delim.byteLength) return -1;
@@ -395,8 +889,29 @@ export abstract class BufferedBytesReader extends BytesReader {
   }
 
   /**
-   * Synchronous: pop exactly n bytes off the head of the chunk list.
-   * Does NOT pull from upstream. Throws if buffered < n.
+   * Remove and return exactly `n` bytes from the current buffer.
+   *
+   * This method never pulls upstream. It throws if fewer than `n` bytes are
+   * buffered. The returned bytes are copied so callers own the buffer.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class OneChunk extends BufferedBytesReader {
+   *   done = false;
+   *   async doPull() {
+   *     if (this.done) return null;
+   *     this.done = true;
+   *     return new Uint8Array([1, 2]);
+   *   }
+   * }
+   * const reader = new OneChunk();
+   * await reader.peek(2);
+   * console.log(reader.takeBuffered(1)[0]);
+   * ```
+   *
+   * @param n Number of bytes to consume.
+   * @returns Exactly `n` buffered bytes.
+   * @internal
    */
   takeBuffered(n: number): Uint8Array {
     if (n > this.#bufferedBytes) {
@@ -408,12 +923,26 @@ export abstract class BufferedBytesReader extends BytesReader {
   // ── Structural read overrides with non-consuming-on-failure semantics ─────
 
   /**
-   * Read exactly n bytes without consuming on failure.
+   * Read exactly `n` bytes without consuming on failure.
    *
-   * Uses peek to accumulate n bytes in the internal buffer, then consumes
-   * them atomically. If EOF arrives before n bytes, returns null without
-   * consuming any bytes — unlike BytesReader.readExactly which discards
-   * already-consumed bytes on EOF.
+   * The method first accumulates bytes with `peek()`. If EOF arrives before
+   * `n` bytes are available, it returns `null` and leaves buffered bytes
+   * untouched. For `n === 0`, it returns an empty array.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class OneChunk extends BufferedBytesReader {
+   *   done = false;
+   *   async doPull() { if (this.done) return null; this.done = true; return new Uint8Array([1]); }
+   * }
+   * const reader = new OneChunk();
+   * console.log(await reader.readExactly(2));
+   * console.log(reader.buffered);
+   * ```
+   *
+   * @param n Number of bytes required.
+   * @returns Exactly `n` bytes, or `null` if EOF arrives first.
+   * @internal
    */
   async readExactly(n: number): Promise<Uint8Array | null> {
     if (n === 0) return new Uint8Array(0);
@@ -423,12 +952,27 @@ export abstract class BufferedBytesReader extends BytesReader {
   }
 
   /**
-   * Read until (and including) `delim`, without consuming on failure.
+   * Read through a delimiter without consuming on failure.
    *
-   * Incrementally pulls data into the internal buffer and scans for `delim`.
-   * If found: consumes and returns all bytes up to and including the delimiter.
-   * If EOF without finding the delimiter: returns null without consuming anything.
-   * Throws if `max` bytes are buffered without finding the delimiter.
+   * The method scans buffered bytes first, pulls one chunk at a time as needed,
+   * and consumes only when a delimiter is found. EOF before a match returns
+   * `null` with buffered bytes preserved. Empty delimiters and scans beyond
+   * `max` throw.
+   *
+   * ```js
+   * import { BufferedBytesReader } from 'internal:stream';
+   * class Lines extends BufferedBytesReader {
+   *   chunks = [new TextEncoder().encode('a\\n')];
+   *   async doPull() { return this.chunks.shift() ?? null; }
+   * }
+   * const reader = new Lines();
+   * console.log(new TextDecoder().decode(await reader.readUntil(new Uint8Array([10]))));
+   * ```
+   *
+   * @param delim Delimiter bytes to include in the returned chunk.
+   * @param max Maximum buffered bytes to scan before throwing. Defaults to 1 MiB.
+   * @returns Bytes through the delimiter, or `null` on EOF before a match.
+   * @internal
    */
   async readUntil(delim: Uint8Array, max: number = 1 << 20): Promise<Uint8Array | null> {
     if (delim.byteLength === 0) throw new Error('readUntil: empty delimiter');
@@ -453,6 +997,29 @@ export abstract class BufferedBytesReader extends BytesReader {
 
   // Shared helper: return n bytes from head of chunk list.
   // If consume=true, removes them from the buffer.
+  /**
+   * Private method `#sliceBuffered` used by `BufferedBytesReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #sliceBuffered() {
+   *     return 'sliceBuffered';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#sliceBuffered();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #sliceBuffered(n: number, consume: boolean): Uint8Array {
     if (n === 0) return new Uint8Array(0);
     // Fast path: first chunk has at least n bytes.
@@ -495,28 +1062,171 @@ export abstract class BufferedBytesReader extends BytesReader {
 // ---------------------------------------------------------------------------
 
 /**
- * Read half of a plain POSIX file descriptor. Uses libc read(2) with a
- * 64 KiB arena buffer; EAGAIN causes the loop to await fd readability.
- * Buffering is provided by the BufferedBytesReader base class.
+ * Buffered reader backed by a POSIX file descriptor.
+ *
+ * `FdReader` borrows the descriptor; it does not close it directly. The
+ * `onClose` callback owns descriptor shutdown policy. Reads use libc `read(2)`
+ * with a reusable 64 KiB arena and wait for runtime readability on EAGAIN.
+ * Fatal read errors are treated as EOF by this low-level adapter.
+ *
+ * ```js
+ * import { FdReader } from 'internal:stream';
+ * const reader = new FdReader(0, () => {});
+ * console.log(reader.fd);
+ * await reader.close();
+ * ```
+ *
+ * @internal
  */
 export class FdReader extends BufferedBytesReader {
+  /**
+   * Private property `#fd` used by `FdReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fd = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#fd;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fd:       number;
+  /**
+   * Private property `#readBuf` used by `FdReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readBuf = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readBuf;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readBuf:  ArrayBuffer = new ArrayBuffer(65536);
   // Pre-allocated view — subarray() is cheaper than new Uint8Array(buf, off, len).
+  /**
+   * Private property `#readView` used by `FdReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readView = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readView;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readView: Uint8Array  = new Uint8Array(this.#readBuf);
   // Bytes kqueue reported available at last EVFILT_READ event. When > 0 we can
   // skip the next loop.readable() call because the kernel already told us data
   // is present. Reset to 0 after each read() or on unexpected EAGAIN.
+  /**
+   * Private property `#avail` used by `FdReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #avail = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#avail;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #avail:    number      = 0;
 
+  /**
+   * Create a reader for an existing file descriptor.
+   *
+   * The descriptor is borrowed and must remain valid until the reader closes.
+   * `onClose` is required so callers can wire descriptor shutdown, socket
+   * half-close, or reference counting in the owning abstraction.
+   *
+   * ```js
+   * import { FdReader } from 'internal:stream';
+   * const reader = new FdReader(0, () => console.log('stdin reader closed'));
+   * console.log(reader.closed);
+   * ```
+   *
+   * @param fd POSIX file descriptor to read from.
+   * @param onClose Cleanup callback invoked by `close()`.
+   * @internal
+   */
   constructor(fd: number, onClose: () => void | Promise<void>) {
     super(onClose);
     this.#fd = fd;
   }
 
-  /** Raw file descriptor. Available to subclasses and close callbacks. */
+  /**
+   * Raw borrowed file descriptor.
+   *
+   * The value is exposed for subclasses and close callbacks. Ownership remains
+   * with the creator; reading this property does not keep the descriptor alive.
+   *
+   * ```js
+   * import { FdReader } from 'internal:stream';
+   * const reader = new FdReader(0, () => {});
+   * console.log(reader.fd);
+   * ```
+   *
+   * @returns The borrowed descriptor number.
+   * @internal
+   */
   get fd(): number { return this.#fd; }
 
+  /**
+   * Pull one descriptor chunk for the buffered reader.
+   *
+   * The method waits for readability when needed, copies read bytes out of the
+   * reusable arena, returns `null` on EOF or after close, and treats non-EAGAIN
+   * read failures as EOF.
+   *
+   * ```js
+   * import { FdReader } from 'internal:stream';
+   * const reader = new FdReader(0, () => {});
+   * console.log(typeof reader.read);
+   * ```
+   *
+   * @returns A byte chunk, or `null` on EOF/close.
+   * @internal
+   */
   protected async doPull(): Promise<Uint8Array | null> {
     while (true) {
       if (this.closed) return null;
@@ -543,36 +1253,192 @@ export class FdReader extends BufferedBytesReader {
 // ---------------------------------------------------------------------------
 
 /**
- * Abstract base class for any async consumer of values of type T.
+ * Abstract base class for asynchronous consumers.
  *
- * Provides:
- *   - write(value) template (subclasses implement)
- *   - pipe(source) — iterate source and write each value
- *   - async close() that invokes the onClose callback
+ * Subclasses implement `write(value)`. The base class supplies ordered
+ * `pipe()` consumption, a no-op `flush()` hook, and idempotent asynchronous
+ * close handling. `close()` awaits the optional callback and does not flush
+ * unless a subclass overrides it.
+ *
+ * ```js
+ * import { Writer } from 'internal:stream';
+ * class ArrayWriter extends Writer {
+ *   values = [];
+ *   async write(value) { this.values.push(value); }
+ * }
+ * const writer = new ArrayWriter();
+ * await writer.write('hello');
+ * ```
+ *
+ * @typeParam T Value type consumed by `write()`.
+ * @internal
  */
 export abstract class Writer<T> {
+  /**
+   * Private property `#closed` used by `Writer`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closed = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closed;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closed  = false;
+  /**
+   * Private property `#onClose` used by `Writer`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onClose = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onClose;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onClose: () => void | Promise<void>;
 
+  /**
+   * Create a writer with an optional close callback.
+   *
+   * The callback defaults to a no-op and is invoked at most once. Callback
+   * failures reject `close()`.
+   *
+   * ```js
+   * import { Writer } from 'internal:stream';
+   * class NullWriter extends Writer { async write(_value) {} }
+   * const writer = new NullWriter(() => console.log('closed'));
+   * await writer.close();
+   * ```
+   *
+   * @param onClose Optional cleanup callback.
+   * @internal
+   */
   constructor(onClose: () => void | Promise<void> = () => {}) {
     this.#onClose = onClose;
   }
 
+  /**
+   * Whether the writer has been closed.
+   *
+   * Subclasses should reject writes after this flag is true. The flag is set
+   * before the close callback is awaited.
+   *
+   * ```js
+   * import { Writer } from 'internal:stream';
+   * class NullWriter extends Writer { async write(_value) {} }
+   * const writer = new NullWriter();
+   * await writer.close();
+   * console.log(writer.closed);
+   * ```
+   *
+   * @returns True after `close()` starts.
+   * @internal
+   */
   get closed(): boolean { return this.#closed; }
 
-  /** Write one value. Subclasses implement. */
+  /**
+   * Write one value to the sink.
+   *
+   * Subclasses define ordering, backpressure, and failure behavior. Generic
+   * `Writer` does not enforce the closed state; byte writers do.
+   *
+   * ```js
+   * import { Writer } from 'internal:stream';
+   * class ArrayWriter extends Writer {
+   *   values = [];
+   *   async write(value) { this.values.push(value); }
+   * }
+   * await new ArrayWriter().write('x');
+   * ```
+   *
+   * @param value Value to write.
+   * @returns A promise that resolves after the value is accepted.
+   * @internal
+   */
   abstract write(value: T): Promise<void>;
 
-  /** Consume an async iterable and write each value in order. */
+  /**
+   * Consume an async iterable and write each value in order.
+   *
+   * The method awaits each `write()` before reading the next source value,
+   * preserving backpressure. It does not close the writer or the source.
+   *
+   * ```js
+   * import { Writer } from 'internal:stream';
+   * class ArrayWriter extends Writer {
+   *   values = [];
+   *   async write(value) { this.values.push(value); }
+   * }
+   * const writer = new ArrayWriter();
+   * await writer.pipe(['a', 'b']);
+   * console.log(writer.values.length);
+   * ```
+   *
+   * @param source Async iterable source.
+   * @returns A promise that resolves after all values are written.
+   * @internal
+   */
   async pipe(source: AsyncIterable<T>): Promise<void> {
     for await (const v of source) await this.write(v);
   }
 
-  /** Flush any internally buffered bytes to the underlying resource.
-   *  No-op for unbuffered writers. Overridden by BufferedBytesWriter. */
+  /**
+   * Flush internally buffered data.
+   *
+   * The base implementation is a no-op for unbuffered writers. Buffered
+   * subclasses override this to write pending bytes and may throw on sink
+   * failures.
+   *
+   * ```js
+   * import { Writer } from 'internal:stream';
+   * class NullWriter extends Writer { async write(_value) {} }
+   * await new NullWriter().flush();
+   * ```
+   *
+   * @returns A promise that resolves after pending data is flushed.
+   * @internal
+   */
   async flush(): Promise<void> {}
 
-  /** Close this writer. Idempotent; awaits the onClose callback. */
+  /**
+   * Close the writer and run its close callback once.
+   *
+   * Multiple calls are safe. The base class does not flush; subclasses with
+   * buffers should override close to flush first.
+   *
+   * ```js
+   * import { Writer } from 'internal:stream';
+   * class NullWriter extends Writer { async write(_value) {} }
+   * const writer = new NullWriter();
+   * await writer.close();
+   * await writer.close();
+   * ```
+   *
+   * @returns A promise that resolves after cleanup.
+   * @internal
+   */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
@@ -585,25 +1451,97 @@ export abstract class Writer<T> {
 // ---------------------------------------------------------------------------
 
 /**
- * Abstract byte-stream writer. Adds a doWrite(buf) template method;
- * write(data) delegates through. Subclasses implement doWrite to actually
- * emit bytes to the underlying resource.
+ * Abstract byte-stream writer.
  *
- * writev() defaults to sequential write() calls; subclasses may override
- * for scatter/gather.
+ * Subclasses implement `doWrite(buf)` to emit all bytes to the underlying
+ * resource. `write()` accepts `Uint8Array` or `ArrayBuffer`, rejects writes
+ * after close, and delegates to the hook. `writev()` defaults to sequential
+ * writes and can be overridden for scatter/gather implementations.
+ *
+ * ```js
+ * import { BytesWriter } from 'internal:stream';
+ * class MemoryWriter extends BytesWriter {
+ *   chunks = [];
+ *   async doWrite(buf) { this.chunks.push(buf.slice()); }
+ * }
+ * const writer = new MemoryWriter();
+ * await writer.write(new Uint8Array([1]));
+ * ```
+ *
+ * @internal
  */
 export abstract class BytesWriter extends Writer<Uint8Array> {
-  /** Subclass: emit all bytes in buf to the underlying resource.
-   *  Must handle partial writes / backpressure internally. */
+  /**
+   * Emit all bytes in `buf` to the underlying resource.
+   *
+   * Implementations must handle partial writes, backpressure, and sink errors
+   * internally. The base `write()` method has already converted input to a
+   * `Uint8Array` and checked the closed state.
+   *
+   * ```js
+   * import { BytesWriter } from 'internal:stream';
+   * class MemoryWriter extends BytesWriter {
+   *   async doWrite(buf) { console.log(buf.byteLength); }
+   * }
+   * await new MemoryWriter().write(new Uint8Array([1, 2]));
+   * ```
+   *
+   * @param buf Bytes to emit completely.
+   * @returns A promise that resolves after bytes are written.
+   * @internal
+   */
   protected abstract doWrite(buf: Uint8Array): Promise<void>;
 
+  /**
+   * Write one byte buffer.
+   *
+   * `ArrayBuffer` inputs are wrapped in a `Uint8Array`. The method throws
+   * `Writer is closed` after close and forwards errors from `doWrite()`.
+   *
+   * ```js
+   * import { BytesWriter } from 'internal:stream';
+   * class MemoryWriter extends BytesWriter {
+   *   bytes = 0;
+   *   async doWrite(buf) { this.bytes += buf.byteLength; }
+   * }
+   * const writer = new MemoryWriter();
+   * await writer.write(new ArrayBuffer(4));
+   * console.log(writer.bytes);
+   * ```
+   *
+   * @param data Bytes to write.
+   * @returns A promise that resolves after all bytes are accepted.
+   * @internal
+   */
   async write(data: Uint8Array | ArrayBuffer): Promise<void> {
     if (this.closed) throw new Error('Writer is closed');
     const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
     await this.doWrite(arr);
   }
 
-  /** Write multiple buffers in order. Override for scatter/gather. */
+  /**
+   * Write multiple buffers in order.
+   *
+   * The default implementation writes up to `count` vectors sequentially and
+   * skips missing or empty entries. Subclasses may override for vectorized
+   * system calls. Errors from any individual write abort the sequence.
+   *
+   * ```js
+   * import { BytesWriter } from 'internal:stream';
+   * class MemoryWriter extends BytesWriter {
+   *   bytes = 0;
+   *   async doWrite(buf) { this.bytes += buf.byteLength; }
+   * }
+   * const writer = new MemoryWriter();
+   * await writer.writev([new Uint8Array([1]), new Uint8Array([2])]);
+   * console.log(writer.bytes);
+   * ```
+   *
+   * @param vecs Byte vectors to write.
+   * @param count Number of vectors from `vecs` to consider. Defaults to all.
+   * @returns A promise that resolves after all selected vectors are written.
+   * @internal
+   */
   async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
     for (let i = 0; i < count; i++) {
       const v = vecs[i];
@@ -617,28 +1555,153 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
 // ---------------------------------------------------------------------------
 
 /**
- * Byte writer with a coalesce buffer. Small write() calls accumulate in the
- * buffer; the buffer is flushed via doFlush() when it fills, on explicit
- * flush(), or when close() is called.
+ * Byte writer with a coalescing buffer.
  *
- * Subclasses implement doFlush(buf) to emit the coalesced bytes to the
- * underlying resource. Use BufferedBytesWriter.over(target) to wrap an
- * existing BytesWriter without subclassing.
+ * Small writes accumulate in an internal buffer and are emitted by `doFlush()`
+ * when the buffer fills, when `flush()` is called, or before `close()`
+ * completes. Writes at least as large as the buffer bypass coalescing after
+ * pending bytes are flushed.
+ *
+ * ```js
+ * import { BufferedBytesWriter, BytesWriter } from 'internal:stream';
+ * class Sink extends BytesWriter { async doWrite(_buf) {} }
+ * const writer = BufferedBytesWriter.over(new Sink());
+ * await writer.write(new Uint8Array([1]));
+ * await writer.flush();
+ * ```
+ *
+ * @internal
  */
 export abstract class BufferedBytesWriter extends BytesWriter {
+  /**
+   * Private property `#buf` used by `BufferedBytesWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #buf = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#buf;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #buf:     Uint8Array;
+  /**
+   * Private property `#pending` used by `BufferedBytesWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pending = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#pending;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pending: number = 0;
+  /**
+   * Private static readonly property `#COALESCE_LIMIT` used by `BufferedBytesWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   static #COALESCE_LIMIT = undefined;
+   *
+   *   static readInternalState() {
+   *     return this.#COALESCE_LIMIT;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   static readonly #COALESCE_LIMIT = 65536;
 
+  /**
+   * Create a buffered byte writer.
+   *
+   * `bufferSize` defaults to 64 KiB. A smaller buffer flushes more often; a
+   * larger buffer can reduce syscall frequency at the cost of memory. `onClose`
+   * is invoked after pending bytes are flushed.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
+   * const writer = new Sink(() => {}, 1024);
+   * await writer.close();
+   * ```
+   *
+   * @param onClose Optional cleanup callback.
+   * @param bufferSize Coalesce buffer size in bytes. Defaults to 65536.
+   * @internal
+   */
   constructor(onClose: () => void | Promise<void> = () => {}, bufferSize: number = 65536) {
     super(onClose);
     this.#buf = new Uint8Array(bufferSize);
   }
 
-  /** Subclass: emit all bytes in buf to the underlying resource. */
+  /**
+   * Flush a coalesced byte slice to the underlying resource.
+   *
+   * Implementations must emit all bytes in `buf` or throw. The slice is backed
+   * by the writer's internal buffer and should not be retained after the promise
+   * resolves.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter {
+   *   async doFlush(buf) { console.log(buf.byteLength); }
+   * }
+   * await new Sink().write(new Uint8Array([1]));
+   * ```
+   *
+   * @param buf Pending bytes to emit.
+   * @returns A promise that resolves after all bytes are flushed.
+   * @internal
+   */
   protected abstract doFlush(buf: Uint8Array): Promise<void>;
 
-  /** Wrap an existing BytesWriter as a BufferedBytesWriter. */
+  /**
+   * Wrap an existing byte writer with coalescing behavior.
+   *
+   * The wrapper flushes by calling `target.write(buf)` and closes the target
+   * when the wrapper closes. `bufferSize` defaults to 64 KiB.
+   *
+   * ```js
+   * import { BufferedBytesWriter, BytesWriter } from 'internal:stream';
+   * class Sink extends BytesWriter { async doWrite(_buf) {} }
+   * const buffered = BufferedBytesWriter.over(new Sink(), 4096);
+   * await buffered.close();
+   * ```
+   *
+   * @param target Byte writer to wrap.
+   * @param bufferSize Coalesce buffer size in bytes. Defaults to 65536.
+   * @returns A buffered wrapper around `target`.
+   * @internal
+   */
   static over(target: BytesWriter, bufferSize: number = 65536): BufferedBytesWriter {
     return new (class WrappedBufferedWriter extends BufferedBytesWriter {
       protected doFlush(buf: Uint8Array): Promise<void> {
@@ -648,6 +1711,23 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   }
 
   // BytesWriter.doWrite override: coalesce small writes; bypass for large ones.
+  /**
+   * Coalesce or immediately flush one byte buffer.
+   *
+   * Buffers at least as large as the coalesce buffer bypass accumulation after
+   * pending bytes are flushed. Smaller buffers are copied into the internal
+   * buffer, flushing first if needed.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
+   * await new Sink().write(new Uint8Array([1, 2]));
+   * ```
+   *
+   * @param buf Bytes to write.
+   * @returns A promise that resolves after bytes are buffered or flushed.
+   * @internal
+   */
   protected async doWrite(buf: Uint8Array): Promise<void> {
     if (buf.byteLength >= this.#buf.byteLength) {
       // Bypass: write is large enough that coalescing doesn't help.
@@ -667,6 +1747,19 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * Returns true if the bytes were accumulated; false if the buffer
    * doesn't have enough room (caller must await flush() first, then retry).
    * Only safe to call when `buf.byteLength < this.#buf.byteLength`.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter {
+   *   async doFlush(_buf) {}
+   *   tryAccumulate(buf) { return this._directAccumulate(buf); }
+   * }
+   * console.log(new Sink().tryAccumulate(new Uint8Array([1])));
+   * ```
+   *
+   * @param buf Bytes to copy into the coalesce buffer.
+   * @returns True when bytes were accumulated; false when a flush is needed.
+   * @internal
    */
   protected _directAccumulate(buf: Uint8Array): boolean {
     if (this.#pending + buf.byteLength > this.#buf.byteLength) return false;
@@ -675,7 +1768,23 @@ export abstract class BufferedBytesWriter extends BytesWriter {
     return true;
   }
 
-  /** Drain the coalesce buffer. Idempotent. */
+  /**
+   * Drain the coalesce buffer.
+   *
+   * Calling `flush()` with no pending bytes is a no-op. Errors from `doFlush()`
+   * reject the returned promise and the pending count has already been reset.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
+   * const writer = new Sink();
+   * await writer.write(new Uint8Array([1]));
+   * await writer.flush();
+   * ```
+   *
+   * @returns A promise that resolves after pending bytes are emitted.
+   * @internal
+   */
   async flush(): Promise<void> {
     if (this.#pending === 0) return;
     const slice = this.#buf.subarray(0, this.#pending);
@@ -687,6 +1796,20 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * Return the buffered bytes (a copy) and reset the pending count.
    * Used by subclasses that need to perform a synchronous flush (e.g. on
    * process exit) without going through the async flush path.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter {
+   *   async doFlush(_buf) {}
+   *   take() { return this._takePending(); }
+   * }
+   * const writer = new Sink();
+   * await writer.write(new Uint8Array([1]));
+   * console.log(writer.take()?.byteLength);
+   * ```
+   *
+   * @returns Pending bytes, or `null` when the buffer is empty.
+   * @internal
    */
   protected _takePending(): Uint8Array | null {
     if (this.#pending === 0) return null;
@@ -695,7 +1818,22 @@ export abstract class BufferedBytesWriter extends BytesWriter {
     return out;
   }
 
-  /** Flush the coalesce buffer, then close. */
+  /**
+   * Flush pending bytes, then close the writer.
+   *
+   * The method is idempotent. If flushing throws, the close callback still runs
+   * through the `finally` block and the flush error is rethrown.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'internal:stream';
+   * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
+   * const writer = new Sink();
+   * await writer.close();
+   * ```
+   *
+   * @returns A promise that resolves after flush and cleanup.
+   * @internal
+   */
   async close(): Promise<void> {
     if (this.closed) return;
     try {
@@ -715,33 +1853,166 @@ export abstract class BufferedBytesWriter extends BytesWriter {
 const COALESCE_LIMIT = 65536;
 
 /**
- * Write half of a plain POSIX file descriptor. Uses libc write(2) and
- * writev(2). Buffering is provided by the BufferedBytesWriter base class.
+ * Buffered writer backed by a POSIX file descriptor.
  *
- * writev() override: small batches (≤ 64 KiB total) go through the inherited
- * coalesce buffer (one syscall). Large batches use true scatter/gather
- * writev(2) for zero-copy writes.
+ * `FdWriter` borrows the descriptor; the `onClose` callback owns descriptor
+ * cleanup. Normal flushing uses libc `write(2)` and waits for runtime
+ * writability on EAGAIN. `writev()` coalesces small batches and uses
+ * scatter/gather `writev(2)` for large batches.
+ *
+ * ```js
+ * import { FdWriter } from 'internal:stream';
+ * const writer = new FdWriter(1, () => {});
+ * console.log(writer.fd);
+ * await writer.close();
+ * ```
+ *
+ * @internal
  */
 export class FdWriter extends BufferedBytesWriter {
+  /**
+   * Private property `#fd` used by `FdWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fd = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#fd;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fd:      number;
   // Pre-allocated iovec buffer for the large-write scatter/gather slow path.
+  /**
+   * Private property `#iovBuf` used by `FdWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #iovBuf = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#iovBuf;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #iovBuf   = new ArrayBuffer(MAX_IOV * IOVEC_SIZE);
+  /**
+   * Private property `#iovView` used by `FdWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #iovView = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#iovView;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #iovView  = new DataView(this.#iovBuf);
   // Per-vector write cursors for partial-writev tracking.
+  /**
+   * Private property `#cursors` used by `FdWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #cursors = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#cursors;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #cursors  = new Int32Array(MAX_IOV);
 
+  /**
+   * Create a writer for an existing file descriptor.
+   *
+   * The descriptor is borrowed and must remain valid until the writer closes.
+   * `onClose` is required so callers can wire descriptor shutdown, socket
+   * half-close, or reference counting in the owning abstraction.
+   *
+   * ```js
+   * import { FdWriter } from 'internal:stream';
+   * const writer = new FdWriter(1, () => console.log('stdout writer closed'));
+   * console.log(writer.closed);
+   * ```
+   *
+   * @param fd POSIX file descriptor to write to.
+   * @param onClose Cleanup callback invoked by `close()`.
+   * @internal
+   */
   constructor(fd: number, onClose: () => void | Promise<void>) {
     super(onClose);
     this.#fd = fd;
   }
 
-  /** Raw file descriptor. Available to subclasses and close callbacks. */
+  /**
+   * Raw borrowed file descriptor.
+   *
+   * The value is exposed for subclasses and close callbacks. Ownership remains
+   * with the creator; reading this property does not keep the descriptor alive.
+   *
+   * ```js
+   * import { FdWriter } from 'internal:stream';
+   * const writer = new FdWriter(1, () => {});
+   * console.log(writer.fd);
+   * ```
+   *
+   * @returns The borrowed descriptor number.
+   * @internal
+   */
   get fd(): number { return this.#fd; }
 
   /**
    * Synchronous flush of the coalesce buffer via write(2). Used in contexts
    * where async is not available (e.g. `process.exit()`). EAGAIN is ignored
    * (partial writes are accepted on a best-effort basis).
+   *
+   * ```js
+   * import { FdWriter } from 'internal:stream';
+   * const writer = new FdWriter(1, () => {});
+   * writer.flushSync();
+   * ```
+   *
+   * @returns Nothing. Pending bytes may remain unwritten on EAGAIN or error.
+   * @internal
    */
   flushSync(): void {
     const pending = this._takePending();
@@ -755,6 +2026,23 @@ export class FdWriter extends BufferedBytesWriter {
     }
   }
 
+  /**
+   * Flush all bytes in `buf` with `write(2)`.
+   *
+   * Partial writes advance through the buffer. EAGAIN waits for descriptor
+   * writability and retries. Closing the writer during the wait throws
+   * `Writer closed during write`; other failures throw `write failed`.
+   *
+   * ```js
+   * import { FdWriter } from 'internal:stream';
+   * const writer = new FdWriter(1, () => {});
+   * await writer.write(new Uint8Array());
+   * ```
+   *
+   * @param buf Bytes to flush completely.
+   * @returns A promise that resolves after all bytes are written.
+   * @internal
+   */
   protected async doFlush(buf: Uint8Array): Promise<void> {
     let off = 0;
     while (off < buf.byteLength) {
@@ -773,10 +2061,24 @@ export class FdWriter extends BufferedBytesWriter {
   /**
    * Write multiple buffers.
    *
-   * Fast path (total ≤ 64 KiB): push each vec through the inherited coalesce
-   * buffer — one syscall via doFlush when it flushes.
+   * Fast path (total at most 64 KiB): push each vec through the inherited
+   * coalesce buffer, usually producing one syscall when it flushes.
    *
-   * Slow path (total > 64 KiB): true scatter/gather via writev(2) — no copy.
+   * Slow path (total over 64 KiB): flush pending bytes, then use true
+   * scatter/gather via `writev(2)` with no data copy. `count` must not exceed
+   * the internal iovec limit. Closed writers, too many vectors, EAGAIN retry
+   * failures, and writev errors throw.
+   *
+   * ```js
+   * import { FdWriter } from 'internal:stream';
+   * const writer = new FdWriter(1, () => {});
+   * await writer.writev([new Uint8Array(), new Uint8Array()], 2);
+   * ```
+   *
+   * @param vecs Byte vectors to write.
+   * @param count Number of vectors from `vecs` to consider. Defaults to all.
+   * @returns A promise that resolves after all selected vectors are written.
+   * @internal
    */
   async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
     if (this.closed) throw new Error('Writer is closed');

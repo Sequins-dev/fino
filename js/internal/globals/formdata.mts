@@ -74,7 +74,22 @@ function _escapeQuotes(s: string): string {
 
 /**
  * Serialize a FormData instance to multipart/form-data wire format.
- * Returns the boundary string and the combined body bytes.
+ *
+ * Returns a content type with the chosen boundary and the combined body bytes.
+ * The boundary is generated when omitted. File parts default to
+ * application/octet-stream when their Blob type is empty. Callers should not
+ * reuse untrusted boundary strings without validating that they cannot collide
+ * with body content.
+ *
+ * ```typescript no_run
+ * const fd = new FormData();
+ * fd.append('name', 'Alice');
+ * const { contentType, body } = await _serializeFormData(fd, 'fixed');
+ * contentType; // "multipart/form-data; boundary=fixed"
+ * body.byteLength; // multipart payload size
+ * ```
+ *
+ * @internal
  */
 export async function _serializeFormData(fd: FormData, boundary?: string): Promise<{ contentType: string; body: Uint8Array }> {
   if (!boundary) boundary = 'boundary' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
@@ -135,9 +150,55 @@ function _normalizeEntry(name: string, value: string | Blob, filename?: string):
 // FormData
 // ---------------------------------------------------------------------------
 
+/**
+ * Ordered collection of string and File form entries.
+ *
+ * Duplicate names are allowed and insertion order is preserved. Blob values
+ * are normalized into File entries so multipart serialization always has a
+ * filename.
+ *
+ * ```typescript no_run
+ * const form = new FormData();
+ * form.append('name', 'Alice');
+ * form.get('name'); // "Alice"
+ * ```
+ */
 export class FormData {
+  /**
+   * Private property `#entries` used by `FormData`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #entries = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#entries;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #entries: [string, FormDataEntryValue][] = [];
 
+  /**
+   * Create an empty FormData or shallow-copy an existing FormData.
+   *
+   * The copy preserves entry order. File objects are not deep-cloned by this
+   * constructor.
+   *
+   * ```typescript no_run
+   * const source = new FormData();
+   * source.append('x', '1');
+   * const copy = new FormData(source);
+   * ```
+   */
   constructor(init?: FormData) {
     if (init instanceof FormData) {
       // Copy constructor — clone entries from the source FormData.
@@ -145,12 +206,44 @@ export class FormData {
     }
   }
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new FormData()); // "[object FormData]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'FormData'; }
 
+  /**
+   * Append a new entry without removing existing entries with the same name.
+   *
+   * Names and string values are string-coerced and line endings are normalized
+   * to CRLF. Blob values become File values, using filename or "blob".
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('tag', 'a');
+   * form.append('tag', 'b');
+   * form.getAll('tag'); // ["a", "b"]
+   * ```
+   */
   append(name: string, value: string | Blob, filename?: string): void {
     this.#entries.push(_normalizeEntry(name, value, filename));
   }
 
+  /**
+   * Remove every entry with the given name.
+   *
+   * Unknown names are ignored. The name is string-coerced before matching.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * form.delete('x');
+   * form.has('x'); // false
+   * ```
+   */
   delete(name: string): void {
     name = String(name);
     const next: [string, FormDataEntryValue][] = [];
@@ -160,6 +253,18 @@ export class FormData {
     this.#entries = next;
   }
 
+  /**
+   * Return the first value for a name, or null when absent.
+   *
+   * File entries are returned as File instances. Duplicate entries after the
+   * first are ignored by this method.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * form.get('x'); // "1"
+   * ```
+   */
   get(name: string): FormDataEntryValue | null {
     name = String(name);
     for (let i = 0; i < this.#entries.length; i++) {
@@ -168,6 +273,18 @@ export class FormData {
     return null;
   }
 
+  /**
+   * Return all values for a name in insertion order.
+   *
+   * The returned array is new, so mutating it does not affect the FormData.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * form.append('x', '2');
+   * form.getAll('x'); // ["1", "2"]
+   * ```
+   */
   getAll(name: string): FormDataEntryValue[] {
     name = String(name);
     const result: FormDataEntryValue[] = [];
@@ -177,6 +294,15 @@ export class FormData {
     return result;
   }
 
+  /**
+   * Return true when at least one entry exists for name.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * form.has('x'); // true
+   * ```
+   */
   has(name: string): boolean {
     name = String(name);
     for (let i = 0; i < this.#entries.length; i++) {
@@ -185,6 +311,19 @@ export class FormData {
     return false;
   }
 
+  /**
+   * Replace entries for a name with a single normalized entry.
+   *
+   * The first matching position is preserved and later duplicates are removed.
+   * If the name did not exist, the new entry is appended.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * form.set('x', '2');
+   * form.getAll('x'); // ["2"]
+   * ```
+   */
   set(name: string, value: string | Blob, filename?: string): void {
     const entry = _normalizeEntry(name, value, filename);
     const n = entry[0];
@@ -201,22 +340,68 @@ export class FormData {
     this.#entries = next;
   }
 
+  /**
+   * Iterate over [name, value] pairs in insertion order.
+   *
+   * The iterator is backed by a snapshot, so later mutations do not affect the
+   * current iteration.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * [...form.entries()]; // [["x", "1"]]
+   * ```
+   */
   entries() {
     return this.#entries.slice()[Symbol.iterator]();
   }
 
+  /**
+   * Iterate over entry names in insertion order.
+   *
+   * Duplicate names appear once for each entry.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * [...form.keys()]; // ["x"]
+   * ```
+   */
   keys() {
     const ks: string[] = [];
     for (let i = 0; i < this.#entries.length; i++) ks.push(this.#entries[i]![0]);
     return ks[Symbol.iterator]();
   }
 
+  /**
+   * Iterate over values in insertion order.
+   *
+   * Values are strings or File objects.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * [...form.values()]; // ["1"]
+   * ```
+   */
   values() {
     const vs: FormDataEntryValue[] = [];
     for (let i = 0; i < this.#entries.length; i++) vs.push(this.#entries[i]![1]);
     return vs[Symbol.iterator]();
   }
 
+  /**
+   * Call a callback for each entry in insertion order.
+   *
+   * The callback receives value, name, and the FormData object. thisArg is used
+   * as the callback receiver when provided.
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * form.append('x', '1');
+   * form.forEach((value, name) => console.log(name, value));
+   * ```
+   */
   forEach(callback: (value: FormDataEntryValue, name: string, parent: FormData) => void, thisArg?: unknown): void {
     const entries = this.#entries.slice();
     for (let i = 0; i < entries.length; i++) {
@@ -224,6 +409,16 @@ export class FormData {
     }
   }
 
+  /**
+   * Default iterator over [name, value] entries.
+   *
+   * This is equivalent to entries().
+   *
+   * ```typescript no_run
+   * const form = new FormData();
+   * for (const [name, value] of form) console.log(name, value);
+   * ```
+   */
   [Symbol.iterator]() {
     return this.entries();
   }

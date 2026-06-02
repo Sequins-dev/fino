@@ -84,6 +84,19 @@
  * - `MAX_EVENTS = 256` is a tunable. Higher values reduce syscall overhead for
  *   high-connection servers at the cost of a larger stack-allocated buffer.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ *
+ * const loop = kqueue.create();
+ * kqueue.addTimer(loop, 1, 10);
+ * const events = kqueue.wait(loop, 50);
+ * kqueue.destroy(loop);
+ *
+ * console.log(events.map(event => event.filter));
+ * ```
+ *
  * @internal
  */
 
@@ -122,11 +135,47 @@ const lib = dlopen('/usr/lib/libSystem.B.dylib', {
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Kqueue read readiness filter.
+ * ```typescript no_run
+ * import { EVFILT_READ } from 'internal:runtime/kqueue';
+ * void EVFILT_READ;
+ * ```
+ * @internal */
 const EVFILT_READ   = -1;
+/** Kqueue write readiness filter.
+ * ```typescript no_run
+ * import { EVFILT_WRITE } from 'internal:runtime/kqueue';
+ * void EVFILT_WRITE;
+ * ```
+ * @internal */
 const EVFILT_WRITE  = -2;
+/** Kqueue timer filter.
+ * ```typescript no_run
+ * import { EVFILT_TIMER } from 'internal:runtime/kqueue';
+ * void EVFILT_TIMER;
+ * ```
+ * @internal */
 const EVFILT_TIMER  = -7;
+/** Kqueue process-exit filter.
+ * ```typescript no_run
+ * import { EVFILT_PROC } from 'internal:runtime/kqueue';
+ * void EVFILT_PROC;
+ * ```
+ * @internal */
 const EVFILT_PROC   = -5;
+/** Kqueue vnode filesystem-event filter.
+ * ```typescript no_run
+ * import { EVFILT_VNODE } from 'internal:runtime/kqueue';
+ * void EVFILT_VNODE;
+ * ```
+ * @internal */
 const EVFILT_VNODE  = -4;
+/** Kqueue signal filter.
+ * ```typescript no_run
+ * import { EVFILT_SIGNAL } from 'internal:runtime/kqueue';
+ * void EVFILT_SIGNAL;
+ * ```
+ * @internal */
 const EVFILT_SIGNAL = -6;
 
 const EV_ADD     = 0x0001;
@@ -135,7 +184,19 @@ const EV_ENABLE  = 0x0004;
 // const EV_DISABLE = 0x0008;
 const EV_ONESHOT = 0x0010;
 const EV_CLEAR   = 0x0020; // auto-re-arm after delivery (used for EVFILT_VNODE)
+/** Kqueue returned-event EOF flag.
+ * ```typescript no_run
+ * import { EV_EOF } from 'internal:runtime/kqueue';
+ * void EV_EOF;
+ * ```
+ * @internal */
 const EV_EOF     = 0x8000;
+/** Kqueue returned-event error flag.
+ * ```typescript no_run
+ * import { EV_ERROR } from 'internal:runtime/kqueue';
+ * void EV_ERROR;
+ * ```
+ * @internal */
 const EV_ERROR   = 0x4000;
 
 // POSIX errno values
@@ -152,12 +213,82 @@ const NOTE_EXIT = 0x80000000;
 
 // EVFILT_VNODE fflags — which filesystem events to watch for.
 // Multiple flags can be OR'd together.
+/**
+ * Vnode flag emitted when the watched file or directory is deleted.
+ *
+ * ```typescript no_run
+ * import { NOTE_DELETE } from 'internal:runtime/kqueue';
+ * void NOTE_DELETE;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_DELETE = 0x00000001; // file/dir was deleted (unlink/rmdir)
+/**
+ * Vnode flag emitted when file data changes or directory entries change.
+ *
+ * ```typescript no_run
+ * import { NOTE_WRITE } from 'internal:runtime/kqueue';
+ * void NOTE_WRITE;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_WRITE  = 0x00000002; // file was written; for dirs: an entry was added/removed
+/**
+ * Vnode flag emitted when file size increases.
+ *
+ * ```typescript no_run
+ * import { NOTE_EXTEND } from 'internal:runtime/kqueue';
+ * void NOTE_EXTEND;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_EXTEND = 0x00000004; // file size increased
+/**
+ * Vnode flag emitted when metadata changes.
+ *
+ * ```typescript no_run
+ * import { NOTE_ATTRIB } from 'internal:runtime/kqueue';
+ * void NOTE_ATTRIB;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_ATTRIB = 0x00000008; // file attributes changed (permissions, timestamps)
+/**
+ * Vnode flag emitted when link count changes.
+ *
+ * ```typescript no_run
+ * import { NOTE_LINK } from 'internal:runtime/kqueue';
+ * void NOTE_LINK;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_LINK   = 0x00000010; // link count changed
+/**
+ * Vnode flag emitted when the watched path is renamed.
+ *
+ * ```typescript no_run
+ * import { NOTE_RENAME } from 'internal:runtime/kqueue';
+ * void NOTE_RENAME;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_RENAME = 0x00000020; // file/dir was renamed
+/**
+ * Vnode flag emitted when access is revoked, such as unmount.
+ *
+ * ```typescript no_run
+ * import { NOTE_REVOKE } from 'internal:runtime/kqueue';
+ * void NOTE_REVOKE;
+ * ```
+ *
+ * @internal
+ */
 export const NOTE_REVOKE = 0x00000040; // access was revoked (e.g. unmount)
 
 const KEVENT_SIZE    = 32;   // sizeof(struct kevent) on macOS 64-bit
@@ -332,6 +463,15 @@ function registerChanges(kqFd: number, changeBuf: ArrayBuffer, nChanges: number)
 
 /**
  * Create a new kqueue event loop handle.
+ *
+ * The returned handle owns a kqueue fd and must be passed to `destroy` when the
+ * backend is torn down.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * const loop = kqueue.create();
+ * kqueue.destroy(loop);
+ * ```
  */
 export function create(): KqueueLoop {
   const fd = lib.symbols.kqueue();
@@ -355,6 +495,11 @@ function queueChange(loop: KqueueLoop, ident: number, filter: number, flags: num
 /**
  * Watch `fd` for read readiness (one-shot — auto-removed after delivery).
  * `userData` is a number returned with the event.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.addRead(loop, fd, fd);
+ * ```
  */
 export function addRead(loop: KqueueLoop, fd: number, userData: number): void {
   queueChange(loop, fd, EVFILT_READ, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, 0, userData);
@@ -362,6 +507,11 @@ export function addRead(loop: KqueueLoop, fd: number, userData: number): void {
 
 /**
  * Watch `fd` for write readiness (one-shot — auto-removed after delivery).
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.addWrite(loop, fd, fd);
+ * ```
  */
 export function addWrite(loop: KqueueLoop, fd: number, userData: number): void {
   queueChange(loop, fd, EVFILT_WRITE, EV_ADD | EV_ENABLE | EV_ONESHOT, 0, 0, userData);
@@ -372,6 +522,11 @@ export function addWrite(loop: KqueueLoop, fd: number, userData: number): void {
  * Fires each time data arrives; does not auto-remove after delivery.
  * Used for background wake sources that must not be counted as live I/O
  * for the loop's `alive()` check.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.addPersistentRead(loop, fd, fd);
+ * ```
  */
 export function addPersistentRead(loop: KqueueLoop, fd: number, userData: number): void {
   queueChange(loop, fd, EVFILT_READ, EV_ADD | EV_ENABLE | EV_CLEAR, 0, 0, userData);
@@ -380,6 +535,11 @@ export function addPersistentRead(loop: KqueueLoop, fd: number, userData: number
 /**
  * Explicitly cancel a read watch for `fd` (e.g. on connection close before event fires).
  * Queued as a pending change so it batches with the next wait().
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.removeRead(loop, fd);
+ * ```
  */
 export function removeRead(loop: KqueueLoop, fd: number): void {
   queueChange(loop, fd, EVFILT_READ, EV_DELETE, 0, 0, 0);
@@ -387,6 +547,11 @@ export function removeRead(loop: KqueueLoop, fd: number): void {
 
 /**
  * Explicitly cancel a write watch for `fd`.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.removeWrite(loop, fd);
+ * ```
  */
 export function removeWrite(loop: KqueueLoop, fd: number): void {
   queueChange(loop, fd, EVFILT_WRITE, EV_DELETE, 0, 0, 0);
@@ -395,6 +560,11 @@ export function removeWrite(loop: KqueueLoop, fd: number): void {
 /**
  * Add a one-shot timer. Fires after `ms` milliseconds.
  * `id` is returned as `ident` in the event.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.addTimer(loop, 1, 100);
+ * ```
  */
 export function addTimer(loop: KqueueLoop, id: number, ms: number): void {
   // data = ms when no NOTE_* fflag is set (default unit is milliseconds on macOS)
@@ -403,6 +573,11 @@ export function addTimer(loop: KqueueLoop, id: number, ms: number): void {
 
 /**
  * Cancel a pending timer. Queued as a pending change so it batches with the next wait().
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.removeTimer(loop, 1);
+ * ```
  */
 export function removeTimer(loop: KqueueLoop, id: number): void {
   queueChange(loop, id, EVFILT_TIMER, EV_DELETE, 0, 0, 0);
@@ -415,6 +590,11 @@ export function removeTimer(loop: KqueueLoop, id: number): void {
  * Returns `true` if the filter was registered successfully, `false` if the
  * process has already exited (kevent returns an error in that case). The
  * caller is responsible for handling the already-exited case.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * const watching = kqueue.addProc(loop, pid, pid);
+ * ```
  */
 export function addProc(loop: KqueueLoop, pid: number, userData: number): boolean {
   writeKevent(_changeView, 0, pid, EVFILT_PROC, EV_ADD | EV_ENABLE | EV_ONESHOT, NOTE_EXIT, 0, userData);
@@ -424,6 +604,11 @@ export function addProc(loop: KqueueLoop, pid: number, userData: number): boolea
 
 /**
  * Remove a process watch for `pid`.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.removeProc(loop, pid);
+ * ```
  */
 export function removeProc(loop: KqueueLoop, pid: number): void {
   writeKevent(_changeView, 0, pid, EVFILT_PROC, EV_DELETE, 0, 0, 0);
@@ -432,6 +617,14 @@ export function removeProc(loop: KqueueLoop, pid: number): void {
 
 /**
  * Non-blocking poll — returns any events immediately available.
+ *
+ * Flushes no pending changes; use `wait` to combine pending changes with a
+ * blocking or timed wait.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * const events = kqueue.poll(loop);
+ * ```
  */
 export function poll(loop: KqueueLoop): Kevent[] {
   return kevent(loop.fd, null, 0, makeTimespec(0));
@@ -441,6 +634,11 @@ export function poll(loop: KqueueLoop): Kevent[] {
  * Blocking wait — blocks until events arrive or `timeoutMs` elapses.
  * Flushes any pending add/remove changes in the same syscall.
  * Pass `null` to block indefinitely.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * const events = kqueue.wait(loop, 50);
+ * ```
  */
 export function wait(loop: KqueueLoop, timeoutMs: number | null = null): Kevent[] {
   const changes = _pendingCount;
@@ -464,6 +662,11 @@ export function wait(loop: KqueueLoop, timeoutMs: number | null = null): Kevent[
  *
  * `userData` is returned as `udata` in events (used by fino:loop to look
  * up the callback via the fd).
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.addVnode(loop, fd, kqueue.NOTE_WRITE | kqueue.NOTE_RENAME, fd);
+ * ```
  */
 export function addVnode(loop: KqueueLoop, fd: number, fflags: number, userData: number): void {
   writeKevent(_changeView, 0, fd, EVFILT_VNODE, EV_ADD | EV_ENABLE | EV_CLEAR, fflags, 0, userData);
@@ -472,6 +675,11 @@ export function addVnode(loop: KqueueLoop, fd: number, fflags: number, userData:
 
 /**
  * Remove a vnode watch for `fd`.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.removeVnode(loop, fd);
+ * ```
  */
 export function removeVnode(loop: KqueueLoop, fd: number): void {
   writeKevent(_changeView, 0, fd, EVFILT_VNODE, EV_DELETE, 0, 0, 0);
@@ -493,6 +701,11 @@ const SIG_DFL = 0;
  * The kqueue filter still fires even with SIG_IGN set.
  *
  * `signo` is returned as `ident` in events.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.addSignal(loop, 15);
+ * ```
  */
 export function addSignal(loop: KqueueLoop, signo: number): void {
   // Suppress default disposition so the process is not killed.
@@ -503,6 +716,11 @@ export function addSignal(loop: KqueueLoop, signo: number): void {
 
 /**
  * Remove signal watch for `signo` and restore default disposition.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.removeSignal(loop, 15);
+ * ```
  */
 export function removeSignal(loop: KqueueLoop, signo: number): void {
   lib.symbols.signal(signo, SIG_DFL);
@@ -513,6 +731,13 @@ export function removeSignal(loop: KqueueLoop, signo: number): void {
 
 /**
  * Close the kqueue file descriptor and release resources.
+ *
+ * The handle must not be used after destruction.
+ *
+ * ```typescript no_run
+ * import * as kqueue from 'internal:runtime/kqueue';
+ * kqueue.destroy(loop);
+ * ```
  */
 export function destroy(loop: KqueueLoop): void {
   lib.symbols.close(loop.fd);

@@ -5,11 +5,35 @@
  * used by the Fino package installer: comparators, hyphen ranges, wildcards,
  * tilde ranges, caret ranges, and `||` disjunctions. Build metadata is parsed
  * and preserved but ignored for precedence comparisons.
+ *
+ * @example
+ * ```ts no_run
+ * import { parse, satisfies, maxSatisfying } from 'fino:semver';
+ *
+ * const version = parse('1.2.3-beta.1+build.5');
+ * const ok = satisfies(version.version, '^1.0.0');
+ * const selected = maxSatisfying(['1.0.0', '1.4.0', '2.0.0'], '^1');
+ * ```
  */
 
 import { Scanner } from 'fino:parsing/scanner';
 
-/** Parsed SemVer components with prerelease identifiers split by segment. */
+/**
+ * Parsed SemVer components with prerelease identifiers split by segment.
+ *
+ * Numeric prerelease identifiers are converted to numbers so comparisons can
+ * follow SemVer precedence. Build metadata is preserved in `build` and
+ * `version`, but is ignored by `compare()` and range matching.
+ *
+ * ```ts no_run
+ * import { parse } from 'fino:semver';
+ *
+ * const parsed = parse('1.2.3-beta.1+build.5');
+ * parsed.major;      // 1
+ * parsed.prerelease; // ['beta', 1]
+ * parsed.build;      // ['build', '5']
+ * ```
+ */
 interface SemVer {
   major: number;
   minor: number;
@@ -388,6 +412,17 @@ export function parse(version: string): SemVer {
 
 /**
  * Return the normalized version string, or `null` when the input is invalid.
+ *
+ * This is the non-throwing companion to `parse()`. It trims input, validates
+ * strict SemVer syntax, normalizes prerelease numeric identifiers, and returns
+ * `null` instead of raising when the string is not a version.
+ *
+ * ```ts no_run
+ * import { valid } from 'fino:semver';
+ *
+ * valid('1.2.3+build.5'); // '1.2.3+build.5'
+ * valid('01.2.3');        // null
+ * ```
  */
 export function valid(version: string): string | null {
   try {
@@ -402,6 +437,16 @@ export function valid(version: string): string | null {
  *
  * Returns a negative number when `a < b`, zero when they are equal, and a
  * positive number when `a > b`.
+ *
+ * Build metadata is ignored by SemVer precedence, so `1.0.0+one` and
+ * `1.0.0+two` compare as equal. Invalid inputs throw.
+ *
+ * ```ts no_run
+ * import { compare } from 'fino:semver';
+ *
+ * compare('1.0.0-alpha', '1.0.0'); // negative
+ * compare('2.0.0', '1.9.9');       // positive
+ * ```
  */
 export function compare(a: string, b: string): number {
   return compareParsed(parse(a), parse(b));
@@ -438,6 +483,16 @@ export function satisfies(version: string, range: string | null | undefined): bo
 
 /**
  * Return the highest version in `versions` that satisfies `range`.
+ *
+ * Invalid versions or ranges throw because this helper delegates to
+ * `satisfies()` and `compare()`. The returned string is the original matching
+ * entry from `versions`, not a normalized copy.
+ *
+ * ```ts no_run
+ * import { maxSatisfying } from 'fino:semver';
+ *
+ * maxSatisfying(['1.0.0', '1.5.0', '2.0.0'], '^1.0.0'); // '1.5.0'
+ * ```
  */
 export function maxSatisfying(versions: string[], range: string | null | undefined): string | null {
   let best: string | null = null;
@@ -450,6 +505,17 @@ export function maxSatisfying(versions: string[], range: string | null | undefin
 
 /**
  * Validate a range expression and return its trimmed form, or `null`.
+ *
+ * Empty ranges, `*`, and `latest` are accepted as wildcard ranges. Other
+ * ranges may use comparators, wildcards, tilde, caret, hyphen ranges, and `||`
+ * disjunctions. The return value is suitable for display or reuse.
+ *
+ * ```ts no_run
+ * import { validRange } from 'fino:semver';
+ *
+ * validRange(' ^1.2.3 '); // '^1.2.3'
+ * validRange('bad range'); // null
+ * ```
  */
 export function validRange(range: string | null | undefined): string | null {
   try {

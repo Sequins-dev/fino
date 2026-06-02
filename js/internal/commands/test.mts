@@ -1,7 +1,16 @@
 /**
  * internal/commands/test — internal runtime module.
  *
- * 
+ * Builds the `fino test` command. Arguments may be direct files, directories,
+ * or simple glob patterns. Expanded test modules are imported for registration
+ * side effects before execution is delegated to `fino:test/test`.
+ *
+ * ```js
+ * import { createTestCommand } from 'internal:commands/test';
+ * const command = createTestCommand();
+ * console.log(command.name);
+ * ```
+ *
  * @internal
  */
 
@@ -23,7 +32,7 @@ function normalizeModuleSpecifier(path: string): string {
  * - If the argument contains `*` or `?` it is treated as a glob pattern
  *   rooted at cwd.
  * - If the argument ends with `/` or has no file extension it is treated as a
- *   directory and expanded to all `**\/*.test.mts` files within it.
+ *   directory and expanded to matching `.test.mts` files within it.
  * - Otherwise it is returned as-is (a direct file path).
  */
 async function expandArg(arg: string): Promise<string[]> {
@@ -47,6 +56,24 @@ async function expandArg(arg: string): Promise<string[]> {
   return results;
 }
 
+/**
+ * Create the `test` subcommand used by the root Fino CLI.
+ *
+ * The returned command requires at least one positional path. Directory inputs
+ * expand to matching `.test.mts` files, glob inputs are resolved from the current working
+ * directory, and direct files are imported as given. `--filter` is optional and
+ * forwards a substring filter to the test runner. The command throws when no
+ * files are supplied.
+ *
+ * ```js
+ * import { createTestCommand } from 'internal:commands/test';
+ * const test = createTestCommand();
+ * await test.parse(['--filter', 'socket', 'tests/net']);
+ * ```
+ *
+ * @returns A configured `Command` instance for `fino test`.
+ * @internal
+ */
 export function createTestCommand(): Command {
   return new Command({
     name: 'test',

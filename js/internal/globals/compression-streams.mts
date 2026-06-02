@@ -23,6 +23,20 @@
  * This keeps all the actual compression work in the existing FFI-backed
  * generators and avoids duplicating the zlib/brotli logic here.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * const { CompressionStream, DecompressionStream } =
+ *   import 'internal:globals/compression-streams';
+ *
+ * const source = new Blob(['hello']).stream();
+ * const compressed = source.pipeThrough(new CompressionStream('gzip'));
+ * const restored = compressed.pipeThrough(new DecompressionStream('gzip'));
+ *
+ * const text = await new Response(restored).text();
+ * console.log(text);
+ * ```
+ *
  * @internal
  */
 
@@ -33,6 +47,19 @@ import { createCompressor, createDecompressor } from 'fino:compress';
 // Format maps
 // ---------------------------------------------------------------------------
 
+/**
+ * Compression formats supported by WHATWG CompressionStream.
+ *
+ * Brotli is intentionally excluded because it is not part of the standard
+ * Compression Streams constructor format set.
+ *
+ * ```typescript no_run
+ * const format: CompressionFormat = 'gzip';
+ * new CompressionStream(format);
+ * ```
+ *
+ * @internal
+ */
 type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw';
 
 const COMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> }> = {
@@ -164,11 +191,72 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
  * ```
  */
 export class CompressionStream {
+  /**
+   * Private property `#readable` used by `CompressionStream`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readable = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readable;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readable: ReadableStream;
+  /**
+   * Private property `#writable` used by `CompressionStream`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #writable = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#writable;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #writable: WritableStream;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * const stream = new CompressionStream('gzip');
+   * Object.prototype.toString.call(stream); // "[object CompressionStream]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'CompressionStream'; }
 
+  /**
+   * Create a compression transform for the selected format.
+   *
+   * Unsupported formats throw TypeError. The writable side accepts BufferSource
+   * chunks and the readable side emits compressed Uint8Array chunks.
+   *
+   * ```typescript no_run
+   * const gzip = new CompressionStream('gzip');
+   * await new Blob(['hello']).stream().pipeTo(gzip.writable);
+   * ```
+   */
   constructor(format: CompressionFormat) {
     const factory = COMPRESS_FORMATS[format];
     if (!factory) {
@@ -179,7 +267,31 @@ export class CompressionStream {
     this.#writable = writable;
   }
 
+  /**
+   * Readable side that yields compressed bytes.
+   *
+   * It closes after the writable side is closed and all compressor output has
+   * been emitted.
+   *
+   * ```typescript no_run
+   * const cs = new CompressionStream('deflate');
+   * const compressed = cs.readable;
+   * ```
+   */
   get readable() { return this.#readable; }
+
+  /**
+   * Writable side that accepts uncompressed BufferSource chunks.
+   *
+   * Writing a non-buffer chunk throws TypeError. Closing this side completes the
+   * compression stream and flushes final bytes.
+   *
+   * ```typescript no_run
+   * const cs = new CompressionStream('gzip');
+   * const writer = cs.writable.getWriter();
+   * await writer.write(new Uint8Array([1, 2, 3]));
+   * ```
+   */
   get writable() { return this.#writable; }
 }
 
@@ -193,11 +305,72 @@ export class CompressionStream {
  * ```
  */
 export class DecompressionStream {
+  /**
+   * Private property `#readable` used by `DecompressionStream`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readable = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readable;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readable: ReadableStream;
+  /**
+   * Private property `#writable` used by `DecompressionStream`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #writable = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#writable;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #writable: WritableStream;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * const stream = new DecompressionStream('gzip');
+   * Object.prototype.toString.call(stream); // "[object DecompressionStream]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'DecompressionStream'; }
 
+  /**
+   * Create a decompression transform for the selected format.
+   *
+   * Unsupported formats throw TypeError. Invalid compressed input causes the
+   * readable side to error when the backend decompressor detects it.
+   *
+   * ```typescript no_run
+   * const gunzip = new DecompressionStream('gzip');
+   * compressedReadable.pipeThrough(gunzip);
+   * ```
+   */
   constructor(format: CompressionFormat) {
     const factory = DECOMPRESS_FORMATS[format];
     if (!factory) {
@@ -208,6 +381,26 @@ export class DecompressionStream {
     this.#writable = writable;
   }
 
+  /**
+   * Readable side that yields decompressed bytes.
+   *
+   * ```typescript no_run
+   * const ds = new DecompressionStream('deflate-raw');
+   * const output = ds.readable;
+   * ```
+   */
   get readable() { return this.#readable; }
+
+  /**
+   * Writable side that accepts compressed BufferSource chunks.
+   *
+   * Close the writer to finish the decompressor and surface final output or
+   * format errors.
+   *
+   * ```typescript no_run
+   * const ds = new DecompressionStream('gzip');
+   * await ds.writable.getWriter().close();
+   * ```
+   */
   get writable() { return this.#writable; }
 }

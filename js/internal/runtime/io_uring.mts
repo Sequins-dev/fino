@@ -109,6 +109,19 @@
  * - If you add a new io_uring opcode, add its user_data to `fileBufs` (or a
  *   new Map) so that `drainCqes()` can identify the completion type correctly.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import * as io from 'internal:runtime/io_uring';
+ *
+ * const loop = io.create();
+ * io.addTimer(loop, 1, 10);
+ * const events = io.wait(loop, 50);
+ * io.destroy(loop);
+ *
+ * console.log(events.map(event => event.filter));
+ * ```
+ *
  * @internal
  */
 
@@ -217,11 +230,62 @@ const IORING_READ_AT_CURPOS = 0xFFFFFFFFFFFFFFFFn;
 
 // Kqueue-compatible filter constants (same values as fino:kqueue exports).
 // Exported so that fino:loop can use a single dispatch table on both platforms.
+/**
+ * Kqueue-compatible read readiness filter emitted by io_uring poll completions.
+ *
+ * ```typescript no_run
+ * import { EVFILT_READ } from 'internal:runtime/io_uring';
+ * void EVFILT_READ;
+ * ```
+ *
+ * @internal
+ */
 export const EVFILT_READ       = -1;
+/**
+ * Kqueue-compatible write readiness filter emitted by io_uring poll completions.
+ *
+ * ```typescript no_run
+ * import { EVFILT_WRITE } from 'internal:runtime/io_uring';
+ * void EVFILT_WRITE;
+ * ```
+ *
+ * @internal
+ */
 export const EVFILT_WRITE      = -2;
+/**
+ * Kqueue-compatible timer filter emitted by timeout completions.
+ *
+ * ```typescript no_run
+ * import { EVFILT_TIMER } from 'internal:runtime/io_uring';
+ * void EVFILT_TIMER;
+ * ```
+ *
+ * @internal
+ */
 export const EVFILT_TIMER      = -7;
+/**
+ * Kqueue-compatible signal filter emitted by signalfd readiness.
+ *
+ * ```typescript no_run
+ * import { EVFILT_SIGNAL } from 'internal:runtime/io_uring';
+ * void EVFILT_SIGNAL;
+ * ```
+ *
+ * @internal
+ */
 export const EVFILT_SIGNAL     = -6;
-// Unique to io_uring: signals completion of an async file/close operation.
+/**
+ * io_uring-only filter for async file operation completions.
+ *
+ * `internal:runtime/loop.submit` resolves operations that emit this filter.
+ *
+ * ```typescript no_run
+ * import { EVFILT_COMPLETION } from 'internal:runtime/io_uring';
+ * void EVFILT_COMPLETION;
+ * ```
+ *
+ * @internal
+ */
 export const EVFILT_COMPLETION = -10;
 
 // Signal handling via signalfd(2)
@@ -271,6 +335,15 @@ function bufPtr(ab: ArrayBuffer): bigint {
 /**
  * Create a new io_uring event loop handle.
  * @param {number} [entries=256]
+ *
+ * The returned handle owns three mmap regions and a ring fd. Release it with
+ * `destroy`.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * const loop = uring.create(256);
+ * uring.destroy(loop);
+ * ```
  */
 export function create(entries: number = 256): IoUringLoop {
   // Allocate io_uring_params (120 bytes, zero-filled)
@@ -453,20 +526,66 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
 // Public API
 // ---------------------------------------------------------------------------
 
+/**
+ * Submit a one-shot poll for read readiness.
+ *
+ * The completion emits `EVFILT_READ` and returns `userData` as the event
+ * identifier. No explicit removal is needed after delivery.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.addRead(loop, fd, fd);
+ * ```
+ *
+ * @internal
+ */
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, userData, POLLIN);
 }
 
+/**
+ * Submit a one-shot poll for write readiness.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.addWrite(loop, fd, fd);
+ * ```
+ *
+ * @internal
+ */
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, userData, POLLOUT);
 }
 
+/**
+ * No-op cancellation hook for read readiness.
+ *
+ * `IORING_OP_POLL_ADD` is one-shot in this backend, so no persistent read watch
+ * exists to remove.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.removeRead(loop, fd);
+ * ```
+ *
+ * @internal
+ */
 export function removeRead(loop: IoUringLoop, _fd: number): void {
   // POLL_ADD is one-shot by default in io_uring — no explicit removal needed.
   // For persistent watches, IORING_OP_POLL_REMOVE would be used here.
   void loop;
 }
 
+/**
+ * No-op cancellation hook for write readiness.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.removeWrite(loop, fd);
+ * ```
+ *
+ * @internal
+ */
 export function removeWrite(loop: IoUringLoop, _fd: number): void {
   void loop;
 }
@@ -479,6 +598,11 @@ export function removeWrite(loop: IoUringLoop, _fd: number): void {
  * does not take effect. The signalfd becomes readable when the signal arrives.
  *
  * `signo` is returned as `ident` in events.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.addSignal(loop, 15);
+ * ```
  */
 export function addSignal(loop: IoUringLoop, signo: number): void {
   if (loop.signalFds.has(signo)) return; // already watching
@@ -504,6 +628,11 @@ export function addSignal(loop: IoUringLoop, signo: number): void {
 
 /**
  * Remove signal watch for `signo` and close the signalfd.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.removeSignal(loop, 15);
+ * ```
  */
 export function removeSignal(loop: IoUringLoop, signo: number): void {
   const fd = loop.signalFds.get(signo);
@@ -517,6 +646,11 @@ export function removeSignal(loop: IoUringLoop, signo: number): void {
  * Add a one-shot timer. Fires after `ms` milliseconds.
  * Uses IORING_OP_TIMEOUT with a __kernel_timespec stored as a JS ArrayBuffer.
  * The buffer must remain alive until the timeout fires.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.addTimer(loop, 1, 100);
+ * ```
  */
 export function addTimer(loop: IoUringLoop, id: number, ms: number): void {
   const buf  = new ArrayBuffer(16);
@@ -533,6 +667,14 @@ export function addTimer(loop: IoUringLoop, id: number, ms: number): void {
 
 /**
  * Non-blocking poll — return any immediately available completions.
+ *
+ * Submits queued SQEs before draining CQEs. Returns an empty array when no
+ * completions are ready.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * const events = uring.poll(loop);
+ * ```
  */
 export function poll(loop: IoUringLoop): CqeEvent[] {
   submitPending(loop);
@@ -542,6 +684,14 @@ export function poll(loop: IoUringLoop): CqeEvent[] {
 /**
  * Blocking wait — block until at least 1 CQE is available or timeout expires.
  * `timeoutMs = null` → block indefinitely.
+ *
+ * A finite timeout is implemented by submitting an internal timeout SQE. The
+ * returned array may include that timeout event.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * const events = uring.wait(loop, 50);
+ * ```
  */
 export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEvent[] {
   if (timeoutMs !== null && timeoutMs <= 0) {
@@ -582,6 +732,11 @@ export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEve
  * @param {number} flags  O_RDONLY / O_WRONLY | O_CREAT | O_TRUNC etc.
  * @param {number} mode   File creation permissions (e.g. 0o666).
  * @param {number} userData  Completion identifier assigned by loop.submit().
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.asyncOpen(loop, pathBuf, flags, 0o666, id);
+ * ```
  */
 export function asyncOpen(loop: IoUringLoop, pathBuf: ArrayBuffer, flags: number, mode: number, userData: number): void {
   const addr = Number(bufPtr(pathBuf));
@@ -598,6 +753,11 @@ export function asyncOpen(loop: IoUringLoop, pathBuf: ArrayBuffer, flags: number
  * @param {ArrayBuffer} buf  Destination buffer; kept alive until completion.
  * @param {number} len  Maximum bytes to read.
  * @param {number} userData  Completion identifier assigned by loop.submit().
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.asyncRead(loop, fd, new ArrayBuffer(4096), 4096, id);
+ * ```
  */
 export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: number, userData: number): void {
   const addr = Number(bufPtr(buf));
@@ -611,6 +771,11 @@ export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: 
  * @param {object} loop  Raw io_uring handle from create().
  * @param {number} fd  File descriptor to close.
  * @param {number} userData  Completion identifier assigned by loop.submit().
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.asyncClose(loop, fd, id);
+ * ```
  */
 export function asyncClose(loop: IoUringLoop, fd: number, userData: number): void {
   loop.fileBufs.set(userData, []);
@@ -619,6 +784,13 @@ export function asyncClose(loop: IoUringLoop, fd: number, userData: number): voi
 
 /**
  * Unmap rings and close the ring fd. Also closes any open signalFds.
+ *
+ * The handle must not be used after destruction.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.destroy(loop);
+ * ```
  */
 export function destroy(loop: IoUringLoop): void {
   for (const fd of loop.signalFds.values()) {

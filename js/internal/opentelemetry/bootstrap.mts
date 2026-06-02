@@ -1,7 +1,16 @@
 /**
  * internal/opentelemetry/bootstrap — internal runtime module.
  *
- * 
+ * Creates the OpenTelemetry runtime used by CLI script execution when
+ * `--otlp-endpoint` is supplied. It configures OTLP/HTTP JSON export,
+ * resource attributes, runtime instrumentations, processors, readers, and a
+ * shutdown hook that flushes providers before the CLI exits.
+ *
+ * ```js
+ * import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
+ * console.log(typeof createCliOtelRuntime);
+ * ```
+ *
  * @internal
  */
 
@@ -55,6 +64,27 @@ async function loadCliResource(script: string): Promise<Resource> {
   return new Resource(attributes);
 }
 
+/**
+ * Build tracer, logger, and meter providers for an instrumented CLI script.
+ *
+ * The resource is loaded from `package.json` when available and otherwise
+ * falls back to a service name inferred from `script`. `debug` enables verbose
+ * exporter request and response logging. The returned providers are started
+ * through an `OtelSDK` instance and a shutdown hook is registered to flush and
+ * stop it. Exporter partial-success and request failures are logged to stderr.
+ *
+ * ```js
+ * import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
+ * const runtime = await createCliOtelRuntime('http://127.0.0.1:4318', 'server.mts');
+ * console.log(Boolean(runtime.tracerProvider));
+ * ```
+ *
+ * @param endpoint OTLP/HTTP collector endpoint.
+ * @param script Script path or specifier used for fallback service metadata.
+ * @param debug Enables exporter request/response logging when true.
+ * @returns Providers to install around CLI script execution.
+ * @internal
+ */
 export async function createCliOtelRuntime(endpoint: string, script: string, debug = false) {
   const exporter = new OTLPHttpJsonExporter({
     endpoint,

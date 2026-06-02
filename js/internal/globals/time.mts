@@ -94,12 +94,50 @@ const _startMs = Date.now();
  * - `performance.now()` — milliseconds elapsed since module load (monotonic, float)
  * - `performance.timeOrigin` — Unix timestamp (ms) of module load
  * - `performance.toJSON()` — serializable snapshot
+ *
+ * @example
+ * ```ts no_run
+ * const documentedMember = 'performance';
+ * console.log(documentedMember);
+ * ```
  */
 export const performance = {
+  /**
+   * Unix timestamp in milliseconds captured when this module loaded.
+   *
+   * ```typescript no_run
+   * import { performance } from 'internal:globals/time';
+   * performance.timeOrigin <= Date.now(); // true
+   * ```
+   */
   timeOrigin: _startMs,
+
+  /**
+   * Return monotonic milliseconds elapsed since module load.
+   *
+   * The clock is not affected by system clock adjustments. It is suitable for
+   * measuring durations, not for wall-clock timestamps.
+   *
+   * ```typescript no_run
+   * import { performance } from 'internal:globals/time';
+   * const start = performance.now();
+   * const elapsed = performance.now() - start;
+   * ```
+   */
   now() {
     return (_getNanos() - _startNs) / 1e6;
   },
+
+  /**
+   * Return a JSON-serializable performance snapshot.
+   *
+   * Only timeOrigin is included in this subset.
+   *
+   * ```typescript no_run
+   * import { performance } from 'internal:globals/time';
+   * JSON.stringify(performance.toJSON());
+   * ```
+   */
   toJSON() {
     return { timeOrigin: this.timeOrigin };
   },
@@ -125,6 +163,15 @@ const _timers = new Map<number, TimerState>();
 /**
  * Schedule `fn(...args)` to run after at least `ms` milliseconds.
  *
+ * Negative, NaN, and falsy delays are normalized to 0. The returned numeric id
+ * can be passed to clearTimeout(). Exceptions thrown by fn propagate through
+ * the runtime task execution path.
+ *
+ * ```typescript no_run
+ * const id = setTimeout((name) => console.log(name), 10, 'timer');
+ * clearTimeout(id);
+ * ```
+ *
  * @param {Function} fn
  * @param {number}   [ms=0]
  * @param {...*}     args  Passed to `fn` when it fires.
@@ -145,6 +192,14 @@ export function setTimeout(fn: (...args: any[]) => void, ms: number = 0, ...args
 /**
  * Cancel a pending `setTimeout`. No-op if `id` is unknown or already fired.
  *
+ * Cancellation also calls the runtime timer's cancel hook and removes local
+ * timer state. Already-fired timers cannot be cancelled.
+ *
+ * ```typescript no_run
+ * const id = setTimeout(() => console.log('late'), 1000);
+ * clearTimeout(id);
+ * ```
+ *
  * @param {number} id
  */
 export function clearTimeout(id: number): void {
@@ -162,6 +217,14 @@ export function clearTimeout(id: number): void {
 
 /**
  * Repeatedly call `fn(...args)` every `ms` milliseconds until cancelled.
+ *
+ * The next timeout is scheduled only after the callback returns. A delay less
+ * than or equal to 0 schedules each turn as soon as the loop can run it.
+ *
+ * ```typescript no_run
+ * const id = setInterval(() => console.log('tick'), 1000);
+ * clearInterval(id);
+ * ```
  *
  * @param {Function} fn
  * @param {number}   [ms=0]
@@ -201,6 +264,14 @@ export function setInterval(fn: (...args: any[]) => void, ms: number = 0, ...arg
 /**
  * Cancel a repeating `setInterval`. No-op if `id` is unknown.
  *
+ * This shares the same timer state as clearTimeout(), so ids from either API
+ * can be cleared without throwing.
+ *
+ * ```typescript no_run
+ * const id = setInterval(() => console.log('tick'), 1000);
+ * clearInterval(id);
+ * ```
+ *
  * @param {number} id
  */
 export function clearInterval(id: number): void {
@@ -214,6 +285,12 @@ export function clearInterval(id: number): void {
 /**
  * Enqueue `fn` as a microtask — runs before any I/O callbacks but after the
  * current synchronous code completes. Equivalent to `Promise.resolve().then(fn)`.
+ *
+ * Passing a non-function throws TypeError.
+ *
+ * ```typescript no_run
+ * queueMicrotask(() => console.log('after current job'));
+ * ```
  *
  * @param {Function} fn
  */

@@ -1,5 +1,5 @@
 /**
- * fino:format/csv — CSV parsing and serialization (RFC 4180 + dialect options).
+ * fino:format/csv - CSV parsing and serialization (RFC 4180 + dialect options).
  *
  * This module handles comma-separated and delimiter-separated tabular text for
  * data import/export workflows. It supports the RFC 4180 quoting model, custom
@@ -47,43 +47,287 @@ import { Scanner, ParseError } from 'fino:parsing/scanner';
 // Types
 // ---------------------------------------------------------------------------
 
-/** Error thrown when CSV input is malformed. */
-export class CsvParseError extends ParseError { name = 'CsvParseError'; }
+/**
+ * Error thrown when CSV input is malformed or violates configured column rules.
+ *
+ * `CsvParseError` extends `ParseError`, so callers can inspect the inherited
+ * offset, line, column, format, and renderable diagnostic context. Dialect
+ * option validation, such as multi-character delimiters, throws `TypeError`
+ * before parsing starts instead.
+ *
+ * ```ts no_run
+ * import { CsvParseError, parse } from 'fino:format/csv';
+ *
+ * try {
+ *   parse('"unterminated');
+ * } catch (error) {
+ *   if (error instanceof CsvParseError) {
+ *     console.error(error.render());
+ *   }
+ * }
+ * ```
+ */
+export class CsvParseError extends ParseError {
+  /**
+   * Error name reported by `CsvParseError` instances.
+   *
+   * This member is emitted by the docs generator when
+   * `--include-private` is enabled. It is maintained by runtime
+   * internals and should be changed only with the surrounding
+   * implementation contract in mind.
+   *
+   * @example
+   * ```ts no_run
+   * const error = new CsvParseError('example', { line: 1, column: 1, offset: 0, snippet: 'x' });
+   * console.log(error.name);
+   * ```
+   */
+  name = 'CsvParseError';
+}
 
-/** Positional CSV row with one string per field. */
+/**
+ * Positional CSV row with one entry per parsed field.
+ *
+ * Rows are returned by `parse()` and `parseStream()` when neither `header` nor
+ * `columns` is enabled. Fields are strings by default; enabling `cast` can
+ * produce non-string runtime values even though the public row shape remains
+ * tuple-like for CSV compatibility.
+ *
+ * ```ts no_run
+ * import type { CsvRow } from 'fino:format/csv';
+ * import { parse } from 'fino:format/csv';
+ *
+ * const rows: CsvRow[] = parse('name,age\nAda,36\n');
+ * const firstName = rows[1]?.[0];
+ * ```
+ */
 export type CsvRow = string[];
-/** Object row produced when headers or explicit columns are enabled. */
+/**
+ * Object row produced when `header: true` or `columns` is enabled.
+ *
+ * Each key is taken from the header row or the explicit `columns` option.
+ * Missing fields are filled with an empty string; extra fields are ignored for
+ * records unless column-count validation throws first.
+ *
+ * ```ts no_run
+ * import type { CsvRecord } from 'fino:format/csv';
+ * import { parse } from 'fino:format/csv';
+ *
+ * const rows: CsvRecord[] = parse('name,age\nAda,36\n', { header: true });
+ * rows[0]?.name;
+ * ```
+ */
 export type CsvRecord = Record<string, string>;
 
 type CastFn = (value: string, ctx: { column: number; header: string | undefined }) => unknown;
 
-/** Options controlling CSV parsing dialect and row shape. */
+/**
+ * Options controlling CSV parsing dialect, row shape, and field conversion.
+ *
+ * Defaults match common RFC 4180-style CSV: comma delimiter, double-quote
+ * quoting, no comment lines, positional rows, no trimming, no empty-line
+ * skipping, strict column counts for records, and no casting.
+ *
+ * ```ts no_run
+ * import { parse, type CsvParseOptions } from 'fino:format/csv';
+ *
+ * const options: CsvParseOptions = {
+ *   delimiter: ';',
+ *   header: true,
+ *   skipEmptyLines: true,
+ * };
+ * const rows = parse('name;age\nAda;36\n', options);
+ * ```
+ */
 export interface CsvParseOptions {
-  /** One-character field delimiter. Defaults to comma. */
+  /**
+   * One-character field delimiter. Defaults to `","`.
+   *
+   * Multi-character delimiters are rejected with `TypeError` before parsing.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse('a;b\n1;2\n', { delimiter: ';' });
+   * ```
+   */
   delimiter?: string;
-  /** One-character quote delimiter. Defaults to double quote. */
+  /**
+   * One-character quote delimiter. Defaults to the double quote character.
+   *
+   * The quote character starts and ends quoted fields, and doubled quote
+   * characters inside a quoted field become one literal quote.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse("'a','b'\n'one','two'\n", { quote: "'" });
+   * ```
+   */
   quote?: string;
-  /** Optional one-character line comment prefix. */
+  /**
+   * Optional one-character line comment prefix.
+   *
+   * Lines whose first character is the comment prefix are skipped. Comments are
+   * recognized only at the start of a row, not after fields.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse('# ignored\na,b\n1,2\n', { comment: '#' });
+   * ```
+   */
   comment?: string;
-  /** Use the first row as object keys. */
+  /**
+   * Use the first parsed row as object keys. Defaults to `false`.
+   *
+   * When enabled, the header row is not returned as data. If `columns` is also
+   * provided, explicit columns take precedence and the first row is treated as
+   * data.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * const records = parse('name,age\nAda,36\n', { header: true });
+   * ```
+   */
   header?: boolean;
-  /** Explicit object keys for each field. */
+  /**
+   * Explicit object keys for each field.
+   *
+   * Supplying columns returns records without consuming a header row. Missing
+   * fields are assigned `""`; by default row lengths must match exactly.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse('Ada,36\n', { columns: ['name', 'age'] });
+   * ```
+   */
   columns?: string[];
+  /**
+   * Skip rows that contain exactly one empty field. Defaults to `false`.
+   *
+   * The option is applied after field parsing and optional trimming, so a blank
+   * whitespace-only line is skipped only when `trim` is also enabled.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse('a\n\nb\n', { skipEmptyLines: true });
+   * ```
+   */
   skipEmptyLines?: boolean;
+  /**
+   * Trim leading and trailing JavaScript whitespace from every field.
+   * Defaults to `false`.
+   *
+   * Trimming applies to quoted and unquoted fields after quote processing.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse(' name \n Ada \n', { trim: true });
+   * ```
+   */
   trim?: boolean;
+  /**
+   * Allow record rows to have a different field count than the header.
+   * Defaults to `false`.
+   *
+   * When disabled, record parsing throws `CsvParseError` on the first mismatch.
+   * When enabled, missing fields become `""` and extra fields are ignored.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse('a,b\n1\n', { header: true, relaxColumnCount: true });
+   * ```
+   */
   relaxColumnCount?: boolean;
+  /**
+   * Convert fields from strings to typed values. Defaults to `false`.
+   *
+   * `true` converts `""` and `"null"` to `null`, booleans to booleans, and
+   * numeric-looking values with `Number()`. A function receives the raw field
+   * plus column index and optional header name.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/csv';
+   *
+   * parse('name,age\nAda,36\n', {
+   *   header: true,
+   *   cast: (value, ctx) => ctx.header === 'age' ? Number(value) : value,
+   * });
+   * ```
+   */
   cast?: boolean | CastFn;
 }
 
-/** Options controlling CSV output dialect and header emission. */
+/**
+ * Options controlling CSV output dialect and header emission.
+ *
+ * Stringification defaults to comma-delimited CSV, double-quote escaping, and
+ * CRLF row endings. Empty input returns an empty string.
+ *
+ * ```ts no_run
+ * import { stringify, type CsvStringifyOptions } from 'fino:format/csv';
+ *
+ * const options: CsvStringifyOptions = { header: true, lineEnding: '\n' };
+ * stringify([{ name: 'Ada' }], options);
+ * ```
+ */
 export interface CsvStringifyOptions {
-  /** One-character field delimiter. Defaults to comma. */
+  /**
+   * One-character field delimiter. Defaults to `","`.
+   *
+   * Fields containing the delimiter are quoted automatically. Multi-character
+   * delimiters are rejected with `TypeError`.
+   *
+   * ```ts no_run
+   * import { stringify } from 'fino:format/csv';
+   *
+   * stringify([['a', 'b']], { delimiter: ';' });
+   * ```
+   */
   delimiter?: string;
-  /** One-character quote delimiter. Defaults to double quote. */
+  /**
+   * One-character quote delimiter. Defaults to the double quote character.
+   *
+   * Quote characters inside fields are doubled during output.
+   *
+   * ```ts no_run
+   * import { stringify } from 'fino:format/csv';
+   *
+   * stringify([["can't", 'stop']], { quote: "'" });
+   * ```
+   */
   quote?: string;
-  /** Row separator. Defaults to CRLF. */
+  /**
+   * Row separator appended after each emitted row. Defaults to `"\r\n"`.
+   *
+   * Use `"\n"` when generating Unix-style text files.
+   *
+   * ```ts no_run
+   * import { stringify } from 'fino:format/csv';
+   *
+   * stringify([['a'], ['b']], { lineEnding: '\n' });
+   * ```
+   */
   lineEnding?: string;
-  /** Emit a header row when stringifying records. */
+  /**
+   * Controls header row emission.
+   *
+   * For record rows, an array fixes header order and selected fields. `true`
+   * emits the union of record keys in discovery order. `false` suppresses the
+   * header row. For positional rows, only an array emits headers.
+   *
+   * ```ts no_run
+   * import { stringify } from 'fino:format/csv';
+   *
+   * stringify([{ b: 2, a: 1 }], { header: ['a', 'b'] });
+   * ```
+   */
   header?: boolean | string[];
 }
 
@@ -92,7 +336,12 @@ export interface CsvStringifyOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a CSV string or bytes into positional rows or records.
+ * Parse a CSV string or UTF-8 byte buffer into positional rows or records.
+ *
+ * The return shape depends on `header` and `columns`: positional `string[][]`
+ * by default, or records when a header source is configured. Malformed quoted
+ * fields and strict record column mismatches throw `CsvParseError`; invalid
+ * delimiter or quote options throw `TypeError`.
  *
  * ```ts no_run
  * import { parse } from 'fino:format/csv';
@@ -147,7 +396,7 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
           if (c === quoteCode) {
             sc.eat();
             if (sc.peekCode() === quoteCode) {
-              buf += sc.eat(); // doubled quote → literal quote
+              buf += sc.eat(); // doubled quote -> literal quote
             } else {
               break; // closing quote
             }
@@ -157,7 +406,7 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
         }
         field = buf;
       } else {
-        // Unquoted field — eat until delimiter, CR, LF, or EOF
+        // Unquoted field: eat until delimiter, CR, LF, or EOF
         const start = sc.mark();
         sc.eatUntil(c => c === delimCode || c === 0x0A || c === 0x0D);
         field = sc.text(start);
@@ -166,7 +415,7 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
       if (trim) field = field.trim();
       row.push(field);
 
-      // After field: delimiter → next field; CR/LF/EOF → end of row
+      // After field: delimiter -> next field; CR/LF/EOF -> end of row
       if (sc.peekCode() === delimCode) {
         sc.eat(); // consume delimiter
       } else {
@@ -210,7 +459,7 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
   }
 
   if (!headers) {
-    // Plain string[][] — apply cast if requested
+    // Plain string[][]: apply cast if requested
     if (!cast) return dataRows;
     return dataRows.map(row =>
       row.map((v, ci) =>
@@ -251,8 +500,25 @@ function _autocast(v: string): unknown {
 
 /**
  * Parse a CSV byte stream row-by-row without buffering the entire input.
- * Each chunk from `src` is processed incrementally; quoted fields containing
- * embedded newlines are handled correctly across chunk boundaries.
+ *
+ * Chunks from `src` are accumulated only until a complete row is available.
+ * Quoted fields containing embedded newlines are handled across chunk
+ * boundaries. The yielded row shape follows `header` and `columns` in the same
+ * way as `parse()`. Unterminated quoted data or column mismatches throw while
+ * iterating.
+ *
+ * ```ts no_run
+ * import { parseStream } from 'fino:format/csv';
+ *
+ * async function* bytes() {
+ *   yield new TextEncoder().encode('name,age\nAda,');
+ *   yield new TextEncoder().encode('36\n');
+ * }
+ *
+ * for await (const row of parseStream(bytes(), { header: true })) {
+ *   console.log(row);
+ * }
+ * ```
  */
 export async function* parseStream(
   src: AsyncIterable<Uint8Array>,
@@ -373,7 +639,7 @@ export async function* parseStream(
     const raw = parseRow(tail);
     if (raw !== null) {
       if (!headerConsumed) {
-        // File was only headers — nothing to yield
+        // File was only headers; nothing to yield
       } else {
         yield _emitStreamRow(raw, headers, relax, cast);
       }
@@ -415,9 +681,13 @@ function _emitStreamRow(
 // Stringify
 // ---------------------------------------------------------------------------
 
-/** Serialize rows or records to a CSV string. */
 /**
  * Serialize rows or records to CSV.
+ *
+ * Positional rows are emitted as-is. Record rows use an explicit header array
+ * when provided or the union of discovered keys otherwise. Fields are converted
+ * with `String()`, missing record values become `""`, and fields requiring
+ * escaping are quoted. Empty input returns `""`.
  *
  * ```ts no_run
  * import { stringify } from 'fino:format/csv';

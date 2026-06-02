@@ -19,6 +19,20 @@
  * Only available in thread and process child Realms (where `nativeSend` has a live
  * channel_tx). Embedded child Realms are not a primary facade target.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ *
+ * const result = await rpc.call('facade:kv', 'get', ['users:42']);
+ *
+ * for await (const chunk of rpc.callStream('facade:kv', 'scan', ['users:'])) {
+ *   console.log(chunk);
+ * }
+ *
+ * console.log(result);
+ * ```
+ *
  * @internal
  */
 
@@ -124,6 +138,14 @@ function _sendMsg(msg: unknown): void {
 /**
  * Make an RPC call to the parent's registered Facade handler.
  * Returns a Promise that settles when the parent sends back `__rpc_res`.
+ *
+ * Rejections are wrapped as `Error` objects. Handle results are automatically
+ * converted into method proxies.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const value = await rpc.call('facade:demo', 'read', []);
+ * ```
  */
 export function call(specifier: string, method: string, args: unknown[]): Promise<unknown> {
   const reqId = _nextId++;
@@ -141,6 +163,11 @@ export function call(specifier: string, method: string, args: unknown[]): Promis
  * When `result` carries `{ __handle: id, streams?: [...] }`, the pending
  * promise is resolved with a Proxy that routes further method calls back
  * through parent-rpc using the handle ID as the specifier.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const handled = rpc.resolveRpc(1, { ok: true });
+ * ```
  */
 export function resolveRpc(reqId: number, result: unknown): boolean {
   const entry = _pending.get(reqId);
@@ -186,6 +213,11 @@ function _makeHandleProxy(handleId: string, streams: string[], sinks: string[]):
 /**
  * Settle a pending scalar call with an error.
  * Returns true if the reqId was found; false means try errStream() instead.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const handled = rpc.rejectRpc(1, 'failed');
+ * ```
  */
 export function rejectRpc(reqId: number, error: string): boolean {
   const entry = _pending.get(reqId);
@@ -206,6 +238,13 @@ export function rejectRpc(reqId: number, error: string): boolean {
  * Make a streaming RPC call. Returns an AsyncIterable that yields chunks as
  * the parent sends `__rpc_chunk` envelopes, and completes on `__rpc_end`.
  * The parent sends `__rpc_err` (or `__rpc_res` with error) on failure.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * for await (const chunk of rpc.callStream('facade:demo', 'stream', [])) {
+ *   void chunk;
+ * }
+ * ```
  */
 export function callStream(specifier: string, method: string, args: unknown[]): AsyncIterable<unknown> {
   const reqId = _nextId++;
@@ -218,6 +257,13 @@ export function callStream(specifier: string, method: string, args: unknown[]): 
 /**
  * Deliver a chunk to a pending streaming call.
  * Called by the drain path in messaging.mts on `__rpc_chunk`.
+ *
+ * Unknown request IDs are ignored.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * rpc.pushChunk(1, new Uint8Array([1]));
+ * ```
  */
 export function pushChunk(reqId: number, chunk: unknown): void {
   _pendingStreams.get(reqId)?.push(chunk);
@@ -226,6 +272,13 @@ export function pushChunk(reqId: number, chunk: unknown): void {
 /**
  * Signal end-of-stream for a pending streaming call.
  * Called by the drain path in messaging.mts on `__rpc_end`.
+ *
+ * Unknown request IDs are ignored.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * rpc.endStream(1);
+ * ```
  */
 export function endStream(reqId: number): void {
   const q = _pendingStreams.get(reqId);
@@ -238,6 +291,13 @@ export function endStream(reqId: number): void {
  * Signal an error on a pending streaming call.
  * Called by the drain path on `__rpc_err` OR on `__rpc_res` with an error
  * when the reqId belongs to a stream (handler threw before yielding).
+ *
+ * Unknown request IDs are ignored.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * rpc.errStream(1, 'stream failed');
+ * ```
  */
 export function errStream(reqId: number, error: string): void {
   const q = _pendingStreams.get(reqId);
@@ -267,14 +327,106 @@ export function errStream(reqId: number, error: string): void {
  *
  * `write()` and `close()` are synchronous fire-and-forget — no round-trip per
  * chunk.  `result` is a Promise that settles when the parent's handler returns.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const sink = rpc.callSink('facade:demo', 'upload', []);
+ * sink.write(new Uint8Array([1]));
+ * sink.close();
+ * await sink.result;
+ * ```
+ *
+ * @internal
  */
 export class WriteSink {
+  /**
+   * Result returned by the parent sink handler.
+   *
+   * Resolves on `__rpc_res` and rejects on an error response.
+   *
+   * ```typescript no_run
+   * const result = await sink.result;
+   * ```
+   */
   readonly result: Promise<unknown>;
+  /**
+   * Private readonly property `#reqId` used by `WriteSink`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #reqId = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#reqId;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   readonly #reqId: number;
+  /**
+   * Private property `#resolve` used by `WriteSink`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #resolve = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#resolve;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #resolve!: (v: unknown) => void;
+  /**
+   * Private property `#reject` used by `WriteSink`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #reject = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#reject;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #reject!:  (e: Error) => void;
 
-  /** @internal */
+  /**
+   * Create a sink bound to a request ID.
+   *
+   * Usually constructed by `callSink`, not by application code.
+   *
+   * ```typescript no_run
+   * const sink = new WriteSink(1);
+   * ```
+   *
+   * @internal
+   */
   constructor(reqId: number) {
     this.#reqId = reqId;
     this.result = new Promise<unknown>((res, rej) => {
@@ -283,23 +435,90 @@ export class WriteSink {
     });
   }
 
-  /** Push a chunk to the parent — no await, no backpressure acknowledgement. */
+  /**
+   * Push a chunk to the parent.
+   *
+   * This is fire-and-forget: there is no per-chunk acknowledgement or
+   * backpressure signal. The final handler result is exposed through `result`.
+   *
+   * ```typescript no_run
+   * sink.write('chunk');
+   * ```
+   */
   write(chunk: unknown): void {
     _sendMsg({ __rpc_send_chunk: true, reqId: this.#reqId, chunk });
   }
 
-  /** Signal end-of-stream (FIN). */
+  /**
+   * Signal end-of-stream.
+   *
+   * After closing, no more chunks should be written. The parent may still send a
+   * final result that settles `result`.
+   *
+   * ```typescript no_run
+   * sink.close();
+   * ```
+   */
   close(): void {
     _sendMsg({ __rpc_send_end: true, reqId: this.#reqId });
   }
 
-  /** Abort the stream with an error (RESET_STREAM). */
+  /**
+   * Abort the stream with an error.
+   *
+   * Sends a reset-style envelope to the parent. The local `result` promise is
+   * settled only when the parent response is routed back.
+   *
+   * ```typescript no_run
+   * sink.abort('cancelled');
+   * ```
+   */
   abort(error: string): void {
     _sendMsg({ __rpc_send_err: true, reqId: this.#reqId, error });
   }
 
-  /** @internal */ _resolve(v: unknown) { this.#resolve(v); }
-  /** @internal */ _reject(e: string)   { this.#reject(new Error(e)); }
+  /**
+   * Internal method `_resolve` used by `WriteSink`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _resolve() {
+   *     return '_resolve';
+   *   },
+   * };
+   * includePrivateExample._resolve();
+   * ```
+   *
+   * @internal
+   */
+  _resolve(v: unknown) { this.#resolve(v); }
+  /**
+   * Internal method `_reject` used by `WriteSink`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _reject() {
+   *     return '_reject';
+   *   },
+   * };
+   * includePrivateExample._reject();
+   * ```
+   *
+   * @internal
+   */
+  _reject(e: string)   { this.#reject(new Error(e)); }
 }
 
 const _pendingSinks = new Map<number, WriteSink>();
@@ -308,6 +527,12 @@ const _pendingSinks = new Map<number, WriteSink>();
  * Open a write stream to the parent.  Returns a `WriteSink` immediately;
  * chunks written to it flow child→parent without a round-trip per chunk.
  * The parent handler receives `(args, source: AsyncIterable<unknown>)`.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const sink = rpc.callSink('facade:demo', 'upload', ['name']);
+ * sink.close();
+ * ```
  */
 export function callSink(specifier: string, method: string, args: unknown[]): WriteSink {
   const reqId = _nextId++;
@@ -317,7 +542,18 @@ export function callSink(specifier: string, method: string, args: unknown[]): Wr
   return sink;
 }
 
-/** @internal — settle a sink's result promise on `__rpc_res`. */
+/**
+ * Settle a sink's result promise on `__rpc_res`.
+ *
+ * Returns false when the request ID does not belong to a pending sink.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const handled = rpc.resolveSink(1, { ok: true });
+ * ```
+ *
+ * @internal
+ */
 export function resolveSink(reqId: number, result: unknown): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;
@@ -326,7 +562,18 @@ export function resolveSink(reqId: number, result: unknown): boolean {
   return true;
 }
 
-/** @internal — reject a sink's result promise on `__rpc_res` with error. */
+/**
+ * Reject a sink's result promise on an error response.
+ *
+ * Returns false when the request ID does not belong to a pending sink.
+ *
+ * ```typescript no_run
+ * import * as rpc from 'internal:runtime/parent-rpc';
+ * const handled = rpc.rejectSink(1, 'failed');
+ * ```
+ *
+ * @internal
+ */
 export function rejectSink(reqId: number, error: string): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;

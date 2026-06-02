@@ -94,6 +94,19 @@ the non-zero `byteOffset` of arena views.
   simple and spec-compliant, but O(n) for lookups. For typical HTTP headers
   (< 50 entries) this is fine; for exotic use cases, a Map could be used.
 
+```ts
+import { Request, Response, parseRequest, serializeResponse } from 'fino:http';
+
+const request = new Request('https://example.test/', { method: 'POST', body: 'hello' });
+const response = new Response(await request.text(), {
+  status: 201,
+  headers: { 'content-type': 'text/plain' },
+});
+for await (const chunk of serializeResponse(response)) {
+  await writer.write(chunk);
+}
+```
+
 ## Arena
 
 ```ts
@@ -114,10 +127,22 @@ falls back to a regular `new Uint8Array(n)` — no failure mode.
 The FFI layer correctly handles the non-zero `byteOffset` of arena views
 when they are passed to `write(2)` as `buffer` arguments.
 
+```ts
+const arena = new Arena(4096);
+const bytes = arena.alloc(128);
+arena.reset();
+```
+
 ### constructor
 
 ```ts
 constructor(size: number = 8192)
+```
+
+Create an arena with the requested backing-buffer size.
+
+```ts
+const arena = new Arena(65536);
 ```
 
 ### alloc
@@ -126,10 +151,28 @@ constructor(size: number = 8192)
 alloc(n: number): Uint8Array
 ```
 
+Allocate a `Uint8Array` view of `n` bytes.
+
+If the arena has insufficient remaining space, this returns a standalone
+`Uint8Array` instead of throwing. Previously returned arena views are
+invalidated logically by `reset()` but not zeroed.
+
+```ts
+const header = arena.alloc(64);
+```
+
 ### reset
 
 ```ts
 reset(): void
+```
+
+Reset the allocation cursor to the beginning of the backing buffer.
+
+Call this only after all views allocated from the arena have been consumed.
+
+```ts
+arena.reset();
 ```
 
 ## Headers
@@ -143,10 +186,24 @@ WHATWG-compatible Headers class.
 Internal storage is an array of [name, value] pairs with lowercased names.
 Iteration order is sorted ascending by name (per spec).
 
+```ts
+const headers = new Headers({ 'Content-Type': 'text/plain' });
+headers.append('Set-Cookie', 'sid=1');
+```
+
 ### constructor
 
 ```ts
 constructor(init?: HeadersInit)
+```
+
+Create a header map from another `Headers`, pair array, object, or nothing.
+
+Header names are normalized to lowercase and values are trimmed. Invalid
+pair entries throw `TypeError`.
+
+```ts
+const headers = new Headers([['content-type', 'application/json']]);
 ```
 
 ### append
@@ -158,6 +215,10 @@ append(name: string, value: string): void
 Append a new value for the given header name.
 If the header already exists, the new value is added alongside the old.
 
+```ts
+headers.append('set-cookie', 'a=1');
+```
+
 ### _appendTrusted
 
 ```ts
@@ -168,6 +229,10 @@ Internal: append a pre-normalized [name, value] pair without validation.
 name must already be lowercased and trimmed; value must already be trimmed
 and free of control characters (guaranteed for wire-parsed headers).
 
+```ts
+headers._appendTrusted('host', 'example.com');
+```
+
 ### set
 
 ```ts
@@ -175,6 +240,10 @@ set(name: string, value: string): void
 ```
 
 Set the value for a header name, replacing any existing values.
+
+```ts
+headers.set('content-type', 'application/json');
+```
 
 ### get
 
@@ -185,6 +254,13 @@ get(name: string): string | null
 Return the combined value for the given name, or null if not present.
 Multiple values are joined with ", ".
 
+Use `getSetCookie()` for `Set-Cookie`, which must not be interpreted as a
+comma-joined list.
+
+```ts
+const contentType = headers.get('content-type') ?? 'application/octet-stream';
+```
+
 ### has
 
 ```ts
@@ -193,6 +269,10 @@ has(name: string): boolean
 
 Return true if a header with the given name exists.
 
+```ts
+if (headers.has('content-length')) console.log(headers.get('content-length'));
+```
+
 ### delete
 
 ```ts
@@ -200,6 +280,10 @@ delete(name: string): void
 ```
 
 Remove all values for the given header name.
+
+```ts
+headers.delete('transfer-encoding');
+```
 
 ### getSetCookie
 
@@ -210,6 +294,10 @@ getSetCookie()
 Return an array of all Set-Cookie header values without joining.
 Use this instead of get('set-cookie') to avoid value ambiguity.
 
+```ts
+for (const cookie of headers.getSetCookie()) console.log(cookie);
+```
+
 ### entries
 
 ```ts
@@ -217,6 +305,10 @@ entries()
 ```
 
 Return an iterator over [name, value] pairs, sorted by name.
+
+```ts
+for (const [name, value] of headers.entries()) console.log(name, value);
+```
 
 ### keys
 
@@ -226,6 +318,10 @@ keys()
 
 Return an iterator over header names, sorted.
 
+```ts
+for (const name of headers.keys()) console.log(name);
+```
+
 ### values
 
 ```ts
@@ -233,6 +329,10 @@ values()
 ```
 
 Return an iterator over header values, sorted by name.
+
+```ts
+for (const value of headers.values()) console.log(value);
+```
 
 ### forEach
 
@@ -242,6 +342,10 @@ forEach(callback: (value: string, name: string, headers: Headers) => void, thisA
 
 Iterate over [name, value] pairs, sorted by name.
 
+```ts
+headers.forEach((value, name) => console.log(name, value));
+```
+
 ## _parseHeaders
 
 ```ts
@@ -250,6 +354,12 @@ function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers }
 
 Parse a raw header block (everything up to and including "\r\n\r\n") into
 a Headers instance.  Header names are lowercased; values are trimmed.
+
+Throws on obsolete folded header lines or malformed header syntax.
+
+```ts
+const { firstLine, headers } = _parseHeaders(rawHeaderBytes);
+```
 
 ## Request
 
@@ -265,10 +375,27 @@ Spec-style constructor: new Request(url, init?)
 
 Wire-parse constructor (internal): new Request(INTERNAL, { method, url, version, headers, body })
 
+```ts
+const req = new Request('https://example.com/api', {
+  method: 'POST',
+  body: JSON.stringify({ ok: true }),
+});
+```
+
 ### constructor
 
 ```ts
 constructor(input: string | Request | symbol, init?: RequestInit | any)
+```
+
+Create a Request from a URL string, another Request, or the internal parser
+sentinel.
+
+Body values may be strings, bytes, ArrayBuffers, FormData, or null. Reading
+the body later marks it used; cloning is only allowed before disturbance.
+
+```ts
+const req = new Request('/submit', { method: 'POST', body: 'hello' });
 ```
 
 ### trailers
@@ -277,18 +404,13 @@ constructor(input: string | Request | symbol, init?: RequestInit | any)
 get trailers(): Promise<Headers>
 ```
 
-Incoming trailer headers — resolves after the chunked body is fully consumed.
+Incoming trailer headers, resolving after a chunked body is fully consumed.
 
-### _hasOutTrailers
-
-```ts
-_hasOutTrailers(): boolean
-```
-
-### _getRawOutTrailers
+For constructed outbound requests with trailer metadata, this resolves that
+metadata immediately. Otherwise it resolves to an empty `Headers` object.
 
 ```ts
-_getRawOutTrailers(): OutTrailers | null
+const trailers = await req.trailers;
 ```
 
 ### url
@@ -299,13 +421,25 @@ get url()
 
 The full URL string.
 
+Parsed server requests are made absolute from `Host` when possible.
+
+```ts
+console.log(req.url);
+```
+
 ### method
 
 ```ts
 get method()
 ```
 
-HTTP method (uppercase).
+HTTP method.
+
+Common Fetch methods are normalized to uppercase during construction.
+
+```ts
+if (req.method === 'POST') console.log('has body');
+```
 
 ### headers
 
@@ -313,7 +447,11 @@ HTTP method (uppercase).
 get headers()
 ```
 
-Request headers.
+Mutable request headers.
+
+```ts
+req.headers.set('authorization', 'Bearer token');
+```
 
 ### body
 
@@ -324,6 +462,13 @@ get body(): ReadableStream | null
 The body as a ReadableStream, or null if no body.
 Returns the same stream on repeated access (spec: [SameObject]).
 
+Accessing the stream does not consume it immediately, but locking or
+reading it makes `bodyUsed` true.
+
+```ts
+if (req.body !== null) for await (const chunk of req.body) console.log(chunk);
+```
+
 ### bodyUsed
 
 ```ts
@@ -332,13 +477,23 @@ get bodyUsed()
 
 True if the body has been read or the stream is locked.
 
+```ts
+if (!req.bodyUsed) console.log(await req.text());
+```
+
 ### version
 
 ```ts
 get version()
 ```
 
-HTTP version string — fino extension (e.g. "HTTP/1.1").
+HTTP version string, a Fino extension for parsed wire requests.
+
+Constructed requests use an empty string until serialized.
+
+```ts
+console.log(req.version || 'not parsed from wire');
+```
 
 ### hasBody
 
@@ -348,6 +503,10 @@ get hasBody()
 
 True if the request has a body.
 
+```ts
+if (req.hasBody) await req.bytes();
+```
+
 ### text
 
 ```ts
@@ -355,6 +514,12 @@ async text()
 ```
 
 Consume body and return as a UTF-8 string.
+
+Throws `TypeError` if the body has already been consumed.
+
+```ts
+const text = await req.text();
+```
 
 ### json
 
@@ -364,13 +529,23 @@ async json()
 
 Consume body and parse as JSON.
 
+Throws `TypeError` if consumed already and propagates `JSON.parse` errors.
+
+```ts
+const data = await req.json();
+```
+
 ### arrayBuffer
 
 ```ts
 async arrayBuffer()
 ```
 
-Consume body and return as ArrayBuffer.
+Consume body and return as a copied ArrayBuffer.
+
+```ts
+const buffer = await req.arrayBuffer();
+```
 
 ### bytes
 
@@ -380,6 +555,10 @@ async bytes()
 
 Consume body and return as Uint8Array.
 
+```ts
+const bytes = await req.bytes();
+```
+
 ### blob
 
 ```ts
@@ -387,6 +566,12 @@ async blob()
 ```
 
 Consume body and return as a Blob.
+
+The Blob type is taken from the `content-type` header when present.
+
+```ts
+const blob = await req.blob();
+```
 
 ### clone
 
@@ -396,6 +581,13 @@ clone(): Request
 
 Create an independent copy of this request.
 
+Throws if the body has already been consumed or locked. Streaming bodies are
+teed so both copies can be read independently.
+
+```ts
+const clone = req.clone();
+```
+
 ### from
 
 ```ts
@@ -404,6 +596,13 @@ static from(source: AsyncByteSource)
 
 Parse an HTTP/1.x request from an async iterable of byte chunks
 (e.g. a TCP connection).
+
+Throws on malformed headers, invalid framing, or stream EOF before the
+header terminator.
+
+```ts
+const req = await Request.from(reader);
+```
 
 ## Response
 
@@ -421,10 +620,23 @@ Wire-parse constructor (internal): new Response(INTERNAL, { version, status, sta
 
 Static factories: Response.json(), Response.redirect(), Response.error()
 
+```ts
+const res = new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } });
+```
+
 ### constructor
 
 ```ts
 constructor(body: BodyInit | symbol, init?: ResponseInit | any)
+```
+
+Create a response from body data and optional status, headers, and trailers.
+
+Status defaults to 200 and statusText defaults to the empty string. Body
+reads are single-use unless the response is cloned before consumption.
+
+```ts
+const res = new Response(JSON.stringify({ ok: true }), { status: 201 });
 ```
 
 ### ok
@@ -433,7 +645,11 @@ constructor(body: BodyInit | symbol, init?: ResponseInit | any)
 get ok()
 ```
 
-True if status is in the 200–299 range.
+True if status is in the 200-299 range.
+
+```ts
+if (res.ok) console.log(await res.text());
+```
 
 ### status
 
@@ -443,6 +659,10 @@ get status()
 
 HTTP status code.
 
+```ts
+console.log(res.status);
+```
+
 ### statusText
 
 ```ts
@@ -451,13 +671,23 @@ get statusText()
 
 HTTP reason phrase.
 
+May be empty for constructed responses.
+
+```ts
+console.log(res.statusText);
+```
+
 ### headers
 
 ```ts
 get headers()
 ```
 
-Response headers.
+Mutable response headers.
+
+```ts
+res.headers.set('content-type', 'application/json');
+```
 
 ### body
 
@@ -468,6 +698,10 @@ get body(): ReadableStream | null
 The body as a ReadableStream, or null if no body.
 Returns the same stream on repeated access (spec: [SameObject]).
 
+```ts
+if (res.body !== null) for await (const chunk of res.body) console.log(chunk);
+```
+
 ### bodyUsed
 
 ```ts
@@ -476,13 +710,21 @@ get bodyUsed()
 
 True if the body has been read or the stream is locked.
 
+```ts
+if (!res.bodyUsed) console.log(await res.text());
+```
+
 ### url
 
 ```ts
 get url()
 ```
 
-Final URL (empty for constructed responses; set by fetch clients).
+Final URL, empty for constructed responses and set by fetch clients.
+
+```ts
+console.log(res.url);
+```
 
 ### type
 
@@ -490,7 +732,11 @@ Final URL (empty for constructed responses; set by fetch clients).
 get type()
 ```
 
-Response type — always "default" or "error".
+Response type, currently `"default"` or `"error"`.
+
+```ts
+if (res.type === 'error') console.log('network error response');
+```
 
 ### redirected
 
@@ -500,13 +746,21 @@ get redirected()
 
 True if the response is the result of a redirect.
 
+```ts
+console.log(res.redirected);
+```
+
 ### version
 
 ```ts
 get version()
 ```
 
-HTTP version string — fino extension (e.g. "HTTP/1.1").
+HTTP version string, a Fino extension for parsed wire responses.
+
+```ts
+console.log(res.version || 'constructed response');
+```
 
 ### trailers
 
@@ -514,24 +768,13 @@ HTTP version string — fino extension (e.g. "HTTP/1.1").
 get trailers(): Promise<Headers>
 ```
 
-Incoming trailer headers — resolves after the chunked body is fully consumed.
+Incoming trailer headers, resolving after a chunked body is fully consumed.
 
-### _hasOutTrailers
-
-```ts
-_hasOutTrailers(): boolean
-```
-
-### _getRawOutTrailers
+Constructed responses with outbound trailers resolve those trailers
+immediately. Responses without trailers resolve an empty `Headers`.
 
 ```ts
-_getRawOutTrailers(): OutTrailers | null
-```
-
-### _getOutTrailers
-
-```ts
-async _getOutTrailers(): Promise<Headers>
+const trailers = await res.trailers;
 ```
 
 ### text
@@ -542,6 +785,10 @@ async text()
 
 Consume body and return as a UTF-8 string.
 
+```ts
+const text = await res.text();
+```
+
 ### json
 
 ```ts
@@ -550,13 +797,23 @@ async json()
 
 Consume body and parse as JSON.
 
+Throws if the body was already consumed or JSON parsing fails.
+
+```ts
+const data = await res.json();
+```
+
 ### arrayBuffer
 
 ```ts
 async arrayBuffer()
 ```
 
-Consume body and return as ArrayBuffer.
+Consume body and return as a copied ArrayBuffer.
+
+```ts
+const buffer = await res.arrayBuffer();
+```
 
 ### bytes
 
@@ -566,6 +823,10 @@ async bytes()
 
 Consume body and return as Uint8Array.
 
+```ts
+const bytes = await res.bytes();
+```
+
 ### blob
 
 ```ts
@@ -574,6 +835,12 @@ async blob()
 
 Consume body and return as a Blob.
 
+The Blob type is derived from `content-type` when present.
+
+```ts
+const blob = await res.blob();
+```
+
 ### clone
 
 ```ts
@@ -581,6 +848,13 @@ clone(): Response
 ```
 
 Create an independent copy of this response.
+
+Throws if the body is already consumed. Streaming bodies are teed; byte
+bodies can be shared without copying.
+
+```ts
+const copy = res.clone();
+```
 
 ### json
 
@@ -591,6 +865,10 @@ static json(data: unknown, init?: ResponseInit)
 Create a Response with a JSON-serialised body and
 Content-Type: application/json.
 
+```ts
+return Response.json({ ok: true }, { status: 201 });
+```
+
 ### redirect
 
 ```ts
@@ -598,6 +876,13 @@ static redirect(url: string, status?: number)
 ```
 
 Create a redirect Response.
+
+The status must be one of 301, 302, 303, 307, or 308, otherwise a
+`RangeError` is thrown.
+
+```ts
+return Response.redirect('/login', 302);
+```
 
 ### error
 
@@ -607,6 +892,11 @@ static error()
 
 Create a network error Response (type "error", status 0).
 
+```ts
+const res = Response.error();
+console.log(res.type, res.status);
+```
+
 ### from
 
 ```ts
@@ -615,6 +905,10 @@ static from(source: AsyncByteSource)
 
 Parse an HTTP/1.x response from an async iterable of byte chunks
 (e.g. a TCP connection).
+
+```ts
+const res = await Response.from(reader);
+```
 
 ## parseRequest
 
@@ -628,6 +922,13 @@ The returned Request's `url` is constructed from the Host header and the
 request path: "http://<host><path>".  If no Host header is present, `url`
 contains only the path.
 
+Throws on malformed request lines, malformed headers, conflicting
+`Content-Length`, invalid chunked framing, or premature EOF.
+
+```ts
+const req = await parseRequest(reader);
+```
+
 ## parseResponse
 
 ```ts
@@ -636,7 +937,13 @@ async function parseResponse( source: AsyncIterable<Uint8Array | ArrayBuffer>, m
 
 Parse an HTTP response from a byte stream.
 
-                  must never have a body even when Content-Length is present.
+`method` is the original request method; pass `'HEAD'` so the parser knows
+the response must not expose a body even if framing headers are present.
+Throws on malformed status lines, headers, or body framing.
+
+```ts
+const res = await parseResponse(reader, request.method);
+```
 
 ## _buildResponseHead
 
@@ -645,6 +952,12 @@ function _buildResponseHead(res: Response): string
 ```
 
 Serialize HTTP response headers to a string (status-line + headers + CRLF).
+
+Body bytes are not included. The version defaults to HTTP/1.1 when unset.
+
+```ts
+const head = _buildResponseHead(new Response('ok'));
+```
 
 ## serializeResponse
 
@@ -655,7 +968,15 @@ async function* serializeResponse(res: Response, arena?: Arena): AsyncGenerator<
 Serialize a Response to an async iterable of Uint8Array chunks suitable for
 piping to a TCP connection: status-line + headers first, then body chunks.
 
-  bytes and chunked framing are allocated from the arena (zero extra alloc).
+If outbound trailers are present, chunked transfer encoding is emitted and
+`content-length` is removed from the wire headers. Reading from the returned
+iterable consumes the response body.
+
+```ts
+for await (const chunk of serializeResponse(res, new Arena())) {
+  await writer.write(chunk);
+}
+```
 
 ## serializeRequest
 
@@ -670,6 +991,14 @@ Body framing:
   - No body → no framing headers added.
   - `content-length` already present → body emitted verbatim.
   - Body without content-length → `transfer-encoding: chunked` injected.
+
+Reading from the returned iterable consumes the request body.
+
+```ts
+for await (const chunk of serializeRequest(req)) {
+  await writer.write(chunk);
+}
+```
 
 ## connectionParser
 
@@ -686,6 +1015,14 @@ Used by `fino:serve` so that multiple requests on the same TCP connection
 share a single `_createReader` instance. Calling `parseRequest()` directly
 would create a fresh reader each time and lose bytes between requests.
 
+`parseBufferedNext()` returns `null` when a complete next request header is
+not already buffered.
+
+```ts
+const parser = connectionParser(reader);
+const req = await parser.parseNext();
+```
+
 ## buildWireResponse
 
 ```ts
@@ -696,13 +1033,12 @@ Build a Response from already-prepared wire components.
 Used by `fino:serve` to inject `Connection` and `Content-Length` headers
 and set the HTTP version without exposing the `INTERNAL` sentinel publicly.
 
-## _iterableFromBytes
+Missing `version` defaults to HTTP/1.1, missing `status` defaults to 200, and
+missing body becomes a bodyless response.
 
 ```ts
-function _iterableFromBytes(bytes: Uint8Array): AsyncByteIterable
+const wire = buildWireResponse({ headers: new Headers(), body: null, status: 204 });
 ```
-
-Wrap a Uint8Array as a single-chunk async iterable.
 
 ## _concat
 
@@ -711,3 +1047,10 @@ function _concat(parts: Uint8Array[], totalLen: number, arena?: Arena): Uint8Arr
 ```
 
 Concatenate an array of Uint8Array slices into a single Uint8Array.
+
+When an arena is supplied, the returned bytes may be a view into arena
+storage. Callers must consume it before resetting the arena.
+
+```ts
+const joined = _concat([a, b], a.byteLength + b.byteLength);
+```

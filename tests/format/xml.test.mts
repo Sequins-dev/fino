@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { parse, stringify, parseStream, type XmlEvent } from 'fino:format/xml';
+import { DiskFileSystem } from 'fino:file';
 import { loadCorpus, runCorpus, type CorpusCase } from './_corpus.mts';
 
 describe('fino:format/xml — parse basics', () => {
@@ -286,8 +287,7 @@ describe('fino:format/xml — security fixtures', () => {
   const DEC = new TextDecoder();
 
   it('large-entity-bomb: expansion accumulator limit fires', async (t) => {
-    const fs = (await import('fino:file')).DiskFileSystem;
-    const f = new fs();
+    const f = new DiskFileSystem();
     const file = await f.open(XML_FIXTURES_DIR + '/security/billion_laughs.xml', 'r');
     const bytes = await file.bytes();
     await file.close();
@@ -296,8 +296,7 @@ describe('fino:format/xml — security fixtures', () => {
   });
 
   it('quadratic-blowup: entity expansion limit fires', async (t) => {
-    const fs = (await import('fino:file')).DiskFileSystem;
-    const f = new fs();
+    const f = new DiskFileSystem();
     const file = await f.open(XML_FIXTURES_DIR + '/security/quadratic_blowup.xml', 'r');
     const bytes = await file.bytes();
     await file.close();
@@ -305,8 +304,7 @@ describe('fino:format/xml — security fixtures', () => {
   });
 
   it('xxe-file: external entity rejected by default', async (t) => {
-    const fs = (await import('fino:file')).DiskFileSystem;
-    const f = new fs();
+    const f = new DiskFileSystem();
     const file = await f.open(XML_FIXTURES_DIR + '/security/xxe_file.xml', 'r');
     const bytes = await file.bytes();
     await file.close();
@@ -314,8 +312,7 @@ describe('fino:format/xml — security fixtures', () => {
   });
 
   it('xxe-http: external entity rejected by default', async (t) => {
-    const fs = (await import('fino:file')).DiskFileSystem;
-    const f = new fs();
+    const f = new DiskFileSystem();
     const file = await f.open(XML_FIXTURES_DIR + '/security/xxe_http.xml', 'r');
     const bytes = await file.bytes();
     await file.close();
@@ -323,8 +320,7 @@ describe('fino:format/xml — security fixtures', () => {
   });
 
   it('deep-nesting: depth limit fires', async (t) => {
-    const fs = (await import('fino:file')).DiskFileSystem;
-    const f = new fs();
+    const f = new DiskFileSystem();
     const file = await f.open(XML_FIXTURES_DIR + '/security/deep_nesting.xml', 'r');
     const bytes = await file.bytes();
     await file.close();

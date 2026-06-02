@@ -1,7 +1,19 @@
 /**
  * internal/commands/bench — internal runtime module.
  *
- * 
+ * Builds the `fino bench` command. The command imports one or more benchmark
+ * modules, then delegates execution to `fino:bench`. Paths are normalized to
+ * file URLs so direct paths, relative paths, absolute paths, and already
+ * canonical specifiers all resolve through the runtime loader.
+ *
+ * This module is CLI-only and is not intended for application imports.
+ *
+ * ```js
+ * import { createBenchCommand } from 'internal:commands/bench';
+ * const command = createBenchCommand();
+ * console.log(command.name);
+ * ```
+ *
  * @internal
  */
 
@@ -16,6 +28,25 @@ function normalizeModuleSpecifier(path: string): string {
   return `file://${cwd()}/./${path}`;
 }
 
+/**
+ * Create the `bench` subcommand used by the root Fino CLI.
+ *
+ * The returned command requires at least one positional benchmark file. It
+ * imports each file for registration side effects and then calls
+ * `fino:bench.run()`. `--filter` is optional; when provided, only benchmark
+ * groups whose full path contains the filter text are run. The command throws
+ * when no files are supplied and otherwise returns the result of the benchmark
+ * runner.
+ *
+ * ```js
+ * import { createBenchCommand } from 'internal:commands/bench';
+ * const bench = createBenchCommand();
+ * await bench.parse(['--filter', 'parser', 'benchmarks/parser.bench.mjs']);
+ * ```
+ *
+ * @returns A configured `Command` instance for `fino bench`.
+ * @internal
+ */
 export function createBenchCommand(): Command {
   return new Command({
     name: 'bench',

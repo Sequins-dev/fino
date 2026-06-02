@@ -18,6 +18,16 @@
  *   {a,b}   alternation (brace expansion, may be nested)
  *   \*      escaped literal
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import { glob } from 'internal:file/glob';
+ *
+ * for await (const entry of glob(listDir, 'src/**\/*.mts', { cwd: '.', dot: false })) {
+ *   if (entry.isFile()) console.log(entry.path);
+ * }
+ * ```
+ *
  * @internal
  */
 
@@ -138,13 +148,110 @@ function compileSegment(pat: string): string {
  * g.test('src/lib/util.mts');    // true
  * g.test('README.md');            // false
  * ```
+ *
+ * @internal
  */
 export class Glob {
+  /**
+   * Private property `#pattern` used by `Glob`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pattern = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#pattern;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pattern: string;
+  /**
+   * Private property `#re` used by `Glob`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #re = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#re;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #re: RegExp;
+  /**
+   * Private property `#dot` used by `Glob`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #dot = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#dot;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #dot: boolean;
+  /**
+   * Private property `#segPatterns` used by `Glob`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #segPatterns = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#segPatterns;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #segPatterns: RegExp[] | null;
 
+  /**
+   * Compile a glob pattern.
+   *
+   * Hidden dot segments are excluded by default unless `options.dot` is true
+   * or the pattern segment itself starts with a dot.
+   *
+   * ```typescript no_run
+   * import { Glob } from 'internal:file/glob';
+   * const g = new Glob('src/**\/*.mts', { dot: false });
+   * ```
+   */
   constructor(pattern: string, options?: { dot?: boolean }) {
     this.#pattern = pattern;
     this.#dot = options?.dot ?? false;
@@ -155,8 +262,25 @@ export class Glob {
       : segs.map(s => new RegExp('^' + compileSegment(s) + '$'));
   }
 
+  /**
+   * Original pattern string.
+   *
+   * ```typescript no_run
+   * const pattern = g.pattern;
+   * ```
+   */
   get pattern(): string { return this.#pattern; }
 
+  /**
+   * Return true when `path` matches the compiled pattern.
+   *
+   * Paths are matched with `/` separators. Hidden dot segments are rejected by
+   * default unless enabled in the constructor options or matched explicitly.
+   *
+   * ```typescript no_run
+   * const ok = g.test('src/index.mts');
+   * ```
+   */
   test(path: string): boolean {
     const s = typeof path === 'string' ? path : String(path);
     if (!this.#dot) {
@@ -171,7 +295,16 @@ export class Glob {
     return this.#re.test(s);
   }
 
-  /** Return true if a dir at `dirRel` could contain matching entries. */
+  /**
+   * Return true if a directory could contain matching entries.
+   *
+   * This is a pruning helper for patterns without `**`. Patterns with `**`
+   * return true because any subtree may match.
+   *
+   * ```typescript no_run
+   * const shouldDescend = g.couldMatch('src/internal');
+   * ```
+   */
   couldMatch(dirRel: string): boolean {
     if (!this.#segPatterns) return true;
     const patSegs = this.#pattern.split('/');
@@ -188,24 +321,146 @@ export class Glob {
 // Directory walker (push queue / pull iterator pattern)
 // ---------------------------------------------------------------------------
 
-/** @internal Directory entry shape consumed and yielded by the glob walker. */
+/**
+ * Directory entry shape consumed and yielded by the glob walker.
+ *
+ * Providers adapt their concrete entries to this interface so glob traversal
+ * does not import the disk filesystem directly.
+ *
+ * ```typescript no_run
+ * import type { GlobEntry } from 'internal:file/glob';
+ * const entry: GlobEntry = {
+ *   name: 'file.txt',
+ *   path: '/tmp/file.txt',
+ *   isDirectory: () => false,
+ *   isFile: () => true,
+ *   isSymlink: () => false,
+ * };
+ * ```
+ *
+ * @internal
+ */
 export interface GlobEntry {
+  /**
+   * Basename of the entry within the listed directory.
+   *
+   * ```typescript no_run
+   * const name = entry.name;
+   * ```
+   */
   name: string;
+  /**
+   * Provider-specific path object or string.
+   *
+   * The glob walker passes this through unchanged to consumers.
+   *
+   * ```typescript no_run
+   * const path = entry.path;
+   * ```
+   */
   path: any;
+  /**
+   * Return true when this entry is a directory.
+   *
+   * ```typescript no_run
+   * if (entry.isDirectory()) void entry.path;
+   * ```
+   */
   isDirectory(): boolean;
+  /**
+   * Return true when this entry is a regular file.
+   *
+   * ```typescript no_run
+   * const file = entry.isFile();
+   * ```
+   */
   isFile(): boolean;
+  /**
+   * Return true when this entry is a symbolic link.
+   *
+   * ```typescript no_run
+   * const link = entry.isSymlink();
+   * ```
+   */
   isSymlink(): boolean;
 }
 
-/** @internal Async directory listing callback used by provider-specific globbing. */
+/**
+ * Async directory listing callback used by provider-specific globbing.
+ *
+ * The callback receives a path string and returns entries for that directory.
+ * Throwing from the callback causes the walker to skip that subtree.
+ *
+ * ```typescript no_run
+ * import type { ListDir } from 'internal:file/glob';
+ * const listDir: ListDir = async (_path) => [];
+ * ```
+ *
+ * @internal
+ */
 export type ListDir = (path: string) => Promise<GlobEntry[]>;
 
-/** @internal Options for provider-backed glob traversal. */
+/**
+ * Options for provider-backed glob traversal.
+ *
+ * Defaults are `cwd: '.'`, `dot: false`, `onlyFiles: false`, and
+ * `onlyDirectories: false`.
+ *
+ * ```typescript no_run
+ * import type { GlobOptions } from 'internal:file/glob';
+ * const options: GlobOptions = { cwd: 'src', onlyFiles: true };
+ * ```
+ *
+ * @internal
+ */
 export interface GlobOptions {
+  /**
+   * Directory used as the traversal root.
+   *
+   * ```typescript no_run
+   * import type { GlobOptions } from 'internal:file/glob';
+   * const options: GlobOptions = { cwd: 'js' };
+   * ```
+   */
   cwd?: string;
+  /**
+   * Include dot-prefixed path segments when true.
+   *
+   * ```typescript no_run
+   * import type { GlobOptions } from 'internal:file/glob';
+   * const options: GlobOptions = { dot: true };
+   * ```
+   */
   dot?: boolean;
+  /**
+   * Yield only regular files when true.
+   *
+   * ```typescript no_run
+   * import type { GlobOptions } from 'internal:file/glob';
+   * const options: GlobOptions = { onlyFiles: true };
+   * ```
+   */
   onlyFiles?: boolean;
+  /**
+   * Yield only directories when true.
+   *
+   * ```typescript no_run
+   * import type { GlobOptions } from 'internal:file/glob';
+   * const options: GlobOptions = { onlyDirectories: true };
+   * ```
+   */
   onlyDirectories?: boolean;
+  /**
+   * Abort signal checked before directory reads and between entries.
+   *
+   * Aborting stops traversal without throwing to the iterator consumer.
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * import type { GlobOptions } from 'internal:file/glob';
+   * const options: GlobOptions = { signal: controller.signal };
+   * ```
+   */
   signal?: AbortSignal;
 }
 
@@ -215,6 +470,17 @@ export interface GlobOptions {
  * Uses a push-queue / pull-iterator pattern: a fire-and-forget async walk
  * pushes results into a queue; the iterator's `next()` pulls from the queue
  * or waits for the next push.
+ *
+ * Missing or unreadable subdirectories are skipped. The iterable finishes when
+ * traversal completes or the abort signal is observed.
+ *
+ * ```typescript no_run
+ * import { glob } from 'internal:file/glob';
+ * const listDir = async (_path: string) => [];
+ * for await (const entry of glob(listDir, '**\/*.mts', { onlyFiles: true })) {
+ *   void entry.name;
+ * }
+ * ```
  */
 export function glob(listDir: ListDir, pattern: string, options: GlobOptions = {}): AsyncIterable<GlobEntry> {
   const dot       = options.dot            ?? false;

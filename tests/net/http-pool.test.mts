@@ -11,6 +11,7 @@ import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import { Response } from 'fino:net/http';
 import { h2Available, createPoolEntry } from 'fino:net/http/h2';
+import { H2ConnectionPool } from 'internal:net/http/pool';
 
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
@@ -157,8 +158,6 @@ describe('H2PoolEntry — close and GOAWAY', () => {
 
 describe('H2ConnectionPool — eviction', () => {
   it('pool.get() returns undefined for a closed entry', { skip }, async (t) => {
-    // Import pool internals
-    const { H2ConnectionPool } = await import('fino:net/http/h2') as any;
     if (!H2ConnectionPool) {
       t.ok(true, 'H2ConnectionPool not exported (skipped)');
       return;

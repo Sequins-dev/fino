@@ -1,7 +1,26 @@
 /**
- * internal/opentelemetry/metrics — internal runtime module.
+ * Metric providers, instruments, observable registrations, and aggregation.
  *
- * 
+ * This internal module creates meters and metric instruments, publishes raw
+ * metric observations, and contains the SDK-side helpers that clone, key,
+ * aggregate, zero, and view-transform metric records. It supports counters,
+ * up-down counters, gauges, histograms, observable instruments, exemplars, and
+ * delta or cumulative reader flows.
+ *
+ * Instrument names must be non-empty. Histograms use the OpenTelemetry default
+ * explicit bucket boundaries unless `advice.explicitBucketBoundaries` is
+ * supplied. Observable instruments publish registration records and return a
+ * disposable handle that unregisters the callback.
+ *
+ * ```typescript no_run
+ * const meter = getMeterProvider().getMeter('orders');
+ * const counter = meter.createCounter('orders.created', { unit: '1' });
+ * counter.add(1, { tenant: 'acme' });
+ * ```
+ *
+ * See OpenTelemetry metrics:
+ * https://opentelemetry.io/docs/concepts/signals/metrics/
+ *
  * @internal
  */
 
@@ -28,7 +47,25 @@ import type {
 } from './common.mts';
 import { getActiveSpanContext } from './traces.mts';
 
+/**
+ * MeterProvider class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = MeterProvider;
+ * ```
+ */
 export class MeterProvider extends BaseProvider {
+  /**
+   * getMeter member on MeterProvider.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = MeterProvider.prototype.getMeter;
+   * ```
+   */
   getMeter(
     name: string,
     version?: string,
@@ -38,33 +75,141 @@ export class MeterProvider extends BaseProvider {
   }
 }
 
+/**
+ * Counter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = Counter;
+ * ```
+ */
 export class Counter {
+  /**
+   * #meter member on Counter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Counter.#meter';
+   * ```
+   */
   #meter: Meter;
+  /**
+   * #name member on Counter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Counter.#name';
+   * ```
+   */
   #name: string;
+  /**
+   * #options member on Counter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Counter.#options';
+   * ```
+   */
   #options: MetricInstrumentOptions;
 
+  /**
+   * constructor member on Counter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new Counter();
+   * ```
+   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions = {}) {
     this.#meter = meter;
     this.#name = requireNonEmptyName('metric instrument', name);
     this.#options = options;
   }
 
+  /**
+   * add member on Counter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Counter.prototype.add;
+   * ```
+   */
   add(value: number, attributes: Attributes = {}): void {
     this.#meter.record(this.#name, value, { ...this.#options, attributes, kind: 'counter' });
   }
 }
 
+/**
+ * UpDownCounter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = UpDownCounter;
+ * ```
+ */
 export class UpDownCounter {
+  /**
+   * #meter member on UpDownCounter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'UpDownCounter.#meter';
+   * ```
+   */
   #meter: Meter;
+  /**
+   * #name member on UpDownCounter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'UpDownCounter.#name';
+   * ```
+   */
   #name: string;
+  /**
+   * #options member on UpDownCounter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'UpDownCounter.#options';
+   * ```
+   */
   #options: MetricInstrumentOptions;
 
+  /**
+   * constructor member on UpDownCounter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new UpDownCounter();
+   * ```
+   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions = {}) {
     this.#meter = meter;
     this.#name = requireNonEmptyName('metric instrument', name);
     this.#options = options;
   }
 
+  /**
+   * add member on UpDownCounter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = UpDownCounter.prototype.add;
+   * ```
+   */
   add(value: number, attributes: Attributes = {}): void {
     this.#meter.record(this.#name, value, { ...this.#options, attributes, kind: 'updowncounter' });
   }
@@ -73,12 +218,66 @@ export class UpDownCounter {
 // OTel spec default explicit bucket boundaries.
 const DEFAULT_HISTOGRAM_BOUNDARIES = [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000];
 
+/**
+ * HistogramInstrument class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = HistogramInstrument;
+ * ```
+ */
 export class HistogramInstrument {
+  /**
+   * #meter member on HistogramInstrument.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'HistogramInstrument.#meter';
+   * ```
+   */
   #meter: Meter;
+  /**
+   * #name member on HistogramInstrument.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'HistogramInstrument.#name';
+   * ```
+   */
   #name: string;
+  /**
+   * #options member on HistogramInstrument.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'HistogramInstrument.#options';
+   * ```
+   */
   #options: MetricInstrumentOptions;
+  /**
+   * #boundaries member on HistogramInstrument.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'HistogramInstrument.#boundaries';
+   * ```
+   */
   #boundaries: number[];
 
+  /**
+   * constructor member on HistogramInstrument.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new HistogramInstrument();
+   * ```
+   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {}) {
     this.#meter = meter;
     this.#name = requireNonEmptyName('metric instrument', name);
@@ -88,50 +287,230 @@ export class HistogramInstrument {
       : DEFAULT_HISTOGRAM_BOUNDARIES;
   }
 
+  /**
+   * record member on HistogramInstrument.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = HistogramInstrument.prototype.record;
+   * ```
+   */
   record(value: number, attributes: Attributes = {}): void {
     this.#meter.record(this.#name, value, { ...this.#options, attributes, kind: 'histogram', explicitBounds: this.#boundaries } as MetricInstrumentOptions & { explicitBounds?: number[] });
   }
 }
 
+/**
+ * ObservableGauge class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = ObservableGauge;
+ * ```
+ */
 export class ObservableGauge {
+  /**
+   * #handle member on ObservableGauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'ObservableGauge.#handle';
+   * ```
+   */
   #handle: { dispose(): void } | null;
 
+  /**
+   * constructor member on ObservableGauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new ObservableGauge();
+   * ```
+   */
   constructor(handle: { dispose(): void }) {
     this.#handle = handle;
   }
 
+  /**
+   * dispose member on ObservableGauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = ObservableGauge.prototype.dispose;
+   * ```
+   */
   dispose(): void {
     this.#handle?.dispose?.();
   }
 }
 
+/**
+ * Gauge class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = Gauge;
+ * ```
+ */
 export class Gauge {
+  /**
+   * #meter member on Gauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Gauge.#meter';
+   * ```
+   */
   #meter: Meter;
+  /**
+   * #name member on Gauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Gauge.#name';
+   * ```
+   */
   #name: string;
+  /**
+   * #options member on Gauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Gauge.#options';
+   * ```
+   */
   #options: MetricInstrumentOptions;
 
+  /**
+   * constructor member on Gauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new Gauge();
+   * ```
+   */
   constructor(meter: Meter, name: string, options: MetricInstrumentOptions = {}) {
     this.#meter = meter;
     this.#name = requireNonEmptyName('metric instrument', name);
     this.#options = options;
   }
 
+  /**
+   * record member on Gauge.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Gauge.prototype.record;
+   * ```
+   */
   record(value: number, attributes: Attributes = {}): void {
     this.#meter.record(this.#name, value, { ...this.#options, attributes, kind: 'gauge' });
   }
 }
 
+/**
+ * ObservableCounter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = ObservableCounter;
+ * ```
+ */
 export class ObservableCounter extends ObservableGauge {}
+/**
+ * ObservableUpDownCounter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = ObservableUpDownCounter;
+ * ```
+ */
 export class ObservableUpDownCounter extends ObservableGauge {}
+/**
+ * Histogram const used by the internal OpenTelemetry runtime.
+ *
+ * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const value = Histogram;
+ * ```
+ */
 export const Histogram = HistogramInstrument;
 
+/**
+ * Meter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = Meter;
+ * ```
+ */
 export class Meter {
+  /**
+   * #provider member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Meter.#provider';
+   * ```
+   */
   #provider: MeterProvider;
+  /**
+   * #scope member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Meter.#scope';
+   * ```
+   */
   #scope: ScopeInfo;
   // Pre-cached topic sets keyed by `${instrumentName}:${kind}`, plus the shared record topic.
+  /**
+   * #topicsByKey member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Meter.#topicsByKey';
+   * ```
+   */
   #topicsByKey: Map<string, Array<Topic<MetricRecord>>>;
+  /**
+   * #recordTopic member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Meter.#recordTopic';
+   * ```
+   */
   #recordTopic: Topic<MetricRecord>;
 
+  /**
+   * constructor member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new Meter();
+   * ```
+   */
   constructor(provider: MeterProvider, scope: ScopeInfo) {
     this.#provider = provider;
     this.#scope = scope;
@@ -139,6 +518,16 @@ export class Meter {
     this.#recordTopic = topic<MetricRecord>('otel:metric:record');
   }
 
+  /**
+   * Returns cached scoped metric topics for an instrument and kind.
+   *
+   * Topic names are created lazily and keyed by `instrumentName:kind`. The helper
+   * assumes the caller already normalized and validated the instrument name.
+   *
+   * ```typescript no_run
+   * const helper = 'Meter.#getTopics';
+   * ```
+   */
   #getTopics(instrumentName: string, kind: string): Array<Topic<MetricRecord>> {
     const key = `${instrumentName}:${kind}`;
     let topics = this.#topicsByKey.get(key);
@@ -149,6 +538,15 @@ export class Meter {
     return topics;
   }
 
+  /**
+   * record member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.record;
+   * ```
+   */
   record(name: string, value: number, options: MetricInstrumentOptions & { explicitBounds?: number[] } = {}): void {
     const metricName = requireNonEmptyName('metric instrument', name);
     const activeContext = getActiveSpanContext();
@@ -178,22 +576,67 @@ export class Meter {
     this.#recordTopic.publish(record);
   }
 
+  /**
+   * createCounter member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createCounter;
+   * ```
+   */
   createCounter(name: string, options: MetricInstrumentOptions = {}): Counter {
     return new Counter(this, name, options);
   }
 
+  /**
+   * createUpDownCounter member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createUpDownCounter;
+   * ```
+   */
   createUpDownCounter(name: string, options: MetricInstrumentOptions = {}): UpDownCounter {
     return new UpDownCounter(this, name, options);
   }
 
+  /**
+   * createHistogram member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createHistogram;
+   * ```
+   */
   createHistogram(name: string, options: MetricInstrumentOptions & { advice?: { explicitBucketBoundaries?: number[] } } = {}): HistogramInstrument {
     return new HistogramInstrument(this, name, options);
   }
 
+  /**
+   * createGauge member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createGauge;
+   * ```
+   */
   createGauge(name: string, options: MetricInstrumentOptions = {}): Gauge {
     return new Gauge(this, name, options);
   }
 
+  /**
+   * createObservableCounter member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createObservableCounter;
+   * ```
+   */
   createObservableCounter(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableCounter {
     const registration: ObservableMetricRegistration = {
       kind: 'observablecounter',
@@ -212,6 +655,15 @@ export class Meter {
     });
   }
 
+  /**
+   * createObservableUpDownCounter member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createObservableUpDownCounter;
+   * ```
+   */
   createObservableUpDownCounter(
     name: string,
     callback: ObservableMetricRegistration['callback'],
@@ -234,6 +686,15 @@ export class Meter {
     });
   }
 
+  /**
+   * createObservableGauge member on Meter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Meter.prototype.createObservableGauge;
+   * ```
+   */
   createObservableGauge(name: string, callback: ObservableMetricRegistration['callback'], options: MetricInstrumentOptions = {}): ObservableGauge {
     const registration: ObservableMetricRegistration = {
       kind: 'gauge',
@@ -253,6 +714,15 @@ export class Meter {
   }
 }
 
+/**
+ * cloneMetric function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = cloneMetric;
+ * ```
+ */
 export function cloneMetric(metric: MetricRecord): MetricRecord {
   return {
     ...metric,
@@ -285,6 +755,15 @@ export function cloneMetric(metric: MetricRecord): MetricRecord {
   };
 }
 
+/**
+ * zeroMetric function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = zeroMetric;
+ * ```
+ */
 export function zeroMetric(metric: MetricRecord): MetricRecord {
   const clone = cloneMetric(metric);
   if (typeof clone.value === 'number') clone.value = 0;
@@ -308,20 +787,56 @@ function sortAttributeEntries(attributes: Attributes): Array<[string, unknown]> 
   });
 }
 
+/**
+ * attributesKey function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = attributesKey;
+ * ```
+ */
 export function attributesKey(attributes: Attributes): string {
   return JSON.stringify(sortAttributeEntries(attributes));
 }
 
+/**
+ * normalizeMetricKind function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = normalizeMetricKind;
+ * ```
+ */
 export function normalizeMetricKind(kind: string | undefined): string {
   if (kind === 'observablecounter') return 'counter';
   if (kind === 'observableupdowncounter') return 'updowncounter';
   return kind || 'record';
 }
 
+/**
+ * metricInstrumentKey function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = metricInstrumentKey;
+ * ```
+ */
 export function metricInstrumentKey(metric: MetricRecord): string {
   return JSON.stringify([metric.scope?.name || '', metric.scope?.version || '', metric.name || '', normalizeMetricKind(metric.kind || 'record'), metric.unit || '']);
 }
 
+/**
+ * metricSeriesKey function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = metricSeriesKey;
+ * ```
+ */
 export function metricSeriesKey(metric: MetricRecord): string {
   return JSON.stringify([
     metric.scope?.name || '',
@@ -389,6 +904,15 @@ function initializeAggregate(metric: MetricRecord): MetricRecord {
   };
 }
 
+/**
+ * accumulateMetric function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = accumulateMetric;
+ * ```
+ */
 export function accumulateMetric(store: Map<string, MetricRecord>, key: string, metric: MetricRecord): void {
   const normalized = { ...cloneMetric(metric), aggregationKind: normalizeMetricKind(metric.kind || metric.aggregationKind || 'record') };
   const existing = store.get(key);
@@ -415,6 +939,15 @@ export function accumulateMetric(store: Map<string, MetricRecord>, key: string, 
   if (exemplar) existing.exemplars = [exemplar];
 }
 
+/**
+ * applyMetricView function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = applyMetricView;
+ * ```
+ */
 export function applyMetricView(metric: MetricRecord, views: MetricView[]): MetricRecord {
   let out = cloneMetric(metric);
   for (const view of views) {
@@ -457,18 +990,54 @@ export function applyMetricView(metric: MetricRecord, views: MetricView[]): Metr
 const meterProviderContext = new Context<MeterProvider | null>('otel:meter-provider');
 let defaultMeterProvider = new MeterProvider();
 
+/**
+ * getMeterProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = getMeterProvider;
+ * ```
+ */
 export function getMeterProvider(): MeterProvider {
   return meterProviderContext.get() || defaultMeterProvider;
 }
 
+/**
+ * setMeterProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = setMeterProvider;
+ * ```
+ */
 export function setMeterProvider(provider: MeterProvider): void {
   defaultMeterProvider = provider;
 }
 
+/**
+ * runWithMeterProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = runWithMeterProvider;
+ * ```
+ */
 export function runWithMeterProvider<R>(provider: MeterProvider, fn: () => R): R {
   return meterProviderContext.runWithValue(provider, fn);
 }
 
+/**
+ * runWithoutMeterProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = runWithoutMeterProvider;
+ * ```
+ */
 export function runWithoutMeterProvider<R>(fn: () => R): R {
   return meterProviderContext.runWithValue(null, fn);
 }

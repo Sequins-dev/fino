@@ -120,10 +120,31 @@ interface MeasureOptions<T = unknown> {
 
 Options for registering a benchmark measurement with setup and teardown hooks.
 
+`setup()` and `teardown()` run outside the measured loop. The value returned
+by `setup()` is passed to `fn(ctx)` for every timed iteration and then to
+`teardown(ctx)` once the adaptive one-second sample window completes.
+
+```ts
+import { bench, type MeasureOptions } from 'fino:test/bench';
+
+const opts: MeasureOptions<{ value: string }> = {
+  setup: () => ({ value: '42' }),
+  fn: (ctx) => Number(ctx.value),
+  teardown: () => {},
+};
+bench('numbers', (b) => b.measure('Number()', opts));
+```
+
 ### setup
 
 ```ts
 setup?: () => T
+```
+
+Prepare state for the measured function.
+
+```ts
+const setup = () => ({ buffer: new Uint8Array(1024) });
 ```
 
 ### fn
@@ -132,10 +153,22 @@ setup?: () => T
 fn: (ctx: T) => unknown
 ```
 
+Function measured repeatedly until at least one second of runtime has been sampled.
+
+```ts
+const fn = (ctx: { value: string }) => Number(ctx.value);
+```
+
 ### teardown
 
 ```ts
 teardown?: (ctx: T) => void
+```
+
+Clean up state created by `setup()`.
+
+```ts
+const teardown = (_ctx: { close?: () => void }) => {};
 ```
 
 ## Group
@@ -146,10 +179,32 @@ class Group {
 
 Benchmark group containing deferred measurements and nested groups.
 
+Group instances are passed to `bench()` callbacks and nested `group()`
+callbacks. Registration is cheap; work runs later when `finalize()` executes.
+
+```ts
+import { Group } from 'fino:test/bench';
+
+const group = new Group('manual');
+group.measure('noop', () => {});
+```
+
 ### constructor
 
 ```ts
 constructor(name: string, indent: number = 0, filter: string | null = null, path: string[] = [name])
+```
+
+Create a benchmark group.
+
+Most application code receives groups from `bench()` rather than calling
+this constructor directly. `indent`, `filter`, and `path` are used by the
+runner for nested output and filtered execution.
+
+```ts
+import { Group } from 'fino:test/bench';
+
+const group = new Group('manual', 0, null, ['manual']);
 ```
 
 ### measure
@@ -174,6 +229,18 @@ iteration.
 `setup()` and `teardown()` are synchronous and are not included in timing.
 The return value of `setup()` is passed as the first argument to `fn(ctx)`.
 
+```ts
+import { bench } from 'fino:test/bench';
+
+bench('strings', (b) => {
+  b.measure('concat', () => { 'a' + 'b'; });
+  b.measure('with setup', {
+    setup: () => ['a', 'b'],
+    fn: (parts) => parts.join(''),
+  });
+});
+```
+
 ### group
 
 ```ts
@@ -181,6 +248,16 @@ group(name: string, fn: (g: Group) => void): void
 ```
 
 Add a named sub-group. Registration is deferred until `finalize()`.
+
+```ts
+import { bench } from 'fino:test/bench';
+
+bench('runtime', (b) => {
+  b.group('numbers', (g) => {
+    g.measure('parseInt', () => parseInt('42', 10));
+  });
+});
+```
 
 ### finalize
 
@@ -191,10 +268,29 @@ finalize()
 Execute all pending measurements and sub-groups, then print the
 comparison. Called by run() after the suite body returns.
 
+```ts
+import { Group } from 'fino:test/bench';
+
+const group = new Group('manual');
+group.measure('noop', () => {});
+group.finalize();
+```
+
 ### shouldRun
 
 ```ts
 shouldRun(): boolean
+```
+
+Return whether this group has measurements matching the active filter.
+
+This is mainly used by the runner before printing a group heading. With no
+filter, every group runs.
+
+```ts
+import { Group } from 'fino:test/bench';
+
+new Group('strings', 0, 'strings').shouldRun(); // true
 ```
 
 ## bench
@@ -205,6 +301,14 @@ function bench(name: string, fn: (b: Group) => void): void
 
 Register a benchmark suite.
 
+```ts
+import { bench } from 'fino:test/bench';
+
+bench('strings', (b) => {
+  b.measure('concat', () => { 'a' + 'b'; });
+});
+```
+
 ## run
 
 ```ts
@@ -214,3 +318,10 @@ async function run(options: { filter?: string } = {})
 Run all registered benchmark suites and print results.
 
 Prints the benc.h v1.0.0 header, then each suite in registration order.
+
+```ts
+import { bench, run } from 'fino:test/bench';
+
+bench('noop', (b) => b.measure('empty', () => {}));
+await run({ filter: 'noop' });
+```

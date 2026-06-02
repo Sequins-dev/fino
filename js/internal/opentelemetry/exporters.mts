@@ -1,7 +1,28 @@
 /**
- * internal/opentelemetry/exporters — internal runtime module.
+ * OTLP HTTP JSON export and wire-format conversion helpers.
  *
- * 
+ * This internal module serializes span, log, and metric records into OTLP/HTTP
+ * JSON payloads and posts them to collector endpoints. It groups records by
+ * resource and scope, maps runtime record fields into OTLP signal shapes,
+ * handles optional request compression, parses partial-success responses, and
+ * applies retry and timeout options.
+ *
+ * The default endpoint is `http://127.0.0.1:4318`, with `/v1/traces`,
+ * `/v1/logs`, or `/v1/metrics` appended unless a signal-specific endpoint or
+ * full `/v1/...` endpoint is supplied. Export after shutdown returns failure.
+ * 4xx responses other than 429 are not retried.
+ *
+ * ```typescript no_run
+ * const exporter = new OTLPHttpJsonExporter({
+ *   endpoint: 'http://127.0.0.1:4318',
+ *   retry: { maxAttempts: 2, initialBackoffMillis: 100 },
+ * });
+ * await exporter.exportSpans([]);
+ * ```
+ *
+ * See the OTLP specification:
+ * https://opentelemetry.io/docs/specs/otlp/
+ *
  * @internal
  */
 
@@ -534,19 +555,136 @@ function normalizeStatus(status: { code?: string } | null | undefined): number {
   return 0;
 }
 
+/**
+ * OTLPHttpJsonExporter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = OTLPHttpJsonExporter;
+ * ```
+ */
 export class OTLPHttpJsonExporter {
+  /**
+   * #baseEndpoint member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#baseEndpoint';
+   * ```
+   */
   #baseEndpoint: string;
+  /**
+   * #signalEndpoints member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#signalEndpoints';
+   * ```
+   */
   #signalEndpoints: Record<OtlpSignal, string | undefined>;
+  /**
+   * #headers member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#headers';
+   * ```
+   */
   #headers: Record<string, string>;
+  /**
+   * #timeoutMillis member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#timeoutMillis';
+   * ```
+   */
   #timeoutMillis: number;
+  /**
+   * #compression member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#compression';
+   * ```
+   */
   #compression: CompressionKind;
+  /**
+   * #retry member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#retry';
+   * ```
+   */
   #retry: Required<RetryOptions>;
+  /**
+   * #onError member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#onError';
+   * ```
+   */
   #onError: ((error: Error) => void) | null;
+  /**
+   * #onPartialSuccess member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#onPartialSuccess';
+   * ```
+   */
   #onPartialSuccess: ((result: PartialSuccessResult) => void) | null;
+  /**
+   * #onRequest member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#onRequest';
+   * ```
+   */
   #onRequest: OtlpExporterOptions['onRequest'] | null;
+  /**
+   * #onResponse member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#onResponse';
+   * ```
+   */
   #onResponse: OtlpExporterOptions['onResponse'] | null;
+  /**
+   * #isShutdown member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OTLPHttpJsonExporter.#isShutdown';
+   * ```
+   */
   #isShutdown: boolean;
 
+  /**
+   * constructor member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new OTLPHttpJsonExporter();
+   * ```
+   */
   constructor(options: OtlpExporterOptions = {}) {
     const cfg = normalizeOtlpOptions('OTLP HTTP JSON exporter', options, 'http://127.0.0.1:4318');
     this.#baseEndpoint = cfg.baseEndpoint;
@@ -562,6 +700,18 @@ export class OTLPHttpJsonExporter {
     this.#isShutdown = false;
   }
 
+  /**
+   * Serializes an OTLP JSON payload and posts it to the signal endpoint.
+   *
+   * Returns `{ code: 'success' }` for successful HTTP responses, including
+   * partial-success responses after invoking the configured callback. Returns
+   * `{ code: 'failure' }` after shutdown, network failure, non-retryable 4xx, or
+   * exhausted retry attempts.
+   *
+   * ```typescript no_run
+   * const helper = 'OTLPHttpJsonExporter.#post';
+   * ```
+   */
   async #post(path: OtlpSignal, payload: Record<string, unknown>): Promise<ExportResult> {
     const body = JSON.stringify(payload);
     return postOtlp({
@@ -579,18 +729,54 @@ export class OTLPHttpJsonExporter {
     }, path, body, 'application/json');
   }
 
+  /**
+   * exportSpans member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OTLPHttpJsonExporter.prototype.exportSpans;
+   * ```
+   */
   async exportSpans(spans: SpanRecord[]): Promise<ExportResult> {
     return this.#post('traces', jsonTraceExport(spans));
   }
 
+  /**
+   * exportLogs member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OTLPHttpJsonExporter.prototype.exportLogs;
+   * ```
+   */
   async exportLogs(logs: LogRecord[]): Promise<ExportResult> {
     return this.#post('logs', jsonLogsExport(logs));
   }
 
+  /**
+   * exportMetrics member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OTLPHttpJsonExporter.prototype.exportMetrics;
+   * ```
+   */
   async exportMetrics(metrics: MetricRecord[]): Promise<ExportResult> {
     return this.#post('metrics', jsonMetricsExport(metrics));
   }
 
+  /**
+   * shutdown member on OTLPHttpJsonExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OTLPHttpJsonExporter.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {
     this.#isShutdown = true;
   }

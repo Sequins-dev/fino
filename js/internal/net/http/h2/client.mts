@@ -1,5 +1,5 @@
 /**
- * internal:net/http/h2/client — H2ClientDriver.
+ * internal:net/http/h2/client - H2ClientDriver.
  *
  * Sends one HTTP/2 request over an already-connected reader/writer pair.
  * Each call opens its own nghttp2 client session (no pooling; that is Step 13).
@@ -7,12 +7,29 @@
  *
  * ## Flow
  *
- * 1. Create client Nghttp2Session → nghttp2 queues the connection preface.
+ * 1. Create client Nghttp2Session -> nghttp2 queues the connection preface.
  * 2. Submit SETTINGS (empty) and the request HEADERS.
- * 3. Drain write → preface + SETTINGS + HEADERS go on the wire.
+ * 3. Drain write -> preface + SETTINGS + HEADERS go on the wire.
  * 4. Loop recv(chunk) + drainWrite until the response stream END_STREAMs.
  * 5. Send GOAWAY, drain, close session, close writer.
  * 6. Resolve the returned Promise with the buffered Response.
+ *
+ * ## Example
+ *
+ * ```ts no_run
+ * import { H2ClientDriver } from 'internal:net/http/h2/client';
+ * import { Request } from 'fino:net/http';
+ *
+ * const driver = new H2ClientDriver();
+ * const response = await driver.send(
+ *   new Request('https://example.test/'),
+ *   reader,
+ *   writer,
+ *   {},
+ * );
+ *
+ * response.status;
+ * ```
  *
  * @internal
  */
@@ -57,9 +74,51 @@ interface H2ClientStream {
 // H2ClientDriver
 // ---------------------------------------------------------------------------
 
+/**
+ * HTTP/2 client driver for a single connected reader/writer pair.
+ *
+ * Each `send()` call creates a fresh nghttp2 client session and buffers the
+ * complete response body before resolving. Connection pooling is handled by the
+ * separate HTTP/2 pool layer, not this one-shot driver.
+ *
+ * ```ts no_run
+ * import { H2ClientDriver } from 'internal:net/http/h2/client';
+ * const driver = new H2ClientDriver();
+ * driver.multiplexed;
+ * ```
+ *
+ * @internal
+ */
 export class H2ClientDriver implements ClientDriver {
+  /**
+   * Whether this driver supports multiplexed protocol semantics.
+   *
+   * The flag is `true` for HTTP/2. This one-shot driver still sends one request
+   * per session, but the protocol itself supports multiplexing and the pool
+   * uses that capability.
+   *
+   * ```ts
+   * import { H2ClientDriver } from 'internal:net/http/h2/client';
+   * new H2ClientDriver().multiplexed;
+   * ```
+   */
   readonly multiplexed = true;
 
+  /**
+   * Send one HTTP request over an already connected HTTP/2 stream pair.
+   *
+   * The request body is buffered before submission. The returned promise
+   * resolves with a fully buffered `Response`, rejects on stream close errors,
+   * and always attempts GOAWAY, session close, and writer close in `finally`.
+   *
+   * ```ts no_run
+   * import { Request } from 'fino:net/http';
+   * import { H2ClientDriver } from 'internal:net/http/h2/client';
+   * const driver = new H2ClientDriver();
+   * const res = await driver.send(new Request('https://example.test/'), reader, writer, {});
+   * res.status;
+   * ```
+   */
   async send(
     req: Request,
     reader: BufferedBytesReader,
@@ -68,7 +127,7 @@ export class H2ClientDriver implements ClientDriver {
   ): Promise<Response> {
     const streams = new Map<number, H2ClientStream>();
 
-    // Serialize all drainWrite calls — same race as server.mts.
+    // Serialize all drainWrite calls - same race as server.mts.
     let drainChain: Promise<void> = Promise.resolve();
     function drainWrite(): Promise<void> {
       drainChain = drainChain.then(async () => {
@@ -177,7 +236,7 @@ export class H2ClientDriver implements ClientDriver {
       } catch { bodyBytes = null; }
     }
 
-    // Submit the request — returns the stream ID.
+    // Submit the request - returns the stream ID.
     const hasBody = bodyBytes !== null;
     const streamId = session.submitRequest(requestHeaders, hasBody);
 

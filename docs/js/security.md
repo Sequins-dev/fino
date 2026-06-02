@@ -6,6 +6,13 @@ The module includes cryptographic random bytes and tokens, security and CORS
 header builders, signed or sealed cookies, PBKDF2 password records, JWK/JWKS
 utilities, compact JWT/JWE helpers, and signed opaque JSON tokens.
 
+```ts
+import { createSecurityHeaders, randomToken } from 'fino:security';
+
+const headers = createSecurityHeaders();
+const token = randomToken();
+```
+
 ## randomBytes
 
 ```ts

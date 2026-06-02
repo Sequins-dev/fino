@@ -23,6 +23,18 @@
  *
  * Registers `globalThis.crypto` at import time.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import { crypto, cryptoAvailable } from 'internal:globals/crypto';
+ *
+ * if (cryptoAvailable) {
+ *   const data = new TextEncoder().encode('hello');
+ *   const digest = await crypto.subtle.digest('SHA-256', data);
+ *   console.log(new Uint8Array(digest).byteLength);
+ * }
+ * ```
+ *
  * @internal
  */
 
@@ -81,14 +93,48 @@ const _pkeyRegistry = new FinalizationRegistry<object>((pkey) => {
   openssl.evpPkeyFree(pkey);
 });
 
+/**
+ * Web Crypto key handle backed by either symmetric bytes or an OpenSSL EVP_PKEY.
+ *
+ * CryptoKey exposes metadata but not key material unless the key is extractable
+ * and exported through SubtleCrypto. Asymmetric native keys are freed with a
+ * FinalizationRegistry when the wrapper is collected.
+ *
+ * ```typescript no_run
+ * const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt']);
+ * key.type; // "secret"
+ * ```
+ *
+ * @internal
+ */
 class CryptoKey {
   #type:        KeyType;
   #extractable: boolean;
   #algorithm:   CryptoKeyAlgorithm;
   #usages:      KeyUsage[];
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt']);
+   * Object.prototype.toString.call(key); // "[object CryptoKey]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'CryptoKey'; }
 
+  /**
+   * Create an internal CryptoKey wrapper.
+   *
+   * Symmetric keys store bytes in a WeakMap. Asymmetric keys store an OpenSSL
+   * pointer in a WeakMap and register it for finalization. User code receives
+   * CryptoKey objects from SubtleCrypto methods rather than constructing them.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
+   * key.extractable; // true
+   * ```
+   */
   constructor(
     type: KeyType,
     extractable: boolean,
@@ -108,9 +154,51 @@ class CryptoKey {
     }
   }
 
+  /**
+   * Key kind: public, private, or secret.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
+   * key.type; // "secret"
+   * ```
+   */
   get type():        KeyType           { return this.#type; }
+
+  /**
+   * Whether exportKey() and wrapKey() are allowed to reveal this key.
+   *
+   * Non-extractable keys throw when exported or wrapped.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt']);
+   * key.extractable; // false
+   * ```
+   */
   get extractable(): boolean           { return this.#extractable; }
+
+  /**
+   * Normalized algorithm descriptor associated with this key.
+   *
+   * The descriptor includes fields such as hash, length, namedCurve, or RSA
+   * modulus information depending on the algorithm.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
+   * key.algorithm.name; // "AES-GCM"
+   * ```
+   */
   get algorithm():   CryptoKeyAlgorithm { return this.#algorithm; }
+
+  /**
+   * Frozen copy of allowed key usages.
+   *
+   * Mutating the returned array is not possible and does not affect the key.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
+   * key.usages.includes('encrypt'); // true
+   * ```
+   */
   get usages():      readonly KeyUsage[] { return Object.freeze([...this.#usages]); }
 }
 
@@ -397,6 +485,13 @@ function _ecCoordSize(key: CryptoKey): number {
 // ---------------------------------------------------------------------------
 
 const subtle = {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(crypto.subtle); // "[object SubtleCrypto]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'SubtleCrypto'; },
 
   // -------------------------------------------------------------------------
@@ -405,6 +500,14 @@ const subtle = {
 
   /**
    * Compute a hash digest for `data`.
+   *
+   * Supports SHA-1, SHA-256, SHA-384, and SHA-512. Throws if OpenSSL is not
+   * available or the algorithm is unsupported.
+   *
+   * ```typescript no_run
+   * const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('hello'));
+   * digest.byteLength; // 32
+   * ```
    */
   async digest(algorithm: string | { name: string; [key: string]: unknown }, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
@@ -420,6 +523,14 @@ const subtle = {
 
   /**
    * Sign `data` with an HMAC, ECDSA, RSA-PSS, or RSASSA-PKCS1-v1_5 key.
+   *
+   * The key must include the "sign" usage. ECDSA signatures are returned in
+   * WebCrypto raw r||s form; RSA and HMAC return backend-produced bytes.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, true, ['sign']);
+   * const sig = await crypto.subtle.sign('HMAC', key, new Uint8Array([1]));
+   * ```
    */
   async sign(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
@@ -457,6 +568,15 @@ const subtle = {
 
   /**
    * Verify a signature produced by `sign`.
+   *
+   * Returns false for malformed or non-matching signatures and throws for
+   * unsupported algorithms, unavailable OpenSSL, or disallowed key usage.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, true, ['sign', 'verify']);
+   * const sig = await crypto.subtle.sign('HMAC', key, new Uint8Array([1]));
+   * await crypto.subtle.verify('HMAC', key, sig, new Uint8Array([1])); // true
+   * ```
    */
   async verify(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, signature: BufferSource, data: BufferSource): Promise<boolean> {
     _checkCryptoAvailable();
@@ -507,6 +627,15 @@ const subtle = {
 
   /**
    * Encrypt data with AES-GCM, AES-CBC, or RSA-OAEP.
+   *
+   * The key must include the "encrypt" usage. AES-GCM returns ciphertext
+   * followed by the authentication tag; AES-CBC returns ciphertext only.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt']);
+   * const iv = crypto.getRandomValues(new Uint8Array(12));
+   * const out = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new Uint8Array([1]));
+   * ```
    */
   async encrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
@@ -543,6 +672,16 @@ const subtle = {
 
   /**
    * Decrypt data produced by `encrypt`.
+   *
+   * The key must include the "decrypt" usage. AES-GCM input must include the
+   * trailing tag, and authentication failures are surfaced by the backend.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt', 'decrypt']);
+   * const iv = crypto.getRandomValues(new Uint8Array(12));
+   * const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new Uint8Array([1]));
+   * await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted);
+   * ```
    */
   async decrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
@@ -584,6 +723,15 @@ const subtle = {
 
   /**
    * Import raw, PKCS#8, SPKI, or JWK key material as a CryptoKey.
+   *
+   * Supported formats depend on the algorithm. JWK import accepts oct, EC, and
+   * RSA keys. PBKDF2 and HKDF raw imports are always non-extractable.
+   *
+   * ```typescript no_run
+   * const raw = new Uint8Array(16);
+   * const key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', true, ['encrypt']);
+   * key.algorithm.name; // "AES-GCM"
+   * ```
    */
   async importKey(format: KeyFormat, keyData: BufferSource, algorithm: string | { name: string; [key: string]: unknown }, extractable: boolean, keyUsages: KeyUsage[]): Promise<CryptoKey> {
     _checkCryptoAvailable();
@@ -737,6 +885,15 @@ const subtle = {
 
   /**
    * Export a CryptoKey as raw bytes, SPKI, PKCS#8, or JWK data.
+   *
+   * The key must be extractable. JWK export returns an object, while raw, spki,
+   * and pkcs8 return ArrayBuffer bytes.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
+   * const raw = await crypto.subtle.exportKey('raw', key);
+   * raw.byteLength; // 16
+   * ```
    */
   async exportKey(format: KeyFormat, key: CryptoKey): Promise<ArrayBuffer | object> {
     _checkCryptoAvailable();
@@ -834,6 +991,19 @@ const subtle = {
 
   /**
    * Generate a new secret key or asymmetric key pair.
+   *
+   * AES and HMAC return a single CryptoKey. ECDH, ECDSA, RSA-OAEP, RSA-PSS,
+   * and RSASSA-PKCS1-v1_5 return { privateKey, publicKey }. Missing algorithm
+   * defaults follow this module's documented choices.
+   *
+   * ```typescript no_run
+   * const pair = await crypto.subtle.generateKey(
+   *   { name: 'ECDSA', namedCurve: 'P-256' },
+   *   true,
+   *   ['sign', 'verify'],
+   * );
+   * pair.privateKey.type; // "private"
+   * ```
    */
   async generateKey(
     algorithm: string | { name: string; [key: string]: unknown },
@@ -955,6 +1125,19 @@ const subtle = {
 
   /**
    * Derive raw key bits with PBKDF2, HKDF, or ECDH.
+   *
+   * The base key must allow deriveBits or deriveKey. The requested length is
+   * expressed in bits and the returned ArrayBuffer length is ceil(length / 8).
+   *
+   * ```typescript no_run
+   * const base = await crypto.subtle.importKey('raw', new Uint8Array([1, 2]), 'PBKDF2', false, ['deriveBits']);
+   * const bits = await crypto.subtle.deriveBits(
+   *   { name: 'PBKDF2', salt: new Uint8Array([3]), iterations: 1, hash: 'SHA-256' },
+   *   base,
+   *   128,
+   * );
+   * bits.byteLength; // 16
+   * ```
    */
   async deriveBits(algorithm: string | { name: string; [key: string]: unknown }, baseKey: CryptoKey, length: number): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
@@ -1015,6 +1198,21 @@ const subtle = {
 
   /**
    * Derive a CryptoKey from another key.
+   *
+   * This derives raw bits with deriveBits() and imports them as the requested
+   * derived key type. AES-GCM, AES-CBC, and HMAC are supported as outputs.
+   *
+   * ```typescript no_run
+   * const base = await crypto.subtle.importKey('raw', new Uint8Array([1, 2]), 'HKDF', false, ['deriveKey']);
+   * const key = await crypto.subtle.deriveKey(
+   *   { name: 'HKDF', salt: new Uint8Array(), info: new Uint8Array(), hash: 'SHA-256' },
+   *   base,
+   *   { name: 'AES-GCM', length: 128 },
+   *   true,
+   *   ['encrypt'],
+   * );
+   * key.type; // "secret"
+   * ```
    */
   async deriveKey(
     algorithm: string | { name: string; [key: string]: unknown },
@@ -1044,6 +1242,17 @@ const subtle = {
 
   /**
    * Export and encrypt a key with another key.
+   *
+   * The wrapped key must be extractable and the wrapping key must allow
+   * wrapKey. This implementation supports AES wrapping algorithms through the
+   * same AES-GCM/AES-CBC path used for encryption.
+   *
+   * ```typescript no_run
+   * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
+   * const wrappingKey = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['wrapKey']);
+   * const iv = new Uint8Array(12);
+   * await crypto.subtle.wrapKey('raw', key, wrappingKey, { name: 'AES-GCM', iv });
+   * ```
    */
   async wrapKey(
     format: KeyFormat,
@@ -1079,6 +1288,21 @@ const subtle = {
 
   /**
    * Decrypt wrapped key material and import it as a CryptoKey.
+   *
+   * The unwrapping key must allow unwrapKey. raw and jwk wrapped formats are
+   * supported; other formats currently throw.
+   *
+   * ```typescript no_run
+   * const unwrapped = await crypto.subtle.unwrapKey(
+   *   'raw',
+   *   wrappedBytes,
+   *   unwrappingKey,
+   *   { name: 'AES-GCM', iv },
+   *   'AES-GCM',
+   *   true,
+   *   ['encrypt'],
+   * );
+   * ```
    */
   async unwrapKey(
     format: KeyFormat,
@@ -1119,11 +1343,38 @@ const subtle = {
 // crypto object (globalThis.crypto)
 // ---------------------------------------------------------------------------
 
+/**
+ * Web Crypto global object backed by OpenSSL.
+ *
+ * Methods throw an informative Error when libcrypto is unavailable. The object
+ * is installed on globalThis when this module is imported.
+ *
+ * ```typescript no_run
+ * const bytes = crypto.getRandomValues(new Uint8Array(8));
+ * const id = crypto.randomUUID();
+ * ```
+ */
 export const crypto = {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(crypto); // "[object Crypto]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'Crypto'; },
 
   /**
    * Fill `typedArray` with cryptographically random bytes.
+   *
+   * The argument must be an integer typed array and must not exceed 65536
+   * bytes. The same typed array object is returned.
+   *
+   * ```typescript no_run
+   * const bytes = crypto.getRandomValues(new Uint8Array(16));
+   * bytes.byteLength; // 16
+   * ```
+   *
    * @param {TypedArray} typedArray
    * @returns {TypedArray} the same typed array
    */
@@ -1157,6 +1408,14 @@ export const crypto = {
 
   /**
    * Generate a random RFC 9562 UUID string.
+   *
+   * The UUID is version 4 and uses the runtime UUID module's random source.
+   * Throws if OpenSSL is unavailable.
+   *
+   * ```typescript no_run
+   * const id = crypto.randomUUID();
+   * id.length; // 36
+   * ```
    */
   randomUUID(): string {
     _checkCryptoAvailable();
@@ -1165,6 +1424,13 @@ export const crypto = {
 
   /**
    * SubtleCrypto-compatible cryptographic operations.
+   *
+   * This object exposes digest, sign, verify, encrypt, decrypt, key import and
+   * export, key generation, derivation, wrapping, and unwrapping.
+   *
+   * ```typescript no_run
+   * await crypto.subtle.digest('SHA-256', new Uint8Array());
+   * ```
    */
   subtle,
 };
@@ -1173,8 +1439,25 @@ export const crypto = {
 globalThis.crypto = crypto as unknown as typeof globalThis.crypto;
 (globalThis as Record<string, unknown>).CryptoKey = CryptoKey;
 
-/** Whether the OpenSSL (libcrypto) backend loaded successfully. */
+/**
+ * Whether the OpenSSL libcrypto backend loaded successfully.
+ *
+ * When false, crypto methods throw instead of attempting unavailable FFI calls.
+ *
+ * ```typescript no_run
+ * if (!cryptoAvailable) console.warn('crypto disabled');
+ * ```
+ */
 export const cryptoAvailable = openssl.cryptoAvailable;
 
-/** Whether the OpenSSL TLS (libssl) backend loaded successfully. */
+/**
+ * Whether the OpenSSL libssl TLS backend loaded successfully.
+ *
+ * This flag is exported from the crypto globals module for code that wants to
+ * check TLS support alongside crypto support.
+ *
+ * ```typescript no_run
+ * if (!tlsAvailable) console.warn('tls disabled');
+ * ```
+ */
 export const tlsAvailable = openssl.tlsAvailable;

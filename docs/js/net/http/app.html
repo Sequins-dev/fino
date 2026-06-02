@@ -1,0 +1,824 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fino - app</title>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}.member{border-left:3px solid var(--border);padding-left:12px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}}</style>
+</head>
+<body>
+<div class="docs-layout">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../../index.html">fino</a></p>
+<ul><li><div class="docs-sidebar-directory">Docs</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../getting-started.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Getting Started</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../runtime-model.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Runtime Model</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../cli.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>CLI</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../modules-and-packages.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Modules and Packages</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../testing-and-benchmarking.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Testing and Benchmarking</span></a></li><li><div class="docs-sidebar-directory">database</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../database/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Database Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../file/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>File Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../format/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Format Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">net/http</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>HTTP Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">realm</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../../realm/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Realm Guide</span></a></li></ul></li></ul></li><li><div class="docs-sidebar-directory">API Reference</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../archive.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>archive</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../cluster.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cluster</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../compress.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>compress</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../config.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>config</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../context.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>context</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../context/topic.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>topic</span></a></li></ul></li><li><div class="docs-sidebar-directory">database</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../database/sqlite.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>sqlite</span></a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../file/fs.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>fs</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../file/path.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>path</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../file/watch.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>watch</span></a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../format/csv.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>csv</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../format/markdown.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>markdown</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../format/toml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>toml</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../format/typescript.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>typescript</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../format/xml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>xml</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../format/yaml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>yaml</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../log.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>log</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../module.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>module</span></a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../dns.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>dns</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../http.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>http</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="app.html" aria-current="page"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>app</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="driver.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>driver</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="eventsource.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>eventsource</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="h1.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>h1</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="h2.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>h2</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="server.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>server</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="websocket.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>websocket</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../socket.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>socket</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../tls.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>tls</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../opentelemetry.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>opentelemetry</span></a></li><li><div class="docs-sidebar-directory">parsing</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../parsing/scanner.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>scanner</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../process.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>process</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../process/argv.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>argv</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../realm.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>realm</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../realm/messaging.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>messaging</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../realm/pool.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>pool</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../realm/self.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>self</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>security</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/cookie.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cookie</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/cors.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cors</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/headers.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>headers</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/jwk.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>jwk</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/jwt.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>jwt</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/password.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>password</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/random.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>random</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../security/token.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>token</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../semver.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>semver</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../template.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>template</span></a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../test/assert.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>assert</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../test/bench.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>bench</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../test/mock.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>mock</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../test/test.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>test</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../tty.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>tty</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../tty/prompt.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>prompt</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../uuid.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>uuid</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../../validate.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>validate</span></a></li></ul></li></ul>
+</nav>
+<main>
+<h1 id="module:app">app</h1>
+<p class="muted">js/net/http/app.mts</p>
+<p>fino:net/http/app — middleware, routing, and OpenAPI for HTTP services.</p>
+<p>This module builds a small application framework on top of Fino&#39;s existing <code>Request</code>, <code>Response</code>, and <code>serve()</code> APIs. It is intended for APIs that need composable middleware, URLPattern routing, request-scoped values, and a machine-readable OpenAPI document without giving up direct access to the underlying Fetch-compatible HTTP primitives.</p>
+<p>The middleware model is Koa-style: each middleware receives <code>(ctx, next)</code> and may short-circuit by returning a <code>Response</code>, or may <code>await next()</code> and mutate the downstream response. Builders (<code>App</code>, <code>Router</code>, <code>RouteBuilder</code>, and <code>MethodBuilder</code>) share <code>.use()</code>, <code>.value()</code>, and <code>.meta()</code>. A value producer declares a context slot and populates it only when that point in the middleware stack is reached; duplicate slot declarations throw while the app is being built.</p>
+<p>Routing uses the platform <code>URLPattern</code> implementation with pathname patterns such as <code>/users/:id</code>. Path parameters are available through the built-in <code>schema.params()</code> producer, which reserves the usual <code>params</code> slot and validates the matched parameter object. <code>app.context()</code> returns the active request context from anywhere in the async call chain by using <code>fino:context</code>.</p>
+<p>OpenAPI generation targets OpenAPI 3.1 and embeds JSON Schema objects from <code>fino:validate</code> directly. Middleware can describe documentation effects with <code>defineMiddleware(fn, meta)</code> and <code>defineProducer(fn, meta)</code>, making runtime logic independent from documentation generation.</p>
+<pre><code class="language-ts"><span class="tok-keyword">import</span> { App, body, schema } from <span class="tok-string">&#39;fino:net/http/app&#39;</span>;
+<span class="tok-keyword">import</span> { v } from <span class="tok-string">&#39;fino:validate&#39;</span>;
+
+<span class="tok-keyword">const</span> app = <span class="tok-keyword">new</span> App({ name: <span class="tok-string">&#39;Example API&#39;</span> });
+app.route(<span class="tok-string">&#39;/users/:id&#39;</span>)
+  .meta({ tags: [<span class="tok-string">&#39;users&#39;</span>] })
+  .value(<span class="tok-string">&#39;params&#39;</span>, schema.params(v.<span class="tok-keyword">object</span>({ id: v.<span class="tok-keyword">string</span>() })))
+  .post()
+  .value(<span class="tok-string">&#39;body&#39;</span>, body.json(v.<span class="tok-keyword">object</span>({ name: v.<span class="tok-keyword">string</span>() })))
+  .handle((ctx) =&gt; Response.json({ id: ctx.params.id, name: ctx.body.name }));
+
+app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/openapi.json&#39;</span>, app.openapiHandler({ version: <span class="tok-string">&#39;1.0.0&#39;</span> }));
+app.listen({ port: <span class="tok-number">3000</span> });</code></pre>
+<p>Learn more:</p>
+<ul>
+<li>OpenAPI 3.1: <a href="https://spec.openapis.org/oas/v3.1.0">https://spec.openapis.org/oas/v3.1.0</a></li>
+<li>URLPattern: <a href="https://wicg.github.io/urlpattern/">https://wicg.github.io/urlpattern/</a></li>
+<li>HTTP cookies: <a href="https://www.rfc-editor.org/rfc/rfc6265">https://www.rfc-editor.org/rfc/rfc6265</a></li>
+</ul>
+
+
+<h2>Types</h2>
+
+<section id="app.HttpMethod">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="app.html#app.HttpMethod">HttpMethod</a> = <span class="tok-string">&#39;GET&#39;</span> | <span class="tok-string">&#39;POST&#39;</span> | <span class="tok-string">&#39;PUT&#39;</span> | <span class="tok-string">&#39;PATCH&#39;</span> | <span class="tok-string">&#39;DELETE&#39;</span> | <span class="tok-string">&#39;HEAD&#39;</span> | <span class="tok-string">&#39;OPTIONS&#39;</span></code></h3>
+
+<p>Standard HTTP methods supported by route builders.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> method: HttpMethod = <span class="tok-string">&#39;GET&#39;</span>;</code></pre>
+
+</section>
+
+<section id="app.Middleware">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="app.html#app.Middleware">Middleware</a> = (ctx: <a class="tok-type" href="app.html#app.HttpContext">HttpContext</a>, next: () =&gt; <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a>&gt;) =&gt; <a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a> | <span class="tok-keyword">void</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a> | <span class="tok-keyword">void</span>&gt;</code></h3>
+
+<p>Koa-style middleware. Return a response to short-circuit or call <code>next()</code>.</p>
+<p>Returning <code>undefined</code> after calling <code>next()</code> uses the downstream response. Calling <code>next()</code> more than once throws at runtime.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> timing: Middleware = <span class="tok-keyword">async</span> (ctx, next) =&gt; {
+  <span class="tok-keyword">const</span> res = <span class="tok-keyword">await</span> next();
+  res.headers.<span class="tok-keyword">set</span>(<span class="tok-string">&#39;x-route&#39;</span>, ctx.route);
+  <span class="tok-keyword">return</span> res;
+};</code></pre>
+
+</section>
+
+<section id="app.Handler">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="app.html#app.Handler">Handler</a> = (ctx: <a class="tok-type" href="app.html#app.HttpContext">HttpContext</a>) =&gt; <a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a>&gt;</code></h3>
+
+<p>Terminal route handler.</p>
+<p>Handlers must return a <code>Response</code> or a protocol takeover such as a WebSocket connection. Throwing is normally handled by <code>errorHandler()</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> handler: Handler = (ctx) =&gt; Response.json({ id: ctx.params?.id });</code></pre>
+
+</section>
+
+<section id="app.Producer">
+<h3><code><span class="tok-keyword">type</span> <a class="tok-type" href="app.html#app.Producer">Producer</a> = (ctx: <a class="tok-type" href="app.html#app.HttpContext">HttpContext</a>) =&gt; <span class="tok-keyword">unknown</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">unknown</span>&gt;</code></h3>
+
+<p>Context value producer used by <code>.value(name, producer)</code>.</p>
+<p>The producer runs at its position in the middleware stack and stores its return value under the declared context key.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> currentUser: Producer = <span class="tok-keyword">async</span> (ctx) =&gt; loadUser(ctx.request);</code></pre>
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section id="app.HttpContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="app.html#app.HttpContext">HttpContext</a> {</code></h3>
+
+<p>Request context object passed through app middleware and handlers.</p>
+<p>Producers can add additional keys, so application-specific context values are exposed through the index signature. Built-in helpers commonly add <code>params</code>, <code>query</code>, <code>headers</code>, <code>body</code>, <code>cookies</code>, and <code>session</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> handler: Handler = (ctx) =&gt; Response.json({ route: ctx.route });</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="app.HttpContext.request">
+<h5><code>request: <a class="tok-type" href="../http.html#js-net-http.Request">Request</a></code></h5>
+
+<p>Fetch-compatible request being handled.</p>
+<pre><code class="language-ts">console.log(ctx.request.method);</code></pre>
+</section>
+
+<section class="member" id="app.HttpContext.app">
+<h5><code>app: <a class="tok-type" href="app.html#app.App">App</a></code></h5>
+
+<p>App instance that is dispatching this request.</p>
+<pre><code class="language-ts">console.log(ctx.app.context());</code></pre>
+</section>
+
+<section class="member" id="app.HttpContext.route">
+<h5><code>route: <span class="tok-keyword">string</span></code></h5>
+
+<p>Matched route pathname pattern, such as <code>/users/:id</code>.</p>
+<pre><code class="language-ts">console.log(ctx.route);</code></pre>
+</section>
+
+<section class="member" id="app.HttpContext.method">
+<h5><code>method: <span class="tok-keyword">string</span></code></h5>
+
+<p>Matched HTTP method.</p>
+<pre><code class="language-ts">console.log(ctx.method);</code></pre>
+</section>
+
+<section class="member" id="app.HttpContext.params">
+<h5><code>params?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h5>
+
+<p>URLPattern path parameters when a route matched.</p>
+<pre><code class="language-ts">console.log(ctx.params?.id);</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.OperationMeta">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="app.html#app.OperationMeta">OperationMeta</a> {</code></h3>
+
+<p>OpenAPI metadata that can be attached to builders, middleware, or producers.</p>
+<p>Metadata is merged as routes are built. Duplicate parameters or request bodies throw unless <code>replaceRequestBody</code> is set.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/users&#39;</span>).meta({ tags: [<span class="tok-string">&#39;users&#39;</span>], summary: <span class="tok-string">&#39;List users&#39;</span> });</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="app.OperationMeta.operationId">
+<h5><code>operationId?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Explicit OpenAPI operationId.</p>
+<pre><code class="language-ts">route.meta({ operationId: <span class="tok-string">&#39;getUser&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.summary">
+<h5><code>summary?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Short OpenAPI summary.</p>
+<pre><code class="language-ts">route.meta({ summary: <span class="tok-string">&#39;Create a user&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.description">
+<h5><code>description?: <span class="tok-keyword">string</span></code></h5>
+
+<p>Longer OpenAPI description.</p>
+<pre><code class="language-ts">route.meta({ description: <span class="tok-string">&#39;Creates a user account.&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.tags">
+<h5><code>tags?: <span class="tok-keyword">string</span>[]</code></h5>
+
+<p>OpenAPI tags for grouping operations.</p>
+<pre><code class="language-ts">route.meta({ tags: [<span class="tok-string">&#39;users&#39;</span>] });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.security">
+<h5><code>security?: <span class="tok-keyword">unknown</span></code></h5>
+
+<p>OpenAPI security requirement object or array.</p>
+<pre><code class="language-ts">route.meta({ security: [{ bearerAuth: [] }] });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.parameters">
+<h5><code>parameters?: OpenApiParameter[]</code></h5>
+
+<p>Additional OpenAPI parameters.</p>
+<pre><code class="language-ts">route.meta({ parameters: [{ name: <span class="tok-string">&#39;id&#39;</span>, <span class="tok-keyword">in</span>: <span class="tok-string">&#39;path&#39;</span>, required: <span class="tok-keyword">true</span> }] });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.requestBody">
+<h5><code>requestBody?: OpenApiRequestBody</code></h5>
+
+<p>OpenAPI requestBody metadata.</p>
+<pre><code class="language-ts">route.meta({ requestBody: { required: <span class="tok-keyword">true</span>, content: { <span class="tok-string">&#39;application/json&#39;</span>: { schema } } } });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.responses">
+<h5><code>responses?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, OpenApiResponse&gt;</code></h5>
+
+<p>OpenAPI responses keyed by status code.</p>
+<pre><code class="language-ts">route.meta({ responses: { <span class="tok-string">&#39;200&#39;</span>: { description: <span class="tok-string">&#39;OK&#39;</span> } } });</code></pre>
+</section>
+
+<section class="member" id="app.OperationMeta.replaceRequestBody">
+<h5><code>replaceRequestBody?: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>Replace an inherited requestBody instead of throwing on duplication.</p>
+<pre><code class="language-ts">route.meta({ replaceRequestBody: <span class="tok-keyword">true</span>, requestBody });</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.OpenApiOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="app.html#app.OpenApiOptions">OpenApiOptions</a> {</code></h3>
+
+<p>Options passed to <code>App.openapi()</code>.</p>
+<p><code>version</code> is required and becomes <code>info.version</code>. <code>title</code> defaults to the app name passed to <code>new App()</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> doc = app.openapi({ version: <span class="tok-string">&#39;1.0.0&#39;</span>, title: <span class="tok-string">&#39;Admin API&#39;</span> });</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="app.OpenApiOptions.title">
+<h5><code>title?: <span class="tok-keyword">string</span></code></h5>
+
+<p>OpenAPI info title; defaults to the app name.</p>
+<pre><code class="language-ts">app.openapi({ title: <span class="tok-string">&#39;Example API&#39;</span>, version: <span class="tok-string">&#39;1.0.0&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.OpenApiOptions.version">
+<h5><code>version: <span class="tok-keyword">string</span></code></h5>
+
+<p>OpenAPI info version.</p>
+<pre><code class="language-ts">app.openapi({ version: <span class="tok-string">&#39;1.0.0&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.OpenApiOptions.servers">
+<h5><code>servers?: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;&gt;</code></h5>
+
+<p>Optional OpenAPI servers array.</p>
+<pre><code class="language-ts">app.openapi({ version: <span class="tok-string">&#39;1.0.0&#39;</span>, servers: [{ url: <span class="tok-string">&#39;https://api.example.com&#39;</span> }] });</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.Session">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="app.html#app.Session">Session</a> {</code></h3>
+
+<p>Session data persisted by a <code>SessionStore</code>.</p>
+<pre><code class="language-ts">session.data.userId = <span class="tok-string">&#39;u_123&#39;</span>;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="app.Session.id">
+<h5><code>id: <span class="tok-keyword">string</span></code></h5>
+
+<p>Stable session ID.</p>
+<pre><code class="language-ts">console.log(session.id);</code></pre>
+</section>
+
+<section class="member" id="app.Session.data">
+<h5><code>data: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+<p>Mutable session payload.</p>
+<pre><code class="language-ts">session.data.count = Number(session.data.count ?? <span class="tok-number">0</span>) + <span class="tok-number">1</span>;</code></pre>
+</section>
+
+<section class="member" id="app.Session.isNew">
+<h5><code>isNew: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>True when this session was created for the current request.</p>
+<pre><code class="language-ts"><span class="tok-keyword">if</span> (session.isNew) console.log(<span class="tok-string">&#39;new session&#39;</span>);</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.SessionStore">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="app.html#app.SessionStore">SessionStore</a> {</code></h3>
+
+<p>Minimal async session store interface.</p>
+<p>Store methods may be synchronous or async. Returned sessions should be safe for request-local mutation.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> store = memorySessionStore();</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="app.SessionStore.get">
+<h5><code><span class="tok-keyword">get</span>(id: <span class="tok-keyword">string</span>): <a class="tok-type" href="app.html#app.Session">Session</a> | <span class="tok-keyword">null</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="app.html#app.Session">Session</a> | <span class="tok-keyword">null</span>&gt;</code></h5>
+
+<p>Load a session by ID, or return <code>null</code> when missing.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> session = <span class="tok-keyword">await</span> store.<span class="tok-keyword">get</span>(id);</code></pre>
+</section>
+
+<section class="member" id="app.SessionStore.set">
+<h5><code><span class="tok-keyword">set</span>(id: <span class="tok-keyword">string</span>, session: <a class="tok-type" href="app.html#app.Session">Session</a>): <span class="tok-keyword">void</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Persist a session by ID.</p>
+<pre><code class="language-ts"><span class="tok-keyword">await</span> store.<span class="tok-keyword">set</span>(session.id, session);</code></pre>
+</section>
+
+<section class="member" id="app.SessionStore.delete">
+<h5><code><span class="tok-keyword">delete</span>(id: <span class="tok-keyword">string</span>): <span class="tok-keyword">void</span> | <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h5>
+
+<p>Delete a session by ID.</p>
+<pre><code class="language-ts"><span class="tok-keyword">await</span> store.<span class="tok-keyword">delete</span>(id);</code></pre>
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section id="app.defineMiddleware">
+<h3><code><span class="tok-keyword">function</span> defineMiddleware&lt;T <span class="tok-keyword">extends</span> <a class="tok-type" href="app.html#app.Middleware">Middleware</a>&gt;(fn: T, meta: <a class="tok-type" href="app.html#app.OperationMeta">OperationMeta</a> = {}): T</code></h3>
+
+<p>Attach static OpenAPI metadata to a middleware function.</p>
+<p>The returned function is the original function with non-enumerable metadata attached. Metadata is read when the middleware is installed in a route stack.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> auth = defineMiddleware(<span class="tok-keyword">async</span> (ctx, next) =&gt; next(), {
+  security: [{ bearerAuth: [] }],
+});</code></pre>
+
+</section>
+
+<section id="app.defineProducer">
+<h3><code><span class="tok-keyword">function</span> defineProducer&lt;T <span class="tok-keyword">extends</span> <a class="tok-type" href="app.html#app.Producer">Producer</a>&gt;(fn: T, meta: <a class="tok-type" href="app.html#app.OperationMeta">OperationMeta</a> = {}): T</code></h3>
+
+<p>Attach static OpenAPI metadata to a context value producer.</p>
+<p>The returned producer is the original function with metadata attached. Use this for reusable body, params, query, or session producers.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> user = defineProducer(<span class="tok-keyword">async</span> (ctx) =&gt; loadUser(ctx), {
+  parameters: [{ name: <span class="tok-string">&#39;user-id&#39;</span>, <span class="tok-keyword">in</span>: <span class="tok-string">&#39;header&#39;</span> }],
+});</code></pre>
+
+</section>
+
+<section id="app.cookies">
+<h3><code><span class="tok-keyword">function</span> cookies(): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h3>
+
+<p>Producer that creates a <code>CookieJar</code> and appends queued cookies downstream.</p>
+<p>Use with <code>.value(&#39;cookies&#39;, cookies())</code> so handlers can read and mutate cookies through <code>ctx.cookies</code>.</p>
+<pre><code class="language-ts">app.value(<span class="tok-string">&#39;cookies&#39;</span>, cookies());</code></pre>
+
+</section>
+
+<section id="app.memorySessionStore">
+<h3><code><span class="tok-keyword">function</span> memorySessionStore(): <a class="tok-type" href="app.html#app.SessionStore">SessionStore</a></code></h3>
+
+<p>Create an in-memory session store suitable for tests and single-process apps.</p>
+<p>Data is lost when the process exits and is not shared across workers.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> store = memorySessionStore();
+app.value(<span class="tok-string">&#39;session&#39;</span>, sessions({ store }));</code></pre>
+
+</section>
+
+<section id="app.sessions">
+<h3><code><span class="tok-keyword">function</span> sessions(opts: { store: <a class="tok-type" href="app.html#app.SessionStore">SessionStore</a>; cookie?: <span class="tok-keyword">string</span>; cookieOptions?: <a class="tok-type" href="../../security/cookie.html#cookie.CookieOptions">CookieOptions</a> }): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h3>
+
+<p>Producer that loads a cookie-backed session and saves it after response creation.</p>
+<p>Expects <code>ctx.cookies</code> to be a <code>CookieJar</code> when installed after <code>.value(&#39;cookies&#39;, cookies())</code>; otherwise it creates a private jar. New sessions are assigned UUIDs and persisted after the response is produced.</p>
+<pre><code class="language-ts">app.value(<span class="tok-string">&#39;cookies&#39;</span>, cookies()).value(<span class="tok-string">&#39;session&#39;</span>, sessions({ store: memorySessionStore() }));</code></pre>
+
+</section>
+
+<section id="app.errorHandler">
+<h3><code><span class="tok-keyword">function</span> errorHandler(opts: { expose?: <span class="tok-keyword">boolean</span> } = {}): <a class="tok-type" href="app.html#app.Middleware">Middleware</a></code></h3>
+
+<p>Middleware that converts uncaught errors to a JSON error response.</p>
+<p>By default, error messages are hidden. Pass <code>{ expose: true }</code> for development or trusted internal APIs.</p>
+<pre><code class="language-ts">app.use(errorHandler({ expose: <span class="tok-keyword">false</span> }));</code></pre>
+
+</section>
+
+<section id="app.staticFiles">
+<h3><code><span class="tok-keyword">function</span> staticFiles(root: <span class="tok-keyword">string</span>, opts: { index?: <span class="tok-keyword">string</span>; prefix?: <span class="tok-keyword">string</span> } = {}): <a class="tok-type" href="app.html#app.Middleware">Middleware</a></code></h3>
+
+<p>Serve files from a local root directory, short-circuiting matched requests.</p>
+<p>The request path must start with <code>opts.prefix</code> (default <code>/</code>). Paths are normalized and <code>..</code> traversal is rejected with 403. Missing files fall through to downstream middleware.</p>
+<pre><code class="language-ts">app.use(staticFiles(<span class="tok-string">&#39;/var/www&#39;</span>, { index: <span class="tok-string">&#39;index.html&#39;</span>, prefix: <span class="tok-string">&#39;/&#39;</span> }));</code></pre>
+
+</section>
+
+
+<h2>Classes</h2>
+
+<section id="app.App">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="app.html#app.App">App</a> <span class="tok-keyword">extends</span> BuilderBase&lt;<a class="tok-type" href="app.html#app.App">App</a>&gt; {</code></h3>
+
+<p>HTTP application with middleware, routes, async context, serving, and docs.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> app = <span class="tok-keyword">new</span> App({ name: <span class="tok-string">&#39;Example API&#39;</span> });
+app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;ok&#39;</span>));</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="app.App.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(options: { name?: <span class="tok-keyword">string</span> } = {})</code></h5>
+
+<p>Create an application. <code>name</code> becomes the default OpenAPI title.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> app = <span class="tok-keyword">new</span> App({ name: <span class="tok-string">&#39;Billing API&#39;</span> });</code></pre>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="app.App.context">
+<h5><code>context(): <a class="tok-type" href="app.html#app.HttpContext">HttpContext</a> | <span class="tok-keyword">undefined</span></code></h5>
+
+<p>Return the current request context, or <code>undefined</code> outside app handling.</p>
+<p>This uses async context propagation, so it can be called from helpers invoked by a handler.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> ctx = app.context();</code></pre>
+</section>
+
+<section class="member" id="app.App.route">
+<h5><code>route(path: <span class="tok-keyword">string</span>): <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Create a route builder for one URLPattern pathname.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/users/:id&#39;</span>).<span class="tok-keyword">get</span>((ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.App.mount">
+<h5><code>mount(prefix: <span class="tok-keyword">string</span>, router: <a class="tok-type" href="app.html#app.Router">Router</a>): <span class="tok-keyword">this</span></code></h5>
+
+<p>Mount all routes from a router under a prefix.</p>
+<p>Router middleware is combined with current app middleware at mount time.</p>
+<pre><code class="language-ts">app.mount(<span class="tok-string">&#39;/api&#39;</span>, router);</code></pre>
+</section>
+
+<section class="member" id="app.App.get">
+<h5><code><span class="tok-keyword">get</span>(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register a GET route directly or return a method builder.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/health&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-string">&#39;ok&#39;</span>));</code></pre>
+</section>
+
+<section class="member" id="app.App.post">
+<h5><code>post(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register a POST route directly or return a method builder.</p>
+<pre><code class="language-ts">app.post(<span class="tok-string">&#39;/users&#39;</span>, body.json(), (ctx) =&gt; Response.json(ctx.body));</code></pre>
+</section>
+
+<section class="member" id="app.App.put">
+<h5><code>put(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register a PUT route directly or return a method builder.</p>
+<pre><code class="language-ts">app.put(<span class="tok-string">&#39;/users/:id&#39;</span>, (ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.App.patch">
+<h5><code>patch(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register a PATCH route directly or return a method builder.</p>
+<pre><code class="language-ts">app.patch(<span class="tok-string">&#39;/users/:id&#39;</span>, (ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.App.delete">
+<h5><code><span class="tok-keyword">delete</span>(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register a DELETE route directly or return a method builder.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">delete</span>(<span class="tok-string">&#39;/users/:id&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.App.head">
+<h5><code>head(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register a HEAD route directly or return a method builder.</p>
+<pre><code class="language-ts">app.head(<span class="tok-string">&#39;/health&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.App.options">
+<h5><code>options(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span> | <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a></code></h5>
+
+<p>Register an OPTIONS route directly or return a method builder.</p>
+<pre><code class="language-ts">app.options(<span class="tok-string">&#39;/users&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.App.handle">
+<h5><code><span class="tok-keyword">async</span> handle(req: <a class="tok-type" href="../http.html#js-net-http.Request">Request</a>): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<a class="tok-type" href="../http.html#js-net-http.Response">Response</a> | <a class="tok-type" href="driver.html#driver.ConnectionTakeover">ConnectionTakeover</a>&gt;</code></h5>
+
+<p>Dispatch one request through the matching route stack.</p>
+<p>Returns a JSON 404 response when no method/path pair matches. Matching is based on the URL pathname and the request method.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> response = <span class="tok-keyword">await</span> app.handle(<span class="tok-keyword">new</span> Request(<span class="tok-string">&#39;http://local/health&#39;</span>));</code></pre>
+</section>
+
+<section class="member" id="app.App.listen">
+<h5><code>listen(options: Parameters&lt;<span class="tok-keyword">typeof</span> serve&gt;[<span class="tok-number">0</span>]): ReturnType&lt;<span class="tok-keyword">typeof</span> serve&gt;</code></h5>
+
+<p>Start an HTTP server that dispatches requests to this app.</p>
+<p>The returned server is the same object returned by <code>serve()</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> server = app.listen({ port: <span class="tok-number">3000</span> });</code></pre>
+</section>
+
+<section class="member" id="app.App.openapi">
+<h5><code>openapi(options: <a class="tok-type" href="app.html#app.OpenApiOptions">OpenApiOptions</a>): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+<p>Generate an OpenAPI 3.1 document from registered routes and metadata.</p>
+<p>Throws when generated or explicit operation IDs collide.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> doc = app.openapi({ version: <span class="tok-string">&#39;1.0.0&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.App.openapiHandler">
+<h5><code>openapiHandler(options: <a class="tok-type" href="app.html#app.OpenApiOptions">OpenApiOptions</a>): <a class="tok-type" href="app.html#app.Handler">Handler</a></code></h5>
+
+<p>Return a handler that serves this app&#39;s OpenAPI document as JSON.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/openapi.json&#39;</span>, app.openapiHandler({ version: <span class="tok-string">&#39;1.0.0&#39;</span> }));</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.Router">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="app.html#app.Router">Router</a> <span class="tok-keyword">extends</span> BuilderBase&lt;<a class="tok-type" href="app.html#app.Router">Router</a>&gt; {</code></h3>
+
+<p>Reusable route collection mountable into an <code>App</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> router = <span class="tok-keyword">new</span> Router();
+router.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/users&#39;</span>, () =&gt; Response.json([]));
+app.mount(<span class="tok-string">&#39;/api&#39;</span>, router);</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="app.Router.route">
+<h5><code>route(path: <span class="tok-keyword">string</span>): <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Create a route builder inside this router.</p>
+<pre><code class="language-ts">router.route(<span class="tok-string">&#39;/users/:id&#39;</span>).<span class="tok-keyword">get</span>((ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.Router.get">
+<h5><code><span class="tok-keyword">get</span>(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register a GET route directly.</p>
+<pre><code class="language-ts">router.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/items&#39;</span>, () =&gt; Response.json([]));</code></pre>
+</section>
+
+<section class="member" id="app.Router.post">
+<h5><code>post(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register a POST route directly.</p>
+<pre><code class="language-ts">router.post(<span class="tok-string">&#39;/items&#39;</span>, (ctx) =&gt; Response.json(ctx.body));</code></pre>
+</section>
+
+<section class="member" id="app.Router.put">
+<h5><code>put(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register a PUT route directly.</p>
+<pre><code class="language-ts">router.put(<span class="tok-string">&#39;/items/:id&#39;</span>, (ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.Router.patch">
+<h5><code>patch(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register a PATCH route directly.</p>
+<pre><code class="language-ts">router.patch(<span class="tok-string">&#39;/items/:id&#39;</span>, (ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.Router.delete">
+<h5><code><span class="tok-keyword">delete</span>(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register a DELETE route directly.</p>
+<pre><code class="language-ts">router.<span class="tok-keyword">delete</span>(<span class="tok-string">&#39;/items/:id&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.Router.head">
+<h5><code>head(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register a HEAD route directly.</p>
+<pre><code class="language-ts">router.head(<span class="tok-string">&#39;/items&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.Router.options">
+<h5><code>options(path: <span class="tok-keyword">string</span>, ...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <span class="tok-keyword">this</span></code></h5>
+
+<p>Register an OPTIONS route directly.</p>
+<pre><code class="language-ts">router.options(<span class="tok-string">&#39;/items&#39;</span>, () =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.RouteBuilder">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a> <span class="tok-keyword">extends</span> BuilderBase&lt;<a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a>&gt; {</code></h3>
+
+<p>Builder for one URLPattern pathname and shared route-level metadata.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/users/:id&#39;</span>).meta({ tags: [<span class="tok-string">&#39;users&#39;</span>] }).<span class="tok-keyword">get</span>((ctx) =&gt; Response.json(ctx.params));</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="app.RouteBuilder.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(owner: <a class="tok-type" href="app.html#app.App">App</a> | <a class="tok-type" href="app.html#app.Router">Router</a>, path: <span class="tok-keyword">string</span>, state: BuildState)</code></h5>
+
+<p>Create a route builder.</p>
+<p>This is normally created through <code>app.route()</code> or <code>router.route()</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> route = <span class="tok-keyword">new</span> RouteBuilder(app, <span class="tok-string">&#39;/items&#39;</span>, state);</code></pre>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="app.RouteBuilder.get">
+<h5><code><span class="tok-keyword">get</span>(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build GET endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items&#39;</span>).<span class="tok-keyword">get</span>((ctx) =&gt; Response.json([]));</code></pre>
+</section>
+
+<section class="member" id="app.RouteBuilder.post">
+<h5><code>post(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build POST endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items&#39;</span>).post().handle((ctx) =&gt; Response.json(ctx.body));</code></pre>
+</section>
+
+<section class="member" id="app.RouteBuilder.put">
+<h5><code>put(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build PUT endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items/:id&#39;</span>).put((ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.RouteBuilder.patch">
+<h5><code>patch(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build PATCH endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items/:id&#39;</span>).patch((ctx) =&gt; Response.json(ctx.params));</code></pre>
+</section>
+
+<section class="member" id="app.RouteBuilder.delete">
+<h5><code><span class="tok-keyword">delete</span>(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build DELETE endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items/:id&#39;</span>).<span class="tok-keyword">delete</span>(() =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.RouteBuilder.head">
+<h5><code>head(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build HEAD endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items&#39;</span>).head(() =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+<section class="member" id="app.RouteBuilder.options">
+<h5><code>options(...stack: <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>&lt;<a class="tok-type" href="app.html#app.Middleware">Middleware</a> | <a class="tok-type" href="app.html#app.Handler">Handler</a>&gt;): <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> | <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Register or build OPTIONS endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items&#39;</span>).options(() =&gt; <span class="tok-keyword">new</span> Response(<span class="tok-keyword">null</span>, { status: <span class="tok-number">204</span> }));</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.MethodBuilder">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a> <span class="tok-keyword">extends</span> BuilderBase&lt;<a class="tok-type" href="app.html#app.MethodBuilder">MethodBuilder</a>&gt; {</code></h3>
+
+<p>Builder for one method endpoint. Call <code>.handle()</code> to finalize the endpoint.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items&#39;</span>).post().value(<span class="tok-string">&#39;body&#39;</span>, body.json()).handle((ctx) =&gt; Response.json(ctx.body));</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="app.MethodBuilder.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(route: <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a>, method: <a class="tok-type" href="app.html#app.HttpMethod">HttpMethod</a>, state: BuildState)</code></h5>
+
+<p>Create a method builder.</p>
+<p>This is normally created by a <code>RouteBuilder</code> method such as <code>.get()</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> method = <span class="tok-keyword">new</span> MethodBuilder(route, <span class="tok-string">&#39;GET&#39;</span>, state);</code></pre>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="app.MethodBuilder.handle">
+<h5><code>handle(handler: <a class="tok-type" href="app.html#app.Handler">Handler</a>): <a class="tok-type" href="app.html#app.RouteBuilder">RouteBuilder</a></code></h5>
+
+<p>Finalize the endpoint and return the parent route builder for chaining.</p>
+<p>Calling this registers the endpoint on the owning app or router.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/items&#39;</span>).<span class="tok-keyword">get</span>().handle(() =&gt; Response.json([]));</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.CookieJar">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="app.html#app.CookieJar">CookieJar</a> {</code></h3>
+
+<p>Mutable cookie jar populated from the request and applied to the response.</p>
+<p>Queue cookie changes with <code>set()</code> or <code>delete()</code>. The app middleware pipeline applies queued <code>Set-Cookie</code> headers after a <code>Response</code> is produced.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> jar = <span class="tok-keyword">new</span> CookieJar(<span class="tok-string">&#39;sid=123&#39;</span>);
+jar.<span class="tok-keyword">set</span>(<span class="tok-string">&#39;theme&#39;</span>, <span class="tok-string">&#39;dark&#39;</span>, { path: <span class="tok-string">&#39;/&#39;</span> });</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="app.CookieJar.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(header: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>)</code></h5>
+
+<p>Parse a Cookie header into a mutable jar.</p>
+<p><code>null</code> creates an empty jar. Invalid cookie parsing behavior follows <code>parseCookieHeader</code>.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> jar = <span class="tok-keyword">new</span> CookieJar(ctx.request.headers.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;cookie&#39;</span>));</code></pre>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="app.CookieJar.get">
+<h5><code><span class="tok-keyword">get</span>(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">string</span> | <span class="tok-keyword">undefined</span></code></h5>
+
+<p>Read one request cookie.</p>
+<p>Returns <code>undefined</code> when the cookie was not present or was deleted locally.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> sid = jar.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;sid&#39;</span>);</code></pre>
+</section>
+
+<section class="member" id="app.CookieJar.all">
+<h5><code>all(): <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">string</span>&gt;</code></h5>
+
+<p>Return all request cookies as a plain object copy.</p>
+<pre><code class="language-ts"><span class="tok-keyword">const</span> values = jar.all();</code></pre>
+</section>
+
+<section class="member" id="app.CookieJar.set">
+<h5><code><span class="tok-keyword">set</span>(name: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="../../security/cookie.html#cookie.CookieOptions">CookieOptions</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+<p>Queue a <code>Set-Cookie</code> header and update this jar&#39;s current value.</p>
+<p>Cookie options are passed to <code>serializeCookie</code>.</p>
+<pre><code class="language-ts">jar.<span class="tok-keyword">set</span>(<span class="tok-string">&#39;sid&#39;</span>, session.id, { httpOnly: <span class="tok-keyword">true</span>, path: <span class="tok-string">&#39;/&#39;</span> });</code></pre>
+</section>
+
+<section class="member" id="app.CookieJar.delete">
+<h5><code><span class="tok-keyword">delete</span>(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="../../security/cookie.html#cookie.CookieOptions">CookieOptions</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+<p>Queue an expired <code>Set-Cookie</code> header and remove this jar&#39;s current value.</p>
+<pre><code class="language-ts">jar.<span class="tok-keyword">delete</span>(<span class="tok-string">&#39;sid&#39;</span>, { path: <span class="tok-string">&#39;/&#39;</span> });</code></pre>
+</section>
+
+
+</section>
+
+
+<h2>Constants</h2>
+
+<section id="app.schema">
+<h3><code><span class="tok-keyword">const</span> schema</code></h3>
+
+<p>Validation and OpenAPI helpers for parameters and responses.</p>
+<p>These helpers wrap <code>fino:validate</code> schemas and attach matching OpenAPI metadata. Runtime validation failures throw from middleware or producer execution.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/users&#39;</span>, schema.query(v.<span class="tok-keyword">object</span>({ q: v.<span class="tok-keyword">string</span>() })), (ctx) =&gt; Response.json(ctx.query));</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="app.schema.params">
+<h5><code>params(schemaValue: <span class="tok-keyword">unknown</span>): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h5>
+
+<p>Validate route params and contribute OpenAPI path parameters.</p>
+<p>The parsed value is produced for the context key selected by <code>.value()</code>.</p>
+<pre><code class="language-ts">app.route(<span class="tok-string">&#39;/users/:id&#39;</span>).value(<span class="tok-string">&#39;params&#39;</span>, schema.params(v.<span class="tok-keyword">object</span>({ id: v.<span class="tok-keyword">string</span>() })));</code></pre>
+</section>
+
+<section class="member" id="app.schema.query">
+<h5><code>query(schemaValue: <span class="tok-keyword">unknown</span>): <a class="tok-type" href="app.html#app.Middleware">Middleware</a></code></h5>
+
+<p>Validate query parameters and contribute OpenAPI query parameters.</p>
+<p>Parsed query values are stored as <code>ctx.query</code>. Repeated query keys are represented as arrays before validation.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/search&#39;</span>, schema.query(v.<span class="tok-keyword">object</span>({ q: v.<span class="tok-keyword">string</span>() })), (ctx) =&gt; Response.json(ctx.query));</code></pre>
+</section>
+
+<section class="member" id="app.schema.headers">
+<h5><code>headers(schemaValue: <span class="tok-keyword">unknown</span>): <a class="tok-type" href="app.html#app.Middleware">Middleware</a></code></h5>
+
+<p>Validate headers and contribute OpenAPI header parameters.</p>
+<p>Parsed headers are stored as <code>ctx.headers</code> using lowercase header names.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/secure&#39;</span>, schema.headers(v.<span class="tok-keyword">object</span>({ authorization: v.<span class="tok-keyword">string</span>() })), handler);</code></pre>
+</section>
+
+<section class="member" id="app.schema.response">
+<h5><code>response(schemaValue: <span class="tok-keyword">unknown</span>, opts: { status?: <span class="tok-keyword">number</span>; description?: <span class="tok-keyword">string</span>; contentType?: <span class="tok-keyword">string</span> } = {}): <a class="tok-type" href="app.html#app.Middleware">Middleware</a></code></h5>
+
+<p>Validate downstream response bodies and contribute OpenAPI responses.</p>
+<p>The middleware clones matching <code>Response</code> objects before reading JSON, so the original response body remains available for serialization. Only the configured status and content type are validated.</p>
+<pre><code class="language-ts">app.<span class="tok-keyword">get</span>(<span class="tok-string">&#39;/health&#39;</span>, schema.response(v.<span class="tok-keyword">object</span>({ ok: v.<span class="tok-keyword">boolean</span>() })), () =&gt; Response.json({ ok: <span class="tok-keyword">true</span> }));</code></pre>
+</section>
+
+
+</section>
+
+<section id="app.body">
+<h3><code><span class="tok-keyword">const</span> body</code></h3>
+
+<p>Request body producers for <code>.value(&#39;body&#39;, body.json(...))</code> and friends.</p>
+<p>Body producers consume the request body exactly once. Install them at the point in the stack where the parsed body should become available.</p>
+<pre><code class="language-ts">app.post(<span class="tok-string">&#39;/items&#39;</span>).value(<span class="tok-string">&#39;body&#39;</span>, body.json()).handle((ctx) =&gt; Response.json(ctx.body));</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="app.body.json">
+<h5><code>json(schemaValue?: <span class="tok-keyword">unknown</span>): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h5>
+
+<p>Read and optionally validate a JSON request body.</p>
+<p>Accepts an empty content type or <code>application/json</code>. Other content types throw before the body is read.</p>
+<pre><code class="language-ts">route.post().value(<span class="tok-string">&#39;body&#39;</span>, body.json(v.<span class="tok-keyword">object</span>({ name: v.<span class="tok-keyword">string</span>() })));</code></pre>
+</section>
+
+<section class="member" id="app.body.text">
+<h5><code>text(): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h5>
+
+<p>Read the request body as text.</p>
+<pre><code class="language-ts">route.post().value(<span class="tok-string">&#39;body&#39;</span>, body.text()).handle((ctx) =&gt; <span class="tok-keyword">new</span> Response(String(ctx.body)));</code></pre>
+</section>
+
+<section class="member" id="app.body.bytes">
+<h5><code>bytes(): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h5>
+
+<p>Read the request body as bytes.</p>
+<pre><code class="language-ts">route.post().value(<span class="tok-string">&#39;body&#39;</span>, body.bytes()).handle((ctx) =&gt; <span class="tok-keyword">new</span> Response(ctx.body <span class="tok-keyword">as</span> Uint8Array));</code></pre>
+</section>
+
+<section class="member" id="app.body.form">
+<h5><code>form(): <a class="tok-type" href="app.html#app.Producer">Producer</a></code></h5>
+
+<p>Read the request body as form data when the Request implementation supports it.</p>
+<p>Throws when <code>Request.formData()</code> is not available in the runtime.</p>
+<pre><code class="language-ts">route.post().value(<span class="tok-string">&#39;form&#39;</span>, body.form());</code></pre>
+</section>
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>

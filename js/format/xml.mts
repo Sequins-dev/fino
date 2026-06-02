@@ -1,5 +1,5 @@
 /**
- * fino:format/xml — XML 1.0 + Namespaces parser and serializer.
+ * fino:format/xml - XML 1.0 + Namespaces parser and serializer.
  *
  * XML is a structured markup format used for documents, feeds, config files,
  * protocols, and interchange with older systems. This module parses XML into a
@@ -14,8 +14,8 @@
  * and trust boundaries.
  *
  * Two output surfaces:
- *   - Tree (DOM-lite):  parse(input)  → XmlDocument
- *   - SAX/streaming:   parseStream(src) → AsyncIterableIterator<XmlEvent>
+ *   - Tree (DOM-lite):  parse(input)  -> XmlDocument
+ *   - SAX/streaming:   parseStream(src) -> AsyncIterableIterator<XmlEvent>
  *
  * ```ts no_run
  * import { parse, stringify } from 'fino:format/xml';
@@ -46,61 +46,751 @@ import { Scanner, ParseError } from 'fino:parsing/scanner';
 // Node types
 // ---------------------------------------------------------------------------
 
-/** Error thrown when XML input is not well-formed or violates parser limits. */
-export class XmlParseError extends ParseError { name = 'XmlParseError'; }
-
-/** Parsed XML document tree. */
-export interface XmlDocument {
-  type: 'document';
-  root: XmlElement;
-  prolog: XmlNode[];   // PIs and comments before root
+/**
+ * Error thrown when XML input is not well-formed or violates parser limits.
+ *
+ * The error inherits source location and diagnostic rendering from
+ * `ParseError`. External entity rejection, entity expansion limits, nesting
+ * depth limits, undefined entities, and mismatched close tags are reported
+ * through this type.
+ *
+ * ```ts no_run
+ * import { XmlParseError, parse } from 'fino:format/xml';
+ *
+ * try {
+ *   parse('<root>');
+ * } catch (error) {
+ *   if (error instanceof XmlParseError) console.error(error.render());
+ * }
+ * ```
+ */
+export class XmlParseError extends ParseError {
+  /**
+   * Error name reported by `XmlParseError` instances.
+   *
+   * This member is emitted by the docs generator when
+   * `--include-private` is enabled. It is maintained by runtime
+   * internals and should be changed only with the surrounding
+   * implementation contract in mind.
+   *
+   * @example
+   * ```ts no_run
+   * const error = new XmlParseError('example', { line: 1, column: 1, offset: 0, snippet: 'x' });
+   * console.log(error.name);
+   * ```
+   */
+  name = 'XmlParseError';
 }
 
-/** Element node with namespace metadata, attributes, and child nodes. */
+/**
+ * Parsed XML document tree.
+ *
+ * A document contains exactly one root element. Processing instructions,
+ * comments, and doctypes before the root are preserved in `prolog`; trailing
+ * processing instructions and comments are accepted but not retained.
+ *
+ * ```ts no_run
+ * import { parse, type XmlDocument } from 'fino:format/xml';
+ *
+ * const document: XmlDocument = parse('<?xml version="1.0"?><root />');
+ * document.root.name;
+ * ```
+ */
+export interface XmlDocument {
+  /**
+   * Discriminator for XML document values.
+   *
+   * Always the string literal `"document"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root />').type;
+   * ```
+   */
+  type: 'document';
+  /**
+   * Root element of the document.
+   *
+   * XML requires exactly one root element; missing or additional element
+   * content throws during parsing.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * const root = parse('<root><child /></root>').root;
+   * ```
+   */
+  root: XmlElement;
+  /**
+   * Processing instructions, comments, and doctypes before the root element.
+   *
+   * The XML declaration is parsed and skipped rather than added as a prolog
+   * processing instruction.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * const prolog = parse('<!-- note --><root />').prolog;
+   * ```
+   */
+  prolog: XmlNode[];
+}
+
+/**
+ * Element node with namespace metadata, attributes, and child nodes.
+ *
+ * With namespace processing enabled, `name` is the local name, `prefix`
+ * contains the source prefix when present, and `namespace` contains the
+ * resolved namespace URI or `null`.
+ *
+ * ```ts no_run
+ * import { parse, type XmlElement } from 'fino:format/xml';
+ *
+ * const element: XmlElement = parse('<x:root xmlns:x="urn:x" />').root;
+ * element.namespace; // 'urn:x'
+ * ```
+ */
 export interface XmlElement {
+  /**
+   * Discriminator for element nodes.
+   *
+   * Always the string literal `"element"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root />').root.type;
+   * ```
+   */
   type: 'element';
+  /**
+   * Element name.
+   *
+   * When namespaces are enabled, this is the local name without prefix. When
+   * `namespaces: false`, this preserves the qualified source name.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<x:root xmlns:x="urn:x" />').root.name;
+   * ```
+   */
   name: string;
+  /**
+   * Source namespace prefix, or `null` when absent or namespace processing is disabled.
+   *
+   * Prefixes are preserved for serialization, but namespace declaration
+   * attributes themselves are not included in `attributes`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<x:root xmlns:x="urn:x" />').root.prefix;
+   * ```
+   */
   prefix: string | null;
+  /**
+   * Resolved namespace URI, or `null` when none is in scope.
+   *
+   * Set `namespaces: false` to disable namespace resolution entirely.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root xmlns="urn:default" />').root.namespace;
+   * ```
+   */
   namespace: string | null;
+  /**
+   * Element attributes as string values.
+   *
+   * Attribute entity references are expanded. Namespace declaration attributes
+   * are consumed for namespace resolution and omitted from this record.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root id="a" />').root.attributes.id;
+   * ```
+   */
   attributes: Record<string, string>;
+  /**
+   * Child nodes in source order.
+   *
+   * Text nodes may be omitted when `trim` removes all text content. Self-closing
+   * elements have an empty child array.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root>text<child /></root>').root.children;
+   * ```
+   */
   children: XmlNode[];
 }
 
-/** Text node. */
-export interface XmlText      { type: 'text';   data: string; }
-/** CDATA node. */
-export interface XmlCData     { type: 'cdata';  data: string; }
-/** XML comment node. */
-export interface XmlComment   { type: 'comment'; data: string; }
-/** Processing instruction node. */
-export interface XmlPI        { type: 'pi';     target: string; data: string; }
-/** Doctype declaration node. */
-export interface XmlDoctype   { type: 'doctype'; data: string; }
+/**
+ * Text node.
+ *
+ * Entity and character references have already been expanded. When
+ * `XmlParseOptions.trim` is true, all-whitespace text nodes are omitted.
+ *
+ * ```ts no_run
+ * import { parse, type XmlText } from 'fino:format/xml';
+ *
+ * const node = parse('<root>hello</root>').root.children[0] as XmlText;
+ * node.data;
+ * ```
+ */
+export interface XmlText {
+  /**
+   * Discriminator for text nodes.
+   *
+   * Always the string literal `"text"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root>hello</root>').root.children[0]?.type;
+   * ```
+   */
+  type: 'text';
+  /**
+   * Text content after entity expansion.
+   *
+   * The string is not HTML-escaped; escape it when embedding in another output
+   * format.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * (parse('<root>&amp;</root>').root.children[0] as { data: string }).data;
+   * ```
+   */
+  data: string;
+}
+/**
+ * CDATA node.
+ *
+ * CDATA contents are returned as text data without interpreting markup inside
+ * the section. The serializer emits the data inside a CDATA section.
+ *
+ * ```ts no_run
+ * import { parse, type XmlCData } from 'fino:format/xml';
+ *
+ * const node = parse('<root><![CDATA[<x>]]></root>').root.children[0] as XmlCData;
+ * node.data;
+ * ```
+ */
+export interface XmlCData {
+  /**
+   * Discriminator for CDATA nodes.
+   *
+   * Always the string literal `"cdata"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root><![CDATA[x]]></root>').root.children[0]?.type;
+   * ```
+   */
+  type: 'cdata';
+  /**
+   * Raw CDATA section content.
+   *
+   * The closing `]]>` delimiter is not included.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * (parse('<root><![CDATA[x]]></root>').root.children[0] as { data: string }).data;
+   * ```
+   */
+  data: string;
+}
+/**
+ * XML comment node.
+ *
+ * Comment text excludes the `<!--` and `-->` delimiters. XML forbids `--`
+ * inside comments, and such input throws during parsing.
+ *
+ * ```ts no_run
+ * import { parse, type XmlComment } from 'fino:format/xml';
+ *
+ * const comment = parse('<!-- note --><root />').prolog[0] as XmlComment;
+ * comment.data;
+ * ```
+ */
+export interface XmlComment {
+  /**
+   * Discriminator for comment nodes.
+   *
+   * Always the string literal `"comment"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<!-- note --><root />').prolog[0]?.type;
+   * ```
+   */
+  type: 'comment';
+  /**
+   * Comment content without delimiters.
+   *
+   * The string is not escaped. Do not insert untrusted comments into another
+   * document format without escaping.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * (parse('<!-- note --><root />').prolog[0] as { data: string }).data;
+   * ```
+   */
+  data: string;
+}
+/**
+ * Processing instruction node.
+ *
+ * The XML declaration is parsed but skipped from document `prolog`; other
+ * processing instructions are retained with their target and data.
+ *
+ * ```ts no_run
+ * import { parse, type XmlPI } from 'fino:format/xml';
+ *
+ * const pi = parse('<?xml-stylesheet href="style.css"?><root />').prolog[0] as XmlPI;
+ * pi.target;
+ * ```
+ */
+export interface XmlPI {
+  /**
+   * Discriminator for processing instruction nodes.
+   *
+   * Always the string literal `"pi"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<?go now?><root />').prolog[0]?.type;
+   * ```
+   */
+  type: 'pi';
+  /**
+   * Processing instruction target.
+   *
+   * The target is lower- or upper-case as written by the source except for
+   * comparisons internal to parsing.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * (parse('<?go now?><root />').prolog[0] as { target: string }).target;
+   * ```
+   */
+  target: string;
+  /**
+   * Processing instruction data after the target.
+   *
+   * Surrounding whitespace is trimmed by the parser. Empty processing
+   * instructions use an empty string.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * (parse('<?go now?><root />').prolog[0] as { data: string }).data;
+   * ```
+   */
+  data: string;
+}
+/**
+ * Doctype declaration node.
+ *
+ * Internal entity declarations are parsed for expansion. External entities are
+ * rejected unless a resolver is explicitly provided in parse options.
+ *
+ * ```ts no_run
+ * import { parse, type XmlDoctype } from 'fino:format/xml';
+ *
+ * const doc = parse('<!DOCTYPE root><root />').prolog[0] as XmlDoctype;
+ * doc.data;
+ * ```
+ */
+export interface XmlDoctype {
+  /**
+   * Discriminator for doctype nodes.
+   *
+   * Always the string literal `"doctype"`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<!DOCTYPE root><root />').prolog[0]?.type;
+   * ```
+   */
+  type: 'doctype';
+  /**
+   * Doctype declaration content without the `<!DOCTYPE` wrapper.
+   *
+   * Internal subset details are preserved only as parser output text, not as a
+   * rich DTD model.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * (parse('<!DOCTYPE root><root />').prolog[0] as { data: string }).data;
+   * ```
+   */
+  data: string;
+}
 
-/** Any non-document XML node returned in the tree model. */
+/**
+ * Any non-document XML node returned in the tree model.
+ *
+ * Use the `type` discriminator before accessing node-specific fields.
+ *
+ * ```ts no_run
+ * import { parse, type XmlNode } from 'fino:format/xml';
+ *
+ * const node: XmlNode | undefined = parse('<root>text</root>').root.children[0];
+ * if (node?.type === 'text') console.log(node.data);
+ * ```
+ */
 export type XmlNode = XmlElement | XmlText | XmlCData | XmlComment | XmlPI | XmlDoctype;
 
-/** SAX-style parse event emitted by parseStream(). */
+/**
+ * SAX-style parse event emitted by `parseStream()`.
+ *
+ * Events are yielded in document order after the prolog. Start element events
+ * contain resolved namespace metadata and attributes; end element events
+ * contain only the element name.
+ *
+ * ```ts no_run
+ * import { parseStream, type XmlEvent } from 'fino:format/xml';
+ *
+ * async function handle(event: XmlEvent) {
+ *   if (event.type === 'text') console.log(event.data);
+ * }
+ * ```
+ */
 export type XmlEvent =
-  | { type: 'startElement'; name: string; prefix: string | null; namespace: string | null; attributes: Record<string, string> }
-  | { type: 'endElement';   name: string }
-  | { type: 'text';         data: string }
-  | { type: 'cdata';        data: string }
-  | { type: 'comment';      data: string }
-  | { type: 'pi';           target: string; data: string };
+  | {
+    /**
+     * Discriminator for start-element events.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} };
+     * event.type;
+     * ```
+     */
+    type: 'startElement';
+    /**
+     * Element name for the start tag.
+     *
+     * With namespaces enabled, this is the local name.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: {} };
+     * event.name;
+     * ```
+     */
+    name: string;
+    /**
+     * Source namespace prefix, or `null`.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: 'x', namespace: 'urn:x', attributes: {} };
+     * event.prefix;
+     * ```
+     */
+    prefix: string | null;
+    /**
+     * Resolved namespace URI, or `null` when none is in scope.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: 'urn:x', attributes: {} };
+     * event.namespace;
+     * ```
+     */
+    namespace: string | null;
+    /**
+     * Start-tag attributes as expanded string values.
+     *
+     * Namespace declaration attributes are omitted when namespace processing is
+     * enabled.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'startElement', name: 'root', prefix: null, namespace: null, attributes: { id: 'a' } };
+     * event.attributes.id;
+     * ```
+     */
+    attributes: Record<string, string>;
+  }
+  | {
+    /**
+     * Discriminator for end-element events.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'endElement', name: 'root' };
+     * event.type;
+     * ```
+     */
+    type: 'endElement';
+    /**
+     * Element name for the closing tag.
+     *
+     * With namespaces enabled, this is the local name.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'endElement', name: 'root' };
+     * event.name;
+     * ```
+     */
+    name: string;
+  }
+  | {
+    /**
+     * Discriminator for text events.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'text', data: 'hello' };
+     * event.type;
+     * ```
+     */
+    type: 'text';
+    /**
+     * Text data after entity expansion.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'text', data: 'hello' };
+     * event.data;
+     * ```
+     */
+    data: string;
+  }
+  | {
+    /**
+     * Discriminator for CDATA events.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'cdata', data: '<raw>' };
+     * event.type;
+     * ```
+     */
+    type: 'cdata';
+    /**
+     * Raw CDATA section content.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'cdata', data: '<raw>' };
+     * event.data;
+     * ```
+     */
+    data: string;
+  }
+  | {
+    /**
+     * Discriminator for comment events.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'comment', data: 'note' };
+     * event.type;
+     * ```
+     */
+    type: 'comment';
+    /**
+     * Comment text without XML comment delimiters.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'comment', data: 'note' };
+     * event.data;
+     * ```
+     */
+    data: string;
+  }
+  | {
+    /**
+     * Discriminator for processing-instruction events.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' };
+     * event.type;
+     * ```
+     */
+    type: 'pi';
+    /**
+     * Processing instruction target.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' };
+     * event.target;
+     * ```
+     */
+    target: string;
+    /**
+     * Processing instruction data after the target.
+     *
+     * ```ts no_run
+     * import type { XmlEvent } from 'fino:format/xml';
+     *
+     * const event: XmlEvent = { type: 'pi', target: 'go', data: 'now' };
+     * event.data;
+     * ```
+     */
+    data: string;
+  };
 
-/** Options controlling XML parsing, namespaces, and entity expansion limits. */
+/**
+ * Options controlling XML parsing, namespaces, and entity expansion limits.
+ *
+ * Defaults enable namespaces, preserve text whitespace, reject external
+ * entities, cap entity expansion at 1,000,000 characters, and cap nesting
+ * depth at 500 elements.
+ *
+ * ```ts no_run
+ * import { parse, type XmlParseOptions } from 'fino:format/xml';
+ *
+ * const options: XmlParseOptions = { trim: true, maxDepth: 100 };
+ * parse('<root> text </root>', options);
+ * ```
+ */
 export interface XmlParseOptions {
-  namespaces?: boolean;            // default true
-  trim?: boolean;                  // trim text nodes
-  maxEntityExpansion?: number;     // default 1_000_000
-  maxDepth?: number;               // default 500
+  /**
+   * Enable XML namespace resolution. Defaults to `true`.
+   *
+   * When disabled, element names preserve their qualified source names and
+   * `prefix` and `namespace` are `null`.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<x:r xmlns:x="urn:x" />', { namespaces: false }).root.name;
+   * ```
+   */
+  namespaces?: boolean;
+  /**
+   * Trim text nodes and omit empty text after trimming. Defaults to `false`.
+   *
+   * CDATA content and comments are not trimmed by this option.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root> text </root>', { trim: true }).root.children[0];
+   * ```
+   */
+  trim?: boolean;
+  /**
+   * Maximum expanded character count from XML entity references.
+   *
+   * Defaults to `1_000_000`. Lower this for untrusted inputs that should fail
+   * quickly on repeated entity expansion.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root>&amp;</root>', { maxEntityExpansion: 10 });
+   * ```
+   */
+  maxEntityExpansion?: number;
+  /**
+   * Maximum nested element depth. Defaults to `500`.
+   *
+   * Deeply nested documents throw once this limit is exceeded.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<root><child /></root>', { maxDepth: 10 });
+   * ```
+   */
+  maxDepth?: number;
+  /**
+   * Optional resolver for external DTD entities.
+   *
+   * Defaults to `null`, which rejects external entities. A resolver should
+   * return the entity text, or `null` to ignore it. Supplying a resolver opts
+   * into any filesystem, network, and trust-boundary risks it performs.
+   *
+   * ```ts no_run
+   * import { parse } from 'fino:format/xml';
+   *
+   * parse('<!DOCTYPE r [<!ENTITY e SYSTEM "safe">]><r>&e;</r>', {
+   *   resolveExternalEntities: (systemId) => systemId === 'safe' ? 'ok' : null,
+   * });
+   * ```
+   */
   resolveExternalEntities?: ((systemId: string) => string | null) | null;
 }
 
-/** Options controlling XML serialization. */
+/**
+ * Options controlling XML serialization.
+ *
+ * Serialization escapes text and attribute values, optionally pretty-prints
+ * element children, and emits an XML declaration unless disabled.
+ *
+ * ```ts no_run
+ * import { stringify, parse, type XmlStringifyOptions } from 'fino:format/xml';
+ *
+ * const options: XmlStringifyOptions = { indent: '  ', xmlDeclaration: true };
+ * stringify(parse('<root />'), options);
+ * ```
+ */
 export interface XmlStringifyOptions {
+  /**
+   * Indentation string for nested elements. Defaults to `""`.
+   *
+   * An empty string emits compact XML without added newlines between child
+   * nodes. A non-empty value inserts newlines around nested children.
+   *
+   * ```ts no_run
+   * import { parse, stringify } from 'fino:format/xml';
+   *
+   * stringify(parse('<root><child /></root>'), { indent: '  ' });
+   * ```
+   */
   indent?: string;
+  /**
+   * Whether to emit the XML declaration. Defaults to `true`.
+   *
+   * Set to `false` when embedding XML fragments or when a caller provides its
+   * own declaration.
+   *
+   * ```ts no_run
+   * import { parse, stringify } from 'fino:format/xml';
+   *
+   * stringify(parse('<root />'), { xmlDeclaration: false });
+   * ```
+   */
   xmlDeclaration?: boolean;
 }
 
@@ -110,6 +800,9 @@ export interface XmlStringifyOptions {
 
 /**
  * Parse XML input into a document tree.
+ *
+ * Input may be a string or UTF-8 bytes. Well-formedness, namespace resolution,
+ * entity expansion limits, and nesting depth are enforced during parsing.
  *
  * ```ts no_run
  * import { parse } from 'fino:format/xml';
@@ -125,7 +818,27 @@ export function parse(input: string | Uint8Array, options: XmlParseOptions = {})
 // Parse stream (SAX)
 // ---------------------------------------------------------------------------
 
-/** Parse XML bytes into SAX-style events. */
+/**
+ * Parse XML bytes into SAX-style events.
+ *
+ * The stream parser reparses accumulated bytes until a complete document is
+ * available and yields only newly observed events. Errors thrown after the
+ * source is exhausted are real parse errors, while earlier chunk-boundary
+ * stalls are retried with more input.
+ *
+ * ```ts no_run
+ * import { parseStream } from 'fino:format/xml';
+ *
+ * async function* source() {
+ *   yield new TextEncoder().encode('<root>');
+ *   yield new TextEncoder().encode('<child /></root>');
+ * }
+ *
+ * for await (const event of parseStream(source())) {
+ *   console.log(event.type);
+ * }
+ * ```
+ */
 export async function* parseStream(
   src: AsyncIterable<Uint8Array>,
   options: XmlParseOptions = {},
@@ -150,14 +863,14 @@ export async function* parseStream(
       return; // parser reached natural end-of-document
     } catch (e) {
       if (!(e instanceof ParseError)) throw e;
-      // Parser stalled — likely an incomplete token at the chunk boundary.
+      // Parser stalled; likely an incomplete token at the chunk boundary.
       // Record how many events were emitted before the stall; skip them on
       // the next attempt once more data arrives.
       yieldedCount = i;
     }
   }
 
-  // Source exhausted — parse the final accumulated buffer. Any error here is
+  // Source exhausted; parse the final accumulated buffer. Any error here is
   // a genuine parse error (not a chunk-boundary truncation).
   let i = 0;
   for (const event of new XmlParser(accum, options).events()) {
@@ -481,7 +1194,7 @@ class XmlParser {
     sc.expect('?');
     const target = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x3F && c !== 0x3E);
     if (target.toLowerCase() === 'xml' && !this.#sc.done) {
-      // XML declaration — consume it
+      // XML declaration: consume it
       const decl = sc.eatWhile(c => c !== 0x3F);
       sc.match('?>');
       return { type: 'pi', target, data: decl.trim() };
@@ -522,7 +1235,7 @@ class XmlParser {
           sc.expect('>');
           if (!(ename in _PREDEF)) this.#entities[ename] = val;
         } else if (sc.match('SYSTEM') || sc.match('PUBLIC')) {
-          // External entity — consume the identifier(s) then reject or resolve
+          // External entity: consume the identifier(s) then reject or resolve
           sc.skipWhitespace();
           let firstId = '';
           if (sc.peek() === '"' || sc.peek() === "'") {
@@ -569,7 +1282,21 @@ function _splitName(name: string): [string | null, string] {
 // Stringify
 // ---------------------------------------------------------------------------
 
-/** Serialize an XML document tree. */
+/**
+ * Serialize an XML document tree.
+ *
+ * The serializer emits the document root and ignores `prolog` nodes. Text and
+ * attribute values are escaped, CDATA and comments are emitted as stored, and
+ * an XML declaration is included unless `xmlDeclaration: false` is set.
+ *
+ * ```ts no_run
+ * import { parse, stringify } from 'fino:format/xml';
+ *
+ * const xml = stringify(parse('<root attr="&amp;">text</root>'), {
+ *   xmlDeclaration: false,
+ * });
+ * ```
+ */
 export function stringify(doc: XmlDocument, options: XmlStringifyOptions = {}): string {
   const indent = options.indent ?? '';
   let out = '';

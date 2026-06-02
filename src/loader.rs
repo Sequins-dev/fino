@@ -209,6 +209,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
     source_builtin!("fino:net/http", "net/http/index"),
+    source_builtin!("fino:net/http/app", "net/http/app"),
     source_builtin!("fino:net/http/driver", "net/http/driver"),
     source_builtin!("fino:net/http/h1", "net/http/h1"),
     source_builtin!("fino:net/http/server", "net/http/server"),
@@ -388,6 +389,16 @@ fn resolve_builtin_relative(referrer_spec: &str, specifier: &str) -> Option<&'st
             None
         }
     })
+}
+
+fn source_specifier_path(specifier: &str) -> Option<PathBuf> {
+    if let Some(path) = specifier.strip_prefix("file://") {
+        return Some(PathBuf::from(path));
+    }
+    if specifier.starts_with('/') {
+        return Some(PathBuf::from(specifier));
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,12 +1157,14 @@ fn get_or_load_builtin_inner<'s>(
             register_source_map_from_json(scope, spec, &source_map);
             let m = compile_source_module(scope, &code, spec, Some(&source_map))?;
             if let Some(id) = m.script_id() {
-                // Record the specifier so `from`-clause matching works when this
-                // module imports something else.
-                state_rc
-                    .borrow_mut()
-                    .builtin_specifiers
-                    .insert(id, spec.to_string());
+                let mut st = state_rc.borrow_mut();
+                if let Some(path) = source_specifier_path(spec) {
+                    st.module_paths.insert(id, path);
+                } else {
+                    // Record the specifier so `from`-clause matching works when
+                    // this module imports something else.
+                    st.builtin_specifiers.insert(id, spec.to_string());
+                }
             }
             let global = v8::Global::new(scope, m);
             state_rc

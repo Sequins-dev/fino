@@ -55,9 +55,8 @@ const LONG  = bytes('A'.repeat(100_000));
 
 describe('fino:compress layout', () => {
   it('resolves the new builtin specifier', async (t) => {
-    const module = await import('fino:compress');
-    t.equal(typeof module.compress, 'function', 'compress exported');
-    t.equal(typeof module.createCompressor, 'function', 'createCompressor exported');
+    t.equal(typeof compress, 'function', 'compress exported');
+    t.equal(typeof createCompressor, 'function', 'createCompressor exported');
   });
 
   it('does not resolve the old util specifier', async (t) => {

@@ -7,6 +7,18 @@
  * H1ClientDriver.send() serialises one Request and parses the Response on an
  * already-connected reader/writer pair. DNS, TCP/TLS connect, redirect
  * following and body wrapping are all handled by the caller (fetch.mts).
+ *
+ * @example
+ * ```ts no_run
+ * import { H1ServerDriver } from 'fino:net/http/h1';
+ * import { Response } from 'fino:http';
+ *
+ * const driver = new H1ServerDriver();
+ * await driver.run(reader, writer, async () => new Response('ok'), {
+ *   maxConcurrent: 32,
+ *   allowH2cUpgrade: true,
+ * });
+ * ```
  */
 
 import {
@@ -320,7 +332,30 @@ async function _writeResponseBatch(
 // H1ServerDriver
 // ---------------------------------------------------------------------------
 
+/**
+ * HTTP/1.1 server protocol driver.
+ *
+ * The driver parses pipelined requests from one accepted connection, runs the
+ * supplied handler with bounded concurrency, preserves response order, supports
+ * h2c upgrade when enabled, and closes the reader/writer when done.
+ *
+ * ```ts no_run
+ * const driver = new H1ServerDriver();
+ * await driver.run(reader, writer, async () => new Response('ok'), { maxConcurrent: 32 });
+ * ```
+ */
 export class H1ServerDriver implements ServerDriver {
+  /**
+   * Process one HTTP/1.1 connection until EOF, close, upgrade, or error.
+   *
+   * Handler exceptions are converted to a 500 response and the connection is
+   * closed. Request bodies are drained before keep-alive reuse. The returned
+   * promise resolves after both I/O halves have been closed.
+   *
+   * ```ts no_run
+   * await new H1ServerDriver().run(reader, writer, handler, { maxConcurrent: 8 });
+   * ```
+   */
   async run(
     reader: BytesReader,
     writer: BytesWriter,
@@ -581,9 +616,38 @@ export class H1ServerDriver implements ServerDriver {
 // H1ClientDriver
 // ---------------------------------------------------------------------------
 
+/**
+ * HTTP/1.1 client protocol driver for one already-connected socket.
+ *
+ * It serializes a single `Request`, flushes it, and parses the matching
+ * `Response`. Connection creation, pooling, redirects, and retries are handled
+ * by higher-level client code.
+ *
+ * ```ts no_run
+ * const response = await new H1ClientDriver().send(req, reader, writer, { signal: null });
+ * ```
+ */
 export class H1ClientDriver implements ClientDriver {
+  /**
+   * HTTP/1.1 is not multiplexed; callers must serialize requests per
+   * connection.
+   *
+   * ```ts no_run
+   * if (!driver.multiplexed) console.log('one in-flight request');
+   * ```
+   */
   readonly multiplexed = false;
 
+  /**
+   * Send one HTTP request and parse its response.
+   *
+   * The method races writes, flush, and response parsing against `opts.signal`
+   * when provided. It does not close the reader or writer on success.
+   *
+   * ```ts no_run
+   * const res = await driver.send(req, reader, writer, { signal: controller.signal });
+   * ```
+   */
   async send(
     req: Request,
     reader: BytesReader,

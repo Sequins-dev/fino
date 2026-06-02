@@ -1,6 +1,15 @@
 /**
  * internal:repl/handler — REPL command handling.
  *
+ * Runs inside the child realm created for the CLI REPL. Requests arrive over a
+ * `MessagePort`, are evaluated through the inspector API in REPL mode, and are
+ * posted back as compact result or error envelopes for the parent realm.
+ *
+ * ```js
+ * import { handleEval } from 'internal:repl/handler';
+ * console.log(typeof handleEval);
+ * ```
+ *
  * @internal
  */
 
@@ -14,6 +23,26 @@ interface EvalRequest {
   port: MessagePort;
 }
 
+/**
+ * Evaluate one REPL request and post the response to the supplied port.
+ *
+ * Successful evaluations post `{ __eval_result: true, id, value }`. Failures
+ * post `{ __eval_error: true, id, message, stack? }`. Inspector exception
+ * details are reduced to a user-facing message, and unserializable remote
+ * objects fall back to their inspector description. This function does not
+ * close the port and never throws for normal evaluation failures.
+ *
+ * ```js
+ * import { handleEval } from 'internal:repl/handler';
+ * const { port1, port2 } = new MessageChannel();
+ * port1.start();
+ * await handleEval({ id: 1, code: '1 + 1', port: port2 });
+ * ```
+ *
+ * @param request REPL evaluation request with id, source code, and reply port.
+ * @returns A promise that resolves after a result or error has been posted.
+ * @internal
+ */
 export async function handleEval({ id, code, port }: EvalRequest): Promise<void> {
   const sourceName = `<repl:${++_evalCount}>`;
   let responseJson: string;

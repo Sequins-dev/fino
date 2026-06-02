@@ -11,6 +11,23 @@
  * module is then dynamically imported and driveLoop is called with the child's
  * own isDone/onDone callbacks.
  *
+ * ## Example
+ *
+ * ```ts no_run
+ * import { driveLoop } from 'internal:bootstrap';
+ *
+ * let finished = false;
+ * queueMicrotask(() => { finished = true; });
+ *
+ * driveLoop(
+ *   () => finished,
+ *   () => {
+ *     // Host loop has drained pending runtime work.
+ *   },
+ *   { nonBlocking: true },
+ * );
+ * ```
+ *
  * @internal
  */
 
@@ -234,6 +251,22 @@ interface DriveLoopOptions {
  * @param isDone  Returns true when the caller's work is complete.
  * @param onDone  Called after the loop exits (e.g. to handle errors).
  * @param opts    Optional hooks for child Realm stepping.
+ *
+ * ```typescript no_run
+ * import { driveLoop } from 'internal:bootstrap';
+ *
+ * let complete = false;
+ * Promise.resolve().then(() => { complete = true; });
+ * driveLoop(
+ *   () => complete,
+ *   () => {
+ *     // loop finished
+ *   },
+ *   { nonBlocking: true },
+ * );
+ * ```
+ *
+ * @internal
  */
 export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: DriveLoopOptions): void {
   let emptyTicks = 0;

@@ -1,7 +1,30 @@
 /**
- * internal/commands/doc — internal runtime module.
+ * internal:commands/doc - API documentation command.
  *
- * 
+ * Builds the `fino doc` command tree and contains the source parser, Markdown
+ * and HTML renderers, search database generation, and doc-test runner used by
+ * that command. The builder reads commented source modules, extracts module and
+ * symbol JSDoc, resolves supported re-exports, writes generated documentation
+ * under `docs/`, and can execute runnable fenced examples from comments.
+ *
+ * Use this module from the root CLI command table. Application code should not
+ * call the helper functions directly because they assume Fino command context,
+ * runtime filesystem APIs, and documentation output conventions.
+ *
+ * ## Example
+ *
+ * ```ts no_run
+ * import { createDocCommand } from 'internal:commands/doc';
+ *
+ * const doc = createDocCommand();
+ * await doc.parse([
+ *   'build',
+ *   '--format',
+ *   'markdown',
+ *   'js/internal/stream.mts',
+ * ]);
+ * ```
+ *
  * @internal
  */
 
@@ -13,6 +36,7 @@ import { escapeHtml, render as renderTemplate } from '../../template.mts';
 import { parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.mts';
 import { parse as parseYaml } from '../../format/yaml.mts';
 import { Scanner } from '../../parsing/scanner.mts';
+import * as sqlite from '../../database/sqlite.mts';
 
 const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
@@ -2332,7 +2356,6 @@ function renderCandidates(title: string, candidates: FlatSymbol[]): string {
 }
 
 async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
-  const sqlite = await import('fino:database/sqlite');
   if (!sqlite.sqliteAvailable) throw new Error('fino doc: sqlite unavailable');
   await ensureDir(dirname(dbPath));
   if (await exists(dbPath)) await fs.unlink(dbPath);
@@ -2551,7 +2574,6 @@ async function runSearchCommand(ctx: CommandContext): Promise<string> {
 }
 
 async function searchSqlite(dbPath: string, query: string): Promise<string> {
-  const sqlite = await import('fino:database/sqlite');
   if (!sqlite.sqliteAvailable) throw new Error('fino doc search: sqlite unavailable');
 
   const ftsQuery = toFtsQuery(query);
@@ -2593,6 +2615,20 @@ function docTestExamples(api: ApiDoc): Array<{ module: ModuleDoc; symbol: FlatSy
   return examples;
 }
 
+function docTestSpecifier(example: { module: ModuleDoc; symbol: FlatSymbol; index: number }): string {
+  const rawPath = example.module.path;
+  const modulePath = rawPath.startsWith('/') || rawPath.startsWith('file://') || rawPath.startsWith('./') || rawPath.startsWith('../')
+    ? normalizePath(rawPath)
+    : joinPath(cwd(), rawPath);
+  const safeId = example.symbol.id.replace(/[^A-Za-z0-9_.-]/g, '_');
+  const suffix = `.doc-test-${safeId}-${example.index}`;
+  const slash = modulePath.lastIndexOf('/');
+  const dot = modulePath.lastIndexOf('.');
+  const insertAt = dot > slash ? dot : modulePath.length;
+  const ext = dot > slash ? modulePath.slice(dot) : '.mts';
+  return modulePath.slice(0, insertAt) + suffix + ext;
+}
+
 async function runDocTestCommand(ctx: CommandContext): Promise<string> {
   const files = await expandInputs(ctx.args.files);
   if (files.length === 0) throw new Error('fino doc test: no source files specified');
@@ -2602,7 +2638,12 @@ async function runDocTestCommand(ctx: CommandContext): Promise<string> {
   const tempDir = `/tmp/fino-doc-test-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
   await ensureDir(tempDir);
   const testPath = `${tempDir}/doc-examples.test.mts`;
-  const lines = [`import { describe, it } from 'fino:test/test';`, ``, `describe('fino doc examples', () => {`];
+  const lines = [
+    `import { describe, it } from 'fino:test/test';`,
+    `import { Realm } from 'fino:realm';`,
+    ``,
+    `describe('fino doc examples', () => {`,
+  ];
   let runnable = 0;
   let ignored = 0;
 
@@ -2614,17 +2655,15 @@ async function runDocTestCommand(ctx: CommandContext): Promise<string> {
     const code = example.block.hiddenCode || example.block.code || '';
     if (skip) ignored += 1;
     else runnable += 1;
-    lines.push(`  it(${JSON.stringify(name)}, ${skip ? `{ skip: 'ignored' }, ` : ''}async () => {`);
+    lines.push(`  it(${JSON.stringify(name)}, ${skip ? `{ skip: 'ignored' }, ` : ''}async (t) => {`);
     if (skip) {
       lines.push(`    // ignored doc example`);
     } else if (throws) {
-      lines.push(`    let threw = false;`);
-      lines.push(`    try {`);
-      lines.push(indentCode(code, 6));
-      lines.push(`    } catch (_) { threw = true; }`);
-      lines.push(`    if (!threw) throw new Error('expected example to throw');`);
+      lines.push(`    const realm = Realm.fromSource(${JSON.stringify(code)}, { specifier: ${JSON.stringify(docTestSpecifier(example))} });`);
+      lines.push(`    await t.rejects(() => realm.run(), null, 'expected example to throw');`);
     } else {
-      lines.push(indentCode(code, 4));
+      lines.push(`    const realm = Realm.fromSource(${JSON.stringify(code)}, { specifier: ${JSON.stringify(docTestSpecifier(example))} });`);
+      lines.push(`    await realm.run();`);
     }
     lines.push(`  });`);
   }
@@ -2635,11 +2674,6 @@ async function runDocTestCommand(ctx: CommandContext): Promise<string> {
   const { run } = await import('fino:test/test');
   await run({});
   return `${runnable} passed\n${ignored} ignored`;
-}
-
-function indentCode(code: string, spaces: number): string {
-  const prefix = ' '.repeat(spaces);
-  return code.split('\n').map((line) => prefix + line).join('\n');
 }
 
 function buildOptions() {
@@ -2656,6 +2690,26 @@ function filesPositional() {
   ];
 }
 
+/**
+ * Create the `doc` subcommand tree used by the root Fino CLI.
+ *
+ * The returned command supports `build`, `show`, `search`, and `test`.
+ * Invoking `fino doc` directly runs the build path. Build accepts source files,
+ * directories, or globs and writes Markdown or HTML documentation depending on
+ * `--format`. `--include-private` includes internal and private declarations.
+ * `show` and `search` read generated docs, while `test` extracts fenced examples
+ * from comments and executes runnable examples. Parser, filesystem, rendering,
+ * and doc-test failures propagate as command errors.
+ *
+ * ```js
+ * import { createDocCommand } from 'internal:commands/doc';
+ * const doc = createDocCommand();
+ * await doc.parse(['build', '--format', 'markdown', 'js/internal/stream.mts']);
+ * ```
+ *
+ * @returns A configured `Command` instance for `fino doc`.
+ * @internal
+ */
 export function createDocCommand(): Command {
   return new Command({
     name: 'doc',

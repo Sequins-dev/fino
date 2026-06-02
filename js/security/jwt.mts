@@ -1,3 +1,30 @@
+/**
+ * fino:security/jwt - compact JWT/JWS and JWE helpers backed by JWK keys.
+ *
+ * This module signs and verifies compact JWTs with HMAC, RSA, RSASSA-PSS, and
+ * ECDSA algorithms, and encrypts or decrypts compact JWE payloads with direct
+ * symmetric keys or RSA-OAEP key wrapping. Key inputs may be single JWKs, arrays
+ * of JWKs, or JWKS containers; verification and decryption select compatible
+ * keys from token headers.
+ *
+ * The helpers validate common registered claims such as issuer, audience,
+ * expiration, and not-before when options request them. They do not fetch remote
+ * JWKS documents or implement application authorization policy.
+ *
+ * @example
+ * ```ts no_run
+ * import { jwkFromSecret } from 'fino:security/jwk';
+ * import { jwtSign, jwtVerify } from 'fino:security/jwt';
+ *
+ * const key = jwkFromSecret(sessionSecret, 'HS256', 'current');
+ * const token = await jwtSign({ sub: 'user-123' }, key, {
+ *   algorithm: 'HS256',
+ *   expiresIn: 900,
+ * });
+ * const { payload } = await jwtVerify(token, key, { clockTolerance: 30 });
+ * ```
+ */
+
 import {
   base64urlDecode,
   base64urlEncode,
@@ -9,50 +36,315 @@ import {
 import { randomBytes } from './random.mts';
 import { exportPublicJwk, importJwk, selectJwk, type JsonWebKeyLike, type JsonWebKeySet } from './jwk.mts';
 
-/** Supported compact JWS algorithms; `none` is intentionally not supported. */
+/**
+ * Supported compact JWS algorithms.
+ *
+ * `none` is intentionally unsupported. HMAC algorithms require `oct` keys, RSA
+ * algorithms require RSA keys, and ECDSA algorithms require EC keys with a
+ * compatible curve.
+ *
+ * ```ts no_run
+ * import type { JwtAlgorithm } from 'fino:security/jwt';
+ *
+ * const algorithm: JwtAlgorithm = 'HS256';
+ * ```
+ */
 export type JwtAlgorithm =
   | 'HS256' | 'HS384' | 'HS512'
   | 'RS256' | 'RS384' | 'RS512'
   | 'PS256' | 'PS384' | 'PS512'
   | 'ES256' | 'ES384' | 'ES512';
 
-/** Supported compact JWE key-management algorithms. */
+/**
+ * Supported compact JWE key-management algorithms.
+ *
+ * `dir` uses the supplied symmetric key directly as the content-encryption key.
+ * RSA-OAEP variants wrap a fresh content-encryption key for each token.
+ *
+ * ```ts no_run
+ * import type { JweAlgorithm } from 'fino:security/jwt';
+ *
+ * const algorithm: JweAlgorithm = 'RSA-OAEP-256';
+ * ```
+ */
 export type JweAlgorithm = 'dir' | 'RSA-OAEP' | 'RSA-OAEP-256';
 
-/** Supported compact JWE content-encryption algorithms. */
+/**
+ * Supported compact JWE content-encryption algorithms.
+ *
+ * `A128GCM` uses a 16-byte content-encryption key; `A256GCM` uses 32 bytes.
+ *
+ * ```ts no_run
+ * import type { JweEncryption } from 'fino:security/jwt';
+ *
+ * const encryption: JweEncryption = 'A256GCM';
+ * ```
+ */
 export type JweEncryption = 'A128GCM' | 'A256GCM';
 
-/** Key input accepted by verification and decryption helpers. */
+/**
+ * Key input accepted by verification and decryption helpers.
+ *
+ * A single JWK is used directly. Arrays and JWKS containers are searched by
+ * header `kid` and `alg`, returning the first matching key or throwing when no
+ * key matches.
+ *
+ * ```ts no_run
+ * import type { JwtKeyInput } from 'fino:security/jwt';
+ *
+ * const keys: JwtKeyInput = { keys: [{ kty: 'oct', kid: 'current', k: 'secret' }] };
+ * ```
+ */
 export type JwtKeyInput = JsonWebKeyLike | JsonWebKeySet | JsonWebKeyLike[];
 
-/** Options for signing a compact JWT. */
+/**
+ * Options for signing a compact JWT.
+ *
+ * The algorithm is required. `iat` is added by default, and `expiresIn` or
+ * `notBefore` add relative `exp` and `nbf` claims based on the current Unix
+ * time in seconds.
+ *
+ * ```ts no_run
+ * import type { JwtSignOptions } from 'fino:security/jwt';
+ *
+ * const options: JwtSignOptions = { algorithm: 'HS256', expiresIn: 3600 };
+ * ```
+ */
 export interface JwtSignOptions {
+  /**
+   * JWS signing algorithm.
+   *
+   * The key must be compatible with the selected algorithm. `none` is not part
+   * of this type and is rejected defensively at runtime.
+   *
+   * ```ts no_run
+   * import type { JwtSignOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtSignOptions = { algorithm: 'RS256' };
+   * ```
+   */
   algorithm: JwtAlgorithm;
+  /**
+   * Additional protected header fields.
+   *
+   * These fields are merged after the default `{ typ: 'JWT', alg }`, so they
+   * can add values such as `kid`. Avoid overriding `alg`.
+   *
+   * ```ts no_run
+   * import type { JwtSignOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtSignOptions = { algorithm: 'HS256', header: { kid: 'current' } };
+   * ```
+   */
   header?: Record<string, unknown>;
+  /**
+   * Lifetime in seconds from signing time.
+   *
+   * When provided, `exp` is set to `now + expiresIn`. Omit it to leave the JWT
+   * without an expiration claim.
+   *
+   * ```ts no_run
+   * import type { JwtSignOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtSignOptions = { algorithm: 'HS256', expiresIn: 900 };
+   * ```
+   */
   expiresIn?: number;
+  /**
+   * Delay in seconds before the JWT becomes valid.
+   *
+   * When provided, `nbf` is set to `now + notBefore`.
+   *
+   * ```ts no_run
+   * import type { JwtSignOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtSignOptions = { algorithm: 'HS256', notBefore: 30 };
+   * ```
+   */
   notBefore?: number;
+  /**
+   * Issued-at claim value, or `false` to omit `iat`.
+   *
+   * Defaults to the current Unix time in seconds. Numeric values are used as-is.
+   *
+   * ```ts no_run
+   * import type { JwtSignOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtSignOptions = { algorithm: 'HS256', issuedAt: false };
+   * ```
+   */
   issuedAt?: number | false;
 }
 
-/** Claim checks and clock controls used during JWT verification. */
+/**
+ * Claim checks and clock controls used during JWT verification.
+ *
+ * All supplied checks must pass after signature verification. Failures throw
+ * errors from `jwtVerify()` rather than returning `null`.
+ *
+ * ```ts no_run
+ * import type { JwtVerifyOptions } from 'fino:security/jwt';
+ *
+ * const options: JwtVerifyOptions = { issuer: 'https://issuer.example', audience: 'api' };
+ * ```
+ */
 export interface JwtVerifyOptions {
+  /**
+   * Expected `aud` claim.
+   *
+   * A string or any value in the provided list may match. JWT payload `aud` can
+   * be a string or array of strings.
+   *
+   * ```ts no_run
+   * import type { JwtVerifyOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtVerifyOptions = { audience: ['api', 'admin'] };
+   * ```
+   */
   audience?: string | string[];
+  /**
+   * Expected `iss` claim.
+   *
+   * When supplied, payload `iss` must be exactly equal or verification throws.
+   *
+   * ```ts no_run
+   * import type { JwtVerifyOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtVerifyOptions = { issuer: 'https://issuer.example' };
+   * ```
+   */
   issuer?: string;
+  /**
+   * Expected `sub` claim.
+   *
+   * When supplied, payload `sub` must be exactly equal or verification throws.
+   *
+   * ```ts no_run
+   * import type { JwtVerifyOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtVerifyOptions = { subject: 'user-123' };
+   * ```
+   */
   subject?: string;
+  /**
+   * Clock tolerance in seconds for `exp` and `nbf`.
+   *
+   * Defaults to `0`. Positive values allow small clock skew during validation.
+   *
+   * ```ts no_run
+   * import type { JwtVerifyOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtVerifyOptions = { clockTolerance: 30 };
+   * ```
+   */
   clockTolerance?: number;
+  /**
+   * Current Unix time in seconds for claim checks.
+   *
+   * Defaults to the current wall clock. Supplying it is useful for tests.
+   *
+   * ```ts no_run
+   * import type { JwtVerifyOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtVerifyOptions = { now: 1_700_000_000 };
+   * ```
+   */
   now?: number;
 }
 
-/** Options for encrypting a compact JWE with a JSON payload. */
+/**
+ * Options for encrypting a compact JWE with a JSON payload.
+ *
+ * The algorithm controls key management and `encryption` controls AES-GCM
+ * content encryption. Additional header fields are protected by authenticated
+ * encryption.
+ *
+ * ```ts no_run
+ * import type { JwtEncryptOptions } from 'fino:security/jwt';
+ *
+ * const options: JwtEncryptOptions = { algorithm: 'dir', encryption: 'A256GCM' };
+ * ```
+ */
 export interface JwtEncryptOptions {
+  /**
+   * JWE key-management algorithm.
+   *
+   * `dir` requires an `oct` JWK whose decoded `k` length matches `encryption`.
+   * RSA-OAEP variants use a public RSA key to encrypt a fresh CEK.
+   *
+   * ```ts no_run
+   * import type { JwtEncryptOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtEncryptOptions = { algorithm: 'RSA-OAEP-256', encryption: 'A256GCM' };
+   * ```
+   */
   algorithm: JweAlgorithm;
+  /**
+   * JWE content-encryption algorithm.
+   *
+   * `A128GCM` requires a 16-byte CEK and `A256GCM` requires a 32-byte CEK.
+   *
+   * ```ts no_run
+   * import type { JwtEncryptOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtEncryptOptions = { algorithm: 'dir', encryption: 'A128GCM' };
+   * ```
+   */
   encryption: JweEncryption;
+  /**
+   * Additional protected JWE header fields.
+   *
+   * Fields are merged after `typ`, `alg`, and `enc`, so use this for values
+   * such as `kid`. Avoid overriding algorithm fields.
+   *
+   * ```ts no_run
+   * import type { JwtEncryptOptions } from 'fino:security/jwt';
+   *
+   * const options: JwtEncryptOptions = { algorithm: 'dir', encryption: 'A256GCM', header: { kid: 'enc-1' } };
+   * ```
+   */
   header?: Record<string, unknown>;
 }
 
-/** Decoded compact JWT or JWE result. */
+/**
+ * Decoded compact JWT or JWE result.
+ *
+ * Verification and decryption return the protected header and JSON payload as
+ * plain records. Claim validation is performed only by `jwtVerify()`.
+ *
+ * ```ts no_run
+ * import type { JwtResult } from 'fino:security/jwt';
+ *
+ * const result: JwtResult = { header: { alg: 'HS256' }, payload: { sub: 'user-123' } };
+ * ```
+ */
 export interface JwtResult {
+  /**
+   * Decoded protected header.
+   *
+   * Values are parsed from JSON and are not narrowed beyond the record shape.
+   *
+   * ```ts no_run
+   * import type { JwtResult } from 'fino:security/jwt';
+   *
+   * const result: JwtResult = { header: { alg: 'HS256' }, payload: {} };
+   * const alg = result.header.alg;
+   * ```
+   */
   header: Record<string, unknown>;
+  /**
+   * Decoded JSON payload.
+   *
+   * Values are parsed from JSON. JWT registered claims remain in this object
+   * after verification.
+   *
+   * ```ts no_run
+   * import type { JwtResult } from 'fino:security/jwt';
+   *
+   * const result: JwtResult = { header: { alg: 'HS256' }, payload: { sub: 'user-123' } };
+   * const sub = result.payload.sub;
+   * ```
+   */
   payload: Record<string, unknown>;
 }
 
@@ -161,7 +453,21 @@ function validateClaims(payload: Record<string, unknown>, options: JwtVerifyOpti
   }
 }
 
-/** Sign a compact JWS/JWT, adding `iat` by default and optional `exp`/`nbf` claims. */
+/**
+ * Sign a compact JWS/JWT.
+ *
+ * Adds `iat` by default and optional relative `exp` and `nbf` claims. The
+ * returned string is `header.payload.signature`. Key import, unsupported
+ * algorithms, and crypto signing failures reject the promise.
+ *
+ * ```ts no_run
+ * import { jwtSign } from 'fino:security/jwt';
+ * import { jwkFromSecret } from 'fino:security/jwk';
+ *
+ * const key = jwkFromSecret('shared-secret', 'HS256');
+ * const token = await jwtSign({ sub: 'user-123' }, key, { algorithm: 'HS256' });
+ * ```
+ */
 export async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtSignOptions): Promise<string> {
   const alg = options.algorithm;
   if (alg === 'none') throw new Error('JWT alg "none" is not supported');
@@ -180,7 +486,22 @@ export async function jwtSign(payload: Record<string, unknown>, key: JsonWebKeyL
   return `${signingInput}.${base64urlEncode(signature)}`;
 }
 
-/** Verify a compact JWS/JWT and return decoded header and payload or throw on failure. */
+/**
+ * Verify a compact JWS/JWT and return decoded header and payload.
+ *
+ * Throws for malformed compact tokens, unsupported algorithms, missing matching
+ * keys, failed signatures, and failed claim checks. The helper selects keys
+ * from JWKS input using protected header `kid` and `alg`.
+ *
+ * ```ts no_run
+ * import { jwtSign, jwtVerify } from 'fino:security/jwt';
+ * import { jwkFromSecret } from 'fino:security/jwk';
+ *
+ * const key = jwkFromSecret('shared-secret', 'HS256');
+ * const token = await jwtSign({ sub: 'user-123' }, key, { algorithm: 'HS256' });
+ * const result = await jwtVerify(token, key, { subject: 'user-123' });
+ * ```
+ */
 export async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVerifyOptions = {}): Promise<JwtResult> {
   const parts = token.split('.');
   if (parts.length !== 3) throw new Error('Invalid compact JWT');
@@ -210,7 +531,22 @@ function rsaOaepHash(alg: JweAlgorithm): string {
   return alg === 'RSA-OAEP' ? 'SHA-1' : 'SHA-256';
 }
 
-/** Encrypt a compact JWE with a JSON payload using AES-GCM content encryption. */
+/**
+ * Encrypt a compact JWE with a JSON payload using AES-GCM content encryption.
+ *
+ * The returned string is the five-part compact JWE form. With `dir`, the
+ * symmetric key is used directly as the CEK. With RSA-OAEP, a fresh CEK is
+ * generated and encrypted for the recipient. Key import and crypto failures
+ * reject the promise.
+ *
+ * ```ts no_run
+ * import { jwtEncrypt } from 'fino:security/jwt';
+ * import { generateJwk } from 'fino:security/jwk';
+ *
+ * const key = await generateJwk({ kty: 'oct', alg: 'dir', length: 256 });
+ * const token = await jwtEncrypt({ sub: 'user-123' }, key, { algorithm: 'dir', encryption: 'A256GCM' });
+ * ```
+ */
 export async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebKeyLike, options: JwtEncryptOptions): Promise<string> {
   const header = { typ: 'JWT', alg: options.algorithm, enc: options.encryption, ...options.header };
   const protectedHeader = base64urlJson(header);
@@ -246,7 +582,23 @@ export async function jwtEncrypt(payload: Record<string, unknown>, key: JsonWebK
   ].join('.');
 }
 
-/** Decrypt a compact JWE and return decoded header and JSON payload or throw on failure. */
+/**
+ * Decrypt a compact JWE and return decoded header and JSON payload.
+ *
+ * Throws for malformed compact tokens, missing matching keys, CEK length
+ * mismatches, AES-GCM authentication failures, and JSON decode failures. The
+ * thrown error message is prefixed with `JWE decryption failed:` for inner
+ * decryption errors.
+ *
+ * ```ts no_run
+ * import { jwtDecrypt, jwtEncrypt } from 'fino:security/jwt';
+ * import { generateJwk } from 'fino:security/jwk';
+ *
+ * const key = await generateJwk({ kty: 'oct', alg: 'dir', length: 256 });
+ * const token = await jwtEncrypt({ sub: 'user-123' }, key, { algorithm: 'dir', encryption: 'A256GCM' });
+ * const result = await jwtDecrypt(token, key);
+ * ```
+ */
 export async function jwtDecrypt(token: string, keys: JwtKeyInput): Promise<JwtResult> {
   const parts = token.split('.');
   if (parts.length !== 5) throw new Error('Invalid compact JWE');

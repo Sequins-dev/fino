@@ -1,7 +1,16 @@
 /**
  * internal/opentelemetry/instrumentations/http-server — internal runtime module.
  *
- * 
+ * Converts runtime HTTP server request lifecycle topic events into server
+ * spans and installs request trace context for downstream work performed by
+ * the handler.
+ *
+ * ```js
+ * const { HttpServerInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/http-server';
+ * console.log(new HttpServerInstrumentation().constructor.name);
+ * ```
+ *
  * @internal
  */
 
@@ -15,12 +24,79 @@ import {
 import type { Attributes, Disposable, OtelSdkLike, RuntimeHttpRequestEvent } from '../common.mts';
 import { isTracerProviderContextEnabled } from '../traces.mts';
 
+/**
+ * Runtime HTTP server instrumentation.
+ *
+ * The instrumentation subscribes to server request start, end, and error
+ * topics. Start events extract incoming propagation context, record a span
+ * start, and install request context. End and error events finalize the stored
+ * span. Missing start events are ignored, and response status codes 500 and
+ * above are marked as errors.
+ *
+ * ```js
+ * const { HttpServerInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/http-server';
+ * const disposable = new HttpServerInstrumentation().enable({
+ *   propagator: { extract() { return {}; } },
+ *   recordSpanStart() {},
+ *   recordSpan() {},
+ * });
+ * disposable.dispose();
+ * ```
+ *
+ * @internal
+ */
 export class HttpServerInstrumentation {
+  /**
+   * Private property `#active` used by `HttpServerInstrumentation`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #active = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#active;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #active = new Map<
     string,
     { traceId: string; spanId: string; parentSpanId: string | null; startTimeUnixNano: number; kind: string; attributes: Attributes }
   >();
 
+  /**
+   * Enable HTTP server topic subscriptions.
+   *
+   * The SDK must provide `propagator.extract()`, `recordSpanStart()`, and
+   * `recordSpan()`. Completed spans are named from the request method and
+   * route, include response status or error attributes when available, and are
+   * emitted with server kind. The returned disposable removes all
+   * subscriptions.
+   *
+   * ```js
+   * const { HttpServerInstrumentation } =
+   *   import 'internal:opentelemetry/instrumentations/http-server';
+   * const disposable = new HttpServerInstrumentation().enable({
+   *   propagator: { extract() { return {}; } },
+   *   recordSpanStart(span) { console.log(span.kind); },
+   *   recordSpan() {},
+   * });
+   * disposable.dispose();
+   * ```
+   *
+   * @param sdk SDK-like sink with propagator and span recorders.
+   * @returns A disposable that removes all HTTP server subscriptions.
+   * @internal
+   */
   enable(sdk: OtelSdkLike): Disposable {
     const onStart = topic<RuntimeHttpRequestEvent>(otelRuntimeTopic('http.server', 'request', 'start')).subscribe((event) => {
       if (!isTracerProviderContextEnabled()) return;

@@ -12,6 +12,17 @@
  * create internal:boringssl with the same exports and change the import in
  * fino:crypto and fino:tls.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import * as openssl from 'internal:openssl';
+ *
+ * if (openssl.cryptoAvailable) {
+ *   const digest = openssl.digest('sha-256', new Uint8Array([1, 2, 3]));
+ *   console.log(digest.byteLength);
+ * }
+ * ```
+ *
  * @internal
  */
 
@@ -25,8 +36,60 @@ import {
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
 
+/**
+ * Result returned by symmetric encryption helpers.
+ *
+ * GCM ciphers return both ciphertext and an authentication tag. CBC ciphers do
+ * not authenticate and therefore return `tag: null`. Callers must pass the tag
+ * back to `cipherDecrypt()` for GCM decryption and should treat a missing or
+ * mismatched tag as an authentication failure.
+ *
+ * ```js
+ * import { cipherEncrypt, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = new Uint8Array(32);
+ *   const iv = new Uint8Array(12);
+ *   const result = cipherEncrypt('aes-256-gcm', key, iv, new Uint8Array());
+ *   console.log(result.tag?.byteLength ?? 0);
+ * }
+ * ```
+ *
+ * @internal
+ */
 export interface CipherResult {
+  /**
+   * Encrypted payload bytes.
+   *
+   * For CBC ciphers this includes OpenSSL padding output. For GCM ciphers this
+   * is only the encrypted payload; the authentication tag is separate.
+   *
+   * ```js
+   * import { cipherEncrypt, cryptoAvailable } from 'internal:openssl';
+   * if (cryptoAvailable) {
+   *   const result = cipherEncrypt('aes-128-cbc', new Uint8Array(16), new Uint8Array(16), new Uint8Array());
+   *   console.log(result.ciphertext.byteLength);
+   * }
+   * ```
+   *
+   * @internal
+   */
   ciphertext: Uint8Array;
+  /**
+   * Authentication tag for GCM ciphers, or `null` for CBC ciphers.
+   *
+   * The tag must be retained with the ciphertext and provided to
+   * `cipherDecrypt()` for GCM. CBC callers should expect `null`.
+   *
+   * ```js
+   * import { cipherEncrypt, cryptoAvailable } from 'internal:openssl';
+   * if (cryptoAvailable) {
+   *   const result = cipherEncrypt('aes-256-gcm', new Uint8Array(32), new Uint8Array(12), new Uint8Array());
+   *   console.log(result.tag !== null);
+   * }
+   * ```
+   *
+   * @internal
+   */
   tag:        Uint8Array | null;
 }
 
@@ -298,7 +361,35 @@ function _tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TS
 const _libcrypto = _tryOpen(_cryptoPaths, _cryptoSymbols);
 const _libssl    = _tryOpen(_sslPaths, _sslSymbols);
 
+/**
+ * Whether libcrypto was loaded successfully.
+ *
+ * Crypto helpers call an internal availability check and throw
+ * `OpenSSL not available` when this flag is false. Public modules use this to
+ * produce clearer user-facing errors before attempting native calls.
+ *
+ * ```js
+ * import { cryptoAvailable } from 'internal:openssl';
+ * console.log(typeof cryptoAvailable);
+ * ```
+ *
+ * @internal
+ */
 export const cryptoAvailable = _libcrypto !== null;
+/**
+ * Whether libssl was loaded successfully.
+ *
+ * TLS helpers call an internal availability check and throw
+ * `OpenSSL SSL not available` when this flag is false. Public TLS modules use
+ * this to decide whether TLS support can be enabled.
+ *
+ * ```js
+ * import { tlsAvailable } from 'internal:openssl';
+ * console.log(typeof tlsAvailable);
+ * ```
+ *
+ * @internal
+ */
 export const tlsAvailable    = _libssl !== null;
 
 function _requireCrypto(): CryptoLibrary {
@@ -316,8 +407,20 @@ function _requireSsl(): SslLibrary {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the most recent error from the OpenSSL error queue as a human-readable string.
- * @returns {string}
+ * Read the most recent OpenSSL error as text.
+ *
+ * Returns `OpenSSL not available` when libcrypto is missing and `no error` when
+ * the OpenSSL error queue is empty. Otherwise it drains one error code from the
+ * queue and formats it with `ERR_error_string_n()`. This is a low-level helper;
+ * callers should include their own operation context in thrown errors.
+ *
+ * ```js
+ * import { getErrorString } from 'internal:openssl';
+ * console.log(typeof getErrorString());
+ * ```
+ *
+ * @returns A human-readable OpenSSL error string.
+ * @internal
  */
 export function getErrorString(): string {
   if (_libcrypto === null) return 'OpenSSL not available';
@@ -381,9 +484,25 @@ function _normalizeCipherAlgorithm(algorithm: string): CipherAlgorithm {
 // ---------------------------------------------------------------------------
 
 /**
- * Fill `buf` with `len` cryptographically random bytes via RAND_bytes.
- * @param {ArrayBuffer} buf
- * @param {number} len
+ * Fill an ArrayBuffer with cryptographically random bytes.
+ *
+ * The function writes exactly `len` bytes starting at the beginning of `buf`
+ * using OpenSSL `RAND_bytes()`. `buf` must be at least `len` bytes long. It
+ * throws when libcrypto is unavailable or the random generator reports failure.
+ *
+ * ```js
+ * import { randBytes, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const buf = new ArrayBuffer(16);
+ *   randBytes(buf, 16);
+ *   console.log(new Uint8Array(buf).byteLength);
+ * }
+ * ```
+ *
+ * @param buf Destination buffer.
+ * @param len Number of bytes to fill.
+ * @returns Nothing.
+ * @internal
  */
 export function randBytes(buf: ArrayBuffer, len: number): void {
   const rc = _requireCrypto().symbols.RAND_bytes(buf, len);
@@ -395,10 +514,25 @@ export function randBytes(buf: ArrayBuffer, len: number): void {
 // ---------------------------------------------------------------------------
 
 /**
- * One-shot digest.
- * @param {string} algorithm — 'sha-1', 'sha-256', 'sha-384', 'sha-512'
- * @param {Uint8Array} data
- * @returns {Uint8Array}
+ * Compute a one-shot message digest.
+ *
+ * Supported algorithms are `sha-1`, `sha-256`, `sha-384`, and `sha-512`.
+ * Unsupported algorithm names and unavailable libcrypto throw. The output size
+ * is fixed by the selected digest and the returned `Uint8Array` owns its
+ * backing buffer.
+ *
+ * ```js
+ * import { digest, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const out = digest('sha-256', new TextEncoder().encode('hello'));
+ *   console.log(out.byteLength);
+ * }
+ * ```
+ *
+ * @param algorithm Digest algorithm name.
+ * @param data Bytes to hash.
+ * @returns Digest bytes.
+ * @internal
  */
 export function digest(algorithm: string, data: Uint8Array): Uint8Array {
   const lib = _requireCrypto();
@@ -432,11 +566,25 @@ export function digest(algorithm: string, data: Uint8Array): Uint8Array {
 // ---------------------------------------------------------------------------
 
 /**
- * One-shot HMAC.
- * @param {string} algorithm — 'sha-256', 'sha-512', etc.
- * @param {Uint8Array} key
- * @param {Uint8Array} data
- * @returns {Uint8Array}
+ * Compute a one-shot HMAC.
+ *
+ * Supported digest algorithms match `digest()`. `key` and `data` may be
+ * `Uint8Array` or `ArrayBuffer`. Unsupported algorithms, unavailable libcrypto,
+ * and OpenSSL HMAC failures throw. The result length matches the digest size.
+ *
+ * ```js
+ * import { hmac, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const mac = hmac('sha-256', new Uint8Array([1]), new Uint8Array([2]));
+ *   console.log(mac.byteLength);
+ * }
+ * ```
+ *
+ * @param algorithm Digest algorithm name.
+ * @param key Secret HMAC key bytes.
+ * @param data Message bytes.
+ * @returns HMAC bytes.
+ * @internal
  */
 export function hmac(algorithm: string, key: Uint8Array | ArrayBuffer, data: Uint8Array | ArrayBuffer): Uint8Array {
   const lib = _requireCrypto();
@@ -667,13 +815,28 @@ function _decryptCBC(cipher: object, key: Uint8Array, iv: Uint8Array, ciphertext
 // ---------------------------------------------------------------------------
 
 /**
- * Encrypt data with the given cipher.
- * @param {string} algorithm — 'aes-128-gcm', 'aes-256-gcm', 'aes-128-cbc', 'aes-256-cbc'
- * @param {Uint8Array} key
- * @param {Uint8Array} iv
- * @param {Uint8Array} plaintext
- * @param {Uint8Array|null} [aad] — additional authenticated data (GCM only)
- * @returns {{ ciphertext: Uint8Array, tag: Uint8Array|null }}
+ * Encrypt bytes with a supported AES cipher.
+ *
+ * Supported algorithms are `aes-128-gcm`, `aes-256-gcm`, `aes-128-cbc`, and
+ * `aes-256-cbc`. GCM returns an authentication tag and accepts optional AAD.
+ * CBC returns `tag: null` and uses OpenSSL padding. Invalid algorithms,
+ * unavailable libcrypto, bad key or IV sizes, and OpenSSL failures throw.
+ *
+ * ```js
+ * import { cipherEncrypt, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const result = cipherEncrypt('aes-256-gcm', new Uint8Array(32), new Uint8Array(12), new Uint8Array([1]));
+ *   console.log(result.ciphertext.byteLength);
+ * }
+ * ```
+ *
+ * @param algorithm AES cipher name.
+ * @param key Raw key bytes of the size required by the algorithm.
+ * @param iv Initialization vector or nonce bytes.
+ * @param plaintext Plaintext bytes to encrypt.
+ * @param aad Optional GCM additional authenticated data.
+ * @returns Ciphertext plus optional authentication tag.
+ * @internal
  */
 export function cipherEncrypt(algorithm: string, key: Uint8Array, iv: Uint8Array, plaintext: Uint8Array, aad?: Uint8Array | null): CipherResult {
   const normalized = _normalizeCipherAlgorithm(algorithm);
@@ -683,14 +846,31 @@ export function cipherEncrypt(algorithm: string, key: Uint8Array, iv: Uint8Array
 }
 
 /**
- * Decrypt data with the given cipher.
- * @param {string} algorithm
- * @param {Uint8Array} key
- * @param {Uint8Array} iv
- * @param {Uint8Array} ciphertext
- * @param {Uint8Array|null} [tag] — auth tag (GCM only)
- * @param {Uint8Array|null} [aad] — additional authenticated data (GCM only)
- * @returns {Uint8Array}
+ * Decrypt bytes with a supported AES cipher.
+ *
+ * GCM requires the authentication tag returned by `cipherEncrypt()` and fails
+ * when the tag, key, IV, ciphertext, or AAD do not authenticate. CBC ignores
+ * `tag` and `aad` and relies on OpenSSL padding validation. Invalid algorithms,
+ * unavailable libcrypto, and OpenSSL failures throw.
+ *
+ * ```js
+ * import { cipherEncrypt, cipherDecrypt, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = new Uint8Array(32);
+ *   const iv = new Uint8Array(12);
+ *   const encrypted = cipherEncrypt('aes-256-gcm', key, iv, new Uint8Array([7]));
+ *   console.log(cipherDecrypt('aes-256-gcm', key, iv, encrypted.ciphertext, encrypted.tag).byteLength);
+ * }
+ * ```
+ *
+ * @param algorithm AES cipher name.
+ * @param key Raw key bytes of the size required by the algorithm.
+ * @param iv Initialization vector or nonce bytes.
+ * @param ciphertext Ciphertext bytes to decrypt.
+ * @param tag Required GCM authentication tag; ignored for CBC.
+ * @param aad Optional GCM additional authenticated data.
+ * @returns Plaintext bytes.
+ * @internal
  */
 export function cipherDecrypt(algorithm: string, key: Uint8Array, iv: Uint8Array, ciphertext: Uint8Array, tag?: Uint8Array | null, aad?: Uint8Array | null): Uint8Array {
   const normalized = _normalizeCipherAlgorithm(algorithm);
@@ -707,14 +887,28 @@ export function cipherDecrypt(algorithm: string, key: Uint8Array, iv: Uint8Array
 // ---------------------------------------------------------------------------
 
 /**
- * Derive key bytes using PBKDF2-HMAC.
+ * Derive key bytes with PBKDF2-HMAC.
  *
- * @param {Uint8Array} password
- * @param {Uint8Array} salt
- * @param {number} iterations
- * @param {string} hashAlg — 'sha-1', 'sha-256', 'sha-384', 'sha-512'
- * @param {number} keyLength — output length in bytes
- * @returns {Uint8Array}
+ * `hashAlg` supports the same digest names as `digest()`. `iterations` and
+ * `keyLength` are passed to OpenSSL as signed integers, so callers should
+ * validate user-provided values before calling this internal helper.
+ * Unavailable libcrypto, unsupported digests, and OpenSSL failures throw.
+ *
+ * ```js
+ * import { pbkdf2, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = pbkdf2(new TextEncoder().encode('pw'), new Uint8Array([1, 2]), 1000, 'sha-256', 32);
+ *   console.log(key.byteLength);
+ * }
+ * ```
+ *
+ * @param password Password bytes.
+ * @param salt Salt bytes.
+ * @param iterations PBKDF2 iteration count.
+ * @param hashAlg Digest algorithm used by HMAC.
+ * @param keyLength Desired output length in bytes.
+ * @returns Derived key bytes.
+ * @internal
  */
 export function pbkdf2(password: Uint8Array, salt: Uint8Array, iterations: number, hashAlg: string, keyLength: number): Uint8Array {
   const lib = _requireCrypto();
@@ -737,17 +931,28 @@ export function pbkdf2(password: Uint8Array, salt: Uint8Array, iterations: numbe
 // ---------------------------------------------------------------------------
 
 /**
- * Derive key bytes using HKDF (RFC 5869).
+ * Derive key bytes with HKDF as defined by RFC 5869.
  *
- * Implemented directly in JS using HMAC (extract + expand) to avoid OpenSSL
- * version compatibility issues with the EVP_PKEY_CTX HKDF API.
+ * This helper is implemented in JavaScript using `hmac()` for extract and
+ * expand to avoid OpenSSL HKDF API differences. Empty salt is replaced with a
+ * zero-filled salt of the digest length. Requests requiring more than 255 HKDF
+ * blocks throw. Unavailable libcrypto and unsupported digests also throw.
  *
- * @param {string} hashAlg — 'sha-1', 'sha-256', 'sha-384', 'sha-512'
- * @param {Uint8Array} ikm   — input key material
- * @param {Uint8Array} salt  — salt (may be empty; defaults to HashLen zero bytes)
- * @param {Uint8Array} info  — context info (may be empty)
- * @param {number} keyLength — output length in bytes
- * @returns {Uint8Array}
+ * ```js
+ * import { hkdf, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = hkdf('sha-256', new Uint8Array([1]), new Uint8Array(), new Uint8Array(), 32);
+ *   console.log(key.byteLength);
+ * }
+ * ```
+ *
+ * @param hashAlg Digest algorithm used by HMAC.
+ * @param ikm Input key material.
+ * @param salt Optional salt bytes; empty means HashLen zero bytes.
+ * @param info Optional context/application info.
+ * @param keyLength Desired output length in bytes.
+ * @returns Derived key bytes.
+ * @internal
  */
 export function hkdf(hashAlg: string, ikm: Uint8Array, salt: Uint8Array, info: Uint8Array, keyLength: number): Uint8Array {
   // Use a zero-filled salt of HashLen bytes if salt is empty (RFC 5869 §2.2)
@@ -859,7 +1064,21 @@ const _CURVE_INFO: Record<string, _CurveInfo> = {
   },
 };
 
-/** Return the byte size of each coordinate for the given named curve (32/48/66). */
+/**
+ * Return the coordinate byte width for a supported EC curve.
+ *
+ * Supported curves are `P-256`, `P-384`, and `P-521`. Unsupported names throw.
+ * The result is used for JWK coordinate padding and private scalar extraction.
+ *
+ * ```js
+ * import { ecdsaCoordSize } from 'internal:openssl';
+ * console.log(ecdsaCoordSize('P-256'));
+ * ```
+ *
+ * @param namedCurve Web Crypto named curve.
+ * @returns Coordinate size in bytes.
+ * @internal
+ */
 export function ecdsaCoordSize(namedCurve: string): number {
   const info = _CURVE_INFO[namedCurve];
   if (!info) throw new Error(`Unsupported EC curve: ${namedCurve}`);
@@ -867,9 +1086,23 @@ export function ecdsaCoordSize(namedCurve: string): number {
 }
 
 /**
- * Generate an EC key pair for the given named curve.
- * Returns an EVP_PKEY* owning both private and public components.
- * The caller must eventually call `evpPkeyFree()`.
+ * Generate an EC key pair for a supported named curve.
+ *
+ * Returns an owning `EVP_PKEY*` wrapper represented as an opaque object. The
+ * caller must eventually call `evpPkeyFree()`. Unsupported curves, unavailable
+ * libcrypto, allocation failures, and OpenSSL generation failures throw.
+ *
+ * ```js
+ * import { evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param namedCurve `P-256`, `P-384`, or `P-521`.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
  */
 export function evpPkeyGenerateEc(namedCurve: string): object {
   if (!_CURVE_INFO[namedCurve]) throw new Error(`Unsupported EC curve: ${namedCurve}`);
@@ -894,17 +1127,72 @@ export function evpPkeyGenerateEc(namedCurve: string): object {
   return pkey;
 }
 
-/** @deprecated Use evpPkeyGenerateEc('P-256') instead. */
+/**
+ * Generate a P-256 EC key pair.
+ *
+ * This compatibility helper delegates to `evpPkeyGenerateEc('P-256')`. The
+ * returned key must be freed with `evpPkeyFree()`. It throws for the same
+ * OpenSSL availability and generation failures as `evpPkeyGenerateEc()`.
+ *
+ * ```js
+ * import { evpPkeyGenerateEcP256, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEcP256();
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @returns Opaque owning P-256 `EVP_PKEY*`.
+ * @deprecated Use `evpPkeyGenerateEc('P-256')` instead.
+ * @internal
+ */
 export function evpPkeyGenerateEcP256(): object { return evpPkeyGenerateEc('P-256'); }
 
-/** Free an EVP_PKEY* returned by evpPkeyGenerateEc or evpPkeyImportSpki. */
+/**
+ * Free an owning `EVP_PKEY*`.
+ *
+ * The pointer must come from one of this module's key generation or import
+ * helpers. Calling it with a borrowed, already-freed, or foreign pointer is
+ * undefined native behavior.
+ *
+ * ```js
+ * import { evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey Opaque owning `EVP_PKEY*`.
+ * @returns Nothing.
+ * @internal
+ */
 export function evpPkeyFree(pkey: object): void {
   _requireCrypto().symbols.EVP_PKEY_free(pkey);
 }
 
 /**
- * Export the public component of an EC key as DER-encoded SPKI.
- * `namedCurve` must match the curve used when the key was generated.
+ * Export an EC public key as DER-encoded SPKI.
+ *
+ * `namedCurve` must match the key's actual curve and must be supported by the
+ * built-in SPKI prefix table. The returned bytes are DER SubjectPublicKeyInfo.
+ * Unavailable libcrypto, unsupported curves, malformed keys, and OpenSSL point
+ * conversion failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateEc, evpPkeyExportSpki, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   console.log(evpPkeyExportSpki(key, 'P-256').byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey EC key to export.
+ * @param namedCurve Expected curve name.
+ * @returns DER SubjectPublicKeyInfo bytes.
+ * @internal
  */
 export function evpPkeyExportSpki(pkey: object, namedCurve: string): Uint8Array {
   const info = _CURVE_INFO[namedCurve];
@@ -928,8 +1216,27 @@ export function evpPkeyExportSpki(pkey: object, namedCurve: string): Uint8Array 
 
 /**
  * Import an EC public key from DER-encoded SPKI.
- * Auto-detects the curve from the SPKI header bytes.
- * Returns `{ pkey, namedCurve }`. The caller must call evpPkeyFree(pkey) when done.
+ *
+ * The curve is detected from the supported SPKI header prefixes for `P-256`,
+ * `P-384`, and `P-521`. The returned key is owning and must be freed with
+ * `evpPkeyFree()`. Unknown headers, invalid point encodings, unavailable
+ * libcrypto, and OpenSSL allocation/import failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateEc, evpPkeyExportSpki, evpPkeyImportSpki, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   const imported = evpPkeyImportSpki(evpPkeyExportSpki(key, 'P-256'));
+ *   console.log(imported.namedCurve);
+ *   evpPkeyFree(imported.pkey);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param der DER SubjectPublicKeyInfo bytes.
+ * @returns Imported key and detected curve name.
+ * @internal
  */
 export function evpPkeyImportSpki(der: Uint8Array): { pkey: object; namedCurve: string } {
   let namedCurve: string | undefined;
@@ -997,8 +1304,28 @@ export function evpPkeyImportSpki(der: Uint8Array): { pkey: object; namedCurve: 
 }
 
 /**
- * ECDSA sign: compute ECDSA_sign(0, hash, hashLen, ...) and return the
- * DER-encoded signature.  `hash` must already be the digest bytes.
+ * Sign a precomputed digest with ECDSA.
+ *
+ * `hash` must already be digest bytes appropriate for the key and caller
+ * policy; this helper does not hash input. The returned signature is DER
+ * encoded. Unavailable libcrypto, non-EC keys, and OpenSSL signing failures
+ * throw.
+ *
+ * ```js
+ * const { digest, ecdsaSign, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   const sig = ecdsaSign(digest('sha-256', new Uint8Array([1])), key);
+ *   console.log(sig.byteLength > 0);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param hash Precomputed digest bytes.
+ * @param pkey EC private key.
+ * @returns DER-encoded ECDSA signature.
+ * @internal
  */
 export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
   const lib   = _requireCrypto();
@@ -1015,8 +1342,27 @@ export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
 }
 
 /**
- * ECDSA verify: return true if `derSig` is a valid DER-encoded ECDSA signature
- * over `hash` for the given public key.
+ * Verify a DER-encoded ECDSA signature over a precomputed digest.
+ *
+ * Returns `true` for a valid signature and `false` for an invalid signature.
+ * It throws for unavailable libcrypto or when `pkey` is not an EC key.
+ *
+ * ```js
+ * const { digest, ecdsaSign, ecdsaVerify, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   const hash = digest('sha-256', new Uint8Array([1]));
+ *   console.log(ecdsaVerify(hash, ecdsaSign(hash, key), key));
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param hash Precomputed digest bytes.
+ * @param derSig DER-encoded ECDSA signature.
+ * @param pkey EC public or private key.
+ * @returns Whether the signature verifies.
+ * @internal
  */
 export function ecdsaVerify(hash: Uint8Array, derSig: Uint8Array, pkey: object): boolean {
   const lib   = _requireCrypto();
@@ -1035,8 +1381,25 @@ const RSA_PKCS1_PSS_PADDING  = 6;
 const RSA_PSS_SALTLEN_AUTO   = -2; // use digest length for verify, set from signature for verify
 
 /**
- * Generate an RSA key pair and return an EVP_PKEY* owning it.
- * `publicExponent` is typically 65537.  The caller must call evpPkeyFree().
+ * Generate an RSA key pair.
+ *
+ * Returns an owning `EVP_PKEY*` wrapper that must be freed with
+ * `evpPkeyFree()`. `publicExponent` is typically 65537. Unavailable libcrypto,
+ * invalid modulus/exponent values, allocation failures, and OpenSSL generation
+ * failures throw.
+ *
+ * ```js
+ * import { evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param modulusBits RSA modulus size in bits.
+ * @param publicExponent Public exponent, usually 65537.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
  */
 export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number): object {
   const lib = _requireCrypto();
@@ -1066,8 +1429,26 @@ export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number):
 }
 
 /**
- * Export the public component of an RSA EVP_PKEY as DER-encoded SPKI.
- * Uses i2d_PUBKEY (works for any EVP_PKEY type).
+ * Export an RSA public key as DER-encoded SPKI.
+ *
+ * This uses OpenSSL `i2d_PUBKEY()` and returns DER SubjectPublicKeyInfo bytes.
+ * The helper is intended for RSA keys, although OpenSSL can encode other
+ * `EVP_PKEY` types. Unavailable libcrypto and OpenSSL length/write failures
+ * throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateRsa, evpPkeyExportSpkiRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   console.log(evpPkeyExportSpkiRsa(key).byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA key to export.
+ * @returns DER SubjectPublicKeyInfo bytes.
+ * @internal
  */
 export function evpPkeyExportSpkiRsa(pkey: object): Uint8Array {
   const lib = _requireCrypto();
@@ -1082,8 +1463,25 @@ export function evpPkeyExportSpkiRsa(pkey: object): Uint8Array {
 
 /**
  * Import an RSA public key from DER-encoded SPKI.
- * Uses d2i_PUBKEY (works for any EVP_PKEY type).
- * The caller must call evpPkeyFree().
+ *
+ * The returned key is owning and must be freed with `evpPkeyFree()`. The helper
+ * uses `d2i_PUBKEY()` and is intended for RSA SPKI input; unavailable libcrypto
+ * and OpenSSL parse failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateRsa, evpPkeyExportSpkiRsa, evpPkeyImportSpkiRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   const imported = evpPkeyImportSpkiRsa(evpPkeyExportSpkiRsa(key));
+ *   evpPkeyFree(imported);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param der DER SubjectPublicKeyInfo bytes.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
  */
 export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
   const lib  = _requireCrypto();
@@ -1094,9 +1492,29 @@ export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
 }
 
 /**
- * RSA-OAEP encrypt.  Returns ciphertext.
- * `hashMd` is the EVP_MD* for the OAEP hash and the MGF1 hash.
- * `label` may be empty; most callers pass an empty Uint8Array.
+ * Encrypt bytes with RSA-OAEP.
+ *
+ * `hashAlg` is used for both OAEP and MGF1. `label` is accepted for API shape
+ * but currently ignored and should be `null` or empty to match Web Crypto's
+ * default behavior. Unavailable libcrypto, unsupported hashes, invalid keys,
+ * oversize plaintext, and OpenSSL failures throw.
+ *
+ * ```js
+ * const { rsaOaepEncrypt, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   console.log(rsaOaepEncrypt(key, 'sha-256', null, new Uint8Array([1])).byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA public or private key.
+ * @param hashAlg Digest algorithm for OAEP and MGF1.
+ * @param label Optional OAEP label; ignored unless null/empty by callers.
+ * @param data Plaintext bytes.
+ * @returns Ciphertext bytes.
+ * @internal
  */
 export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array | null, data: Uint8Array): Uint8Array {
   const lib = _requireCrypto();
@@ -1136,7 +1554,30 @@ export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array 
 }
 
 /**
- * RSA-OAEP decrypt.  Returns plaintext.
+ * Decrypt bytes with RSA-OAEP.
+ *
+ * `hashAlg` is used for both OAEP and MGF1. `label` is accepted for API shape
+ * but currently ignored and should be `null` or empty to match encryption.
+ * Wrong keys, wrong ciphertext, padding/authentication failures, unavailable
+ * libcrypto, and OpenSSL failures throw.
+ *
+ * ```js
+ * const { rsaOaepEncrypt, rsaOaepDecrypt, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   const ciphertext = rsaOaepEncrypt(key, 'sha-256', null, new Uint8Array([1]));
+ *   console.log(rsaOaepDecrypt(key, 'sha-256', null, ciphertext)[0]);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA private key.
+ * @param hashAlg Digest algorithm for OAEP and MGF1.
+ * @param label Optional OAEP label; ignored unless null/empty by callers.
+ * @param data Ciphertext bytes.
+ * @returns Plaintext bytes.
+ * @internal
  */
 export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array | null, data: Uint8Array): Uint8Array {
   const lib = _requireCrypto();
@@ -1175,8 +1616,29 @@ export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array 
 }
 
 /**
- * RSA-PSS sign: pre-hash `data` and sign the digest.
- * `saltLength = -1` means "auto" (use hash size); -2 = "max".
+ * Sign data with RSA-PSS.
+ *
+ * The helper hashes `data` with `hashAlg` before signing the digest.
+ * `saltLength === -1` uses the digest length; other values are passed through
+ * to OpenSSL. Unavailable libcrypto, unsupported digests, invalid keys, and
+ * OpenSSL signing failures throw.
+ *
+ * ```js
+ * const { rsaPssSign, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   console.log(rsaPssSign(key, 'sha-256', -1, new Uint8Array([1])).byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA private key.
+ * @param hashAlg Digest algorithm used before signing.
+ * @param saltLength PSS salt length; `-1` means digest length.
+ * @param data Message bytes to hash and sign.
+ * @returns Signature bytes.
+ * @internal
  */
 export function rsaPssSign(pkey: object, hashAlg: string, saltLength: number, data: Uint8Array): Uint8Array {
   const lib  = _requireCrypto();
@@ -1214,7 +1676,30 @@ export function rsaPssSign(pkey: object, hashAlg: string, saltLength: number, da
 }
 
 /**
- * RSA-PSS verify: return true if the signature is valid.
+ * Verify an RSA-PSS signature.
+ *
+ * The helper hashes `data` with `hashAlg` before verification and lets OpenSSL
+ * infer the salt length from the signature. It returns `false` for invalid
+ * signatures and throws for unavailable libcrypto, unsupported digests, invalid
+ * keys, and OpenSSL setup failures.
+ *
+ * ```js
+ * const { rsaPssSign, rsaPssVerify, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   const data = new Uint8Array([1]);
+ *   console.log(rsaPssVerify(key, 'sha-256', rsaPssSign(key, 'sha-256', -1, data), data));
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA public or private key.
+ * @param hashAlg Digest algorithm used before verification.
+ * @param sig Signature bytes.
+ * @param data Message bytes to hash and verify.
+ * @returns Whether the signature verifies.
+ * @internal
  */
 export function rsaPssVerify(pkey: object, hashAlg: string, sig: Uint8Array, data: Uint8Array): boolean {
   const lib  = _requireCrypto();
@@ -1241,7 +1726,27 @@ export function rsaPssVerify(pkey: object, hashAlg: string, sig: Uint8Array, dat
 }
 
 /**
- * RSASSA-PKCS1-v1_5 sign.
+ * Sign data with RSASSA-PKCS1-v1_5.
+ *
+ * The helper hashes `data` with `hashAlg` before signing the digest.
+ * Unavailable libcrypto, unsupported digests, invalid keys, and OpenSSL
+ * signing failures throw.
+ *
+ * ```js
+ * const { rsaPkcs1Sign, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   console.log(rsaPkcs1Sign(key, 'sha-256', new Uint8Array([1])).byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA private key.
+ * @param hashAlg Digest algorithm used before signing.
+ * @param data Message bytes to hash and sign.
+ * @returns Signature bytes.
+ * @internal
  */
 export function rsaPkcs1Sign(pkey: object, hashAlg: string, data: Uint8Array): Uint8Array {
   const lib  = _requireCrypto();
@@ -1275,7 +1780,29 @@ export function rsaPkcs1Sign(pkey: object, hashAlg: string, data: Uint8Array): U
 }
 
 /**
- * RSASSA-PKCS1-v1_5 verify.
+ * Verify an RSASSA-PKCS1-v1_5 signature.
+ *
+ * The helper hashes `data` with `hashAlg` before verification. It returns
+ * `false` for invalid signatures and throws for unavailable libcrypto,
+ * unsupported digests, invalid keys, and OpenSSL setup failures.
+ *
+ * ```js
+ * const { rsaPkcs1Sign, rsaPkcs1Verify, evpPkeyGenerateRsa, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateRsa(2048, 65537);
+ *   const data = new Uint8Array([1]);
+ *   console.log(rsaPkcs1Verify(key, 'sha-256', rsaPkcs1Sign(key, 'sha-256', data), data));
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey RSA public or private key.
+ * @param hashAlg Digest algorithm used before verification.
+ * @param sig Signature bytes.
+ * @param data Message bytes to hash and verify.
+ * @returns Whether the signature verifies.
+ * @internal
  */
 export function rsaPkcs1Verify(pkey: object, hashAlg: string, sig: Uint8Array, data: Uint8Array): boolean {
   const lib  = _requireCrypto();
@@ -1316,9 +1843,22 @@ function _bytesToBn(lib: ReturnType<typeof _requireCrypto>, bytes: Uint8Array): 
 }
 
 /**
- * Import an RSA key from raw component byte arrays.
- * Provide `d` and friends for a private key; omit them for a public key.
- * The caller must call evpPkeyFree().
+ * Import an RSA key from raw big-endian component byte arrays.
+ *
+ * Provide `n` and `e` for a public key. Include `d` and optionally CRT
+ * components `p`, `q`, `dp`, `dq`, and `qi` for a private key. OpenSSL takes
+ * ownership of constructed BIGNUMs; the returned `EVP_PKEY*` is owning and must
+ * be freed with `evpPkeyFree()`. Missing required components, unavailable
+ * libcrypto, allocation failures, and OpenSSL import failures throw.
+ *
+ * ```js
+ * import { rsaImportComponents } from 'internal:openssl';
+ * console.log(typeof rsaImportComponents);
+ * ```
+ *
+ * @param components RSA component byte arrays.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
  */
 export function rsaImportComponents(components: {
   n: Uint8Array; e: Uint8Array;
@@ -1371,8 +1911,27 @@ export function rsaImportComponents(components: {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract the uncompressed public key point (04 || X || Y) from an EC EVP_PKEY,
- * then split into separate X and Y Uint8Arrays of `coordSize` bytes each.
+ * Extract public EC coordinates from an `EVP_PKEY`.
+ *
+ * The key must be on a supported named curve. The helper reads the uncompressed
+ * point, removes the `0x04` prefix, and returns fixed-width X and Y arrays.
+ * Unsupported curves, unavailable libcrypto, non-EC keys, and OpenSSL point
+ * conversion failures throw.
+ *
+ * ```js
+ * const { ecPublicKeyCoords, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   console.log(ecPublicKeyCoords(key, 'P-256').x.byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey EC key.
+ * @param namedCurve Expected curve name.
+ * @returns Fixed-width X and Y coordinate bytes.
+ * @internal
  */
 export function ecPublicKeyCoords(pkey: object, namedCurve: string): { x: Uint8Array; y: Uint8Array } {
   const info = _CURVE_INFO[namedCurve];
@@ -1392,8 +1951,31 @@ export function ecPublicKeyCoords(pkey: object, namedCurve: string): { x: Uint8A
 }
 
 /**
- * Build an EVP_PKEY from raw EC JWK coordinates (x, y required; d optional for private).
- * All coordinate arrays must be `coordSize` bytes (big-endian, zero-padded).
+ * Import an EC key from raw JWK coordinate bytes.
+ *
+ * `x` and `y` are required public coordinates. `d` is optional and creates a
+ * private key when supplied. All coordinates must be big-endian and padded to
+ * the curve coordinate size. Unsupported curves, invalid coordinate lengths,
+ * unavailable libcrypto, and OpenSSL import failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateEc, ecPublicKeyCoords, evpPkeyImportEcJwk, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const source = evpPkeyGenerateEc('P-256');
+ *   const { x, y } = ecPublicKeyCoords(source, 'P-256');
+ *   const imported = evpPkeyImportEcJwk('P-256', x, y);
+ *   evpPkeyFree(imported);
+ *   evpPkeyFree(source);
+ * }
+ * ```
+ *
+ * @param namedCurve `P-256`, `P-384`, or `P-521`.
+ * @param x Public X coordinate.
+ * @param y Public Y coordinate.
+ * @param d Optional private scalar.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
  */
 export function evpPkeyImportEcJwk(
   namedCurve: string,
@@ -1467,8 +2049,25 @@ function _ptrPtrBuf(buf: Uint8Array): Uint8Array {
 }
 
 /**
- * Export an EVP_PKEY private key as an unencrypted PKCS8 PrivateKeyInfo DER blob.
- * Works for EC keys (all curves) and RSA keys.
+ * Export a private key as unencrypted PKCS8 DER.
+ *
+ * Works for EC and RSA private keys supported by OpenSSL. The returned bytes are
+ * a PKCS8 `PrivateKeyInfo` structure without encryption. Unavailable libcrypto,
+ * public-only keys, and OpenSSL conversion failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateEc, evpPkeyExportPkcs8, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   console.log(evpPkeyExportPkcs8(key).byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey EC or RSA private key.
+ * @returns Unencrypted PKCS8 DER bytes.
+ * @internal
  */
 export function evpPkeyExportPkcs8(pkey: object): Uint8Array {
   const lib = _requireCrypto();
@@ -1492,9 +2091,26 @@ export function evpPkeyExportPkcs8(pkey: object): Uint8Array {
 }
 
 /**
- * Import an EVP_PKEY from an unencrypted PKCS8 PrivateKeyInfo DER blob.
- * Works for EC keys (all curves) and RSA keys.
- * The caller must call evpPkeyFree() when done.
+ * Import a private key from unencrypted PKCS8 DER.
+ *
+ * The returned key is owning and must be freed with `evpPkeyFree()`. Works for
+ * EC and RSA private keys supported by OpenSSL. Encrypted PKCS8, malformed DER,
+ * unavailable libcrypto, and OpenSSL conversion failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateEc, evpPkeyExportPkcs8, evpPkeyImportPkcs8, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   const imported = evpPkeyImportPkcs8(evpPkeyExportPkcs8(key));
+ *   evpPkeyFree(imported);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param der Unencrypted PKCS8 `PrivateKeyInfo` bytes.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
  */
 export function evpPkeyImportPkcs8(der: Uint8Array): object {
   const lib  = _requireCrypto();
@@ -1517,9 +2133,29 @@ export function evpPkeyImportPkcs8(der: Uint8Array): object {
 // ---------------------------------------------------------------------------
 
 /**
- * Derive the ECDH shared secret between a private key and a peer public key.
- * Both keys must be on the same named curve.
- * Returns the raw shared secret bytes (X coordinate of the shared point).
+ * Derive an ECDH shared secret.
+ *
+ * `privateKey` must contain a private EC key and `publicKey` must be a peer EC
+ * public key on the same curve. The returned bytes are the raw shared secret
+ * produced by OpenSSL. Unavailable libcrypto, mismatched curves, invalid keys,
+ * and OpenSSL derive failures throw.
+ *
+ * ```js
+ * const { evpPkeyGenerateEc, evpPkeyDeriveEcdh, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const a = evpPkeyGenerateEc('P-256');
+ *   const b = evpPkeyGenerateEc('P-256');
+ *   console.log(evpPkeyDeriveEcdh(a, b).byteLength);
+ *   evpPkeyFree(b);
+ *   evpPkeyFree(a);
+ * }
+ * ```
+ *
+ * @param privateKey Local EC private key.
+ * @param publicKey Peer EC public key.
+ * @returns Raw ECDH shared secret bytes.
+ * @internal
  */
 export function evpPkeyDeriveEcdh(privateKey: object, publicKey: object): Uint8Array {
   const lib = _requireCrypto();
@@ -1552,8 +2188,26 @@ export function evpPkeyDeriveEcdh(privateKey: object, publicKey: object): Uint8A
 }
 
 /**
- * Extract the private scalar `d` from an EC private key as big-endian bytes.
- * The result is zero-padded to `coordSize` bytes.
+ * Extract the private EC scalar as fixed-width bytes.
+ *
+ * The result is big-endian and left-padded with zeroes to `coordSize`. The key
+ * must be an EC private key. Public-only keys, unavailable libcrypto, and
+ * OpenSSL BIGNUM conversion failures throw.
+ *
+ * ```js
+ * const { ecPrivateKeyD, ecdsaCoordSize, evpPkeyGenerateEc, evpPkeyFree, cryptoAvailable } =
+ *   import 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   const key = evpPkeyGenerateEc('P-256');
+ *   console.log(ecPrivateKeyD(key, ecdsaCoordSize('P-256')).byteLength);
+ *   evpPkeyFree(key);
+ * }
+ * ```
+ *
+ * @param pkey EC private key.
+ * @param coordSize Expected coordinate width in bytes.
+ * @returns Zero-padded private scalar bytes.
+ * @internal
  */
 export function ecPrivateKeyD(pkey: object, coordSize: number): Uint8Array {
   const lib   = _requireCrypto();
@@ -1576,6 +2230,24 @@ export function ecPrivateKeyD(pkey: object, coordSize: number): Uint8Array {
 // SSL — context management
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a client TLS context.
+ *
+ * The returned `SSL_CTX*` is owning and must be freed with `sslCtxFree()`.
+ * It is configured with OpenSSL's generic client TLS method. Unavailable
+ * libssl and OpenSSL allocation failures throw.
+ *
+ * ```js
+ * import { sslCtxNewClient, sslCtxFree, tlsAvailable } from 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewClient();
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @returns Opaque owning `SSL_CTX*`.
+ * @internal
+ */
 export function sslCtxNewClient(): object {
   const lib = _requireSsl();
   const method = lib.symbols.TLS_client_method();
@@ -1584,6 +2256,24 @@ export function sslCtxNewClient(): object {
   return ctx;
 }
 
+/**
+ * Create a server TLS context.
+ *
+ * The returned `SSL_CTX*` is owning and must be freed with `sslCtxFree()`.
+ * Callers normally load certificates with `sslCtxLoadCertKey()` before use.
+ * Unavailable libssl and OpenSSL allocation failures throw.
+ *
+ * ```js
+ * import { sslCtxNewServer, sslCtxFree, tlsAvailable } from 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewServer();
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @returns Opaque owning `SSL_CTX*`.
+ * @internal
+ */
 export function sslCtxNewServer(): object {
   const lib = _requireSsl();
   const method = lib.symbols.TLS_server_method();
@@ -1597,9 +2287,15 @@ export function sslCtxNewServer(): object {
  * Both paths must point to PEM-encoded files (SSL_FILETYPE_PEM = 1).
  * Throws if the context cannot be created or either file fails to load.
  *
+ * ```js
+ * import { sslCtxLoadCertKey } from 'internal:openssl';
+ * console.log(typeof sslCtxLoadCertKey);
+ * ```
+ *
  * @param {string} certPath — path to PEM certificate file
  * @param {string} keyPath  — path to PEM private key file
  * @returns {object} SSL_CTX* configured with the cert/key pair
+ * @internal
  */
 export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
   const lib = _requireSsl();
@@ -1633,6 +2329,25 @@ export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
   return ctx;
 }
 
+/**
+ * Free an owning TLS context.
+ *
+ * The context must have been returned by this module. Any ALPN server callback
+ * object returned by `sslCtxSetAlpnServerProtos()` should be retained and
+ * closed by the owner before or alongside freeing the context.
+ *
+ * ```js
+ * import { sslCtxNewClient, sslCtxFree, tlsAvailable } from 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewClient();
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @param ctx Opaque owning `SSL_CTX*`.
+ * @returns Nothing.
+ * @internal
+ */
 export function sslCtxFree(ctx: object): void {
   _requireSsl().symbols.SSL_CTX_free(ctx);
 }
@@ -1658,8 +2373,20 @@ function _encodeAlpnProtocols(protocols: string[]): Uint8Array {
  * Set the ALPN protocol list on an SSL_CTX (client side: preference list).
  * Used to advertise supported protocols during TLS handshake.
  *
- * @param ctx — SSL_CTX* (from sslCtxNewClient / sslCtxLoadCertKey)
- * @param protocols — ordered preference list, e.g. `['http/1.1']`
+ * ```js
+ * const { sslCtxNewClient, sslCtxSetAlpnProtos, sslCtxFree, tlsAvailable } =
+ *   import 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewClient();
+ *   sslCtxSetAlpnProtos(ctx, ['http/1.1']);
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @param ctx SSL_CTX* from `sslCtxNewClient()` or `sslCtxLoadCertKey()`.
+ * @param protocols Ordered preference list, for example `['http/1.1']`.
+ * @returns Nothing.
+ * @internal
  */
 export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
   const lib = _requireSsl();
@@ -1669,8 +2396,20 @@ export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
 }
 
 /**
- * Query the ALPN protocol that was negotiated on this SSL connection.
- * Returns null if no protocol was negotiated (no ALPN, or handshake not done yet).
+ * Query the negotiated ALPN protocol for a TLS connection.
+ *
+ * Returns `null` when no protocol has been negotiated, ALPN was not used, or
+ * the handshake has not completed. The returned string is copied from OpenSSL's
+ * borrowed protocol bytes.
+ *
+ * ```js
+ * import { sslGetAlpnSelected } from 'internal:openssl';
+ * console.log(typeof sslGetAlpnSelected);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @returns Negotiated protocol name, or `null`.
+ * @internal
  */
 export function sslGetAlpnSelected(ssl: object): string | null {
   const lib = _requireSsl();
@@ -1684,6 +2423,26 @@ export function sslGetAlpnSelected(ssl: object): string | null {
   return decodeUtf8(bytes);
 }
 
+/**
+ * Configure a TLS context to use OpenSSL's default trust paths.
+ *
+ * This is normally called for client contexts that verify peers. Unavailable
+ * libssl and OpenSSL trust-path setup failures throw.
+ *
+ * ```js
+ * const { sslCtxNewClient, sslCtxSetDefaultVerifyPaths, sslCtxFree, tlsAvailable } =
+ *   import 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewClient();
+ *   sslCtxSetDefaultVerifyPaths(ctx);
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @param ctx SSL_CTX* to configure.
+ * @returns Nothing.
+ * @internal
+ */
 export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
   const rc = _requireSsl().symbols.SSL_CTX_set_default_verify_paths(ctx);
   if (rc !== 1) throw new Error('SSL_CTX_set_default_verify_paths failed: ' + getErrorString());
@@ -1691,9 +2450,17 @@ export function sslCtxSetDefaultVerifyPaths(ctx: object): void {
 
 /**
  * Load CA certificate(s) for peer verification.
+ *
+ * ```js
+ * import { sslCtxLoadVerifyLocations } from 'internal:openssl';
+ * console.log(typeof sslCtxLoadVerifyLocations);
+ * ```
+ *
  * @param {object} ctx — SSL_CTX* pointer
  * @param {string|null} caFile — path to a PEM file, or null
  * @param {string|null} caPath — path to a directory of PEM files, or null
+ * @returns Nothing.
+ * @internal
  */
 export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, caPath: string | null): void {
   const lib = _requireSsl();
@@ -1703,6 +2470,23 @@ export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, ca
   if (rc !== 1) throw new Error('SSL_CTX_load_verify_locations failed: ' + getErrorString());
 }
 
+/**
+ * Set TLS peer verification mode on a context.
+ *
+ * `mode` is passed directly to `SSL_CTX_set_verify()`, commonly
+ * `SSL_VERIFY_PEER` for clients that require certificate verification. The
+ * verify callback is always null.
+ *
+ * ```js
+ * import { SSL_VERIFY_PEER, sslCtxSetVerify } from 'internal:openssl';
+ * console.log(SSL_VERIFY_PEER, typeof sslCtxSetVerify);
+ * ```
+ *
+ * @param ctx SSL_CTX* to configure.
+ * @param mode OpenSSL verification bitmask.
+ * @returns Nothing.
+ * @internal
+ */
 export function sslCtxSetVerify(ctx: object, mode: number): void {
   _requireSsl().symbols.SSL_CTX_set_verify(ctx, mode, null);
 }
@@ -1711,16 +2495,76 @@ export function sslCtxSetVerify(ctx: object, mode: number): void {
 // SSL — connection management
 // ---------------------------------------------------------------------------
 
+/**
+ * Create an SSL connection object from a context.
+ *
+ * The returned `SSL*` is owning and must be freed with `sslFree()`. Callers
+ * usually bind it to a descriptor with `sslSetFd()` before handshaking.
+ * Unavailable libssl and OpenSSL allocation failures throw.
+ *
+ * ```js
+ * const { sslCtxNewClient, sslNew, sslFree, sslCtxFree, tlsAvailable } =
+ *   import 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewClient();
+ *   const ssl = sslNew(ctx);
+ *   sslFree(ssl);
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @param ctx SSL_CTX* used to create the connection.
+ * @returns Opaque owning `SSL*`.
+ * @internal
+ */
 export function sslNew(ctx: object): object {
   const ssl = _requireSsl().symbols.SSL_new(ctx);
   if (ssl === null) throw new Error('SSL_new failed: ' + getErrorString());
   return ssl;
 }
 
+/**
+ * Free an owning SSL connection object.
+ *
+ * The pointer must have been returned by `sslNew()` and must not be used after
+ * this call. Shutdown should be handled separately when protocol semantics
+ * require it.
+ *
+ * ```js
+ * const { sslCtxNewClient, sslNew, sslFree, sslCtxFree, tlsAvailable } =
+ *   import 'internal:openssl';
+ * if (tlsAvailable) {
+ *   const ctx = sslCtxNewClient();
+ *   const ssl = sslNew(ctx);
+ *   sslFree(ssl);
+ *   sslCtxFree(ctx);
+ * }
+ * ```
+ *
+ * @param ssl Opaque owning `SSL*`.
+ * @returns Nothing.
+ * @internal
+ */
 export function sslFree(ssl: object): void {
   _requireSsl().symbols.SSL_free(ssl);
 }
 
+/**
+ * Bind an SSL connection object to a file descriptor.
+ *
+ * The descriptor is borrowed by OpenSSL and must remain valid while the SSL
+ * object is used. OpenSSL setup failure throws.
+ *
+ * ```js
+ * import { sslSetFd } from 'internal:openssl';
+ * console.log(typeof sslSetFd);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @param fd POSIX file descriptor.
+ * @returns Nothing.
+ * @internal
+ */
 export function sslSetFd(ssl: object, fd: number): void {
   const rc = _requireSsl().symbols.SSL_set_fd(ssl, fd);
   if (rc !== 1) throw new Error('SSL_set_fd failed');
@@ -1731,8 +2575,15 @@ export function sslSetFd(ssl: object, fd: number): void {
  * RFC 6066 forbids IP literals in the SNI extension — SNI is skipped for them.
  * SSL_set1_host is always called so that IP SAN matching still works.
  *
+ * ```js
+ * import { sslSetHostname } from 'internal:openssl';
+ * console.log(typeof sslSetHostname);
+ * ```
+ *
  * @param {object} ssl — SSL* pointer
  * @param {string} hostname — DNS name or IP address
+ * @returns Nothing.
+ * @internal
  */
 export function sslSetHostname(ssl: object, hostname: string): void {
   const lib = _requireSsl();
@@ -1746,10 +2597,40 @@ export function sslSetHostname(ssl: object, hostname: string): void {
   lib.symbols.SSL_set1_host(ssl, encodeUtf8(hostname + '\0'));
 }
 
-/** Perform TLS handshake (client). Returns 1 on success. */
+/**
+ * Perform a client TLS handshake step.
+ *
+ * Returns the raw `SSL_connect()` result, usually `1` on success and
+ * non-positive values requiring `sslGetError()` handling. This wrapper does not
+ * loop on WANT_READ or WANT_WRITE.
+ *
+ * ```js
+ * import { sslConnect } from 'internal:openssl';
+ * console.log(typeof sslConnect);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @returns Raw OpenSSL handshake result.
+ * @internal
+ */
 export function sslConnect(ssl: object): number { return _requireSsl().symbols.SSL_connect(ssl); }
 
-/** Perform TLS handshake (server). Returns 1 on success (async — runs on blocking pool). */
+/**
+ * Perform a server TLS handshake step.
+ *
+ * Returns the raw `SSL_accept()` result, usually `1` on success. The FFI symbol
+ * is async and runs on the blocking pool so ALPN callbacks can bridge safely.
+ * Non-positive results require `sslGetError()` handling by the caller.
+ *
+ * ```js
+ * import { sslAccept } from 'internal:openssl';
+ * console.log(typeof sslAccept);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @returns A promise resolving to the raw OpenSSL handshake result.
+ * @internal
+ */
 export function sslAccept(ssl: object): Promise<number> { return _requireSsl().symbols.SSL_accept(ssl) as Promise<number>; }
 
 /**
@@ -1763,6 +2644,16 @@ export function sslAccept(ssl: object): Promise<number> { return _requireSsl().s
  *
  * Requires SSL_accept to be async:true so the FfiCallback fires via the
  * condvar bridge rather than silently on the V8 thread.
+ *
+ * ```js
+ * import { sslCtxSetAlpnServerProtos } from 'internal:openssl';
+ * console.log(typeof sslCtxSetAlpnServerProtos);
+ * ```
+ *
+ * @param ctx Server SSL_CTX*.
+ * @param protocols Ordered server preference list.
+ * @returns Retained FFI callback object; caller must keep and close it.
+ * @internal
  */
 export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): object {
   const lib = _requireSsl();
@@ -1804,40 +2695,177 @@ export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): obj
 
 /**
  * Read up to `len` decrypted bytes into `buf`.
+ *
+ * This returns the raw `SSL_read()` result: positive byte count on success, `0`
+ * for graceful close, or a negative value that should be interpreted with
+ * `sslGetError()`. The buffer must be at least `len` bytes.
+ *
+ * ```js
+ * import { sslRead } from 'internal:openssl';
+ * console.log(typeof sslRead);
+ * ```
+ *
  * @param {object} ssl
  * @param {ArrayBuffer} buf
  * @param {number} len
  * @returns {number} bytes read, 0 on graceful close, negative on error
+ * @internal
  */
 export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number  { return _requireSsl().symbols.SSL_read(ssl, buf, len); }
 
 /**
  * Write `len` bytes from `buf` over TLS.
+ *
+ * This returns the raw `SSL_write()` result: positive byte count on success or
+ * a non-positive value that should be interpreted with `sslGetError()`. The
+ * caller is responsible for retrying partial writes.
+ *
+ * ```js
+ * import { sslWrite } from 'internal:openssl';
+ * console.log(typeof sslWrite);
+ * ```
+ *
  * @param {object} ssl
  * @param {Uint8Array|ArrayBuffer} buf
  * @param {number} len
  * @returns {number} bytes written, or negative on error
+ * @internal
  */
 export function sslWrite(ssl: object, buf: Uint8Array | ArrayBuffer, len: number): number { return _requireSsl().symbols.SSL_write(ssl, buf, len); }
 
-/** Initiate TLS shutdown sequence. */
+/**
+ * Initiate or continue the TLS shutdown sequence.
+ *
+ * Returns the raw `SSL_shutdown()` result. Callers must interpret non-success
+ * results with OpenSSL semantics and may need to call the function again for a
+ * bidirectional shutdown.
+ *
+ * ```js
+ * import { sslShutdown } from 'internal:openssl';
+ * console.log(typeof sslShutdown);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @returns Raw OpenSSL shutdown result.
+ * @internal
+ */
 export function sslShutdown(ssl: object): number { return _requireSsl().symbols.SSL_shutdown(ssl); }
 
-/** Translate an SSL return value to an error code. */
+/**
+ * Translate a raw SSL operation result to an OpenSSL error code.
+ *
+ * Use this after `sslRead()`, `sslWrite()`, `sslConnect()`, `sslAccept()`, or
+ * `sslShutdown()` return a non-success value. Returned constants include
+ * `SSL_ERROR_WANT_READ`, `SSL_ERROR_WANT_WRITE`, and `SSL_ERROR_ZERO_RETURN`.
+ *
+ * ```js
+ * import { sslGetError, SSL_ERROR_WANT_READ } from 'internal:openssl';
+ * console.log(typeof sslGetError, SSL_ERROR_WANT_READ);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @param ret Raw result from a previous SSL operation.
+ * @returns OpenSSL SSL_ERROR_* code.
+ * @internal
+ */
 export function sslGetError(ssl: object, ret: number): number { return _requireSsl().symbols.SSL_get_error(ssl, ret); }
 
-/** Return number of bytes already decrypted and buffered in OpenSSL. */
+/**
+ * Return bytes already decrypted and buffered by OpenSSL.
+ *
+ * This does not read from the underlying descriptor. A positive value means
+ * `sslRead()` can return decrypted bytes without waiting for more network I/O.
+ *
+ * ```js
+ * import { sslPending } from 'internal:openssl';
+ * console.log(typeof sslPending);
+ * ```
+ *
+ * @param ssl Opaque `SSL*`.
+ * @returns Pending decrypted byte count.
+ * @internal
+ */
 export function sslPending(ssl: object): number { return _requireSsl().symbols.SSL_pending(ssl); }
 
 // ---------------------------------------------------------------------------
 // SSL error code constants
 // ---------------------------------------------------------------------------
 
+/**
+ * OpenSSL error code for no SSL error.
+ *
+ * ```js
+ * import { SSL_ERROR_NONE } from 'internal:openssl';
+ * console.log(SSL_ERROR_NONE);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_ERROR_NONE        = 0;
+/**
+ * OpenSSL error code for protocol or library failure.
+ *
+ * ```js
+ * import { SSL_ERROR_SSL } from 'internal:openssl';
+ * console.log(SSL_ERROR_SSL);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_ERROR_SSL         = 1;
+/**
+ * OpenSSL error code indicating the operation should retry after readability.
+ *
+ * ```js
+ * import { SSL_ERROR_WANT_READ } from 'internal:openssl';
+ * console.log(SSL_ERROR_WANT_READ);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_ERROR_WANT_READ   = 2;
+/**
+ * OpenSSL error code indicating the operation should retry after writability.
+ *
+ * ```js
+ * import { SSL_ERROR_WANT_WRITE } from 'internal:openssl';
+ * console.log(SSL_ERROR_WANT_WRITE);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_ERROR_WANT_WRITE  = 3;
+/**
+ * OpenSSL error code for syscall-layer failure or unexpected EOF.
+ *
+ * ```js
+ * import { SSL_ERROR_SYSCALL } from 'internal:openssl';
+ * console.log(SSL_ERROR_SYSCALL);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_ERROR_SYSCALL     = 5;
+/**
+ * OpenSSL error code for clean TLS close-notify.
+ *
+ * ```js
+ * import { SSL_ERROR_ZERO_RETURN } from 'internal:openssl';
+ * console.log(SSL_ERROR_ZERO_RETURN);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_ERROR_ZERO_RETURN = 6;
 
+/**
+ * OpenSSL verification mode bit that requires peer certificate verification.
+ *
+ * ```js
+ * import { SSL_VERIFY_PEER } from 'internal:openssl';
+ * console.log(SSL_VERIFY_PEER);
+ * ```
+ *
+ * @internal
+ */
 export const SSL_VERIFY_PEER = 0x01;

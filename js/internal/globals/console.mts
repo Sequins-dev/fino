@@ -57,6 +57,18 @@
  * - Do not switch output to process.stdout streams — the direct `writeLine`
  *   call is intentional (no buffering, works before the event loop starts).
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import { console } from 'internal:globals/console';
+ *
+ * console.group('request');
+ * console.log({ method: 'GET', url: '/health' });
+ * console.time('work');
+ * console.timeEnd('work');
+ * console.groupEnd();
+ * ```
+ *
  * @internal
  */
 
@@ -230,6 +242,18 @@ function out(fd: number, label: string, args: unknown[]): void {
 // Exported console object
 // ---------------------------------------------------------------------------
 
+/**
+ * Runtime console singleton exposed as globalThis.console.
+ *
+ * Methods write directly to stdout or stderr through internal libc bindings.
+ * Formatting is intentionally small and synchronous so console works before
+ * stream globals or the event loop are fully initialized.
+ *
+ * ```typescript no_run
+ * console.log('ready');
+ * console.warn('slow path');
+ * ```
+ */
 const console: ConsoleShape & {
   readonly [Symbol.toStringTag]: string;
   log(...args: unknown[]): void;
@@ -253,13 +277,73 @@ const console: ConsoleShape & {
   dirxml(...args: unknown[]): void;
   timeStamp(_label?: string): void;
 } = {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(console); // "[object console]"
+   * ```
+   */
   [Symbol.toStringTag]: 'console',
+
+  /**
+   * Write formatted values to stdout.
+   *
+   * Supports basic printf-style placeholders in the first string argument and
+   * appends remaining arguments separated by spaces.
+   *
+   * ```typescript no_run
+   * console.log('answer=%d', 42);
+   * ```
+   */
   log(...args)   { out(1, '',        args); },
+
+  /**
+   * Alias for log() that writes to stdout.
+   *
+   * ```typescript no_run
+   * console.info('server started');
+   * ```
+   */
   info(...args)  { out(1, '',        args); },
+
+  /**
+   * Alias for log() that writes to stdout.
+   *
+   * ```typescript no_run
+   * console.debug({ state: 'ready' });
+   * ```
+   */
   debug(...args) { out(1, '',        args); },
+
+  /**
+   * Write formatted warning output to stderr with a [warn] prefix.
+   *
+   * ```typescript no_run
+   * console.warn('retrying %s', 'request');
+   * ```
+   */
   warn(...args)  { out(2, '[warn]',  args); },
+
+  /**
+   * Write formatted error output to stderr with an [error] prefix.
+   *
+   * ```typescript no_run
+   * console.error(new Error('failed'));
+   * ```
+   */
   error(...args) { out(2, '[error]', args); },
 
+  /**
+   * Write an assertion failure to stderr when condition is falsy.
+   *
+   * Truthy conditions do nothing. Without a custom message, "Assertion failed"
+   * is printed.
+   *
+   * ```typescript no_run
+   * console.assert(value !== null, 'value must exist');
+   * ```
+   */
   assert(condition: unknown, ...args: unknown[]) {
     if (!condition) {
       const msg = args.length ? format(args) : 'Assertion failed';
@@ -267,11 +351,30 @@ const console: ConsoleShape & {
     }
   },
 
+  /**
+   * Inspect an object with an optional depth and write it to stdout.
+   *
+   * The colors option is accepted for shape compatibility but ignored.
+   *
+   * ```typescript no_run
+   * console.dir({ nested: { ok: true } }, { depth: 1 });
+   * ```
+   */
   dir(obj: unknown, opts?: { depth?: number; colors?: boolean }) {
     const depth = (opts != null && typeof opts.depth === 'number') ? opts.depth : 4;
     out(1, '', [inspect(obj, depth)]);
   },
 
+  /**
+   * Write a JSON representation of tabular data to stdout.
+   *
+   * This implementation does not render aligned columns yet; when JSON
+   * serialization fails, it falls back to inspect().
+   *
+   * ```typescript no_run
+   * console.table([{ name: 'a' }, { name: 'b' }]);
+   * ```
+   */
   table(data: unknown) {
     // Minimal table: JSON for now, full column layout can come later.
     try {
@@ -281,24 +384,76 @@ const console: ConsoleShape & {
     }
   },
 
+  /**
+   * Increase indentation for subsequent console output.
+   *
+   * Any arguments are printed before increasing the group depth.
+   *
+   * ```typescript no_run
+   * console.group('phase');
+   * console.log('inside');
+   * console.groupEnd();
+   * ```
+   */
   group(...args) {
     if (args.length) out(1, '', args);
     _groupDepth++;
   },
 
+  /**
+   * Same as group() in this terminal console implementation.
+   *
+   * The collapsed hint only applies to browser DevTools-style UIs, so it is
+   * ignored after printing the optional label.
+   *
+   * ```typescript no_run
+   * console.groupCollapsed('details');
+   * console.groupEnd();
+   * ```
+   */
   groupCollapsed(...args) {
     // Same as group — collapse is a hint for GUIs we don't have.
     console.group(...args);
   },
 
+  /**
+   * Decrease console indentation by one level.
+   *
+   * Calling this when there is no open group is a no-op.
+   *
+   * ```typescript no_run
+   * console.group('x');
+   * console.groupEnd();
+   * ```
+   */
   groupEnd() {
     if (_groupDepth > 0) _groupDepth--;
   },
 
+  /**
+   * Start or replace a named timer.
+   *
+   * The default label is "default". Reusing a label overwrites the previous
+   * start time without warning.
+   *
+   * ```typescript no_run
+   * console.time('load');
+   * ```
+   */
   time(label = 'default') {
     _timers.set(label, _now());
   },
 
+  /**
+   * End a named timer and write elapsed milliseconds to stdout.
+   *
+   * Missing timers produce a warning on stderr and return undefined.
+   *
+   * ```typescript no_run
+   * console.time('load');
+   * console.timeEnd('load');
+   * ```
+   */
   timeEnd(label = 'default') {
     const start = _timers.get(label);
     if (start === undefined) {
@@ -309,6 +464,17 @@ const console: ConsoleShape & {
     out(1, '', [`${label}: ${_now() - start}ms`]);
   },
 
+  /**
+   * Log elapsed milliseconds for a named timer without clearing it.
+   *
+   * Additional arguments are appended after the elapsed time. Missing timers
+   * produce a warning on stderr.
+   *
+   * ```typescript no_run
+   * console.time('load');
+   * console.timeLog('load', 'halfway');
+   * ```
+   */
   timeLog(label = 'default', ...args) {
     const start = _timers.get(label);
     if (start === undefined) {
@@ -318,12 +484,32 @@ const console: ConsoleShape & {
     out(1, '', [`${label}: ${_now() - start}ms`, ...args]);
   },
 
+  /**
+   * Increment and print a named counter.
+   *
+   * The default label is "default". Counters start at 1.
+   *
+   * ```typescript no_run
+   * console.count('requests');
+   * console.count('requests');
+   * ```
+   */
   count(label = 'default') {
     const n = (_counts.get(label) ?? 0) + 1;
     _counts.set(label, n);
     out(1, '', [`${label}: ${n}`]);
   },
 
+  /**
+   * Reset a named counter.
+   *
+   * Missing counters produce a warning on stderr.
+   *
+   * ```typescript no_run
+   * console.count('requests');
+   * console.countReset('requests');
+   * ```
+   */
   countReset(label = 'default') {
     if (!_counts.has(label)) {
       out(2, '[warn]', [`Count for '${label}' does not exist`]);
@@ -332,10 +518,30 @@ const console: ConsoleShape & {
     _counts.delete(label);
   },
 
+  /**
+   * Clear the console.
+   *
+   * This is a no-op because the runtime writes to a non-interactive terminal
+   * stream and does not manage a screen buffer.
+   *
+   * ```typescript no_run
+   * console.clear();
+   * ```
+   */
   clear() {
     // No-op in a non-interactive terminal context.
   },
 
+  /**
+   * Write a stack trace to stdout.
+   *
+   * Optional arguments are formatted before the Trace label. The stack starts
+   * below the trace() call.
+   *
+   * ```typescript no_run
+   * console.trace('checkpoint');
+   * ```
+   */
   trace(...args) {
     const err = new Error();
     const stack = err.stack?.split('\n').slice(1).join('\n') ?? '';
@@ -343,11 +549,30 @@ const console: ConsoleShape & {
     writeLine(1, prefix() + msg);
   },
 
+  /**
+   * Log XML-like data.
+   *
+   * Fino has no DOM renderer, so this delegates to normal stdout formatting.
+   *
+   * ```typescript no_run
+   * console.dirxml('<root />');
+   * ```
+   */
   dirxml(...args) {
     // No DOM — delegate to log.
     out(1, '', args);
   },
 
+  /**
+   * Performance marker hook.
+   *
+   * This is a no-op because the runtime does not expose DevTools performance
+   * timeline markers.
+   *
+   * ```typescript no_run
+   * console.timeStamp('loaded');
+   * ```
+   */
   timeStamp(_label?: string) {
     // Performance marker — no-op in non-DevTools environment.
   },

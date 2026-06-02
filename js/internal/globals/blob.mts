@@ -88,7 +88,21 @@ const BYTES_INIT = Symbol('bytes-init');
 // All Blob and File instances register here on construction.
 const _blobBytes = new WeakMap<Blob, Uint8Array>();
 
-/** Friend-function: returns the internal byte store of a Blob/File for cloning. */
+/**
+ * Return the internal byte store for a Blob or File.
+ *
+ * This helper is exported for other internal modules, notably structuredClone.
+ * It returns the module-owned Uint8Array, so callers must treat it as read-only
+ * and copy before exposing bytes to user code.
+ *
+ * ```typescript no_run
+ * const blob = new Blob(['hello']);
+ * const bytes = _getBlobBytes(blob);
+ * bytes.byteLength; // 5
+ * ```
+ *
+ * @internal
+ */
 export function _getBlobBytes(blob: Blob): Uint8Array {
   return _blobBytes.get(blob)!;
 }
@@ -128,13 +142,87 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 // Blob
 // ---------------------------------------------------------------------------
 
-/** Web `Blob` facade backed by an immutable in-memory byte store. */
+/**
+ * Web Blob facade backed by an immutable in-memory byte store.
+ *
+ * Blob parts are eagerly normalized and concatenated during construction.
+ * MIME types are lowercased and rejected to the empty string when they contain
+ * non-ASCII printable characters. Methods that expose bytes return copies.
+ *
+ * ```typescript no_run
+ * const blob = new Blob(['hello'], { type: 'TEXT/PLAIN' });
+ * blob.type; // "text/plain"
+ * await blob.text(); // "hello"
+ * ```
+ */
 export class Blob {
+  /**
+   * Private property `#bytes` used by `Blob`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bytes = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bytes;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bytes: Uint8Array;
+  /**
+   * Private property `#type` used by `Blob`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #type = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#type;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #type: string;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new Blob()); // "[object Blob]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'Blob'; }
 
+  /**
+   * Create a Blob from strings, buffers, views, or other Blobs.
+   *
+   * Null or omitted parts create an empty Blob. Non-iterable parts throw a
+   * TypeError. The internal BYTES_INIT path is private to this module and is
+   * used by slice() to avoid re-normalizing already-owned bytes.
+   *
+   * ```typescript no_run
+   * const bytes = new Uint8Array([104, 105]);
+   * const blob = new Blob(['prefix-', bytes], { type: 'text/plain' });
+   * blob.size; // 9
+   * ```
+   */
   constructor(parts?: Iterable<BlobPart> | typeof BYTES_INIT | null, options?: { type?: string; bytes?: Uint8Array } | null) {
     if (parts === BYTES_INIT) {
       // Internal path: options is { bytes: Uint8Array, type: string }
@@ -166,9 +254,41 @@ export class Blob {
     _blobBytes.set(this, this.#bytes);
   }
 
+  /**
+   * Number of bytes in the Blob.
+   *
+   * The value is computed from the immutable internal byte store.
+   *
+   * ```typescript no_run
+   * new Blob(['abc']).size; // 3
+   * ```
+   */
   get size() { return this.#bytes.byteLength; }
+
+  /**
+   * Normalized MIME type for the Blob.
+   *
+   * The value is lowercased. Invalid type strings containing characters outside
+   * U+0020 through U+007E become the empty string.
+   *
+   * ```typescript no_run
+   * new Blob([], { type: 'Application/JSON' }).type; // "application/json"
+   * ```
+   */
   get type() { return this.#type; }
 
+  /**
+   * Return a new Blob containing a byte range from this Blob.
+   *
+   * Negative indexes are resolved from the end, bounds are clamped to the Blob
+   * size, and end values before start produce an empty Blob. The contentType
+   * argument becomes the returned Blob type after the same normalization rules.
+   *
+   * ```typescript no_run
+   * const blob = new Blob(['abcdef']);
+   * await blob.slice(1, 4).text(); // "bcd"
+   * ```
+   */
   slice(start?: number, end?: number, contentType?: string): Blob {
     const size = this.#bytes.byteLength;
     let s = start === undefined ? 0 : Math.trunc(Number(start));
@@ -183,10 +303,31 @@ export class Blob {
     return new Blob(BYTES_INIT, { bytes: sliced, type });
   }
 
+  /**
+   * Decode the Blob bytes as UTF-8 text.
+   *
+   * Invalid UTF-8 sequences follow the internal decoder's replacement behavior.
+   * The method resolves to a string and does not mutate the Blob.
+   *
+   * ```typescript no_run
+   * const text = await new Blob(['hello']).text();
+   * ```
+   */
   async text(): Promise<string> {
     return decodeUtf8(this.#bytes);
   }
 
+  /**
+   * Copy the Blob bytes into a new ArrayBuffer.
+   *
+   * The returned buffer is detached from Blob storage, so modifications to a
+   * view over it cannot change the Blob.
+   *
+   * ```typescript no_run
+   * const buffer = await new Blob(['hi']).arrayBuffer();
+   * new Uint8Array(buffer).byteLength; // 2
+   * ```
+   */
   async arrayBuffer(): Promise<ArrayBuffer> {
     // Return a copy to prevent mutation of internal state.
     return this.#bytes.buffer.slice(
@@ -195,10 +336,33 @@ export class Blob {
     ) as ArrayBuffer;
   }
 
+  /**
+   * Copy the Blob bytes into a new Uint8Array.
+   *
+   * This is a convenience over arrayBuffer() when callers want a typed array.
+   * The returned array is safe to mutate.
+   *
+   * ```typescript no_run
+   * const bytes = await new Blob(['hi']).bytes();
+   * bytes[0]; // 104
+   * ```
+   */
   async bytes(): Promise<Uint8Array> {
     return new Uint8Array(this.#bytes);
   }
 
+  /**
+   * Create a ReadableStream for the Blob contents.
+   *
+   * The current implementation emits one copied Uint8Array chunk and then
+   * closes. It is suitable for piping Blob bodies without exposing storage.
+   *
+   * ```typescript no_run
+   * const stream = new Blob(['hi']).stream();
+   * const reader = stream.getReader();
+   * await reader.read();
+   * ```
+   */
   stream(): ReadableStream {
     const bytes = this.#bytes;
     return new ReadableStream({
@@ -215,12 +379,84 @@ export class Blob {
 // File (extends Blob)
 // ---------------------------------------------------------------------------
 
+/**
+ * File extends Blob with a filename and lastModified timestamp.
+ *
+ * File contents use the same eager in-memory byte store as Blob. The name is
+ * string-coerced and lastModified defaults to Date.now() when omitted.
+ *
+ * ```typescript no_run
+ * const file = new File(['hello'], 'hello.txt', { type: 'text/plain' });
+ * file.name; // "hello.txt"
+ * ```
+ */
 export class File extends Blob {
+  /**
+   * Private property `#name` used by `File`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #name = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#name;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #name: string;
+  /**
+   * Private property `#lastModified` used by `File`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #lastModified = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#lastModified;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #lastModified: number;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new File([], 'x')); // "[object File]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'File'; }
 
+  /**
+   * Create a File from Blob parts and metadata.
+   *
+   * The options type is passed through Blob normalization. lastModified is
+   * truncated to an integer millisecond timestamp; when absent, Date.now() is
+   * captured at construction time.
+   *
+   * ```typescript no_run
+   * const file = new File(['data'], 'data.bin', { lastModified: 0 });
+   * file.lastModified; // 0
+   * ```
+   */
   constructor(parts: Iterable<BlobPart> | null, name: string, options?: { type?: string; lastModified?: number } | null) {
     super(parts, options);
     this.#name = String(name);
@@ -229,7 +465,27 @@ export class File extends Blob {
       : Date.now();
   }
 
+  /**
+   * File name supplied at construction.
+   *
+   * The name is not path-normalized or sanitized; callers should validate it
+   * before using it on a filesystem.
+   *
+   * ```typescript no_run
+   * new File([], 'avatar.png').name; // "avatar.png"
+   * ```
+   */
   get name()         { return this.#name; }
+
+  /**
+   * Last modified time in Unix epoch milliseconds.
+   *
+   * The value is an integer and defaults to the construction time.
+   *
+   * ```typescript no_run
+   * new File([], 'x', { lastModified: 123 }).lastModified; // 123
+   * ```
+   */
   get lastModified() { return this.#lastModified; }
 }
 

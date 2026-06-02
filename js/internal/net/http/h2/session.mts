@@ -1,5 +1,5 @@
 /**
- * internal:net/http/h2/session — Nghttp2Session wrapper.
+ * internal:net/http/h2/session - Nghttp2Session wrapper.
  *
  * Owns the nghttp2_session*, all FfiCallbacks, and per-stream data slots.
  *
@@ -9,20 +9,20 @@
  * When passed to an FFI function as `'pointer'`, `from_js` reads those bytes
  * as u64 and uses the value as the raw C pointer.
  *
- *   Pointer.of(buf)  → new 8-byte ArrayBuffer containing buf's backing-store address
- *   Pointer.copyFrom(ptr, n)  → copy n bytes from the C address in ptr into a new Uint8Array
+ *   Pointer.of(buf)  -> new 8-byte ArrayBuffer containing buf's backing-store address
+ *   Pointer.copyFrom(ptr, n)  -> copy n bytes from the C address in ptr into a new Uint8Array
  *
  * Out-parameters (e.g. nghttp2_session**, nghttp2_session_callbacks**):
  * ```ts no_run
  *   const handle = new ArrayBuffer(8);  // 8 bytes to receive the written pointer
  *   sym.foo(Pointer.of(handle), ...);   // pass address of those 8 bytes
- *   // Now handle's 8 bytes contain the allocated C pointer — use handle directly.
+ *   // Now handle's 8 bytes contain the allocated C pointer - use handle directly.
  * ```
  *
  * ## Threading
  *
- * session_mem_recv2 / session_mem_send2 are `async: true` → blocking pool.
- * FfiCallbacks fire from pool threads → condvar bridge → V8 thread → JS.
+ * session_mem_recv2 / session_mem_send2 are `async: true` -> blocking pool.
+ * FfiCallbacks fire from pool threads -> condvar bridge -> V8 thread -> JS.
  * Never call blocking-FFI inside a FfiCallback (deadlocks pool thread).
  *
  * ## GC pinning
@@ -48,19 +48,106 @@ import {
   buildSettingsArray,
 } from './bindings.mts';
 
-/** @internal Helpers for building nghttp2 name/value and settings arrays. */
+/**
+ * Re-export helpers for building nghttp2 name/value and settings arrays.
+ *
+ * These helpers are defined in the bindings module and re-exported here so
+ * session-adjacent code can import them from the wrapper module. They allocate
+ * buffers that must stay alive for the FFI call that consumes them.
+ *
+ * ```ts
+ * import { buildSettingsArray } from 'internal:net/http/h2/session';
+ * buildSettingsArray([]);
+ * ```
+ *
+ * @internal
+ */
 export { buildNvArray, buildSettingsArray };
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-/** @internal Callbacks invoked by nghttp2 session events for one HTTP/2 stream. */
+/**
+ * Callback set invoked by nghttp2 session events.
+ *
+ * The wrapper copies C-owned header and DATA bytes before invoking these
+ * callbacks. Implementations must not call blocking nghttp2 FFI from a callback
+ * because callbacks are bridged from blocking-pool threads to JavaScript.
+ *
+ * ```ts
+ * const callbacks = {
+ *   onBeginHeaders() {},
+ *   onHeader() {},
+ *   onFrameRecv() {},
+ *   onDataChunk() {},
+ *   onStreamClose() {},
+ * };
+ * callbacks.onStreamClose(1, 0);
+ * ```
+ *
+ * @internal
+ */
 export interface H2StreamCallbacks {
+  /**
+   * Called when nghttp2 starts a HEADERS frame for a stream.
+   *
+   * `isTrailers` is inferred by whether the stream has already received DATA.
+   * Stream `0` and non-HEADERS frames are filtered before this callback.
+   *
+   * ```ts
+   * const callbacks = { onBeginHeaders(streamId, isTrailers) { void streamId; void isTrailers; }, onHeader() {}, onFrameRecv() {}, onDataChunk() {}, onStreamClose() {} };
+   * callbacks.onBeginHeaders(1, false);
+   * ```
+   */
   onBeginHeaders(streamId: number, isTrailers: boolean): void;
+  /**
+   * Called for each decoded header name/value pair.
+   *
+   * Names and values are UTF-8 decoded from nghttp2 buffers. `flags` is the raw
+   * nghttp2 name/value flags byte and is usually `0`.
+   *
+   * ```ts
+   * const callbacks = { onBeginHeaders() {}, onHeader(streamId, name, value, flags) { void streamId; void name; void value; void flags; }, onFrameRecv() {}, onDataChunk() {}, onStreamClose() {} };
+   * callbacks.onHeader(1, ':status', '200', 0);
+   * ```
+   */
   onHeader(streamId: number, name: string, value: string, flags: number): void;
+  /**
+   * Called after nghttp2 receives a complete frame.
+   *
+   * `frameType` and `frameFlags` are raw nghttp2 numeric values. DATA frames mark
+   * the stream as having body data before the callback runs.
+   *
+   * ```ts
+   * const callbacks = { onBeginHeaders() {}, onHeader() {}, onFrameRecv(streamId, frameType, frameFlags) { void streamId; void frameType; void frameFlags; }, onDataChunk() {}, onStreamClose() {} };
+   * callbacks.onFrameRecv(1, 0x01, 0x04);
+   * ```
+   */
   onFrameRecv(streamId: number, frameType: number, frameFlags: number): void;
+  /**
+   * Called for one received DATA chunk.
+   *
+   * The `Uint8Array` is a copy of C memory and remains valid after the callback
+   * returns. Empty chunks may be delivered by nghttp2 and should be tolerated.
+   *
+   * ```ts
+   * const callbacks = { onBeginHeaders() {}, onHeader() {}, onFrameRecv() {}, onDataChunk(streamId, data) { void streamId; void data; }, onStreamClose() {} };
+   * callbacks.onDataChunk(1, new Uint8Array([65]));
+   * ```
+   */
   onDataChunk(streamId: number, data: Uint8Array): void;
+  /**
+   * Called when nghttp2 closes a stream.
+   *
+   * `errorCode` is the HTTP/2 error code associated with the close. The session
+   * wrapper clears its per-stream data slot before invoking this callback.
+   *
+   * ```ts
+   * const callbacks = { onBeginHeaders() {}, onHeader() {}, onFrameRecv() {}, onDataChunk() {}, onStreamClose(streamId, errorCode) { void streamId; void errorCode; } };
+   * callbacks.onStreamClose(1, 0);
+   * ```
+   */
   onStreamClose(streamId: number, errorCode: number): void;
 }
 
@@ -74,50 +161,316 @@ const _dec = new _TextDecoder();
 // Nghttp2Session
 // ---------------------------------------------------------------------------
 
-/** @internal Stateful wrapper around an nghttp2 session pointer. */
+/**
+ * Stateful wrapper around an `nghttp2_session*`.
+ *
+ * The wrapper owns callback structs, JavaScript callback objects, data-provider
+ * state, and the async mutex that serializes blocking-pool FFI calls. Call
+ * `close()` exactly once when the session is no longer needed.
+ *
+ * ```ts no_run
+ * import { Nghttp2Session } from 'internal:net/http/h2/session';
+ * const session = Nghttp2Session.createClient(callbacks);
+ * session.close();
+ * ```
+ *
+ * @internal
+ */
 export class Nghttp2Session {
   // 8-byte ArrayBuffer whose bytes hold the nghttp2_session* address.
+  /**
+   * Private property `#sessionHandle` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #sessionHandle = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#sessionHandle;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #sessionHandle: ArrayBuffer;
+  /**
+   * Private property `#callbacks` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #callbacks = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#callbacks;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #callbacks: Array<{ close(): void }> = [];
+  /**
+   * Private property `#streamDataSlots` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #streamDataSlots = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#streamDataSlots;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #streamDataSlots = new Map<number, DataSlot>();
-  #streamHasData = new Set<number>(); // streams that have received ≥1 DATA frame
+  /**
+   * Private property `#streamHasData` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #streamHasData = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#streamHasData;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
+  #streamHasData = new Set<number>(); // streams that have received >=1 DATA frame
+  /**
+   * Private property `#closed` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closed = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closed;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closed = false;
 
-  // Shared nghttp2_data_provider2 struct (16 bytes) — held alive for submit calls.
+  // Shared nghttp2_data_provider2 struct (16 bytes) - held alive for submit calls.
+  /**
+   * Private property `#dpBuf` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #dpBuf = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#dpBuf;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #dpBuf!: Uint8Array;
 
   // Async mutex: nghttp2 is not thread-safe. recv() and flush() both dispatch
   // to the blocking pool; if they run on different pool threads concurrently
   // they race on the nghttp2_session*. Serialise all pool-bound operations
   // through this promise chain.
+  /**
+   * Private property `#mu` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #mu = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#mu;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #mu: Promise<void> = Promise.resolve();
 
+  /**
+   * Private readonly property `#cb` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #cb = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#cb;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   readonly #cb: H2StreamCallbacks;
 
+  /**
+   * Internal constructor used after a native session handle is allocated.
+   *
+   * Callers must use `createServer()` or `createClient()` so callbacks and data
+   * providers are installed correctly.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * Nghttp2Session.createClient(callbacks);
+   * ```
+   *
+   * @internal
+   */
   private constructor(sessionHandle: ArrayBuffer, cb: H2StreamCallbacks) {
     this.#sessionHandle = sessionHandle;
     this.#cb = cb;
   }
 
+  /**
+   * Create a server-mode nghttp2 session.
+   *
+   * The method throws when libnghttp2 is unavailable or native session creation
+   * fails. The returned session has callbacks and data provider installed but no
+   * SETTINGS have been submitted yet.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createServer(callbacks);
+   * session.close();
+   * ```
+   */
   static createServer(cb: H2StreamCallbacks): Nghttp2Session {
     Nghttp2Session.#requireH2();
     return Nghttp2Session.#create(cb, true);
   }
 
+  /**
+   * Create a client-mode nghttp2 session.
+   *
+   * The method throws when libnghttp2 is unavailable or native session creation
+   * fails. Client code normally submits SETTINGS immediately after creation.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.close();
+   * ```
+   */
   static createClient(cb: H2StreamCallbacks): Nghttp2Session {
     Nghttp2Session.#requireH2();
     return Nghttp2Session.#create(cb, false);
   }
 
+  /**
+   * Private static method `#requireH2` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #requireH2() {
+   *     return 'requireH2';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#requireH2();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   static #requireH2(): void {
     if (!h2Available || sym === null) {
       throw new Error('libnghttp2 is not available on this system');
     }
   }
 
+  /**
+   * Private static method `#create` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #create() {
+   *     return 'create';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#create();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   static #create(cb: H2StreamCallbacks, isServer: boolean): Nghttp2Session {
     // 1. Allocate the nghttp2_session_callbacks struct.
-    //    nghttp2_session_callbacks_new(callbacks**) — out-pointer pattern.
+    //    nghttp2_session_callbacks_new(callbacks**) - out-pointer pattern.
     const cbsHandle = new ArrayBuffer(8);
     const cbsRc = sym!.nghttp2_session_callbacks_new(Pointer.of(cbsHandle)) as number;
     if (cbsRc !== 0) throw new Error(`nghttp2_session_callbacks_new failed: ${cbsRc}`);
@@ -157,6 +510,29 @@ export class Nghttp2Session {
     return session;
   }
 
+  /**
+   * Private method `#installCallbacks` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #installCallbacks() {
+   *     return 'installCallbacks';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#installCallbacks();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #installCallbacks(cbsHandle: ArrayBuffer): void {
     const cb = this.#cb;
     const streamHasData = this.#streamHasData;
@@ -187,13 +563,13 @@ export class Nghttp2Session {
         _session: ArrayBuffer,
         frame: ArrayBuffer,
         namePtrBuf: ArrayBuffer,
-        nameLen: bigint,    // usize → BigInt in FfiCallback
+        nameLen: bigint,    // usize -> BigInt in FfiCallback
         valuePtrBuf: ArrayBuffer,
-        valueLen: bigint,   // usize → BigInt
+        valueLen: bigint,   // usize -> BigInt
         flags: number,
         _userData: ArrayBuffer,
       ) => {
-        // Read name/value before returning — C retains ownership of the memory.
+        // Read name/value before returning - C retains ownership of the memory.
         const nameBytes  = Pointer.copyFrom(namePtrBuf,  Number(nameLen))  as Uint8Array;
         const valueBytes = Pointer.copyFrom(valuePtrBuf, Number(valueLen)) as Uint8Array;
         const { streamId } = readFrameHd(frame);
@@ -225,7 +601,7 @@ export class Nghttp2Session {
         _flags: number,
         streamId: number,
         dataPtrBuf: ArrayBuffer,
-        len: bigint,    // usize → BigInt
+        len: bigint,    // usize -> BigInt
         _userData: ArrayBuffer,
       ) => {
         const bytes = Pointer.copyFrom(dataPtrBuf, Number(len)) as Uint8Array;
@@ -260,6 +636,29 @@ export class Nghttp2Session {
     this.#callbacks.push(onError);
   }
 
+  /**
+   * Private method `#installDataProvider` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #installDataProvider() {
+   *     return 'installDataProvider';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#installDataProvider();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #installDataProvider(): void {
     // The shared data-provider callback. Looks up per-stream state from
     // #streamDataSlots and returns bytes / DEFERRED / EOF to nghttp2.
@@ -272,7 +671,7 @@ export class Nghttp2Session {
         _session: ArrayBuffer,
         streamId: number,
         bufPtrBuf: ArrayBuffer,
-        length: bigint,   // usize → BigInt
+        length: bigint,   // usize -> BigInt
         dataFlagsPtrBuf: ArrayBuffer,
         _source: ArrayBuffer,
         _userData: ArrayBuffer,
@@ -297,7 +696,7 @@ export class Nghttp2Session {
     this.#callbacks.push(dataCb);
 
     // Build the nghttp2_data_provider2 struct (16 bytes).
-    // source.ptr at offset 0 (leave zero — we use streamId to look up state)
+    // source.ptr at offset 0 (leave zero - we use streamId to look up state)
     // read_callback at offset 8 (function pointer from dataCb)
     const dpBuf = new Uint8Array(16);
     // dataCb.pointer is an 8-byte ArrayBuffer whose raw bytes contain the fn ptr address.
@@ -312,7 +711,30 @@ export class Nghttp2Session {
   // ---------------------------------------------------------------------------
 
   // Serialise all blocking-pool calls (recv2 / send2) so they never run
-  // concurrently on different pool threads — nghttp2 is not thread-safe.
+  // concurrently on different pool threads - nghttp2 is not thread-safe.
+  /**
+   * Private method `#lock` used by `Nghttp2Session`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #lock() {
+   *     return 'lock';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#lock();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #lock<T>(fn: () => Promise<T>): Promise<T> {
     let unlock!: () => void;
     const release = new Promise<void>(r => (unlock = r));
@@ -322,10 +744,22 @@ export class Nghttp2Session {
   }
 
   // ---------------------------------------------------------------------------
-  // I/O pumps (async — run on blocking pool, fire FfiCallbacks)
+  // I/O pumps (async - run on blocking pool, fire FfiCallbacks)
   // ---------------------------------------------------------------------------
 
-  /** Feed incoming bytes into the session. Returns bytes consumed (or throws). */
+  /**
+   * Feed incoming bytes into the nghttp2 session.
+   *
+   * The call is serialized with `flush()` through the session mutex. It resolves
+   * with the number of bytes consumed, returns `0` after close, or rejects when
+   * the native FFI call fails.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * await session.recv(new Uint8Array());
+   * ```
+   */
   recv(bytes: Uint8Array): Promise<number> {
     return this.#lock(async () => {
       if (this.#closed) return 0;
@@ -339,6 +773,16 @@ export class Nghttp2Session {
   /**
    * Drain pending outgoing bytes from the session.
    * Returns a Uint8Array to write, or null if nothing to send.
+   *
+   * The call is serialized with `recv()` because nghttp2 sessions are not
+   * thread-safe. After close, it resolves to `null`.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * const bytes = await session.flush();
+   * bytes?.byteLength;
+   * ```
    */
   flush(): Promise<Uint8Array | null> {
     return this.#lock(async () => {
@@ -353,12 +797,34 @@ export class Nghttp2Session {
     });
   }
 
-  /** True if the session has data ready to send. */
+  /**
+   * Return whether nghttp2 wants the caller to write bytes.
+   *
+   * This mirrors `nghttp2_session_want_write`. It is a synchronous snapshot and
+   * should usually be followed by `flush()` until it becomes false.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.wantWrite();
+   * ```
+   */
   wantWrite(): boolean {
     return (sym!.nghttp2_session_want_write(this.#sessionHandle) as number) !== 0;
   }
 
-  /** True if the session wants more incoming data. */
+  /**
+   * Return whether nghttp2 wants more incoming bytes.
+   *
+   * This mirrors `nghttp2_session_want_read`. A false value usually means the
+   * session is closing or has enough data queued for now.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.wantRead();
+   * ```
+   */
   wantRead(): boolean {
     return (sym!.nghttp2_session_want_read(this.#sessionHandle) as number) !== 0;
   }
@@ -367,6 +833,19 @@ export class Nghttp2Session {
   // Submit operations (sync)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Submit local HTTP/2 settings.
+   *
+   * Settings are pairs of nghttp2 setting ID and unsigned value. The method
+   * throws when nghttp2 rejects the settings array; callers must `flush()` to
+   * put the frame on the wire.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.submitSettings([]);
+   * ```
+   */
   submitSettings(settings: Array<[number, number]>): void {
     const buf = buildSettingsArray(settings);
     const rc = sym!.nghttp2_submit_settings(
@@ -377,7 +856,16 @@ export class Nghttp2Session {
 
   /**
    * Submit a server response.
-   * `hasBody` true → attach the shared data provider; caller feeds data via setStreamData.
+   * `hasBody` true -> attach the shared data provider; caller feeds data via setStreamData.
+   *
+   * Headers should include `:status` and any regular response headers. The
+   * method throws if nghttp2 rejects the stream ID or header array.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createServer(callbacks);
+   * session.submitResponse(1, [[':status', '200']], false);
+   * ```
    */
   submitResponse(streamId: number, headers: Array<[string, string]>, hasBody: boolean): void {
     const { buf, nv } = buildNvArray(headers);
@@ -388,7 +876,19 @@ export class Nghttp2Session {
     if (rc !== 0) throw new Error(`nghttp2_submit_response2 failed: ${rc}`);
   }
 
-  /** Submit a client request. Returns the new stream ID. */
+  /**
+   * Submit a client request and return the new stream ID.
+   *
+   * Request pseudo-headers must be included by the caller. A negative nghttp2
+   * return value is converted to an `Error`.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * const id = session.submitRequest([[':method', 'GET'], [':path', '/'], [':scheme', 'https'], [':authority', 'example.test']], false);
+   * id;
+   * ```
+   */
   submitRequest(headers: Array<[string, string]>, hasBody: boolean): number {
     const { buf, nv } = buildNvArray(headers);
     const dpPtr = hasBody ? Pointer.of(this.#dpBuf) : null;
@@ -399,6 +899,18 @@ export class Nghttp2Session {
     return streamId;
   }
 
+  /**
+   * Submit trailers for an existing stream.
+   *
+   * The trailers array must contain only regular headers. The method throws if
+   * nghttp2 rejects the stream or header list; callers must `flush()` afterward.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createServer(callbacks);
+   * session.submitTrailer(1, [['x-finished', 'true']]);
+   * ```
+   */
   submitTrailer(streamId: number, trailers: Array<[string, string]>): void {
     const { buf, nv } = buildNvArray(trailers);
     const rc = sym!.nghttp2_submit_trailer(
@@ -407,22 +919,55 @@ export class Nghttp2Session {
     if (rc !== 0) throw new Error(`nghttp2_submit_trailer failed: ${rc}`);
   }
 
+  /**
+   * Queue a GOAWAY frame.
+   *
+   * The method does not throw for the native return value and does not flush.
+   * `lastStreamId` and `errorCode` are passed directly to nghttp2.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.submitGoaway(0, 0);
+   * ```
+   */
   submitGoaway(lastStreamId: number, errorCode: number): void {
     sym!.nghttp2_submit_goaway(this.#sessionHandle, 0, lastStreamId, errorCode, null, 0);
   }
 
+  /**
+   * Queue an RST_STREAM frame for one stream.
+   *
+   * `errorCode` is a numeric HTTP/2 error code. The method does not flush and
+   * ignores the native return value.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createServer(callbacks);
+   * session.submitRstStream(1, 0x07);
+   * ```
+   */
   submitRstStream(streamId: number, errorCode: number): void {
     sym!.nghttp2_submit_rst_stream(this.#sessionHandle, 0, streamId, errorCode);
   }
 
   /**
    * Inform nghttp2 that this connection was established via HTTP/1.1 h2c
-   * Upgrade (RFC 7540 §3.2). Must be called after session creation and before
+   * Upgrade (RFC 7540 Section 3.2). Must be called after session creation and before
    * submitSettings / recv. Works for both client and server sessions.
    *
    * After calling this, stream 1 is implicitly open:
-   *   server side: half-closed (remote) — client sent its request over h1.
-   *   client side: half-closed (local)  — client already sent the request.
+   *   server side: half-closed (remote) - client sent its request over h1.
+   *   client side: half-closed (local)  - client already sent the request.
+   *
+   * The method throws when nghttp2 rejects the settings payload. Call it before
+   * submitting SETTINGS or receiving additional HTTP/2 frames.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createServer(callbacks);
+   * session.upgradeFromH1(new Uint8Array(), false);
+   * ```
    */
   upgradeFromH1(settingsPayload: Uint8Array, headRequest: boolean): void {
     const settingsPtr = settingsPayload.byteLength > 0 ? Pointer.of(settingsPayload) : null;
@@ -433,6 +978,18 @@ export class Nghttp2Session {
     if (rc !== 0) throw new Error(`nghttp2_session_upgrade2 failed: ${rc}`);
   }
 
+  /**
+   * Resume data production for a deferred stream.
+   *
+   * This wakes nghttp2 after `setStreamData()` installs bytes or EOF. The
+   * native return value is intentionally ignored.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.resumeData(1);
+   * ```
+   */
   resumeData(streamId: number): void {
     sym!.nghttp2_session_resume_data(this.#sessionHandle, streamId);
   }
@@ -444,6 +1001,16 @@ export class Nghttp2Session {
   /**
    * Feed the next body chunk for `streamId`.
    * Pass `null` to signal EOF; the data provider will set the EOF flag on next call.
+   *
+   * The bytes are held by the session until the data provider consumes them.
+   * Passing another chunk before the previous one is fully consumed replaces the
+   * pending slot, so callers should drain writes between chunks.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.setStreamData(1, new Uint8Array([65]));
+   * ```
    */
   setStreamData(streamId: number, bytes: Uint8Array | null): void {
     let slot = this.#streamDataSlots.get(streamId);
@@ -459,6 +1026,18 @@ export class Nghttp2Session {
   // Lifecycle
   // ---------------------------------------------------------------------------
 
+  /**
+   * Free the native nghttp2 session and close all FFI callbacks.
+   *
+   * The method is idempotent. After close, `recv()` returns `0`, `flush()`
+   * returns `null`, and submit operations must no longer be called.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.close();
+   * ```
+   */
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -469,5 +1048,17 @@ export class Nghttp2Session {
     this.#streamHasData.clear();
   }
 
+  /**
+   * Whether this wrapper has been closed.
+   *
+   * The value is updated synchronously by `close()`. It does not reflect remote
+   * peer GOAWAY state unless higher-level code calls `close()`.
+   *
+   * ```ts no_run
+   * import { Nghttp2Session } from 'internal:net/http/h2/session';
+   * const session = Nghttp2Session.createClient(callbacks);
+   * session.isClosed;
+   * ```
+   */
   get isClosed(): boolean { return this.#closed; }
 }

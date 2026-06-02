@@ -6,6 +6,17 @@
  * compression module. It is hidden from generated application docs; public
  * formats and usage are documented on `fino:compress`.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import * as zlib from 'internal:compress/zlib';
+ *
+ * const input = new TextEncoder().encode('payload');
+ * const compressed = zlib.zlibCompress(input, 'gzip', { level: 6 });
+ * const restored = zlib.zlibDecompress(compressed, 'gzip');
+ * console.assert(new TextDecoder().decode(restored) === 'payload');
+ * ```
+ *
  * @internal
  */
 
@@ -19,7 +30,31 @@ import {
   type ZlibCompressionFormat,
 } from './common.mts';
 
-export interface ZlibCompressionOptions { level?: number; }
+/**
+ * Options used by zlib-backed compression.
+ *
+ * `level` defaults to zlib's `Z_DEFAULT_COMPRESSION` when omitted. The native
+ * library validates the actual range and may reject unsupported values.
+ *
+ * ```typescript no_run
+ * import type { ZlibCompressionOptions } from 'internal:compress/zlib';
+ * const opts: ZlibCompressionOptions = { level: 6 };
+ * ```
+ *
+ * @internal
+ */
+export interface ZlibCompressionOptions {
+  /**
+   * Optional zlib compression level.
+   *
+   * ```typescript no_run
+   * import type { ZlibCompressionOptions } from 'internal:compress/zlib';
+   * const opts: ZlibCompressionOptions = { level: 1 };
+   * opts.level;
+   * ```
+   */
+  level?: number;
+}
 
 const isDarwin = os === 'darwin';
 
@@ -141,10 +176,37 @@ function inflateOneShot(data: ByteInput, windowBits: number): Uint8Array {
   return concat(parts);
 }
 
+/**
+ * Compress a complete buffer with the zlib backend.
+ *
+ * Supports `gzip`, `deflate`, and `deflate-raw`. The output is a new
+ * `Uint8Array`. Throws when zlib initialization or deflation fails.
+ *
+ * ```typescript no_run
+ * import { zlibCompress } from 'internal:compress/zlib';
+ * const out = zlibCompress(new TextEncoder().encode('hello'), 'gzip');
+ * ```
+ *
+ * @internal
+ */
 export function zlibCompress(data: ByteInput, format: ZlibCompressionFormat, opts?: ZlibCompressionOptions): Uint8Array {
   return deflateOneShot(data, windowBitsForCompress(format), opts?.level ?? Z_DEFAULT_COMPRESSION);
 }
 
+/**
+ * Decompress a complete buffer with the zlib backend.
+ *
+ * `gzip` and `deflate` use auto-detecting wrapped inflate; `deflate-raw` uses
+ * raw inflate. Throws on malformed or truncated compressed input.
+ *
+ * ```typescript no_run
+ * import { zlibCompress, zlibDecompress } from 'internal:compress/zlib';
+ * const packed = zlibCompress(new Uint8Array([1, 2, 3]), 'deflate');
+ * const plain = zlibDecompress(packed, 'deflate');
+ * ```
+ *
+ * @internal
+ */
 export function zlibDecompress(data: ByteInput, format: ZlibCompressionFormat): Uint8Array {
   return inflateOneShot(data, windowBitsForDecompress(format));
 }
@@ -239,13 +301,66 @@ class ZlibCodec implements CompressionTransform {
   }
 }
 
+/**
+ * Streaming zlib compressor.
+ *
+ * The constructor accepts either a public zlib format or raw zlib window bits.
+ * `write` returns any output currently available; `finish` must be called to
+ * flush trailers and close native state.
+ *
+ * ```typescript no_run
+ * import { ZlibCompressor } from 'internal:compress/zlib';
+ * const codec = new ZlibCompressor('gzip');
+ * const chunks = [...codec.write(new Uint8Array([1])), ...codec.finish()];
+ * ```
+ *
+ * @internal
+ */
 export class ZlibCompressor extends ZlibCodec {
+  /**
+   * Create a zlib compressor.
+   *
+   * `level` defaults to zlib's default compression. Passing a numeric first
+   * argument bypasses format mapping and is intended only for backend internals.
+   *
+   * ```typescript no_run
+   * import { ZlibCompressor } from 'internal:compress/zlib';
+   * const gzip = new ZlibCompressor('gzip', 6);
+   * ```
+   */
   constructor(windowBitsOrFormat: number | ZlibCompressionFormat, level = Z_DEFAULT_COMPRESSION) {
     super(typeof windowBitsOrFormat === 'number' ? windowBitsOrFormat : windowBitsForCompress(windowBitsOrFormat), level, true);
   }
 }
 
+/**
+ * Streaming zlib decompressor.
+ *
+ * `write` may produce chunks before the compressed stream is complete. `finish`
+ * closes native state and returns no additional data for inflate streams.
+ *
+ * ```typescript no_run
+ * import { ZlibCompressor, ZlibDecompressor } from 'internal:compress/zlib';
+ * const packed = new ZlibCompressor('deflate').write(new Uint8Array([1]));
+ * const codec = new ZlibDecompressor('deflate');
+ * void packed;
+ * codec.close();
+ * ```
+ *
+ * @internal
+ */
 export class ZlibDecompressor extends ZlibCodec {
+  /**
+   * Create a zlib decompressor for a supported zlib format.
+   *
+   * Wrapped gzip and deflate inputs are auto-detected. Raw deflate requires the
+   * explicit `deflate-raw` format.
+   *
+   * ```typescript no_run
+   * import { ZlibDecompressor } from 'internal:compress/zlib';
+   * const inflate = new ZlibDecompressor('gzip');
+   * ```
+   */
   constructor(format: ZlibCompressionFormat) {
     super(windowBitsForDecompress(format), Z_DEFAULT_COMPRESSION, false);
   }

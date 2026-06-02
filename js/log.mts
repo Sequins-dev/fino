@@ -42,53 +42,206 @@ import { getActiveSpanContext, getLoggerProvider, SeverityNumber } from './opent
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 type Fields = Record<string, unknown>;
 
-/** Structured event emitted by `Logger` and consumed by sinks/subscribers. */
+/**
+ * Structured event emitted by `Logger` and consumed by sinks/subscribers.
+ *
+ * Records are immutable by convention once published. Sinks receive the same
+ * record shape regardless of whether they render JSON, text, or OpenTelemetry
+ * log events.
+ *
+ * ```ts no_run
+ * import { createLogger, subscribeLogs, type LogRecord } from 'fino:log';
+ *
+ * const events: LogRecord[] = [];
+ * const sub = subscribeLogs((record) => events.push(record));
+ * createLogger({ name: 'api' }).info('ready');
+ * sub.dispose();
+ * ```
+ */
 export interface LogRecord {
-  /** ISO-8601 timestamp generated when the record is emitted. */
+  /**
+   * ISO-8601 timestamp generated when the record is emitted.
+   *
+   * ```ts no_run
+   * const emittedAt = new Date(record.timestamp);
+   * ```
+   */
   timestamp: string;
-  /** Normalized severity level. */
+  /**
+   * Normalized severity level.
+   *
+   * ```ts no_run
+   * if (record.level === 'error') {
+   *   // route to stderr
+   * }
+   * ```
+   */
   level: LogLevel;
-  /** Logger name, usually a dotted subsystem path. */
+  /**
+   * Logger name, usually a dotted subsystem path.
+   *
+   * ```ts no_run
+   * const subsystem = record.logger;
+   * ```
+   */
   logger: string;
-  /** Human-readable event message. */
+  /**
+   * Human-readable event message.
+   *
+   * ```ts no_run
+   * console.log(record.message);
+   * ```
+   */
   message: string;
-  /** Per-call structured fields. */
+  /**
+   * Per-call structured fields.
+   *
+   * ```ts no_run
+   * const route = record.fields.route;
+   * ```
+   */
   fields: Fields;
-  /** Async-scoped and logger-scoped fields merged together. */
+  /**
+   * Async-scoped and logger-scoped fields merged together.
+   *
+   * ```ts no_run
+   * const requestId = record.context.requestId;
+   * ```
+   */
   context: Fields;
-  /** Normalized error details when the message or `fields.error` is an Error. */
+  /**
+   * Normalized error details when the message or `fields.error` is an Error.
+   *
+   * ```ts no_run
+   * if (record.error) {
+   *   console.error(record.error.message);
+   * }
+   * ```
+   */
   error?: {
     name: string;
     message: string;
     stack?: string;
   };
-  /** OpenTelemetry trace id copied from the active span, when present. */
+  /**
+   * OpenTelemetry trace id copied from the active span, when present.
+   *
+   * ```ts no_run
+   * const traceId = record.traceId ?? 'none';
+   * ```
+   */
   traceId?: string;
-  /** OpenTelemetry span id copied from the active span, when present. */
+  /**
+   * OpenTelemetry span id copied from the active span, when present.
+   *
+   * ```ts no_run
+   * const spanId = record.spanId ?? 'none';
+   * ```
+   */
   spanId?: string;
-  /** OpenTelemetry trace flags copied from the active span, when present. */
+  /**
+   * OpenTelemetry trace flags copied from the active span, when present.
+   *
+   * ```ts no_run
+   * const sampled = (record.traceFlags ?? 0) & 1;
+   * ```
+   */
   traceFlags?: number;
 }
 
-/** Options for constructing a `Logger`. */
+/**
+ * Options for constructing a `Logger`.
+ *
+ * A logger name is required. The level controls which records are emitted, and
+ * context fields are attached to every record from that logger and its
+ * descendants.
+ *
+ * ```ts no_run
+ * import { Logger, type LoggerOptions } from 'fino:log';
+ *
+ * const options: LoggerOptions = {
+ *   name: 'api',
+ *   level: 'info',
+ *   context: { service: 'users' },
+ * };
+ * const log = new Logger(options);
+ * ```
+ */
 export interface LoggerOptions {
-  /** Non-empty logger name. */
+  /**
+   * Non-empty logger name.
+   *
+   * ```ts no_run
+   * const options = { name: 'api' };
+   * ```
+   */
   name: string;
-  /** Minimum emitted level. Defaults to `trace`. */
+  /**
+   * Minimum emitted level. Defaults to `trace`.
+   *
+   * ```ts no_run
+   * const options = { name: 'api', level: 'warn' as const };
+   * ```
+   */
   level?: LogLevel;
-  /** Fields attached to every record emitted by this logger. */
+  /**
+   * Fields attached to every record emitted by this logger.
+   *
+   * ```ts no_run
+   * const options = { name: 'api', context: { service: 'users' } };
+   * ```
+   */
   context?: Fields;
 }
 
-/** Shared options for log subscriptions and sinks. */
+/**
+ * Shared options for log subscriptions and sinks.
+ *
+ * The level threshold is applied by subscribers after records are published.
+ * It does not change logger-level filtering.
+ *
+ * ```ts no_run
+ * import { subscribeLogs, type SinkOptions } from 'fino:log';
+ *
+ * const options: SinkOptions = { level: 'warn' };
+ * const sub = subscribeLogs(() => {}, options);
+ * sub.dispose();
+ * ```
+ */
 export interface SinkOptions {
-  /** Minimum level accepted by the subscription. Defaults to all levels. */
+  /**
+   * Minimum level accepted by the subscription. Defaults to all levels.
+   *
+   * ```ts no_run
+   * const options = { level: 'error' as const };
+   * ```
+   */
   level?: LogLevel;
 }
 
-/** Options for line-oriented sinks such as text and JSON output. */
+/**
+ * Options for line-oriented sinks such as text and JSON output.
+ *
+ * Provide `write` to capture lines in tests, send them to a custom stream, or
+ * adapt records to a host logging system.
+ *
+ * ```ts no_run
+ * import { createJsonSink, type WriteSinkOptions } from 'fino:log';
+ *
+ * const lines: string[] = [];
+ * const options: WriteSinkOptions = { write: (line) => lines.push(line) };
+ * const sink = createJsonSink(options);
+ * sink.dispose();
+ * ```
+ */
 export interface WriteSinkOptions extends SinkOptions {
-  /** Receives each rendered line. Defaults to direct stdout/stderr writes. */
+  /**
+   * Receives each rendered line. Defaults to direct stdout/stderr writes.
+   *
+   * ```ts no_run
+   * const options = { write: (line: string) => console.log(line) };
+   * ```
+   */
   write?: (line: string, record: LogRecord) => void;
 }
 
@@ -161,6 +314,14 @@ function shouldEmit(recordLevel: LogLevel, threshold: LogLevel | undefined): boo
  *
  * The returned object is a shallow copy, so mutating it does not alter the
  * active context.
+ *
+ * ```ts no_run
+ * import { getLogContext, runWithLogContext } from 'fino:log';
+ *
+ * runWithLogContext({ requestId: 'req-1' }, () => {
+ *   getLogContext().requestId; // 'req-1'
+ * });
+ * ```
  */
 export function getLogContext(): Fields {
   return { ...(logContext.get() ?? {}) };
@@ -172,6 +333,15 @@ export function getLogContext(): Fields {
  * The provided fields are shallow-merged over any existing context and are
  * visible to logger calls made through async continuations created inside
  * `fn`.
+ *
+ * ```ts no_run
+ * import { createLogger, runWithLogContext } from 'fino:log';
+ *
+ * const log = createLogger({ name: 'api' });
+ * await runWithLogContext({ requestId: 'req-1' }, async () => {
+ *   log.info('handled request');
+ * });
+ * ```
  */
 export function runWithLogContext<R>(context: Fields, fn: () => R): R {
   return logContext.runWithValue({ ...getLogContext(), ...cloneFields(context) }, fn);
@@ -181,13 +351,101 @@ export function runWithLogContext<R>(context: Fields, fn: () => R): R {
 // Logger
 // ---------------------------------------------------------------------------
 
-/** Emits structured log records onto the fino log topics. */
+/**
+ * Emits structured log records onto the fino log topics.
+ *
+ * A logger filters records by its configured level, merges logger context with
+ * async log context, and publishes matching records to broad and narrow topics.
+ *
+ * ```ts no_run
+ * import { Logger, createConsoleSink } from 'fino:log';
+ *
+ * const sink = createConsoleSink({ level: 'info' });
+ * const log = new Logger({ name: 'api', level: 'debug' });
+ * log.info('ready', { port: 3000 });
+ * sink.dispose();
+ * ```
+ */
 export class Logger {
+  /**
+   * Private property `#name` used by `Logger`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #name = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#name;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #name: string;
+  /**
+   * Private property `#level` used by `Logger`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #level = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#level;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #level: LogLevel;
+  /**
+   * Private property `#context` used by `Logger`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #context = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#context;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #context: Fields;
 
-  /** Create a logger with a required non-empty name. */
+  /**
+   * Create a logger with a required non-empty name.
+   *
+   * The constructor validates the level and shallow-copies context fields so
+   * later mutations of the options object do not affect emitted records.
+   *
+   * ```ts no_run
+   * import { Logger } from 'fino:log';
+   *
+   * const log = new Logger({ name: 'api', level: 'info' });
+   * ```
+   */
   constructor(options: LoggerOptions) {
     const name = String(options.name ?? '').trim();
     if (name.length === 0) throw new Error('Logger name must be a non-empty string');
@@ -196,12 +454,28 @@ export class Logger {
     this.#context = cloneFields(options.context);
   }
 
-  /** Logger name included on every emitted record. */
+  /**
+   * Logger name included on every emitted record.
+   *
+   * ```ts no_run
+   * import { createLogger } from 'fino:log';
+   *
+   * createLogger({ name: 'api' }).name; // 'api'
+   * ```
+   */
   get name(): string {
     return this.#name;
   }
 
-  /** Minimum level this logger emits. */
+  /**
+   * Minimum level this logger emits.
+   *
+   * ```ts no_run
+   * import { createLogger } from 'fino:log';
+   *
+   * createLogger({ name: 'api', level: 'warn' }).level; // 'warn'
+   * ```
+   */
   get level(): LogLevel {
     return this.#level;
   }
@@ -212,6 +486,14 @@ export class Logger {
    * If `options.name` is provided, it is appended to the parent name with a
    * dot. Other fields become logger context unless provided under
    * `options.context`.
+   *
+   * ```ts no_run
+   * import { createLogger } from 'fino:log';
+   *
+   * const root = createLogger({ name: 'api', context: { service: 'users' } });
+   * const requests = root.child({ name: 'requests', route: '/users' });
+   * requests.info('started');
+   * ```
    */
   child(options: Fields | (Partial<LoggerOptions> & { name?: string }) = {}): Logger {
     const childOptions = cloneFields(options);
@@ -238,6 +520,13 @@ export class Logger {
    *
    * Prefer the level-specific helpers for normal use. Passing an `Error` as
    * `message`, or as `fields.error`, attaches normalized error details.
+   *
+   * ```ts no_run
+   * import { createLogger } from 'fino:log';
+   *
+   * const log = createLogger({ name: 'api' });
+   * log.log('warn', 'slow request', { durationMs: 1200 });
+   * ```
    */
   log(level: LogLevel, message: unknown, fields: Fields = {}): void {
     const normalizedLevel = normalizeLevel(level);
@@ -261,21 +550,69 @@ export class Logger {
     topic<LogRecord>(`fino:log:${this.#name}`).publish(record);
   }
 
-  /** Emit a trace-level record. */
+  /**
+   * Emit a trace-level record.
+   *
+   * ```ts no_run
+   * createLogger({ name: 'api' }).trace('cache lookup');
+   * ```
+   */
   trace(message: unknown, fields: Fields = {}): void { this.log('trace', message, fields); }
-  /** Emit a debug-level record. */
+  /**
+   * Emit a debug-level record.
+   *
+   * ```ts no_run
+   * createLogger({ name: 'api' }).debug('cache miss', { key: 'user:1' });
+   * ```
+   */
   debug(message: unknown, fields: Fields = {}): void { this.log('debug', message, fields); }
-  /** Emit an info-level record. */
+  /**
+   * Emit an info-level record.
+   *
+   * ```ts no_run
+   * createLogger({ name: 'api' }).info('request started');
+   * ```
+   */
   info(message: unknown, fields: Fields = {}): void { this.log('info', message, fields); }
-  /** Emit a warn-level record. */
+  /**
+   * Emit a warn-level record.
+   *
+   * ```ts no_run
+   * createLogger({ name: 'api' }).warn('rate limit near capacity');
+   * ```
+   */
   warn(message: unknown, fields: Fields = {}): void { this.log('warn', message, fields); }
-  /** Emit an error-level record. */
+  /**
+   * Emit an error-level record.
+   *
+   * ```ts no_run
+   * createLogger({ name: 'api' }).error(new Error('database unavailable'));
+   * ```
+   */
   error(message: unknown, fields: Fields = {}): void { this.log('error', message, fields); }
-  /** Emit a fatal-level record. */
+  /**
+   * Emit a fatal-level record.
+   *
+   * ```ts no_run
+   * createLogger({ name: 'api' }).fatal('process cannot continue');
+   * ```
+   */
   fatal(message: unknown, fields: Fields = {}): void { this.log('fatal', message, fields); }
 }
 
-/** Convenience factory for `new Logger(options)`. */
+/**
+ * Convenience factory for `new Logger(options)`.
+ *
+ * Use this when a factory reads more naturally than a constructor. It performs
+ * the same validation and returns the same `Logger` class.
+ *
+ * ```ts no_run
+ * import { createLogger } from 'fino:log';
+ *
+ * const log = createLogger({ name: 'api', level: 'info' });
+ * log.info('ready');
+ * ```
+ */
 export function createLogger(options: LoggerOptions): Logger {
   return new Logger(options);
 }
@@ -289,6 +626,16 @@ export function createLogger(options: LoggerOptions): Logger {
  *
  * Returns a disposable subscription handle. This is the lowest-level sink API;
  * higher-level sinks are thin wrappers over this function.
+ *
+ * ```ts no_run
+ * import { createLogger, subscribeLogs } from 'fino:log';
+ *
+ * const sub = subscribeLogs((record) => {
+ *   console.log(record.level, record.message);
+ * }, { level: 'info' });
+ * createLogger({ name: 'api' }).info('ready');
+ * sub.dispose();
+ * ```
  */
 export function subscribeLogs(fn: (record: LogRecord) => void, options: SinkOptions = {}) {
   const threshold = options.level === undefined ? undefined : normalizeLevel(options.level);
@@ -318,6 +665,14 @@ function formatText(record: LogRecord): string {
  * Without a custom `write`, records are written directly to stdout/stderr with
  * one JSON object per line. The sink is opt-in; importing `fino:log` never
  * installs it automatically.
+ *
+ * ```ts no_run
+ * import { createJsonSink, createLogger } from 'fino:log';
+ *
+ * const sink = createJsonSink({ level: 'info' });
+ * createLogger({ name: 'api' }).info('ready');
+ * sink.dispose();
+ * ```
  */
 export function createJsonSink(options: WriteSinkOptions = {}) {
   const write = options.write ?? ((line: string, record: LogRecord) => {
@@ -331,6 +686,14 @@ export function createJsonSink(options: WriteSinkOptions = {}) {
  *
  * This is intended for local development. Production ingestion should normally
  * use `createJsonSink()` or `createOtelSink()`.
+ *
+ * ```ts no_run
+ * import { createConsoleSink, createLogger } from 'fino:log';
+ *
+ * const sink = createConsoleSink();
+ * createLogger({ name: 'api' }).warn('slow request');
+ * sink.dispose();
+ * ```
  */
 export function createConsoleSink(options: WriteSinkOptions = {}) {
   const write = options.write ?? ((line: string, record: LogRecord) => {
@@ -345,6 +708,14 @@ export function createConsoleSink(options: WriteSinkOptions = {}) {
  * Records are forwarded through the active/default OTel `LoggerProvider`.
  * Context and fields become log attributes, and normalized errors become
  * `exception.*` attributes.
+ *
+ * ```ts no_run
+ * import { createLogger, createOtelSink } from 'fino:log';
+ *
+ * const sink = createOtelSink({ level: 'info' });
+ * createLogger({ name: 'api' }).info('exported to OpenTelemetry');
+ * sink.dispose();
+ * ```
  */
 export function createOtelSink(options: SinkOptions = {}) {
   return subscribeLogs((record) => {

@@ -87,13 +87,112 @@ function _createSignal(): AbortSignal {
 // AbortSignal
 // ---------------------------------------------------------------------------
 
+/**
+ * Generated-doc-visible class `AbortSignal`.
+ *
+ * This implementation detail is included when documentation is built with
+ * `--include-private`. It describes state or helper behavior used by the
+ * owning module rather than a stable application-facing contract. Prefer the
+ * public API around the owning type unless you are maintaining this runtime.
+ *
+ * @example
+ * ```ts no_run
+ * const documentedClass = 'AbortSignal';
+ * console.log(documentedClass);
+ * ```
+ *
+ * @internal
+ */
 export class AbortSignal extends EventTarget {
+  /**
+   * Private property `#aborted` used by `AbortSignal`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #aborted = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#aborted;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #aborted: boolean = false;
+  /**
+   * Private property `#reason` used by `AbortSignal`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #reason = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#reason;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #reason: unknown = undefined;
+  /**
+   * Private property `#onabort` used by `AbortSignal`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onabort = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onabort;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onabort: ((event: Event) => void) | null = null;
 
+  /**
+   * String tag used by Object.prototype.toString for this web-platform object.
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.abort();
+   * Object.prototype.toString.call(signal); // "[object AbortSignal]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'AbortSignal'; }
 
+  /**
+   * Internal constructor for AbortSignal instances.
+   *
+   * Signals are created by AbortController and the static AbortSignal factory
+   * methods. Direct construction throws a TypeError so callers cannot create a
+   * signal that is missing the internal abort closure.
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.abort('done');
+   * signal.aborted; // true
+   * ```
+   */
   constructor() {
     if (!_allowConstruct) throw new TypeError('Illegal constructor');
     _allowConstruct = false;
@@ -107,16 +206,89 @@ export class AbortSignal extends EventTarget {
     });
   }
 
+  /**
+   * Whether this signal has already been aborted.
+   *
+   * Once true, the value never returns to false and the abort reason is fixed.
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * controller.signal.aborted; // false
+   * controller.abort();
+   * controller.signal.aborted; // true
+   * ```
+   */
   get aborted() { return this.#aborted; }
+
+  /**
+   * The reason supplied to abort(), or undefined before aborting.
+   *
+   * When no reason is supplied, AbortController.abort() and AbortSignal.abort()
+   * use an Error named "AbortError"; timeout() uses "TimeoutError".
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.abort(new Error('stop'));
+   * signal.reason.message; // "stop"
+   * ```
+   */
   get reason()  { return this.#reason; }
+
+  /**
+   * IDL event handler for the abort event.
+   *
+   * Assigning a non-function clears the handler. The handler fires before
+   * listeners registered with addEventListener('abort', ...).
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * controller.signal.onabort = (event) => console.log(event.type);
+   * controller.abort();
+   * ```
+   */
   get onabort() { return this.#onabort; }
+
+  /**
+   * Set the abort event handler or clear it with null.
+   *
+   * Non-function values are treated as null, matching browser IDL handler
+   * behavior.
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * controller.signal.onabort = null;
+   * ```
+   */
   set onabort(v: ((event: Event) => void) | null) { this.#onabort = typeof v === 'function' ? v : null; }
 
+  /**
+   * Throw the abort reason if this signal has aborted.
+   *
+   * This is a synchronous guard for APIs that need to fail early before doing
+   * work. It returns undefined while the signal is still active.
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.abort('cancelled');
+   * signal.throwIfAborted(); // throws "cancelled"
+   * ```
+   */
   throwIfAborted(): void {
     if (this.#aborted) throw this.#reason;
   }
 
   // Fire the onabort IDL event handler before registered EventTarget listeners.
+  /**
+   * Dispatch an event on the signal.
+   *
+   * The abort event receives special handling so the onabort property handler
+   * runs before registered EventTarget listeners. The return value follows
+   * EventTarget.dispatchEvent(): false only when the event was cancelable and
+   * preventDefault() was called.
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.abort();
+   * signal.dispatchEvent(new Event('custom'));
+   * ```
+   */
   dispatchEvent(event: Event): boolean {
     if (event.type === 'abort' && typeof this.#onabort === 'function') {
       try { this.#onabort(event); } catch (_) {}
@@ -128,6 +300,19 @@ export class AbortSignal extends EventTarget {
   // Static factories
   // ---------------------------------------------------------------------------
 
+  /**
+   * Create a signal that is already aborted.
+   *
+   * If no reason is supplied, the reason is an Error named "AbortError".
+   * The returned signal dispatches no future abort events because it is already
+   * settled.
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.abort('done');
+   * signal.aborted; // true
+   * signal.reason; // "done"
+   * ```
+   */
   static abort(reason?: unknown): AbortSignal {
     if (reason === undefined) {
       reason = defaultAbortError('The operation was aborted.', 'AbortError');
@@ -137,6 +322,18 @@ export class AbortSignal extends EventTarget {
     return signal;
   }
 
+  /**
+   * Create a signal that aborts after the given delay in milliseconds.
+   *
+   * The timer is scheduled with the runtime loop. The delay is passed through
+   * to the loop timeout implementation, and the reason is an Error named
+   * "TimeoutError".
+   *
+   * ```typescript no_run
+   * const signal = AbortSignal.timeout(1000);
+   * signal.addEventListener('abort', () => console.log(signal.reason.name));
+   * ```
+   */
   static timeout(ms: number): AbortSignal {
     const signal = _createSignal();
     const fireAbort = _signalAbort.get(signal);
@@ -148,6 +345,21 @@ export class AbortSignal extends EventTarget {
     return signal;
   }
 
+  /**
+   * Create a signal that aborts when the first input signal aborts.
+   *
+   * The input must be iterable and every element must be an AbortSignal. If an
+   * input is already aborted, the returned signal is aborted immediately with
+   * that reason. Otherwise listeners are removed after the first abort wins.
+   *
+   * ```typescript no_run
+   * const a = new AbortController();
+   * const b = new AbortController();
+   * const signal = AbortSignal.any([a.signal, b.signal]);
+   * b.abort('winner');
+   * signal.reason; // "winner"
+   * ```
+   */
   static any(signals: AbortSignal[]): AbortSignal {
     // Validate: must be iterable and all elements must be AbortSignal instances.
     if (signals == null || typeof (signals as any)[Symbol.iterator] !== 'function') {
@@ -189,12 +401,84 @@ export class AbortSignal extends EventTarget {
 // AbortController
 // ---------------------------------------------------------------------------
 
+/**
+ * Generated-doc-visible class `AbortController`.
+ *
+ * This implementation detail is included when documentation is built with
+ * `--include-private`. It describes state or helper behavior used by the
+ * owning module rather than a stable application-facing contract. Prefer the
+ * public API around the owning type unless you are maintaining this runtime.
+ *
+ * @example
+ * ```ts no_run
+ * const documentedClass = 'AbortController';
+ * console.log(documentedClass);
+ * ```
+ *
+ * @internal
+ */
 export class AbortController {
+  /**
+   * Private property `#signal` used by `AbortController`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #signal = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#signal;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #signal = _createSignal();
 
+  /**
+   * String tag used by Object.prototype.toString for this controller.
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * Object.prototype.toString.call(controller); // "[object AbortController]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'AbortController'; }
+
+  /**
+   * The AbortSignal controlled by this controller.
+   *
+   * The same signal object is returned for the lifetime of the controller.
+   * Calling abort() settles it exactly once.
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * const signal = controller.signal;
+   * controller.abort();
+   * signal.aborted; // true
+   * ```
+   */
   get signal() { return this.#signal; }
 
+  /**
+   * Abort the controlled signal with an optional reason.
+   *
+   * The first call wins. Later calls are ignored because AbortSignal state is
+   * immutable after aborting. If reason is omitted, an "AbortError" Error is
+   * stored.
+   *
+   * ```typescript no_run
+   * const controller = new AbortController();
+   * controller.abort(new Error('cancelled'));
+   * controller.signal.throwIfAborted();
+   * ```
+   */
   abort(reason?: unknown): void {
     if (reason === undefined) {
       reason = defaultAbortError('The operation was aborted.', 'AbortError');

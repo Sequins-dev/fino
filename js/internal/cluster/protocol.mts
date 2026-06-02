@@ -1,5 +1,5 @@
 /**
- * internal:cluster/protocol — cluster wire types and JSON codec.
+ * internal:cluster/protocol - cluster wire types and JSON codec.
  *
  * All cluster messages are JSON-encoded ClusterMessage values. The codec
  * layer is deliberately thin: encode/decode are just JSON.stringify/parse
@@ -14,6 +14,25 @@
  * SPAWN message carries `parentPortId` so the child relay knows where to
  * address PORT_MSG.
  *
+ * ## Example
+ *
+ * ```ts no_run
+ * import { encode, decode, nodeIdFromId } from 'internal:cluster/protocol';
+ *
+ * const frame = encode({
+ *   t: 'PORT_MSG',
+ *   fromPort: 'worker-a/p-parent',
+ *   toPort: 'worker-b/p-child',
+ *   payload: '[]',
+ * });
+ *
+ * const message = decode(frame);
+ * if (message.t === 'PORT_MSG') {
+ *   const hostNode = nodeIdFromId(message.toPort);
+ *   void hostNode;
+ * }
+ * ```
+ *
  * @internal
  */
 
@@ -23,22 +42,139 @@ import { Scanner } from 'fino:parsing/scanner';
 // Supporting types
 // ---------------------------------------------------------------------------
 
+/**
+ * Runtime load sample advertised by a cluster node.
+ *
+ * The seed uses this value as a routing hint when choosing a target for remote
+ * realm spawns. Values are trusted only within the cluster control plane; the
+ * decoder rejects malformed or out-of-range samples.
+ *
+ * ```ts
+ * import { encode } from 'internal:cluster/protocol';
+ * encode({ t: 'HEARTBEAT', ts: Date.now() });
+ * ```
+ *
+ * @internal
+ */
 export interface NodeLoad {
-  /** CPU utilisation in [0, 1]. */
+  /**
+   * CPU utilisation in the inclusive range `[0, 1]`.
+   *
+   * `0` means idle and `1` means fully saturated. The protocol decoder throws
+   * if the value is not finite or falls outside the range.
+   *
+   * ```ts
+   * const load = { cpu: 0.25, memory: 32 * 1024 * 1024 };
+   * load.cpu;
+   * ```
+   */
   cpu: number;
-  /** Resident memory in bytes. */
+  /**
+   * Resident memory in bytes.
+   *
+   * The value defaults only at the caller layer; the wire decoder requires a
+   * finite, non-negative number and rejects missing or negative memory samples.
+   *
+   * ```ts
+   * const load = { cpu: 0, memory: 0 };
+   * load.memory;
+   * ```
+   */
   memory: number;
 }
 
+/**
+ * Cluster membership record for one peer node.
+ *
+ * Peer lists are delivered in `WELCOME` messages and individual changes are
+ * delivered as `PEER_UP` or `PEER_DOWN`. `nodeId` is validated as a bare handle
+ * without `/`; malformed IDs cause `decode()` to throw.
+ *
+ * ```ts
+ * const peer = { nodeId: 'worker-1', load: { cpu: 0.1, memory: 1024 } };
+ * peer.nodeId;
+ * ```
+ *
+ * @internal
+ */
 export interface PeerInfo {
+  /**
+   * Bare node identifier used for routing.
+   *
+   * The ID must contain only cluster handle characters and must not contain a
+   * slash. It is not a realm or port ID.
+   *
+   * ```ts
+   * const peer = { nodeId: 'node-a', load: { cpu: 0, memory: 0 } };
+   * peer.nodeId;
+   * ```
+   */
   nodeId: string;
+  /**
+   * Last advertised resource load for the peer.
+   *
+   * The seed currently prefers the lowest `cpu` value for new remote spawns;
+   * memory is carried for future policies and diagnostics.
+   *
+   * ```ts
+   * const peer = { nodeId: 'node-a', load: { cpu: 0.5, memory: 4096 } };
+   * peer.load.cpu;
+   * ```
+   */
   load: NodeLoad;
 }
 
-/** Serialized rule list + entry path sent with SPAWN. Matches Rust's ImportRule JSON layout. */
+/**
+ * Serialized realm spawn configuration carried by a `SPAWN` message.
+ *
+ * The object mirrors Rust's import-rule JSON layout. `decode()` validates only
+ * the top-level shape because individual rules are opaque to the cluster layer
+ * and are interpreted by the realm loader on the target node.
+ *
+ * ```ts
+ * const config = { entry: '/app/main.mts', root: '/app', rules: [] };
+ * config.rules.length;
+ * ```
+ *
+ * @internal
+ */
 export interface SerializedSpawnConfig {
+  /**
+   * Entry module path for the child realm.
+   *
+   * The path is passed through unchanged to `createThreadContext`; resolution
+   * failures happen when the target node starts the realm, not during protocol
+   * decoding.
+   *
+   * ```ts
+   * const config = { entry: '/app/main.mts', root: '/app', rules: [] };
+   * config.entry;
+   * ```
+   */
   entry: string;
+  /**
+   * Root path used by the target realm loader.
+   *
+   * Empty strings are accepted by the protocol and have the same meaning as the
+   * caller layer assigns when spawning a local realm.
+   *
+   * ```ts
+   * const config = { entry: 'main.mts', root: '', rules: [] };
+   * config.root;
+   * ```
+   */
   root: string;
+  /**
+   * Opaque serialized import-rule array.
+   *
+   * The protocol requires an array but does not inspect its members. Invalid
+   * rule contents may still fail later when the child realm is created.
+   *
+   * ```ts
+   * const config = { entry: 'main.mts', root: '.', rules: [] };
+   * Array.isArray(config.rules);
+   * ```
+   */
   rules: unknown[];
 }
 
@@ -46,6 +182,22 @@ export interface SerializedSpawnConfig {
 // Message union
 // ---------------------------------------------------------------------------
 
+/**
+ * Complete cluster control-plane and data-plane message union.
+ *
+ * The `t` discriminator identifies the message shape. Control messages manage
+ * membership and realm lifecycle, while `PORT_MSG` carries an opaque serialized
+ * payload between ports. `decode()` returns this union or throws a protocol
+ * error when required fields are missing or malformed.
+ *
+ * ```ts
+ * import { decode } from 'internal:cluster/protocol';
+ * const msg = decode('{"t":"HEARTBEAT","ts":1}');
+ * msg.t;
+ * ```
+ *
+ * @internal
+ */
 export type ClusterMessage =
   // Membership
   | { t: 'HELLO';      nodeId: string; load: NodeLoad }
@@ -65,10 +217,41 @@ export type ClusterMessage =
 // Codec
 // ---------------------------------------------------------------------------
 
+/**
+ * Encode a validated cluster message object as JSON.
+ *
+ * This function intentionally performs no additional validation; callers that
+ * need wire validation should round-trip through `decode()`. The return value
+ * is a UTF-16 JavaScript string suitable for WebSocket text frames.
+ *
+ * ```ts
+ * import { encode } from 'internal:cluster/protocol';
+ * const text = encode({ t: 'HEARTBEAT', ts: 1 });
+ * JSON.parse(text).t;
+ * ```
+ *
+ * @internal
+ */
 export function encode(msg: ClusterMessage): string {
   return JSON.stringify(msg);
 }
 
+/**
+ * Decode and validate a JSON cluster message.
+ *
+ * The function returns a narrowed `ClusterMessage` object on success and throws
+ * `Error` with a `cluster protocol:` prefix for invalid JSON, unknown message
+ * types, malformed IDs, invalid load samples, or missing fields. No defaults
+ * are applied.
+ *
+ * ```ts
+ * import { decode } from 'internal:cluster/protocol';
+ * const msg = decode('{"t":"PEER_DOWN","nodeId":"worker-1"}');
+ * msg.t;
+ * ```
+ *
+ * @internal
+ */
 export function decode(s: string): ClusterMessage {
   let value: unknown;
   try {
@@ -129,7 +312,20 @@ export function decode(s: string): ClusterMessage {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract the nodeId prefix from a realmId or portId (`{nodeId}/...`). */
+/**
+ * Extract the node ID prefix from a realm ID or port ID.
+ *
+ * The function scans until the first slash and returns the prefix. It does not
+ * validate the rest of the ID and returns the full input when no slash is
+ * present, so use `decode()` for strict wire validation.
+ *
+ * ```ts
+ * import { nodeIdFromId } from 'internal:cluster/protocol';
+ * nodeIdFromId('worker-1/p-2');
+ * ```
+ *
+ * @internal
+ */
 export function nodeIdFromId(id: string): string {
   const sc = new Scanner(String(id), { encoding: 'utf-8', format: 'cluster-id' });
   const start = sc.mark();

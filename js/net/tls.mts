@@ -27,6 +27,17 @@
  * When both halves close, SSL is shut down and freed, then the fd is closed via
  * `super.close()`. When `close()` is called directly (without splitting), SSL
  * teardown happens before calling `super.close()`.
+ *
+ * @example
+ * ```ts no_run
+ * import { TlsSocket } from 'fino:tls';
+ *
+ * const socket = await TlsSocket.connect(
+ *   { family: 'ipv4', ip: '93.184.216.34', port: 443 },
+ *   { hostname: 'example.com', alpn: ['h2', 'http/1.1'] },
+ * );
+ * const [reader, writer] = socket.split();
+ * ```
  */
 
 import * as openssl from '../internal/openssl.mts';
@@ -36,11 +47,48 @@ import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.m
 import type { Address } from './socket.mts';
 import type { ConnectOptions } from './socket.mts';
 
-/** Options for opening or upgrading a TLS socket. */
+/**
+ * Options for opening or upgrading a TLS socket.
+ *
+ * `rejectUnauthorized` defaults to `true`; pass `false` only for local testing
+ * or explicitly trusted endpoints. `hostname` is used for SNI and certificate
+ * verification when provided.
+ *
+ * ```ts no_run
+ * const tls = await TlsSocket.connect(addr, {
+ *   hostname: 'example.com',
+ *   alpn: ['h2', 'http/1.1'],
+ * });
+ * ```
+ */
 export interface TlsConnectOptions extends ConnectOptions {
+  /** Hostname used for SNI and peer certificate checks.
+   *
+   * ```ts no_run
+   * await TlsSocket.connect(addr, { hostname: 'example.com' });
+   * ```
+   */
   hostname?:           string;
+  /** Path to a PEM CA bundle or file loaded with OpenSSL verify locations.
+   *
+   * ```ts no_run
+   * await TlsSocket.connect(addr, { hostname: 'internal.test', ca: '/etc/ssl/internal-ca.pem' });
+   * ```
+   */
   ca?:                 string;
+  /** Whether to verify the peer certificate; defaults to `true`.
+   *
+   * ```ts no_run
+   * await TlsSocket.connect(addr, { rejectUnauthorized: false });
+   * ```
+   */
   rejectUnauthorized?: boolean;
+  /** ALPN protocol list offered by the client in preference order.
+   *
+   * ```ts no_run
+   * await TlsSocket.connect(addr, { hostname: 'example.com', alpn: ['h2', 'http/1.1'] });
+   * ```
+   */
   alpn?:               string[];
 }
 
@@ -96,20 +144,125 @@ async function _doHandshake(ssl: object, fd: number, handshakeFn: (ssl: object) 
  *
  * Buffering, structural reads (readExactly, readUntil, etc.), and the async
  * iterator protocol are all inherited from BufferedBytesReader.
+ *
+ * ```ts no_run
+ * const [reader] = tls.split();
+ * const bytes = await reader.read();
+ * ```
  */
 export class TlsReader extends BufferedBytesReader {
+  /**
+   * Private property `#ssl` used by `TlsReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #ssl = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#ssl;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #ssl: object;
+  /**
+   * Private property `#fd` used by `TlsReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fd = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#fd;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fd:  number;
+  /**
+   * Private property `#readBuf` used by `TlsReader`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readBuf = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readBuf;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readBuf: ArrayBuffer = new ArrayBuffer(65536);
 
+  /**
+   * Wrap OpenSSL state and a non-blocking fd as a TLS reader.
+   *
+   * The reader does not own the SSL pointer by itself; the close callback
+   * coordinates cleanup with the paired `TlsWriter`.
+   *
+   * ```ts no_run
+   * const reader = new TlsReader(ssl, fd, onClose);
+   * ```
+   */
   constructor(ssl: object, fd: number, onClose: () => void | Promise<void>) {
     super(onClose);
     this.#ssl = ssl;
     this.#fd  = fd;
   }
 
+  /**
+   * Underlying socket file descriptor.
+   *
+   * ```ts no_run
+   * console.log(reader.fd);
+   * ```
+   */
   get fd(): number { return this.#fd; }
 
+  /**
+   * Generated-doc-visible method `doPull`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   doPull() {
+   *     return 'doPull';
+   *   },
+   * };
+   * includePrivateExample.doPull();
+   * ```
+   *
+   * @internal
+   */
   protected async doPull(): Promise<Uint8Array | null> {
     while (true) {
       if (this.closed) return null;
@@ -152,19 +305,104 @@ export class TlsReader extends BufferedBytesReader {
  *
  * Write coalescing, pipe(), and async close() are inherited from
  * BufferedBytesWriter.
+ *
+ * ```ts no_run
+ * const [, writer] = tls.split();
+ * await writer.write(new TextEncoder().encode('hello'));
+ * await writer.flush();
+ * ```
  */
 export class TlsWriter extends BufferedBytesWriter {
+  /**
+   * Private property `#ssl` used by `TlsWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #ssl = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#ssl;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #ssl: object;
+  /**
+   * Private property `#fd` used by `TlsWriter`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fd = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#fd;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fd:  number;
 
+  /**
+   * Wrap OpenSSL state and a non-blocking fd as a TLS writer.
+   *
+   * The writer shares SSL ownership with a `TlsReader`; cleanup runs through
+   * the supplied close callback.
+   *
+   * ```ts no_run
+   * const writer = new TlsWriter(ssl, fd, onClose);
+   * ```
+   */
   constructor(ssl: object, fd: number, onClose: () => void | Promise<void>) {
     super(onClose);
     this.#ssl = ssl;
     this.#fd  = fd;
   }
 
+  /**
+   * Underlying socket file descriptor.
+   *
+   * ```ts no_run
+   * console.log(writer.fd);
+   * ```
+   */
   get fd(): number { return this.#fd; }
 
+  /**
+   * Generated-doc-visible method `doFlush`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   doFlush() {
+   *     return 'doFlush';
+   *   },
+   * };
+   * includePrivateExample.doFlush();
+   * ```
+   *
+   * @internal
+   */
   protected async doFlush(buf: Uint8Array): Promise<void> {
     let off = 0;
     while (off < buf.byteLength) {
@@ -207,18 +445,113 @@ export class TlsWriter extends BufferedBytesWriter {
  *
  * Use the static factories rather than the constructor directly:
  * ```ts no_run
- *   const tls = await TlsSocket.connect(lp, { family: 'ipv4', ip: '…', port: 443 });
- *   const [reader, writer] = tls.split();
+ * const tls = await TlsSocket.connect({ family: 'ipv4', ip: '93.184.216.34', port: 443 }, { hostname: 'example.com' });
+ * const [reader, writer] = tls.split();
  * ```
  */
 export class TlsSocket extends Socket {
+  /**
+   * Private property `#ssl` used by `TlsSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #ssl = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#ssl;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #ssl: object;
+  /**
+   * Private property `#sslCtx` used by `TlsSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #sslCtx = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#sslCtx;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #sslCtx: object | null;
+  /**
+   * Private property `#negotiatedProtocol` used by `TlsSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #negotiatedProtocol = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#negotiatedProtocol;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #negotiatedProtocol: string | null;
   // Bound reference to super.close() for use inside split() closures,
   // where `super` is not lexically accessible.
+  /**
+   * Private property `#superClose` used by `TlsSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #superClose = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#superClose;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #superClose: () => void;
 
+  /**
+   * Wrap an established TLS session.
+   *
+   * The constructor takes ownership of `ssl` and, when non-null, `sslCtx`.
+   * Prefer `connect()`, `upgrade()`, or `accept()` so handshakes and cleanup
+   * are coordinated.
+   *
+   * ```ts no_run
+   * const tls = new TlsSocket(fd, remoteAddr, ssl, sslCtx);
+   * ```
+   */
   constructor(fd: number, remoteAddr: Address | null, ssl: object, sslCtx: object | null) {
     super(fd, remoteAddr, null);
     this.#ssl    = ssl;
@@ -227,7 +560,13 @@ export class TlsSocket extends Socket {
     this.#superClose = () => super.close();
   }
 
-  /** The ALPN protocol negotiated during the TLS handshake, or null if none. */
+  /**
+   * The ALPN protocol negotiated during the TLS handshake, or `null` if none.
+   *
+   * ```ts no_run
+   * if (tls.negotiatedProtocol === 'h2') console.log('HTTP/2');
+   * ```
+   */
   get negotiatedProtocol(): string | null { return this.#negotiatedProtocol; }
 
   /**
@@ -237,7 +576,11 @@ export class TlsSocket extends Socket {
    * Note: TLS does not support half-close (no SHUT_RD/SHUT_WR per half).
    * Both sides must close before SSL_shutdown is issued.
    *
-   * @returns {[TlsReader, TlsWriter]}
+   * ```ts no_run
+   * const [reader, writer] = tls.split();
+   * await writer.close();
+   * await reader.close();
+   * ```
    */
   split(): [TlsReader, TlsWriter] {
     const ssl        = this.#ssl;
@@ -263,6 +606,10 @@ export class TlsSocket extends Socket {
   /**
    * Close both directions immediately. Performs SSL teardown, then delegates
    * fd cleanup to `Socket.close()`. Idempotent.
+   *
+   * ```ts no_run
+   * tls.close();
+   * ```
    */
   close() {
     if (this.closed) return;
@@ -277,10 +624,12 @@ export class TlsSocket extends Socket {
    * Uses `connectTcp()` for the TCP layer (same helper as `Socket.connect()`),
    * then performs the TLS handshake.
    *
-   * @param {object} lp — loop handle from fino:loop
-   * @param {{ family: 'ipv4'|'ipv6', ip: string, port: number }} addr
-   * @param {{ hostname?: string, ca?: string, rejectUnauthorized?: boolean }} [opts]
-   * @returns {Promise<TlsSocket>}
+   * Throws when OpenSSL is unavailable, TCP connection fails, certificate
+   * verification fails, or the TLS handshake fails.
+   *
+   * ```ts no_run
+   * const tls = await TlsSocket.connect(addr, { hostname: 'example.com' });
+   * ```
    */
   static async connect(addr: Address, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
     _checkTlsAvailable();
@@ -299,10 +648,13 @@ export class TlsSocket extends Socket {
    * Upgrade an existing connected Socket to TLS (client side).
    * The original Socket should not be used after this call.
    *
-   * @param {Socket} socket — existing connected Socket
-   * @param {object} lp — loop handle
-   * @param {{ hostname?: string, ca?: string, rejectUnauthorized?: boolean }} [opts]
-   * @returns {Promise<TlsSocket>}
+   * On failure, the original socket fd remains caller-owned. This allows the
+   * caller to decide whether to close or recover it.
+   *
+   * ```ts no_run
+   * const raw = await Socket.connect(addr);
+   * const tls = await TlsSocket.upgrade(raw, { hostname: 'example.com' });
+   * ```
    */
   static async upgrade(socket: Socket, opts: TlsConnectOptions = {}): Promise<TlsSocket> {
     _checkTlsAvailable();
@@ -318,10 +670,13 @@ export class TlsSocket extends Socket {
   /**
    * Accept a TLS connection (server side) on an already-accepted TCP fd.
    *
-   * @param {number} fd — accepted socket fd (non-blocking)
-   * @param {object} lp — loop handle
-   * @param {object} sslCtx — server SSL_CTX* (pre-configured with cert/key; not owned)
-   * @returns {Promise<TlsSocket>}
+   * `sslCtx` is borrowed from the server and is not freed by the returned
+   * socket. On handshake failure, the SSL object is freed and the fd remains
+   * caller-owned.
+   *
+   * ```ts no_run
+   * const tls = await TlsSocket.accept(fd, sslCtx);
+   * ```
    */
   static async accept(fd: number, sslCtx: object): Promise<TlsSocket> {
     _checkTlsAvailable();
@@ -344,6 +699,26 @@ export class TlsSocket extends Socket {
   // Private helper: shared client-side TLS setup + handshake
   // ---------------------------------------------------------------------------
 
+  /**
+   * Internal static method `_handshakeClient` used by `TlsSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _handshakeClient() {
+   *     return '_handshakeClient';
+   *   },
+   * };
+   * includePrivateExample._handshakeClient();
+   * ```
+   *
+   * @internal
+   */
   static async _handshakeClient(fd: number, remoteAddr: Address | null, hostname: string | null, opts: TlsConnectOptions): Promise<TlsSocket> {
     const sslCtx = openssl.sslCtxNewClient();
     const rejectUnauthorized = opts.rejectUnauthorized !== false;

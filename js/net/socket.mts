@@ -110,6 +110,16 @@
  *   use `sendto()` and `recvfrom()`.
  * - `setsockopt()` with a boolean or number value writes a 4-byte little-endian
  *   int. For raw option buffers (e.g. `struct linger`), pass an ArrayBuffer.
+ *
+ * @example
+ * ```ts no_run
+ * import { Socket } from 'fino:socket';
+ *
+ * const socket = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: 8080 });
+ * const [reader, writer] = socket.split();
+ * await writer.write(new TextEncoder().encode('ping'));
+ * const reply = await reader.read();
+ * ```
  */
 
 import { dlopen, Pointer } from 'fino:ffi';
@@ -122,28 +132,230 @@ import { FdReader, FdWriter, BufferedBytesReader, BufferedBytesWriter } from '..
 // Types
 // ---------------------------------------------------------------------------
 
-/** IPv4 socket address. */
-export interface IPv4Address { family: 'ipv4'; ip: string; port: number; }
-/** IPv6 socket address. */
-export interface IPv6Address { family: 'ipv6'; ip: string; port: number; }
-/** Unix domain socket address. */
-export interface UnixAddress  { family: 'unix'; path: string; }
-/** Supported socket address shapes. */
+/**
+ * IPv4 socket address.
+ *
+ * Used with TCP and UDP helpers. `ip` must be a numeric IPv4 literal accepted
+ * by `inet_pton`; hostnames are not resolved here.
+ *
+ * ```ts no_run
+ * const addr: IPv4Address = { family: 'ipv4', ip: '127.0.0.1', port: 8080 };
+ * ```
+ */
+export interface IPv4Address {
+  /** Literal IPv4 family tag.
+   *
+   * ```ts no_run
+   * if (addr.family === 'ipv4') console.log(addr.ip);
+   * ```
+   */
+  family: 'ipv4';
+  /** Numeric IPv4 address string.
+   *
+   * ```ts no_run
+   * const addr = { family: 'ipv4', ip: '0.0.0.0', port: 3000 } as const;
+   * ```
+   */
+  ip: string;
+  /** TCP or UDP port number; encoded as an unsigned 16-bit network-order field.
+   *
+   * ```ts no_run
+   * console.log(addr.port);
+   * ```
+   */
+  port: number;
+}
+
+/**
+ * IPv6 socket address.
+ *
+ * `ip` must be a numeric IPv6 literal. Scope IDs are not represented in this
+ * public shape and encode as zero.
+ *
+ * ```ts no_run
+ * const addr: IPv6Address = { family: 'ipv6', ip: '::1', port: 8080 };
+ * ```
+ */
+export interface IPv6Address {
+  /** Literal IPv6 family tag.
+   *
+   * ```ts no_run
+   * if (addr.family === 'ipv6') console.log(addr.ip);
+   * ```
+   */
+  family: 'ipv6';
+  /** Numeric IPv6 address string.
+   *
+   * ```ts no_run
+   * const loopback = { family: 'ipv6', ip: '::1', port: 3000 } as const;
+   * ```
+   */
+  ip: string;
+  /** TCP or UDP port number.
+   *
+   * ```ts no_run
+   * console.log(addr.port);
+   * ```
+   */
+  port: number;
+}
+
+/**
+ * Unix domain socket address.
+ *
+ * Paths must fit the platform `sockaddr_un` limit after UTF-8 encoding and a
+ * trailing NUL byte. `Socket.listen()` unlinks stale paths before binding.
+ *
+ * ```ts no_run
+ * const addr: UnixAddress = { family: 'unix', path: '/tmp/fino.sock' };
+ * ```
+ */
+export interface UnixAddress {
+  /** Literal Unix-domain family tag.
+   *
+   * ```ts no_run
+   * if (addr.family === 'unix') console.log(addr.path);
+   * ```
+   */
+  family: 'unix';
+  /** Filesystem path for the socket node.
+   *
+   * ```ts no_run
+   * const addr = { family: 'unix', path: '/tmp/app.sock' } as const;
+   * ```
+   */
+  path: string;
+}
+
+/**
+ * Supported socket address shapes accepted by high-level and low-level APIs.
+ *
+ * ```ts no_run
+ * const addr: Address = { family: 'ipv4', ip: '127.0.0.1', port: 80 };
+ * ```
+ */
 export type Address = IPv4Address | IPv6Address | UnixAddress;
-/** Address returned when the native family is not recognized by this module. */
-export interface UnknownAddress { family: string; }
 
-/** Options for high-level TCP connection setup. */
-export interface ConnectOptions { noDelay?: boolean; }
-/** Options for high-level server socket setup. */
-export interface ListenOptions  { reuseAddr?: boolean; reusePort?: boolean; backlog?: number; }
+/**
+ * Address returned when the native family is not recognized by this module.
+ *
+ * This can appear when decoding a kernel-filled sockaddr with an address family
+ * this module does not support.
+ *
+ * ```ts no_run
+ * const decoded = decodeAddr(raw);
+ * if (decoded.family.startsWith('unknown')) console.log(decoded.family);
+ * ```
+ */
+export interface UnknownAddress {
+  /** String form such as `unknown(123)`.
+   *
+   * ```ts no_run
+   * console.log(addr.family);
+   * ```
+   */
+  family: string;
+}
 
-/** Server object returned by Socket.listen(). */
+/**
+ * Options for high-level TCP connection setup.
+ *
+ * ```ts no_run
+ * const fd = await connectTcp(addr, { noDelay: true });
+ * ```
+ */
+export interface ConnectOptions {
+  /** Enable TCP_NODELAY after creating the socket.
+   *
+   * ```ts no_run
+   * await Socket.connect(addr, { noDelay: true });
+   * ```
+   */
+  noDelay?: boolean;
+}
+
+/**
+ * Options for high-level server socket setup.
+ *
+ * Defaults are `reuseAddr: true`, `reusePort: false`, and `backlog: 128` in the
+ * high-level listener.
+ *
+ * ```ts no_run
+ * const server = Socket.listen({ family: 'ipv4', ip: '0.0.0.0', port: 3000 }, { backlog: 256 });
+ * ```
+ */
+export interface ListenOptions {
+  /** Set SO_REUSEADDR before bind.
+   *
+   * ```ts no_run
+   * Socket.listen(addr, { reuseAddr: true });
+   * ```
+   */
+  reuseAddr?: boolean;
+  /** Set SO_REUSEPORT before bind where supported.
+   *
+   * ```ts no_run
+   * Socket.listen(addr, { reusePort: true });
+   * ```
+   */
+  reusePort?: boolean;
+  /** Listen backlog passed to `listen(2)`.
+   *
+   * ```ts no_run
+   * Socket.listen(addr, { backlog: 512 });
+   * ```
+   */
+  backlog?: number;
+}
+
+/**
+ * Server object returned by `Socket.listen()`.
+ *
+ * The server owns a non-blocking listening fd. `accept()` waits for a
+ * connection and returns `null` only for a spurious non-blocking wakeup; async
+ * iteration skips those nulls.
+ *
+ * ```ts no_run
+ * const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+ * for await (const conn of server) conn.close();
+ * ```
+ */
 export interface Server {
+  /** Listening file descriptor.
+   *
+   * ```ts no_run
+   * console.log(server.fd);
+   * ```
+   */
   fd:       number;
+  /** Bound address, including the assigned port when port zero was used.
+   *
+   * ```ts no_run
+   * console.log(server.address);
+   * ```
+   */
   address:  Address;
+  /** Accept the next connection, or `null` after a spurious wakeup.
+   *
+   * ```ts no_run
+   * const conn = await server.accept();
+   * if (conn !== null) conn.close();
+   * ```
+   */
   accept(): Promise<Socket | null>;
+  /** Close the listening fd. In-flight accepted sockets are not closed.
+   *
+   * ```ts no_run
+   * server.close();
+   * ```
+   */
   close():  void;
+  /** Iterate accepted sockets until the server is closed or accept throws.
+   *
+   * ```ts no_run
+   * for await (const conn of server) conn.close();
+   * ```
+   */
   [Symbol.asyncIterator](): AsyncIterator<Socket>;
 }
 
@@ -195,47 +407,138 @@ function getErrno(): number {
 // Constants — platform-specific where they differ
 // ---------------------------------------------------------------------------
 
-/** IPv4 address family constant. */
+/** IPv4 address family constant.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET, SOCK_STREAM, 0);
+ * ```
+ */
 export const AF_INET  = 2;
-/** IPv6 address family constant. */
+/** IPv6 address family constant.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET6, SOCK_STREAM, 0);
+ * ```
+ */
 export const AF_INET6 = isDarwin ? 30 : 10;
-/** Unix domain socket address family constant. */
+/** Unix domain socket address family constant.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_UNIX, SOCK_STREAM, 0);
+ * ```
+ */
 export const AF_UNIX  = 1;
 
-/** Stream socket type, typically TCP. */
+/** Stream socket type, typically TCP.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET, SOCK_STREAM, 0);
+ * ```
+ */
 export const SOCK_STREAM = 1;
-/** Datagram socket type, typically UDP. */
+/** Datagram socket type, typically UDP.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+ * ```
+ */
 export const SOCK_DGRAM  = 2;
 
 // Linux-only: OR into socket type to set non-blocking at creation time
+/** Linux socket type flag for atomic non-blocking creation; zero elsewhere.
+ *
+ * ```ts no_run
+ * const type = SOCK_STREAM | SOCK_NONBLOCK;
+ * ```
+ */
 export const SOCK_NONBLOCK = isLinux ? 0x80000 : 0;
 
-/** TCP protocol number. */
+/** TCP protocol number.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+ * ```
+ */
 export const IPPROTO_TCP = 6;
-/** UDP protocol number. */
+/** UDP protocol number.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+ * ```
+ */
 export const IPPROTO_UDP = 17;
 
-/** Socket option level for `setsockopt` and `getsockopt`. */
+/** Socket option level for `setsockopt` and `getsockopt`.
+ *
+ * ```ts no_run
+ * setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, true);
+ * ```
+ */
 export const SOL_SOCKET   = isDarwin ? 0xFFFF : 1;
-/** Allow reusing a recently-bound local address. */
+/** Allow reusing a recently-bound local address.
+ *
+ * ```ts no_run
+ * setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, true);
+ * ```
+ */
 export const SO_REUSEADDR = isDarwin ? 0x0004 : 2;
-/** Allow multiple listeners to share a local address where supported. */
+/** Allow multiple listeners to share a local address where supported.
+ *
+ * ```ts no_run
+ * setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, true);
+ * ```
+ */
 export const SO_REUSEPORT = isDarwin ? 0x0200 : 15;
-/** Enable TCP keepalive probes. */
+/** Enable TCP keepalive probes.
+ *
+ * ```ts no_run
+ * setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, true);
+ * ```
+ */
 export const SO_KEEPALIVE = isDarwin ? 0x0008 : 9;
-/** Socket option used to read pending connection errors. */
+/** Socket option used to read pending connection errors.
+ *
+ * ```ts no_run
+ * const errno = new DataView(getsockopt(fd, SOL_SOCKET, SO_ERROR)).getInt32(0, true);
+ * ```
+ */
 export const SO_ERROR     = isDarwin ? 0x1007 : 4;
 
-/** TCP option level used with `setsockopt`. */
+/** TCP option level used with `setsockopt`.
+ *
+ * ```ts no_run
+ * setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
+ * ```
+ */
 export const IPPROTO_TCP_LEVEL = 6;   // same as IPPROTO_TCP, used with setsockopt
-/** Disable Nagle's algorithm for TCP sockets. */
+/** Disable Nagle's algorithm for TCP sockets.
+ *
+ * ```ts no_run
+ * setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
+ * ```
+ */
 export const TCP_NODELAY = 1;
 
-/** Shut down the read side of a socket. */
+/** Shut down the read side of a socket.
+ *
+ * ```ts no_run
+ * shutdown(fd, SHUT_RD);
+ * ```
+ */
 export const SHUT_RD   = 0;
-/** Shut down the write side of a socket. */
+/** Shut down the write side of a socket.
+ *
+ * ```ts no_run
+ * shutdown(fd, SHUT_WR);
+ * ```
+ */
 export const SHUT_WR   = 1;
-/** Shut down both sides of a socket. */
+/** Shut down both sides of a socket.
+ *
+ * ```ts no_run
+ * shutdown(fd, SHUT_RDWR);
+ * ```
+ */
 export const SHUT_RDWR = 2;
 
 // fcntl constants
@@ -287,7 +590,17 @@ function readFamily(view: DataView): number {
   return isDarwin ? view.getUint8(1) : view.getUint16(0, true);
 }
 
-/** Encode a JS socket address into a native `sockaddr` buffer and byte length. */
+/**
+ * Encode a JS socket address into a native `sockaddr` buffer and byte length.
+ *
+ * Throws when IP literals fail `inet_pton`, Unix socket paths exceed the native
+ * limit, or the address family is unknown. The returned buffer is ready for
+ * `bind`, `connect`, or `sendto`.
+ *
+ * ```ts no_run
+ * const { buf, len } = encodeAddr({ family: 'ipv4', ip: '127.0.0.1', port: 80 });
+ * ```
+ */
 export function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number } {
   if (addr.family === 'ipv4') {
     const buf  = new ArrayBuffer(SOCKADDR_IN_SIZE);
@@ -344,8 +657,13 @@ export function encodeAddr(addr: Address): { buf: ArrayBuffer; len: number } {
 /**
  * Decode a sockaddr ArrayBuffer into a JS address object.
  *
- * @param {ArrayBuffer} buf
- * @returns {{ family: 'ipv4'|'ipv6'|'unix', ip?: string, port?: number, path?: string }}
+ * Unknown native address families return `{ family: 'unknown(n)' }` instead of
+ * throwing. IP addresses are formatted via `inet_ntop`.
+ *
+ * ```ts no_run
+ * const addr = decodeAddr(sockaddrBuffer);
+ * console.log(addr.family);
+ * ```
  */
 export function decodeAddr(buf: ArrayBuffer): Address | UnknownAddress {
   const view   = new DataView(buf);
@@ -396,10 +714,14 @@ function isKnownAddress(addr: Address | UnknownAddress): addr is Address {
 /**
  * Create a socket.
  *
- * @param {number} [family=AF_INET]
- * @param {number} [type=SOCK_STREAM]
- * @param {number} [protocol=0]
- * @returns {number} file descriptor
+ * Returns a raw file descriptor on success and throws when `socket(2)` fails.
+ * Low-level callers should set non-blocking mode before integrating with the
+ * event loop.
+ *
+ * ```ts no_run
+ * const fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+ * close(fd);
+ * ```
  */
 export function socket(family: number = AF_INET, type: number = SOCK_STREAM, protocol: number = 0): number {
   const fd = lib.symbols.socket(family, type, protocol);
@@ -409,6 +731,14 @@ export function socket(family: number = AF_INET, type: number = SOCK_STREAM, pro
 
 /**
  * Set a socket to non-blocking mode via fcntl(F_SETFL, O_NONBLOCK).
+ *
+ * Throws if either `fcntl` call fails. High-level `Socket.connect()` and
+ * `Socket.listen()` call this automatically.
+ *
+ * ```ts no_run
+ * const fd = socket();
+ * setNonblocking(fd);
+ * ```
  */
 export function setNonblocking(fd: number): void {
   const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
@@ -420,6 +750,13 @@ export function setNonblocking(fd: number): void {
 /**
  * Set socket option. Value can be a boolean/number (written as 4-byte int)
  * or an ArrayBuffer for raw option data.
+ *
+ * Throws when `setsockopt(2)` fails. Boolean and number values are encoded as
+ * little-endian 32-bit integers for common POSIX socket options.
+ *
+ * ```ts no_run
+ * setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, true);
+ * ```
  */
 export function setsockopt(fd: number, level: number, optname: number, value: boolean | number | ArrayBuffer): void {
   let buf;
@@ -435,6 +772,14 @@ export function setsockopt(fd: number, level: number, optname: number, value: bo
 
 /**
  * Get socket option. Returns the raw ArrayBuffer (4 bytes for int options).
+ *
+ * Throws when `getsockopt(2)` fails. Interpret integer options with a
+ * little-endian `DataView`.
+ *
+ * ```ts no_run
+ * const buf = getsockopt(fd, SOL_SOCKET, SO_ERROR);
+ * const errno = new DataView(buf).getInt32(0, true);
+ * ```
  */
 export function getsockopt(fd: number, level: number, optname: number, bufSize: number = 4): ArrayBuffer {
   const buf     = new ArrayBuffer(bufSize);
@@ -445,7 +790,17 @@ export function getsockopt(fd: number, level: number, optname: number, bufSize: 
   return buf;
 }
 
-/** Return the local address currently bound to a socket fd. */
+/**
+ * Return the local address currently bound to a socket fd.
+ *
+ * This is useful after binding port `0` to discover the assigned port. Unknown
+ * address families are represented with `UnknownAddress`.
+ *
+ * ```ts no_run
+ * const addr = getsockname(fd);
+ * console.log(addr);
+ * ```
+ */
 export function getsockname(fd: number): Address | UnknownAddress {
   const addrBuf = new ArrayBuffer(128);
   const lenBuf = new ArrayBuffer(4);
@@ -460,8 +815,12 @@ export function getsockname(fd: number): Address | UnknownAddress {
 /**
  * Bind a socket to an address.
  *
- * @param {number} fd
- * @param {{ family, ip, port }|{ family, path }} addr
+ * Throws on native bind errors. When the address is already in use, the error
+ * message includes the port when available.
+ *
+ * ```ts no_run
+ * bind(fd, { family: 'ipv4', ip: '127.0.0.1', port: 3000 });
+ * ```
  */
 export function bind(fd: number, addr: Address): void {
   const { buf, len } = encodeAddr(addr);
@@ -478,6 +837,13 @@ export function bind(fd: number, addr: Address): void {
 
 /**
  * Mark a socket as passive (server socket).
+ *
+ * `backlog` defaults to 128. The socket must already be bound. Throws when
+ * `listen(2)` fails.
+ *
+ * ```ts no_run
+ * listen(fd, 128);
+ * ```
  */
 export function listen(fd: number, backlog: number = 128): void {
   const rc = lib.symbols.listen(fd, backlog);
@@ -490,9 +856,12 @@ export function listen(fd: number, backlog: number = 128): void {
  *
  * On Linux, the accepted socket is made non-blocking atomically via accept4.
  *
- * @param {number} serverFd
- * @param {boolean} [setNonblock=true]  Make the accepted fd non-blocking.
- * @returns {{ fd: number, addr: object }|null}
+ * Throws for accept errors other than EAGAIN/EWOULDBLOCK.
+ *
+ * ```ts no_run
+ * const accepted = accept(serverFd);
+ * if (accepted !== null) close(accepted.fd);
+ * ```
  */
 export function accept(serverFd: number, setNonblock: boolean = true): { fd: number; addr: Address | UnknownAddress } | null {
   const addrBuf = new ArrayBuffer(128); // large enough for any sockaddr
@@ -533,9 +902,10 @@ export function accept(serverFd: number, setNonblock: boolean = true): { fd: num
  * -36 (EINPROGRESS) on macOS — use fino:loop addWrite() to wait for
  * completion, then check SO_ERROR via getsockopt().
  *
- * @param {number} fd
- * @param {{ family, ip, port }|{ family, path }} addr
- * @returns {number} 0 on immediate success, negative errno otherwise
+ * ```ts no_run
+ * const rc = connect(fd, { family: 'ipv4', ip: '127.0.0.1', port: 80 });
+ * if (rc === EINPROGRESS) await loop.writable(fd);
+ * ```
  */
 export function connect(fd: number, addr: Address): number {
   const { buf, len } = encodeAddr(addr);
@@ -546,10 +916,12 @@ export function connect(fd: number, addr: Address): number {
 /**
  * Send data on a connected socket.
  *
- * @param {number} fd
- * @param {Uint8Array|ArrayBuffer} data
- * @param {number} [flags=0]
- * @returns {number} bytes sent, or negative errno
+ * Returns bytes sent or a negative errno. Short writes are possible and must be
+ * handled by low-level callers.
+ *
+ * ```ts no_run
+ * const n = send(fd, new TextEncoder().encode('GET / HTTP/1.1\\r\\n\\r\\n'));
+ * ```
  */
 export function send(fd: number, data: Uint8Array | ArrayBuffer, flags: number = 0): number {
   const buf = data instanceof ArrayBuffer ? data : data.buffer;
@@ -561,10 +933,13 @@ export function send(fd: number, data: Uint8Array | ArrayBuffer, flags: number =
 /**
  * Receive data from a connected socket.
  *
- * @param {number} fd
- * @param {number} [maxBytes=65536]
- * @param {number} [flags=0]
- * @returns {Uint8Array|null} received bytes, or null if connection closed, or negative number on error
+ * Returns `Uint8Array` bytes, `null` on EOF, or a negative errno on error. For
+ * non-blocking fds, EAGAIN is returned as the platform-specific negative errno.
+ *
+ * ```ts no_run
+ * const chunk = recv(fd);
+ * if (chunk === null) console.log('peer closed');
+ * ```
  */
 export function recv(fd: number, maxBytes: number = 65536, flags: number = 0): Uint8Array | number | null {
   const buf = new ArrayBuffer(maxBytes);
@@ -577,11 +952,12 @@ export function recv(fd: number, maxBytes: number = 65536, flags: number = 0): U
 /**
  * Send a datagram to a specific address (UDP).
  *
- * @param {number} fd
- * @param {Uint8Array|ArrayBuffer} data
- * @param {{ family, ip, port }} destAddr
- * @param {number} [flags=0]
- * @returns {number} bytes sent, or negative errno
+ * Returns bytes sent or a negative errno. The socket does not need to be
+ * connected.
+ *
+ * ```ts no_run
+ * sendto(fd, packet, { family: 'ipv4', ip: '8.8.8.8', port: 53 });
+ * ```
  */
 export function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Address, flags: number = 0): number {
   const { buf: addrBuf, len: addrLen } = encodeAddr(destAddr);
@@ -594,10 +970,13 @@ export function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Add
 /**
  * Receive a datagram (UDP). Returns `{ data, addr }` or null on EAGAIN.
  *
- * @param {number} fd
- * @param {number} [maxBytes=65536]
- * @param {number} [flags=0]
- * @returns {{ data: Uint8Array, addr: object }|null}
+ * This implementation returns a negative errno for receive errors, including
+ * EAGAIN, rather than `null`. Successful results include the sender address.
+ *
+ * ```ts no_run
+ * const packet = recvfrom(fd, 4096);
+ * if (typeof packet !== 'number') console.log(packet.addr, packet.data);
+ * ```
  */
 export function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | UnknownAddress } | number {
   const dataBuf = new ArrayBuffer(maxBytes);
@@ -616,6 +995,13 @@ export function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0
 
 /**
  * Shut down part or all of a socket connection.
+ *
+ * Errors from `shutdown(2)` are ignored to keep close paths idempotent. Use
+ * `SHUT_RD`, `SHUT_WR`, or `SHUT_RDWR`.
+ *
+ * ```ts no_run
+ * shutdown(fd, SHUT_WR);
+ * ```
  */
 export function shutdown(fd: number, how: number = SHUT_RDWR): void {
   lib.symbols.shutdown(fd, how);
@@ -623,6 +1009,13 @@ export function shutdown(fd: number, how: number = SHUT_RDWR): void {
 
 /**
  * Close a socket.
+ *
+ * Errors from `close(2)` are ignored. After calling this, the fd must not be
+ * reused by user code.
+ *
+ * ```ts no_run
+ * close(fd);
+ * ```
  */
 export function close(fd: number): void {
   lib.symbols.close(fd);
@@ -632,17 +1025,47 @@ export function close(fd: number): void {
 // Convenience: errno constants (returned as negative values by the above)
 // ---------------------------------------------------------------------------
 
-/** Negative errno returned when a non-blocking operation would block. */
+/** Negative errno returned when a non-blocking operation would block.
+ *
+ * ```ts no_run
+ * if (recv(fd) === EAGAIN) await loop.readable(fd);
+ * ```
+ */
 export const EAGAIN      = isDarwin ? -35  : -11;
-/** Negative errno returned while a non-blocking connect is in progress. */
+/** Negative errno returned while a non-blocking connect is in progress.
+ *
+ * ```ts no_run
+ * if (connect(fd, addr) === EINPROGRESS) await loop.writable(fd);
+ * ```
+ */
 export const EINPROGRESS = isDarwin ? -36  : -115;
-/** Negative errno returned when a peer resets the connection. */
+/** Negative errno returned when a peer resets the connection.
+ *
+ * ```ts no_run
+ * if (err === ECONNRESET) console.log('peer reset');
+ * ```
+ */
 export const ECONNRESET  = isDarwin ? -54  : -104;
-/** Negative errno returned when writing to a closed pipe/socket. */
+/** Negative errno returned when writing to a closed pipe/socket.
+ *
+ * ```ts no_run
+ * if (send(fd, bytes) === EPIPE) console.log('closed');
+ * ```
+ */
 export const EPIPE       = isDarwin ? -32  : -32;
-/** Negative errno returned when a local address is already in use. */
+/** Negative errno returned when a local address is already in use.
+ *
+ * ```ts no_run
+ * if (rc === EADDRINUSE) console.log('address busy');
+ * ```
+ */
 export const EADDRINUSE  = isDarwin ? -48  : -98;
-/** Negative errno returned when a remote endpoint refuses a connection. */
+/** Negative errno returned when a remote endpoint refuses a connection.
+ *
+ * ```ts no_run
+ * if (rc === ECONNREFUSED) console.log('refused');
+ * ```
+ */
 export const ECONNREFUSED = isDarwin ? -61 : -111;
 
 
@@ -655,10 +1078,12 @@ export const ECONNREFUSED = isDarwin ? -61 : -111;
  * Used by both Socket.connect() and TlsSocket.connect() (in fino:tls)
  * to avoid duplicating the connect/SO_ERROR dance.
  *
- * @param {object} lp — loop handle
- * @param {{ family: 'ipv4'|'ipv6'|'unix', ip?: string, port?: number, path?: string }} addr
- * @param {{ noDelay?: boolean }} [opts]
- * @returns {Promise<number>} connected file descriptor
+ * Throws if socket creation, connection, or SO_ERROR checking fails. On error,
+ * the temporary fd is closed before the error is rethrown.
+ *
+ * ```ts no_run
+ * const fd = await connectTcp({ family: 'ipv4', ip: '127.0.0.1', port: 80 }, { noDelay: true });
+ * ```
  */
 export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Promise<number> {
   const family = addr.family === 'ipv6' ? AF_INET6
@@ -696,16 +1121,111 @@ export async function connectTcp(addr: Address, opts: ConnectOptions = {}): Prom
  *
  * Use the static factories rather than the constructor directly:
  * ```ts no_run
- *   const sock = await Socket.connect(lp, { family: 'ipv4', ip: '…', port: 80 });
- *   const server = Socket.listen(lp, { family: 'ipv6', ip: '::', port: 8080 });
+ * const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: 80 });
+ * const server = Socket.listen({ family: 'ipv6', ip: '::', port: 8080 });
  * ```
  */
 export class Socket {
+  /**
+   * Private property `#fd` used by `Socket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fd = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#fd;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fd: number;
+  /**
+   * Private property `#remoteAddr` used by `Socket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #remoteAddr = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#remoteAddr;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #remoteAddr: Address | null;
+  /**
+   * Private property `#localAddr` used by `Socket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #localAddr = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#localAddr;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #localAddr: Address | null;
+  /**
+   * Private property `#closed` used by `Socket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closed = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closed;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closed: boolean;
 
+  /**
+   * Wrap an already-open socket fd.
+   *
+   * The constructor does not set non-blocking mode and does not duplicate the
+   * fd. Prefer `Socket.connect()` or `Socket.listen()` unless integrating with
+   * a lower-level accept/connect path.
+   *
+   * ```ts no_run
+   * const sock = new Socket(fd, remoteAddr, localAddr);
+   * ```
+   */
   constructor(fd: number, remoteAddr: Address | null, localAddr: Address | null) {
     this.#fd = fd;
     this.#remoteAddr = remoteAddr;
@@ -713,15 +1233,44 @@ export class Socket {
     this.#closed = false;
   }
 
-  /** Raw file descriptor — for advanced use with the low-level API. */
+  /**
+   * Raw file descriptor for advanced use with the low-level API.
+   *
+   * ```ts no_run
+   * console.log(socket.fd);
+   * ```
+   */
   get fd() { return this.#fd; }
 
-  /** Remote address object, or null for server-side accepted sockets. */
+  /**
+   * Remote address object passed to `Socket.connect()`, or the peer address for
+   * accepted sockets when known.
+   *
+   * ```ts no_run
+   * console.log(socket.remoteAddress);
+   * ```
+   */
   get remoteAddress() { return this.#remoteAddr; }
 
-  /** Local address object, or null if not known. */
+  /**
+   * Local bound address when known.
+   *
+   * Client sockets created by `Socket.connect()` currently expose `null`;
+   * accepted sockets expose the listener address.
+   *
+   * ```ts no_run
+   * console.log(socket.localAddress);
+   * ```
+   */
   get localAddress() { return this.#localAddr; }
 
+  /**
+   * Whether `close()` has been called or both split halves have closed.
+   *
+   * ```ts no_run
+   * if (!socket.closed) socket.close();
+   * ```
+   */
   get closed() { return this.#closed; }
 
   /**
@@ -731,7 +1280,12 @@ export class Socket {
    * The Reader's close sends SHUT_RD (wakes any in-flight read with EOF).
    * The Writer's close sends SHUT_WR (sends FIN to the peer).
    *
-   * @returns {[BufferedBytesReader, BufferedBytesWriter]}
+   * ```ts no_run
+   * const [reader, writer] = socket.split();
+   * await writer.write(new TextEncoder().encode('hello'));
+   * await writer.close();
+   * await reader.close();
+   * ```
    */
   split(): [BufferedBytesReader, BufferedBytesWriter] {
     const fd = this.#fd;
@@ -754,6 +1308,11 @@ export class Socket {
   /**
    * Immediately close the socket (both directions). Calls shutdown(SHUT_RDWR)
    * then close(fd). Idempotent.
+   *
+   * ```ts no_run
+   * socket.close();
+   * socket.close();
+   * ```
    */
   close(): void {
     if (this.#closed) return;
@@ -762,6 +1321,16 @@ export class Socket {
     close(this.#fd);
   }
 
+  /**
+   * Open a non-blocking TCP or Unix-domain client connection.
+   *
+   * Resolves with a connected `Socket`. Throws on connection errors; temporary
+   * fds are closed before the error is rethrown.
+   *
+   * ```ts no_run
+   * const socket = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: 80 }, { noDelay: true });
+   * ```
+   */
   static async connect(addr: Address, opts: ConnectOptions = {}): Promise<Socket> {
     const fd = await connectTcp(addr, opts);
     return new Socket(fd, addr, null);
@@ -773,10 +1342,16 @@ export class Socket {
    *
    * Supports IPv4, IPv6, and Unix domain sockets via `addr.family`.
    *
-   * @param {object} lp — loop handle from fino:loop
-   * @param {{ family: 'ipv4'|'ipv6'|'unix', ip?: string, port?: number, path?: string }} addr
-   * @param {{ reuseAddr?: boolean, reusePort?: boolean, backlog?: number }} [opts]
-   * @returns {{ fd, address, accept(), close(), [Symbol.asyncIterator]() }}
+   * If `addr.port` is zero, the returned server address contains the assigned
+   * port. Unix-domain paths are unlinked before binding. Throws if bind/listen
+   * fails or if `getsockname()` returns an unsupported address family.
+   *
+   * ```ts no_run
+   * const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+   * const conn = await server.accept();
+   * conn?.close();
+   * server.close();
+   * ```
    */
   static listen(addr: Address, opts: ListenOptions = {}): Server {
     const family = addr.family === 'ipv6' ? AF_INET6

@@ -739,18 +739,216 @@ function _extractComponents(input: string | { href: string } | URLPatternInit, b
 // URLPattern
 // ---------------------------------------------------------------------------
 
+/**
+ * WHATWG URLPattern implementation for matching URLs by component.
+ *
+ * Patterns may be supplied as a URL-like string or as an object with per-part
+ * patterns. Missing components default to "*".
+ *
+ * ```typescript no_run
+ * const pattern = new URLPattern({ pathname: '/users/:id' });
+ * pattern.test('https://example.com/users/42'); // true
+ * ```
+ */
 export class URLPattern {
+  /**
+   * Private property `#protocol` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #protocol = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#protocol;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #protocol: CompiledPattern;
+  /**
+   * Private property `#username` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #username = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#username;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #username: CompiledPattern;
+  /**
+   * Private property `#password` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #password = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#password;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #password: CompiledPattern;
+  /**
+   * Private property `#hostname` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #hostname = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#hostname;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #hostname: CompiledPattern;
+  /**
+   * Private property `#port` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #port = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#port;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #port:     CompiledPattern;
+  /**
+   * Private property `#pathname` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pathname = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#pathname;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pathname: CompiledPattern;
+  /**
+   * Private property `#search` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #search = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#search;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #search:   CompiledPattern;
+  /**
+   * Private property `#hash` used by `URLPattern`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #hash = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#hash;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #hash:     CompiledPattern;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new URLPattern({ pathname: '/' })); // "[object URLPattern]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'URLPattern'; }
 
+  /**
+   * Create a URLPattern from string or component-object input.
+   *
+   * String input is split into URL components while respecting pattern groups.
+   * baseURL supplies defaults for relative string patterns. Object input uses
+   * the provided component patterns directly.
+   *
+   * ```typescript no_run
+   * const pattern = new URLPattern('/files/:name', 'https://example.com');
+   * pattern.hostname; // "example.com"
+   * ```
+   */
   constructor(input: string | URLPatternInit, baseURL?: string) {
     let init: ParsedURLPatternInit | URLPatternInit;
 
@@ -784,18 +982,89 @@ export class URLPattern {
   }
 
   // Pattern string accessors
+  /**
+   * Protocol pattern without the trailing colon.
+   *
+   * ```typescript no_run
+   * new URLPattern({ protocol: 'https' }).protocol; // "https"
+   * ```
+   */
   get protocol() { return this.#protocol.pattern; }
+
+  /**
+   * Username pattern.
+   *
+   * ```typescript no_run
+   * new URLPattern({ username: '*' }).username; // "*"
+   * ```
+   */
   get username() { return this.#username.pattern; }
+
+  /**
+   * Password pattern.
+   *
+   * ```typescript no_run
+   * new URLPattern({ password: '*' }).password; // "*"
+   * ```
+   */
   get password() { return this.#password.pattern; }
+
+  /**
+   * Hostname pattern.
+   *
+   * Hostname named parameters stop at "." by default.
+   *
+   * ```typescript no_run
+   * new URLPattern({ hostname: ':sub.example.com' }).hostname; // ":sub.example.com"
+   * ```
+   */
   get hostname() { return this.#hostname.pattern; }
+
+  /**
+   * Port pattern.
+   *
+   * ```typescript no_run
+   * new URLPattern({ port: '8080' }).port; // "8080"
+   * ```
+   */
   get port()     { return this.#port.pattern; }
+
+  /**
+   * Pathname pattern.
+   *
+   * Pathname named parameters stop at "/" by default.
+   *
+   * ```typescript no_run
+   * new URLPattern({ pathname: '/users/:id' }).pathname; // "/users/:id"
+   * ```
+   */
   get pathname() { return this.#pathname.pattern; }
+
+  /**
+   * Search pattern without leading question mark.
+   *
+   * ```typescript no_run
+   * new URLPattern({ search: 'q=:term' }).search; // "q=:term"
+   * ```
+   */
   get search()   { return this.#search.pattern; }
+
+  /**
+   * Hash pattern without leading hash.
+   *
+   * ```typescript no_run
+   * new URLPattern({ hash: 'top' }).hash; // "top"
+   * ```
+   */
   get hash()     { return this.#hash.pattern; }
 
   /**
    * Returns true if any component contains an explicit regexp group `(...)`.
    * Named params like `:name` do not count; only inline `(pattern)` groups do.
+   *
+   * ```typescript no_run
+   * new URLPattern({ pathname: '/:id(\\d+)' }).hasRegExpGroups; // true
+   * ```
    */
   get hasRegExpGroups(): boolean {
     // True when any component contains an explicit regexp group — either an
@@ -807,6 +1076,17 @@ export class URLPattern {
            this.#search.hasRegExpGroups   || this.#hash.hasRegExpGroups;
   }
 
+  /**
+   * Return true when input matches every URL component pattern.
+   *
+   * Invalid string or href inputs return false. Object inputs are interpreted as
+   * already-split URLPatternInit component values.
+   *
+   * ```typescript no_run
+   * const pattern = new URLPattern({ pathname: '/users/:id' });
+   * pattern.test('https://example.com/users/42'); // true
+   * ```
+   */
   test(input: string | { href: string } | URLPatternInit, baseURL?: string): boolean {
     const components = _extractComponents(input, baseURL);
     if (!components) return false;
@@ -823,6 +1103,18 @@ export class URLPattern {
     );
   }
 
+  /**
+   * Match input and return per-component inputs and capture groups.
+   *
+   * Returns null if parsing fails or any component does not match. The inputs
+   * array contains [input] or [input, baseURL] depending on call shape.
+   *
+   * ```typescript no_run
+   * const pattern = new URLPattern({ pathname: '/users/:id' });
+   * const match = pattern.exec('https://example.com/users/42');
+   * match?.pathname.groups.id; // "42"
+   * ```
+   */
   exec(input: string | { href: string } | URLPatternInit, baseURL?: string): { inputs: any[]; protocol: URLPatternComponentResult; username: URLPatternComponentResult; password: URLPatternComponentResult; hostname: URLPatternComponentResult; port: URLPatternComponentResult; pathname: URLPatternComponentResult; search: URLPatternComponentResult; hash: URLPatternComponentResult } | null {
     const components = _extractComponents(input, baseURL);
     if (!components) return null;

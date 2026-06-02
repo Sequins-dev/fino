@@ -75,7 +75,31 @@ interface SpinOptions {
 }
 
 /** A Promise<void> with an additional cancel() method to cancel the pending timer. */
+/**
+ * Generated-doc-visible interface `CancelablePromise`.
+ *
+ * This implementation detail is included when documentation is built with
+ * `--include-private`. It describes state or helper behavior used by the
+ * owning module rather than a stable application-facing contract. Prefer the
+ * public API around the owning type unless you are maintaining this runtime.
+ *
+ * @example
+ * ```ts no_run
+ * const documentedType = 'CancelablePromise';
+ * console.log(documentedType);
+ * ```
+ *
+ * @internal
+ */
 export interface CancelablePromise extends Promise<void> {
+  /**
+   * Cancel the pending timer without settling the promise.
+   *
+   * ```typescript no_run
+   * const timer = timeout(1000);
+   * timer.cancel();
+   * ```
+   */
   cancel(): void;
 }
 
@@ -187,6 +211,11 @@ function _dispatch(ev: LoopEvent): void {
  *
  * @param {number} timeoutMs  How long to block waiting for events (0 = non-blocking).
  * @returns {number} Total number of events dispatched.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * const dispatched = loop.tick(0);
+ * ```
  */
 export function tick(timeoutMs: number): number {
   const events = _wait(_raw, timeoutMs);
@@ -197,6 +226,11 @@ export function tick(timeoutMs: number): number {
 /**
  * Returns true if the loop has any pending I/O work.
  * `internal/main.mts` uses this to decide whether to exit the run loop.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * if (loop.alive()) loop.tick(0);
+ * ```
  */
 export function alive(): boolean {
   return _reads.size > 0 || _writes.size > 0 || _timers.size > 0 ||
@@ -204,10 +238,33 @@ export function alive(): boolean {
          hasPendingV8Tasks() || _atomicsWaiters > 0;
 }
 
-/** @internal — called by the Atomics.waitAsync shim when a new async wait starts */
+/**
+ * Track one pending `Atomics.waitAsync` waiter.
+ *
+ * This keeps the runtime alive while the waiter can still settle.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop._trackAtomicsWaiter();
+ * loop._untrackAtomicsWaiter();
+ * ```
+ *
+ * @internal
+ */
 export function _trackAtomicsWaiter(): void { _atomicsWaiters++; }
 
-/** @internal — called by the Atomics.waitAsync shim when an async wait settles */
+/**
+ * Stop tracking one pending `Atomics.waitAsync` waiter.
+ *
+ * Must be paired with a previous `_trackAtomicsWaiter` call.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop._untrackAtomicsWaiter();
+ * ```
+ *
+ * @internal
+ */
 export function _untrackAtomicsWaiter(): void { _atomicsWaiters--; }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +278,11 @@ export function _untrackAtomicsWaiter(): void { _atomicsWaiters--; }
  *
  * Resolves with the number of bytes available to read (from kqueue's ev.data
  * on macOS; 0 on io_uring/Linux where the count is not available).
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * const available = await loop.readable(fd);
+ * ```
  */
 export function readable(fd: number): Promise<number> {
   return new Promise(function onReadable(resolve) {
@@ -231,6 +293,13 @@ export function readable(fd: number): Promise<number> {
 
 /**
  * Returns a Promise that resolves the next time `fd` becomes writable.
+ *
+ * Replaces any previous pending write resolver for the same fd.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * await loop.writable(fd);
+ * ```
  */
 export function writable(fd: number): Promise<void> {
   return new Promise(function onWritable(resolve) {
@@ -246,6 +315,12 @@ export function writable(fd: number): Promise<void> {
  * the timer fires removes the timer from the event loop immediately (so it no
  * longer counts toward `alive()`) and cancels the kqueue/io_uring event if the
  * backend supports it. The promise is left unsettled after cancellation.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * const timer = loop.timeout(50);
+ * timer.cancel();
+ * ```
  */
 export function timeout(ms: number): CancelablePromise {
   const id = _nextTimerId++;
@@ -268,6 +343,11 @@ export function timeout(ms: number): CancelablePromise {
  * Handles the race where the process exits before EVFILT_PROC is registered:
  * addProc() returns false in that case, and we resolve immediately so the
  * caller can proceed to waitpid().
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * await loop.proc(pid);
+ * ```
  */
 export function proc(pid: number): Promise<void> {
   if (_addProc === undefined) throw new Error('proc() is not supported on this platform');
@@ -311,6 +391,11 @@ export function submit(submitter: (raw: object, id: number) => void): Promise<{ 
  * count toward `alive()` — the loop can exit while a wake source is registered.
  * On platforms that don't support persistent reads the call is a no-op; the
  * Rust layer falls back to the per-iteration drain path with ≤50ms latency.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.registerWakeSource(fd);
+ * ```
  */
 export function registerWakeSource(fd: number): void {
   _wakeSources.add(fd);
@@ -321,6 +406,11 @@ export function registerWakeSource(fd: number): void {
 
 /**
  * Cancel a pending read watch for `fd` (rejects any pending promise silently).
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.removeRead(fd);
+ * ```
  */
 export function removeRead(fd: number): void {
   _reads.delete(fd);
@@ -329,6 +419,11 @@ export function removeRead(fd: number): void {
 
 /**
  * Cancel a pending write watch for `fd`.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.removeWrite(fd);
+ * ```
  */
 export function removeWrite(fd: number): void {
   _writes.delete(fd);
@@ -344,6 +439,11 @@ export function removeWrite(fd: number): void {
  * persists until `removeVnode()` is called; it does NOT auto-remove on delivery.
  *
  * @throws {Error} If vnode watching is not supported on this platform.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.vnode(fd, NOTE_WRITE, (event) => void event.fflags);
+ * ```
  */
 export function vnode(fd: number, fflags: number, callback: (event: { fflags: number }) => void): void {
   if (_addVnode === undefined) throw new Error('vnode() is not supported on this platform');
@@ -353,6 +453,11 @@ export function vnode(fd: number, fflags: number, callback: (event: { fflags: nu
 
 /**
  * Remove a vnode watch for `fd`.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.removeVnode(fd);
+ * ```
  */
 export function removeVnode(fd: number): void {
   if (!_vnodes.has(fd)) return;
@@ -371,6 +476,11 @@ export function removeVnode(fd: number): void {
  * for SIGTERM/SIGINT) so the process is not killed on delivery.
  *
  * @throws {Error} If signal watching is not supported on this platform.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.signal(15, () => {});
+ * ```
  */
 export function signal(signo: number, callback: () => void): void {
   if (_addSignal === undefined) throw new Error('signal() is not supported on this platform');
@@ -380,6 +490,11 @@ export function signal(signo: number, callback: () => void): void {
 
 /**
  * Remove a signal watch for `signo` and restore the default OS signal action.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * loop.removeSignal(15);
+ * ```
  */
 export function removeSignal(signo: number): void {
   if (!_signals.has(signo)) return;
@@ -406,6 +521,11 @@ export function removeSignal(signo: number): void {
  * @param {AbortSignal} [options.signal]  Abort the spin when this signal fires.
  * @returns The resolved value of `promise`.
  * @throws  The rejection reason, or the abort signal's reason.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * const value = loop.spin(Promise.resolve(1));
+ * ```
  */
 export function spin<T>(promise: Promise<T>, options?: SpinOptions): T {
   const signal = options?.signal;
@@ -465,6 +585,11 @@ export function spin<T>(promise: Promise<T>, options?: SpinOptions): T {
  * @param {object}   [options]
  * @param {AbortSignal} [options.signal]  Forwarded to `spin()`.
  * @returns The settled value of `fn()`.
+ *
+ * ```typescript no_run
+ * import * as loop from 'internal:runtime/loop';
+ * const value = loop.run(async () => 1);
+ * ```
  */
 export function run<T>(fn: () => T | Promise<T>, options?: SpinOptions): T {
   const ret = fn();

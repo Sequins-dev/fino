@@ -71,6 +71,19 @@
  * counts as 2 code units), `written` is the number of bytes written. Stops
  * early if the destination would overflow.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * const { TextEncoder, TextDecoder, encodeUtf8, decodeUtf8 } =
+ *   import 'internal:globals/encoding';
+ *
+ * const encoded = new TextEncoder().encode('hello');
+ * console.log(new TextDecoder().decode(encoded));
+ *
+ * const pathBytes = encodeUtf8('/tmp/fino.txt');
+ * console.log(decodeUtf8(pathBytes));
+ * ```
+ *
  * @internal
  */
 
@@ -86,6 +99,11 @@
  * need the exact byte count should use `.byteLength` on the returned view
  * (not `.buffer.byteLength`). This avoids a second allocation (slice copy)
  * while keeping the API identical to before.
+ *
+ * ```typescript no_run
+ * const bytes = encodeUtf8('hello');
+ * bytes.byteLength; // 5
+ * ```
  *
  * @param {string} str
  * @returns {Uint8Array}
@@ -149,6 +167,14 @@ export function encodeUtf8(str: string): Uint8Array {
 /**
  * Decode a Uint8Array of UTF-8 bytes to a JS string.
  * Invalid sequences are replaced with U+FFFD (replacement character).
+ *
+ * In fatal mode, malformed bytes throw TypeError. When skipBom is true, an
+ * initial UTF-8 BOM is omitted from the result.
+ *
+ * ```typescript no_run
+ * const text = decodeUtf8(new Uint8Array([104, 105]));
+ * text; // "hi"
+ * ```
  *
  * @param {Uint8Array} bytes
  * @param {boolean} [fatal=false]  Throw TypeError on invalid sequences instead of replacing.
@@ -271,6 +297,10 @@ BASE64_DECODE[0x3D] = -2; // '='
  * Encode a Latin-1 binary string to base64 (web `btoa`).
  * Throws if any character code is > 255.
  *
+ * ```typescript no_run
+ * btoa('hi'); // "aGk="
+ * ```
+ *
  * @param {string} data  Binary string — each char must be in [0, 255].
  * @returns {string}
  */
@@ -302,6 +332,13 @@ export function btoa(data: string): string {
 /**
  * Decode a base64 string to a Latin-1 binary string (web `atob`).
  * Throws on invalid base64 input.
+ *
+ * ASCII whitespace is ignored. Missing padding is accepted for valid 2- and
+ * 3-character remainders, but length % 4 == 1 is rejected.
+ *
+ * ```typescript no_run
+ * atob('aGk='); // "hi"
+ * ```
  *
  * @param {string} encodedData
  * @returns {string}
@@ -361,7 +398,27 @@ type BlobCloneHelper = {
 };
 let _blobCloneHelper: BlobCloneHelper | null = null;
 
-/** @internal Register Blob/File clone helpers without creating an import cycle. */
+/**
+ * Register Blob/File clone helpers without creating an import cycle.
+ *
+ * blob.mts calls this after defining Blob and File. structuredClone() then uses
+ * the helper to synchronously clone Blob and File instances by byte-copying
+ * their internal storage.
+ *
+ * ```typescript no_run
+ * _registerBlobCloneHelper({
+ *   getBlobBytes: () => new Uint8Array(),
+ *   BlobCtor: Blob as any,
+ *   FileCtor: File as any,
+ *   isBlob: () => false,
+ *   isFile: () => false,
+ *   getName: () => '',
+ *   getLastModified: () => 0,
+ * });
+ * ```
+ *
+ * @internal
+ */
 export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
   _blobCloneHelper = helper;
 }
@@ -381,6 +438,17 @@ export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
  *   Functions, Symbols, WeakMap, WeakSet.
  *
  * Cycles are detected and reproduced correctly.
+ *
+ * The transfer option accepts ArrayBuffers. Without native detach support,
+ * transferred resizable buffers are resized to zero and fixed buffers are
+ * zero-filled after cloning.
+ *
+ * ```typescript no_run
+ * const original: any = { nested: new Map([['x', 1]]) };
+ * original.self = original;
+ * const copy = structuredClone(original);
+ * copy.self === copy; // true
+ * ```
  *
  * @param {*} value
  * @returns {*}
@@ -563,14 +631,44 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
 /**
  * WHATWG TextEncoder — always UTF-8.
  * https://encoding.spec.whatwg.org/#interface-textencoder
+ *
+ * ```typescript no_run
+ * const encoder = new TextEncoder();
+ * encoder.encode('hello');
+ * ```
  */
 export class TextEncoder {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new TextEncoder()); // "[object TextEncoder]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'TextEncoder'; }
-  /** @returns {"utf-8"} */
+
+  /**
+   * Encoding label for this encoder.
+   *
+   * TextEncoder only supports UTF-8, so this always returns "utf-8".
+   *
+   * ```typescript no_run
+   * new TextEncoder().encoding; // "utf-8"
+   * ```
+   *
+   * @returns {"utf-8"}
+   */
   get encoding() { return 'utf-8'; }
 
   /**
    * Encode `input` to a new Uint8Array.
+   *
+   * Input is string-coerced and lone surrogates are encoded as U+FFFD.
+   *
+   * ```typescript no_run
+   * const bytes = new TextEncoder().encode('ok');
+   * bytes[0]; // 111
+   * ```
    *
    * @param {string} [input='']
    * @returns {Uint8Array}
@@ -581,6 +679,15 @@ export class TextEncoder {
 
   /**
    * Encode as much of `input` as fits into `destination` without allocating.
+   *
+   * Returns the number of UTF-16 code units read and UTF-8 bytes written.
+   * Stops before writing a partial UTF-8 sequence.
+   *
+   * ```typescript no_run
+   * const dest = new Uint8Array(2);
+   * const result = new TextEncoder().encodeInto('abc', dest);
+   * result.written; // 2
+   * ```
    *
    * @param {string} input
    * @param {Uint8Array} destination
@@ -655,6 +762,11 @@ const UTF8_LABELS = new Set([
 /**
  * WHATWG TextDecoder — UTF-8 only.
  * https://encoding.spec.whatwg.org/#interface-textdecoder
+ *
+ * ```typescript no_run
+ * const decoder = new TextDecoder('utf-8', { fatal: false });
+ * decoder.decode(new Uint8Array([104, 105])); // "hi"
+ * ```
  */
 // Scan the end of `bytes` for an incomplete multi-byte UTF-8 sequence.
 // Returns the byte offset at which the incomplete sequence starts,
@@ -680,19 +792,152 @@ function _findIncompleteEnd(bytes: Uint8Array): number {
   return len;
 }
 
-/** WHATWG `TextDecoder` facade for UTF-8 decoding with optional fatal mode and BOM handling. */
+/**
+ * WHATWG TextDecoder facade for UTF-8 decoding with optional fatal mode and
+ * BOM handling.
+ *
+ * Only UTF-8 labels are accepted. Streaming decode buffers incomplete trailing
+ * UTF-8 sequences across calls.
+ *
+ * ```typescript no_run
+ * const decoder = new TextDecoder();
+ * decoder.decode(new Uint8Array([0x68, 0x69])); // "hi"
+ * ```
+ */
 export class TextDecoder {
+  /**
+   * Private property `#encoding` used by `TextDecoder`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #encoding = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#encoding;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #encoding: string;
+  /**
+   * Private property `#fatal` used by `TextDecoder`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fatal = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#fatal;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fatal: boolean;
+  /**
+   * Private property `#ignoreBOM` used by `TextDecoder`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #ignoreBOM = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#ignoreBOM;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #ignoreBOM: boolean;
+  /**
+   * Private property `#pending` used by `TextDecoder`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pending = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#pending;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pending: Uint8Array | null = null;
   // Tracks whether the BOM at the stream start has been seen/consumed. Resets
   // after each non-streaming decode() call per WHATWG spec.
+  /**
+   * Private property `#bomHandled` used by `TextDecoder`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bomHandled = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bomHandled;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bomHandled: boolean = false;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new TextDecoder()); // "[object TextDecoder]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'TextDecoder'; }
 
   /**
+   * Create a UTF-8 TextDecoder.
+   *
+   * Non-UTF-8 labels throw RangeError. fatal controls malformed byte handling,
+   * and ignoreBOM preserves an initial BOM when true.
+   *
+   * ```typescript no_run
+   * const decoder = new TextDecoder('utf8', { fatal: true });
+   * decoder.encoding; // "utf-8"
+   * ```
+   *
    * @param {string} [label='utf-8']
    * @param {{ fatal?: boolean, ignoreBOM?: boolean }} [options]
    */
@@ -706,13 +951,39 @@ export class TextDecoder {
     this.#ignoreBOM = Boolean(options.ignoreBOM);
   }
 
-  /** @returns {"utf-8"} */
+  /**
+   * Normalized encoding name.
+   *
+   * ```typescript no_run
+   * new TextDecoder('unicode-1-1-utf-8').encoding; // "utf-8"
+   * ```
+   *
+   * @returns {"utf-8"}
+   */
   get encoding()  { return this.#encoding; }
 
-  /** @returns {boolean} */
+  /**
+   * Whether malformed UTF-8 throws TypeError instead of replacement.
+   *
+   * ```typescript no_run
+   * new TextDecoder('utf-8', { fatal: true }).fatal; // true
+   * ```
+   *
+   * @returns {boolean}
+   */
   get fatal()     { return this.#fatal; }
 
-  /** @returns {boolean} */
+  /**
+   * Whether an initial BOM is preserved in decoded output.
+   *
+   * false means the leading BOM is skipped, matching browser defaults.
+   *
+   * ```typescript no_run
+   * new TextDecoder('utf-8', { ignoreBOM: true }).ignoreBOM; // true
+   * ```
+   *
+   * @returns {boolean}
+   */
   get ignoreBOM() { return this.#ignoreBOM; }
 
   /**
@@ -722,6 +993,13 @@ export class TextDecoder {
    * @param {{ stream?: boolean }} [options]
    *   When `stream: true`, incomplete multi-byte sequences at the end are
    *   buffered and prepended to the next call, enabling chunk-by-chunk decoding.
+   *
+   * ```typescript no_run
+   * const decoder = new TextDecoder();
+   * decoder.decode(new Uint8Array([0xe2, 0x82]), { stream: true }); // ""
+   * decoder.decode(new Uint8Array([0xac])).length; // 1
+   * ```
+   *
    * @returns {string}
    */
   decode(input?: ArrayBuffer | ArrayBufferView | null, options?: { stream?: boolean }): string {

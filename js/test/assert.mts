@@ -117,12 +117,105 @@ function _messageOf(err: unknown): string {
   return String(err);
 }
 
-/** Error thrown by failed assertions, including actual, expected, and operator metadata. */
+/**
+ * Error thrown by failed assertions, including actual, expected, and operator metadata.
+ *
+ * Assertion methods create this error and either throw it immediately or pass
+ * it to a custom `onFail` callback. The metadata fields are useful for TAP
+ * output, custom reporters, and debugging failed test expectations.
+ *
+ * ```ts no_run
+ * import { AssertionError } from 'fino:test/assert';
+ *
+ * const err = new AssertionError({
+ *   message: 'expected count',
+ *   actual: 1,
+ *   expected: 2,
+ *   operator: 'equal',
+ * });
+ * ```
+ */
 export class AssertionError extends Error {
+  /**
+   * Private property `#actual` used by `AssertionError`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #actual = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#actual;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #actual: unknown;
+  /**
+   * Private property `#expected` used by `AssertionError`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #expected = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#expected;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #expected: unknown;
+  /**
+   * Private property `#operator` used by `AssertionError`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #operator = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#operator;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #operator: string | undefined;
 
+  /**
+   * Create an assertion error.
+   *
+   * Omitted fields stay `undefined`, and the message defaults to
+   * `"Assertion failed"`. The constructor does not inspect or format values;
+   * assertion methods prepare human-readable messages before constructing it.
+   *
+   * ```ts no_run
+   * import { AssertionError } from 'fino:test/assert';
+   *
+   * throw new AssertionError({ message: 'custom failure', operator: 'fail' });
+   * ```
+   */
   constructor({ message, actual, expected, operator }: AssertionErrorOptions = {}) {
     super(message || 'Assertion failed');
     this.name = 'AssertionError';
@@ -131,8 +224,38 @@ export class AssertionError extends Error {
     this.#operator = operator;
   }
 
+  /**
+   * Value produced by the code under test.
+   *
+   * ```ts no_run
+   * import { AssertionError } from 'fino:test/assert';
+   *
+   * const err = new AssertionError({ actual: 1 });
+   * err.actual; // 1
+   * ```
+   */
   get actual()   { return this.#actual;   }
+  /**
+   * Value the assertion expected.
+   *
+   * ```ts no_run
+   * import { AssertionError } from 'fino:test/assert';
+   *
+   * const err = new AssertionError({ expected: 2 });
+   * err.expected; // 2
+   * ```
+   */
   get expected() { return this.#expected; }
+  /**
+   * Assertion operator that failed, such as `equal` or `throws`.
+   *
+   * ```ts no_run
+   * import { AssertionError } from 'fino:test/assert';
+   *
+   * const err = new AssertionError({ operator: 'equal' });
+   * err.operator; // 'equal'
+   * ```
+   */
   get operator() { return this.#operator; }
 }
 
@@ -189,25 +312,149 @@ function _checkErr(err: unknown, check: Exclude<ErrorCheck, null>): boolean {
  *                                     Default: no-op.
  * @param {function} [options.onFail]  Called with AssertionError on a failing assertion.
  *                                     Default: throws the error.
+ *
+ * ```ts no_run
+ * import { Assert } from 'fino:test/assert';
+ *
+ * const failures: Error[] = [];
+ * const assert = new Assert({ onFail: (err) => failures.push(err) });
+ * assert.ok(false);
+ * failures.length; // 1
+ * ```
  */
 export class Assert {
+  /**
+   * Private property `#onPass` used by `Assert`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onPass = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onPass;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onPass: () => void;
+  /**
+   * Private property `#onFail` used by `Assert`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onFail = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onFail;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onFail: (err: AssertionError) => void;
 
+  /**
+   * Create an assertion helper with optional pass/fail callbacks.
+   *
+   * The default `onFail` throws immediately. Test runners can collect errors by
+   * providing `onFail` and count successful assertions with `onPass`.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * let passed = 0;
+   * const assert = new Assert({ onPass: () => passed++ });
+   * assert.equal(1, 1);
+   * ```
+   */
   constructor({ onPass, onFail }: AssertCallbacks = {}) {
     this.#onPass = onPass || function noopPass() {};
     this.#onFail = onFail || function defaultFail(err) { throw err; };
   }
 
+  /**
+   * Private method `#pass` used by `Assert`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pass() {
+   *     return 'pass';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#pass();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pass() {
     this.#onPass();
   }
 
+  /**
+   * Private method `#fail` used by `Assert`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fail() {
+   *     return 'fail';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#fail();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fail(message: string, actual: unknown, expected: unknown, operator: string): void {
     this.#onFail(new AssertionError({ message, actual, expected, operator }));
   }
 
-  /** Assert that `value` is truthy. */
+  /**
+   * Assert that `value` is truthy.
+   *
+   * Fails for JavaScript-falsy values (`false`, `0`, `''`, `null`,
+   * `undefined`, and `NaN`). The optional message prefixes the generated
+   * failure text.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.ok('non-empty');
+   * ```
+   */
   ok(value: unknown, msg?: string): void {
     if (value) {
       this.#pass();
@@ -219,7 +466,19 @@ export class Assert {
     }
   }
 
-  /** Assert that `value` is falsy. */
+  /**
+   * Assert that `value` is falsy.
+   *
+   * Use this for explicit negative conditions. Passing a truthy value fails
+   * with `operator` set to `notOk`.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.notOk('');
+   * ```
+   */
   notOk(value: unknown, msg?: string): void {
     if (!value) {
       this.#pass();
@@ -231,7 +490,19 @@ export class Assert {
     }
   }
 
-  /** Assert strict equality (===). */
+  /**
+   * Assert strict equality using `===`.
+   *
+   * This does not coerce types and does not perform deep comparison. Use
+   * `deepEqual()` for plain object or array structure checks.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.equal(1 + 1, 2);
+   * ```
+   */
   equal(actual: unknown, expected: unknown, msg?: string): void {
     if (actual === expected) {
       this.#pass();
@@ -243,7 +514,18 @@ export class Assert {
     }
   }
 
-  /** Assert strict inequality (!==). */
+  /**
+   * Assert strict inequality using `!==`.
+   *
+   * Fails when the two values are strictly equal.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.notEqual('1', 1);
+   * ```
+   */
   notEqual(actual: unknown, expected: unknown, msg?: string): void {
     if (actual !== expected) {
       this.#pass();
@@ -255,7 +537,20 @@ export class Assert {
     }
   }
 
-  /** Assert deep equality of two plain objects/arrays. */
+  /**
+   * Assert deep equality of plain objects and arrays.
+   *
+   * The comparison walks own enumerable string keys and uses strict equality at
+   * leaves. It intentionally does not special-case `Map`, `Set`, `Date`,
+   * `RegExp`, symbol keys, or non-enumerable properties.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.deepEqual({ tags: ['a'] }, { tags: ['a'] });
+   * ```
+   */
   deepEqual(actual: unknown, expected: unknown, msg?: string): void {
     if (_deepEqual(actual, expected)) {
       this.#pass();
@@ -267,7 +562,19 @@ export class Assert {
     }
   }
 
-  /** Unconditionally fail with a message. */
+  /**
+   * Unconditionally fail with a message.
+   *
+   * This is useful for unreachable branches or callbacks that should not run.
+   * The failure uses `operator` set to `fail`.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.fail('unreachable');
+   * ```
+   */
   fail(msg?: string): void {
     this.#fail(msg || 'fail called', undefined, undefined, 'fail');
   }
@@ -276,6 +583,16 @@ export class Assert {
    * Assert that `fn` throws synchronously. Optionally validate the thrown
    * value with a `check` function `(err) => boolean` or a RegExp tested
    * against `err.message`.
+   *
+   * The function is called immediately and must throw before returning. Use
+   * `rejects()` for promise-returning code.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * assert.throws(() => JSON.parse('{'), /JSON/);
+   * ```
    */
   throws(fn: () => void, check?: ErrorCheck, msg?: string): void {
     let threw = false;
@@ -308,6 +625,15 @@ export class Assert {
    * rejection value with a `check` function or RegExp.
    *
    * Must be awaited: `await assert.rejects(async () => { ... })`.
+   *
+   * ```ts no_run
+   * import { Assert } from 'fino:test/assert';
+   *
+   * const assert = new Assert();
+   * await assert.rejects(async () => {
+   *   throw new Error('network');
+   * }, /network/);
+   * ```
    */
   async rejects(fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> {
     let rejected = false;
@@ -345,19 +671,83 @@ const _default = new Assert();
 
 export default _default;
 
-/** Assert that a value is truthy. */
+/**
+ * Assert that a value is truthy using the default `Assert` instance.
+ *
+ * ```ts no_run
+ * import { ok } from 'fino:test/assert';
+ *
+ * ok(true);
+ * ```
+ */
 export const ok = (value: unknown, msg?: string): void => _default.ok(value, msg);
-/** Assert that a value is falsy. */
+/**
+ * Assert that a value is falsy using the default `Assert` instance.
+ *
+ * ```ts no_run
+ * import { notOk } from 'fino:test/assert';
+ *
+ * notOk(false);
+ * ```
+ */
 export const notOk = (value: unknown, msg?: string): void => _default.notOk(value, msg);
-/** Assert strict equality with `Object.is` semantics. */
+/**
+ * Assert strict equality using the default `Assert` instance.
+ *
+ * ```ts no_run
+ * import { equal } from 'fino:test/assert';
+ *
+ * equal(1 + 1, 2);
+ * ```
+ */
 export const equal = (actual: unknown, expected: unknown, msg?: string): void => _default.equal(actual, expected, msg);
-/** Assert strict inequality with `Object.is` semantics. */
+/**
+ * Assert strict inequality using the default `Assert` instance.
+ *
+ * ```ts no_run
+ * import { notEqual } from 'fino:test/assert';
+ *
+ * notEqual('1', 1);
+ * ```
+ */
 export const notEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.notEqual(actual, expected, msg);
-/** Assert structural equality for plain object and array-like values. */
+/**
+ * Assert structural equality for plain object and array values.
+ *
+ * ```ts no_run
+ * import { deepEqual } from 'fino:test/assert';
+ *
+ * deepEqual({ a: [1] }, { a: [1] });
+ * ```
+ */
 export const deepEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.deepEqual(actual, expected, msg);
-/** Unconditionally fail an assertion. */
+/**
+ * Unconditionally fail an assertion.
+ *
+ * ```ts no_run
+ * import { fail } from 'fino:test/assert';
+ *
+ * fail('expected branch not reached');
+ * ```
+ */
 export const fail = (msg?: string): void => _default.fail(msg);
-/** Assert that a synchronous function throws, optionally matching the error. */
+/**
+ * Assert that a synchronous function throws, optionally matching the error.
+ *
+ * ```ts no_run
+ * import { throws } from 'fino:test/assert';
+ *
+ * throws(() => JSON.parse('{'), /JSON/);
+ * ```
+ */
 export const throws = (fn: () => void, check?: ErrorCheck, msg?: string): void => _default.throws(fn, check, msg);
-/** Assert that an async function rejects, optionally matching the error. */
+/**
+ * Assert that an async function rejects, optionally matching the error.
+ *
+ * ```ts no_run
+ * import { rejects } from 'fino:test/assert';
+ *
+ * await rejects(async () => { throw new Error('boom'); }, /boom/);
+ * ```
+ */
 export const rejects = (fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> => _default.rejects(fn, check, msg);

@@ -85,10 +85,37 @@ class AssertionError extends Error {
 
 Error thrown by failed assertions, including actual, expected, and operator metadata.
 
+Assertion methods create this error and either throw it immediately or pass
+it to a custom `onFail` callback. The metadata fields are useful for TAP
+output, custom reporters, and debugging failed test expectations.
+
+```ts
+import { AssertionError } from 'fino:test/assert';
+
+const err = new AssertionError({
+  message: 'expected count',
+  actual: 1,
+  expected: 2,
+  operator: 'equal',
+});
+```
+
 ### constructor
 
 ```ts
 constructor({ message, actual, expected, operator }: AssertionErrorOptions = {})
+```
+
+Create an assertion error.
+
+Omitted fields stay `undefined`, and the message defaults to
+`"Assertion failed"`. The constructor does not inspect or format values;
+assertion methods prepare human-readable messages before constructing it.
+
+```ts
+import { AssertionError } from 'fino:test/assert';
+
+throw new AssertionError({ message: 'custom failure', operator: 'fail' });
 ```
 
 ### actual
@@ -97,16 +124,43 @@ constructor({ message, actual, expected, operator }: AssertionErrorOptions = {})
 get actual()
 ```
 
+Value produced by the code under test.
+
+```ts
+import { AssertionError } from 'fino:test/assert';
+
+const err = new AssertionError({ actual: 1 });
+err.actual; // 1
+```
+
 ### expected
 
 ```ts
 get expected()
 ```
 
+Value the assertion expected.
+
+```ts
+import { AssertionError } from 'fino:test/assert';
+
+const err = new AssertionError({ expected: 2 });
+err.expected; // 2
+```
+
 ### operator
 
 ```ts
 get operator()
+```
+
+Assertion operator that failed, such as `equal` or `throws`.
+
+```ts
+import { AssertionError } from 'fino:test/assert';
+
+const err = new AssertionError({ operator: 'equal' });
+err.operator; // 'equal'
 ```
 
 ## Assert
@@ -121,10 +175,32 @@ Configurable assertion helper. Each method calls `onPass` on success or
                                     Default: no-op.
                                     Default: throws the error.
 
+```ts
+import { Assert } from 'fino:test/assert';
+
+const failures: Error[] = [];
+const assert = new Assert({ onFail: (err) => failures.push(err) });
+assert.ok(false);
+failures.length; // 1
+```
+
 ### constructor
 
 ```ts
 constructor({ onPass, onFail }: AssertCallbacks = {})
+```
+
+Create an assertion helper with optional pass/fail callbacks.
+
+The default `onFail` throws immediately. Test runners can collect errors by
+providing `onFail` and count successful assertions with `onPass`.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+let passed = 0;
+const assert = new Assert({ onPass: () => passed++ });
+assert.equal(1, 1);
 ```
 
 ### ok
@@ -135,6 +211,17 @@ ok(value: unknown, msg?: string): void
 
 Assert that `value` is truthy.
 
+Fails for JavaScript-falsy values (`false`, `0`, `''`, `null`,
+`undefined`, and `NaN`). The optional message prefixes the generated
+failure text.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.ok('non-empty');
+```
+
 ### notOk
 
 ```ts
@@ -143,13 +230,33 @@ notOk(value: unknown, msg?: string): void
 
 Assert that `value` is falsy.
 
+Use this for explicit negative conditions. Passing a truthy value fails
+with `operator` set to `notOk`.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.notOk('');
+```
+
 ### equal
 
 ```ts
 equal(actual: unknown, expected: unknown, msg?: string): void
 ```
 
-Assert strict equality (===).
+Assert strict equality using `===`.
+
+This does not coerce types and does not perform deep comparison. Use
+`deepEqual()` for plain object or array structure checks.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.equal(1 + 1, 2);
+```
 
 ### notEqual
 
@@ -157,7 +264,16 @@ Assert strict equality (===).
 notEqual(actual: unknown, expected: unknown, msg?: string): void
 ```
 
-Assert strict inequality (!==).
+Assert strict inequality using `!==`.
+
+Fails when the two values are strictly equal.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.notEqual('1', 1);
+```
 
 ### deepEqual
 
@@ -165,7 +281,18 @@ Assert strict inequality (!==).
 deepEqual(actual: unknown, expected: unknown, msg?: string): void
 ```
 
-Assert deep equality of two plain objects/arrays.
+Assert deep equality of plain objects and arrays.
+
+The comparison walks own enumerable string keys and uses strict equality at
+leaves. It intentionally does not special-case `Map`, `Set`, `Date`,
+`RegExp`, symbol keys, or non-enumerable properties.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.deepEqual({ tags: ['a'] }, { tags: ['a'] });
+```
 
 ### fail
 
@@ -174,6 +301,16 @@ fail(msg?: string): void
 ```
 
 Unconditionally fail with a message.
+
+This is useful for unreachable branches or callbacks that should not run.
+The failure uses `operator` set to `fail`.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.fail('unreachable');
+```
 
 ### throws
 
@@ -184,6 +321,16 @@ throws(fn: () => void, check?: ErrorCheck, msg?: string): void
 Assert that `fn` throws synchronously. Optionally validate the thrown
 value with a `check` function `(err) => boolean` or a RegExp tested
 against `err.message`.
+
+The function is called immediately and must throw before returning. Use
+`rejects()` for promise-returning code.
+
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+assert.throws(() => JSON.parse('{'), /JSON/);
+```
 
 ### rejects
 
@@ -196,13 +343,28 @@ rejection value with a `check` function or RegExp.
 
 Must be awaited: `await assert.rejects(async () => { ... })`.
 
+```ts
+import { Assert } from 'fino:test/assert';
+
+const assert = new Assert();
+await assert.rejects(async () => {
+  throw new Error('network');
+}, /network/);
+```
+
 ## ok
 
 ```ts
 const ok
 ```
 
-Assert that a value is truthy.
+Assert that a value is truthy using the default `Assert` instance.
+
+```ts
+import { ok } from 'fino:test/assert';
+
+ok(true);
+```
 
 ## notOk
 
@@ -210,7 +372,13 @@ Assert that a value is truthy.
 const notOk
 ```
 
-Assert that a value is falsy.
+Assert that a value is falsy using the default `Assert` instance.
+
+```ts
+import { notOk } from 'fino:test/assert';
+
+notOk(false);
+```
 
 ## equal
 
@@ -218,7 +386,13 @@ Assert that a value is falsy.
 const equal
 ```
 
-Assert strict equality with `Object.is` semantics.
+Assert strict equality using the default `Assert` instance.
+
+```ts
+import { equal } from 'fino:test/assert';
+
+equal(1 + 1, 2);
+```
 
 ## notEqual
 
@@ -226,7 +400,13 @@ Assert strict equality with `Object.is` semantics.
 const notEqual
 ```
 
-Assert strict inequality with `Object.is` semantics.
+Assert strict inequality using the default `Assert` instance.
+
+```ts
+import { notEqual } from 'fino:test/assert';
+
+notEqual('1', 1);
+```
 
 ## deepEqual
 
@@ -234,7 +414,13 @@ Assert strict inequality with `Object.is` semantics.
 const deepEqual
 ```
 
-Assert structural equality for plain object and array-like values.
+Assert structural equality for plain object and array values.
+
+```ts
+import { deepEqual } from 'fino:test/assert';
+
+deepEqual({ a: [1] }, { a: [1] });
+```
 
 ## fail
 
@@ -244,6 +430,12 @@ const fail
 
 Unconditionally fail an assertion.
 
+```ts
+import { fail } from 'fino:test/assert';
+
+fail('expected branch not reached');
+```
+
 ## throws
 
 ```ts
@@ -252,6 +444,12 @@ const throws
 
 Assert that a synchronous function throws, optionally matching the error.
 
+```ts
+import { throws } from 'fino:test/assert';
+
+throws(() => JSON.parse('{'), /JSON/);
+```
+
 ## rejects
 
 ```ts
@@ -259,3 +457,9 @@ const rejects
 ```
 
 Assert that an async function rejects, optionally matching the error.
+
+```ts
+import { rejects } from 'fino:test/assert';
+
+await rejects(async () => { throw new Error('boom'); }, /boom/);
+```

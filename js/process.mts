@@ -1,5 +1,5 @@
 /**
- * fino:process — process information and child process spawning.
+ * fino:process - process information and child process spawning.
  *
  * This module combines two concerns: static process metadata (pid, cwd, argv,
  * env, etc.) and the `Process` class for spawning child processes with piped
@@ -12,7 +12,7 @@
  * `fork(2)` + `execve(2)` is the classic UNIX child-process primitive. We use
  * it here rather than `posix_spawn` because it gives us full control over the
  * child's environment between fork and exec: we can call `dup2` to wire up
- * pipes, `chdir` to set the working directory, and close file descriptors —
+ * pipes, `chdir` to set the working directory, and close file descriptors -
  * all without the `posix_spawn` attribute machinery. The child side of the
  * fork runs between the `childPid === 0` branch and the `execve` call; any
  * failure in that branch causes `_exit(127)` (the shell convention for
@@ -23,13 +23,13 @@
  *
  * Three `pipe(2)` calls create six file descriptors before the fork:
  *
- *   stdin:  [stdinR  → child stdin,  stdinW  → parent Writer]
- *   stdout: [stdoutR → parent Reader, stdoutW → child stdout]
- *   stderr: [stderrR → parent Reader, stderrW → child stderr]
+ *   stdin:  [stdinR  -> child stdin,  stdinW  -> parent Writer]
+ *   stdout: [stdoutR -> parent Reader, stdoutW -> child stdout]
+ *   stderr: [stderrR -> parent Reader, stderrW -> child stderr]
  *
  * After the fork, each process immediately closes the ends it doesn't own.
  * The parent-side fds are set to O_NONBLOCK so they can be used with the
- * event loop. The child-side fds are left blocking — they run inside
+ * event loop. The child-side fds are left blocking - they run inside
  * `execve`'d code that doesn't know about fino's event loop.
  *
  *
@@ -67,9 +67,9 @@
  * ## Exit status decoding
  *
  * `waitpid` fills an `int` status word with the following encoding:
- *   - bits [6:0] = 0x00 → exited normally; exit code is bits [15:8]
- *   - bits [6:0] ≠ 0x00 and ≠ 0x7f → killed by signal; signal is bits [6:0]
- *   - bits [6:0] = 0x7f → stopped (WIFSTOPPED) — we ignore this case
+ *   - bits [6:0] = 0x00 -> exited normally; exit code is bits [15:8]
+ *   - bits [6:0] != 0x00 and != 0x7f -> killed by signal; signal is bits [6:0]
+ *   - bits [6:0] = 0x7f -> stopped (WIFSTOPPED) - we ignore this case
  *
  *
  * ```ts no_run
@@ -95,15 +95,87 @@ import { FdReader, FdWriter } from './internal/stream.mts';
 import * as loop from './internal/runtime/loop.mts';
 import { topic, Topic } from './context/topic.mts';
 
-/** Options for spawning a child process. */
+/**
+ * Options for spawning a child process.
+ *
+ * ```ts no_run
+ * import { Process, type ProcessOptions } from 'fino:process';
+ *
+ * const opts: ProcessOptions = { cwd: '/tmp', env: { PATH: '/usr/bin' } };
+ * const proc = new Process('/usr/bin/env', [], opts);
+ * ```
+ */
 export interface ProcessOptions {
+  /**
+   * Working directory for the child process.
+   *
+   * When omitted, the child inherits the parent's current working directory.
+   * If the directory cannot be entered after fork, the child exits with the
+   * same failure path as other exec setup errors.
+   *
+   * ```ts no_run
+   * import type { ProcessOptions } from 'fino:process';
+   *
+   * const opts: ProcessOptions = { cwd: '/srv/app' };
+   * ```
+   */
   cwd?:  string;
+  /**
+   * Environment passed to `execve`.
+   *
+   * When omitted, the runtime startup environment snapshot is used. Supplying
+   * this object replaces, rather than merges with, the inherited environment.
+   *
+   * ```ts no_run
+   * import type { ProcessOptions } from 'fino:process';
+   *
+   * const opts: ProcessOptions = { env: { PATH: '/usr/bin', NODE_ENV: 'test' } };
+   * ```
+   */
   env?:  Record<string, string>;
 }
 
-/** Exit status returned by `Process.wait`. */
+/**
+ * Exit status returned by `Process.wait`.
+ *
+ * Exactly one of `code` or `signal` is usually non-null. Both can be `null` for
+ * status states the decoder does not currently expose, such as stopped
+ * children.
+ *
+ * ```ts no_run
+ * import type { WaitResult } from 'fino:process';
+ *
+ * const result: WaitResult = { code: 0, signal: null };
+ * ```
+ */
 export interface WaitResult {
+  /**
+   * Numeric exit code for a normally exited child.
+   *
+   * The value is `null` when the child was killed by a signal or when the
+   * status could not be decoded as a normal exit.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const result = await new Process('/bin/true', []).wait();
+   * console.log(result.code);
+   * ```
+   */
   code:   number | null;
+  /**
+   * Signal number that terminated the child.
+   *
+   * The value is `null` for normal exits. Use exported signal constants such as
+   * `SIGTERM` when comparing known signals.
+   *
+   * ```ts no_run
+   * import { Process, SIGTERM } from 'fino:process';
+   *
+   * const result = await new Process('/bin/sleep', ['1']).wait();
+   * console.log(result.signal === SIGTERM);
+   * ```
+   */
   signal: number | null;
 }
 
@@ -111,9 +183,32 @@ export interface WaitResult {
 // Re-exports from internal:process
 // ---------------------------------------------------------------------------
 
+/**
+ * Runtime process metadata re-exported from `internal:process`.
+ *
+ * `os` and `arch` identify the platform, `env` is the startup environment
+ * snapshot, and `execPath` is the fino executable path.
+ *
+ * ```ts no_run
+ * import { arch, env, execPath, os } from 'fino:process';
+ *
+ * console.log(os, arch, execPath, env.PATH);
+ * ```
+ */
 export { os, arch, env, execPath };
 
-/** Command-line arguments. argv[0] is the fino binary, argv[1] is the script. */
+/**
+ * Command-line arguments.
+ *
+ * `argv[0]` is the fino binary and `argv[1]` is the script path when a script
+ * was launched. The array is a startup snapshot from the runtime.
+ *
+ * ```ts no_run
+ * import { argv } from 'fino:process';
+ *
+ * console.log(argv.slice(2));
+ * ```
+ */
 export { args as argv };
 
 // ---------------------------------------------------------------------------
@@ -131,7 +226,7 @@ const O_NONBLOCK = isLinux ? 0x0800 : 0x0004;
 // waitpid(2) flags
 const WNOHANG = 1;
 
-// Linux syscall number for pidfd_open(2) — same on x86_64 and arm64.
+// Linux syscall number for pidfd_open(2) - same on x86_64 and arm64.
 const SYS_PIDFD_OPEN = 434n;
 
 // Default signal for kill (also exported in signal constants below)
@@ -183,7 +278,7 @@ function buildCStringArray(strings: string[]): { ptrBuf: ArrayBuffer; bufs: Uint
   for (let i = 0; i < bufs.length; i++) {
     view.setBigUint64(i * 8, Pointer.addr(bufs[i]), true);
   }
-  // Last 8 bytes remain zero — null pointer terminator.
+  // Last 8 bytes remain zero - null pointer terminator.
   return { ptrBuf, bufs };
 }
 
@@ -205,10 +300,32 @@ function setNonblocking(fd: number): void {
 // Process-level APIs
 // ---------------------------------------------------------------------------
 
-/** Current process ID. */
+/**
+ * Current process ID.
+ *
+ * This value is read once from `getpid()` during module evaluation and is
+ * stable for the lifetime of the process.
+ *
+ * ```ts no_run
+ * import { pid } from 'fino:process';
+ *
+ * console.log(`running as ${pid}`);
+ * ```
+ */
 export const pid = lib.symbols.getpid();
 
-/** Parent process ID. */
+/**
+ * Parent process ID.
+ *
+ * This value is read from `getppid()` during module evaluation. It may not
+ * reflect later parent changes caused by reparenting after startup.
+ *
+ * ```ts no_run
+ * import { ppid } from 'fino:process';
+ *
+ * console.log(`parent ${ppid}`);
+ * ```
+ */
 export const ppid = lib.symbols.getppid();
 
 /**
@@ -216,6 +333,16 @@ export const ppid = lib.symbols.getppid();
  * Flushes buffered stdout/stderr before exiting so pending console output is
  * not lost. Uses `_exit` (not `exit(3)`) after the flush to avoid running C
  * atexit handlers.
+ *
+ * This function never returns. Errors during stream flushing are swallowed so
+ * the process still exits.
+ *
+ * ```ts no_run
+ * import { exit } from 'fino:process';
+ *
+ * exit(0);
+ * ```
+ *
  * @param {number} [code=0] exit status
  */
 export function exit(code: number = 0): never {
@@ -229,6 +356,16 @@ export function exit(code: number = 0): never {
 
 /**
  * Return the current working directory.
+ *
+ * Throws if `getcwd(2)` fails. The returned string is decoded as UTF-8 from a
+ * fixed-size buffer.
+ *
+ * ```ts no_run
+ * import { cwd } from 'fino:process';
+ *
+ * console.log(cwd());
+ * ```
+ *
  * @returns {string}
  */
 export function cwd(): string {
@@ -242,6 +379,17 @@ export function cwd(): string {
 
 /**
  * Change the current working directory. Throws on failure.
+ *
+ * The change affects the whole current process and therefore all realms in the
+ * process that consult process cwd. Use absolute paths for predictable results.
+ *
+ * ```ts no_run
+ * import { chdir, cwd } from 'fino:process';
+ *
+ * chdir('/tmp');
+ * console.log(cwd());
+ * ```
+ *
  * @param {string} path
  */
 export function chdir(path: string): void {
@@ -251,6 +399,16 @@ export function chdir(path: string): void {
 
 /**
  * Send a signal to a process. Throws if the syscall fails.
+ *
+ * The target may be the current process, a child, or any process permitted by
+ * the operating system. Passing an invalid PID or signal causes an error.
+ *
+ * ```ts no_run
+ * import { kill, pid, SIGTERM } from 'fino:process';
+ *
+ * kill(pid, SIGTERM);
+ * ```
+ *
  * @param {number} targetPid
  * @param {number} signal
  */
@@ -260,7 +418,7 @@ export function kill(targetPid: number, signal: number): void {
 }
 
 // ---------------------------------------------------------------------------
-// process.stdin / stdout / stderr — lazy FdReader/FdWriter singletons
+// process.stdin / stdout / stderr - lazy FdReader/FdWriter singletons
 // ---------------------------------------------------------------------------
 
 let _stdin:  FdReader | null = null;
@@ -272,6 +430,15 @@ const _noop = () => {};
 /**
  * Returns a Reader for the current process's stdin (fd 0).
  * Sets the fd to non-blocking mode on first call.
+ *
+ * The same `FdReader` instance is returned on subsequent calls. The call can
+ * throw if changing fd 0 to non-blocking mode fails.
+ *
+ * ```ts no_run
+ * import { stdin } from 'fino:process';
+ *
+ * for await (const chunk of stdin()) console.log(chunk.byteLength);
+ * ```
  */
 export function stdin(): FdReader {
   if (_stdin === null) {
@@ -284,6 +451,15 @@ export function stdin(): FdReader {
 /**
  * Returns a Writer for the current process's stdout (fd 1).
  * Sets the fd to non-blocking mode on first call.
+ *
+ * The same `FdWriter` instance is returned on subsequent calls. Use
+ * `flushSync()` before abrupt exits when output ordering matters.
+ *
+ * ```ts no_run
+ * import { stdout } from 'fino:process';
+ *
+ * await stdout().write(new TextEncoder().encode('hello\n'));
+ * ```
  */
 export function stdout(): FdWriter {
   if (_stdout === null) {
@@ -296,6 +472,15 @@ export function stdout(): FdWriter {
 /**
  * Returns a Writer for the current process's stderr (fd 2).
  * Sets the fd to non-blocking mode on first call.
+ *
+ * The same `FdWriter` instance is returned on subsequent calls. The call can
+ * throw if changing fd 2 to non-blocking mode fails.
+ *
+ * ```ts no_run
+ * import { stderr } from 'fino:process';
+ *
+ * await stderr().write(new TextEncoder().encode('error\n'));
+ * ```
  */
 export function stderr(): FdWriter {
   if (_stderr === null) {
@@ -306,28 +491,121 @@ export function stderr(): FdWriter {
 }
 
 // ---------------------------------------------------------------------------
-// Signal handling — Topic-based API
+// Signal handling - Topic-based API
 // ---------------------------------------------------------------------------
 
-/** Signal numbers (POSIX, platform-aware for platform-divergent signals). */
+/**
+ * Hangup signal number.
+ *
+ * ```ts no_run
+ * import { SIGHUP, signal } from 'fino:process';
+ *
+ * signal('SIGHUP').subscribe(({ signo }) => console.log(signo === SIGHUP));
+ * ```
+ */
 export const SIGHUP  = 1;
-/** Interrupt signal number. */
+/**
+ * Interrupt signal number.
+ *
+ * ```ts no_run
+ * import { SIGINT, signal } from 'fino:process';
+ *
+ * signal('SIGINT').subscribe(({ signo }) => console.log(signo === SIGINT));
+ * ```
+ */
 export const SIGINT  = 2;
-/** Quit signal number. */
+/**
+ * Quit signal number.
+ *
+ * ```ts no_run
+ * import { SIGQUIT } from 'fino:process';
+ *
+ * console.log(SIGQUIT);
+ * ```
+ */
 export const SIGQUIT = 3;
-/** Kill signal number. */
+/**
+ * Kill signal number.
+ *
+ * `SIGKILL` cannot be caught or handled by `signal()`, but it can be sent with
+ * `kill()` where the operating system permits it.
+ *
+ * ```ts no_run
+ * import { kill, pid, SIGKILL } from 'fino:process';
+ *
+ * kill(pid, SIGKILL);
+ * ```
+ */
 export const SIGKILL = 9;
-/** User-defined signal 1 number. */
+/**
+ * User-defined signal 1 number.
+ *
+ * The numeric value is platform-aware: Linux and Darwin use different values.
+ *
+ * ```ts no_run
+ * import { SIGUSR1, signal } from 'fino:process';
+ *
+ * signal('SIGUSR1').subscribe(({ signo }) => console.log(signo === SIGUSR1));
+ * ```
+ */
 export const SIGUSR1 = isLinux ? 10 : 30;
-/** User-defined signal 2 number. */
+/**
+ * User-defined signal 2 number.
+ *
+ * The numeric value is platform-aware: Linux and Darwin use different values.
+ *
+ * ```ts no_run
+ * import { SIGUSR2, signal } from 'fino:process';
+ *
+ * signal('SIGUSR2').subscribe(({ signo }) => console.log(signo === SIGUSR2));
+ * ```
+ */
 export const SIGUSR2 = isLinux ? 12 : 31;
-/** Broken pipe signal number. */
+/**
+ * Broken pipe signal number.
+ *
+ * ```ts no_run
+ * import { SIGPIPE } from 'fino:process';
+ *
+ * console.log(SIGPIPE);
+ * ```
+ */
 export const SIGPIPE = 13;
-/** Alarm signal number. */
+/**
+ * Alarm signal number.
+ *
+ * ```ts no_run
+ * import { SIGALRM, signal } from 'fino:process';
+ *
+ * signal('SIGALRM').subscribe(({ signal }) => console.log(signal));
+ * ```
+ */
 export const SIGALRM = 14;
-/** Termination signal number. */
+/**
+ * Termination signal number.
+ *
+ * This is the default signal used by `Process.kill()`.
+ *
+ * ```ts no_run
+ * import { Process, SIGTERM } from 'fino:process';
+ *
+ * const proc = new Process('/bin/sleep', ['10']);
+ * proc.kill(SIGTERM);
+ * ```
+ */
 export const SIGTERM = 15;
-/** Child-status signal number. */
+/**
+ * Child-status signal number.
+ *
+ * The numeric value is platform-aware. This signal is delivered when child
+ * process status changes.
+ *
+ * ```ts no_run
+ * import { SIGCHLD, signal } from 'fino:process';
+ *
+ * signal('SIGCHLD').subscribe(({ signo }) => console.log(signo === SIGCHLD));
+ * ```
+ */
 export const SIGCHLD = isLinux ? 17 : 20;
 
 const _signalNumbers: Record<string, number> = {
@@ -354,11 +632,14 @@ const _registeredSignals = new Set<string>();
  *
  * const handle = signal('SIGTERM').subscribe(({ signal }) => {
  *   console.log(`Received ${signal}, shutting down...`);
- *   process.exit(0);
+ *   handle.dispose();
  * });
  *
  * // Later: handle.dispose() to unsubscribe
  * ```
+ *
+ * Unknown signal names throw. The returned topic is shared by signal name, so
+ * multiple calls subscribe to the same event source.
  */
 export function signal(name: string): Topic {
   const t = topic('process:' + name);
@@ -379,30 +660,133 @@ export function signal(name: string): Topic {
  * Spawn a child process with piped stdin, stdout, and stderr.
  *
  * The child is launched via fork()+execve(). The parent receives:
- * - `stdin`  — a Writer to send bytes to the child's stdin
- * - `stdout` — a Reader to receive bytes from the child's stdout
- * - `stderr` — a Reader to receive bytes from the child's stderr
+ * - `stdin` - a Writer to send bytes to the child's stdin
+ * - `stdout` - a Reader to receive bytes from the child's stdout
+ * - `stderr` - a Reader to receive bytes from the child's stderr
+ *
+ * Construction throws if pipe creation, fork, or parent-side non-blocking setup
+ * fails. If `execve` fails in the child, the child exits with status 127.
  *
  * ```ts no_run
+ * import { Process } from 'fino:process';
+ *
  * const proc = new Process('/usr/bin/cat', []);
- * await proc.stdin.write(encodeUtf8('hello\n'));
+ * await proc.stdin.write(new TextEncoder().encode('hello\n'));
  * proc.stdin.close();
  * for await (const chunk of proc.stdout) {
- *   console.log(decodeUtf8(chunk));
+ *   console.log(new TextDecoder().decode(chunk));
  * }
  * const { code } = await proc.wait();
  * ```
  */
 export class Process {
+  /**
+   * Private property `#pid` used by `Process`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pid = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#pid;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pid: number;
+  /**
+   * Private property `#stdin` used by `Process`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #stdin = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#stdin;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #stdin: FdWriter;
+  /**
+   * Private property `#stdout` used by `Process`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #stdout = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#stdout;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #stdout: FdReader;
+  /**
+   * Private property `#stderr` used by `Process`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #stderr = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#stderr;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #stderr: FdReader;
 
   /**
-   * @param {string} command - absolute path to the executable
-   * @param {string[]} [cmdArgs=[]] - arguments (excluding argv[0])
-   * @param {{ cwd?: string, env?: object }} [opts]
+   * Spawn a child process.
+   *
+   * The command should be an executable path accepted by `execve(2)`. Arguments
+   * exclude `argv[0]`; the constructor prepends `command`. `opts.env` replaces
+   * the inherited environment snapshot, and `opts.cwd` is applied in the child
+   * before `execve`.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const proc = new Process('/bin/echo', ['hello'], { cwd: '/tmp' });
+   * const result = await proc.wait();
+   * ```
+   *
+   * @param {string} command Absolute or executable path to run.
+   * @param {string[]} [cmdArgs=[]] Arguments excluding `argv[0]`.
+   * @param {{ cwd?: string, env?: object }} [opts] Optional cwd and environment.
    */
   constructor(command: string, cmdArgs: string[], opts?: ProcessOptions) {
     if (opts == null) opts = {};
@@ -469,7 +853,7 @@ export class Process {
       // so their backing memory remains valid through the syscall.
       lib.symbols.execve(commandBuf, argvBuf, envpBuf);
 
-      // execve only returns on failure — exit with a recognisable code.
+      // execve only returns on failure - exit with a recognisable code.
       lib.symbols._exit(127);
     }
 
@@ -492,26 +876,87 @@ export class Process {
     // execve call in the child. No explicit retention needed in the parent.
   }
 
-  /** Write bytes to the child's stdin. */
+  /**
+   * Writer connected to the child's stdin.
+   *
+   * Close this writer when no more input will be sent so programs waiting for
+   * EOF can exit. The writer is backed by a non-blocking pipe fd.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const proc = new Process('/usr/bin/cat', []);
+   * await proc.stdin.write(new TextEncoder().encode('hello\n'));
+   * proc.stdin.close();
+   * ```
+   */
   get stdin()  { return this.#stdin; }
 
-  /** Read bytes from the child's stdout. */
+  /**
+   * Reader connected to the child's stdout.
+   *
+   * The reader yields `Uint8Array` chunks until the child closes stdout. It is
+   * backed by a non-blocking pipe fd.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const proc = new Process('/bin/echo', ['hello']);
+   * for await (const chunk of proc.stdout) console.log(chunk.byteLength);
+   * ```
+   */
   get stdout() { return this.#stdout; }
 
-  /** Read bytes from the child's stderr. */
+  /**
+   * Reader connected to the child's stderr.
+   *
+   * The reader yields `Uint8Array` chunks until the child closes stderr. Drain
+   * it when running commands that may write enough stderr to fill the pipe.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const proc = new Process('/bin/sh', ['-c', 'echo error >&2']);
+   * for await (const chunk of proc.stderr) console.log(chunk.byteLength);
+   * ```
+   */
   get stderr() { return this.#stderr; }
 
-  /** The child process ID. */
+  /**
+   * Child process ID returned by `fork()`.
+   *
+   * The PID is available immediately after construction and remains the same
+   * after the child exits.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const proc = new Process('/bin/sleep', ['1']);
+   * console.log(proc.pid);
+   * ```
+   */
   get pid() { return this.#pid; }
 
   /**
    * Wait for the child process to exit using kernel notifications.
    *
-   * - macOS: registers EVFILT_PROC via kqueue — zero-latency, zero-CPU wait.
+   * - macOS: registers EVFILT_PROC via kqueue - zero-latency, zero-CPU wait.
    * - Linux: opens a pidfd via pidfd_open(2) and polls it with loop.readable()
-   *          — the pidfd becomes readable the moment the child exits.
+   *          - the pidfd becomes readable the moment the child exits.
    *
    * After the kernel signals exit, a single waitpid(pid, 0) reaps the zombie.
+   *
+   * Calling `wait()` more than once is not supported because the first call
+   * reaps the process. The promise rejects if the platform wait primitive
+   * cannot be created.
+   *
+   * ```ts no_run
+   * import { Process } from 'fino:process';
+   *
+   * const proc = new Process('/bin/true', []);
+   * const result = await proc.wait();
+   * console.log(result.code);
+   * ```
    *
    * @returns {Promise<{ code: number|null, signal: number|null }>}
    */
@@ -541,6 +986,17 @@ export class Process {
 
   /**
    * Send a signal to the child process.
+   *
+   * Defaults to `SIGTERM`. This method does not wait for the child to exit and
+   * does not currently throw when the underlying `kill(2)` call fails.
+   *
+   * ```ts no_run
+   * import { Process, SIGTERM } from 'fino:process';
+   *
+   * const proc = new Process('/bin/sleep', ['10']);
+   * proc.kill(SIGTERM);
+   * ```
+   *
    * @param {number} [signal=15] SIGTERM by default
    */
   kill(signal: number = _SIGTERM): void {

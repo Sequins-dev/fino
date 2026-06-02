@@ -31,6 +31,13 @@
  * - `process` — available as `fino:process` but not on globalThis (fino is
  *   not Node.js; prefer explicit imports for process-level APIs).
  *
+ * ```typescript no_run
+ * import { URL, ReadableStream, fetch } from 'internal:globals/global';
+ * const url = new URL('https://example.com/');
+ * const stream = ReadableStream.from(['chunk']);
+ * const response = await fetch(url.href);
+ * ```
+ *
  * @internal
  */
 

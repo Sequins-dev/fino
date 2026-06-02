@@ -99,6 +99,20 @@
  * - `Headers` stores a flat `[name, value]` pair array internally. This is
  *   simple and spec-compliant, but O(n) for lookups. For typical HTTP headers
  *   (< 50 entries) this is fine; for exotic use cases, a Map could be used.
+ *
+ * @example
+ * ```ts no_run
+ * import { Request, Response, parseRequest, serializeResponse } from 'fino:http';
+ *
+ * const request = new Request('https://example.test/', { method: 'POST', body: 'hello' });
+ * const response = new Response(await request.text(), {
+ *   status: 201,
+ *   headers: { 'content-type': 'text/plain' },
+ * });
+ * for await (const chunk of serializeResponse(response)) {
+ *   await writer.write(chunk);
+ * }
+ * ```
  */
 
 import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';
@@ -197,16 +211,82 @@ function _makeTrailersDeferred(): { resolve: (h: Headers) => void; reject: (e: E
  *
  * The FFI layer correctly handles the non-zero `byteOffset` of arena views
  * when they are passed to `write(2)` as `buffer` arguments.
+ *
+ * ```ts no_run
+ * const arena = new Arena(4096);
+ * const bytes = arena.alloc(128);
+ * arena.reset();
+ * ```
  */
 export class Arena {
+  /**
+   * Private property `#buf` used by `Arena`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #buf = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#buf;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #buf: ArrayBuffer;
+  /**
+   * Private property `#cursor` used by `Arena`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #cursor = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#cursor;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #cursor: number;
 
+  /**
+   * Create an arena with the requested backing-buffer size.
+   *
+   * ```ts no_run
+   * const arena = new Arena(65536);
+   * ```
+   */
   constructor(size: number = 8192) {
     this.#buf = new ArrayBuffer(size);
     this.#cursor = 0;
   }
 
+  /**
+   * Allocate a `Uint8Array` view of `n` bytes.
+   *
+   * If the arena has insufficient remaining space, this returns a standalone
+   * `Uint8Array` instead of throwing. Previously returned arena views are
+   * invalidated logically by `reset()` but not zeroed.
+   *
+   * ```ts no_run
+   * const header = arena.alloc(64);
+   * ```
+   */
   alloc(n: number): Uint8Array {
     if (this.#cursor + n > this.#buf.byteLength) {
       return new Uint8Array(n); // fallback if arena is full
@@ -216,6 +296,15 @@ export class Arena {
     return view;
   }
 
+  /**
+   * Reset the allocation cursor to the beginning of the backing buffer.
+   *
+   * Call this only after all views allocated from the arena have been consumed.
+   *
+   * ```ts no_run
+   * arena.reset();
+   * ```
+   */
   reset(): void {
     this.#cursor = 0;
   }
@@ -529,6 +618,22 @@ function _createReader(source: AsyncByteSource) {
 const INTERNAL = Symbol('internal');
 
 /** Wrap a Uint8Array as a single-chunk async iterable. */
+/**
+ * Internal function `_iterableFromBytes` used by `superset/worktrees/351077b5-cb94-454b-8784-50bc1f731bb7/sqlite/js/net/http`.
+ *
+ * This implementation detail is included when documentation is built with
+ * `--include-private`. It describes state or helper behavior used by the
+ * owning module rather than a stable application-facing contract. Prefer the
+ * public API around the owning type unless you are maintaining this runtime.
+ *
+ * @example
+ * ```ts no_run
+ * const documentedMember = '_iterableFromBytes';
+ * console.log(documentedMember);
+ * ```
+ *
+ * @internal
+ */
 function _iterableFromBytes(bytes: Uint8Array): AsyncByteIterable {
   return {
     [Symbol.asyncIterator]() {
@@ -564,11 +669,68 @@ function _toBytes(body: Exclude<BodyInit, null>): Uint8Array {
  *
  * Internal storage is an array of [name, value] pairs with lowercased names.
  * Iteration order is sorted ascending by name (per spec).
+ *
+ * ```ts no_run
+ * const headers = new Headers({ 'Content-Type': 'text/plain' });
+ * headers.append('Set-Cookie', 'sid=1');
+ * ```
  */
 export class Headers {
+  /**
+   * Private property `#list` used by `Headers`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #list = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#list;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #list: [string, string][];
+  /**
+   * Private property `#sortedCache` used by `Headers`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #sortedCache = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#sortedCache;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #sortedCache: [string, string][] | null = null;
 
+  /**
+   * Create a header map from another `Headers`, pair array, object, or nothing.
+   *
+   * Header names are normalized to lowercase and values are trimmed. Invalid
+   * pair entries throw `TypeError`.
+   *
+   * ```ts no_run
+   * const headers = new Headers([['content-type', 'application/json']]);
+   * ```
+   */
   constructor(init?: HeadersInit) {
     this.#list = []; // [[name, value], ...]
     if (init == null) return;
@@ -592,6 +754,10 @@ export class Headers {
   /**
    * Append a new value for the given header name.
    * If the header already exists, the new value is added alongside the old.
+   *
+   * ```ts no_run
+   * headers.append('set-cookie', 'a=1');
+   * ```
    */
   append(name: string, value: string): void {
     name = _normalizeHeaderName(name);
@@ -604,6 +770,10 @@ export class Headers {
    * Internal: append a pre-normalized [name, value] pair without validation.
    * name must already be lowercased and trimmed; value must already be trimmed
    * and free of control characters (guaranteed for wire-parsed headers).
+   *
+   * ```ts no_run
+   * headers._appendTrusted('host', 'example.com');
+   * ```
    */
   _appendTrusted(name: string, value: string): void {
     this.#list.push([name, value]);
@@ -612,6 +782,10 @@ export class Headers {
 
   /**
    * Set the value for a header name, replacing any existing values.
+   *
+   * ```ts no_run
+   * headers.set('content-type', 'application/json');
+   * ```
    */
   set(name: string, value: string): void {
     name = _normalizeHeaderName(name);
@@ -638,6 +812,13 @@ export class Headers {
   /**
    * Return the combined value for the given name, or null if not present.
    * Multiple values are joined with ", ".
+   *
+   * Use `getSetCookie()` for `Set-Cookie`, which must not be interpreted as a
+   * comma-joined list.
+   *
+   * ```ts no_run
+   * const contentType = headers.get('content-type') ?? 'application/octet-stream';
+   * ```
    */
   get(name: string): string | null {
     name = name.toLowerCase().trim();
@@ -653,7 +834,12 @@ export class Headers {
     return result;
   }
 
-  /** Return true if a header with the given name exists. */
+  /** Return true if a header with the given name exists.
+   *
+   * ```ts no_run
+   * if (headers.has('content-length')) console.log(headers.get('content-length'));
+   * ```
+   */
   has(name: string): boolean {
     name = name.toLowerCase().trim();
     for (const entry of this.#list) {
@@ -662,7 +848,12 @@ export class Headers {
     return false;
   }
 
-  /** Remove all values for the given header name. */
+  /** Remove all values for the given header name.
+   *
+   * ```ts no_run
+   * headers.delete('transfer-encoding');
+   * ```
+   */
   delete(name: string): void {
     name = name.toLowerCase().trim();
     this.#list = this.#list.filter(function keepNonMatching(entry) { return entry[0] !== name; });
@@ -672,6 +863,10 @@ export class Headers {
   /**
    * Return an array of all Set-Cookie header values without joining.
    * Use this instead of get('set-cookie') to avoid value ambiguity.
+   *
+   * ```ts no_run
+   * for (const cookie of headers.getSetCookie()) console.log(cookie);
+   * ```
    */
   getSetCookie() {
     return this.#list
@@ -679,22 +874,42 @@ export class Headers {
       .map(function extractValue(entry) { return entry[1]; });
   }
 
-  /** Return an iterator over [name, value] pairs, sorted by name. */
+  /** Return an iterator over [name, value] pairs, sorted by name.
+   *
+   * ```ts no_run
+   * for (const [name, value] of headers.entries()) console.log(name, value);
+   * ```
+   */
   entries() {
     return this.#sorted()[Symbol.iterator]();
   }
 
-  /** Return an iterator over header names, sorted. */
+  /** Return an iterator over header names, sorted.
+   *
+   * ```ts no_run
+   * for (const name of headers.keys()) console.log(name);
+   * ```
+   */
   keys() {
     return this.#sorted().map(function extractName(e) { return e[0]; })[Symbol.iterator]();
   }
 
-  /** Return an iterator over header values, sorted by name. */
+  /** Return an iterator over header values, sorted by name.
+   *
+   * ```ts no_run
+   * for (const value of headers.values()) console.log(value);
+   * ```
+   */
   values() {
     return this.#sorted().map(function extractValue(e) { return e[1]; })[Symbol.iterator]();
   }
 
-  /** Iterate over [name, value] pairs, sorted by name. */
+  /** Iterate over [name, value] pairs, sorted by name.
+   *
+   * ```ts no_run
+   * headers.forEach((value, name) => console.log(name, value));
+   * ```
+   */
   forEach(callback: (value: string, name: string, headers: Headers) => void, thisArg?: unknown): void {
     for (const entry of this.#sorted()) {
       callback.call(thisArg, entry[1], entry[0], this);
@@ -705,6 +920,29 @@ export class Headers {
     return this.entries();
   }
 
+  /**
+   * Private method `#sorted` used by `Headers`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #sorted() {
+   *     return 'sorted';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#sorted();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #sorted(): [string, string][] {
     if (this.#sortedCache !== null) return this.#sortedCache;
     this.#sortedCache = this.#list.slice().sort(function compareHeaderNames(a, b) {
@@ -734,8 +972,11 @@ function _normalizeHeaderValue(value: string): string {
  * Parse a raw header block (everything up to and including "\r\n\r\n") into
  * a Headers instance.  Header names are lowercased; values are trimmed.
  *
- * @param {Uint8Array} raw
- * @returns {{ firstLine: string, headers: Headers }}
+ * Throws on obsolete folded header lines or malformed header syntax.
+ *
+ * ```ts no_run
+ * const { firstLine, headers } = _parseHeaders(rawHeaderBytes);
+ * ```
  */
 export function _parseHeaders(raw: Uint8Array): { firstLine: string; headers: Headers } {
   const scanner = new Scanner(raw, { encoding: 'ascii', format: 'http' });
@@ -783,7 +1024,15 @@ function _trimAscii(value: string): string {
   return value.slice(start, end);
 }
 
-/** @internal Parse a comma-delimited HTTP header token list. */
+/** @internal Parse a comma-delimited HTTP header token list.
+ *
+ * Returns an empty array for `null` or an empty string. Whitespace around tokens
+ * is handled by the shared HTTP scanner.
+ *
+ * ```ts no_run
+ * const tokens = _headerTokenList(headers.get('connection'));
+ * ```
+ */
 export function _headerTokenList(value: string | null): string[] {
   if (value === null || value === '') return [];
   const scanner = new Scanner(value, { encoding: 'ascii', format: 'http' });
@@ -811,7 +1060,15 @@ function _urlFromRequestTarget(path: string, headers: Headers): string {
   return host ? 'http://' + host + path : path;
 }
 
-/** @internal Parse an HTTP response status line into version, status, and text. */
+/** @internal Parse an HTTP response status line into version, status, and text.
+ *
+ * Throws when the line is missing required spaces or when the status is outside
+ * the parser's accepted 100-999 range.
+ *
+ * ```ts no_run
+ * const line = _parseResponseLine('HTTP/1.1 200 OK');
+ * ```
+ */
 export function _parseResponseLine(firstLine: string): { version: string; status: number; statusText: string } {
   const scanner = new Scanner(firstLine, { encoding: 'ascii', format: 'http' });
   const version = scanner.readToken('HTTP version');
@@ -915,18 +1172,225 @@ const _emptyBody = {
  *   init — { method?, headers?, body? }
  *
  * Wire-parse constructor (internal): new Request(INTERNAL, { method, url, version, headers, body })
+ *
+ * ```ts no_run
+ * const req = new Request('https://example.com/api', {
+ *   method: 'POST',
+ *   body: JSON.stringify({ ok: true }),
+ * });
+ * ```
  */
 export class Request {
+  /**
+   * Private property `#bodyUsed` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bodyUsed = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bodyUsed;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bodyUsed: boolean;
+  /**
+   * Private property `#method` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #method = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#method;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #method: string;
+  /**
+   * Private property `#url` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #url = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#url;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #url: string;
+  /**
+   * Private property `#version` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #version = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#version;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #version: string;
+  /**
+   * Private property `#headers` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #headers = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#headers;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #headers: Headers;
+  /**
+   * Private property `#rawBody` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #rawBody = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#rawBody;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #rawBody: AsyncIterable<Uint8Array> | null;
+  /**
+   * Private property `#bodyStream` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bodyStream = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bodyStream;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bodyStream: ReadableStream | null = null;
+  /**
+   * Private property `#inTrailers` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #inTrailers = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#inTrailers;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #inTrailers: Promise<Headers> | null = null;
+  /**
+   * Private property `#outTrailers` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #outTrailers = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#outTrailers;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #outTrailers: OutTrailers | null = null;
 
+  /**
+   * Create a Request from a URL string, another Request, or the internal parser
+   * sentinel.
+   *
+   * Body values may be strings, bytes, ArrayBuffers, FormData, or null. Reading
+   * the body later marks it used; cloning is only allowed before disturbance.
+   *
+   * ```ts no_run
+   * const req = new Request('/submit', { method: 'POST', body: 'hello' });
+   * ```
+   */
   constructor(input: string | Request | symbol, init?: RequestInit | any) {
     this.#bodyUsed = false;
 
@@ -967,7 +1431,15 @@ export class Request {
     }
   }
 
-  /** Incoming trailer headers — resolves after the chunked body is fully consumed. */
+  /** Incoming trailer headers, resolving after a chunked body is fully consumed.
+   *
+   * For constructed outbound requests with trailer metadata, this resolves that
+   * metadata immediately. Otherwise it resolves to an empty `Headers` object.
+   *
+   * ```ts no_run
+   * const trailers = await req.trailers;
+   * ```
+   */
   get trailers(): Promise<Headers> {
     if (this.#inTrailers !== null) return this.#inTrailers;
     if (this.#outTrailers instanceof Headers) return Promise.resolve(this.#outTrailers);
@@ -975,39 +1447,145 @@ export class Request {
     return Promise.resolve(new Headers());
   }
 
+  /**
+   * Internal method `_hasOutTrailers` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _hasOutTrailers() {
+   *     return '_hasOutTrailers';
+   *   },
+   * };
+   * includePrivateExample._hasOutTrailers();
+   * ```
+   *
+   * @internal
+   */
   _hasOutTrailers(): boolean { return this.#outTrailers !== null; }
 
+  /**
+   * Internal method `_getRawOutTrailers` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _getRawOutTrailers() {
+   *     return '_getRawOutTrailers';
+   *   },
+   * };
+   * includePrivateExample._getRawOutTrailers();
+   * ```
+   *
+   * @internal
+   */
   _getRawOutTrailers(): OutTrailers | null { return this.#outTrailers; }
 
-  /** The full URL string. */
+  /** The full URL string.
+   *
+   * Parsed server requests are made absolute from `Host` when possible.
+   *
+   * ```ts no_run
+   * console.log(req.url);
+   * ```
+   */
   get url() { return this.#url; }
 
-  /** HTTP method (uppercase). */
+  /** HTTP method.
+   *
+   * Common Fetch methods are normalized to uppercase during construction.
+   *
+   * ```ts no_run
+   * if (req.method === 'POST') console.log('has body');
+   * ```
+   */
   get method() { return this.#method; }
 
-  /** Request headers. */
+  /** Mutable request headers.
+   *
+   * ```ts no_run
+   * req.headers.set('authorization', 'Bearer token');
+   * ```
+   */
   get headers() { return this.#headers; }
 
   /**
    * The body as a ReadableStream, or null if no body.
    * Returns the same stream on repeated access (spec: [SameObject]).
+   *
+   * Accessing the stream does not consume it immediately, but locking or
+   * reading it makes `bodyUsed` true.
+   *
+   * ```ts no_run
+   * if (req.body !== null) for await (const chunk of req.body) console.log(chunk);
+   * ```
    */
   get body(): ReadableStream | null {
     if (this.#rawBody === null) return null;
     return this.#bodyStream ??= ReadableStream.from(this.#rawBody);
   }
 
-  /** True if the body has been read or the stream is locked. */
+  /** True if the body has been read or the stream is locked.
+   *
+   * ```ts no_run
+   * if (!req.bodyUsed) console.log(await req.text());
+   * ```
+   */
   get bodyUsed() {
     return this.#bodyUsed || (this.#bodyStream !== null && this.#bodyStream.locked);
   }
 
-  /** HTTP version string — fino extension (e.g. "HTTP/1.1"). */
+  /** HTTP version string, a Fino extension for parsed wire requests.
+   *
+   * Constructed requests use an empty string until serialized.
+   *
+   * ```ts no_run
+   * console.log(req.version || 'not parsed from wire');
+   * ```
+   */
   get version() { return this.#version; }
 
-  /** True if the request has a body. */
+  /** True if the request has a body.
+   *
+   * ```ts no_run
+   * if (req.hasBody) await req.bytes();
+   * ```
+   */
   get hasBody() { return this.#rawBody !== null; }
 
+  /**
+   * Private method `#consumeBody` used by `Request`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #consumeBody() {
+   *     return 'consumeBody';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#consumeBody();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   async #consumeBody() {
     if (this.#bodyUsed) throw new TypeError('body already consumed');
     if (this.#rawBody === null) return new Uint8Array(0);
@@ -1023,13 +1601,32 @@ export class Request {
     return _concat(parts, total);
   }
 
-  /** Consume body and return as a UTF-8 string. */
+  /** Consume body and return as a UTF-8 string.
+   *
+   * Throws `TypeError` if the body has already been consumed.
+   *
+   * ```ts no_run
+   * const text = await req.text();
+   * ```
+   */
   async text() { return decodeUtf8(await this.#consumeBody()); }
 
-  /** Consume body and parse as JSON. */
+  /** Consume body and parse as JSON.
+   *
+   * Throws `TypeError` if consumed already and propagates `JSON.parse` errors.
+   *
+   * ```ts no_run
+   * const data = await req.json();
+   * ```
+   */
   async json() { return JSON.parse(await this.text()); }
 
-  /** Consume body and return as ArrayBuffer. */
+  /** Consume body and return as a copied ArrayBuffer.
+   *
+   * ```ts no_run
+   * const buffer = await req.arrayBuffer();
+   * ```
+   */
   async arrayBuffer() {
     const bytes = await this.#consumeBody();
     const copy = new Uint8Array(bytes.byteLength);
@@ -1037,17 +1634,37 @@ export class Request {
     return copy.buffer;
   }
 
-  /** Consume body and return as Uint8Array. */
+  /** Consume body and return as Uint8Array.
+   *
+   * ```ts no_run
+   * const bytes = await req.bytes();
+   * ```
+   */
   async bytes() { return this.#consumeBody(); }
 
-  /** Consume body and return as a Blob. */
+  /** Consume body and return as a Blob.
+   *
+   * The Blob type is taken from the `content-type` header when present.
+   *
+   * ```ts no_run
+   * const blob = await req.blob();
+   * ```
+   */
   async blob() {
     const buf = await this.arrayBuffer();
     const type = this.#headers.get('content-type') || '';
     return new Blob([buf], { type });
   }
 
-  /** Create an independent copy of this request. */
+  /** Create an independent copy of this request.
+   *
+   * Throws if the body has already been consumed or locked. Streaming bodies are
+   * teed so both copies can be read independently.
+   *
+   * ```ts no_run
+   * const clone = req.clone();
+   * ```
+   */
   clone(): Request {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Request');
     if (this.#rawBody === null) {
@@ -1065,8 +1682,12 @@ export class Request {
    * Parse an HTTP/1.x request from an async iterable of byte chunks
    * (e.g. a TCP connection).
    *
-   * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
-   * @returns {Promise<Request>}
+   * Throws on malformed headers, invalid framing, or stream EOF before the
+   * header terminator.
+   *
+   * ```ts no_run
+   * const req = await Request.from(reader);
+   * ```
    */
   static from(source: AsyncByteSource) { return parseRequest(source); }
 }
@@ -1085,21 +1706,287 @@ export class Request {
  * Wire-parse constructor (internal): new Response(INTERNAL, { version, status, statusText, headers, body })
  *
  * Static factories: Response.json(), Response.redirect(), Response.error()
+ *
+ * ```ts no_run
+ * const res = new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } });
+ * ```
  */
 export class Response {
+  /**
+   * Private property `#bodyUsed` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bodyUsed = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bodyUsed;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bodyUsed: boolean;
+  /**
+   * Private property `#url` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #url = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#url;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #url: string;
+  /**
+   * Private property `#type` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #type = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#type;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #type: string;
+  /**
+   * Private property `#redirected` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #redirected = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#redirected;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #redirected: boolean;
+  /**
+   * Private property `#version` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #version = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#version;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #version: string;
+  /**
+   * Private property `#status` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #status = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#status;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #status: number;
+  /**
+   * Private property `#statusText` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #statusText = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#statusText;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #statusText: string;
+  /**
+   * Private property `#headers` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #headers = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#headers;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #headers: Headers;
+  /**
+   * Private property `#rawBody` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #rawBody = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#rawBody;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #rawBody: AsyncIterable<Uint8Array> | Uint8Array | null;
+  /**
+   * Private property `#bodyStream` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bodyStream = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bodyStream;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bodyStream: ReadableStream | null = null;
+  /**
+   * Private property `#inTrailers` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #inTrailers = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#inTrailers;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #inTrailers: Promise<Headers> | null = null;
+  /**
+   * Private property `#outTrailers` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #outTrailers = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#outTrailers;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #outTrailers: OutTrailers | null = null;
 
+  /**
+   * Create a response from body data and optional status, headers, and trailers.
+   *
+   * Status defaults to 200 and statusText defaults to the empty string. Body
+   * reads are single-use unless the response is cloned before consumption.
+   *
+   * ```ts no_run
+   * const res = new Response(JSON.stringify({ ok: true }), { status: 201 });
+   * ```
+   */
   constructor(body: BodyInit | symbol, init?: ResponseInit | any) {
     this.#bodyUsed   = false;
     this.#url        = '';
@@ -1150,21 +2037,47 @@ export class Response {
     }
   }
 
-  /** True if status is in the 200–299 range. */
+  /** True if status is in the 200-299 range.
+   *
+   * ```ts no_run
+   * if (res.ok) console.log(await res.text());
+   * ```
+   */
   get ok() { return this.#status >= 200 && this.#status < 300; }
 
-  /** HTTP status code. */
+  /** HTTP status code.
+   *
+   * ```ts no_run
+   * console.log(res.status);
+   * ```
+   */
   get status() { return this.#status; }
 
-  /** HTTP reason phrase. */
+  /** HTTP reason phrase.
+   *
+   * May be empty for constructed responses.
+   *
+   * ```ts no_run
+   * console.log(res.statusText);
+   * ```
+   */
   get statusText() { return this.#statusText; }
 
-  /** Response headers. */
+  /** Mutable response headers.
+   *
+   * ```ts no_run
+   * res.headers.set('content-type', 'application/json');
+   * ```
+   */
   get headers() { return this.#headers; }
 
   /**
    * The body as a ReadableStream, or null if no body.
    * Returns the same stream on repeated access (spec: [SameObject]).
+   *
+   * ```ts no_run
+   * if (res.body !== null) for await (const chunk of res.body) console.log(chunk);
+   * ```
    */
   get body(): ReadableStream | null {
     if (this.#rawBody === null) return null;
@@ -1174,24 +2087,57 @@ export class Response {
     return this.#bodyStream ??= ReadableStream.from(iterable);
   }
 
-  /** True if the body has been read or the stream is locked. */
+  /** True if the body has been read or the stream is locked.
+   *
+   * ```ts no_run
+   * if (!res.bodyUsed) console.log(await res.text());
+   * ```
+   */
   get bodyUsed() {
     return this.#bodyUsed || (this.#bodyStream !== null && this.#bodyStream.locked);
   }
 
-  /** Final URL (empty for constructed responses; set by fetch clients). */
+  /** Final URL, empty for constructed responses and set by fetch clients.
+   *
+   * ```ts no_run
+   * console.log(res.url);
+   * ```
+   */
   get url() { return this.#url; }
 
-  /** Response type — always "default" or "error". */
+  /** Response type, currently `"default"` or `"error"`.
+   *
+   * ```ts no_run
+   * if (res.type === 'error') console.log('network error response');
+   * ```
+   */
   get type() { return this.#type; }
 
-  /** True if the response is the result of a redirect. */
+  /** True if the response is the result of a redirect.
+   *
+   * ```ts no_run
+   * console.log(res.redirected);
+   * ```
+   */
   get redirected() { return this.#redirected; }
 
-  /** HTTP version string — fino extension (e.g. "HTTP/1.1"). */
+  /** HTTP version string, a Fino extension for parsed wire responses.
+   *
+   * ```ts no_run
+   * console.log(res.version || 'constructed response');
+   * ```
+   */
   get version() { return this.#version; }
 
-  /** Incoming trailer headers — resolves after the chunked body is fully consumed. */
+  /** Incoming trailer headers, resolving after a chunked body is fully consumed.
+   *
+   * Constructed responses with outbound trailers resolve those trailers
+   * immediately. Responses without trailers resolve an empty `Headers`.
+   *
+   * ```ts no_run
+   * const trailers = await res.trailers;
+   * ```
+   */
   get trailers(): Promise<Headers> {
     if (this.#inTrailers !== null) return this.#inTrailers;
     if (this.#outTrailers instanceof Headers) return Promise.resolve(this.#outTrailers);
@@ -1199,10 +2145,70 @@ export class Response {
     return Promise.resolve(new Headers());
   }
 
+  /**
+   * Internal method `_hasOutTrailers` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _hasOutTrailers() {
+   *     return '_hasOutTrailers';
+   *   },
+   * };
+   * includePrivateExample._hasOutTrailers();
+   * ```
+   *
+   * @internal
+   */
   _hasOutTrailers(): boolean { return this.#outTrailers !== null; }
 
+  /**
+   * Internal method `_getRawOutTrailers` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _getRawOutTrailers() {
+   *     return '_getRawOutTrailers';
+   *   },
+   * };
+   * includePrivateExample._getRawOutTrailers();
+   * ```
+   *
+   * @internal
+   */
   _getRawOutTrailers(): OutTrailers | null { return this.#outTrailers; }
 
+  /**
+   * Internal method `_getOutTrailers` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _getOutTrailers() {
+   *     return '_getOutTrailers';
+   *   },
+   * };
+   * includePrivateExample._getOutTrailers();
+   * ```
+   *
+   * @internal
+   */
   async _getOutTrailers(): Promise<Headers> {
     if (this.#outTrailers instanceof Headers) return this.#outTrailers;
     if (typeof this.#outTrailers === 'function') return (this.#outTrailers as () => Headers | Promise<Headers>)();
@@ -1214,6 +2220,16 @@ export class Response {
    * is a pre-buffered byte payload, without allocating a ReadableStream wrapper.
    * Marks bodyUsed = true. Returns null when the body is null or a streaming
    * async iterable.
+   *
+   * @example
+   * ```ts no_run
+   * const includePrivateExample = {
+   *   _extractBytes() {
+   *     return '_extractBytes';
+   *   },
+   * };
+   * includePrivateExample._extractBytes();
+   * ```
    */
   _extractBytes(): Uint8Array | null {
     if (this.#rawBody instanceof Uint8Array) {
@@ -1223,6 +2239,29 @@ export class Response {
     return null;
   }
 
+  /**
+   * Private method `#consumeBody` used by `Response`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #consumeBody() {
+   *     return 'consumeBody';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#consumeBody();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   async #consumeBody() {
     if (this.#bodyUsed) throw new TypeError('body already consumed');
     if (this.#rawBody === null) return new Uint8Array(0);
@@ -1240,13 +2279,30 @@ export class Response {
     return _concat(parts, total);
   }
 
-  /** Consume body and return as a UTF-8 string. */
+  /** Consume body and return as a UTF-8 string.
+   *
+   * ```ts no_run
+   * const text = await res.text();
+   * ```
+   */
   async text() { return decodeUtf8(await this.#consumeBody()); }
 
-  /** Consume body and parse as JSON. */
+  /** Consume body and parse as JSON.
+   *
+   * Throws if the body was already consumed or JSON parsing fails.
+   *
+   * ```ts no_run
+   * const data = await res.json();
+   * ```
+   */
   async json() { return JSON.parse(await this.text()); }
 
-  /** Consume body and return as ArrayBuffer. */
+  /** Consume body and return as a copied ArrayBuffer.
+   *
+   * ```ts no_run
+   * const buffer = await res.arrayBuffer();
+   * ```
+   */
   async arrayBuffer() {
     const bytes = await this.#consumeBody();
     const copy = new Uint8Array(bytes.byteLength);
@@ -1254,17 +2310,37 @@ export class Response {
     return copy.buffer;
   }
 
-  /** Consume body and return as Uint8Array. */
+  /** Consume body and return as Uint8Array.
+   *
+   * ```ts no_run
+   * const bytes = await res.bytes();
+   * ```
+   */
   async bytes() { return this.#consumeBody(); }
 
-  /** Consume body and return as a Blob. */
+  /** Consume body and return as a Blob.
+   *
+   * The Blob type is derived from `content-type` when present.
+   *
+   * ```ts no_run
+   * const blob = await res.blob();
+   * ```
+   */
   async blob() {
     const buf = await this.arrayBuffer();
     const type = this.#headers.get('content-type') || '';
     return new Blob([buf], { type });
   }
 
-  /** Create an independent copy of this response. */
+  /** Create an independent copy of this response.
+   *
+   * Throws if the body is already consumed. Streaming bodies are teed; byte
+   * bodies can be shared without copying.
+   *
+   * ```ts no_run
+   * const copy = res.clone();
+   * ```
+   */
   clone(): Response {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Response');
     if (this.#rawBody === null) {
@@ -1290,6 +2366,10 @@ export class Response {
   /**
    * Create a Response with a JSON-serialised body and
    * Content-Type: application/json.
+   *
+   * ```ts no_run
+   * return Response.json({ ok: true }, { status: 201 });
+   * ```
    */
   static json(data: unknown, init?: ResponseInit) {
     const body = JSON.stringify(data);
@@ -1302,8 +2382,13 @@ export class Response {
 
   /**
    * Create a redirect Response.
-   * @param {string} url
-   * @param {number} [status=302]
+   *
+   * The status must be one of 301, 302, 303, 307, or 308, otherwise a
+   * `RangeError` is thrown.
+   *
+   * ```ts no_run
+   * return Response.redirect('/login', 302);
+   * ```
    */
   static redirect(url: string, status?: number) {
     status = (status != null) ? Number(status) : 302;
@@ -1316,6 +2401,11 @@ export class Response {
 
   /**
    * Create a network error Response (type "error", status 0).
+   *
+   * ```ts no_run
+   * const res = Response.error();
+   * console.log(res.type, res.status);
+   * ```
    */
   static error() {
     const res = new Response(null, { status: 0, statusText: '' });
@@ -1327,8 +2417,9 @@ export class Response {
    * Parse an HTTP/1.x response from an async iterable of byte chunks
    * (e.g. a TCP connection).
    *
-   * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
-   * @returns {Promise<Response>}
+   * ```ts no_run
+   * const res = await Response.from(reader);
+   * ```
    */
   static from(source: AsyncByteSource) { return parseResponse(source); }
 }
@@ -1344,8 +2435,12 @@ export class Response {
  * request path: "http://<host><path>".  If no Host header is present, `url`
  * contains only the path.
  *
- * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
- * @returns {Promise<Request>}
+ * Throws on malformed request lines, malformed headers, conflicting
+ * `Content-Length`, invalid chunked framing, or premature EOF.
+ *
+ * ```ts no_run
+ * const req = await parseRequest(reader);
+ * ```
  */
 export async function parseRequest(source: AsyncIterable<Uint8Array | ArrayBuffer>): Promise<Request> {
   const reader = _createReader(source);
@@ -1372,17 +2467,15 @@ export async function parseRequest(source: AsyncIterable<Uint8Array | ArrayBuffe
 }
 
 /**
- * Parse an HTTP/1.x response from an async iterable of byte chunks.
- *
- * @param {AsyncIterable<Uint8Array|ArrayBuffer>} source
- * @returns {Promise<Response>}
- */
-/**
  * Parse an HTTP response from a byte stream.
  *
- * @param source   — byte stream from the server
- * @param method   — the original request method (e.g. 'HEAD'). HEAD responses
- *                   must never have a body even when Content-Length is present.
+ * `method` is the original request method; pass `'HEAD'` so the parser knows
+ * the response must not expose a body even if framing headers are present.
+ * Throws on malformed status lines, headers, or body framing.
+ *
+ * ```ts no_run
+ * const res = await parseResponse(reader, request.method);
+ * ```
  */
 export async function parseResponse(
   source: AsyncIterable<Uint8Array | ArrayBuffer>,
@@ -1420,7 +2513,15 @@ export async function parseResponse(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Concatenate an array of Uint8Array slices into a single Uint8Array. */
+/** Concatenate an array of Uint8Array slices into a single Uint8Array.
+ *
+ * When an arena is supplied, the returned bytes may be a view into arena
+ * storage. Callers must consume it before resetting the arena.
+ *
+ * ```ts no_run
+ * const joined = _concat([a, b], a.byteLength + b.byteLength);
+ * ```
+ */
 function _concat(parts: Uint8Array[], totalLen: number, arena?: Arena): Uint8Array {
   const first = parts[0];
   if (parts.length === 1 && first) return first;
@@ -1467,7 +2568,14 @@ function _hostFromUrl(url: string): string | null {
   return slashIdx >= 0 ? url.substring(hostStart, slashIdx) : url.substring(hostStart);
 }
 
-/** Serialize HTTP response headers to a string (status-line + headers + CRLF). */
+/** Serialize HTTP response headers to a string (status-line + headers + CRLF).
+ *
+ * Body bytes are not included. The version defaults to HTTP/1.1 when unset.
+ *
+ * ```ts no_run
+ * const head = _buildResponseHead(new Response('ok'));
+ * ```
+ */
 export function _buildResponseHead(res: Response): string {
   const version    = res.version || 'HTTP/1.1';
   const status     = res.status != null ? res.status : 200;
@@ -1524,10 +2632,15 @@ function _chunkedFrame(bytes: Uint8Array, arena?: Arena): Uint8Array {
  * Serialize a Response to an async iterable of Uint8Array chunks suitable for
  * piping to a TCP connection: status-line + headers first, then body chunks.
  *
- * @param {Response} res
- * @param {Arena} [arena] — optional per-connection arena; when provided, header
- *   bytes and chunked framing are allocated from the arena (zero extra alloc).
- * @returns {AsyncIterable<Uint8Array>}
+ * If outbound trailers are present, chunked transfer encoding is emitted and
+ * `content-length` is removed from the wire headers. Reading from the returned
+ * iterable consumes the response body.
+ *
+ * ```ts no_run
+ * for await (const chunk of serializeResponse(res, new Arena())) {
+ *   await writer.write(chunk);
+ * }
+ * ```
  */
 export async function* serializeResponse(res: Response, arena?: Arena): AsyncGenerator<Uint8Array> {
   const hasOutTrailers = res._hasOutTrailers();
@@ -1581,8 +2694,13 @@ export async function* serializeResponse(res: Response, arena?: Arena): AsyncGen
  *   - `content-length` already present → body emitted verbatim.
  *   - Body without content-length → `transfer-encoding: chunked` injected.
  *
- * @param {Request} req
- * @returns {AsyncIterable<Uint8Array>}
+ * Reading from the returned iterable consumes the request body.
+ *
+ * ```ts no_run
+ * for await (const chunk of serializeRequest(req)) {
+ *   await writer.write(chunk);
+ * }
+ * ```
  */
 export async function* serializeRequest(req: Request): AsyncGenerator<Uint8Array> {
   const hasOutTrailers = req._hasOutTrailers();
@@ -1631,8 +2749,13 @@ export async function* serializeRequest(req: Request): AsyncGenerator<Uint8Array
  * share a single `_createReader` instance. Calling `parseRequest()` directly
  * would create a fresh reader each time and lose bytes between requests.
  *
- * @param {AsyncIterable<Uint8Array>} source — socket reader
- * @returns {{ parseNext(): Promise<Request>, parseBufferedNext(): Request | null }}
+ * `parseBufferedNext()` returns `null` when a complete next request header is
+ * not already buffered.
+ *
+ * ```ts no_run
+ * const parser = connectionParser(reader);
+ * const req = await parser.parseNext();
+ * ```
  */
 export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext(): Promise<Request>, parseBufferedNext(): Request | null } {
   const reader = _createReader(source);
@@ -1674,8 +2797,12 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext
  * Used by `fino:serve` to inject `Connection` and `Content-Length` headers
  * and set the HTTP version without exposing the `INTERNAL` sentinel publicly.
  *
- * @param {{ version: string, status: number, statusText: string, headers: Headers, body: AsyncIterable|null }} opts
- * @returns {Response}
+ * Missing `version` defaults to HTTP/1.1, missing `status` defaults to 200, and
+ * missing body becomes a bodyless response.
+ *
+ * ```ts no_run
+ * const wire = buildWireResponse({ headers: new Headers(), body: null, status: 204 });
+ * ```
  */
 export function buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): Response {
   return new Response(INTERNAL, {
@@ -1693,7 +2820,9 @@ export function buildWireResponse({ version, status, statusText, headers, body, 
 
 /**
  * Wrap bytes as a single-chunk async iterable. Exported for fino:serve.
- * @param {Uint8Array} bytes
- * @returns {AsyncIterable<Uint8Array>}
+ *
+ * ```ts no_run
+ * for await (const chunk of _iterableFromBytes(bytes)) console.log(chunk);
+ * ```
  */
 export { _iterableFromBytes, _concat };

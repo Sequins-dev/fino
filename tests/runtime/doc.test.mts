@@ -313,12 +313,25 @@ export class ResourceBox {
  * if (hidden + 1 !== 42) throw new Error('bad math');
  * \`\`\`
  *
+ * \`\`\`ts
+ * import { helper } from './examples.mts';
+ *
+ * if (helper() !== 42) throw new Error('bad helper');
+ * \`\`\`
+ *
  * \`\`\`ts ignore
  * throw new Error('ignored');
  * \`\`\`
  *
  * \`\`\`ts throws
  * throw new Error('expected');
+ * \`\`\`
+ *
+ * \`\`\`ts throws
+ * import { helper } from './examples.mts';
+ *
+ * if (helper() !== 42) throw new Error('bad helper');
+ * throw new Error('expected static import failure');
  * \`\`\`
  */
 export function helper(): number {
@@ -1036,7 +1049,7 @@ path: ../escape.md
 
     t.equal(run.result.code, 0, 'doc test exits successfully');
     t.equal(run.stderr, '', 'doc test writes no stderr');
-    t.ok(run.stdout.includes('2 passed'), 'doc test runs non-ignored examples');
+    t.ok(run.stdout.includes('4 passed'), 'doc test runs non-ignored examples');
     t.ok(run.stdout.includes('1 ignored'), 'doc test reports ignored examples');
   });
 });

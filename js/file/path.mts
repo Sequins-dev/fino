@@ -171,12 +171,61 @@ function _resolve(parts: (string | Path)[]): string {
  *
  * Constructor accepts a string or another Path. Use `Path.from()` for
  * coercion that passes Path instances through without allocating.
+ *
+ * Paths are normalized only when a method such as `normalize()`, `join()`, or
+ * `resolve()` asks for normalization. Constructing a `Path` preserves the raw
+ * input string, including relative segments and repeated separators.
+ *
+ * ```ts no_run
+ * import { Path } from 'fino:file/path';
+ *
+ * const source = new Path('./src/../src/main.mts');
+ * const normalized = source.normalize();
+ * console.log(source.toString());      // ./src/../src/main.mts
+ * console.log(normalized.toString());  // src/main.mts
+ * ```
  */
 export class Path {
+  /**
+   * Private property `#path` used by `Path`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #path = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#path;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #path: string;
 
   /**
-   * @param input  Raw path string or another Path.
+   * Create a path wrapper from a raw path string or another `Path`.
+   *
+   * The constructor does not touch the filesystem and does not normalize the
+   * input. Passing another `Path` copies its stored string. Use `Path.from()`
+   * when you want to avoid allocating a new wrapper for existing `Path`
+   * instances.
+   *
+   * @param input Raw path string or another `Path`.
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const raw = new Path('/tmp//cache');
+   * const copy = new Path(raw);
+   * console.log(copy.toString()); // /tmp//cache
+   * ```
    */
   constructor(input: string | Path) {
     if (input instanceof Path) {
@@ -193,8 +242,21 @@ export class Path {
   /**
    * Convert a string or Path to a Path. If the input is already a Path,
    * returns it directly (no copy).
+   *
+   * This is useful for APIs that accept `string | Path` and want a stable
+   * object form. The returned object preserves the raw input string and may be
+   * the same object that was passed in.
+   *
    * @param {string|Path} input
    * @returns {Path}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const existing = new Path('/var/log');
+   * console.log(Path.from(existing) === existing); // true
+   * console.log(Path.from('tmp').join('out').toString()); // tmp/out
+   * ```
    */
   static from(input: string | Path): Path {
     if (input instanceof Path) return input;
@@ -208,7 +270,19 @@ export class Path {
   /**
    * Return the directory portion of the path (everything before the last
    * separator). Equivalent to POSIX `dirname`.
+   *
+   * The result is a new `Path`. Relative paths with no separator return `.`.
+   * Trailing separators are ignored except when the path is the root
+   * separator.
+   *
    * @returns {Path}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * console.log(new Path('/usr/local/bin/').dirname().toString()); // /usr/local
+   * console.log(new Path('README.md').dirname().toString()); // .
+   * ```
    */
   dirname(): Path {
     const p = this.#path;
@@ -227,8 +301,20 @@ export class Path {
   /**
    * Return the final component of the path. If `suffix` is provided and
    * matches the end of the basename, it is removed.
+   *
+   * The method performs string manipulation only. It strips trailing
+   * separators before finding the final component, and it removes `suffix`
+   * only when the full basename ends with that exact string.
+   *
    * @param {string} [suffix]
    * @returns {string}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * console.log(new Path('/tmp/archive.tar.gz').basename('.gz')); // archive.tar
+   * console.log(new Path('/tmp/build/').basename()); // build
+   * ```
    */
   basename(suffix?: string): string {
     let p = this.#path;
@@ -248,7 +334,19 @@ export class Path {
   /**
    * Return the file extension (including the leading dot), or an empty
    * string if there is none.
+   *
+   * Leading-dot names such as `.env` are treated as having no extension.
+   * Compound extensions are not special-cased; only the substring after the
+   * final dot is returned.
+   *
    * @returns {string}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * console.log(new Path('server.test.mts').extname()); // .mts
+   * console.log(new Path('.env').extname()); // ''
+   * ```
    */
   extname(): string {
     const base = this.basename();
@@ -263,7 +361,18 @@ export class Path {
 
   /**
    * True if the path is absolute.
+   *
+   * On POSIX, an absolute path starts with `/`. The check does not verify that
+   * the path exists.
+   *
    * @returns {boolean}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * console.log(new Path('/tmp').isAbsolute()); // true
+   * console.log(new Path('./tmp').isAbsolute()); // false
+   * ```
    */
   isAbsolute(): boolean {
     return IS_ABS_RE.test(this.#path);
@@ -276,7 +385,19 @@ export class Path {
   /**
    * Return a normalized version of this path: collapse multiple separators,
    * resolve `.` and `..` segments.
+   *
+   * Normalization is lexical. It does not resolve symlinks, inspect the
+   * filesystem, or make relative paths absolute. A trailing separator is
+   * preserved when present.
+   *
    * @returns {Path}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const path = new Path('/tmp//cache/../logs/');
+   * console.log(path.normalize().toString()); // /tmp/logs/
+   * ```
    */
   normalize(): Path {
     return new Path(_normalize(this.#path));
@@ -284,8 +405,20 @@ export class Path {
 
   /**
    * Join this path with one or more additional segments.
+   *
+   * Segments are concatenated with the platform separator and normalized. Empty
+   * segments are ignored. Absolute later segments are not treated as a reset;
+   * use `resolve()` for right-to-left absolute path resolution.
+   *
    * @param {...(string|Path)} segments
    * @returns {Path}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const output = new Path('/tmp').join('build', '..', 'dist/app.js');
+   * console.log(output.toString()); // /tmp/dist/app.js
+   * ```
    */
   join(...segments: (string | Path)[]): Path {
     return new Path(_join([this.#path, ...segments]));
@@ -299,6 +432,13 @@ export class Path {
    *
    * @param {...(string|Path)} bases  Base paths (leftmost = most significant).
    * @returns {Path}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const path = new Path('app.js').resolve('/srv/www', 'assets');
+   * console.log(path.toString()); // /srv/www/assets/app.js
+   * ```
    */
   resolve(...bases: (string | Path)[]): Path {
     return new Path(_resolve([...bases, this.#path]));
@@ -307,8 +447,19 @@ export class Path {
   /**
    * Return a relative path from `from` to this path.
    * Both paths are normalized before computing the relation.
+   *
+   * The calculation is lexical and does not verify either path. When both
+   * normalized paths are the same, the result is `.`.
+   *
    * @param {string|Path} from
    * @returns {Path}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const target = new Path('/repo/src/app.mts');
+   * console.log(target.relative('/repo/tests').toString()); // ../src/app.mts
+   * ```
    */
   relative(from: string | Path): Path {
     const fromParts = _normalize(String(from)).split(SEP_RE).filter(Boolean);
@@ -333,13 +484,51 @@ export class Path {
   // Serialization
   // -------------------------------------------------------------------------
 
-  /** Return the raw path string. */
+  /**
+   * Return the raw stored path string.
+   *
+   * This does not normalize or resolve the path, so it may include repeated
+   * separators, `.` segments, or `..` segments exactly as supplied.
+   *
+   * @returns {string}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * console.log(new Path('./a/../b').toString()); // ./a/../b
+   * ```
+   */
   toString(): string { return this.#path; }
 
-  /** JSON serialization returns the path string. */
+  /**
+   * Serialize the path as its raw string for `JSON.stringify()`.
+   *
+   * The returned value matches `toString()` and is not normalized.
+   *
+   * @returns {string}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * console.log(JSON.stringify({ file: new Path('src/main.mts') }));
+   * ```
+   */
   toJSON(): string { return this.#path; }
 
-  /** Template literal support. */
+  /**
+   * Convert the path to a primitive string for template literals and coercion.
+   *
+   * This hook returns the same raw value as `toString()`.
+   *
+   * @returns {string}
+   *
+   * ```ts no_run
+   * import { Path } from 'fino:file/path';
+   *
+   * const path = new Path('/tmp/file.txt');
+   * console.log(`${path}`);
+   * ```
+   */
   [Symbol.toPrimitive](): string { return this.#path; }
 }
 
@@ -349,8 +538,19 @@ export class Path {
 
 /**
  * Join path segments.
+ *
+ * This is the module-level form of `Path#join()`. It ignores empty segments,
+ * joins the remaining segments with the platform separator, and normalizes the
+ * result. With no usable segments, it returns `Path('.')`.
+ *
  * @param {...(string|Path)} segments
  * @returns {Path}
+ *
+ * ```ts no_run
+ * import { join } from 'fino:file/path';
+ *
+ * console.log(join('src', '..', 'dist', 'app.js').toString()); // dist/app.js
+ * ```
  */
 export function join(...segments: (string | Path)[]): Path {
   return new Path(_join(segments));
@@ -358,8 +558,19 @@ export function join(...segments: (string | Path)[]): Path {
 
 /**
  * Resolve a sequence of paths into an absolute path.
+ *
+ * Segments are processed from right to left until an absolute segment is
+ * found, then the result is normalized. If no absolute segment is present, the
+ * returned path remains relative.
+ *
  * @param {...(string|Path)} segments
  * @returns {Path}
+ *
+ * ```ts no_run
+ * import { resolve } from 'fino:file/path';
+ *
+ * console.log(resolve('/srv', 'app', '/tmp', 'file.txt').toString()); // /tmp/file.txt
+ * ```
  */
 export function resolve(...segments: (string | Path)[]): Path {
   return new Path(_resolve(segments));
@@ -367,8 +578,19 @@ export function resolve(...segments: (string | Path)[]): Path {
 
 /**
  * Normalize a path string.
+ *
+ * This is a lexical operation. It collapses repeated separators and resolves
+ * `.` and `..` segments without inspecting the filesystem or resolving
+ * symlinks.
+ *
  * @param {string|Path} p
  * @returns {Path}
+ *
+ * ```ts no_run
+ * import { normalize } from 'fino:file/path';
+ *
+ * console.log(normalize('/tmp//a/../b').toString()); // /tmp/b
+ * ```
  */
 export function normalize(p: string | Path): Path {
   return new Path(_normalize(String(p)));
@@ -376,6 +598,18 @@ export function normalize(p: string | Path): Path {
 
 /**
  * Return the directory name of a path.
+ *
+ * The input is coerced with `Path.from()` and handled like `Path#dirname()`.
+ * Relative paths with no separator return `Path('.')`.
+ *
+ * @param {string|Path} p Path to inspect.
+ * @returns {Path} Directory portion of `p`.
+ *
+ * ```ts no_run
+ * import { dirname } from 'fino:file/path';
+ *
+ * console.log(dirname('/var/log/system.log').toString()); // /var/log
+ * ```
  */
 export function dirname(p: string | Path): Path {
   return Path.from(p).dirname();
@@ -383,6 +617,19 @@ export function dirname(p: string | Path): Path {
 
 /**
  * Return the basename of a path, optionally stripping a suffix.
+ *
+ * Trailing separators are ignored. The suffix is removed only when it exactly
+ * matches the end of the final path component.
+ *
+ * @param {string|Path} p Path to inspect.
+ * @param {string} [suffix] Optional suffix to remove from the final component.
+ * @returns {string} Final component, possibly without `suffix`.
+ *
+ * ```ts no_run
+ * import { basename } from 'fino:file/path';
+ *
+ * console.log(basename('/tmp/report.csv', '.csv')); // report
+ * ```
  */
 export function basename(p: string | Path, suffix?: string): string {
   return Path.from(p).basename(suffix);
@@ -390,6 +637,18 @@ export function basename(p: string | Path, suffix?: string): string {
 
 /**
  * Return the extension of a path.
+ *
+ * The extension includes the leading dot. Names without a dot, and leading-dot
+ * names such as `.env`, return an empty string.
+ *
+ * @param {string|Path} p Path to inspect.
+ * @returns {string} Extension including the dot, or `''`.
+ *
+ * ```ts no_run
+ * import { extname } from 'fino:file/path';
+ *
+ * console.log(extname('server.test.mts')); // .mts
+ * ```
  */
 export function extname(p: string | Path): string {
   return Path.from(p).extname();
@@ -397,6 +656,17 @@ export function extname(p: string | Path): string {
 
 /**
  * Check if a path is absolute.
+ *
+ * This is a string predicate only and does not check whether the path exists.
+ *
+ * @param {string|Path} p Path to inspect.
+ * @returns {boolean} `true` when `p` is absolute for the current platform.
+ *
+ * ```ts no_run
+ * import { isAbsolute } from 'fino:file/path';
+ *
+ * console.log(isAbsolute('/tmp')); // true
+ * ```
  */
 export function isAbsolute(p: string | Path): boolean {
   return Path.from(p).isAbsolute();
@@ -404,10 +674,35 @@ export function isAbsolute(p: string | Path): boolean {
 
 /**
  * Compute a relative path from `from` to `to`.
+ *
+ * Both paths are normalized before comparison. The calculation is lexical and
+ * does not access the filesystem.
+ *
+ * @param {string|Path} from Starting path.
+ * @param {string|Path} to Target path.
+ * @returns {Path} Relative path from `from` to `to`, or `Path('.')`.
+ *
+ * ```ts no_run
+ * import { relative } from 'fino:file/path';
+ *
+ * console.log(relative('/repo/docs', '/repo/src/app.mts').toString()); // ../src/app.mts
+ * ```
  */
 export function relative(from: string | Path, to: string | Path): Path {
   return Path.from(to).relative(from);
 }
 
-/** Platform path separator. */
+/**
+ * Platform path separator used by this module.
+ *
+ * Fino currently runs on POSIX hosts, so this is usually `/`. Code that formats
+ * user-visible paths can import this constant instead of hard-coding a
+ * separator.
+ *
+ * ```ts no_run
+ * import { sep } from 'fino:file/path';
+ *
+ * console.log(['tmp', 'cache'].join(sep));
+ * ```
+ */
 export const sep = SEP;

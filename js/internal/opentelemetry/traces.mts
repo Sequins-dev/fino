@@ -1,7 +1,26 @@
 /**
- * internal/opentelemetry/traces — internal runtime module.
+ * Trace providers, tracers, spans, sampling, and active span context.
  *
- * 
+ * This internal module turns application span calls and runtime trace-topic
+ * events into `SpanRecord` payloads. It owns the default tracer provider,
+ * active-span context, sampler hooks, span mutation topics, and span limit
+ * application used by the SDK.
+ *
+ * Spans publish a start record at construction time and an end record when
+ * `end()` is called. Attribute, event, link, status, and rename mutations are
+ * published as separate topic records so processors can assemble or observe
+ * them without coupling directly to `Span` instances. Names are required to be
+ * non-empty; repeated `end()` calls are ignored.
+ *
+ * ```typescript no_run
+ * const tracer = getTracerProvider().getTracer('orders', '1.0.0');
+ * const span = tracer.startSpan('orders.create');
+ * span.setAttribute('tenant', 'acme').end({ status: { code: 'OK' } });
+ * ```
+ *
+ * See OpenTelemetry traces:
+ * https://opentelemetry.io/docs/concepts/signals/traces/
+ *
  * @internal
  */
 
@@ -39,15 +58,60 @@ import type {
   TraceContext,
 } from './common.mts';
 
+/**
+ * Sampler class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = Sampler;
+ * ```
+ */
 export class Sampler {
+  /**
+   * shouldSample member on Sampler.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Sampler.prototype.shouldSample;
+   * ```
+   */
   shouldSample(_record: SpanRecord): SamplingResult | boolean {
     return true;
   }
 }
 
+/**
+ * AlwaysOnSampler class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = AlwaysOnSampler;
+ * ```
+ */
 export class AlwaysOnSampler extends Sampler {}
 
+/**
+ * TracerProvider class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = TracerProvider;
+ * ```
+ */
 export class TracerProvider extends BaseProvider {
+  /**
+   * getTracer member on TracerProvider.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = TracerProvider.prototype.getTracer;
+   * ```
+   */
   getTracer(
     name: string,
     version?: string,
@@ -57,16 +121,106 @@ export class TracerProvider extends BaseProvider {
   }
 }
 
+/**
+ * Span class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = Span;
+ * ```
+ */
 export class Span {
+  /**
+   * #tracer member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#tracer';
+   * ```
+   */
   #tracer: Tracer;
+  /**
+   * #name member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#name';
+   * ```
+   */
   #name: string;
+  /**
+   * #traceId member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#traceId';
+   * ```
+   */
   #traceId: string;
+  /**
+   * #spanId member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#spanId';
+   * ```
+   */
   #spanId: string;
+  /**
+   * #parentSpanId member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#parentSpanId';
+   * ```
+   */
   #parentSpanId: string | null;
+  /**
+   * #startTimeUnixNano member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#startTimeUnixNano';
+   * ```
+   */
   #startTimeUnixNano: number;
+  /**
+   * #ended member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#ended';
+   * ```
+   */
   #ended: boolean;
+  /**
+   * #kind member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Span.#kind';
+   * ```
+   */
   #kind: string;
 
+  /**
+   * constructor member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new Span();
+   * ```
+   */
   constructor(tracer: Tracer, name: string, options: SpanStartOptions = {}) {
     const parentContext = getActiveSpanContext();
     const spanName = requireNonEmptyName('span', name);
@@ -94,14 +248,43 @@ export class Span {
     }
   }
 
+  /**
+   * traceId member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = Span.prototype.traceId;
+   * ```
+   */
   get traceId(): string {
     return this.#traceId;
   }
 
+  /**
+   * spanId member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = Span.prototype.spanId;
+   * ```
+   */
   get spanId(): string {
     return this.#spanId;
   }
 
+  /**
+   * Publishes a non-start/end span mutation on the tracer topics.
+   *
+   * The payload is enriched with the current span identity and kind before it is
+   * emitted. Callers provide the mutation-specific fields; this helper does not
+   * validate attribute values or event payloads.
+   *
+   * ```typescript no_run
+   * const helper = 'Span.#publishMutation';
+   * ```
+   */
   #publishMutation(phase: 'attribute' | 'event' | 'link' | 'status' | 'rename', payload: Record<string, unknown>): void {
     this.#tracer.publishTrace(phase, {
       schemaVersion: OTEL_SCHEMA_VERSION,
@@ -114,6 +297,15 @@ export class Span {
     });
   }
 
+  /**
+   * setAttribute member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.setAttribute;
+   * ```
+   */
   setAttribute(key: string, value: unknown): this {
     this.#publishMutation('attribute', {
       timeUnixNano: nowUnixNano(),
@@ -123,11 +315,29 @@ export class Span {
     return this;
   }
 
+  /**
+   * setAttributes member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.setAttributes;
+   * ```
+   */
   setAttributes(attributes: Attributes): this {
     for (const [key, value] of Object.entries(attributes || {})) this.setAttribute(key, value);
     return this;
   }
 
+  /**
+   * addEvent member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.addEvent;
+   * ```
+   */
   addEvent(name: string, attributes: Attributes = {}, timeUnixNano: number = nowUnixNano()): this {
     this.#publishMutation('event', {
       timeUnixNano,
@@ -136,6 +346,15 @@ export class Span {
     return this;
   }
 
+  /**
+   * addLink member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.addLink;
+   * ```
+   */
   addLink(linkContext: SpanLinkContext, attributes: Attributes = {}): this {
     this.#publishMutation('link', {
       timeUnixNano: nowUnixNano(),
@@ -150,6 +369,15 @@ export class Span {
     return this;
   }
 
+  /**
+   * setStatus member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.setStatus;
+   * ```
+   */
   setStatus(status: SpanStatus | null): this {
     this.#publishMutation('status', {
       timeUnixNano: nowUnixNano(),
@@ -158,6 +386,15 @@ export class Span {
     return this;
   }
 
+  /**
+   * recordException member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.recordException;
+   * ```
+   */
   recordException(error: unknown, attributes: Attributes = {}): this {
     const err = error instanceof Error ? error : new Error(String(error));
     this.setStatus({ code: 'ERROR', message: err.message });
@@ -169,6 +406,15 @@ export class Span {
     });
   }
 
+  /**
+   * updateName member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.updateName;
+   * ```
+   */
   updateName(name: string): this {
     const nextName = requireNonEmptyName('span', name);
     this.#publishMutation('rename', {
@@ -179,10 +425,28 @@ export class Span {
     return this;
   }
 
+  /**
+   * isRecording member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.isRecording;
+   * ```
+   */
   isRecording(): boolean {
     return !this.#ended;
   }
 
+  /**
+   * end member on Span.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Span.prototype.end;
+   * ```
+   */
   end(options: SpanEndOptions = {}): void {
     if (this.#ended) return;
     this.#ended = true;
@@ -228,14 +492,59 @@ export class Span {
   }
 }
 
+/**
+ * Tracer class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = Tracer;
+ * ```
+ */
 export class Tracer {
+  /**
+   * #provider member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Tracer.#provider';
+   * ```
+   */
   #provider: TracerProvider;
+  /**
+   * #scope member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Tracer.#scope';
+   * ```
+   */
   #scope: ScopeInfo;
+  /**
+   * #topics member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'Tracer.#topics';
+   * ```
+   */
   #topics: Record<
     'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename',
     Array<Topic<SpanRecord & Record<string, unknown>>>
   >;
 
+  /**
+   * constructor member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new Tracer();
+   * ```
+   */
   constructor(provider: TracerProvider, scope: ScopeInfo) {
     this.#provider = provider;
     this.#scope = scope;
@@ -250,10 +559,28 @@ export class Tracer {
     };
   }
 
+  /**
+   * scope member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = Tracer.prototype.scope;
+   * ```
+   */
   get scope(): ScopeInfo {
     return { ...this.#scope };
   }
 
+  /**
+   * publishTrace member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Tracer.prototype.publishTrace;
+   * ```
+   */
   publishTrace(kind: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename', payload: SpanRecord & Record<string, unknown>): void {
     const record = {
       ...payload,
@@ -263,12 +590,30 @@ export class Tracer {
     for (const target of this.#topics[kind]) target.publish(record);
   }
 
+  /**
+   * startSpan member on Tracer.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = Tracer.prototype.startSpan;
+   * ```
+   */
   startSpan(name: string, options: SpanStartOptions = {}): Span {
     return new Span(this, name, options);
   }
 }
 
 
+/**
+ * applySpanLimits function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = applySpanLimits;
+ * ```
+ */
 export function applySpanLimits(span: SpanRecord, limits: SpanLimits = {}): SpanRecord {
   const { attrs, dropped: droppedAttrs } = limitAttributeEntries(span.attributes || {}, limits);
   const eventLimit = limits.eventCountLimit ?? Number.POSITIVE_INFINITY;
@@ -315,6 +660,15 @@ export function applySpanLimits(span: SpanRecord, limits: SpanLimits = {}): Span
   };
 }
 
+/**
+ * isScopedTraceTopic function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = isScopedTraceTopic;
+ * ```
+ */
 export function isScopedTraceTopic(
   name: string,
   phase: 'start' | 'end' | 'event' | 'attribute' | 'link' | 'status' | 'rename',
@@ -332,30 +686,93 @@ const tracerProviderContext = new Context<TracerProvider | null>('otel:tracer-pr
 const activeSpanContext = new Context<Span>('otel:active-span');
 let defaultTracerProvider = new TracerProvider();
 
+/**
+ * getTracerProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = getTracerProvider;
+ * ```
+ */
 export function getTracerProvider(): TracerProvider {
   return tracerProviderContext.get() || defaultTracerProvider;
 }
 
+/**
+ * setTracerProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = setTracerProvider;
+ * ```
+ */
 export function setTracerProvider(provider: TracerProvider): void {
   defaultTracerProvider = provider;
 }
 
+/**
+ * runWithTracerProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = runWithTracerProvider;
+ * ```
+ */
 export function runWithTracerProvider<R>(provider: TracerProvider, fn: () => R): R {
   return tracerProviderContext.runWithValue(provider, fn);
 }
 
+/**
+ * runWithoutTracerProvider function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = runWithoutTracerProvider;
+ * ```
+ */
 export function runWithoutTracerProvider<R>(fn: () => R): R {
   return tracerProviderContext.runWithValue(null, fn);
 }
 
+/**
+ * isTracerProviderContextEnabled function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = isTracerProviderContextEnabled;
+ * ```
+ */
 export function isTracerProviderContextEnabled(): boolean {
   return tracerProviderContext.get() !== null;
 }
 
+/**
+ * getActiveSpan function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = getActiveSpan;
+ * ```
+ */
 export function getActiveSpan(): Span | undefined {
   return activeSpanContext.get();
 }
 
+/**
+ * getActiveSpanContext function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = getActiveSpanContext;
+ * ```
+ */
 export function getActiveSpanContext(): TraceContext | null {
   const explicit = currentActiveTelemetryContext();
   const baggage = getActiveBaggage();
@@ -376,6 +793,15 @@ export function getActiveSpanContext(): TraceContext | null {
   };
 }
 
+/**
+ * runWithActiveSpan function used by the internal OpenTelemetry runtime.
+ *
+ * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const fn = runWithActiveSpan;
+ * ```
+ */
 export function runWithActiveSpan<R>(span: Span, fn: () => R): R {
   const inherited = getActiveSpanContext();
   const nextContext: ActiveTelemetryContext = {

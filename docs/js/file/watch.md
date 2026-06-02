@@ -53,6 +53,16 @@ type WatchEventType = 'create' | 'modify' | 'delete' | 'rename'
 
 Normalized filesystem event names emitted by `Watcher`.
 
+Platform backends collapse native event masks into these four names. A
+single filesystem operation can still produce multiple events, and directory
+watches may report the directory path rather than the exact changed child on
+macOS.
+
+```ts
+const type = 'modify';
+console.log(type);
+```
+
 ## WatchEvent
 
 ```ts
@@ -61,13 +71,32 @@ interface WatchEvent {
 
 Filesystem event yielded by a watcher.
 
+Events are normalized from kqueue on macOS and inotify on Linux. The `path`
+is the watched path or changed child path reported by the backend; callers
+that need exact metadata should stat or rescan after receiving the event.
+
+```ts
+function logEvent(event) {
+  console.log(event.type, event.path);
+}
+```
+
 ### type
 
 ```ts
 type: WatchEventType
 ```
 
-Type of filesystem event.
+Normalized event type.
+
+The value is one of `'create'`, `'modify'`, `'delete'`, or `'rename'`.
+Backends may coalesce or duplicate events, so treat this as a notification
+to re-check state rather than a complete change log.
+
+```ts
+const event = { type: 'create', path: '/tmp/file.txt' };
+console.log(event.type);
+```
 
 ### path
 
@@ -77,21 +106,14 @@ path: string
 
 Absolute or relative path of the affected file or directory.
 
-## WatchOptions
+The path shape follows the path passed to `watch()` and the platform event
+backend. Linux directory events usually include the changed child name;
+macOS directory events may only identify the watched directory.
 
 ```ts
-interface WatchOptions {
+const event = { type: 'modify', path: 'src/main.mts' };
+console.log(event.path);
 ```
-
-### recursive
-
-```ts
-recursive?: boolean
-```
-
-Watch subdirectories recursively. On macOS, this opens one fd per
-subdirectory. On Linux, it adds one inotify watch per subdirectory.
-Default: false.
 
 ## Watcher
 
@@ -102,8 +124,14 @@ class Watcher {
 Async-iterable filesystem watcher. Construct, call `watch()` for each path,
 then iterate events with `for await`.
 
+The default is non-recursive watching. Call `close()` to stop watching and
+release fds or inotify resources. Iteration ends after `close()` or after
+the iterator's `return()` method is called by breaking out of `for await`.
+
 ```ts
-const watcher = new Watcher(lp, { recursive: true });
+import { Watcher } from 'fino:file/watch';
+
+const watcher = new Watcher({ recursive: true });
 watcher.watch('/tmp/mydir');
 for await (const { type, path } of watcher) {
   console.log(type, path);
@@ -114,6 +142,20 @@ for await (const { type, path } of watcher) {
 
 ```ts
 constructor(options: WatchOptions = {})
+```
+
+Create a filesystem watcher.
+
+By default, only the exact paths passed to `watch()` are watched.
+`{ recursive: true }` scans subdirectories and adds backend watches for
+them. Construction may allocate native watch state on Linux; close the
+watcher when done.
+
+```ts
+import { Watcher } from 'fino:file/watch';
+
+const watcher = new Watcher({ recursive: false });
+watcher.close();
 ```
 
 ### watch
@@ -129,6 +171,17 @@ On macOS, opens an fd for each watched path (and each subdirectory if
 
 May be called multiple times to watch multiple paths.
 
+Throws if the watcher is already closed or the backend cannot register the
+path. On macOS, directory watches do not identify the exact changed child.
+
+```ts
+import { Watcher } from 'fino:file/watch';
+
+const watcher = new Watcher();
+watcher.watch('/tmp/app.log');
+watcher.close();
+```
+
 ### close
 
 ```ts
@@ -137,3 +190,15 @@ close(): void
 
 Stop watching all paths and release all resources.
 Resolves any pending iterator .next() calls with `{ done: true }`.
+
+Calling `close()` more than once is allowed. After close, `watch()` throws
+and async iteration completes without yielding more queued events after the
+queue is drained.
+
+```ts
+import { Watcher } from 'fino:file/watch';
+
+const watcher = new Watcher();
+watcher.watch('/tmp');
+watcher.close();
+```

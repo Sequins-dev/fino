@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { SyntheticModule } from 'fino:module';
+import { Realm } from 'fino:realm';
 
 describe('SyntheticModule — install/import/uninstall lifecycle', () => {
   it('value export is accessible after install', async (t) => {
@@ -127,7 +128,6 @@ describe('SyntheticModule — uninstall then re-install', () => {
 
 describe('SyntheticModule — realm isolation', () => {
   it('installed module is not visible in child realm', async (t) => {
-    const { Realm } = await import('fino:realm');
     const mod = new SyntheticModule('testIsolation', { x: 99 });
     mod.install();
     try {

@@ -1,7 +1,29 @@
 /**
- * internal/opentelemetry/sdk — internal runtime module.
+ * OpenTelemetry SDK wiring for processors, readers, exporters, and runtime instrumentation.
  *
- * 
+ * This internal module subscribes to the trace, log, metric, and observable
+ * registration topics produced by the runtime OpenTelemetry modules. It applies
+ * sampling, limits, metric views, cardinality limits, resource enrichment, and
+ * exporter fan-out before delivering records to processors and readers.
+ *
+ * By default, the SDK uses an OTLP HTTP JSON exporter, a batch span processor,
+ * no log processors, no metric readers, an always-on sampler, and a W3C
+ * propagator. `start()` is idempotent, `flush()` exports queued telemetry and
+ * collects observables, and `shutdown()` flushes before disposing
+ * instrumentations and readers.
+ *
+ * ```typescript no_run
+ * const memory = new InMemoryExporter();
+ * const sdk = new OtelSDK({
+ *   exporters: [memory],
+ *   spanProcessors: [new BatchSpanProcessor(memory)],
+ * }).start();
+ * await sdk.flush();
+ * ```
+ *
+ * See OpenTelemetry SDK concepts:
+ * https://opentelemetry.io/docs/concepts/sdk-configuration/
+ *
  * @internal
  */
 
@@ -41,73 +63,352 @@ import {
 import { AlwaysOnSampler, Sampler, applySpanLimits } from './traces.mts';
 import { W3CTraceContextPropagator } from './common.mts';
 
+/**
+ * InMemoryExporter class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = InMemoryExporter;
+ * ```
+ */
 export class InMemoryExporter {
+  /**
+   * #spans member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'InMemoryExporter.#spans';
+   * ```
+   */
   #spans: SpanRecord[] = [];
+  /**
+   * #logs member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'InMemoryExporter.#logs';
+   * ```
+   */
   #logs: LogRecord[] = [];
+  /**
+   * #metrics member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'InMemoryExporter.#metrics';
+   * ```
+   */
   #metrics: MetricRecord[] = [];
 
+  /**
+   * exportSpans member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = InMemoryExporter.prototype.exportSpans;
+   * ```
+   */
   async exportSpans(spans: SpanRecord[]): Promise<ExportResult> {
     this.#spans.push(...spans);
     return { code: 'success' };
   }
 
+  /**
+   * exportLogs member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = InMemoryExporter.prototype.exportLogs;
+   * ```
+   */
   async exportLogs(logs: LogRecord[]): Promise<ExportResult> {
     this.#logs.push(...logs);
     return { code: 'success' };
   }
 
+  /**
+   * exportMetrics member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = InMemoryExporter.prototype.exportMetrics;
+   * ```
+   */
   async exportMetrics(metrics: MetricRecord[]): Promise<ExportResult> {
     this.#metrics.push(...metrics);
     return { code: 'success' };
   }
 
+  /**
+   * getFinishedSpans member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = InMemoryExporter.prototype.getFinishedSpans;
+   * ```
+   */
   getFinishedSpans(): SpanRecord[] {
     return [...this.#spans];
   }
 
+  /**
+   * getFinishedLogs member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = InMemoryExporter.prototype.getFinishedLogs;
+   * ```
+   */
   getFinishedLogs(): LogRecord[] {
     return [...this.#logs];
   }
 
+  /**
+   * getFinishedMetrics member on InMemoryExporter.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = InMemoryExporter.prototype.getFinishedMetrics;
+   * ```
+   */
   getFinishedMetrics(): MetricRecord[] {
     return [...this.#metrics];
   }
 }
 
+/**
+ * SpanProcessor class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = SpanProcessor;
+ * ```
+ */
 export class SpanProcessor {
+  /**
+   * onStart member on SpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = SpanProcessor.prototype.onStart;
+   * ```
+   */
   onStart(_span: SpanRecord): void {}
+  /**
+   * onEnd member on SpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = SpanProcessor.prototype.onEnd;
+   * ```
+   */
   onEnd(_span: SpanRecord): void {}
+  /**
+   * forceFlush member on SpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = SpanProcessor.prototype.forceFlush;
+   * ```
+   */
   async forceFlush(): Promise<void> {}
+  /**
+   * shutdown member on SpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = SpanProcessor.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {}
 }
 
+/**
+ * LogRecordProcessor class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = LogRecordProcessor;
+ * ```
+ */
 export class LogRecordProcessor {
+  /**
+   * onEmit member on LogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = LogRecordProcessor.prototype.onEmit;
+   * ```
+   */
   onEmit(_log: LogRecord): void {}
+  /**
+   * forceFlush member on LogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = LogRecordProcessor.prototype.forceFlush;
+   * ```
+   */
   async forceFlush(): Promise<void> {}
+  /**
+   * shutdown member on LogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = LogRecordProcessor.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {}
 }
 
+/**
+ * MetricReader class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = MetricReader;
+ * ```
+ */
 export class MetricReader {
+  /**
+   * #temporality member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'MetricReader.#temporality';
+   * ```
+   */
   #temporality: MetricTemporality;
 
+  /**
+   * constructor member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new MetricReader();
+   * ```
+   */
   constructor(options: { temporality?: MetricTemporality } = {}) {
     this.#temporality = options.temporality || 'cumulative';
   }
 
+  /**
+   * temporality member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = MetricReader.prototype.temporality;
+   * ```
+   */
   get temporality(): MetricTemporality {
     return this.#temporality;
   }
 
+  /**
+   * record member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = MetricReader.prototype.record;
+   * ```
+   */
   record(_metric: MetricRecord): void {}
+  /**
+   * receive member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = MetricReader.prototype.receive;
+   * ```
+   */
   receive(_metrics: MetricRecord[]): void {}
+  /**
+   * forceFlush member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = MetricReader.prototype.forceFlush;
+   * ```
+   */
   async forceFlush(): Promise<void> {}
+  /**
+   * shutdown member on MetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = MetricReader.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {}
 }
 
+/**
+ * ManualMetricReader class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = ManualMetricReader;
+ * ```
+ */
 export class ManualMetricReader extends MetricReader {
+  /**
+   * #batch member on ManualMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'ManualMetricReader.#batch';
+   * ```
+   */
   #batch: MetricRecord[] = [];
+  /**
+   * #lastSeen member on ManualMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'ManualMetricReader.#lastSeen';
+   * ```
+   */
   #lastSeen: MetricRecord[] = [];
 
+  /**
+   * receive member on ManualMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = ManualMetricReader.prototype.receive;
+   * ```
+   */
   receive(metrics: MetricRecord[]): void {
     if (metrics.length === 0 && this.temporality === 'delta' && this.#lastSeen.length > 0) {
       this.#batch = this.#lastSeen.map((metric) => zeroMetric(metric));
@@ -117,6 +418,15 @@ export class ManualMetricReader extends MetricReader {
     if (metrics.length > 0) this.#lastSeen = metrics.map((metric) => cloneMetric(metric));
   }
 
+  /**
+   * collect member on ManualMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = ManualMetricReader.prototype.collect;
+   * ```
+   */
   collect(): MetricRecord[] {
     const out = this.#batch.map((metric) => cloneMetric(metric));
     this.#batch = [];
@@ -124,15 +434,96 @@ export class ManualMetricReader extends MetricReader {
   }
 }
 
+/**
+ * BatchSpanProcessor class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = BatchSpanProcessor;
+ * ```
+ */
 export class BatchSpanProcessor extends SpanProcessor {
+  /**
+   * #exporter member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#exporter';
+   * ```
+   */
   #exporter: OtelExporter;
+  /**
+   * #queue member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#queue';
+   * ```
+   */
   #queue: SpanRecord[] = [];
+  /**
+   * #maxExportBatchSize member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#maxExportBatchSize';
+   * ```
+   */
   #maxExportBatchSize: number;
+  /**
+   * #maxQueueSize member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#maxQueueSize';
+   * ```
+   */
   #maxQueueSize: number;
+  /**
+   * #scheduledDelayMillis member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#scheduledDelayMillis';
+   * ```
+   */
   #scheduledDelayMillis: number;
+  /**
+   * #timer member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#timer';
+   * ```
+   */
   #timer: number | null = null;
+  /**
+   * #droppedSpanCount private field on BatchSpanProcessor.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'BatchSpanProcessor.#droppedSpanCount';
+   * ```
+   */
   #droppedSpanCount = 0;
 
+  /**
+   * constructor member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new BatchSpanProcessor();
+   * ```
+   */
   constructor(exporter: OtelExporter, options: { maxQueueSize?: number; maxExportBatchSize?: number; scheduledDelayMillis?: number } = {}) {
     super();
     this.#exporter = exporter;
@@ -141,10 +532,28 @@ export class BatchSpanProcessor extends SpanProcessor {
     this.#scheduledDelayMillis = options.scheduledDelayMillis || 0;
   }
 
+  /**
+   * droppedSpanCount member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = BatchSpanProcessor.prototype.droppedSpanCount;
+   * ```
+   */
   get droppedSpanCount(): number {
     return this.#droppedSpanCount;
   }
 
+  /**
+   * onEnd member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = BatchSpanProcessor.prototype.onEnd;
+   * ```
+   */
   onEnd(span: SpanRecord): void {
     if (this.#queue.length >= this.#maxQueueSize) {
       this.#droppedSpanCount++;
@@ -159,6 +568,15 @@ export class BatchSpanProcessor extends SpanProcessor {
     }
   }
 
+  /**
+   * forceFlush member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = BatchSpanProcessor.prototype.forceFlush;
+   * ```
+   */
   async forceFlush(): Promise<void> {
     if (this.#timer !== null) {
       clearTimeout(this.#timer);
@@ -170,21 +588,120 @@ export class BatchSpanProcessor extends SpanProcessor {
     }
   }
 
+  /**
+   * shutdown member on BatchSpanProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = BatchSpanProcessor.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {
     await this.forceFlush();
   }
 }
 
+/**
+ * BatchLogRecordProcessor class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = BatchLogRecordProcessor;
+ * ```
+ */
 export class BatchLogRecordProcessor extends LogRecordProcessor {
+  /**
+   * #exporter member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#exporter';
+   * ```
+   */
   #exporter: OtelExporter;
+  /**
+   * #queue member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#queue';
+   * ```
+   */
   #queue: LogRecord[] = [];
+  /**
+   * #maxQueueSize member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#maxQueueSize';
+   * ```
+   */
   #maxQueueSize: number;
+  /**
+   * #maxExportBatchSize member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#maxExportBatchSize';
+   * ```
+   */
   #maxExportBatchSize: number;
+  /**
+   * #scheduledDelayMillis member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#scheduledDelayMillis';
+   * ```
+   */
   #scheduledDelayMillis: number;
+  /**
+   * #attributeCountLimit member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#attributeCountLimit';
+   * ```
+   */
   #attributeCountLimit: number;
+  /**
+   * #attributeValueLengthLimit member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#attributeValueLengthLimit';
+   * ```
+   */
   #attributeValueLengthLimit: number;
+  /**
+   * #timer member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'BatchLogRecordProcessor.#timer';
+   * ```
+   */
   #timer: number | null = null;
 
+  /**
+   * constructor member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new BatchLogRecordProcessor();
+   * ```
+   */
   constructor(
     exporter: OtelExporter,
     options: {
@@ -204,6 +721,15 @@ export class BatchLogRecordProcessor extends LogRecordProcessor {
     this.#attributeValueLengthLimit = options.attributeValueLengthLimit || Number.POSITIVE_INFINITY;
   }
 
+  /**
+   * onEmit member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = BatchLogRecordProcessor.prototype.onEmit;
+   * ```
+   */
   onEmit(log: LogRecord): void {
     if (this.#queue.length >= this.#maxQueueSize) return;
     this.#queue.push(
@@ -220,6 +746,15 @@ export class BatchLogRecordProcessor extends LogRecordProcessor {
     }
   }
 
+  /**
+   * forceFlush member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = BatchLogRecordProcessor.prototype.forceFlush;
+   * ```
+   */
   async forceFlush(): Promise<void> {
     if (this.#timer !== null) {
       clearTimeout(this.#timer);
@@ -231,12 +766,30 @@ export class BatchLogRecordProcessor extends LogRecordProcessor {
     }
   }
 
+  /**
+   * shutdown member on BatchLogRecordProcessor.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = BatchLogRecordProcessor.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {
     await this.forceFlush();
   }
 }
 
 class FanoutExporter implements OtelExporter {
+  /**
+   * #exporters private field on FanoutExporter.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'FanoutExporter.#exporters';
+   * ```
+   */
   #exporters: OtelExporter[];
 
   constructor(exporters: OtelExporter[]) {
@@ -262,12 +815,66 @@ class FanoutExporter implements OtelExporter {
   }
 }
 
+/**
+ * PeriodicMetricReader class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = PeriodicMetricReader;
+ * ```
+ */
 export class PeriodicMetricReader extends MetricReader {
+  /**
+   * #exporter member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'PeriodicMetricReader.#exporter';
+   * ```
+   */
   #exporter: OtelExporter;
+  /**
+   * #queue member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'PeriodicMetricReader.#queue';
+   * ```
+   */
   #queue: MetricRecord[] = [];
+  /**
+   * #intervalMs member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'PeriodicMetricReader.#intervalMs';
+   * ```
+   */
   #intervalMs: number;
+  /**
+   * #timer member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'PeriodicMetricReader.#timer';
+   * ```
+   */
   #timer: number | null = null;
 
+  /**
+   * constructor member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new PeriodicMetricReader();
+   * ```
+   */
   constructor(exporter: OtelExporter, options: { temporality?: MetricTemporality; intervalMs?: number } = {}) {
     super(options);
     this.#exporter = exporter;
@@ -276,8 +883,16 @@ export class PeriodicMetricReader extends MetricReader {
 
   /**
    * Called by OtelSDK.start() to wire up a periodic collection cycle.
+   *
    * `collectAndFlush` calls back into the SDK to collect accumulated metrics,
-   * deliver them via receive(), and then calls forceFlush() to export.
+   * deliver them via `receive()`, and then call `forceFlush()` to export. A
+   * non-positive interval disables scheduling, and repeated calls are ignored
+   * once a timer is active.
+   *
+   * ```typescript no_run
+   * const reader = new PeriodicMetricReader({} as never, { intervalMs: 1000 });
+   * reader._startPeriodicCollection(async () => {});
+   * ```
    */
   _startPeriodicCollection(collectAndFlush: () => Promise<void>): void {
     if (this.#intervalMs <= 0 || this.#timer !== null) return;
@@ -286,16 +901,43 @@ export class PeriodicMetricReader extends MetricReader {
     }, this.#intervalMs) as unknown as number;
   }
 
+  /**
+   * receive member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = PeriodicMetricReader.prototype.receive;
+   * ```
+   */
   receive(metrics: MetricRecord[]): void {
     this.#queue.push(...metrics);
   }
 
+  /**
+   * forceFlush member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = PeriodicMetricReader.prototype.forceFlush;
+   * ```
+   */
   async forceFlush(): Promise<void> {
     if (this.#queue.length === 0) return;
     const batch = this.#queue.splice(0, this.#queue.length);
     await this.#exporter.exportMetrics(batch);
   }
 
+  /**
+   * shutdown member on PeriodicMetricReader.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = PeriodicMetricReader.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {
     if (this.#timer !== null) {
       clearInterval(this.#timer);
@@ -305,6 +947,15 @@ export class PeriodicMetricReader extends MetricReader {
   }
 }
 
+/**
+ * PeriodicExportingMetricReader const used by the internal OpenTelemetry runtime.
+ *
+ * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const value = PeriodicExportingMetricReader;
+ * ```
+ */
 export const PeriodicExportingMetricReader = PeriodicMetricReader;
 
 /** Evaluate a sampler result and return the (possibly attribute-enriched) span, or null if not sampled. */
@@ -321,24 +972,186 @@ function applySamplingResult(span: SpanRecord, result: SamplingResult | boolean)
   };
 }
 
+/**
+ * OtelSDK class used by the internal OpenTelemetry runtime.
+ *
+ * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ *
+ * ```typescript no_run
+ * const ctor = OtelSDK;
+ * ```
+ */
 export class OtelSDK {
+  /**
+   * #spanProcessors member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#spanProcessors';
+   * ```
+   */
   #spanProcessors: SpanProcessor[];
+  /**
+   * #logRecordProcessors member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#logRecordProcessors';
+   * ```
+   */
   #logRecordProcessors: LogRecordProcessor[];
+  /**
+   * #metricReaders member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#metricReaders';
+   * ```
+   */
   #metricReaders: MetricReader[];
+  /**
+   * #sampler member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#sampler';
+   * ```
+   */
   #sampler: Sampler;
+  /**
+   * #propagator member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#propagator';
+   * ```
+   */
   #propagator: TextMapPropagator;
+  /**
+   * #instrumentations member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#instrumentations';
+   * ```
+   */
   #instrumentations: Instrumentation[];
+  /**
+   * #disposables member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#disposables';
+   * ```
+   */
   #disposables: Array<{ dispose(): void }> = [];
+  /**
+   * #started private field on OtelSDK.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#started';
+   * ```
+   */
   #started = false;
+  /**
+   * #sampledSpans private field on OtelSDK.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#sampledSpans';
+   * ```
+   */
   #sampledSpans = new Set<string>();
+  /**
+   * #metricAggregates private field on OtelSDK.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#metricAggregates';
+   * ```
+   */
   #metricAggregates = new Map<string, MetricRecord>();
+  /**
+   * #metricDeltaAggregates private field on OtelSDK.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#metricDeltaAggregates';
+   * ```
+   */
   #metricDeltaAggregates = new Map<string, MetricRecord>();
+  /**
+   * #observableMetrics private field on OtelSDK.
+   *
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#observableMetrics';
+   * ```
+   */
   #observableMetrics = new Set<ObservableMetricRegistration>();
+  /**
+   * #views member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#views';
+   * ```
+   */
   #views: MetricView[];
+  /**
+   * #metricCardinalityLimit member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#metricCardinalityLimit';
+   * ```
+   */
   #metricCardinalityLimit: number;
+  /**
+   * #spanLimits member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#spanLimits';
+   * ```
+   */
   #spanLimits: SpanLimits;
+  /**
+   * #resource member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const field = 'OtelSDK.#resource';
+   * ```
+   */
   #resource: Resource | null;
 
+  /**
+   * constructor member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const instance = new OtelSDK();
+   * ```
+   */
   constructor(options: {
     exporters?: OtelExporter[];
     instrumentations?: Instrumentation[];
@@ -366,14 +1179,43 @@ export class OtelSDK {
     this.#resource = options.resource == null ? null : normalizeResource(options.resource);
   }
 
+  /**
+   * propagator member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = OtelSDK.prototype.propagator;
+   * ```
+   */
   get propagator(): TextMapPropagator {
     return this.#propagator;
   }
 
+  /**
+   * resource member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const getter = OtelSDK.prototype.resource;
+   * ```
+   */
   get resource(): Resource | null {
     return this.#resource;
   }
 
+  /**
+   * Merges the SDK resource into an emitted telemetry record.
+   *
+   * When no SDK resource is configured, the original record is returned. When a
+   * resource is configured, its attributes override the record resource
+   * attributes and its dropped-count, schema URL, and entity refs are preserved.
+   *
+   * ```typescript no_run
+   * const helper = 'OtelSDK.#withResource';
+   * ```
+   */
   #withResource<TRecord extends { resource?: Resource }>(record: TRecord): TRecord {
     if (!(this.#resource instanceof Resource)) return record;
     return {
@@ -389,6 +1231,15 @@ export class OtelSDK {
     };
   }
 
+  /**
+   * start member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.start;
+   * ```
+   */
   start(): this {
     if (this.#started) return this;
     this.#started = true;
@@ -429,6 +1280,15 @@ export class OtelSDK {
     return this;
   }
 
+  /**
+   * recordSpanStart member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.recordSpanStart;
+   * ```
+   */
   recordSpanStart(span: SpanRecord): void {
     const limited = applySpanLimits(this.#withResource(span), this.#spanLimits);
     const samplerResult = this.#sampler.shouldSample(limited);
@@ -438,9 +1298,18 @@ export class OtelSDK {
     for (const processor of this.#spanProcessors) processor.onStart?.(finalSpan);
   }
 
+  /**
+   * recordSpan member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.recordSpan;
+   * ```
+   */
   recordSpan(span: SpanRecord): void {
     if (!this.#sampledSpans.delete(span.spanId)) {
-      // Not sampled at start — run sampler now (handles direct recordSpan calls without a prior recordSpanStart).
+      // Not sampled at start - run sampler now (handles direct recordSpan calls without a prior recordSpanStart).
       const limited = applySpanLimits(this.#withResource(span), this.#spanLimits);
       const samplerResult = this.#sampler.shouldSample(limited);
       const finalSpan = applySamplingResult(limited, samplerResult);
@@ -452,11 +1321,29 @@ export class OtelSDK {
     for (const processor of this.#spanProcessors) processor.onEnd(limited);
   }
 
+  /**
+   * recordLog member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.recordLog;
+   * ```
+   */
   recordLog(log: LogRecord): void {
     const enriched = this.#withResource(log);
     for (const processor of this.#logRecordProcessors) processor.onEmit(enriched);
   }
 
+  /**
+   * recordMetric member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.recordMetric;
+   * ```
+   */
   recordMetric(metric: MetricRecord): void {
     const prepared = applyMetricView(this.#withResource(metric), this.#views);
     const instrumentKey = metricInstrumentKey(prepared);
@@ -472,6 +1359,15 @@ export class OtelSDK {
     accumulateMetric(this.#metricDeltaAggregates, key, prepared);
   }
 
+  /**
+   * flush member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.flush;
+   * ```
+   */
   async flush(): Promise<void> {
     for (const registration of this.#observableMetrics) {
       let observations;
@@ -512,6 +1408,15 @@ export class OtelSDK {
     this.#metricDeltaAggregates.clear();
   }
 
+  /**
+   * shutdown member on OtelSDK.
+   *
+   * Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.
+   *
+   * ```typescript no_run
+   * const member = OtelSDK.prototype.shutdown;
+   * ```
+   */
   async shutdown(): Promise<void> {
     await this.flush();
     await Promise.all([

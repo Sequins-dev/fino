@@ -1,7 +1,16 @@
 /**
  * internal/opentelemetry/instrumentations/socket — internal runtime module.
  *
- * 
+ * Converts runtime socket connect lifecycle topic events into client spans.
+ * Active connections are tracked by connect id until an end or error event is
+ * published.
+ *
+ * ```js
+ * const { SocketInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/socket';
+ * console.log(new SocketInstrumentation().constructor.name);
+ * ```
+ *
  * @internal
  */
 
@@ -14,9 +23,65 @@ import type { Disposable, OtelSdkLike, RuntimeSocketEvent, SpanStatus } from '..
 import { createRuntimeClientSpan } from './_runtime-client.mts';
 import { isTracerProviderContextEnabled } from '../traces.mts';
 
+/**
+ * Runtime socket connect instrumentation.
+ *
+ * The instrumentation subscribes to `socket.connect.start`, `socket.connect.end`,
+ * and `socket.connect.error` topics and records spans only when tracer context
+ * recording is enabled. Missing start events are ignored, and dispose removes
+ * all subscriptions.
+ *
+ * ```js
+ * const { SocketInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/socket';
+ * const disposable = new SocketInstrumentation().enable({ recordSpan() {} });
+ * disposable.dispose();
+ * ```
+ *
+ * @internal
+ */
 export class SocketInstrumentation {
+  /**
+   * Private property `#active` used by `SocketInstrumentation`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #active = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#active;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #active = new Map<string, { requestId?: string; hop?: number; host?: string; port?: number; transport: string; startTimeUnixNano: number }>();
 
+  /**
+   * Enable socket connect topic subscriptions.
+   *
+   * Each finished connection records a client span named
+   * `CONNECT <host>:<port>` with network, runtime request, and error attributes
+   * when present. The returned disposable must be invoked during shutdown.
+   *
+   * ```js
+   * const { SocketInstrumentation } =
+   *   import 'internal:opentelemetry/instrumentations/socket';
+   * const disposable = new SocketInstrumentation().enable({ recordSpan() {} });
+   * disposable.dispose();
+   * ```
+   *
+   * @param sdk SDK-like sink that accepts completed spans.
+   * @returns A disposable that removes all socket subscriptions.
+   * @internal
+   */
   enable(sdk: OtelSdkLike): Disposable {
     const onStart = topic<RuntimeSocketEvent>(otelRuntimeTopic('socket', 'connect', 'start')).subscribe((event) => {
       if (!isTracerProviderContextEnabled()) return;

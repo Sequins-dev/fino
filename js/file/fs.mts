@@ -14,7 +14,7 @@
  * `DiskFileSystem` explicitly and pass their loop handle:
  *
  * ```ts no_run
- *   const fs = new DiskFileSystem(lp);
+ *   const fs = new DiskFileSystem();
  * ```
  *
  * This is intentional. It makes the event-loop dependency visible, enables
@@ -72,8 +72,15 @@ export {
 /**
  * A POSIX filesystem backend backed by libc syscalls via FFI.
  *
+ * Each method accepts either a raw path string or a `Path` instance. Methods
+ * throw errno-backed errors when the underlying syscall fails; they do not
+ * return `null` for missing paths unless documented by a lower-level handle
+ * API. File handles returned from `open()` must be closed by the caller.
+ *
  * ```ts no_run
- * const fs = new DiskFileSystem(lp);
+ * import { DiskFileSystem } from 'fino:file';
+ *
+ * const fs = new DiskFileSystem();
  * const text = await fs.readFile('/etc/hosts');
  * ```
  */
@@ -81,8 +88,21 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Stat a path, following symlinks.
-   * @param {string|Path} path
-   * @returns {Promise<Stat>}
+   *
+   * Returns parsed POSIX metadata for the target. If `path` is a symlink, the
+   * returned `Stat` describes the symlink target. Throws when the path cannot
+   * be resolved or the process lacks permission.
+   *
+   * @param {string|Path} path Path to inspect.
+   * @returns {Promise<Stat>} Metadata for the resolved file.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const stat = await fs.stat('/tmp/app.log');
+   * console.log(stat.isFile(), stat.size);
+   * ```
    */
   async stat(path: Path | string): Promise<Stat> {
     const s = _toStr(path);
@@ -94,8 +114,21 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Stat a path without following symlinks.
-   * @param {string|Path} path
-   * @returns {Promise<Stat>}
+   *
+   * Returns metadata for the directory entry itself. For symlinks, this
+   * describes the link rather than the linked target. Throws on missing paths,
+   * permission failures, or other `lstat(2)` errors.
+   *
+   * @param {string|Path} path Path to inspect.
+   * @returns {Promise<Stat>} Metadata for the directory entry.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const stat = await fs.lstat('/tmp/current');
+   * console.log(stat.isSymlink());
+   * ```
    */
   async lstat(path: Path | string): Promise<Stat> {
     const s = _toStr(path);
@@ -107,9 +140,27 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Open a file and return a File handle.
-   * @param {string|Path} path
-   * @param {string} [mode='r']
-   * @returns {Promise<File>}
+   *
+   * The default mode is `'r'`. Mode strings are translated to POSIX open flags
+   * by the file bindings; create modes use `0o666` before the process umask and
+   * then normalize new files to `0o644`. Throws if the file cannot be opened.
+   * Close the returned `File` when finished.
+   *
+   * @param {string|Path} path File path to open.
+   * @param {string} [mode='r'] Open mode such as `'r'`, `'w'`, or `'a'`.
+   * @returns {Promise<File>} Open file handle owning the file descriptor.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const file = await fs.open('/tmp/out.txt', 'w');
+   * try {
+   *   await file.writer().write(new TextEncoder().encode('hello'));
+   * } finally {
+   *   await file.close();
+   * }
+   * ```
    */
   async open(path: Path | string, mode: string = 'r'): Promise<File> {
     const p = _toPath(path);
@@ -142,8 +193,20 @@ export class DiskFileSystem extends FileSystem {
   /**
    * Open a directory and return a DirEntry handle.
    * Throws if the path does not refer to a directory.
-   * @param {string|Path} path
-   * @returns {Promise<DirEntry>}
+   *
+   * The returned entry can enumerate children with `entries()` or async
+   * iteration. Symlinks are not followed for the directory check.
+   *
+   * @param {string|Path} path Directory path to inspect.
+   * @returns {Promise<DirEntry>} Directory entry wrapper.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const dir = await fs.dir('/tmp');
+   * for (const entry of await dir.entries()) console.log(entry.name);
+   * ```
    */
   async dir(path: Path | string): Promise<DirEntry> {
     const p = _toPath(path);
@@ -155,8 +218,21 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Construct an Entry (FileEntry / DirEntry / Entry) for any path using lstat.
-   * @param {string|Path} path
-   * @returns {Promise<Entry>}
+   *
+   * Directories become `DirEntry`, regular files become `FileEntry`, symlinks
+   * become a generic `Entry` with link type, and other filesystem nodes become
+   * a generic `Entry` with unknown type. Throws if `path` cannot be lstat'ed.
+   *
+   * @param {string|Path} path Path to classify.
+   * @returns {Promise<Entry>} Entry wrapper for the detected type.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const entry = await fs.entry('/tmp/app.log');
+   * console.log(entry.name, entry.isFile());
+   * ```
    */
   async entry(path: Path | string): Promise<Entry> {
     const p  = _toPath(path);
@@ -169,8 +245,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Create a directory.
-   * @param {string|Path} path
-   * @param {number} [mode=0o755]
+   *
+   * Creates exactly one directory. Parent directories are not created
+   * automatically. The default mode is `0o755` before the process umask.
+   * Throws if the path exists, a parent is missing, or permissions fail.
+   *
+   * @param {string|Path} path Directory path to create.
+   * @param {number} [mode=0o755] POSIX permission mode.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.mkdir('/tmp/fino-cache', 0o700);
+   * ```
    */
   async mkdir(path: Path | string, mode: number = 0o755): Promise<void> {
     const s = _toStr(path);
@@ -180,7 +268,19 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Remove an empty directory.
-   * @param {string|Path} path
+   *
+   * This wraps `rmdir(2)`, so it only succeeds for empty directories. It
+   * throws if the path is not a directory, is not empty, is missing, or cannot
+   * be removed.
+   *
+   * @param {string|Path} path Empty directory to remove.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.rmdir('/tmp/empty-cache');
+   * ```
    */
   async rmdir(path: Path | string): Promise<void> {
     const s = _toStr(path);
@@ -190,7 +290,19 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Delete a file.
-   * @param {string|Path} path
+   *
+   * Removes a directory entry with `unlink(2)`. For symlinks, the link itself
+   * is removed and the target is left untouched. Throws for directories,
+   * missing paths, or permission failures.
+   *
+   * @param {string|Path} path File or symlink to remove.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.unlink('/tmp/output.tmp');
+   * ```
    */
   async unlink(path: Path | string): Promise<void> {
     const s = _toStr(path);
@@ -200,8 +312,19 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Change the permissions of a file.
-   * @param {string|Path} path
-   * @param {number} mode
+   *
+   * Follows symlinks, matching `chmod(2)`. Throws when the target is missing or
+   * the process cannot change permissions.
+   *
+   * @param {string|Path} path Path whose permissions should change.
+   * @param {number} mode POSIX mode bits, for example `0o644`.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.chmod('/tmp/run.sh', 0o755);
+   * ```
    */
   async chmod(path: Path | string, mode: number): Promise<void> {
     const s = _toStr(path);
@@ -211,9 +334,21 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Change the owner and group of a file, following symlinks.
-   * @param {string|Path} path
-   * @param {number} uid
-   * @param {number} gid
+   *
+   * Pass numeric user and group IDs. This follows symlinks and usually
+   * requires elevated privileges. Throws for missing paths, invalid IDs, or
+   * permission failures.
+   *
+   * @param {string|Path} path Path whose owner should change.
+   * @param {number} uid Numeric user ID.
+   * @param {number} gid Numeric group ID.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.chown('/tmp/app.log', 501, 20);
+   * ```
    */
   async chown(path: Path | string, uid: number, gid: number): Promise<void> {
     const s = _toStr(path);
@@ -223,9 +358,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Change the owner and group of a file without following symlinks.
-   * @param {string|Path} path
-   * @param {number} uid
-   * @param {number} gid
+   *
+   * For symlinks, changes ownership of the link itself. The same permission
+   * and platform caveats as `lchown(2)` apply.
+   *
+   * @param {string|Path} path Path whose directory entry owner should change.
+   * @param {number} uid Numeric user ID.
+   * @param {number} gid Numeric group ID.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.lchown('/tmp/current-link', 501, 20);
+   * ```
    */
   async lchown(path: Path | string, uid: number, gid: number): Promise<void> {
     const s = _toStr(path);
@@ -235,9 +381,21 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Set the access and modification times of a file.
-   * @param {string|Path} path
-   * @param {Date|number} atime  Access time (Date or seconds since epoch).
-   * @param {Date|number} mtime  Modification time (Date or seconds since epoch).
+   *
+   * Numeric timestamps are interpreted as seconds since the Unix epoch. `Date`
+   * values are converted to fractional seconds. Throws when the target is
+   * missing or timestamp updates are not permitted.
+   *
+   * @param {string|Path} path Path whose timestamps should change.
+   * @param {Date|number} atime Access time as a `Date` or seconds since epoch.
+   * @param {Date|number} mtime Modification time as a `Date` or seconds since epoch.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.utimes('/tmp/app.log', new Date(), new Date());
+   * ```
    */
   async utimes(path: Path | string, atime: Date | number, mtime: Date | number): Promise<void> {
     const s = _toStr(path);
@@ -256,8 +414,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Truncate a file to a specified length.
-   * @param {string|Path} path
-   * @param {number} [size=0]
+   *
+   * The default size is `0`, which empties the file. Growing a file may create
+   * sparse zero-filled space depending on the filesystem. Throws if the path is
+   * missing, not writable, or invalid for truncation.
+   *
+   * @param {string|Path} path File to truncate.
+   * @param {number} [size=0] Target byte length.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.truncate('/tmp/app.log');
+   * ```
    */
   async truncate(path: Path | string, size = 0): Promise<void> {
     const s = _toStr(path);
@@ -267,8 +437,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Create a hard link.
-   * @param {string|Path} existingPath  Path of the existing file.
-   * @param {string|Path} newPath       Path of the new hard link to create.
+   *
+   * Creates `newPath` as another directory entry for `existingPath`. The source
+   * and destination must usually be on the same filesystem. Throws when the
+   * target exists, the source is missing, or hard links are not allowed.
+   *
+   * @param {string|Path} existingPath Path of the existing file.
+   * @param {string|Path} newPath Path of the hard link to create.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.link('/tmp/report.txt', '/tmp/report-copy.txt');
+   * ```
    */
   async link(existingPath: Path | string, newPath: Path | string): Promise<void> {
     const existS = _toStr(existingPath);
@@ -279,8 +461,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Test access to a path.
-   * @param {string|Path} path
-   * @param {number} [mode=F_OK]  Bitwise-OR of F_OK, R_OK, W_OK, X_OK.
+   *
+   * Wraps `access(2)`. The default mode is `F_OK`, which only checks
+   * existence. Combine `R_OK`, `W_OK`, and `X_OK` to check permissions from
+   * the process perspective. Throws when the requested access is unavailable.
+   *
+   * @param {string|Path} path Path to check.
+   * @param {number} [mode=F_OK] Bitwise OR of `F_OK`, `R_OK`, `W_OK`, and `X_OK`.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem, R_OK, W_OK } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.access('/tmp/app.log', R_OK | W_OK);
+   * ```
    */
   async access(path: Path | string, mode = F_OK): Promise<void> {
     const s = _toStr(path);
@@ -290,8 +484,21 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Copy a file, preserving permissions.
-   * @param {string|Path} src   Source path.
-   * @param {string|Path} dest  Destination path.
+   *
+   * Reads the entire source file into memory, writes the destination with
+   * truncation, then applies the source mode bits. This is intended for modest
+   * files; stream manually for very large files. Throws if either open, read,
+   * write, or chmod step fails.
+   *
+   * @param {string|Path} src Source file path.
+   * @param {string|Path} dest Destination file path.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.copyFile('/tmp/input.txt', '/tmp/output.txt');
+   * ```
    */
   async copyFile(src: Path | string, dest: Path | string): Promise<void> {
     const srcFile = await this.open(src, 'r');
@@ -316,8 +523,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Rename or move a file or directory.
-   * @param {string|Path} oldPath
-   * @param {string|Path} newPath
+   *
+   * Wraps `rename(2)`. Existing destination behavior follows the host POSIX
+   * rules. Moving across filesystems may fail. Throws on missing sources,
+   * invalid destinations, or permission errors.
+   *
+   * @param {string|Path} oldPath Existing path.
+   * @param {string|Path} newPath New path.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.rename('/tmp/upload.tmp', '/tmp/upload.txt');
+   * ```
    */
   async rename(oldPath: Path | string, newPath: Path | string): Promise<void> {
     const oldS = _toStr(oldPath);
@@ -328,8 +547,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Read the target of a symbolic link.
-   * @param {string|Path} path
-   * @returns {Promise<string>}
+   *
+   * Returns the raw link target string exactly as stored by the symlink. The
+   * target may be relative and may not exist. Throws if `path` is not a symlink
+   * or cannot be read.
+   *
+   * @param {string|Path} path Symlink path.
+   * @returns {Promise<string>} Link target text.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * console.log(await fs.readlink('/tmp/current'));
+   * ```
    */
   async readlink(path: Path | string): Promise<string> {
     const s = _toStr(path);
@@ -341,8 +572,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Create a symbolic link.
-   * @param {string|Path} target   Link target (what the symlink points to).
+   *
+   * The `target` is stored as provided; it is not required to exist and is not
+   * normalized. Throws if `linkpath` already exists or the platform rejects the
+   * link creation.
+   *
+   * @param {string|Path} target Link target, as stored in the symlink.
    * @param {string|Path} linkpath Path of the symlink to create.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.symlink('releases/current', '/tmp/app-current');
+   * ```
    */
   async symlink(target: Path | string, linkpath: Path | string): Promise<void> {
     const tS = _toStr(target);
@@ -353,8 +596,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Resolve the canonical absolute path, expanding symlinks.
-   * @param {string|Path} path
-   * @returns {Promise<Path>}
+   *
+   * Wraps `realpath(3)` and returns a string. The path and all required
+   * components must exist. Throws for missing components, loops, or permission
+   * failures.
+   *
+   * @param {string|Path} path Path to resolve.
+   * @returns {Promise<string>} Canonical absolute path.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * console.log(await fs.realpath('/tmp/../tmp'));
+   * ```
    */
   async realpath(path: Path | string): Promise<string> {
     const s = _toStr(path);
@@ -370,8 +625,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Read an entire file and return its UTF-8 contents as a string.
-   * @param {string|Path} path
-   * @returns {Promise<string>}
+   *
+   * Opens the file in read mode, reads all bytes, decodes them as UTF-8, and
+   * closes the handle. This loads the full file into memory. Throws on open,
+   * read, or decode-related filesystem errors.
+   *
+   * @param {string|Path} path File to read.
+   * @returns {Promise<string>} UTF-8 decoded file contents.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * const text = await fs.readFile('/tmp/config.json');
+   * ```
    */
   async readFile(path: Path | string): Promise<string> {
     const file = await this.open(path, 'r');
@@ -384,8 +651,20 @@ export class DiskFileSystem extends FileSystem {
 
   /**
    * Write data to a file, creating or truncating it.
-   * @param {string|Path} path
-   * @param {string|Uint8Array|ArrayBuffer} data
+   *
+   * Opens the path with mode `'w'`, writes the full buffer, and closes the
+   * handle. Strings are encoded as UTF-8. Parent directories are not created.
+   * Throws on open or write failure.
+   *
+   * @param {string|Path} path File to create or replace.
+   * @param {string|Uint8Array|ArrayBuffer} data Data to write.
+   *
+   * ```ts no_run
+   * import { DiskFileSystem } from 'fino:file';
+   *
+   * const fs = new DiskFileSystem();
+   * await fs.writeFile('/tmp/message.txt', 'hello\n');
+   * ```
    */
   async writeFile(path: Path | string, data: string | Uint8Array | ArrayBuffer): Promise<void> {
     const file = await this.open(path, 'w');
@@ -404,6 +683,10 @@ export class DiskFileSystem extends FileSystem {
   /**
    * Walk the filesystem matching entries against a glob pattern.
    * Yields `Entry` / `FileEntry` / `DirEntry` objects for each match.
+   *
+   * Pattern evaluation is delegated to the internal glob walker. Directory
+   * reads happen lazily as iteration advances. Errors from directory listing or
+   * entry inspection propagate through the async iterator.
    *
    * @param {string} pattern  Glob pattern, e.g. `**\/*.mts`, `src/lib/*.ts`.
    * @param {GlobOptions} [options]

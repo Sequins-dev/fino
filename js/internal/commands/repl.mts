@@ -1,7 +1,16 @@
 /**
  * internal/commands/repl — internal runtime module.
  *
- * 
+ * Implements the Fino CLI REPL. The parent realm handles terminal input and
+ * output while a child realm performs evaluation through the inspector bridge,
+ * allowing REPL code to run in a normal module-like runtime context.
+ *
+ * ```js
+ * import { createReplCommand } from 'internal:commands/repl';
+ * const command = createReplCommand();
+ * console.log(command.name);
+ * ```
+ *
  * @internal
  */
 
@@ -68,6 +77,24 @@ function isComplete(buf: string): boolean {
   return depth <= 0 && !inString && !inBlockComment;
 }
 
+/**
+ * Start the interactive REPL loop.
+ *
+ * The loop reads lines from stdin, keeps reading while bracket or quote balance
+ * suggests an incomplete expression, sends complete snippets to a child realm,
+ * and prints JSON-formatted results. `.exit`, Ctrl-C, Ctrl-D on an empty line,
+ * or stdin EOF terminate the loop. Evaluation errors are printed and do not
+ * terminate the session. The returned promise resolves after the child realm is
+ * asked to terminate.
+ *
+ * ```js
+ * import { runReplCommand } from 'internal:commands/repl';
+ * await runReplCommand();
+ * ```
+ *
+ * @returns A promise that resolves when the REPL has shut down.
+ * @internal
+ */
 export async function runReplCommand(): Promise<void> {
   const realm = new Realm({ repl: true });
   const port = realm.port as MessagePort;
@@ -150,6 +177,22 @@ export async function runReplCommand(): Promise<void> {
   await runPromise;
 }
 
+/**
+ * Create the `repl` subcommand used by the root Fino CLI.
+ *
+ * The command has no positional arguments or options and delegates directly to
+ * `runReplCommand()`. Errors from child realm setup, stdin, or stdout propagate
+ * to the CLI command runner.
+ *
+ * ```js
+ * import { createReplCommand } from 'internal:commands/repl';
+ * const repl = createReplCommand();
+ * await repl.parse([]);
+ * ```
+ *
+ * @returns A configured `Command` instance for `fino repl`.
+ * @internal
+ */
 export function createReplCommand(): Command {
   return new Command({
     name: 'repl',

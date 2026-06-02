@@ -38,6 +38,22 @@
  * TransformStream, TransformStreamDefaultController
  * CountQueuingStrategy, ByteLengthQueuingStrategy
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * const { ReadableStream, TransformStream } =
+ *   import 'internal:globals/webstreams';
+ *
+ * const stream = ReadableStream.from(['hello'])
+ *   .pipeThrough(new TransformStream({
+ *     transform(chunk, controller) {
+ *       controller.enqueue(chunk.toUpperCase());
+ *     },
+ *   }));
+ *
+ * for await (const chunk of stream) console.log(chunk);
+ * ```
+ *
  * @internal
  */
 
@@ -220,25 +236,100 @@ function createChannel(): Channel {
 // Queuing strategies
 // ---------------------------------------------------------------------------
 
-/** WHATWG count queuing strategy with constant chunk size of 1. */
+/**
+ * WHATWG count queuing strategy with constant chunk size of 1.
+ *
+ * highWaterMark is number-coerced and size() ignores the chunk value.
+ *
+ * ```typescript no_run
+ * const strategy = new CountQueuingStrategy({ highWaterMark: 4 });
+ * strategy.size({}); // 1
+ * ```
+ */
 export class CountQueuingStrategy {
+  /**
+   * Queue size threshold where backpressure begins.
+   *
+   * ```typescript no_run
+   * new CountQueuingStrategy({ highWaterMark: 2 }).highWaterMark; // 2
+   * ```
+   */
   highWaterMark: number;
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new CountQueuingStrategy({ highWaterMark: 1 }));
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'CountQueuingStrategy'; }
+  /**
+   * Create a count strategy.
+   *
+   * ```typescript no_run
+   * const strategy = new CountQueuingStrategy({ highWaterMark: 1 });
+   * ```
+   */
   constructor({ highWaterMark }: { highWaterMark: number }) {
     this.highWaterMark = Number(highWaterMark);
   }
 
+  /**
+   * Return the size contribution for any chunk.
+   *
+   * ```typescript no_run
+   * new CountQueuingStrategy({ highWaterMark: 1 }).size('x'); // 1
+   * ```
+   */
   size(): number { return 1; }
 }
 
-/** WHATWG byte-length queuing strategy using `chunk.byteLength` as size. */
+/**
+ * WHATWG byte-length queuing strategy using chunk.byteLength as size.
+ *
+ * ```typescript no_run
+ * const strategy = new ByteLengthQueuingStrategy({ highWaterMark: 1024 });
+ * strategy.size(new Uint8Array(8)); // 8
+ * ```
+ */
 export class ByteLengthQueuingStrategy {
+  /**
+   * Byte threshold where backpressure begins.
+   *
+   * ```typescript no_run
+   * new ByteLengthQueuingStrategy({ highWaterMark: 16 }).highWaterMark; // 16
+   * ```
+   */
   highWaterMark: number;
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new ByteLengthQueuingStrategy({ highWaterMark: 1 }));
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ByteLengthQueuingStrategy'; }
+  /**
+   * Create a byte-length strategy.
+   *
+   * ```typescript no_run
+   * const strategy = new ByteLengthQueuingStrategy({ highWaterMark: 4096 });
+   * ```
+   */
   constructor({ highWaterMark }: { highWaterMark: number }) {
     this.highWaterMark = Number(highWaterMark);
   }
 
+  /**
+   * Return chunk.byteLength.
+   *
+   * Passing a value without byteLength returns undefined at runtime through
+   * normal property access, so callers should pass ArrayBuffer views.
+   *
+   * ```typescript no_run
+   * new ByteLengthQueuingStrategy({ highWaterMark: 1 }).size(new Uint8Array(3)); // 3
+   * ```
+   */
   size(chunk: ArrayBufferView): number { return chunk.byteLength; }
 }
 
@@ -446,17 +537,66 @@ function _rsByobFillFromQueue(s: ReadableStreamState, view: ArrayBufferView, min
 // ReadableStreamDefaultController
 // ---------------------------------------------------------------------------
 
+/**
+ * Controller passed to non-byte ReadableStream underlying sources.
+ *
+ * It lets a source enqueue chunks, close the stream, or error it.
+ *
+ * ```typescript no_run
+ * const stream = new ReadableStream({
+ *   start(controller) { controller.enqueue('x'); controller.close(); },
+ * });
+ * ```
+ */
 export class ReadableStreamDefaultController {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(controller); // "[object ReadableStreamDefaultController]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ReadableStreamDefaultController'; }
 
+  /**
+   * Internal constructor bound to a ReadableStream state record.
+   *
+   * User code receives controllers from underlying source callbacks.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ start(controller) { console.log(controller.desiredSize); } });
+   * ```
+   *
+   * @internal
+   */
   constructor(rsState: ReadableStreamState) {
     _rc.set(this, rsState);
   }
 
+  /**
+   * Desired queue size before backpressure applies.
+   *
+   * Returns null when the stream is errored, 0 when closed, or highWaterMark
+   * minus queued size while readable.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ start(controller) { controller.desiredSize; } });
+   * ```
+   */
   get desiredSize() {
     return _rsDesiredSize(_rc.get(this)!);
   }
 
+  /**
+   * Enqueue a chunk into the readable stream.
+   *
+   * Throws if close() has already been requested or the stream is not readable.
+   * Pending reads are fulfilled immediately before queueing.
+   *
+   * ```typescript no_run
+   * const stream = new ReadableStream({ start(controller) { controller.enqueue('x'); } });
+   * ```
+   */
   enqueue(chunk: any) {
     const s = _rc.get(this)!;
     if (s.closeRequested)        throw new TypeError('Cannot enqueue after close()');
@@ -472,6 +612,16 @@ export class ReadableStreamDefaultController {
     }
   }
 
+  /**
+   * Request stream closure after queued chunks are consumed.
+   *
+   * Calling close() twice throws. If the queue is empty, the stream closes
+   * immediately.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ start(controller) { controller.close(); } });
+   * ```
+   */
   close() {
     const s = _rc.get(this)!;
     if (s.state !== 'readable') return;
@@ -480,6 +630,13 @@ export class ReadableStreamDefaultController {
     if (s.queue!.length === 0) _rsMarkClosed(s);
   }
 
+  /**
+   * Error the stream and reject pending reads.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ start(controller) { controller.error(new Error('stop')); } });
+   * ```
+   */
   error(reason: unknown) {
     _rsMarkErrored(_rc.get(this)!, reason);
   }
@@ -489,17 +646,64 @@ export class ReadableStreamDefaultController {
 // ReadableByteStreamController (for type: 'bytes' underlying sources)
 // ---------------------------------------------------------------------------
 
+/**
+ * Controller passed to byte ReadableStream underlying sources.
+ *
+ * It supports Uint8Array enqueueing and BYOB request fulfillment.
+ *
+ * ```typescript no_run
+ * const stream = new ReadableStream({
+ *   type: 'bytes',
+ *   pull(controller) { controller.enqueue(new Uint8Array([1])); },
+ * });
+ * ```
+ */
 export class ReadableByteStreamController {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(controller); // "[object ReadableByteStreamController]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ReadableByteStreamController'; }
 
+  /**
+   * Internal constructor bound to a byte stream state record.
+   *
+   * User code receives this controller from byte underlying source callbacks.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ type: 'bytes', start(controller) { controller.desiredSize; } });
+   * ```
+   *
+   * @internal
+   */
   constructor(rsState: ReadableStreamState) {
     _rbc.set(this, rsState);
   }
 
+  /**
+   * Desired byte queue size before backpressure applies.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ type: 'bytes', start(controller) { controller.desiredSize; } });
+   * ```
+   */
   get desiredSize() {
     return _rsDesiredSize(_rbc.get(this)!);
   }
 
+  /**
+   * Current BYOB request, or null when no BYOB read is pending.
+   *
+   * The same request object is reused for the pending descriptor until
+   * respond() or respondWithNewView() resolves it.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ type: 'bytes', pull(controller) { controller.byobRequest; } });
+   * ```
+   */
   get byobRequest() {
     const s = _rbc.get(this)!;
     if (!s.pendingByob || s.pendingByob.length === 0) return null;
@@ -508,6 +712,16 @@ export class ReadableByteStreamController {
     return desc.request;
   }
 
+  /**
+   * Enqueue bytes into the stream.
+   *
+   * Accepts ArrayBuffer or ArrayBufferView and normalizes to Uint8Array. Throws
+   * if the stream is closed, errored, or close() was requested.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ type: 'bytes', start(controller) { controller.enqueue(new Uint8Array([1])); } });
+   * ```
+   */
   enqueue(chunk: ArrayBuffer | ArrayBufferView) {
     const s = _rbc.get(this)!;
     if (s.state !== 'readable') throw new TypeError('Stream is not readable');
@@ -567,6 +781,13 @@ export class ReadableByteStreamController {
     _rsPullIfNeeded(s);
   }
 
+  /**
+   * Request byte stream closure after queued and pending BYOB bytes complete.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ type: 'bytes', start(controller) { controller.close(); } });
+   * ```
+   */
   close() {
     const s = _rbc.get(this)!;
     if (s.state !== 'readable') return;
@@ -577,11 +798,29 @@ export class ReadableByteStreamController {
     }
   }
 
+  /**
+   * Error the byte stream and reject pending reads.
+   *
+   * ```typescript no_run
+   * new ReadableStream({ type: 'bytes', start(controller) { controller.error('stop'); } });
+   * ```
+   */
   error(reason: unknown) {
     _rsMarkErrored(_rbc.get(this)!, reason);
   }
 
   // Called by ReadableStreamBYOBRequest.respond(bytesWritten)
+  /**
+   * Fulfill the active BYOB request with bytes written into its view.
+   *
+   * This internal method is called by ReadableStreamBYOBRequest.respond().
+   *
+   * ```typescript no_run
+   * controller._byobRespond(4, view);
+   * ```
+   *
+   * @internal
+   */
   _byobRespond(bytesWritten: number, view: ArrayBufferView) {
     const s = _rbc.get(this)!;
     if (!s.pendingByob || s.pendingByob.length === 0) return;
@@ -609,6 +848,17 @@ export class ReadableByteStreamController {
   }
 
   // Called by ReadableStreamBYOBRequest.respondWithNewView(view)
+  /**
+   * Fulfill the active BYOB request with a replacement view.
+   *
+   * This internal method is called by respondWithNewView().
+   *
+   * ```typescript no_run
+   * controller._byobRespondWithNewView(new Uint8Array(4));
+   * ```
+   *
+   * @internal
+   */
   _byobRespondWithNewView(view: ArrayBufferView) {
     const s = _rbc.get(this)!;
     if (!s.pendingByob || s.pendingByob.length === 0) return;
@@ -630,23 +880,119 @@ export class ReadableByteStreamController {
 // ReadableStreamBYOBRequest
 // ---------------------------------------------------------------------------
 
+/**
+ * Active bring-your-own-buffer request for byte streams.
+ *
+ * Underlying byte sources use this to report how many bytes were written into
+ * the caller-provided view.
+ *
+ * ```typescript no_run
+ * new ReadableStream({ type: 'bytes', pull(controller) {
+ *   const request = controller.byobRequest;
+ *   if (request) request.respond(0);
+ * } });
+ * ```
+ */
 export class ReadableStreamBYOBRequest {
+  /**
+   * Private property `#controller` used by `ReadableStreamBYOBRequest`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #controller = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#controller;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #controller: ReadableByteStreamController;
+  /**
+   * Private property `#desc` used by `ReadableStreamBYOBRequest`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #desc = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#desc;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #desc: PullIntoDescriptor;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(request); // "[object ReadableStreamBYOBRequest]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ReadableStreamBYOBRequest'; }
 
+  /**
+   * Internal constructor for a pending BYOB pull descriptor.
+   *
+   * ```typescript no_run
+   * const request = controller.byobRequest;
+   * ```
+   *
+   * @internal
+   */
   constructor(controller: ReadableByteStreamController, desc: PullIntoDescriptor) {
     this.#controller = controller;
     this.#desc       = desc;
   }
 
+  /**
+   * View supplied by the BYOB reader.
+   *
+   * ```typescript no_run
+   * const view = request.view;
+   * ```
+   */
   get view() { return this.#desc.view; }
 
+  /**
+   * Report how many bytes were written into view.
+   *
+   * Resolves the pending BYOB read once the requested minimum has been filled.
+   *
+   * ```typescript no_run
+   * request.respond(8);
+   * ```
+   */
   respond(bytesWritten: number) {
     this.#controller._byobRespond(Number(bytesWritten), this.#desc.view);
   }
 
+  /**
+   * Respond with a replacement ArrayBufferView.
+   *
+   * Passing a non-view throws TypeError.
+   *
+   * ```typescript no_run
+   * request.respondWithNewView(new Uint8Array([1, 2]));
+   * ```
+   */
   respondWithNewView(view: ArrayBufferView) {
     if (!ArrayBuffer.isView(view)) throw new TypeError('view must be an ArrayBufferView');
     this.#controller._byobRespondWithNewView(view);
@@ -657,9 +1003,39 @@ export class ReadableStreamBYOBRequest {
 // ReadableStream
 // ---------------------------------------------------------------------------
 
+/**
+ * WHATWG ReadableStream implementation with source and iterable backends.
+ *
+ * Source-backed streams use controllers and queues. Iterable-backed streams are
+ * created with ReadableStream.from() and read directly from the iterable.
+ *
+ * ```typescript no_run
+ * const stream = new ReadableStream({ start(controller) { controller.close(); } });
+ * ```
+ */
 export class ReadableStream {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new ReadableStream()); // "[object ReadableStream]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ReadableStream'; }
 
+  /**
+   * Create a source-backed ReadableStream.
+   *
+   * The underlying source may define start, pull, cancel, and type: "bytes".
+   * Queuing strategy defaults to highWaterMark 1 for default streams and 0 for
+   * byte streams.
+   *
+   * ```typescript no_run
+   * const stream = new ReadableStream({
+   *   pull(controller) { controller.enqueue('chunk'); controller.close(); },
+   * });
+   * ```
+   */
   constructor(underlyingSource?: any, queuingStrategy?: QueuingStrategyLike) {
     const src         = underlyingSource ?? {};
     const isByteStream = src.type === 'bytes';
@@ -718,6 +1094,15 @@ export class ReadableStream {
                .catch(function rsStartError(e) { controller.error(e); });
   }
 
+  /**
+   * Create a ReadableStream from an iterable or async iterable.
+   *
+   * The iterable is consumed lazily. Non-iterable inputs throw TypeError.
+   *
+   * ```typescript no_run
+   * const stream = ReadableStream.from([1, 2, 3]);
+   * ```
+   */
   static from(asyncIterable: AsyncIterable<any> | Iterable<any>) {
     const source = asyncIterable as (AsyncIterable<any> & Iterable<any>);
     if (asyncIterable == null ||
@@ -730,14 +1115,44 @@ export class ReadableStream {
     return rs;
   }
 
+  /**
+   * Whether the stream is locked to a reader, pipe, or async iterator.
+   *
+   * ```typescript no_run
+   * const stream = new ReadableStream();
+   * stream.locked; // false
+   * ```
+   */
   get locked() { return _rs.get(this)!.locked; }
 
+  /**
+   * Cancel the stream with a reason.
+   *
+   * Rejects when the stream is locked. Iterable streams call the iterator
+   * return() method when available; source streams call underlyingSource.cancel.
+   *
+   * ```typescript no_run
+   * const stream = new ReadableStream();
+   * await stream.cancel('done');
+   * ```
+   */
   cancel(reason: unknown) {
     const s = _rs.get(this)!;
     if (s.locked) return Promise.reject(new TypeError('ReadableStream is locked to a reader'));
     return _rsCancel(s, reason);
   }
 
+  /**
+   * Acquire a reader and lock the stream.
+   *
+   * mode: "byob" requires a byte stream and returns a ReadableStreamBYOBReader.
+   * Without mode, this returns a ReadableStreamDefaultReader.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStream().getReader();
+   * reader.releaseLock();
+   * ```
+   */
   getReader(options?: { mode?: 'byob' }) {
     const s    = _rs.get(this)!;
     const mode = options?.mode;
@@ -756,6 +1171,15 @@ export class ReadableStream {
     return reader;
   }
 
+  /**
+   * Async iterator over stream chunks.
+   *
+   * Iteration locks the stream until completion, error, or iterator return().
+   *
+   * ```typescript no_run
+   * for await (const chunk of ReadableStream.from(['a'])) console.log(chunk);
+   * ```
+   */
   [Symbol.asyncIterator]() {
     const s = _rs.get(this)!;
     if (s.locked) throw new TypeError('ReadableStream is locked');
@@ -786,6 +1210,19 @@ export class ReadableStream {
     };
   }
 
+  /**
+   * Pipe this readable stream into a writable stream.
+   *
+   * Rejects if either stream is locked. preventClose, preventAbort, and
+   * preventCancel suppress the corresponding propagation steps. signal aborts
+   * the pipe and propagates according to those flags.
+   *
+   * ```typescript no_run
+   * const source = ReadableStream.from(['a']);
+   * const sink = new WritableStream({ write(chunk) { console.log(chunk); } });
+   * await source.pipeTo(sink);
+   * ```
+   */
   async pipeTo(destination: WritableStream, options?: { preventClose?: boolean; preventAbort?: boolean; preventCancel?: boolean; signal?: AbortSignal | null }) {
     const src = _rs.get(this)!;
     const dst = _ws.get(destination);
@@ -867,6 +1304,17 @@ export class ReadableStream {
     }
   }
 
+  /**
+   * Pipe through a transform and return its readable side.
+   *
+   * Starts pipeTo(transform.writable) in the background. Throws if either side
+   * is invalid or locked.
+   *
+   * ```typescript no_run
+   * const transform = new TransformStream();
+   * const readable = ReadableStream.from(['a']).pipeThrough(transform);
+   * ```
+   */
   pipeThrough(transform: { readable: ReadableStream; writable: WritableStream }, options?: { preventClose?: boolean; preventAbort?: boolean; preventCancel?: boolean; signal?: AbortSignal | null }) {
     const { readable, writable } = transform ?? {};
     if (!(readable instanceof ReadableStream))
@@ -881,6 +1329,16 @@ export class ReadableStream {
     return readable;
   }
 
+  /**
+   * Split this stream into two readable branches.
+   *
+   * The original stream is locked while teeing. If both branches cancel, the
+   * original source is cancelled with both reasons.
+   *
+   * ```typescript no_run
+   * const [a, b] = ReadableStream.from([1, 2]).tee();
+   * ```
+   */
   tee() {
     const s = _rs.get(this)!;
     if (s.locked) throw new TypeError('ReadableStream is locked');
@@ -951,9 +1409,36 @@ export class ReadableStream {
 // ReadableStreamDefaultReader
 // ---------------------------------------------------------------------------
 
+/**
+ * Default reader for non-BYOB stream reads.
+ *
+ * Acquiring a reader locks the stream until releaseLock(), cancel(), or stream
+ * completion.
+ *
+ * ```typescript no_run
+ * const reader = ReadableStream.from(['x']).getReader();
+ * await reader.read();
+ * ```
+ */
 export class ReadableStreamDefaultReader {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(reader); // "[object ReadableStreamDefaultReader]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ReadableStreamDefaultReader'; }
 
+  /**
+   * Create a default reader and lock the stream.
+   *
+   * Throws if the argument is not a ReadableStream or is already locked.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStreamDefaultReader(new ReadableStream());
+   * ```
+   */
   constructor(stream: ReadableStream) {
     const s = _rs.get(stream);
     if (!s) throw new TypeError('Argument must be a ReadableStream');
@@ -973,8 +1458,27 @@ export class ReadableStreamDefaultReader {
     s.reader = this;
   }
 
+  /**
+   * Promise resolved when the stream closes and rejected on error or release.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStream().getReader();
+   * reader.closed.catch(() => {});
+   * ```
+   */
   get closed() { return _rr.get(this)!.closedPromise; }
 
+  /**
+   * Read the next chunk.
+   *
+   * Resolves to { done, value }. Rejects if the reader was released or the
+   * stream errors.
+   *
+   * ```typescript no_run
+   * const result = await ReadableStream.from(['x']).getReader().read();
+   * result.value; // "x"
+   * ```
+   */
   read() {
     const rr = _rr.get(this);
     if (!rr) return Promise.reject(new TypeError('Reader is released'));
@@ -990,12 +1494,33 @@ export class ReadableStreamDefaultReader {
     });
   }
 
+  /**
+   * Cancel the associated stream.
+   *
+   * Rejects if the reader has been released.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStream().getReader();
+   * await reader.cancel('done');
+   * ```
+   */
   cancel(reason: unknown) {
     const rr = _rr.get(this);
     if (!rr) return Promise.reject(new TypeError('Reader is released'));
     return _rsCancel(rr.rsState, reason).then(function rrCancelled() { rr.closedResolve?.(); });
   }
 
+  /**
+   * Release the reader lock.
+   *
+   * Pending reads are rejected and the closed promise rejects because the reader
+   * was released before stream closure.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStream().getReader();
+   * reader.releaseLock();
+   * ```
+   */
   releaseLock() {
     const rr = _rr.get(this);
     if (!rr) return;
@@ -1017,9 +1542,36 @@ export class ReadableStreamDefaultReader {
 // ReadableStreamBYOBReader
 // ---------------------------------------------------------------------------
 
+/**
+ * BYOB reader for byte streams.
+ *
+ * read(view) fills caller-provided buffers and can wait for a minimum byte
+ * count when options.min is supplied.
+ *
+ * ```typescript no_run
+ * const stream = new ReadableStream({ type: 'bytes' });
+ * const reader = stream.getReader({ mode: 'byob' });
+ * ```
+ */
 export class ReadableStreamBYOBReader {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(reader); // "[object ReadableStreamBYOBReader]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'ReadableStreamBYOBReader'; }
 
+  /**
+   * Create a BYOB reader and lock a byte stream.
+   *
+   * Throws if the stream is not a byte stream or is already locked.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStream({ type: 'bytes' }).getReader({ mode: 'byob' });
+   * ```
+   */
   constructor(stream: ReadableStream) {
     const s = _rs.get(stream);
     if (!s) throw new TypeError('Argument must be a ReadableStream');
@@ -1035,8 +1587,26 @@ export class ReadableStreamBYOBReader {
     s.reader = this;
   }
 
+  /**
+   * Promise resolved when the byte stream closes and rejected on error/release.
+   *
+   * ```typescript no_run
+   * const reader = new ReadableStream({ type: 'bytes' }).getReader({ mode: 'byob' });
+   * reader.closed.catch(() => {});
+   * ```
+   */
   get closed() { return _br.get(this)!.closedPromise; }
 
+  /**
+   * Read bytes into a supplied ArrayBufferView.
+   *
+   * Rejects for released readers, non-views, zero-length views, or invalid min.
+   * Resolves to a Uint8Array view over the filled region.
+   *
+   * ```typescript no_run
+   * const result = await reader.read(new Uint8Array(16), { min: 1 });
+   * ```
+   */
   read(view: ArrayBufferView, options?: { min?: number }) {
     const br = _br.get(this);
     if (!br) return Promise.reject(new TypeError('Reader is released'));
@@ -1071,12 +1641,28 @@ export class ReadableStreamBYOBReader {
     });
   }
 
+  /**
+   * Cancel the associated byte stream.
+   *
+   * ```typescript no_run
+   * await reader.cancel('done');
+   * ```
+   */
   cancel(reason: unknown) {
     const br = _br.get(this);
     if (!br) return Promise.reject(new TypeError('Reader is released'));
     return _rsCancel(br.rsState, reason).then(function brCancelled() { br.closedResolve?.(); });
   }
 
+  /**
+   * Release the BYOB reader lock.
+   *
+   * Pending BYOB reads are rejected.
+   *
+   * ```typescript no_run
+   * reader.releaseLock();
+   * ```
+   */
   releaseLock() {
     const br = _br.get(this);
     if (!br) return;
@@ -1234,23 +1820,106 @@ async function _wsCloseInternal(s: WritableStreamState): Promise<void> {
 // WritableStreamDefaultController
 // ---------------------------------------------------------------------------
 
+/**
+ * Controller passed to WritableStream underlying sinks.
+ *
+ * It exposes an abort signal and lets the sink error the stream.
+ *
+ * ```typescript no_run
+ * const stream = new WritableStream({ start(controller) { controller.signal; } });
+ * ```
+ */
 export class WritableStreamDefaultController {
+  /**
+   * Private property `#abortCtrl` used by `WritableStreamDefaultController`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #abortCtrl = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#abortCtrl;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #abortCtrl: AbortController;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(controller); // "[object WritableStreamDefaultController]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'WritableStreamDefaultController'; }
 
+  /**
+   * Internal constructor bound to a WritableStream state record.
+   *
+   * ```typescript no_run
+   * new WritableStream({ start(controller) { controller.signal; } });
+   * ```
+   *
+   * @internal
+   */
   constructor(wsState: WritableStreamState) {
     this.#abortCtrl = new AbortController();
     _wc.set(this, wsState);
   }
 
+  /**
+   * AbortSignal that fires when the writable stream aborts.
+   *
+   * ```typescript no_run
+   * new WritableStream({ start(controller) { controller.signal.aborted; } });
+   * ```
+   */
   get signal()      { return this.#abortCtrl.signal; }
+
+  /**
+   * Abort reason from the controller signal.
+   *
+   * Undefined before the stream aborts.
+   *
+   * ```typescript no_run
+   * new WritableStream({ start(controller) { controller.abortReason; } });
+   * ```
+   */
   get abortReason() { return this.#abortCtrl.signal.reason; }
 
+  /**
+   * Error the writable stream.
+   *
+   * Pending and future writes reject with the reason.
+   *
+   * ```typescript no_run
+   * new WritableStream({ start(controller) { controller.error('stop'); } });
+   * ```
+   */
   error(reason: unknown) {
     _wsAbort(_wc.get(this)!, reason);
   }
 
+  /**
+   * Abort this controller's signal.
+   *
+   * Called by the writable abort path after stream state is updated.
+   *
+   * ```typescript no_run
+   * controller._abort('stop');
+   * ```
+   *
+   * @internal
+   */
   _abort(reason: unknown) { this.#abortCtrl.abort(reason); }
 }
 
@@ -1258,9 +1927,36 @@ export class WritableStreamDefaultController {
 // WritableStream
 // ---------------------------------------------------------------------------
 
+/**
+ * WHATWG WritableStream implementation with sink and Fino Writer backends.
+ *
+ * Sink-backed streams serialize writes through an underlyingSink. Writer-backed
+ * streams delegate directly to a Fino Writer for low overhead.
+ *
+ * ```typescript no_run
+ * const stream = new WritableStream({ write(chunk) { console.log(chunk); } });
+ * ```
+ */
 export class WritableStream {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new WritableStream()); // "[object WritableStream]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'WritableStream'; }
 
+  /**
+   * Create a writable stream from an underlying sink or Fino Writer.
+   *
+   * start(controller), write(chunk, controller), close(), and abort(reason)
+   * hooks are supported for sink objects.
+   *
+   * ```typescript no_run
+   * const stream = new WritableStream({ write(chunk) { console.log(chunk); } });
+   * ```
+   */
   constructor(underlyingSink?: any, queuingStrategy?: QueuingStrategyLike) {
     // Fast path: if the sink is a Fino Writer, bypass all controller machinery.
     if (underlyingSink instanceof Writer) {
@@ -1288,20 +1984,57 @@ export class WritableStream {
     startResult.catch(function wsStartError(e) { controller.error(e); });
   }
 
+  /**
+   * Whether the stream is locked to a writer or pipe operation.
+   *
+   * ```typescript no_run
+   * new WritableStream().locked; // false
+   * ```
+   */
   get locked() { return _ws.get(this)!.locked; }
 
+  /**
+   * Close the writable stream after queued writes finish.
+   *
+   * Rejects when locked, already closing, or errored.
+   *
+   * ```typescript no_run
+   * const stream = new WritableStream();
+   * await stream.close();
+   * ```
+   */
   close() {
     const s = _ws.get(this)!;
     if (s.locked) return Promise.reject(new TypeError('WritableStream is locked'));
     return _wsCloseInternal(s);
   }
 
+  /**
+   * Abort the writable stream with a reason.
+   *
+   * Rejects if the stream is locked. Calls underlyingSink.abort when provided.
+   *
+   * ```typescript no_run
+   * const stream = new WritableStream();
+   * await stream.abort('stop');
+   * ```
+   */
   abort(reason: unknown) {
     const s = _ws.get(this)!;
     if (s.locked) return Promise.reject(new TypeError('Cannot abort a locked WritableStream'));
     return _wsAbort(s, reason);
   }
 
+  /**
+   * Acquire a default writer and lock the stream.
+   *
+   * Throws when the stream is already locked.
+   *
+   * ```typescript no_run
+   * const writer = new WritableStream().getWriter();
+   * writer.releaseLock();
+   * ```
+   */
   getWriter() {
     const s = _ws.get(this)!;
     if (s.locked) throw new TypeError('WritableStream is already locked to a writer');
@@ -1316,9 +2049,36 @@ export class WritableStream {
 // WritableStreamDefaultWriter
 // ---------------------------------------------------------------------------
 
+/**
+ * Default writer for WritableStream.
+ *
+ * Writers expose backpressure through ready and desiredSize and release the
+ * stream lock with releaseLock().
+ *
+ * ```typescript no_run
+ * const writer = new WritableStream().getWriter();
+ * await writer.write('x');
+ * ```
+ */
 export class WritableStreamDefaultWriter {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(writer); // "[object WritableStreamDefaultWriter]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'WritableStreamDefaultWriter'; }
 
+  /**
+   * Create a writer and lock the stream.
+   *
+   * Throws if the argument is not a WritableStream or is already locked.
+   *
+   * ```typescript no_run
+   * const writer = new WritableStreamDefaultWriter(new WritableStream());
+   * ```
+   */
   constructor(stream: WritableStream) {
     const s = _ws.get(stream);
     if (!s) throw new TypeError('Argument must be a WritableStream');
@@ -1333,8 +2093,26 @@ export class WritableStreamDefaultWriter {
     s.writer = this;
   }
 
+  /**
+   * Promise resolved when the stream closes and rejected on error/release.
+   *
+   * ```typescript no_run
+   * const writer = new WritableStream().getWriter();
+   * writer.closed.catch(() => {});
+   * ```
+   */
   get closed()      { return _ww.get(this)!.closedPromise; }
 
+  /**
+   * Remaining queue capacity before backpressure applies.
+   *
+   * Returns null for errored streams and 0 for closed streams.
+   *
+   * ```typescript no_run
+   * const writer = new WritableStream().getWriter();
+   * writer.desiredSize;
+   * ```
+   */
   get desiredSize() {
     const ww = _ww.get(this);
     if (!ww) return null;
@@ -1345,18 +2123,44 @@ export class WritableStreamDefaultWriter {
     return s.highWaterMark! - s.queueTotalSize!;
   }
 
+  /**
+   * Promise that resolves when backpressure clears.
+   *
+   * ```typescript no_run
+   * await writer.ready;
+   * ```
+   */
   get ready() {
     const ww = _ww.get(this);
     if (!ww) return Promise.resolve();
     return ww.wsState.readyPromise;
   }
 
+  /**
+   * Write a chunk to the stream.
+   *
+   * Rejects if the writer is released or the stream is not writable.
+   *
+   * ```typescript no_run
+   * const writer = new WritableStream().getWriter();
+   * await writer.write('chunk');
+   * ```
+   */
   write(chunk: any) {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
     return _wsWriteInternal(ww.wsState, chunk);
   }
 
+  /**
+   * Close the stream through this writer.
+   *
+   * Resolves writer.closed on success and rejects it on close failure.
+   *
+   * ```typescript no_run
+   * await writer.close();
+   * ```
+   */
   close() {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
@@ -1365,12 +2169,29 @@ export class WritableStreamDefaultWriter {
       .catch(function wwCloseFailed(e) { ww.closedReject?.(e); throw e; });
   }
 
+  /**
+   * Abort the stream through this writer.
+   *
+   * ```typescript no_run
+   * await writer.abort('stop');
+   * ```
+   */
   abort(reason: unknown) {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
     return _wsAbort(ww.wsState, reason);
   }
 
+  /**
+   * Release the writer lock.
+   *
+   * The writer's closed promise rejects because the writer no longer observes
+   * stream closure.
+   *
+   * ```typescript no_run
+   * writer.releaseLock();
+   * ```
+   */
   releaseLock() {
     const ww = _ww.get(this);
     if (!ww) return;
@@ -1387,24 +2208,118 @@ export class WritableStreamDefaultWriter {
 // TransformStreamDefaultController
 // ---------------------------------------------------------------------------
 
+/**
+ * Controller passed to TransformStream transformer callbacks.
+ *
+ * It can enqueue transformed chunks, terminate the readable side, or error the
+ * transform output.
+ *
+ * ```typescript no_run
+ * const stream = new TransformStream({
+ *   transform(chunk, controller) { controller.enqueue(chunk); },
+ * });
+ * ```
+ */
 export class TransformStreamDefaultController {
+  /**
+   * Private property `#rsState` used by `TransformStreamDefaultController`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #rsState = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#rsState;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #rsState: ReadableStreamState | null = null;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(controller); // "[object TransformStreamDefaultController]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'TransformStreamDefaultController'; }
 
+  /**
+   * Internal constructor bound to the transform output channel.
+   *
+   * User code receives controllers from transformer callbacks.
+   *
+   * ```typescript no_run
+   * new TransformStream({ start(controller) { controller.desiredSize; } });
+   * ```
+   *
+   * @internal
+   */
   constructor(channel: Channel) {
     _tc.set(this, channel);
   }
 
+  /**
+   * Attach readable state so desiredSize reflects readable backpressure.
+   *
+   * Used when a readable strategy creates a source-backed readable side.
+   *
+   * ```typescript no_run
+   * controller._setReadableState(undefined);
+   * ```
+   *
+   * @internal
+   */
   _setReadableState(rsState: ReadableStreamState | undefined) { this.#rsState = rsState ?? null; }
 
+  /**
+   * Desired readable-side queue size.
+   *
+   * Returns 1 before a readable state is attached.
+   *
+   * ```typescript no_run
+   * new TransformStream({ transform(chunk, controller) { controller.desiredSize; } });
+   * ```
+   */
   get desiredSize() {
     if (this.#rsState) return _rsDesiredSize(this.#rsState);
     return 1;
   }
 
+  /**
+   * Enqueue a transformed chunk to the readable side.
+   *
+   * ```typescript no_run
+   * new TransformStream({ transform(chunk, controller) { controller.enqueue(chunk); } });
+   * ```
+   */
   enqueue(chunk: any)  { _tc.get(this)!.enqueue(chunk); }
+
+  /**
+   * Close the readable side immediately.
+   *
+   * ```typescript no_run
+   * new TransformStream({ transform(_chunk, controller) { controller.terminate(); } });
+   * ```
+   */
   terminate()     { _tc.get(this)!.close(); }
+
+  /**
+   * Error the readable side with a reason.
+   *
+   * ```typescript no_run
+   * new TransformStream({ transform(_chunk, controller) { controller.error('stop'); } });
+   * ```
+   */
   error(reason: unknown)   { _tc.get(this)!.error(reason); }
 }
 
@@ -1412,12 +2327,86 @@ export class TransformStreamDefaultController {
 // TransformStream
 // ---------------------------------------------------------------------------
 
+/**
+ * WHATWG TransformStream composed of writable and readable sides.
+ *
+ * Transformer callbacks can start, transform chunks, and flush before closing.
+ * Without a transform callback, chunks pass through unchanged.
+ *
+ * ```typescript no_run
+ * const upper = new TransformStream({
+ *   transform(chunk, controller) { controller.enqueue(String(chunk).toUpperCase()); },
+ * });
+ * ```
+ */
 export class TransformStream {
+  /**
+   * Private property `#readable` used by `TransformStream`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readable = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readable;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readable: ReadableStream;
+  /**
+   * Private property `#writable` used by `TransformStream`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #writable = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#writable;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #writable: WritableStream;
 
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new TransformStream()); // "[object TransformStream]"
+   * ```
+   */
   get [Symbol.toStringTag]() { return 'TransformStream'; }
 
+  /**
+   * Create a transform stream.
+   *
+   * transformer.start receives the controller, transformer.transform handles
+   * each written chunk, and transformer.flush runs before readable closure.
+   * Strategies apply to the writable and readable sides respectively.
+   *
+   * ```typescript no_run
+   * const stream = new TransformStream({
+   *   transform(chunk, controller) { controller.enqueue(chunk); },
+   * });
+   * ```
+   */
   constructor(transformer?: any, writableStrategy?: QueuingStrategyLike, readableStrategy?: QueuingStrategyLike) {
     const channel    = createChannel();
     const controller = new TransformStreamDefaultController(channel);
@@ -1464,6 +2453,23 @@ export class TransformStream {
     }
   }
 
+  /**
+   * Readable side that emits transformed chunks.
+   *
+   * ```typescript no_run
+   * const stream = new TransformStream();
+   * stream.readable;
+   * ```
+   */
   get readable() { return this.#readable; }
+
+  /**
+   * Writable side that accepts input chunks.
+   *
+   * ```typescript no_run
+   * const stream = new TransformStream();
+   * stream.writable;
+   * ```
+   */
   get writable() { return this.#writable; }
 }

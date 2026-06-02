@@ -7,6 +7,8 @@ import {
   Resolver, lookup, RECORD_TYPES,
   _encodeName, _buildQuery, _decodeName, _parseResponse, _reverseIP,
 } from 'fino:net/dns';
+import { dlopen } from 'fino:ffi';
+import { os } from 'fino:process';
 
 type DnsErrorLike = { message?: string; code?: string };
 
@@ -229,8 +231,6 @@ describe('Integration', () => {
     // Bind a local UDP socket that receives queries but never responds.
     // Using 192.0.2.1:53 fails on macOS where mDNSResponder intercepts all
     // port-53 traffic and returns real DNS answers.
-    const { dlopen } = await import('fino:ffi');
-    const { os } = await import('fino:process');
     const libc = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
     const ffi = dlopen(libc, {
       socket:      { parameters: ['i32', 'i32', 'i32'], result: 'i32' },

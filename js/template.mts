@@ -4,6 +4,15 @@
  * Supports escaped variables, triple-mustache/unescaped variables, truthy and
  * inverted sections, list iteration, and dotted-name lookup. Partials are
  * intentionally not implemented yet.
+ *
+ * @example
+ * ```ts no_run
+ * import { compile, render } from 'fino:template';
+ *
+ * const renderUser = compile('{{#active}}{{name}}{{/active}}{{^active}}disabled{{/active}}');
+ * const output = renderUser({ active: true, name: '<Ada>' });
+ * const list = render('{{#items}}{{.}} {{/items}}', { items: ['a', 'b'] });
+ * ```
  */
 
 import { Scanner } from 'fino:parsing/scanner';
@@ -13,9 +22,35 @@ type Token =
   | { type: 'variable'; name: string; escaped: boolean }
   | { type: 'section'; name: string; inverted: boolean; children: Token[] };
 
-/** Options accepted by one-shot template rendering. Reserved for future flags. */
+/**
+ * Options accepted by one-shot template rendering.
+ *
+ * The current renderer has no runtime flags, so this interface is intentionally
+ * empty and exists to keep `render()` forward-compatible with future escaping
+ * or partial-loading options.
+ *
+ * ```ts no_run
+ * import { render, type RenderOptions } from 'fino:template';
+ *
+ * const options: RenderOptions = {};
+ * render('Hello {{name}}', { name: 'Ada' }, options);
+ * ```
+ */
 export interface RenderOptions {}
-/** Options accepted by template compilation. Reserved for future flags. */
+/**
+ * Options accepted by template compilation.
+ *
+ * `CompileOptions` currently inherits the empty `RenderOptions` shape. Pass the
+ * same options to `compile()` that you would pass to `render()`.
+ *
+ * ```ts no_run
+ * import { compile, type CompileOptions } from 'fino:template';
+ *
+ * const options: CompileOptions = {};
+ * const renderUser = compile('{{name}}', options);
+ * renderUser({ name: 'Ada' });
+ * ```
+ */
 export interface CompileOptions extends RenderOptions {}
 
 interface ContextFrame {
@@ -23,7 +58,21 @@ interface ContextFrame {
   parent: ContextFrame | null;
 }
 
-/** Escape a value for safe insertion into HTML text or attributes. */
+/**
+ * Escape a value for safe insertion into HTML text or attributes.
+ *
+ * `null` and `undefined` become the empty string. Other values are stringified
+ * and the five HTML-sensitive characters (`&`, `<`, `>`, `"`, and `'`) are
+ * replaced with entities. This is the same escaping used for normal
+ * `{{name}}` template variables.
+ *
+ * ```ts no_run
+ * import { escapeHtml } from 'fino:template';
+ *
+ * escapeHtml('<script>alert("x")</script>');
+ * // '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;'
+ * ```
+ */
 export function escapeHtml(value: unknown): string {
   return String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -35,6 +84,11 @@ export function escapeHtml(value: unknown): string {
 
 /**
  * Compile a template string into a reusable render function.
+ *
+ * The returned function accepts any data value. Objects are searched by own
+ * properties, maps by key, arrays and other iterables drive sections, and
+ * dotted names traverse nested objects. Syntax errors such as unclosed
+ * sections throw during compilation.
  *
  * ```ts no_run
  * import { compile } from 'fino:template';
@@ -50,6 +104,9 @@ export function compile(template: string, _options: CompileOptions = {}): (data?
 
 /**
  * Render a template once with the provided data.
+ *
+ * This is equivalent to `compile(template, options)(data)`. Use `compile()`
+ * directly when the same template is rendered repeatedly.
  *
  * ```ts no_run
  * import { render } from 'fino:template';

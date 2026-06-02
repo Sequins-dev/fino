@@ -110,7 +110,15 @@ const CLOSE_TIMEOUT_MS    = 5_000;
 // Event classes (CloseEvent, ErrorEvent — MessageEvent imported from shared module)
 // ---------------------------------------------------------------------------
 
-/** Web-compatible message event used for WebSocket `message` events. */
+/** Web-compatible message event used for WebSocket `message` events.
+ *
+ * The event data is a string for text messages and binary data for binary
+ * messages, with the WHATWG facade applying `binaryType` conversion.
+ *
+ * ```ts no_run
+ * ws.addEventListener('message', (event) => console.log(event.data));
+ * ```
+ */
 export { MessageEvent };
 
 interface CloseEventInit {
@@ -119,12 +127,93 @@ interface CloseEventInit {
   wasClean?: boolean;
 }
 
-/** WebSocket close event carrying close code, reason, and cleanliness. */
+/**
+ * WebSocket close event carrying close code, reason, and cleanliness.
+ *
+ * Instances are dispatched for both protocol close handshakes and local
+ * teardown. Code `1006` may be used internally to report abnormal closure.
+ *
+ * ```ts no_run
+ * ws.onclose = (event) => console.log(event.code, event.reason, event.wasClean);
+ * ```
+ */
 export class CloseEvent extends Event {
+  /**
+   * Private property `#code` used by `CloseEvent`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #code = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#code;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #code:     number;
+  /**
+   * Private property `#reason` used by `CloseEvent`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #reason = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#reason;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #reason:   string;
+  /**
+   * Private property `#wasClean` used by `CloseEvent`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #wasClean = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#wasClean;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #wasClean: boolean;
 
+  /**
+   * Create a close event.
+   *
+   * Missing fields default to code `0`, empty reason, and `wasClean: false`.
+   *
+   * ```ts no_run
+   * const event = new CloseEvent('close', { code: 1000, reason: 'done', wasClean: true });
+   * ```
+   */
   constructor(type: string, init?: CloseEventInit) {
     super(type);
     this.#code     = init?.code     ?? 0;
@@ -132,20 +221,81 @@ export class CloseEvent extends Event {
     this.#wasClean = init?.wasClean ?? false;
   }
 
+  /** Close status code.
+   *
+   * ```ts no_run
+   * console.log(event.code);
+   * ```
+   */
   get code()     { return this.#code; }
+  /** UTF-8 close reason string.
+   *
+   * ```ts no_run
+   * console.log(event.reason);
+   * ```
+   */
   get reason()   { return this.#reason; }
+  /** Whether the close handshake completed cleanly.
+   *
+   * ```ts no_run
+   * console.log(event.wasClean);
+   * ```
+   */
   get wasClean() { return this.#wasClean; }
 }
 
-/** WebSocket error event carrying the underlying error value when available. */
+/**
+ * WebSocket error event carrying the underlying error value when available.
+ *
+ * The `error` value may be any thrown value, or `null` when no concrete error
+ * was captured.
+ *
+ * ```ts no_run
+ * ws.onerror = (event) => console.log(event.error);
+ * ```
+ */
 export class ErrorEvent extends Event {
+  /**
+   * Private property `#error` used by `ErrorEvent`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #error = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#error;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #error: unknown;
 
+  /**
+   * Create an error event.
+   *
+   * ```ts no_run
+   * const event = new ErrorEvent('error', { error: new Error('failed') });
+   * ```
+   */
   constructor(type: string, init?: { error?: unknown }) {
     super(type);
     this.#error = init?.error ?? null;
   }
 
+  /** Underlying error value, or `null`.
+   *
+   * ```ts no_run
+   * console.log(event.error);
+   * ```
+   */
   get error() { return this.#error; }
 }
 
@@ -153,9 +303,30 @@ export class ErrorEvent extends Event {
 // Internal: WebSocket message type
 // ---------------------------------------------------------------------------
 
-/** Parsed WebSocket message payload used by lower-level connection helpers. */
+/**
+ * Parsed WebSocket message payload used by lower-level connection helpers.
+ *
+ * Text messages expose a string. Binary messages expose raw bytes and are not
+ * converted to Blob by `WebSocketConnection`.
+ *
+ * ```ts no_run
+ * for await (const message of conn) console.log(message.type, message.data);
+ * ```
+ */
 export interface WebSocketMessage {
+  /** Message kind.
+   *
+   * ```ts no_run
+   * if (message.type === 'binary') console.log(message.data);
+   * ```
+   */
   type: 'text' | 'binary';
+  /** Message payload.
+   *
+   * ```ts no_run
+   * if (message.type === 'text') console.log(message.data.toUpperCase());
+   * ```
+   */
   data: string | Uint8Array;
 }
 
@@ -376,23 +547,75 @@ async function _readUpgradeResponse(
 // WebSocketConnection options interfaces
 // ---------------------------------------------------------------------------
 
-/** Options used when accepting a WebSocket upgrade from an HTTP handler. */
+/**
+ * Options used when accepting a WebSocket upgrade from an HTTP handler.
+ *
+ * If both `protocol` and `selectProtocol` are omitted, no subprotocol is
+ * selected. Invalid upgrade requests throw synchronously.
+ *
+ * ```ts no_run
+ * const conn = WebSocketConnection.accept(req, { protocol: 'chat.v1' });
+ * ```
+ */
 export interface WebSocketAcceptOptions {
-  /** Single subprotocol to accept (must appear in Sec-WebSocket-Protocol header). */
+  /** Single subprotocol to accept; must be offered by the client when present.
+   *
+   * ```ts no_run
+   * WebSocketConnection.accept(req, { protocol: 'chat.v1' });
+   * ```
+   */
   protocol?:       string;
-  /** Callback to select a subprotocol from the list offered by the client. */
+  /** Callback to select a subprotocol from the list offered by the client.
+   *
+   * Return `null` to accept no subprotocol.
+   *
+   * ```ts no_run
+   * WebSocketConnection.accept(req, { selectProtocol: (offered) => offered[0] ?? null });
+   * ```
+   */
   selectProtocol?: (offered: string[]) => string | null;
-  /** Maximum payload size in bytes (default 16 MiB). Frames exceeding this cause close 1009. */
+  /** Maximum payload size in bytes; defaults to 16 MiB.
+   *
+   * Frames exceeding this cause close code 1009.
+   *
+   * ```ts no_run
+   * WebSocketConnection.accept(req, { maxPayloadSize: 1024 * 1024 });
+   * ```
+   */
   maxPayloadSize?: number;
 }
 
-/** Options used when opening a WebSocket client connection. */
+/**
+ * Options used when opening a WebSocket client connection.
+ *
+ * Headers are added to the HTTP upgrade request. Duplicate protocol names throw
+ * synchronously.
+ *
+ * ```ts no_run
+ * const conn = WebSocketConnection.connect('wss://example.com/ws', { protocols: ['chat.v1'] });
+ * ```
+ */
 export interface WebSocketConnectOptions {
-  /** Requested subprotocols (joined as Sec-WebSocket-Protocol header). */
+  /** Requested subprotocols, joined as `Sec-WebSocket-Protocol`.
+   *
+   * ```ts no_run
+   * WebSocketConnection.connect(url, { protocols: ['chat.v1', 'chat.v2'] });
+   * ```
+   */
   protocols?:      string | string[];
-  /** Extra request headers sent with the upgrade request. */
+  /** Extra request headers sent with the upgrade request.
+   *
+   * ```ts no_run
+   * WebSocketConnection.connect(url, { headers: { authorization: 'Bearer token' } });
+   * ```
+   */
   headers?:        Record<string, string> | Headers;
-  /** Maximum incoming payload size in bytes (default 16 MiB). */
+  /** Maximum incoming payload size in bytes; defaults to 16 MiB.
+   *
+   * ```ts no_run
+   * WebSocketConnection.connect(url, { maxPayloadSize: 1024 * 1024 });
+   * ```
+   */
   maxPayloadSize?: number;
 }
 
@@ -409,90 +632,729 @@ export interface WebSocketConnectOptions {
  * Use the static factories:
  *   - `WebSocketConnection.connect(url, opts)` — client (async via events)
  *   - `WebSocketConnection.accept(req, opts)` — server (from a serve() handler)
+ *
+ * ```ts no_run
+ * const conn = WebSocketConnection.connect('wss://example.com/ws');
+ * conn.onmessage = (event) => console.log(event.data);
+ * ```
  */
 export class WebSocketConnection extends EventTarget implements ConnectionTakeover {
+  /** Ready state before the handshake completes.
+   *
+   * ```ts no_run
+   * if (conn.readyState === WebSocketConnection.CONNECTING) console.log('connecting');
+   * ```
+   */
   static readonly CONNECTING = CONNECTING;
+  /** Ready state while messages may be sent.
+   *
+   * ```ts no_run
+   * if (conn.readyState === WebSocketConnection.OPEN) await conn.send('hello');
+   * ```
+   */
   static readonly OPEN       = OPEN;
+  /** Ready state after close has started.
+   *
+   * ```ts no_run
+   * if (conn.readyState === WebSocketConnection.CLOSING) console.log('closing');
+   * ```
+   */
   static readonly CLOSING    = CLOSING;
+  /** Ready state after the connection is closed.
+   *
+   * ```ts no_run
+   * if (conn.readyState === WebSocketConnection.CLOSED) console.log('closed');
+   * ```
+   */
   static readonly CLOSED     = CLOSED;
 
+  /** HTTP protocols this takeover can run under.
+   *
+   * WebSocketConnection currently supports HTTP/1.1 upgrade takeovers.
+   *
+   * ```ts no_run
+   * console.log(conn.compatibleProtocols.has('http/1.1'));
+   * ```
+   */
   readonly compatibleProtocols: ReadonlySet<string> = new Set(['http/1.1']);
 
   // ── State ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Private property `#role` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #role = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#role;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #role:           'client' | 'server' = 'client';
+  /**
+   * Private property `#readyState` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readyState = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#readyState;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #readyState:     number              = CONNECTING;
+  /**
+   * Private property `#url` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #url = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#url;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #url:            string              = '';
+  /**
+   * Private property `#protocol` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #protocol = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#protocol;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #protocol:       string              = '';
+  /**
+   * Private property `#extensions` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #extensions = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#extensions;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #extensions:     string              = '';
+  /**
+   * Private property `#maxPayloadSize` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #maxPayloadSize = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#maxPayloadSize;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #maxPayloadSize: number              = DEFAULT_MAX_PAYLOAD;
+  /**
+   * Private property `#ownsSocket` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #ownsSocket = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#ownsSocket;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #ownsSocket:     boolean             = false;    // true when connect() created the socket
 
   // ── I/O ────────────────────────────────────────────────────────────────────
 
+  /**
+   * Private property `#rawReader` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #rawReader = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#rawReader;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #rawReader:   BytesReader | null = null;
+  /**
+   * Private property `#rawWriter` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #rawWriter = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#rawWriter;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #rawWriter:   BytesWriter | null = null;
+  /**
+   * Private property `#socket` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #socket = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#socket;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #socket:      Socket | null = null;
 
   // Serialised write queue: each enqueued fn runs after the previous one.
+  /**
+   * Private property `#writeQueue` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #writeQueue = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#writeQueue;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #writeQueue: Promise<void> = Promise.resolve();
 
   // Bytes currently buffered in the write queue (best-effort bufferedAmount).
+  /**
+   * Private property `#bufferedBytes` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #bufferedBytes = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#bufferedBytes;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #bufferedBytes: number = 0;
 
   // ── Handshake ──────────────────────────────────────────────────────────────
 
+  /**
+   * Private property `#handshakeBytes` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #handshakeBytes = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#handshakeBytes;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #handshakeBytes: Uint8Array | null = null;   // server: pre-computed 101 bytes
+  /**
+   * Private property `#preamble` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #preamble = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#preamble;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #preamble:       _Buf       | null = null;   // client: bytes after 101 \r\n\r\n
 
   // ── Close state ────────────────────────────────────────────────────────────
 
+  /**
+   * Private property `#closeSent` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closeSent = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closeSent;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closeSent:     boolean                                = false;
+  /**
+   * Private property `#closeReceived` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closeReceived = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closeReceived;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closeReceived: { code: number; reason: string } | null = null;
+  /**
+   * Private property `#closeResolve` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closeResolve = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closeResolve;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closeResolve:  (() => void) | null                    = null;
+  /**
+   * Private property `#closePromise` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closePromise = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#closePromise;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closePromise:  Promise<void>                          = Promise.resolve();
 
   // ── Async iterator ─────────────────────────────────────────────────────────
 
+  /**
+   * Private property `#msgQueue` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #msgQueue = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#msgQueue;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #msgQueue:   WebSocketMessage[]                                 = [];
+  /**
+   * Private property `#msgWaiters` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #msgWaiters = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#msgWaiters;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #msgWaiters: Array<(r: IteratorResult<WebSocketMessage>) => void> = [];
 
   // ── IDL attribute callbacks ─────────────────────────────────────────────────
 
+  /**
+   * Private property `#onopen` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onopen = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onopen;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onopen:    ((e: Event) => void) | null        = null;
+  /**
+   * Private property `#onmessage` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onmessage = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onmessage;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onmessage: ((e: MessageEvent) => void) | null = null;
+  /**
+   * Private property `#onerror` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onerror = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onerror;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onerror:   ((e: ErrorEvent) => void) | null   = null;
+  /**
+   * Private property `#onclose` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onclose = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onclose;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onclose:   ((e: CloseEvent) => void) | null   = null;
 
   // ---------------------------------------------------------------------------
   // Constructor (private — use static factories)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Create an unconnected WebSocketConnection.
+   *
+   * Prefer `connect()` or `accept()` because the constructor does not perform a
+   * handshake or attach I/O.
+   *
+   * ```ts no_run
+   * const conn = new WebSocketConnection();
+   * ```
+   */
   constructor() { super(); }
 
   // ---------------------------------------------------------------------------
   // Public state
   // ---------------------------------------------------------------------------
 
-  /** Role: 'client' sends masked frames; 'server' sends unmasked frames. */
+  /** Role: `client` sends masked frames; `server` sends unmasked frames.
+   *
+   * ```ts no_run
+   * console.log(conn.role);
+   * ```
+   */
   get role():           'client' | 'server' { return this.#role; }
+  /** Current ready state.
+   *
+   * ```ts no_run
+   * console.log(conn.readyState);
+   * ```
+   */
   get readyState():     number              { return this.#readyState; }
+  /** WebSocket URL string for this connection.
+   *
+   * ```ts no_run
+   * console.log(conn.url);
+   * ```
+   */
   get url():            string              { return this.#url; }
+  /** Negotiated subprotocol, or an empty string.
+   *
+   * ```ts no_run
+   * console.log(conn.protocol || 'none');
+   * ```
+   */
   get protocol():       string              { return this.#protocol; }
+  /** Negotiated extension string, currently always empty.
+   *
+   * ```ts no_run
+   * console.log(conn.extensions);
+   * ```
+   */
   get extensions():     string              { return this.#extensions; }
+  /** Best-effort count of bytes queued for writing.
+   *
+   * ```ts no_run
+   * console.log(conn.bufferedAmount);
+   * ```
+   */
   get bufferedAmount(): number              { return this.#bufferedBytes; }
 
-  /** The underlying socket (available once 'open' fires, null before that). */
+  /** The underlying socket, available once `open` fires and `null` before that.
+   *
+   * ```ts no_run
+   * conn.onopen = () => console.log(conn.socket?.fd);
+   * ```
+   */
   get socket(): Socket | null { return this.#socket; }
 
+  /** Callback for `open` events.
+   *
+   * ```ts no_run
+   * conn.onopen = () => conn.send('hello');
+   * ```
+   */
   get onopen()    { return this.#onopen; }
+  /** Callback for `message` events.
+   *
+   * ```ts no_run
+   * conn.onmessage = (event) => console.log(event.data);
+   * ```
+   */
   get onmessage() { return this.#onmessage; }
+  /** Callback for `error` events.
+   *
+   * ```ts no_run
+   * conn.onerror = (event) => console.log(event.error);
+   * ```
+   */
   get onerror()   { return this.#onerror; }
+  /** Callback for `close` events.
+   *
+   * ```ts no_run
+   * conn.onclose = (event) => console.log(event.code);
+   * ```
+   */
   get onclose()   { return this.#onclose; }
 
+  /** Set the `open` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * conn.onopen = null;
+   * ```
+   */
   set onopen(fn: ((e: Event) => void) | null)        { this.#onopen    = typeof fn === 'function' ? fn : null; }
+  /** Set the `message` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * conn.onmessage = null;
+   * ```
+   */
   set onmessage(fn: ((e: MessageEvent) => void) | null) { this.#onmessage = typeof fn === 'function' ? fn : null; }
+  /** Set the `error` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * conn.onerror = null;
+   * ```
+   */
   set onerror(fn: ((e: ErrorEvent) => void) | null)  { this.#onerror   = typeof fn === 'function' ? fn : null; }
+  /** Set the `close` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * conn.onclose = null;
+   * ```
+   */
   set onclose(fn: ((e: CloseEvent) => void) | null)  { this.#onclose   = typeof fn === 'function' ? fn : null; }
 
   // ---------------------------------------------------------------------------
@@ -503,6 +1365,11 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * Send a text, binary, or Blob message.
    * Returns a Promise that resolves when the frame has been written.
    * Throws if readyState is CONNECTING; silently returns if CLOSING or CLOSED.
+   *
+   * ```ts no_run
+   * await conn.send('hello');
+   * await conn.send(new Uint8Array([1, 2, 3]));
+   * ```
    */
   send(data: string | ArrayBuffer | ArrayBufferView | Blob): Promise<void> {
     if (this.#readyState === CONNECTING) {
@@ -545,6 +1412,10 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   /**
    * Send a PING control frame. The peer should respond with a PONG.
    * Payload must be ≤ 125 bytes.
+   *
+   * ```ts no_run
+   * await conn.ping(new Uint8Array([1]));
+   * ```
    */
   ping(data?: Uint8Array): Promise<void> {
     if (this.#readyState !== OPEN) return Promise.resolve();
@@ -556,6 +1427,10 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   /**
    * Send a PONG control frame.
    * Payload must be ≤ 125 bytes.
+   *
+   * ```ts no_run
+   * await conn.pong();
+   * ```
    */
   pong(data?: Uint8Array): Promise<void> {
     if (this.#readyState !== OPEN) return Promise.resolve();
@@ -566,9 +1441,14 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 
   /**
    * Initiate the WebSocket close handshake.
-   * @param code   Close status code (default 1000). Must be 1000 or 3000–4999.
-   * @param reason UTF-8 close reason (≤ 123 bytes after encoding).
-   * Returns a Promise that resolves when the connection is fully closed.
+   *
+   * `code` defaults to 1000 and must be 1000 or 3000-4999. `reason` must encode
+   * to at most 123 UTF-8 bytes. Resolves when the peer close arrives or the
+   * close timeout tears down the socket.
+   *
+   * ```ts no_run
+   * await conn.close(1000, 'done');
+   * ```
    */
   async close(code: number = 1000, reason: string = ''): Promise<void> {
     if (this.#readyState === CLOSING || this.#readyState === CLOSED) return;
@@ -611,6 +1491,16 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   // Async iterator (alternative to events)
   // ---------------------------------------------------------------------------
 
+  /**
+   * Iterate received WebSocket messages.
+   *
+   * The iterator completes when the connection reaches CLOSED. Returning from
+   * the iterator does not close the WebSocket.
+   *
+   * ```ts no_run
+   * for await (const message of conn) console.log(message.data);
+   * ```
+   */
   [Symbol.asyncIterator](): AsyncIterator<WebSocketMessage> {
     const self = this;
     return {
@@ -794,6 +1684,10 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * `serve()` awaits this before running its `finally` (which closes r/w).
    *
    * @internal — not part of the public API surface.
+   *
+   * ```ts no_run
+   * await conn._takeOver(reader, writer);
+   * ```
    */
   _takeOver(reader: BytesReader, writer: BytesWriter): Promise<void> {
     const done = this.#closePromise;
@@ -820,6 +1714,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   // Private: connection setup
   // ---------------------------------------------------------------------------
 
+  /**
+   * Private method `#doConnect` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #doConnect() {
+   *     return 'doConnect';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#doConnect();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   async #doConnect(
     parsed:    InstanceType<typeof URL>,
     isWss:     boolean,
@@ -937,6 +1854,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   }
 
   /** Transition to OPEN, dispatch 'open', start read pump. */
+  /**
+   * Private method `#attach` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #attach() {
+   *     return 'attach';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#attach();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #attach(): void {
     this.#readyState = OPEN;
 
@@ -957,6 +1897,19 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * Enqueue a write operation. Ensures frame atomicity across concurrent
    * send() calls. Errors in individual frames propagate to the caller but
    * do not break the queue for subsequent frames.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #enqueue() {
+   *     return 'enqueue';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#enqueue();
+   *   }
+   * }
+   * ```
    */
   #enqueue(fn: () => Promise<void>, bytes: number = 0): Promise<void> {
     this.#bufferedBytes += bytes;
@@ -969,6 +1922,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   }
 
   /** Write a single WebSocket frame to the underlying writer. */
+  /**
+   * Private method `#writeFrame` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #writeFrame() {
+   *     return 'writeFrame';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#writeFrame();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   async #writeFrame(opcode: number, payload: Uint8Array, mask?: boolean): Promise<void> {
     const shouldMask = mask !== undefined ? mask : this.#role === 'client';
     const frame = _encodeFrame(opcode, payload, shouldMask);
@@ -980,6 +1956,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   // Private: read pump
   // ---------------------------------------------------------------------------
 
+  /**
+   * Private method `#readPump` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #readPump() {
+   *     return 'readPump';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#readPump();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   async #readPump(): Promise<void> {
     const reader = this.#rawReader!;
     // Reuse any bytes captured between the 101 \r\n\r\n and the first read()
@@ -1184,6 +2183,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   // ---------------------------------------------------------------------------
 
   /** Send a close frame and set closeSent flag (used for protocol violations). */
+  /**
+   * Private method `#failProtocol` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #failProtocol() {
+   *     return 'failProtocol';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#failProtocol();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   async #failProtocol(code: number, reason: string): Promise<void> {
     if (this.#closeSent || this.#readyState === CLOSED) return;
     this.#closeSent  = true;
@@ -1201,6 +2223,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   }
 
   /** Deliver a decoded message to event listeners and async iterators. */
+  /**
+   * Private method `#deliverMessage` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #deliverMessage() {
+   *     return 'deliverMessage';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#deliverMessage();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #deliverMessage(msg: WebSocketMessage): void {
     const e = new MessageEvent('message', { data: msg.data });
     this.dispatchEvent(e);
@@ -1214,6 +2259,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   }
 
   /** Drain all pending async iterator waiters with done=true. */
+  /**
+   * Private method `#closeIterators` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #closeIterators() {
+   *     return 'closeIterators';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#closeIterators();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #closeIterators(): void {
     for (const resolve of this.#msgWaiters) {
       resolve({ done: true, value: undefined as unknown as WebSocketMessage });
@@ -1222,6 +2290,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   }
 
   /** Dispatch an error event. */
+  /**
+   * Private method `#fireError` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #fireError() {
+   *     return 'fireError';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#fireError();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #fireError(err?: unknown): void {
     const e = new ErrorEvent('error', { error: err });
     this.dispatchEvent(e);
@@ -1229,6 +2320,29 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   }
 
   /** Final cleanup: transition to CLOSED, fire 'close', resolve the done promise. */
+  /**
+   * Private method `#teardown` used by `WebSocketConnection`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #teardown() {
+   *     return 'teardown';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#teardown();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #teardown(): void {
     if (this.#readyState === CLOSED) return;
     this.#readyState = CLOSED;
@@ -1265,25 +2379,186 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
  *
  * For server-side or lower-level control, use `WebSocketConnection` directly.
  *
+ * ```ts no_run
+ * const ws = new WebSocket('wss://example.com/ws', ['chat.v1']);
+ * ws.onopen = () => ws.send('hello');
+ * ```
+ *
  * @see https://websockets.spec.whatwg.org/
  */
 export class WebSocket extends EventTarget {
+  /** Ready state before the handshake completes.
+   *
+   * ```ts no_run
+   * if (ws.readyState === WebSocket.CONNECTING) console.log('connecting');
+   * ```
+   */
   static readonly CONNECTING = CONNECTING;
+  /** Ready state while messages can be sent.
+   *
+   * ```ts no_run
+   * if (ws.readyState === WebSocket.OPEN) ws.send('hello');
+   * ```
+   */
   static readonly OPEN       = OPEN;
+  /** Ready state after close has started.
+   *
+   * ```ts no_run
+   * if (ws.readyState === WebSocket.CLOSING) console.log('closing');
+   * ```
+   */
   static readonly CLOSING    = CLOSING;
+  /** Ready state after the connection is closed.
+   *
+   * ```ts no_run
+   * if (ws.readyState === WebSocket.CLOSED) console.log('closed');
+   * ```
+   */
   static readonly CLOSED     = CLOSED;
 
+  /**
+   * Private property `#conn` used by `WebSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #conn = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#conn;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #conn:       WebSocketConnection;
+  /**
+   * Private property `#binaryType` used by `WebSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #binaryType = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#binaryType;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #binaryType: 'blob' | 'arraybuffer' = 'blob';
 
+  /**
+   * Private property `#onopen` used by `WebSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onopen = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onopen;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onopen:    ((e: Event) => void) | null        = null;
+  /**
+   * Private property `#onmessage` used by `WebSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onmessage = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onmessage;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onmessage: ((e: MessageEvent) => void) | null = null;
+  /**
+   * Private property `#onerror` used by `WebSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onerror = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onerror;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onerror:   ((e: ErrorEvent) => void) | null   = null;
+  /**
+   * Private property `#onclose` used by `WebSocket`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #onclose = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#onclose;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #onclose:   ((e: CloseEvent) => void) | null   = null;
 
   /**
-   * @param url       WebSocket URL (ws: or wss:, no fragment)
-   * @param protocols Requested subprotocols (string or string[])
+   * Create a WebSocket and immediately start connecting.
+   *
+   * `url` must use `ws:` or `wss:` and must not include a fragment. Duplicate
+   * requested protocols throw synchronously through the underlying connection
+   * factory.
+   *
+   * ```ts no_run
+   * const ws = new WebSocket('wss://example.com/chat', 'chat.v1');
    */
   constructor(url: string | URL, protocols?: string | string[]) {
     super();
@@ -1354,13 +2629,60 @@ export class WebSocket extends EventTarget {
 
   // ── Getters ──────────────────────────────────────────────────────────────────
 
+  /** WebSocket URL string.
+   *
+   * ```ts no_run
+   * console.log(ws.url);
+   * ```
+   */
   get url():            string              { return this.#conn.url; }
+  /** Current ready state.
+   *
+   * ```ts no_run
+   * console.log(ws.readyState);
+   * ```
+   */
   get readyState():     number              { return this.#conn.readyState; }
+  /** Best-effort bytes queued for sending.
+   *
+   * ```ts no_run
+   * console.log(ws.bufferedAmount);
+   * ```
+   */
   get bufferedAmount(): number              { return this.#conn.bufferedAmount; }
+  /** Negotiated extensions, currently an empty string.
+   *
+   * ```ts no_run
+   * console.log(ws.extensions);
+   * ```
+   */
   get extensions():     string              { return this.#conn.extensions; }
+  /** Negotiated subprotocol, or an empty string.
+   *
+   * ```ts no_run
+   * console.log(ws.protocol);
+   * ```
+   */
   get protocol():       string              { return this.#conn.protocol; }
 
+  /** Binary message conversion mode.
+   *
+   * Defaults to `blob`. Set to `arraybuffer` to receive binary messages as
+   * ArrayBuffer values.
+   *
+   * ```ts no_run
+   * ws.binaryType = 'arraybuffer';
+   * ```
+   */
   get binaryType(): 'blob' | 'arraybuffer' { return this.#binaryType; }
+  /** Set binary message conversion mode.
+   *
+   * Throws `TypeError` for values other than `blob` or `arraybuffer`.
+   *
+   * ```ts no_run
+   * ws.binaryType = 'blob';
+   * ```
+   */
   set binaryType(v: 'blob' | 'arraybuffer') {
     if (v !== 'blob' && v !== 'arraybuffer') {
       throw new TypeError('binaryType must be "blob" or "arraybuffer"');
@@ -1368,14 +2690,62 @@ export class WebSocket extends EventTarget {
     this.#binaryType = v;
   }
 
+  /** Callback for `open` events.
+   *
+   * ```ts no_run
+   * ws.onopen = () => ws.send('hello');
+   * ```
+   */
   get onopen()    { return this.#onopen; }
+  /** Callback for `message` events.
+   *
+   * ```ts no_run
+   * ws.onmessage = (event) => console.log(event.data);
+   * ```
+   */
   get onmessage() { return this.#onmessage; }
+  /** Callback for `error` events.
+   *
+   * ```ts no_run
+   * ws.onerror = (event) => console.log(event.error);
+   * ```
+   */
   get onerror()   { return this.#onerror; }
+  /** Callback for `close` events.
+   *
+   * ```ts no_run
+   * ws.onclose = (event) => console.log(event.code);
+   * ```
+   */
   get onclose()   { return this.#onclose; }
 
+  /** Set the `open` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * ws.onopen = null;
+   * ```
+   */
   set onopen(fn: ((e: Event) => void) | null)        { this.#onopen    = typeof fn === 'function' ? fn : null; }
+  /** Set the `message` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * ws.onmessage = null;
+   * ```
+   */
   set onmessage(fn: ((e: MessageEvent) => void) | null) { this.#onmessage = typeof fn === 'function' ? fn : null; }
+  /** Set the `error` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * ws.onerror = null;
+   * ```
+   */
   set onerror(fn: ((e: ErrorEvent) => void) | null)  { this.#onerror   = typeof fn === 'function' ? fn : null; }
+  /** Set the `close` callback, or `null` to clear it.
+   *
+   * ```ts no_run
+   * ws.onclose = null;
+   * ```
+   */
   set onclose(fn: ((e: CloseEvent) => void) | null)  { this.#onclose   = typeof fn === 'function' ? fn : null; }
 
   // ── send / close (WHATWG spec: synchronous, fire-and-forget) ─────────────────
@@ -1383,6 +2753,14 @@ export class WebSocket extends EventTarget {
   /**
    * Queue data to be sent. Throws InvalidStateError if CONNECTING;
    * silently drops if CLOSING or CLOSED.
+   *
+   * Errors after queuing are surfaced through `error` events, matching the
+   * fire-and-forget WHATWG API shape.
+   *
+   * ```ts no_run
+   * ws.send('hello');
+   * ws.send(new Uint8Array([1, 2, 3]));
+   * ```
    */
   send(data: string | ArrayBuffer | ArrayBufferView | Blob): void {
     if (this.#conn.readyState === CONNECTING) {
@@ -1398,8 +2776,13 @@ export class WebSocket extends EventTarget {
 
   /**
    * Initiate the close handshake.
-   * @param code   1000 or 3000–4999 (default 1000)
-   * @param reason UTF-8 string ≤ 123 bytes
+   *
+   * `code` defaults to 1000 and must be 1000 or 3000-4999. `reason` must encode
+   * to at most 123 UTF-8 bytes. Invalid values throw synchronously.
+   *
+   * ```ts no_run
+   * ws.close(1000, 'done');
+   * ```
    */
   close(code: number = 1000, reason: string = ''): void {
     const state = this.#conn.readyState;

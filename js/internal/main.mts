@@ -9,6 +9,10 @@
  * Child Realms do NOT evaluate this module — they evaluate `internal/bootstrap.mts`
  * directly and then import their own entry module.
  *
+ * ```js
+ * import 'internal:main';
+ * ```
+ *
  * @internal
  */
 

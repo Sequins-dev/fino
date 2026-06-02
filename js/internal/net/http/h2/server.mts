@@ -1,15 +1,15 @@
 /**
- * internal:net/http/h2/server — H2ServerDriver.
+ * internal:net/http/h2/server - H2ServerDriver.
  *
  * ## Stream lifecycle (server side)
  *
- * 1. onBeginHeaders(streamId, isTrailers=false) — allocate H2ServerStream.
- * 2. onHeader — accumulate `:method`, `:path`, `:scheme`, `:authority` + headers.
- * 3. onFrameRecv(HEADERS, END_HEADERS) — initial headers complete.
- *    If END_STREAM also set → no body, trigger dispatch.
- * 4. onDataChunk(bytes) — push bytes to body queue.
- * 5. onFrameRecv(DATA, END_STREAM) — body complete, trigger dispatch.
- * 6. Handler completes → submit HEADERS response + DATA frame(s).
+ * 1. onBeginHeaders(streamId, isTrailers=false) - allocate H2ServerStream.
+ * 2. onHeader - accumulate `:method`, `:path`, `:scheme`, `:authority` + headers.
+ * 3. onFrameRecv(HEADERS, END_HEADERS) - initial headers complete.
+ *    If END_STREAM also set -> no body, trigger dispatch.
+ * 4. onDataChunk(bytes) - push bytes to body queue.
+ * 5. onFrameRecv(DATA, END_STREAM) - body complete, trigger dispatch.
+ * 6. Handler completes -> submit HEADERS response + DATA frame(s).
  *
  * ## h2c Upgrade (runFromUpgrade)
  *
@@ -32,8 +32,23 @@
  *
  * `startDispatch` wraps dispatchStream errors so `Promise.all(inFlight)` in
  * the finally block never rejects. All drainWrite calls are serialized via the
- * drainChain promise-mutex — concurrent session_mem_send2 calls on the same
+ * drainChain promise-mutex - concurrent session_mem_send2 calls on the same
  * nghttp2_session* would be a data race.
+ *
+ * ## Example
+ *
+ * ```ts no_run
+ * import { H2ServerDriver } from 'internal:net/http/h2/server';
+ * import { Response } from 'fino:net/http';
+ *
+ * const driver = new H2ServerDriver();
+ * await driver.run(
+ *   reader,
+ *   writer,
+ *   () => new Response('ok'),
+ *   { maxConcurrent: 100 },
+ * );
+ * ```
  *
  * @internal
  */
@@ -79,7 +94,7 @@ interface H2ServerStream {
   // this after triggerDispatch resolves and returns early if true.
   cancelled: boolean;
   triggerDispatch: (() => void) | null;
-  // Header validation state (RFC 7540 §8.1.2). Non-null = error code to RST with.
+  // Header validation state (RFC 7540 Section 8.1.2). Non-null = error code to RST with.
   seenPseudos: Set<string>;
   seenRegularHeader: boolean;
   headerError: number | null;
@@ -96,6 +111,20 @@ function readH2StrictUnsigned(scanner: Scanner, name: string): number {
   return Number(digits);
 }
 
+/**
+ * Parse a strict HTTP/2 `:status` header value.
+ *
+ * The value must contain exactly three ASCII digits and nothing else. Statuses
+ * below `100` are rejected; values up to `999` are accepted because HTTP
+ * status code space is represented as three digits on the wire.
+ *
+ * ```ts
+ * import { _parseH2StatusHeader } from 'internal:net/http/h2/server';
+ * _parseH2StatusHeader('204');
+ * ```
+ *
+ * @internal
+ */
 export function _parseH2StatusHeader(value: string): number {
   const scanner = new Scanner(value, { encoding: 'ascii', format: 'http2' });
   const digits = scanner.eatWhile(isDigit);
@@ -105,6 +134,20 @@ export function _parseH2StatusHeader(value: string): number {
   return status;
 }
 
+/**
+ * Parse an HTTP/2 `content-length` field value.
+ *
+ * The parser accepts comma-separated duplicate values only when every value is
+ * the same, matching HTTP semantics for repeated fields. It throws for empty,
+ * non-integer, unsafe-integer, or conflicting values.
+ *
+ * ```ts
+ * import { _parseH2ContentLength } from 'internal:net/http/h2/server';
+ * _parseH2ContentLength('12, 12');
+ * ```
+ *
+ * @internal
+ */
 export function _parseH2ContentLength(value: string): number {
   const scanner = new Scanner(value, { encoding: 'ascii', format: 'http2' });
   let expected: number | null = null;
@@ -128,7 +171,7 @@ function _hasUppercase(s: string): boolean {
   return !scanner.done;
 }
 
-// Connection-specific header fields forbidden in HTTP/2 (RFC 7540 §8.1.2.2).
+// Connection-specific header fields forbidden in HTTP/2 (RFC 7540 Section 8.1.2.2).
 const _FORBIDDEN_HEADERS = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade']);
 
 // ---------------------------------------------------------------------------
@@ -191,7 +234,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       reqBody = all.buffer;
     }
 
-    // Validate content-length against actual body size (RFC 7540 §8.1.2.6).
+    // Validate content-length against actual body size (RFC 7540 Section 8.1.2.6).
     const clHeader = stream.headers.get('content-length');
     if (clHeader !== null) {
       let clValue = -1;
@@ -235,7 +278,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     }
 
     // Build and submit the response. If the stream was RST_STREAMed while the
-    // handler was running, submitResponse will throw — catch and discard.
+    // handler was running, submitResponse will throw - catch and discard.
     const responseHeaders: Array<[string, string]> = [[':status', String(res.status)]];
     for (const [k, v] of res.headers.entries()) {
       if (k === 'transfer-encoding' || k === 'connection' || k === 'keep-alive') continue;
@@ -315,7 +358,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         return;
       }
       // Determine initial error: REFUSED_STREAM if over concurrent limit.
-      // Never call submitRstStream from onBeginHeaders — the stream is not
+      // Never call submitRstStream from onBeginHeaders - the stream is not
       // fully initialized in nghttp2 yet; doing so causes a connection error.
       // Defer the RST to onFrameRecv (END_HEADERS) when the stream is ready.
       const initialError = streams.size >= maxConcurrent ? NGHTTP2_REFUSED_STREAM : null;
@@ -340,20 +383,20 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       if (!s || s.headerError !== null) return;
 
       if (s.inTrailers) {
-        // Pseudo-headers must not appear in trailers (RFC 7540 §8.1.2.1).
+        // Pseudo-headers must not appear in trailers (RFC 7540 Section 8.1.2.1).
         if (name.startsWith(':')) { s.headerError = NGHTTP2_PROTOCOL_ERROR; return; }
         s.trailerHeaders.append(name, value);
         return;
       }
 
       if (name.startsWith(':')) {
-        // Pseudo-header after a regular header field (RFC 7540 §8.1.2.1).
+        // Pseudo-header after a regular header field (RFC 7540 Section 8.1.2.1).
         if (s.seenRegularHeader) { s.headerError = NGHTTP2_PROTOCOL_ERROR; return; }
-        // Only the four request pseudo-headers are valid (RFC 7540 §8.1.2.3).
+        // Only the four request pseudo-headers are valid (RFC 7540 Section 8.1.2.3).
         if (name !== ':method' && name !== ':path' && name !== ':scheme' && name !== ':authority') {
           s.headerError = NGHTTP2_PROTOCOL_ERROR; return;
         }
-        // Duplicate pseudo-header (RFC 7540 §8.1.2.3).
+        // Duplicate pseudo-header (RFC 7540 Section 8.1.2.3).
         if (s.seenPseudos.has(name)) { s.headerError = NGHTTP2_PROTOCOL_ERROR; return; }
         s.seenPseudos.add(name);
         switch (name) {
@@ -364,18 +407,18 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         }
       } else {
         s.seenRegularHeader = true;
-        // Uppercase header field names are invalid in HTTP/2 (RFC 7540 §8.1.2).
+        // Uppercase header field names are invalid in HTTP/2 (RFC 7540 Section 8.1.2).
         if (_hasUppercase(name)) { s.headerError = NGHTTP2_PROTOCOL_ERROR; return; }
-        // Connection-specific headers are forbidden (RFC 7540 §8.1.2.2).
+        // Connection-specific headers are forbidden (RFC 7540 Section 8.1.2.2).
         if (_FORBIDDEN_HEADERS.has(name)) { s.headerError = NGHTTP2_PROTOCOL_ERROR; return; }
-        // TE header must only carry "trailers" (RFC 7540 §8.1.2.2).
+        // TE header must only carry "trailers" (RFC 7540 Section 8.1.2.2).
         if (name === 'te' && value !== 'trailers') { s.headerError = NGHTTP2_PROTOCOL_ERROR; return; }
         s.headers.append(name, value);
       }
     },
 
     onFrameRecv(streamId: number, frameType: number, frameFlags: number): void {
-      // GOAWAY is connection-level (stream 0) — no per-stream entry.
+      // GOAWAY is connection-level (stream 0) - no per-stream entry.
       if (frameType === NGHTTP2_FRAME_TYPE_GOAWAY) {
         receivedGoaway = true;
         return;
@@ -451,7 +494,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       if (s) {
         // Always mark cancelled so dispatchStream returns early even if it
         // has not yet awaited triggerDispatch (bodyDone was true at dispatch
-        // time — e.g. RST_STREAM arriving before the async handler runs).
+        // time - e.g. RST_STREAM arriving before the async handler runs).
         s.cancelled = true;
         if (s.triggerDispatch !== null) {
           s.bodyDone = true;
@@ -558,7 +601,7 @@ function _buildStream1(req: Request): H2ServerStream {
     trailerHeaders: new Headers(),
     inTrailers: false,
     bodyChunks: [],
-    // RFC 7540 §3.2: the upgrade request MUST NOT include a request body.
+    // RFC 7540 Section 3.2: the upgrade request MUST NOT include a request body.
     bodyDone: true,
     cancelled: false,
     triggerDispatch: null,
@@ -572,7 +615,35 @@ function _buildStream1(req: Request): H2ServerStream {
 // H2ServerDriver
 // ---------------------------------------------------------------------------
 
+/**
+ * HTTP/2 server driver backed by nghttp2.
+ *
+ * The driver validates request pseudo-headers, buffers request bodies, dispatches
+ * a Fino HTTP handler, and submits response headers, body, and trailers. It
+ * serializes all nghttp2 writes to avoid concurrent access to the session.
+ *
+ * ```ts no_run
+ * import { H2ServerDriver } from 'internal:net/http/h2/server';
+ * const driver = new H2ServerDriver();
+ * await driver.run(reader, writer, handler, { maxConcurrent: 100 });
+ * ```
+ *
+ * @internal
+ */
 export class H2ServerDriver implements ServerDriver {
+  /**
+   * Run an HTTP/2 server session on a connected reader/writer pair.
+   *
+   * The method submits server settings, receives frames until EOF, GOAWAY, or
+   * protocol shutdown, waits for in-flight handlers to settle, then closes the
+   * session and both stream halves. Handler failures produce `500` responses.
+   *
+   * ```ts no_run
+   * import { H2ServerDriver } from 'internal:net/http/h2/server';
+   * import { Response } from 'fino:net/http';
+   * await new H2ServerDriver().run(reader, writer, () => new Response('ok'), { maxConcurrent: 100 });
+   * ```
+   */
   async run(
     reader: BufferedBytesReader,
     writer: BytesWriter,
@@ -597,6 +668,16 @@ export class H2ServerDriver implements ServerDriver {
    * response and handed control of reader/writer to us. `initialReq` is the
    * HTTP/1.1 request that triggered the upgrade; it becomes h2 stream 1.
    * `settingsPayload` is the base64url-decoded `HTTP2-Settings` header value.
+   *
+   * The method must be called only after the h1 driver has sent `101 Switching
+   * Protocols`. The upgrade request body is not supported by h2c and stream 1
+   * starts as body-complete.
+   *
+   * ```ts no_run
+   * import { H2ServerDriver } from 'internal:net/http/h2/server';
+   * import { Request, Response } from 'fino:net/http';
+   * await new H2ServerDriver().runFromUpgrade(reader, writer, () => new Response('ok'), { maxConcurrent: 100 }, new Request('http://localhost/'), new Uint8Array(), false);
+   * ```
    */
   async runFromUpgrade(
     reader: BufferedBytesReader,

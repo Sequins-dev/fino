@@ -111,10 +111,23 @@ interface SseEvent {
 
 Parsed server-sent event yielded by `EventSourceReader`.
 
+Events without `data:` fields are not yielded. `id` and `retry` are `null`
+when the event did not include those fields.
+
+```ts
+for await (const event of new EventSourceReader(body)) console.log(event.type, event.data);
+```
+
 ### type
 
 ```ts
 type: string
+```
+
+Event type; defaults to `"message"` when the stream omits `event:`.
+
+```ts
+if (event.type === 'message') console.log(event.data);
 ```
 
 ### data
@@ -123,16 +136,34 @@ type: string
 data: string
 ```
 
+Event payload with multiple `data:` lines joined by newline.
+
+```ts
+console.log(event.data);
+```
+
 ### id
 
 ```ts
 id: string | null
 ```
 
+Event ID from `id:`, or `null` when absent.
+
+```ts
+if (event.id !== null) console.log(event.id);
+```
+
 ### retry
 
 ```ts
 retry: number | null
+```
+
+Retry interval from `retry:`, or `null` when absent or invalid.
+
+```ts
+if (event.retry !== null) console.log(event.retry);
 ```
 
 ## EventSourceInit
@@ -143,10 +174,25 @@ interface EventSourceInit {
 
 Options for the EventSource client connection.
 
+Headers are sent on the initial request and reconnect attempts. The client
+also adds `Last-Event-ID` during reconnect when an ID has been seen.
+
+```ts
+const es = new EventSource('https://example.com/events', {
+  headers: { authorization: 'Bearer token' },
+});
+```
+
 ### headers
 
 ```ts
 headers?: Record<string, string> | Headers
+```
+
+Extra HTTP headers for the SSE request.
+
+```ts
+new EventSource(url, { headers: new Headers({ authorization: 'Bearer t' }) });
 ```
 
 ## EventSourceReader
@@ -175,6 +221,15 @@ for await (const event of reader) {
 constructor(source: AsyncIterable<Uint8Array | ArrayBuffer>)
 ```
 
+Create an SSE parser over a byte stream.
+
+The parser is single-use because it consumes the source iterator as it
+yields events.
+
+```ts
+const reader = new EventSourceReader(response.body);
+```
+
 ### lastEventId
 
 ```ts
@@ -184,6 +239,10 @@ get lastEventId()
 The last event ID seen in the stream. Updated as events are yielded,
 so it reflects the ID of the most recently yielded event that had an
 `id:` field. Persists across all events in the stream.
+
+```ts
+console.log(reader.lastEventId);
+```
 
 ## EventSourceWriter
 
@@ -210,6 +269,15 @@ await esw.retry(5000);
 constructor(writer: WriterLike)
 ```
 
+Create an SSE writer around a byte writer.
+
+The writer is not closed by this class. Callers are responsible for flush
+and close behavior if their writer requires it.
+
+```ts
+const events = new EventSourceWriter(writer);
+```
+
 ### event
 
 ```ts
@@ -221,6 +289,13 @@ Write an SSE event.
 Multi-line `data` strings are automatically split into separate `data:`
 lines. All fields are optional except `data`.
 
+`retry` is floored to an integer. Field values are stringified but not
+escaped, so do not include untrusted newlines in `event` or `id`.
+
+```ts
+await events.event({ event: 'update', data: 'line 1\\nline 2', id: '42' });
+```
+
 ### comment
 
 ```ts
@@ -230,6 +305,12 @@ async comment(text: string = ''): Promise<void>
 Write a comment line. Useful for keep-alive heartbeats that prevent
 proxies from closing idle connections.
 
+Multi-line comments are emitted as multiple comment lines.
+
+```ts
+await events.comment('heartbeat');
+```
+
 ### retry
 
 ```ts
@@ -238,6 +319,12 @@ async retry(ms: number): Promise<void>
 
 Write a standalone `retry:` field to update the client's reconnection
 interval without dispatching an event.
+
+The value is floored to an integer number of milliseconds.
+
+```ts
+await events.retry(5000);
+```
 
 ## EventSource
 
@@ -266,10 +353,22 @@ loop.run(async () => {
 static CONNECTING
 ```
 
+Ready state value while connecting or reconnecting.
+
+```ts
+if (es.readyState === EventSource.CONNECTING) console.log('connecting');
+```
+
 ### OPEN
 
 ```ts
 static OPEN
+```
+
+Ready state value while the stream is open.
+
+```ts
+if (es.readyState === EventSource.OPEN) console.log('open');
 ```
 
 ### CLOSED
@@ -278,10 +377,26 @@ static OPEN
 static CLOSED
 ```
 
+Ready state value after `close()` or terminal failure.
+
+```ts
+if (es.readyState === EventSource.CLOSED) console.log('closed');
+```
+
 ### constructor
 
 ```ts
 constructor(url: string, init?: EventSourceInit)
+```
+
+Create and immediately start an SSE client.
+
+Only `http:` and `https:` URLs are supported. Connection errors dispatch
+`error` and reconnect for retriable statuses unless `close()` is called.
+
+```ts
+const es = new EventSource('https://example.com/events');
+es.onmessage = (event) => console.log(event.data);
 ```
 
 ### readyState
@@ -292,6 +407,10 @@ get readyState()
 
 Current ready state: CONNECTING (0), OPEN (1), or CLOSED (2).
 
+```ts
+console.log(es.readyState);
+```
+
 ### url
 
 ```ts
@@ -300,13 +419,24 @@ get url()
 
 The URL passed to the constructor.
 
+```ts
+console.log(es.url);
+```
+
 ### lastEventId
 
 ```ts
 get lastEventId()
 ```
 
-The last event ID received from the server. Sent as Last-Event-ID on reconnect. Empty string before any id: field is received.
+The last event ID received from the server.
+
+Sent as `Last-Event-ID` on reconnect. Returns an empty string before any
+`id:` field is received.
+
+```ts
+console.log(es.lastEventId);
+```
 
 ### onopen
 
@@ -316,10 +446,20 @@ get onopen()
 
 Callback for `open` events (connection established).
 
+```ts
+es.onopen = () => console.log('open');
+```
+
 ### onopen
 
 ```ts
 set onopen(fn: ((e: Event) => void) | null)
+```
+
+Set the `open` event callback, or `null` to clear it.
+
+```ts
+es.onopen = null;
 ```
 
 ### onmessage
@@ -330,10 +470,20 @@ get onmessage()
 
 Callback for `message` events (default-type SSE events).
 
+```ts
+es.onmessage = (event) => console.log(event.data);
+```
+
 ### onmessage
 
 ```ts
 set onmessage(fn: ((e: MessageEvent) => void) | null)
+```
+
+Set the `message` event callback, or `null` to clear it.
+
+```ts
+es.onmessage = null;
 ```
 
 ### onerror
@@ -344,10 +494,20 @@ get onerror()
 
 Callback for `error` events (connection errors and fatal failures).
 
+```ts
+es.onerror = () => console.log('stream error');
+```
+
 ### onerror
 
 ```ts
 set onerror(fn: ((e: Event) => void) | null)
+```
+
+Set the `error` event callback, or `null` to clear it.
+
+```ts
+es.onerror = null;
 ```
 
 ### close
@@ -358,3 +518,7 @@ close()
 
 Close the connection and prevent any further reconnection.
 Idempotent — safe to call multiple times.
+
+```ts
+es.close();
+```

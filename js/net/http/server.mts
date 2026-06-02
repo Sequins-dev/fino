@@ -95,15 +95,17 @@ const _h2Driver = new H2ServerDriver();
  * Each incoming connection is handled concurrently. The event loop is
  * implicitly kept alive as long as the server is open.
  *
- * @param {object} options — { port, hostname?, tls? }
- * @param {(req: Request) => Response | ConnectionTakeover | Promise<...>} handler
- * @returns {{ address, port, close(): Promise<void> }}
+ * `hostname` defaults to `0.0.0.0`, and `port` may be `0` to request an
+ * ephemeral port. When `tls` is present, the server loads the certificate and
+ * key paths and advertises HTTP/2 through ALPN when libnghttp2 is available.
+ * `close()` stops accepting, closes the listening socket, releases TLS state,
+ * and resolves after in-flight connections finish.
  *
  * ```ts no_run
  * import { serve } from 'fino:net/http/server';
  *
  * const server = serve({ port: 3000 }, async (req) => new Response('hello'));
- * // ... handle some requests ...
+ * console.log(server.port);
  * await server.close();
  * ```
  */

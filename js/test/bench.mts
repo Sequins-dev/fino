@@ -230,10 +230,48 @@ function formatStats(stats: Stats): string {
 // Group — a named collection of measurements with optional sub-groups
 // ---------------------------------------------------------------------------
 
-/** Options for registering a benchmark measurement with setup and teardown hooks. */
+/**
+ * Options for registering a benchmark measurement with setup and teardown hooks.
+ *
+ * `setup()` and `teardown()` run outside the measured loop. The value returned
+ * by `setup()` is passed to `fn(ctx)` for every timed iteration and then to
+ * `teardown(ctx)` once the adaptive one-second sample window completes.
+ *
+ * ```ts no_run
+ * import { bench, type MeasureOptions } from 'fino:test/bench';
+ *
+ * const opts: MeasureOptions<{ value: string }> = {
+ *   setup: () => ({ value: '42' }),
+ *   fn: (ctx) => Number(ctx.value),
+ *   teardown: () => {},
+ * };
+ * bench('numbers', (b) => b.measure('Number()', opts));
+ * ```
+ */
 export interface MeasureOptions<T = unknown> {
+  /**
+   * Prepare state for the measured function.
+   *
+   * ```ts no_run
+   * const setup = () => ({ buffer: new Uint8Array(1024) });
+   * ```
+   */
   setup?: () => T;
+  /**
+   * Function measured repeatedly until at least one second of runtime has been sampled.
+   *
+   * ```ts no_run
+   * const fn = (ctx: { value: string }) => Number(ctx.value);
+   * ```
+   */
   fn: (ctx: T) => unknown;
+  /**
+   * Clean up state created by `setup()`.
+   *
+   * ```ts no_run
+   * const teardown = (_ctx: { close?: () => void }) => {};
+   * ```
+   */
   teardown?: (ctx: T) => void;
 }
 
@@ -253,15 +291,166 @@ interface PendingGroup {
 
 type PendingSpec = PendingMeasurement | PendingGroup;
 
-/** Benchmark group containing deferred measurements and nested groups. */
+/**
+ * Benchmark group containing deferred measurements and nested groups.
+ *
+ * Group instances are passed to `bench()` callbacks and nested `group()`
+ * callbacks. Registration is cheap; work runs later when `finalize()` executes.
+ *
+ * ```ts no_run
+ * import { Group } from 'fino:test/bench';
+ *
+ * const group = new Group('manual');
+ * group.measure('noop', () => {});
+ * ```
+ */
 export class Group {
+  /**
+   * Private property `#name` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #name = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#name;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #name: string;
+  /**
+   * Private property `#indent` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #indent = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#indent;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #indent: number;
+  /**
+   * Private property `#filter` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #filter = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#filter;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #filter: string | null;
+  /**
+   * Private property `#path` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #path = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#path;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #path: string[];
+  /**
+   * Private property `#measurements` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #measurements = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#measurements;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #measurements: Array<{ name: string; stats: Stats }> = [];
+  /**
+   * Private property `#pending` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pending = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#pending;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pending: PendingSpec[] = [];
 
+  /**
+   * Create a benchmark group.
+   *
+   * Most application code receives groups from `bench()` rather than calling
+   * this constructor directly. `indent`, `filter`, and `path` are used by the
+   * runner for nested output and filtered execution.
+   *
+   * ```ts no_run
+   * import { Group } from 'fino:test/bench';
+   *
+   * const group = new Group('manual', 0, null, ['manual']);
+   * ```
+   */
   constructor(name: string, indent: number = 0, filter: string | null = null, path: string[] = [name]) {
     this.#name   = name;
     this.#indent = indent;
@@ -269,6 +458,29 @@ export class Group {
     this.#path = path;
   }
 
+  /**
+   * Private method `#pad` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #pad() {
+   *     return 'pad';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#pad();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #pad() {
     return ' '.repeat(this.#indent);
   }
@@ -292,6 +504,18 @@ export class Group {
    *
    * @param {string}            name
    * @param {function|object}   fnOrOpts  Function or `{ setup, fn, teardown }`.
+   *
+   * ```ts no_run
+   * import { bench } from 'fino:test/bench';
+   *
+   * bench('strings', (b) => {
+   *   b.measure('concat', () => { 'a' + 'b'; });
+   *   b.measure('with setup', {
+   *     setup: () => ['a', 'b'],
+   *     fn: (parts) => parts.join(''),
+   *   });
+   * });
+   * ```
    */
   measure<T>(name: string, fnOrOpts: ((ctx?: unknown) => unknown) | MeasureOptions<T>): void {
     if (typeof fnOrOpts === 'function') {
@@ -311,6 +535,16 @@ export class Group {
    *
    * @param {string}   name
    * @param {function} fn    Receives a Group instance.
+   *
+   * ```ts no_run
+   * import { bench } from 'fino:test/bench';
+   *
+   * bench('runtime', (b) => {
+   *   b.group('numbers', (g) => {
+   *     g.measure('parseInt', () => parseInt('42', 10));
+   *   });
+   * });
+   * ```
    */
   group(name: string, fn: (g: Group) => void): void {
     this.#pending.push({ name, fn, isGroup: true });
@@ -319,6 +553,14 @@ export class Group {
   /**
    * Execute all pending measurements and sub-groups, then print the
    * comparison. Called by run() after the suite body returns.
+   *
+   * ```ts no_run
+   * import { Group } from 'fino:test/bench';
+   *
+   * const group = new Group('manual');
+   * group.measure('noop', () => {});
+   * group.finalize();
+   * ```
    */
   finalize() {
     const pad = this.#pad();
@@ -347,6 +589,19 @@ export class Group {
    * completion before recording the elapsed time.
    *
    * @param {{ name: string, fn: function, setup?: function, teardown?: function }} spec
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #executeMeasurement() {
+   *     return 'executeMeasurement';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#executeMeasurement();
+   *   }
+   * }
+   * ```
    */
   #executeMeasurement({ name, fn, setup, teardown }: PendingMeasurement) {
     const pad = this.#pad();
@@ -371,6 +626,19 @@ export class Group {
   /**
    * Print a comparison of all measurements in this group, sorted by ops/sec.
    * Matches benc.h bench_compare().
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #compare() {
+   *     return 'compare';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#compare();
+   *   }
+   * }
+   * ```
    */
   #compare() {
     const m = this.#measurements;
@@ -399,11 +667,46 @@ export class Group {
     }
   }
 
+  /**
+   * Private method `#matchesSelf` used by `Group`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #matchesSelf() {
+   *     return 'matchesSelf';
+   *   }
+   *
+   *   useInternalMethod() {
+   *     return this.#matchesSelf();
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #matchesSelf(): boolean {
     if (this.#filter === null) return true;
     return this.#path.join(' ').includes(this.#filter);
   }
 
+  /**
+   * Return whether this group has measurements matching the active filter.
+   *
+   * This is mainly used by the runner before printing a group heading. With no
+   * filter, every group runs.
+   *
+   * ```ts no_run
+   * import { Group } from 'fino:test/bench';
+   *
+   * new Group('strings', 0, 'strings').shouldRun(); // true
+   * ```
+   */
   shouldRun(): boolean {
     if (this.#matchesSelf()) return true;
     for (const spec of this.#pending) {
@@ -431,6 +734,14 @@ const _benches: Array<{ name: string; fn: (g: Group) => void }> = [];
  *
  * @param {string}   name  Suite name — printed as a heading.
  * @param {function} fn    Suite body — receives a Group instance `b`.
+ *
+ * ```ts no_run
+ * import { bench } from 'fino:test/bench';
+ *
+ * bench('strings', (b) => {
+ *   b.measure('concat', () => { 'a' + 'b'; });
+ * });
+ * ```
  */
 export function bench(name: string, fn: (b: Group) => void): void {
   _benches.push({ name, fn });
@@ -440,6 +751,13 @@ export function bench(name: string, fn: (b: Group) => void): void {
  * Run all registered benchmark suites and print results.
  *
  * Prints the benc.h v1.0.0 header, then each suite in registration order.
+ *
+ * ```ts no_run
+ * import { bench, run } from 'fino:test/bench';
+ *
+ * bench('noop', (b) => b.measure('empty', () => {}));
+ * await run({ filter: 'noop' });
+ * ```
  */
 export async function run(options: { filter?: string } = {}) {
   console.log('benc.h v1.0.0');

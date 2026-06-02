@@ -1,7 +1,17 @@
 /**
  * internal/commands/init — internal runtime module.
  *
- * 
+ * Builds the `fino init` command. The command creates a `package.json` in the
+ * current working directory, deriving defaults from the directory name and Git
+ * configuration when available. Interactive prompts are used only when the
+ * command context supports them and `--yes` is not set.
+ *
+ * ```js
+ * import { createInitCommand } from 'internal:commands/init';
+ * const command = createInitCommand();
+ * console.log(command.name);
+ * ```
+ *
  * @internal
  */
 
@@ -106,6 +116,23 @@ async function resolveField(ctx: CommandContext, key: string, options: {
   return currentValue;
 }
 
+/**
+ * Create the `init` subcommand used by the root Fino CLI.
+ *
+ * The returned command writes `package.json` with `name`, `version`, `type`,
+ * `description`, `license`, `author`, and `repository` fields. Existing files
+ * are preserved unless `--force` is provided. Package names are validated before
+ * writing; invalid input and filesystem failures are reported as thrown errors.
+ *
+ * ```js
+ * import { createInitCommand } from 'internal:commands/init';
+ * const init = createInitCommand();
+ * await init.parse(['--yes', '--name', 'fino-app']);
+ * ```
+ *
+ * @returns A configured `Command` instance for `fino init`.
+ * @internal
+ */
 export function createInitCommand(): Command {
   return new Command({
     name: 'init',

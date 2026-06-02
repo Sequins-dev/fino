@@ -1,6 +1,16 @@
 /**
  * internal/commands/run — internal runtime module.
  *
+ * Implements script execution for both `fino run <script>` and the root
+ * shortcut `fino <script>`. The module handles path normalization, watch-mode
+ * realm creation, and optional OpenTelemetry provider installation before
+ * importing the target script.
+ *
+ * ```js
+ * import { createRunCommand } from 'internal:commands/run';
+ * const command = createRunCommand();
+ * console.log(command.name);
+ * ```
  *
  * @internal
  */
@@ -41,6 +51,26 @@ function optionValue(ctx: CommandContext, key: string): unknown {
   return ctx.options[key];
 }
 
+/**
+ * Execute the script referenced by a parsed command context.
+ *
+ * When no script positional is present, this returns the command help output.
+ * With `--watch`, the script runs inside a watched `Realm` and the realm is
+ * terminated on `beforeunload`. With an `--otlp-endpoint` option, the script
+ * import runs with CLI OpenTelemetry providers installed; otherwise it is
+ * imported directly. Import failures and provider bootstrap errors propagate to
+ * the caller.
+ *
+ * ```js
+ * import { createRunCommand } from 'internal:commands/run';
+ * const command = createRunCommand();
+ * await command.parse(['./example.mts']);
+ * ```
+ *
+ * @param ctx Parsed command context from `process/argv`.
+ * @returns The imported module result, realm run result, or help text.
+ * @internal
+ */
 export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
   const script = ctx.args.script;
   if (script === undefined) return ctx.command.help();
@@ -64,6 +94,23 @@ export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
   );
 }
 
+/**
+ * Create the explicit `run` subcommand.
+ *
+ * The command requires a script positional and supports `--watch` plus
+ * `--otlp-endpoint`. Its runtime behavior is delegated to
+ * `runScriptCommand()`, so root-level and subcommand script execution stay
+ * consistent.
+ *
+ * ```js
+ * import { createRunCommand } from 'internal:commands/run';
+ * const run = createRunCommand();
+ * await run.parse(['--watch', 'server.mts']);
+ * ```
+ *
+ * @returns A configured `Command` instance for `fino run`.
+ * @internal
+ */
 export function createRunCommand(): Command {
   return new Command({
     name: 'run',

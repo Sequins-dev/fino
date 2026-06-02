@@ -647,12 +647,32 @@ async function _buildFinalResponseWithIntegrity(
 /**
  * Fetch a resource over HTTP or HTTPS.
  *
- * Follows the WHATWG Fetch API.
+ * Follows the WHATWG Fetch API core flow with Fino Request, Response, and
+ * Headers objects. Redirect mode defaults to "follow", up to 20 hops. GET and
+ * HEAD requests reject when given a body. AbortSignal cancellation is checked
+ * before the request starts, during network operations, and while reading the
+ * response body.
  *
- * @param {string|Request} input   — URL string or Request object
- * @param {object}         [init]  — RequestInit options:
+ * The returned Response may have a streamed body. If the body is not consumed
+ * or closed, the underlying socket can remain open until the runtime tears it
+ * down. Integrity checks buffer the full body before returning a Response.
+ *
+ * ```typescript no_run
+ * const response = await fetch('https://example.com/data.json', {
+ *   headers: { accept: 'application/json' },
+ *   signal: AbortSignal.timeout(5000),
+ *   redirect: 'follow',
+ * });
+ * if (response.ok) {
+ *   const payload = await response.json();
+ *   console.log(payload);
+ * }
+ * ```
+ *
+ * @param {string|Request} input   URL string or Request object.
+ * @param {object}         [init]  RequestInit options:
  *   method?, headers?, body?, signal?, redirect?
- * @returns {Promise<Response>}
+ * @returns {Promise<Response>} response with final URL and redirect metadata.
  */
 export async function fetch(input: string | Request, init?: FetchInit): Promise<Response> {
   // ---- Normalize input -------------------------------------------------------

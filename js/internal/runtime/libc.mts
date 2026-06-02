@@ -59,6 +59,15 @@
  *   directly without going through the event loop. This is intentional for
  *   console output, where you want deterministic, in-order output.
  *
+ * ## Example
+ *
+ * ```typescript no_run
+ * import { writeLine, getpid } from 'internal:runtime/libc';
+ *
+ * writeLine(1, `worker pid: ${getpid()}`);
+ * writeLine(2, 'diagnostic message');
+ * ```
+ *
  * @internal
  */
 
@@ -113,9 +122,17 @@ const _lib = openLibc();
 /**
  * Write UTF-8 bytes to a file descriptor.
  *
+ * This is a synchronous `write(2)` call. It returns the OS result directly, so
+ * negative values indicate an error and short writes are possible.
+ *
  * @param {number} fd  - 1 for stdout, 2 for stderr
  * @param {Uint8Array} bytes
  * @returns {number} bytes written (or negative on error)
+ *
+ * ```typescript no_run
+ * import { writeBytes } from 'internal:runtime/libc';
+ * writeBytes(1, new TextEncoder().encode('hello\n'));
+ * ```
  */
 export function writeBytes(fd: number, bytes: Uint8Array): number {
   return Number(_lib.symbols.write(fd, bytes, bytes.length));
@@ -124,8 +141,16 @@ export function writeBytes(fd: number, bytes: Uint8Array): number {
 /**
  * Write a string to a file descriptor, appending a newline.
  *
+ * The string is encoded as UTF-8 before writing. This helper does not retry on
+ * short writes and does not flush C stdio buffers because it uses `write(2)`.
+ *
  * @param {number} fd
  * @param {string} str
+ *
+ * ```typescript no_run
+ * import { writeLine } from 'internal:runtime/libc';
+ * writeLine(2, 'diagnostic');
+ * ```
  */
 export function writeLine(fd: number, str: string): void {
   writeBytes(fd, encodeUtf8(str + '\n'));
@@ -135,7 +160,15 @@ export function writeLine(fd: number, str: string): void {
  * Write a pre-formatted string via printf.
  * The string must not contain unescaped % characters.
  *
+ * The input is passed as the format string and no variadic arguments are
+ * supplied, so never pass untrusted text containing `%`.
+ *
  * @param {string} str
+ *
+ * ```typescript no_run
+ * import { printfRaw } from 'internal:runtime/libc';
+ * printfRaw('ready\n');
+ * ```
  */
 export function printfRaw(str: string): void {
   // Null-terminate so C reads the whole string.
@@ -147,14 +180,29 @@ export function printfRaw(str: string): void {
  * Return the current process ID.
  *
  * @returns {number}
+ *
+ * ```typescript no_run
+ * import { getpid } from 'internal:runtime/libc';
+ * const pid = getpid();
+ * ```
  */
 export function getpid(): number {
   return _lib.symbols.getpid();
 }
 
-// Close the native library handle when this module is done.
-// In practice the library stays open for the lifetime of the process,
-// but this is the correct thing to expose.
+/**
+ * Close the native library handle abstraction.
+ *
+ * Currently a no-op because `dlopen` handles stay process-global for the
+ * runtime lifetime. It exists so callers can use a uniform cleanup shape.
+ *
+ * ```typescript no_run
+ * import * as libc from 'internal:runtime/libc';
+ * libc.close();
+ * ```
+ *
+ * @internal
+ */
 export function close() {
   // dlopen() handles stay process-global for the runtime lifetime.
 }

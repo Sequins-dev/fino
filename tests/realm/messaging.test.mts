@@ -4,6 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
+import { MessagePort } from 'fino:realm/messaging';
 
 describe('Realm messaging', () => {
   it('parent and child can exchange messages via realm.port', async (t) => {
@@ -36,7 +37,6 @@ describe('Realm messaging', () => {
   });
 
   it('realm.port is a MessagePort', async (t) => {
-    const { MessagePort } = await import('fino:realm/messaging') as typeof import('fino:realm/messaging');
     const realm = new Realm({
       entry: new URL('./fixtures/hello.mts', import.meta.url).pathname,
     });

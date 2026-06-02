@@ -4,6 +4,7 @@ import {
   getTracerProvider,
 } from 'fino:opentelemetry';
 import { argv } from 'fino:process';
+import { runDependency } from './cli-otel-dependency.mts';
 
 async function readBodyText(body: unknown): Promise<string> {
   if (body == null) return '';
@@ -46,4 +47,4 @@ if (getTracerProvider() && getLoggerProvider() && getMeterProvider()) {
   console.log('entry providers ready');
 }
 
-await import('./cli-otel-dependency.mts');
+await runDependency();

@@ -13,6 +13,10 @@
  * `internal:file/bindings` because that module uses `await import(...)`,
  * which would make this module (and `internal/main.mjs`) async.
  *
+ * ```js
+ * import 'internal:loader';
+ * ```
+ *
  * @internal
  */
 

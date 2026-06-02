@@ -1,7 +1,15 @@
 /**
  * internal/opentelemetry/instrumentations/fetch — internal runtime module.
  *
- * 
+ * Converts runtime fetch request lifecycle topic events into client spans and
+ * injects propagation headers into the outgoing request carrier.
+ *
+ * ```js
+ * const { FetchInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/fetch';
+ * console.log(new FetchInstrumentation().constructor.name);
+ * ```
+ *
  * @internal
  */
 
@@ -15,12 +23,77 @@ import {
 import type { Disposable, OtelSdkLike, RuntimeHttpRequestEvent, SpanStatus } from '../common.mts';
 import { getActiveSpanContext, isTracerProviderContextEnabled } from '../traces.mts';
 
+/**
+ * Runtime fetch client instrumentation.
+ *
+ * The instrumentation subscribes to fetch request start, end, and error topics.
+ * Start events allocate a trace/span id and inject propagation headers through
+ * the SDK propagator; finish events record the span and include a snapshot of
+ * injected headers. Missing start events are ignored. HTTP status codes 500 and
+ * above are marked as errors.
+ *
+ * ```js
+ * const { FetchInstrumentation } =
+ *   import 'internal:opentelemetry/instrumentations/fetch';
+ * const disposable = new FetchInstrumentation().enable({
+ *   propagator: { inject() {} },
+ *   recordSpan() {},
+ * });
+ * disposable.dispose();
+ * ```
+ *
+ * @internal
+ */
 export class FetchInstrumentation {
+  /**
+   * Private property `#active` used by `FetchInstrumentation`.
+   *
+   * This implementation detail is included when documentation is built with
+   * `--include-private`. It describes state or helper behavior used by the
+   * owning module rather than a stable application-facing contract. Prefer the
+   * public API around the owning type unless you are maintaining this runtime.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #active = undefined;
+   *
+   *   readInternalState() {
+   *     return this.#active;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
   #active = new Map<
     string,
     { traceId: string; spanId: string; parentSpanId: string | null; startTimeUnixNano: number; kind: string; method?: string; url?: string; injectedHeaders: Record<string, unknown> }
   >();
 
+  /**
+   * Enable fetch topic subscriptions and propagation injection.
+   *
+   * The SDK must provide a propagator with `inject()` and a `recordSpan()`
+   * method. Completed spans are named `<method> <url>`, use client kind, and
+   * include HTTP method, URL, response status, error message, resource, and
+   * injected header attributes when available. The returned disposable removes
+   * all subscriptions.
+   *
+   * ```js
+   * const { FetchInstrumentation } =
+   *   import 'internal:opentelemetry/instrumentations/fetch';
+   * const disposable = new FetchInstrumentation().enable({
+   *   propagator: { inject(carrier) { carrier.traceparent = '00-demo'; } },
+   *   recordSpan(span) { console.log(span.kind); },
+   * });
+   * disposable.dispose();
+   * ```
+   *
+   * @param sdk SDK-like sink with propagator and span recorder.
+   * @returns A disposable that removes all fetch subscriptions.
+   * @internal
+   */
   enable(sdk: OtelSdkLike): Disposable {
     const onStart = topic<RuntimeHttpRequestEvent>(otelRuntimeTopic('fetch', 'request', 'start')).subscribe((event) => {
       if (!isTracerProviderContextEnabled()) return;

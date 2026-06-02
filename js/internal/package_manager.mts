@@ -1,6 +1,15 @@
 /**
  * internal:package_manager — package installation helpers.
  *
+ * Resolves npm package specs, downloads tarballs, verifies registry integrity
+ * metadata, extracts packages into `.fino/packages`, and writes the runtime
+ * package map consumed by the internal loader.
+ *
+ * ```js
+ * import { installPackages } from 'internal:package_manager';
+ * console.log(typeof installPackages);
+ * ```
+ *
  * @internal
  */
 
@@ -41,12 +50,27 @@ function firstSriToken(integrity: string): { token: string; hashAlias: string; e
 }
 
 /**
- * Verify a tarball's integrity against the npm packument's `dist.integrity`
- * or `dist.shasum` field. Throws if verification fails. No-ops if OpenSSL is
- * not available or if neither field is present.
+ * Verify package tarball bytes against npm registry integrity metadata.
  *
- * `dist.integrity` is an SRI string like `sha512-<base64>`.
- * `dist.shasum` is a hex-encoded SHA-1 (legacy, lower security).
+ * `integrity` is expected to be an SRI token such as `sha512-...`; only the
+ * first token is checked when the field contains multiple algorithms. `shasum`
+ * is the legacy SHA-1 hex fallback. If OpenSSL is unavailable, or both metadata
+ * fields are absent, the function returns without verification. Mismatches,
+ * malformed metadata without a usable fallback, and unsupported algorithms
+ * throw descriptive errors.
+ *
+ * ```js
+ * import { verifyTarballIntegrity } from 'internal:package_manager';
+ * const bytes = new Uint8Array([1, 2, 3]);
+ * verifyTarballIntegrity(bytes, undefined, undefined, 'demo@1.0.0');
+ * ```
+ *
+ * @param bytes Tarball bytes to verify.
+ * @param integrity Optional npm `dist.integrity` SRI value.
+ * @param shasum Optional npm `dist.shasum` SHA-1 hex value.
+ * @param packageId Human-readable package id used in error messages.
+ * @returns Nothing on success or when verification is skipped.
+ * @internal
  */
 export function verifyTarballIntegrity(
   bytes: Uint8Array,
@@ -475,6 +499,26 @@ async function buildInstallPlan(root: string, packageSpecs: string[]): Promise<{
   return { pkgJson, roots, explicitRequests };
 }
 
+/**
+ * Install project dependencies and write the Fino package map.
+ *
+ * With `packageSpecs`, the root `package.json` is created or updated with the
+ * requested packages before resolution. With no specs, an existing
+ * `package.json` is required and all declared dependency groups are installed.
+ * Packages are resolved from `FINO_NPM_REGISTRY` or the npm public registry by
+ * default. The installer writes `.fino/package-map.json` and package contents
+ * under `.fino/packages`; network, filesystem, registry, and integrity failures
+ * are thrown.
+ *
+ * ```js
+ * import { installPackages } from 'internal:package_manager';
+ * await installPackages(['left-pad@^1.3.0']);
+ * ```
+ *
+ * @param packageSpecs Optional package names or `name@range` specs to add.
+ * @returns A promise that resolves after installation and map generation.
+ * @internal
+ */
 export async function installPackages(packageSpecs: string[] = []): Promise<void> {
   const root = cwd();
   const ctx: InstallContext = {
