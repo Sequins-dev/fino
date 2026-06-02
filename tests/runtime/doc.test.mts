@@ -664,8 +664,14 @@ export function afterEnum(): string {
     t.ok(!html.includes(appDir), 'html does not include absolute project paths');
     t.ok(html.includes('id="advanced.open"'), 'html includes symbol anchors');
     t.ok(html.includes('<main'), 'html uses the shared docs template layout');
-    t.ok(html.includes('.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh'), 'layout uses fixed viewport height');
+    t.ok(html.includes('.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh'), 'shared layout uses fixed viewport height');
+    t.ok(html.includes('.docs-layout-api{grid-template-columns:280px minmax(0,1fr) 240px}'), 'api layout reserves a right page index column');
     t.ok(html.includes('main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto'), 'content area scrolls independently');
+    t.ok(html.includes('main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px;grid-column:2;grid-row:1}'), 'content stays in the first desktop grid row');
+    t.ok(html.includes('.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh'), 'page index is independently scrollable and sticky');
+    t.ok(html.includes('.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh;grid-column:3;grid-row:1}'), 'page index stays in the first desktop grid row');
+    t.ok(html.includes('.docs-sidebar{grid-column:1;grid-row:1;'), 'left sidebar stays in the first desktop grid row');
+    t.ok(html.includes('@media(max-width:760px){body{overflow:auto}.docs-layout,.docs-layout-api{display:block;height:auto}'), 'mobile layout collapses API pages to a single column');
     t.ok(html.includes('.docs-symbol{margin:0 0 72px}'), 'template separates symbols with enough whitespace after descriptions and examples');
     t.ok(html.includes('.docs-symbol>h3+p,.member>h5+p{margin-top:0}'), 'template keeps descriptions close to their signatures');
     t.ok(html.includes('color-scheme:light dark'), 'template advertises light and dark color schemes');
@@ -679,6 +685,13 @@ export function afterEnum(): string {
     t.ok(html.includes('<h4>Getters</h4>'), 'html groups members by kind');
     t.ok(html.includes('<h5><code><span class="tok-keyword">get</span> name(): <span class="tok-keyword">string</span></code></h5>'), 'html uses highlighted member signatures as headings');
     t.ok(html.includes('<h6>Details</h6>'), 'member markdown headings are offset below member title');
+    t.ok(html.includes('<nav class="docs-page-index" aria-label="Page symbol index">'), 'api pages include a page-local symbol index');
+    t.ok(html.includes('<a href="#advanced.open">open</a>'), 'page index links exported symbols by concise name');
+    t.ok(html.includes('<a href="#advanced.ResourceBox">ResourceBox</a>'), 'page index links class exports by concise name');
+    t.ok(html.includes('<a href="#advanced.ResourceBox.name">name</a>'), 'page index links class members by concise name');
+    t.ok(html.includes('<a href="#advanced.ResourceBox.from">from</a>'), 'page index links static members by concise name');
+    t.equal(html.includes('<a href="#advanced.ResourceBox.name">get name()'), false, 'page index does not use full member signatures');
+    t.ok(html.indexOf('<a href="#advanced.ResourceBox">ResourceBox</a>') < html.indexOf('<a href="#advanced.ResourceBox.name">name</a>'), 'page index nests members after their parent export');
     t.ok(!html.includes('<p class="muted">function</p>'), 'html does not repeat per-symbol kind labels');
     t.ok(html.includes('Use <strong>advanced</strong> resources with the <code>ResourceBox</code> helper.'), 'html renders module markdown');
     t.ok(html.includes('<a href="../guides/advanced.md">advanced guide</a>'), 'html rewrites source-relative module markdown links for generated output');
@@ -768,6 +781,7 @@ export function afterEnum(): string {
 
     const index = await fs.readFile(docsDir + '/index.html');
     t.ok(index.includes('<title>Docs Site</title>'), 'root index has site title');
+    t.equal(index.includes('<nav class="docs-page-index"'), false, 'root index does not render the API symbol index');
     t.ok(index.includes('<h1>Fixture API</h1>'), 'root index renders project README');
     t.ok(index.includes('<img src="../logo.svg" alt="Fixture logo">'), 'root index rewrites README image URLs for generated output');
     t.ok(index.includes('<a href="../guides/start.md">Project guide</a>'), 'root index rewrites README links for generated output');
@@ -852,6 +866,7 @@ export function afterEnum(): string {
 
     const guideHtml = await fs.readFile(docsDir + '/guides/start.html');
     t.ok(guideHtml.includes('<title>Guide Docs - Getting Started</title>'), 'guide html uses markdown title');
+    t.equal(guideHtml.includes('<nav class="docs-page-index"'), false, 'guide pages do not render the API symbol index');
     t.ok(guideHtml.includes('<p class="muted">guides/start.md</p>'), 'guide html shows source path');
     t.equal(guideHtml.includes('weight: 10'), false, 'guide html strips frontmatter');
     t.ok(guideHtml.includes('<a href="advanced.html">advanced guide</a>'), 'guide links resolve to other generated guides');

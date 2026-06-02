@@ -190,6 +190,8 @@ interface HtmlModule {
   summary: string;
   summaryHtml: string;
   docHtml: string;
+  symbolIndexHtml: string;
+  hasSymbolIndex: boolean;
   groups: HtmlGroup<HtmlExport>[];
   hasGroups: boolean;
 }
@@ -236,7 +238,7 @@ const DOCS_INDEX_SCHEMA_STATEMENTS = DOCS_INDEX_SCHEMA
   .map((statement) => statement.trim())
   .filter(Boolean);
 
-const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-sidebar{background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,main{height:auto}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}`;
+const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-layout-api{grid-template-columns:280px minmax(0,1fr) 240px}.docs-sidebar{grid-column:1;grid-row:1;background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px;grid-column:2;grid-row:1}.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh;grid-column:3;grid-row:1}.docs-page-index-title{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px}.docs-page-index ul{list-style:none;margin:0;padding-left:14px}.docs-page-index>ul{padding-left:0}.docs-page-index li{margin:4px 0}.docs-page-index a{display:inline-block;padding:2px 0}.docs-page-index-members{font-size:.92rem}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout,.docs-layout-api{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,.docs-page-index,main{height:auto}.docs-page-index{border-left:0;border-bottom:1px solid var(--border);padding:18px 20px;position:static;max-height:none}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}`;
 
 const HTML_PAGE_TEMPLATE = `<!doctype html>
 <html>
@@ -246,8 +248,9 @@ const HTML_PAGE_TEMPLATE = `<!doctype html>
 <style>{{{css}}}</style>
 </head>
 <body>
-<div class="docs-layout">
+<div class="docs-layout{{#hasPageIndex}} docs-layout-api{{/hasPageIndex}}">
 {{{sidebarHtml}}}
+{{{pageIndexHtml}}}
 <main>
 {{{contentHtml}}}
 </main>
@@ -1486,7 +1489,9 @@ function renderModuleHtml(api: ApiDoc, moduleDoc: ModuleDoc, title: string): str
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title: `${title} - ${moduleDoc.name}`,
     css: DOCS_CSS,
+    hasPageIndex: htmlModule.hasSymbolIndex,
     sidebarHtml: renderSidebarHtml(api, htmlModule.href, title),
+    pageIndexHtml: htmlModule.symbolIndexHtml,
     contentHtml,
   });
 }
@@ -1497,7 +1502,9 @@ function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title: `${title} - ${guide.title}`,
     css: DOCS_CSS,
+    hasPageIndex: false,
     sidebarHtml: renderSidebarHtml(api, guide.href, title),
+    pageIndexHtml: '',
     contentHtml,
   });
 }
@@ -1509,7 +1516,9 @@ async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title,
     css: DOCS_CSS,
+    hasPageIndex: false,
     sidebarHtml: renderSidebarHtml(api, 'index.html', title),
+    pageIndexHtml: '',
     contentHtml,
   });
 }
@@ -1520,6 +1529,7 @@ function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
   const exports = moduleDoc.exports.map((item) => toHtmlExport(item, ctx));
   const summary = firstSummary(moduleDoc.doc);
   const groups = groupHtmlItems(exports);
+  const symbolIndexHtml = renderSymbolIndexHtml(moduleDoc);
   return {
     name: moduleDoc.name,
     id: slug(moduleDoc.id ?? moduleDoc.name),
@@ -1530,6 +1540,8 @@ function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
     summary,
     summaryHtml: renderMarkdownInline(summary, { resolveLink: buildLinkResolver(api, moduleDoc) }),
     docHtml: renderDocHtml(moduleDoc.doc, ctx, 1),
+    symbolIndexHtml,
+    hasSymbolIndex: symbolIndexHtml.length > 0,
     groups,
     hasGroups: groups.length > 0,
   };
@@ -1547,6 +1559,21 @@ function toHtmlGuide(api: ApiDoc, guide: GuideDoc): HtmlGuide {
       renderCode: (code, lang) => renderCodeHtml(lang, code),
     }),
   };
+}
+
+function renderSymbolIndexHtml(moduleDoc: ModuleDoc): string {
+  if (moduleDoc.exports.length === 0) return '';
+  const items = moduleDoc.exports.map((item) => {
+    const href = `#${escapeHtml(slug(item.id ?? item.name))}`;
+    const members = item.members.length === 0
+      ? ''
+      : `<ul class="docs-page-index-members">${item.members.map((member) => {
+          const memberHref = `#${escapeHtml(slug(member.id ?? member.name))}`;
+          return `<li><a href="${memberHref}">${escapeHtml(member.name)}</a></li>`;
+        }).join('')}</ul>`;
+    return `<li><a href="${href}">${escapeHtml(item.name)}</a>${members}</li>`;
+  }).join('');
+  return `<nav class="docs-page-index" aria-label="Page symbol index"><p class="docs-page-index-title">On This Page</p><ul>${items}</ul></nav>`;
 }
 
 function stripFirstHeading(markdown: string): string {
