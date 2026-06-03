@@ -227,6 +227,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
     source_builtin!("fino:net/http/eventsource", "net/http/eventsource"),
     source_builtin!("fino:net/http/websocket", "net/http/websocket"),
+    source_builtin!("internal:net/quic/ngtcp2/bindings", "internal/net/quic/ngtcp2/bindings"),
+    source_builtin!("internal:net/quic/ngtcp2/crypto-ossl", "internal/net/quic/ngtcp2/crypto-ossl"),
+    source_builtin!("internal:net/quic/endpoint", "internal/net/quic/endpoint"),
+    source_builtin!("fino:net/quic", "net/quic"),
     // file
     source_builtin!("fino:file", "file/fs"),
     source_builtin!("fino:file/path", "file/path"),

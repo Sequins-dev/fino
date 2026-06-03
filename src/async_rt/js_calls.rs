@@ -152,6 +152,56 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Invoke a registered callback immediately on the V8 thread.
+///
+/// This is used by synchronous FFI calls whose C stack invokes an
+/// `FfiCallback` before returning. Promise-returning callbacks are rejected in
+/// this path because the V8 thread cannot synchronously block waiting for its
+/// own microtasks to run.
+pub fn invoke_registered_callback_sync(
+    scope: &mut v8::HandleScope,
+    callback_id: usize,
+    args: &[SendArg],
+    param_types: &[NativeType],
+) -> Result<CallResult, String> {
+    let func_local = CALLBACK_TABLE.with(|t| {
+        t.borrow()
+            .get(callback_id)
+            .and_then(|o| o.as_ref())
+            .map(|g| v8::Local::new(scope, g))
+    });
+
+    let Some(func) = func_local else {
+        return Err("FfiCallback: callback has been closed".into());
+    };
+
+    let js_args: Vec<v8::Local<v8::Value>> = args
+        .iter()
+        .zip(param_types.iter())
+        .map(|(arg, ty)| send_arg_to_v8(scope, arg, ty))
+        .collect();
+
+    let this: v8::Local<v8::Value> = v8::undefined(scope).into();
+    let tc = &mut v8::TryCatch::new(scope);
+    let call_result = func.call(tc, this, &js_args);
+
+    if tc.has_caught() {
+        let msg = tc
+            .exception()
+            .map(|e| e.to_rust_string_lossy(tc))
+            .unwrap_or_else(|| "unknown exception".into());
+        tc.reset();
+        return Err(format!("FfiCallback: {msg}"));
+    }
+
+    let val = call_result.unwrap_or_else(|| v8::undefined(tc).into());
+    if v8::Local::<v8::Promise>::try_from(val).is_ok() {
+        return Err("FfiCallback: Promise return is not supported for same-thread callbacks".into());
+    }
+
+    Ok(local_to_call_result(tc, val))
+}
+
 fn fill_slot(
     slot: &Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
     result: Result<CallResult, String>,
@@ -369,8 +419,15 @@ pub unsafe fn write_c_result(
                 *(result_ptr as *mut f64) = call_result_to_f64(&call_result);
             }
             NativeType::Pointer | NativeType::Buffer => {
-                // Pointer return from JS callbacks is not supported; write null.
-                *(result_ptr as *mut usize) = 0;
+                let ptr = match &call_result {
+                    CallResult::Bytes(bytes) if bytes.len() >= 8 => {
+                        let mut raw = [0u8; 8];
+                        raw.copy_from_slice(&bytes[..8]);
+                        u64::from_le_bytes(raw) as usize
+                    }
+                    _ => 0,
+                };
+                *(result_ptr as *mut usize) = ptr;
             }
         }
     }

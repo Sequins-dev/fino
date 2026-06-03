@@ -8,16 +8,52 @@ import { os } from 'fino:process';
 
 const libcPath = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
+const libc = dlopen(libcPath, {
+  qsort: {
+    parameters: ['pointer', 'usize', 'usize', 'pointer'],
+    result: 'void',
+  },
+});
+
 // qsort is called async (pool thread) so the comparator callback fires on a
 // non-V8 thread, exercising the real cross-thread bridge.
 // Both base and compar are 'pointer' (not 'buffer'), so they're treated as
 // plain address integers — safe to copy into AsyncFfiWork before the pool runs.
-const libc = dlopen(libcPath, {
+const asyncLibc = dlopen(libcPath, {
   qsort: {
     parameters: ['pointer', 'usize', 'usize', 'pointer'],
     result: 'void',
     async: true,
   },
+});
+
+describe('FfiCallback same-thread (qsort)', () => {
+  it('dlopen exposes raw C symbol pointers', (t) => {
+    t.ok(libc.pointers.qsort instanceof ArrayBuffer, 'qsort pointer is an ArrayBuffer');
+    t.equal(libc.pointers.qsort.byteLength, 8, 'qsort pointer is pointer-sized');
+    t.notEqual(Pointer.addr(libc.pointers.qsort), 0n, 'qsort pointer is non-null');
+  });
+
+  it('JS comparator works when C invokes it during a synchronous FFI call', (t) => {
+    let callCount = 0;
+    const cmp = new FfiCallback(
+      { parameters: ['pointer', 'pointer'], result: 'i32' },
+      (aPtr: ArrayBuffer, bPtr: ArrayBuffer) => {
+        callCount++;
+        const a = Pointer.readI32(aPtr, 0);
+        const b = Pointer.readI32(bPtr, 0);
+        return a - b;
+      },
+    );
+
+    const arr = new Int32Array([5, 3, 1, 4, 2]);
+    libc.symbols.qsort(Pointer.of(arr.buffer), 5n, 4n, cmp.pointer);
+
+    t.ok(callCount > 0, `comparator called ${callCount} times`);
+    t.deepEqual(Array.from(arr), [1, 2, 3, 4, 5], 'array is sorted ascending');
+
+    cmp.close();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -67,7 +103,7 @@ describe('FfiCallback cross-thread (qsort)', () => {
 
     const arr = new Int32Array([5, 3, 1, 4, 2]);
     // Pointer.of wraps arr.buffer's backing-store address as a pointer arg.
-    await libc.symbols.qsort(Pointer.of(arr.buffer), 5n, 4n, cmp.pointer);
+    await asyncLibc.symbols.qsort(Pointer.of(arr.buffer), 5n, 4n, cmp.pointer);
 
     t.ok(callCount > 0, `comparator called ${callCount} times`);
     t.deepEqual(Array.from(arr), [1, 2, 3, 4, 5], 'array is sorted ascending');
@@ -86,7 +122,7 @@ describe('FfiCallback cross-thread (qsort)', () => {
     );
 
     const arr = new Int32Array([3, 1, 4, 1, 5, 9, 2, 6]);
-    await libc.symbols.qsort(Pointer.of(arr.buffer), 8n, 4n, cmp.pointer);
+    await asyncLibc.symbols.qsort(Pointer.of(arr.buffer), 8n, 4n, cmp.pointer);
 
     t.deepEqual(Array.from(arr), [9, 6, 5, 4, 3, 2, 1, 1], 'array is sorted descending');
 
@@ -111,7 +147,7 @@ describe('FfiCallback async-returning comparator', () => {
     );
 
     const arr = new Int32Array([7, 2, 8, 1, 5]);
-    await libc.symbols.qsort(Pointer.of(arr.buffer), 5n, 4n, cmp.pointer);
+    await asyncLibc.symbols.qsort(Pointer.of(arr.buffer), 5n, 4n, cmp.pointer);
 
     t.deepEqual(Array.from(arr), [1, 2, 5, 7, 8], 'async comparator sorts correctly');
 

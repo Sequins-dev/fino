@@ -315,6 +315,9 @@ const _sslSymbols = {
   SSL_CTX_free: { parameters: ['pointer'], result: 'void' },
   SSL_new:  { parameters: ['pointer'], result: 'pointer' },
   SSL_free: { parameters: ['pointer'], result: 'void' },
+  SSL_set_connect_state: { parameters: ['pointer'], result: 'void' },
+  SSL_set_accept_state: { parameters: ['pointer'], result: 'void' },
+  SSL_set_ex_data: { parameters: ['pointer', 'i32', 'pointer'], result: 'i32' },
   SSL_set_fd:   { parameters: ['pointer', 'i32'], result: 'i32' },
   SSL_connect:  { parameters: ['pointer'], result: 'i32' },
   // async: true — runs on the blocking pool so ALPN select FfiCallbacks fire via condvar
@@ -322,9 +325,12 @@ const _sslSymbols = {
   SSL_CTX_set_alpn_select_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
   SSL_read:     { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_write:    { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
+  SSL_read_ex:  { parameters: ['pointer', 'buffer', 'usize', 'buffer'], result: 'i32' },
   SSL_shutdown: { parameters: ['pointer'], result: 'i32' },
+  SSL_shutdown_ex: { parameters: ['pointer', 'u64', 'pointer', 'usize'], result: 'i32' },
   SSL_get_error: { parameters: ['pointer', 'i32'], result: 'i32' },
   SSL_pending:   { parameters: ['pointer'], result: 'i32' },
+  SSL_is_init_finished: { parameters: ['pointer'], result: 'i32' },
   SSL_CTX_set_verify:               { parameters: ['pointer', 'i32', 'pointer'], result: 'void' },
   SSL_CTX_set_default_verify_paths: { parameters: ['pointer'], result: 'i32' },
   SSL_CTX_load_verify_locations:    { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
@@ -342,6 +348,27 @@ const _sslSymbols = {
   // SSL_get0_alpn_selected(ssl, *data_out, *len_out) — query negotiated protocol
   // data_out receives a non-owning pointer into OpenSSL internals; len_out is u32.
   SSL_get0_alpn_selected: { parameters: ['pointer', 'buffer', 'buffer'], result: 'void' },
+  SSL_set_alpn_protos: { parameters: ['pointer', 'buffer', 'u32'], result: 'i32' },
+} satisfies NativeSymbolMap;
+
+const _sslQuicSymbols = {
+  ..._sslSymbols,
+  OSSL_QUIC_client_thread_method: { parameters: [], result: 'pointer' },
+  OSSL_QUIC_server_method: { parameters: [], result: 'pointer' },
+  SSL_write_ex2: { parameters: ['pointer', 'buffer', 'usize', 'u64', 'buffer'], result: 'i32' },
+  SSL_handle_events: { parameters: ['pointer'], result: 'i32', async: true },
+  SSL_set_blocking_mode: { parameters: ['pointer', 'i32'], result: 'i32' },
+  SSL_new_listener: { parameters: ['pointer', 'u64'], result: 'pointer' },
+  SSL_listen: { parameters: ['pointer'], result: 'i32' },
+  SSL_accept_connection: { parameters: ['pointer', 'u64'], result: 'pointer' },
+  SSL_get_accept_connection_queue_len: { parameters: ['pointer'], result: 'usize' },
+  SSL_set_default_stream_mode: { parameters: ['pointer', 'u32'], result: 'i32' },
+  SSL_set_incoming_stream_policy: { parameters: ['pointer', 'i32', 'u64'], result: 'i32' },
+  SSL_new_stream: { parameters: ['pointer', 'u64'], result: 'pointer' },
+  SSL_accept_stream: { parameters: ['pointer', 'u64'], result: 'pointer' },
+  SSL_get_accept_stream_queue_len: { parameters: ['pointer'], result: 'usize' },
+  SSL_get_stream_id: { parameters: ['pointer'], result: 'u64' },
+  SSL_stream_conclude: { parameters: ['pointer', 'u64'], result: 'i32' },
 } satisfies NativeSymbolMap;
 
 // ---------------------------------------------------------------------------
@@ -350,6 +377,7 @@ const _sslSymbols = {
 
 type CryptoLibrary = DynamicLibrary<typeof _cryptoSymbols>;
 type SslLibrary = DynamicLibrary<typeof _sslSymbols>;
+type SslQuicLibrary = DynamicLibrary<typeof _sslQuicSymbols>;
 
 function _tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TSymbols): DynamicLibrary<TSymbols> | null {
   for (const p of paths) {
@@ -360,6 +388,7 @@ function _tryOpen<TSymbols extends NativeSymbolMap>(paths: string[], symbols: TS
 
 const _libcrypto = _tryOpen(_cryptoPaths, _cryptoSymbols);
 const _libssl    = _tryOpen(_sslPaths, _sslSymbols);
+const _libsslQuic = _tryOpen(_sslPaths, _sslQuicSymbols);
 
 /**
  * Whether libcrypto was loaded successfully.
@@ -400,6 +429,11 @@ function _requireCrypto(): CryptoLibrary {
 function _requireSsl(): SslLibrary {
   if (_libssl === null) throw new Error('OpenSSL SSL not available');
   return _libssl;
+}
+
+function _requireSslQuic(): SslQuicLibrary {
+  if (_libsslQuic === null) throw new Error('OpenSSL QUIC SSL not available');
+  return _libsslQuic;
 }
 
 // ---------------------------------------------------------------------------
@@ -2283,6 +2317,64 @@ export function sslCtxNewServer(): object {
 }
 
 /**
+ * Create a client QUIC context using OpenSSL's thread-assisted QUIC method.
+ *
+ * The context is owning and must be freed with `sslCtxFree()`. OpenSSL requires
+ * ALPN for QUIC; callers should configure protocols before connecting.
+ *
+ * @returns Opaque owning `SSL_CTX*`.
+ * @internal
+ */
+export function sslCtxNewQuicClient(): object {
+  const lib = _requireSslQuic();
+  const method = lib.symbols.OSSL_QUIC_client_thread_method();
+  const ctx = lib.symbols.SSL_CTX_new(method);
+  if (ctx === null) throw new Error('SSL_CTX_new(OSSL_QUIC_client_thread_method) failed: ' + getErrorString());
+  return ctx;
+}
+
+/**
+ * Create a server QUIC context using OpenSSL's QUIC listener method.
+ *
+ * The context is owning and must be freed with `sslCtxFree()`. Load a
+ * certificate/key pair and install a server ALPN callback before listening.
+ *
+ * @returns Opaque owning `SSL_CTX*`.
+ * @internal
+ */
+export function sslCtxNewQuicServer(): object {
+  const lib = _requireSslQuic();
+  const method = lib.symbols.OSSL_QUIC_server_method();
+  const ctx = lib.symbols.SSL_CTX_new(method);
+  if (ctx === null) throw new Error('SSL_CTX_new(OSSL_QUIC_server_method) failed: ' + getErrorString());
+  return ctx;
+}
+
+/**
+ * Load a PEM certificate and private key into an existing SSL context.
+ *
+ * @param ctx SSL_CTX* to configure.
+ * @param certPath Path to PEM certificate.
+ * @param keyPath Path to PEM private key.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string): void {
+  const lib = _requireSsl();
+  const certBuf = encodeUtf8(certPath + '\0');
+  if (lib.symbols.SSL_CTX_use_certificate_file(ctx, certBuf, 1) !== 1) {
+    throw new Error(`TLS: failed to load certificate "${certPath}": ` + getErrorString());
+  }
+  const keyBuf = encodeUtf8(keyPath + '\0');
+  if (lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1) !== 1) {
+    throw new Error(`TLS: failed to load private key "${keyPath}": ` + getErrorString());
+  }
+  if (lib.symbols.SSL_CTX_check_private_key(ctx) !== 1) {
+    throw new Error(`TLS: certificate "${certPath}" and key "${keyPath}" do not match: ` + getErrorString());
+  }
+}
+
+/**
  * Create a server SSL context and load a PEM certificate + private key.
  * Both paths must point to PEM-encoded files (SSL_FILETYPE_PEM = 1).
  * Throws if the context cannot be created or either file fails to load.
@@ -2393,6 +2485,24 @@ export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
   const buf = _encodeAlpnProtocols(protocols);
   const rc = lib.symbols.SSL_CTX_set_alpn_protos(ctx, buf, buf.length);
   if (rc !== 0) throw new Error('SSL_CTX_set_alpn_protos failed: ' + getErrorString());
+}
+
+/**
+ * Set the ALPN protocol list on a single SSL connection object.
+ *
+ * This is used by ngtcp2's OpenSSL crypto backend, which configures QUIC TLS
+ * on an `SSL*` rather than on OpenSSL's high-level QUIC transport object.
+ *
+ * @param ssl SSL* connection object.
+ * @param protocols Ordered ALPN preference list.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslSetAlpnProtos(ssl: object, protocols: string[]): void {
+  const lib = _requireSsl();
+  const buf = _encodeAlpnProtocols(protocols);
+  const rc = lib.symbols.SSL_set_alpn_protos(ssl, buf, buf.length);
+  if (rc !== 0) throw new Error('SSL_set_alpn_protos failed: ' + getErrorString());
 }
 
 /**
@@ -2524,6 +2634,138 @@ export function sslNew(ctx: object): object {
 }
 
 /**
+ * Put an `SSL*` into client handshake mode.
+ *
+ * @param ssl SSL* connection object.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslSetConnectState(ssl: object): void {
+  _requireSsl().symbols.SSL_set_connect_state(ssl);
+}
+
+/**
+ * Put an `SSL*` into server handshake mode.
+ *
+ * @param ssl SSL* connection object.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslSetAcceptState(ssl: object): void {
+  _requireSsl().symbols.SSL_set_accept_state(ssl);
+}
+
+/**
+ * Set OpenSSL app data for an `SSL*`.
+ *
+ * @param ssl SSL* connection object.
+ * @param data Native pointer value or null.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslSetAppData(ssl: object, data: ArrayBuffer | null = null): void {
+  if (_requireSsl().symbols.SSL_set_ex_data(ssl, 0, data) !== 1) {
+    throw new Error('SSL_set_ex_data failed: ' + getErrorString());
+  }
+}
+
+export const SSL_DEFAULT_STREAM_MODE_NONE = 0;
+export const SSL_INCOMING_STREAM_POLICY_ACCEPT = 1;
+export const SSL_ACCEPT_CONNECTION_NO_BLOCK = 1;
+export const SSL_STREAM_FLAG_UNI = 1;
+export const SSL_STREAM_FLAG_NO_BLOCK = 2;
+export const SSL_ACCEPT_STREAM_NO_BLOCK = 1;
+export const SSL_ACCEPT_STREAM_UNI = 2;
+export const SSL_ACCEPT_STREAM_BIDI = 4;
+export const SSL_WRITE_FLAG_CONCLUDE = 1;
+export const SSL_SHUTDOWN_FLAG_RAPID = 1;
+
+/**
+ * Create an OpenSSL QUIC listener object from a QUIC server context.
+ *
+ * @param ctx QUIC server SSL_CTX*.
+ * @returns Opaque owning listener `SSL*`.
+ * @internal
+ */
+export function sslNewListener(ctx: object): object {
+  const ssl = _requireSslQuic().symbols.SSL_new_listener(ctx, 0);
+  if (ssl === null) throw new Error('SSL_new_listener failed: ' + getErrorString());
+  return ssl;
+}
+
+/**
+ * Start an OpenSSL listener.
+ *
+ * @param listener QUIC listener `SSL*`.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslListen(listener: object): void {
+  if (_requireSslQuic().symbols.SSL_listen(listener) !== 1) {
+    throw new Error('SSL_listen failed: ' + getErrorString());
+  }
+}
+
+/**
+ * Accept a QUIC connection from a listener without blocking.
+ *
+ * @param listener QUIC listener `SSL*`.
+ * @returns Owning connection `SSL*`, or null when no connection is queued.
+ * @internal
+ */
+export function sslAcceptConnectionNoBlock(listener: object): object | null {
+  return _requireSslQuic().symbols.SSL_accept_connection(listener, SSL_ACCEPT_CONNECTION_NO_BLOCK) as object | null;
+}
+
+/**
+ * Return queued QUIC connections ready to be accepted from a listener.
+ *
+ * @param listener QUIC listener `SSL*`.
+ * @returns Number of queued connections.
+ * @internal
+ */
+export function sslGetAcceptConnectionQueueLen(listener: object): number {
+  return Number(_requireSslQuic().symbols.SSL_get_accept_connection_queue_len(listener));
+}
+
+/**
+ * Create a locally-initiated QUIC stream.
+ *
+ * @param conn QUIC connection `SSL*`.
+ * @param unidirectional Whether to create a unidirectional stream.
+ * @returns Owning stream `SSL*`.
+ * @internal
+ */
+export function sslNewQuicStream(conn: object, unidirectional = false): object {
+  const flags = (unidirectional ? SSL_STREAM_FLAG_UNI : 0) | SSL_STREAM_FLAG_NO_BLOCK;
+  const stream = _requireSslQuic().symbols.SSL_new_stream(conn, flags);
+  if (stream === null) throw new Error('SSL_new_stream failed: ' + getErrorString());
+  return stream;
+}
+
+/**
+ * Accept a remote-initiated QUIC stream without blocking.
+ *
+ * @param conn QUIC connection `SSL*`.
+ * @returns Owning stream `SSL*`, or null when no stream is queued.
+ * @internal
+ */
+export function sslAcceptStreamNoBlock(conn: object): object | null {
+  return _requireSslQuic().symbols.SSL_accept_stream(conn, SSL_ACCEPT_STREAM_NO_BLOCK) as object | null;
+}
+
+/**
+ * Return an OpenSSL QUIC stream ID.
+ *
+ * @param stream QUIC stream `SSL*`.
+ * @returns Stream ID as a number.
+ * @internal
+ */
+export function sslGetStreamId(stream: object): number {
+  return Number(_requireSslQuic().symbols.SSL_get_stream_id(stream));
+}
+
+/**
  * Free an owning SSL connection object.
  *
  * The pointer must have been returned by `sslNew()` and must not be used after
@@ -2568,6 +2810,62 @@ export function sslFree(ssl: object): void {
 export function sslSetFd(ssl: object, fd: number): void {
   const rc = _requireSsl().symbols.SSL_set_fd(ssl, fd);
   if (rc !== 1) throw new Error('SSL_set_fd failed');
+}
+
+/**
+ * Configure OpenSSL application-level blocking mode.
+ *
+ * QUIC network sockets remain nonblocking; this controls whether OpenSSL API
+ * calls wait internally. Fino uses nonblocking mode and the JS event loop.
+ *
+ * @param ssl SSL* object.
+ * @param blocking Whether OpenSSL calls should block.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslSetBlockingMode(ssl: object, blocking: boolean): void {
+  if (_requireSslQuic().symbols.SSL_set_blocking_mode(ssl, blocking ? 1 : 0) !== 1) {
+    throw new Error('SSL_set_blocking_mode failed: ' + getErrorString());
+  }
+}
+
+/**
+ * Disable the implicit default QUIC stream for multi-stream operation.
+ *
+ * @param ssl QUIC connection SSL*.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslUseQuicMultiStreamMode(ssl: object): void {
+  const lib = _requireSslQuic();
+  if (lib.symbols.SSL_set_default_stream_mode(ssl, SSL_DEFAULT_STREAM_MODE_NONE) !== 1) {
+    throw new Error('SSL_set_default_stream_mode failed: ' + getErrorString());
+  }
+  if (lib.symbols.SSL_set_incoming_stream_policy(ssl, SSL_INCOMING_STREAM_POLICY_ACCEPT, 0) !== 1) {
+    throw new Error('SSL_set_incoming_stream_policy failed: ' + getErrorString());
+  }
+}
+
+/**
+ * Drive OpenSSL QUIC event processing.
+ *
+ * @param ssl QUIC listener, connection, or stream SSL*.
+ * @returns Raw OpenSSL return value.
+ * @internal
+ */
+export function sslHandleEvents(ssl: object): Promise<number> {
+  return _requireSslQuic().symbols.SSL_handle_events(ssl) as Promise<number>;
+}
+
+/**
+ * Whether an SSL handshake has completed.
+ *
+ * @param ssl SSL* object.
+ * @returns True after handshake completion.
+ * @internal
+ */
+export function sslIsInitFinished(ssl: object): boolean {
+  return _requireSsl().symbols.SSL_is_init_finished(ssl) === 1;
 }
 
 /**
@@ -2714,6 +3012,24 @@ export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): obj
 export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number  { return _requireSsl().symbols.SSL_read(ssl, buf, len); }
 
 /**
+ * Read decrypted bytes with OpenSSL's size_t-based API.
+ *
+ * @param ssl QUIC stream `SSL*`.
+ * @param buf Destination buffer.
+ * @returns Bytes read, `0` for graceful stream EOF, or `null` for WANT_READ/WRITE.
+ * @internal
+ */
+export function sslReadEx(ssl: object, buf: ArrayBuffer): number | null {
+  const out = new ArrayBuffer(8);
+  const rc = _requireSsl().symbols.SSL_read_ex(ssl, buf, buf.byteLength, out);
+  if (rc === 1) return Number(new DataView(out).getBigUint64(0, true));
+  const err = sslGetError(ssl, rc);
+  if (err === SSL_ERROR_ZERO_RETURN) return 0;
+  if (err === SSL_ERROR_WANT_READ || err === SSL_ERROR_WANT_WRITE) return null;
+  throw new Error('SSL_read_ex failed: ' + getErrorString());
+}
+
+/**
  * Write `len` bytes from `buf` over TLS.
  *
  * This returns the raw `SSL_write()` result: positive byte count on success or
@@ -2732,6 +3048,48 @@ export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number  { r
  * @internal
  */
 export function sslWrite(ssl: object, buf: Uint8Array | ArrayBuffer, len: number): number { return _requireSsl().symbols.SSL_write(ssl, buf, len); }
+
+/**
+ * Write decrypted bytes with optional QUIC FIN.
+ *
+ * @param ssl QUIC stream `SSL*`.
+ * @param buf Source bytes.
+ * @param conclude Whether to append the stream FIN after this write.
+ * @returns Bytes accepted, or `null` for WANT_READ/WRITE.
+ * @internal
+ */
+export function sslWriteEx2(ssl: object, buf: Uint8Array | ArrayBuffer, conclude = false): number | null {
+  const out = new ArrayBuffer(8);
+  const rc = _requireSslQuic().symbols.SSL_write_ex2(ssl, buf, buf.byteLength, conclude ? SSL_WRITE_FLAG_CONCLUDE : 0, out);
+  if (rc === 1) return Number(new DataView(out).getBigUint64(0, true));
+  const err = sslGetError(ssl, rc);
+  if (err === SSL_ERROR_WANT_READ || err === SSL_ERROR_WANT_WRITE) return null;
+  throw new Error('SSL_write_ex2 failed: ' + getErrorString());
+}
+
+/**
+ * Conclude the sending side of a QUIC stream.
+ *
+ * @param ssl QUIC stream `SSL*`.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslStreamConclude(ssl: object): void {
+  if (_requireSslQuic().symbols.SSL_stream_conclude(ssl, 0) !== 1) {
+    throw new Error('SSL_stream_conclude failed: ' + getErrorString());
+  }
+}
+
+/**
+ * Rapidly close a QUIC connection.
+ *
+ * @param ssl QUIC connection `SSL*`.
+ * @returns Raw OpenSSL result.
+ * @internal
+ */
+export function sslShutdownQuicRapid(ssl: object): number {
+  return _requireSsl().symbols.SSL_shutdown_ex(ssl, SSL_SHUTDOWN_FLAG_RAPID, null, 0);
+}
 
 /**
  * Initiate or continue the TLS shutdown sequence.

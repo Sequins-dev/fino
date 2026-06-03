@@ -97,6 +97,7 @@ fn dlopen_callback(
 
     let lib_rc: Rc<RefCell<Option<DynLib>>> = Rc::new(RefCell::new(Some(lib)));
     let symbols_obj = v8::Object::new(scope);
+    let pointers_obj = v8::Object::new(scope);
     let n = prop_names.length();
 
     for i in 0..n {
@@ -240,6 +241,8 @@ fn dlopen_callback(
         };
 
         let name_key = v8::String::new(scope, &key_str).unwrap();
+        let ptr_val = pointer::into_js(scope, code_ptr.as_ptr() as *mut std::ffi::c_void);
+        pointers_obj.set(scope, name_key.into(), ptr_val);
         symbols_obj.set(scope, name_key.into(), sym_fn.into());
     }
 
@@ -255,8 +258,10 @@ fn dlopen_callback(
 
     let result_obj = v8::Object::new(scope);
     let sym_key = v8::String::new(scope, "symbols").unwrap();
+    let pointers_key = v8::String::new(scope, "pointers").unwrap();
     let close_key = v8::String::new(scope, "close").unwrap();
     result_obj.set(scope, sym_key.into(), symbols_obj.into());
+    result_obj.set(scope, pointers_key.into(), pointers_obj.into());
     result_obj.set(scope, close_key.into(), close_fn.into());
 
     rv.set(result_obj.into());
@@ -368,7 +373,7 @@ fn ffi_callback_constructor(
     let func_global = v8::Global::new(scope, func_local);
 
     let (handle_ptr, code_ptr) =
-        match closure::new_callback(param_types, result_type, func_global) {
+        match closure::new_callback(scope, param_types, result_type, func_global) {
             Ok(pair) => pair,
             Err(e) => {
                 throw_error(scope, &format!("FfiCallback: {e}"));

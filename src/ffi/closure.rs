@@ -1,16 +1,10 @@
 //! `FfiCallback` — expose a JS function as a C-callable function pointer.
 //!
-//! Creates a libffi `Closure` that, when invoked by C code on a **non-V8
-//! thread**, marshals the C arguments across to the V8 thread, invokes the JS
-//! function (which may return a Promise), and blocks the calling C thread
-//! until the JS function settles.
-//!
-//! # Limitation
-//! Calling an `FfiCallback` from the V8 thread itself is not supported for
-//! the first version — it would require a re-entrant scope, which is
-//! non-trivial. Use `FfiCallback` with `async: true` FFI symbols (where the
-//! C function runs on the blocking pool) or with C libraries that call
-//! callbacks from their own threads.
+//! Creates a libffi `Closure` that, when invoked by C code, marshals the C
+//! arguments into JS values and invokes the registered JS function. Calls from
+//! foreign threads are bridged back to the V8 thread and may resolve Promises.
+//! Calls made re-entrantly from the V8 thread are invoked synchronously and
+//! must return a non-Promise scalar result.
 
 use std::ffi::c_void;
 use std::os::unix::io::RawFd;
@@ -23,6 +17,10 @@ use libffi::raw::ffi_cif;
 use crate::async_rt::js_calls::{self, JsCallRequest, SendArg};
 use crate::ffi::types::NativeType;
 
+unsafe extern "C" {
+    fn v8__Isolate__GetCurrent() -> *mut v8::Isolate;
+}
+
 // ---------------------------------------------------------------------------
 // Per-callback userdata — stored in a `Box` that is leaked to give `'static`.
 // Freed explicitly in `FfiCallbackInner::drop`.
@@ -32,6 +30,7 @@ struct CallbackData {
     callback_id: usize,
     param_types: Vec<NativeType>,
     result_type: NativeType,
+    context: v8::Global<v8::Context>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
     wake_write: RawFd,
 }
@@ -53,18 +52,6 @@ unsafe extern "C" fn trampoline(
     let data = userdata;
     let result_ptr: *mut c_void = result as *mut c_void;
 
-    // Guard: if called from the V8 thread, a condvar wait would deadlock.
-    if crate::async_rt::is_v8_thread() {
-        eprintln!(
-            "FfiCallback: called from V8 thread — same-thread callbacks are not yet \
-             supported. Returning zero/void."
-        );
-        if !result_ptr.is_null() {
-            unsafe { std::ptr::write_bytes(result_ptr as *mut u8, 0, 8) };
-        }
-        return;
-    }
-
     // Read C arguments.
     let send_args: Vec<SendArg> = data
         .param_types
@@ -75,6 +62,32 @@ unsafe extern "C" fn trampoline(
             unsafe { js_calls::read_c_arg(arg_ptr, ty) }
         })
         .collect();
+
+    if crate::async_rt::is_v8_thread() {
+        let isolate = unsafe { v8__Isolate__GetCurrent() };
+        if isolate.is_null() {
+            unsafe {
+                js_calls::write_c_result(
+                    result_ptr,
+                    &data.result_type,
+                    Err("FfiCallback: no current V8 isolate for same-thread callback".into()),
+                );
+            }
+            return;
+        }
+
+        let cb_scope = &mut unsafe { v8::CallbackScope::new(&mut *isolate) };
+        let context = v8::Local::new(cb_scope, &data.context);
+        let scope = &mut v8::ContextScope::new(cb_scope, context);
+        let outcome = js_calls::invoke_registered_callback_sync(
+            scope,
+            data.callback_id,
+            &send_args,
+            &data.param_types,
+        );
+        unsafe { js_calls::write_c_result(result_ptr, &data.result_type, outcome) };
+        return;
+    }
 
     // Create a condvar slot for the result.
     let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
@@ -117,7 +130,7 @@ pub struct FfiCallbackInner {
     // `Drop::drop` runs before field drops. We free `userdata_ptr` there;
     // the closure is still technically alive at that point, but no C code
     // can reach it after close() is called, so this is safe.
-    closure: Closure<'static>,
+    _closure: Closure<'static>,
     userdata_ptr: *mut CallbackData,
 }
 
@@ -129,7 +142,7 @@ impl Drop for FfiCallbackInner {
         if !self.userdata_ptr.is_null() {
             unsafe { drop(Box::from_raw(self.userdata_ptr)) };
         }
-        // `closure` drops automatically after this impl returns.
+        // `_closure` drops automatically after this impl returns.
     }
 }
 
@@ -139,7 +152,7 @@ pub struct CallbackHandle {
     pub inner: Option<FfiCallbackInner>,
     pub id: usize,
     /// Raw function pointer for passing to C as a `pointer` argument.
-    pub code_ptr: *mut c_void,
+    pub _code_ptr: *mut c_void,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +167,7 @@ pub struct CallbackHandle {
 /// # Errors
 /// Returns a human-readable error string on failure.
 pub fn new_callback(
+    scope: &mut v8::HandleScope,
     param_types: Vec<NativeType>,
     result_type: NativeType,
     func_global: v8::Global<v8::Function>,
@@ -169,10 +183,14 @@ pub fn new_callback(
     let cif = Cif::new(ffi_params.into_iter(), ffi_result);
 
     // Leak the userdata so the closure can hold a `'static` reference.
+    let context = scope.get_current_context();
+    let context = v8::Global::new(scope, context);
+
     let userdata = Box::new(CallbackData {
         callback_id,
         param_types: param_types.clone(),
         result_type,
+        context,
         js_call_requests,
         wake_write,
     });
@@ -189,11 +207,11 @@ pub fn new_callback(
     // Extract the callable function pointer (valid as long as closure lives).
     let code_ptr = *closure.code_ptr() as usize as *mut c_void;
 
-    let inner = FfiCallbackInner { closure, userdata_ptr };
+    let inner = FfiCallbackInner { _closure: closure, userdata_ptr };
     let handle = Box::new(CallbackHandle {
         inner: Some(inner),
         id: callback_id,
-        code_ptr,
+        _code_ptr: code_ptr,
     });
     Ok((Box::into_raw(handle), code_ptr))
 }
