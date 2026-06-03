@@ -37,7 +37,8 @@
 import { Context } from './context/index.mts';
 import { topic } from './context/topic.mts';
 import { writeLine } from 'internal:runtime/libc';
-import { getActiveSpanContext, getLoggerProvider, SeverityNumber } from './opentelemetry.mts';
+import { getActiveSpanContext } from './opentelemetry/traces.mts';
+import { getLoggerProvider, SeverityNumber } from './opentelemetry/logs.mts';
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 type Fields = Record<string, unknown>;

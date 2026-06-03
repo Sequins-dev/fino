@@ -7,6 +7,7 @@ import {
   Baggage,
   BatchLogRecordProcessor,
   BatchSpanProcessor,
+  Counter,
   DnsInstrumentation,
   FetchInstrumentation,
   HttpServerInstrumentation,
@@ -27,9 +28,11 @@ import {
   Resource,
   Sampler,
   SocketInstrumentation,
+  Span,
   TlsInstrumentation,
   TraceTopicInstrumentation,
   TracerProvider,
+  SeverityNumber,
   W3CTraceContextPropagator,
   getActiveSpan,
   getActiveBaggage,
@@ -51,6 +54,10 @@ import {
   setTracerProvider,
 } from 'fino:opentelemetry';
 import type { CarrierApi, LogRecord, LogRecordProcessor, MetricRecord, SpanRecord } from 'fino:opentelemetry';
+import { getTracerProvider as getTraceProviderFromTraces, Span as SplitSpan } from 'fino:opentelemetry/traces';
+import { getMeterProvider as getMeterProviderFromMetrics, Counter as SplitCounter } from 'fino:opentelemetry/metrics';
+import { getLoggerProvider as getLoggerProviderFromLogs, SeverityNumber as SplitSeverityNumber } from 'fino:opentelemetry/logs';
+import { OtelSDK as SplitOtelSDK, InMemoryExporter as SplitInMemoryExporter } from 'fino:opentelemetry/sdk';
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -154,6 +161,17 @@ describe('fino:opentelemetry', () => {
     setTracerProvider(originalTracerProvider);
     setLoggerProvider(originalLoggerProvider);
     setMeterProvider(originalMeterProvider);
+  });
+
+  it('exposes signal-specific public modules and keeps the root facade compatible', (t) => {
+    t.equal(getTraceProviderFromTraces(), getTracerProvider(), 'traces module shares root tracer provider');
+    t.equal(SplitSpan, Span, 'traces module exports the public Span class');
+    t.equal(getMeterProviderFromMetrics(), getMeterProvider(), 'metrics module shares root meter provider');
+    t.equal(SplitCounter, Counter, 'metrics module exports the public Counter class');
+    t.equal(getLoggerProviderFromLogs(), getLoggerProvider(), 'logs module shares root logger provider');
+    t.equal(SplitSeverityNumber.INFO, SeverityNumber.INFO, 'logs module exports the public severity numbers');
+    t.equal(SplitOtelSDK, OtelSDK, 'sdk module exports the public SDK class');
+    t.equal(SplitInMemoryExporter, InMemoryExporter, 'sdk module exports the public in-memory exporter');
   });
 
   it('stores provider defaults globally and supports async-scoped overrides', async (t) => {

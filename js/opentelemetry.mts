@@ -1,9 +1,10 @@
 /**
  * fino:opentelemetry - tracing, metrics, logs, and SDK helpers.
  *
- * This module re-exports the public OpenTelemetry surface used by runtime
- * instrumentation and application code. It includes context propagation,
- * span/log/metric model types, exporters, and SDK wiring helpers.
+ * This backward-compatible facade re-exports the public OpenTelemetry surface
+ * from signal-specific modules and SDK helpers. New code can import narrower
+ * surfaces from `fino:opentelemetry/traces`, `fino:opentelemetry/metrics`,
+ * `fino:opentelemetry/logs`, and `fino:opentelemetry/sdk`.
  *
  * Use this facade when configuring telemetry for an application or when
  * creating manual spans, logs, or metrics. Defaults are intentionally local:
@@ -24,8 +25,7 @@
  * https://opentelemetry.io/docs/concepts/
  */
 
-export * from './internal/opentelemetry/common.mts';
-export * from './internal/opentelemetry/traces.mts';
-export * from './internal/opentelemetry/logs.mts';
-export * from './internal/opentelemetry/metrics.mts';
-export * from './internal/opentelemetry/sdk.mts';
+export * from './opentelemetry/traces.mts';
+export * from './opentelemetry/metrics.mts';
+export * from './opentelemetry/logs.mts';
+export * from './opentelemetry/sdk.mts';

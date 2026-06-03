@@ -1065,6 +1065,149 @@ path: ../escape.md
     t.equal(privateFacadeHtml.includes('Hidden class docs copied into public facades.'), false, 'include-private does not duplicate hidden source docs in facade');
   });
 
+  it('links OpenTelemetry facade re-exports from public signal modules', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    await ensureDir(fs, appDir + '/opentelemetry');
+    await ensureDir(fs, appDir + '/internal/opentelemetry');
+    await fs.writeFile(appDir + '/opentelemetry.mts', `/**
+ * OpenTelemetry facade docs.
+ */
+
+export { getTracerProvider, Span } from './opentelemetry/traces.mts';
+export { getMeterProvider, Counter } from './opentelemetry/metrics.mts';
+export { getLoggerProvider, SeverityNumber } from './opentelemetry/logs.mts';
+export { OtelSDK, InMemoryExporter } from './opentelemetry/sdk.mts';
+`);
+    await fs.writeFile(appDir + '/opentelemetry/traces.mts', `/**
+ * Trace signal docs.
+ */
+
+/**
+ * Detailed span docs should stay on the traces page.
+ */
+export class Span {}
+
+/**
+ * Detailed tracer provider docs should stay on the traces page.
+ */
+export function getTracerProvider(): unknown {
+  return {};
+}
+`);
+    await fs.writeFile(appDir + '/opentelemetry/metrics.mts', `/**
+ * Metric signal docs.
+ */
+
+/**
+ * Detailed counter docs should stay on the metrics page.
+ */
+export class Counter {}
+
+/**
+ * Detailed meter provider docs should stay on the metrics page.
+ */
+export function getMeterProvider(): unknown {
+  return {};
+}
+`);
+    await fs.writeFile(appDir + '/opentelemetry/logs.mts', `/**
+ * Log signal docs.
+ */
+
+/**
+ * Detailed severity docs should stay on the logs page.
+ */
+export enum SeverityNumber {
+  INFO = 9,
+}
+
+/**
+ * Detailed logger provider docs should stay on the logs page.
+ */
+export function getLoggerProvider(): unknown {
+  return {};
+}
+`);
+    await fs.writeFile(appDir + '/opentelemetry/sdk.mts', `/**
+ * SDK docs.
+ */
+
+/**
+ * Detailed SDK docs should stay on the sdk page.
+ */
+export class OtelSDK {}
+
+/**
+ * Detailed exporter docs should stay on the sdk page.
+ */
+export class InMemoryExporter {}
+`);
+    await fs.writeFile(appDir + '/internal/opentelemetry/traces.mts', `/**
+ * Internal trace source.
+ *
+ * @internal
+ */
+export const internalTrace = true;
+`);
+    await fs.writeFile(appDir + '/internal/opentelemetry/metrics.mts', `/**
+ * Internal metric source.
+ *
+ * @internal
+ */
+export const internalMetric = true;
+`);
+    await fs.writeFile(appDir + '/internal/opentelemetry/logs.mts', `/**
+ * Internal log source.
+ *
+ * @internal
+ */
+export const internalLog = true;
+`);
+    await fs.writeFile(appDir + '/internal/opentelemetry/sdk.mts', `/**
+ * Internal SDK source.
+ *
+ * @internal
+ */
+export const internalSdk = true;
+`);
+
+    const run = await runCli([
+      'doc',
+      'build',
+      './opentelemetry.mts',
+      './opentelemetry/traces.mts',
+      './opentelemetry/metrics.mts',
+      './opentelemetry/logs.mts',
+      './opentelemetry/sdk.mts',
+      './internal/opentelemetry/traces.mts',
+      './internal/opentelemetry/metrics.mts',
+      './internal/opentelemetry/logs.mts',
+      './internal/opentelemetry/sdk.mts',
+      '--format',
+      'html',
+      '--title',
+      'OpenTelemetry Docs',
+    ], appDir);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+    t.ok(await exists(fs, docsDir + '/opentelemetry/traces.html'), 'traces page is emitted');
+    t.ok(await exists(fs, docsDir + '/opentelemetry/metrics.html'), 'metrics page is emitted');
+    t.ok(await exists(fs, docsDir + '/opentelemetry/logs.html'), 'logs page is emitted');
+    t.ok(await exists(fs, docsDir + '/opentelemetry/sdk.html'), 'sdk page is emitted');
+
+    const facadeHtml = await fs.readFile(docsDir + '/opentelemetry.html');
+    t.ok(facadeHtml.includes('Re-exported from <a href="opentelemetry/traces.html#opentelemetry-traces.Span">opentelemetry/traces.Span</a>.'), 'root links trace class re-export');
+    t.ok(facadeHtml.includes('Re-exported from <a href="opentelemetry/metrics.html#opentelemetry-metrics.Counter">opentelemetry/metrics.Counter</a>.'), 'root links metric class re-export');
+    t.ok(facadeHtml.includes('Re-exported from <a href="opentelemetry/logs.html#opentelemetry-logs.SeverityNumber">opentelemetry/logs.SeverityNumber</a>.'), 'root links log enum re-export');
+    t.ok(facadeHtml.includes('Re-exported from <a href="opentelemetry/sdk.html#opentelemetry-sdk.OtelSDK">opentelemetry/sdk.OtelSDK</a>.'), 'root links sdk class re-export');
+    t.equal(facadeHtml.includes('Detailed span docs should stay on the traces page.'), false, 'root does not inline trace detail docs');
+    t.equal(facadeHtml.includes('Detailed counter docs should stay on the metrics page.'), false, 'root does not inline metric detail docs');
+    t.equal(facadeHtml.includes('Detailed severity docs should stay on the logs page.'), false, 'root does not inline log detail docs');
+    t.equal(facadeHtml.includes('Detailed SDK docs should stay on the sdk page.'), false, 'root does not inline sdk detail docs');
+  });
+
   it('documents exported object literal members and cleans stale output', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);

@@ -1,0 +1,911 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>fino - js/opentelemetry/traces</title>
+<style>:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-layout-api{grid-template-columns:280px minmax(0,1fr) 240px}.docs-sidebar{grid-column:1;grid-row:1;background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px;grid-column:2;grid-row:1}.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh;grid-column:3;grid-row:1}.docs-page-index-title{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px}.docs-page-index ul{list-style:none;margin:0;padding-left:14px}.docs-page-index>ul{padding-left:0}.docs-page-index li{margin:4px 0}.docs-page-index a{display:inline-block;padding:2px 0}.docs-page-index-members{font-size:.92rem}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout,.docs-layout-api{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,.docs-page-index,main{height:auto}.docs-page-index{border-left:0;border-bottom:1px solid var(--border);padding:18px 20px;position:static;max-height:none}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}</style>
+</head>
+<body>
+<div class="docs-layout docs-layout-api">
+<nav class="docs-sidebar" aria-label="Documentation navigation">
+<p class="docs-sidebar-title"><a href="../../index.html">fino</a></p>
+<ul><li><div class="docs-sidebar-directory">Docs</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../getting-started.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Getting Started</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../runtime-model.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Runtime Model</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../cli.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>CLI</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../modules-and-packages.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Modules and Packages</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../testing-and-benchmarking.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Testing and Benchmarking</span></a></li><li><div class="docs-sidebar-directory">database</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../database/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Database Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../file/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>File Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../format/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Format Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">net/http</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../net/http/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>HTTP Guide</span></a></li></ul></li><li><div class="docs-sidebar-directory">realm</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-guide" href="../realm/guide.html"><svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg><span>Realm Guide</span></a></li></ul></li></ul></li><li><div class="docs-sidebar-directory">API Reference</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../archive.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>archive</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../cluster.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cluster</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../compress.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>compress</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../config.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>config</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../context.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>context</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../context/topic.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>topic</span></a></li></ul></li><li><div class="docs-sidebar-directory">database</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../database/sqlite.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>sqlite</span></a></li></ul></li><li><div class="docs-sidebar-directory">file</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../file/fs.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>fs</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../file/path.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>path</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../file/watch.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>watch</span></a></li></ul></li><li><div class="docs-sidebar-directory">format</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../format/csv.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>csv</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../format/markdown.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>markdown</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../format/toml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>toml</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../format/typescript.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>typescript</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../format/xml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>xml</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../format/yaml.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>yaml</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../log.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>log</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../module.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>module</span></a></li><li><div class="docs-sidebar-directory">net</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/dns.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>dns</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>http</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/app.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>app</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/driver.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>driver</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/eventsource.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>eventsource</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/h1.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>h1</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/h2.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>h2</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/server.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>server</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/http/websocket.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>websocket</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/socket.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>socket</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../net/tls.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>tls</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../opentelemetry.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>opentelemetry</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="logs.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>logs</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="metrics.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>metrics</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="sdk.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>sdk</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="traces.html" aria-current="page"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>traces</span></a></li></ul></li><li><div class="docs-sidebar-directory">parsing</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../parsing/scanner.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>scanner</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../process.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>process</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../process/argv.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>argv</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../realm.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>realm</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../realm/messaging.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>messaging</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../realm/pool.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>pool</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../realm/self.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>self</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>security</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/cookie.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cookie</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/cors.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>cors</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/headers.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>headers</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/jwk.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>jwk</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/jwt.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>jwt</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/password.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>password</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/random.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>random</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../security/token.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>token</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../semver.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>semver</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../template.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>template</span></a></li><li><div class="docs-sidebar-directory">test</div><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../test/assert.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>assert</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../test/bench.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>bench</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../test/mock.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>mock</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../test/test.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>test</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../tty.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>tty</span></a><ul><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../tty/prompt.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>prompt</span></a></li></ul></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../uuid.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>uuid</span></a></li><li><a class="docs-sidebar-link docs-sidebar-link-api" href="../validate.html"><svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg><span>validate</span></a></li></ul></li></ul>
+</nav>
+<nav class="docs-page-index" aria-label="Page symbol index"><p class="docs-page-index-title">On This Page</p><ul><li><a href="#js-opentelemetry-traces.AlwaysOnSampler">AlwaysOnSampler</a></li><li><a href="#js-opentelemetry-traces.Sampler">Sampler</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.Sampler.shouldSample">shouldSample</a></li></ul></li><li><a href="#js-opentelemetry-traces.Span">Span</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.Span.constructor">constructor</a></li><li><a href="#js-opentelemetry-traces.Span.traceId">traceId</a></li><li><a href="#js-opentelemetry-traces.Span.spanId">spanId</a></li><li><a href="#js-opentelemetry-traces.Span.setAttribute">setAttribute</a></li><li><a href="#js-opentelemetry-traces.Span.setAttributes">setAttributes</a></li><li><a href="#js-opentelemetry-traces.Span.addEvent">addEvent</a></li><li><a href="#js-opentelemetry-traces.Span.addLink">addLink</a></li><li><a href="#js-opentelemetry-traces.Span.setStatus">setStatus</a></li><li><a href="#js-opentelemetry-traces.Span.recordException">recordException</a></li><li><a href="#js-opentelemetry-traces.Span.updateName">updateName</a></li><li><a href="#js-opentelemetry-traces.Span.isRecording">isRecording</a></li><li><a href="#js-opentelemetry-traces.Span.end">end</a></li></ul></li><li><a href="#js-opentelemetry-traces.Tracer">Tracer</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.Tracer.constructor">constructor</a></li><li><a href="#js-opentelemetry-traces.Tracer.scope">scope</a></li><li><a href="#js-opentelemetry-traces.Tracer.publishTrace">publishTrace</a></li><li><a href="#js-opentelemetry-traces.Tracer.startSpan">startSpan</a></li></ul></li><li><a href="#js-opentelemetry-traces.TracerProvider">TracerProvider</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.TracerProvider.getTracer">getTracer</a></li></ul></li><li><a href="#js-opentelemetry-traces.applySpanLimits">applySpanLimits</a></li><li><a href="#js-opentelemetry-traces.getActiveSpan">getActiveSpan</a></li><li><a href="#js-opentelemetry-traces.getActiveSpanContext">getActiveSpanContext</a></li><li><a href="#js-opentelemetry-traces.getTracerProvider">getTracerProvider</a></li><li><a href="#js-opentelemetry-traces.isScopedTraceTopic">isScopedTraceTopic</a></li><li><a href="#js-opentelemetry-traces.isTracerProviderContextEnabled">isTracerProviderContextEnabled</a></li><li><a href="#js-opentelemetry-traces.runWithActiveSpan">runWithActiveSpan</a></li><li><a href="#js-opentelemetry-traces.runWithTracerProvider">runWithTracerProvider</a></li><li><a href="#js-opentelemetry-traces.runWithoutTracerProvider">runWithoutTracerProvider</a></li><li><a href="#js-opentelemetry-traces.setTracerProvider">setTracerProvider</a></li><li><a href="#js-opentelemetry-traces.ActiveTelemetryContext">ActiveTelemetryContext</a></li><li><a href="#js-opentelemetry-traces.SamplingResult">SamplingResult</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SamplingResult.sample">sample</a></li><li><a href="#js-opentelemetry-traces.SamplingResult.attributes">attributes</a></li><li><a href="#js-opentelemetry-traces.SamplingResult.traceState">traceState</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanEndOptions">SpanEndOptions</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanEndOptions.attributes">attributes</a></li><li><a href="#js-opentelemetry-traces.SpanEndOptions.status">status</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanEventRecord">SpanEventRecord</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanEventRecord.name">name</a></li><li><a href="#js-opentelemetry-traces.SpanEventRecord.attributes">attributes</a></li><li><a href="#js-opentelemetry-traces.SpanEventRecord.timeUnixNano">timeUnixNano</a></li><li><a href="#js-opentelemetry-traces.SpanEventRecord.droppedAttributesCount">droppedAttributesCount</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanLimits">SpanLimits</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanLimits.attributeCountLimit">attributeCountLimit</a></li><li><a href="#js-opentelemetry-traces.SpanLimits.attributeValueLengthLimit">attributeValueLengthLimit</a></li><li><a href="#js-opentelemetry-traces.SpanLimits.eventCountLimit">eventCountLimit</a></li><li><a href="#js-opentelemetry-traces.SpanLimits.linkCountLimit">linkCountLimit</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanLinkContext">SpanLinkContext</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanLinkContext.traceId">traceId</a></li><li><a href="#js-opentelemetry-traces.SpanLinkContext.spanId">spanId</a></li><li><a href="#js-opentelemetry-traces.SpanLinkContext.traceState">traceState</a></li><li><a href="#js-opentelemetry-traces.SpanLinkContext.flags">flags</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanLinkRecord">SpanLinkRecord</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanLinkRecord.attributes">attributes</a></li><li><a href="#js-opentelemetry-traces.SpanLinkRecord.droppedAttributesCount">droppedAttributesCount</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanRecord">SpanRecord</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanRecord.schemaVersion">schemaVersion</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.operation">operation</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.name">name</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.traceId">traceId</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.spanId">spanId</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.parentSpanId">parentSpanId</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.traceState">traceState</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.timeUnixNano">timeUnixNano</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.startTimeUnixNano">startTimeUnixNano</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.endTimeUnixNano">endTimeUnixNano</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.attributes">attributes</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.scope">scope</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.resource">resource</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.kind">kind</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.status">status</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.events">events</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.links">links</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.droppedAttributesCount">droppedAttributesCount</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.droppedEventsCount">droppedEventsCount</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.droppedLinksCount">droppedLinksCount</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.flags">flags</a></li><li><a href="#js-opentelemetry-traces.SpanRecord.injectedHeaders">injectedHeaders</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanStartOptions">SpanStartOptions</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanStartOptions.traceId">traceId</a></li><li><a href="#js-opentelemetry-traces.SpanStartOptions.parentSpanId">parentSpanId</a></li><li><a href="#js-opentelemetry-traces.SpanStartOptions.attributes">attributes</a></li><li><a href="#js-opentelemetry-traces.SpanStartOptions.links">links</a></li><li><a href="#js-opentelemetry-traces.SpanStartOptions.kind">kind</a></li></ul></li><li><a href="#js-opentelemetry-traces.SpanStatus">SpanStatus</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.SpanStatus.code">code</a></li><li><a href="#js-opentelemetry-traces.SpanStatus.message">message</a></li></ul></li><li><a href="#js-opentelemetry-traces.TraceContext">TraceContext</a><ul class="docs-page-index-members"><li><a href="#js-opentelemetry-traces.TraceContext.traceId">traceId</a></li><li><a href="#js-opentelemetry-traces.TraceContext.spanId">spanId</a></li><li><a href="#js-opentelemetry-traces.TraceContext.traceFlags">traceFlags</a></li><li><a href="#js-opentelemetry-traces.TraceContext.traceState">traceState</a></li><li><a href="#js-opentelemetry-traces.TraceContext.baggage">baggage</a></li></ul></li></ul></nav>
+<main>
+<h1 id="module:js-opentelemetry-traces">js/opentelemetry/traces</h1>
+<p class="muted">js/opentelemetry/traces.mts</p>
+<p>fino:opentelemetry/traces - trace providers, tracers, spans, and trace records.</p>
+<p>This module contains the public trace signal API. Use it to create manual spans, swap tracer providers for tests or scoped execution, inspect the active span, and describe trace records consumed by SDK processors and exporters.</p>
+<p>Span names and tracer scope names must be non-empty strings. Span attributes, events, links, status updates, and rename operations are published as runtime telemetry records; processors may apply additional SDK limits before export. Active-span context follows Fino async context propagation and is visible through <code>getActiveSpan()</code> and <code>getActiveSpanContext()</code>.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">import</span> { getTracerProvider, runWithActiveSpan } from <span class="tok-string">&#39;fino:opentelemetry/traces&#39;</span>;
+
+<span class="tok-keyword">const</span> tracer = getTracerProvider().getTracer(<span class="tok-string">&#39;orders&#39;</span>, <span class="tok-string">&#39;1.0.0&#39;</span>);
+<span class="tok-keyword">const</span> span = tracer.startSpan(<span class="tok-string">&#39;orders.create&#39;</span>, { attributes: { tenant: <span class="tok-string">&#39;acme&#39;</span> } });
+runWithActiveSpan(span, () =&gt; {
+  span.addEvent(<span class="tok-string">&#39;validated&#39;</span>);
+});
+span.end({ status: { code: <span class="tok-string">&#39;OK&#39;</span> } });</code></pre>
+<p>See OpenTelemetry traces: <a href="https://opentelemetry.io/docs/concepts/signals/traces/">https://opentelemetry.io/docs/concepts/signals/traces/</a></p>
+
+
+<h2>Classes</h2>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.AlwaysOnSampler">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.AlwaysOnSampler">AlwaysOnSampler</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.Sampler">Sampler</a> {</code></h3>
+
+<p>AlwaysOnSampler class used by the internal OpenTelemetry runtime.</p>
+<p>Documents the class&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> ctor = AlwaysOnSampler;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.Sampler">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.Sampler">Sampler</a> {</code></h3>
+
+<p>Sampler class used by the internal OpenTelemetry runtime.</p>
+<p>Documents the class&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> ctor = Sampler;</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry-traces.Sampler.shouldSample">
+<h5><code>shouldSample(_record: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanRecord">SpanRecord</a>): <a class="tok-type" href="traces.html#js-opentelemetry-traces.SamplingResult">SamplingResult</a> | <span class="tok-keyword">boolean</span></code></h5>
+
+<p>shouldSample member on Sampler.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Sampler.prototype.shouldSample;</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.Span">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.Span">Span</a> {</code></h3>
+
+<p>Span class used by the internal OpenTelemetry runtime.</p>
+<p>Documents the class&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> ctor = Span;</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry-traces.Span.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(tracer: <a class="tok-type" href="traces.html#js-opentelemetry-traces.Tracer">Tracer</a>, name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStartOptions">SpanStartOptions</a> = {})</code></h5>
+
+<p>constructor member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> instance = <span class="tok-keyword">new</span> Span();</code></pre>
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry-traces.Span.traceId">
+<h5><code><span class="tok-keyword">get</span> traceId(): <span class="tok-keyword">string</span></code></h5>
+
+<p>traceId member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> getter = Span.prototype.traceId;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.spanId">
+<h5><code><span class="tok-keyword">get</span> spanId(): <span class="tok-keyword">string</span></code></h5>
+
+<p>spanId member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> getter = Span.prototype.spanId;</code></pre>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry-traces.Span.setAttribute">
+<h5><code>setAttribute(key: <span class="tok-keyword">string</span>, value: <span class="tok-keyword">unknown</span>): <span class="tok-keyword">this</span></code></h5>
+
+<p>setAttribute member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.setAttribute;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.setAttributes">
+<h5><code>setAttributes(attributes: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a>): <span class="tok-keyword">this</span></code></h5>
+
+<p>setAttributes member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.setAttributes;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.addEvent">
+<h5><code>addEvent(name: <span class="tok-keyword">string</span>, attributes: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a> = {}, timeUnixNano: <span class="tok-keyword">number</span> = nowUnixNano()): <span class="tok-keyword">this</span></code></h5>
+
+<p>addEvent member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.addEvent;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.addLink">
+<h5><code>addLink(linkContext: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLinkContext">SpanLinkContext</a>, attributes: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">this</span></code></h5>
+
+<p>addLink member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.addLink;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.setStatus">
+<h5><code>setStatus(status: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span>): <span class="tok-keyword">this</span></code></h5>
+
+<p>setStatus member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.setStatus;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.recordException">
+<h5><code>recordException(error: <span class="tok-keyword">unknown</span>, attributes: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a> = {}): <span class="tok-keyword">this</span></code></h5>
+
+<p>recordException member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.recordException;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.updateName">
+<h5><code>updateName(name: <span class="tok-keyword">string</span>): <span class="tok-keyword">this</span></code></h5>
+
+<p>updateName member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.updateName;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.isRecording">
+<h5><code>isRecording(): <span class="tok-keyword">boolean</span></code></h5>
+
+<p>isRecording member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.isRecording;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Span.end">
+<h5><code>end(options: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanEndOptions">SpanEndOptions</a> = {}): <span class="tok-keyword">void</span></code></h5>
+
+<p>end member on Span.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Span.prototype.end;</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.Tracer">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.Tracer">Tracer</a> {</code></h3>
+
+<p>Tracer class used by the internal OpenTelemetry runtime.</p>
+<p>Documents the class&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> ctor = Tracer;</code></pre>
+
+<h4>Constructors</h4>
+
+<section class="member" id="js-opentelemetry-traces.Tracer.constructor">
+<h5><code><span class="tok-keyword">constructor</span>(provider: <a class="tok-type" href="traces.html#js-opentelemetry-traces.TracerProvider">TracerProvider</a>, scope: <a class="tok-type" href="../opentelemetry.html#opentelemetry.ScopeInfo">ScopeInfo</a>)</code></h5>
+
+<p>constructor member on Tracer.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> instance = <span class="tok-keyword">new</span> Tracer();</code></pre>
+</section>
+
+
+<h4>Getters</h4>
+
+<section class="member" id="js-opentelemetry-traces.Tracer.scope">
+<h5><code><span class="tok-keyword">get</span> scope(): <a class="tok-type" href="../opentelemetry.html#opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+<p>scope member on Tracer.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> getter = Tracer.prototype.scope;</code></pre>
+</section>
+
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry-traces.Tracer.publishTrace">
+<h5><code>publishTrace(
+  kind: <span class="tok-string">&#39;start&#39;</span> | <span class="tok-string">&#39;end&#39;</span> | <span class="tok-string">&#39;event&#39;</span> | <span class="tok-string">&#39;attribute&#39;</span> | <span class="tok-string">&#39;link&#39;</span> | <span class="tok-string">&#39;status&#39;</span> | <span class="tok-string">&#39;rename&#39;</span>,
+  payload: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanRecord">SpanRecord</a> &amp; <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;
+): <span class="tok-keyword">void</span></code></h5>
+
+<p>publishTrace member on Tracer.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Tracer.prototype.publishTrace;</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.Tracer.startSpan">
+<h5><code>startSpan(name: <span class="tok-keyword">string</span>, options: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStartOptions">SpanStartOptions</a> = {}): <a class="tok-type" href="traces.html#js-opentelemetry-traces.Span">Span</a></code></h5>
+
+<p>startSpan member on Tracer.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = Tracer.prototype.startSpan;</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.TracerProvider">
+<h3><code><span class="tok-keyword">class</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.TracerProvider">TracerProvider</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="../opentelemetry.html#opentelemetry.BaseProvider">BaseProvider</a> {</code></h3>
+
+<p>TracerProvider class used by the internal OpenTelemetry runtime.</p>
+<p>Documents the class&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> ctor = TracerProvider;</code></pre>
+
+<h4>Methods</h4>
+
+<section class="member" id="js-opentelemetry-traces.TracerProvider.getTracer">
+<h5><code>getTracer(name: <span class="tok-keyword">string</span>, version?: <span class="tok-keyword">string</span>, options?: {
+  schemaUrl?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span>;
+  attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a>;
+  droppedAttributesCount?: <span class="tok-keyword">number</span>;
+}): <a class="tok-type" href="traces.html#js-opentelemetry-traces.Tracer">Tracer</a></code></h5>
+
+<p>getTracer member on TracerProvider.</p>
+<p>Defaults and error behavior follow the containing runtime object. Values may be absent or no-op when telemetry is disabled, shutdown, or scoped out by context.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> member = TracerProvider.prototype.getTracer;</code></pre>
+</section>
+
+
+</section>
+
+
+<h2>Functions</h2>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.applySpanLimits">
+<h3><code><span class="tok-keyword">function</span> applySpanLimits(span: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanRecord">SpanRecord</a>, limits: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLimits">SpanLimits</a> = {}): <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanRecord">SpanRecord</a></code></h3>
+
+<p>applySpanLimits function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = applySpanLimits;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.getActiveSpan">
+<h3><code><span class="tok-keyword">function</span> getActiveSpan(): <a class="tok-type" href="traces.html#js-opentelemetry-traces.Span">Span</a> | <span class="tok-keyword">undefined</span></code></h3>
+
+<p>getActiveSpan function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = getActiveSpan;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.getActiveSpanContext">
+<h3><code><span class="tok-keyword">function</span> getActiveSpanContext(): <a class="tok-type" href="traces.html#js-opentelemetry-traces.TraceContext">TraceContext</a> | <span class="tok-keyword">null</span></code></h3>
+
+<p>getActiveSpanContext function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = getActiveSpanContext;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.getTracerProvider">
+<h3><code><span class="tok-keyword">function</span> getTracerProvider(): <a class="tok-type" href="traces.html#js-opentelemetry-traces.TracerProvider">TracerProvider</a></code></h3>
+
+<p>getTracerProvider function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = getTracerProvider;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.isScopedTraceTopic">
+<h3><code><span class="tok-keyword">function</span> isScopedTraceTopic(
+  name: <span class="tok-keyword">string</span>,
+  phase: <span class="tok-string">&#39;start&#39;</span> | <span class="tok-string">&#39;end&#39;</span> | <span class="tok-string">&#39;event&#39;</span> | <span class="tok-string">&#39;attribute&#39;</span> | <span class="tok-string">&#39;link&#39;</span> | <span class="tok-string">&#39;status&#39;</span> | <span class="tok-string">&#39;rename&#39;</span>
+): <span class="tok-keyword">boolean</span></code></h3>
+
+<p>isScopedTraceTopic function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = isScopedTraceTopic;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.isTracerProviderContextEnabled">
+<h3><code><span class="tok-keyword">function</span> isTracerProviderContextEnabled(): <span class="tok-keyword">boolean</span></code></h3>
+
+<p>isTracerProviderContextEnabled function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = isTracerProviderContextEnabled;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.runWithActiveSpan">
+<h3><code><span class="tok-keyword">function</span> runWithActiveSpan&lt;R&gt;(span: <a class="tok-type" href="traces.html#js-opentelemetry-traces.Span">Span</a>, fn: () =&gt; R): R</code></h3>
+
+<p>runWithActiveSpan function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = runWithActiveSpan;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.runWithTracerProvider">
+<h3><code><span class="tok-keyword">function</span> runWithTracerProvider&lt;R&gt;(provider: <a class="tok-type" href="traces.html#js-opentelemetry-traces.TracerProvider">TracerProvider</a>, fn: () =&gt; R): R</code></h3>
+
+<p>runWithTracerProvider function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = runWithTracerProvider;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.runWithoutTracerProvider">
+<h3><code><span class="tok-keyword">function</span> runWithoutTracerProvider&lt;R&gt;(fn: () =&gt; R): R</code></h3>
+
+<p>runWithoutTracerProvider function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = runWithoutTracerProvider;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.setTracerProvider">
+<h3><code><span class="tok-keyword">function</span> setTracerProvider(provider: <a class="tok-type" href="traces.html#js-opentelemetry-traces.TracerProvider">TracerProvider</a>): <span class="tok-keyword">void</span></code></h3>
+
+<p>setTracerProvider function used by the internal OpenTelemetry runtime.</p>
+<p>Documents the function&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> fn = setTracerProvider;</code></pre>
+
+</section>
+
+
+<h2>Interfaces</h2>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.ActiveTelemetryContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.ActiveTelemetryContext">ActiveTelemetryContext</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.TraceContext">TraceContext</a> {</code></h3>
+
+<p>ActiveTelemetryContext interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: ActiveTelemetryContext = {} <span class="tok-keyword">as</span> ActiveTelemetryContext;</code></pre>
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SamplingResult">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SamplingResult">SamplingResult</a> {</code></h3>
+
+<p>SamplingResult interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SamplingResult = {} <span class="tok-keyword">as</span> SamplingResult;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SamplingResult.sample">
+<h5><code>sample: <span class="tok-keyword">boolean</span></code></h5>
+
+<p>sample property on SamplingResult.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SamplingResult[<span class="tok-string">&#39;sample&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SamplingResult.attributes">
+<h5><code>attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a></code></h5>
+
+<p>attributes property on SamplingResult.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SamplingResult[<span class="tok-string">&#39;attributes&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SamplingResult.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceState property on SamplingResult.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SamplingResult[<span class="tok-string">&#39;traceState&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanEndOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanEndOptions">SpanEndOptions</a> {</code></h3>
+
+<p>SpanEndOptions interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanEndOptions = {} <span class="tok-keyword">as</span> SpanEndOptions;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanEndOptions.attributes">
+<h5><code>attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a></code></h5>
+
+<p>attributes property on SpanEndOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanEndOptions[<span class="tok-string">&#39;attributes&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanEndOptions.status">
+<h5><code>status?: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span></code></h5>
+
+<p>status property on SpanEndOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanEndOptions[<span class="tok-string">&#39;status&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanEventRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanEventRecord">SpanEventRecord</a> {</code></h3>
+
+<p>SpanEventRecord interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanEventRecord = {} <span class="tok-keyword">as</span> SpanEventRecord;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanEventRecord.name">
+<h5><code>name: <span class="tok-keyword">string</span></code></h5>
+
+<p>name property on SpanEventRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanEventRecord[<span class="tok-string">&#39;name&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanEventRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a></code></h5>
+
+<p>attributes property on SpanEventRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanEventRecord[<span class="tok-string">&#39;attributes&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanEventRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+<p>timeUnixNano property on SpanEventRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanEventRecord[<span class="tok-string">&#39;timeUnixNano&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanEventRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+<p>droppedAttributesCount property on SpanEventRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanEventRecord[<span class="tok-string">&#39;droppedAttributesCount&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanLimits">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLimits">SpanLimits</a> {</code></h3>
+
+<p>SpanLimits interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanLimits = {} <span class="tok-keyword">as</span> SpanLimits;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanLimits.attributeCountLimit">
+<h5><code>attributeCountLimit?: <span class="tok-keyword">number</span></code></h5>
+
+<p>attributeCountLimit property on SpanLimits.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLimits[<span class="tok-string">&#39;attributeCountLimit&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLimits.attributeValueLengthLimit">
+<h5><code>attributeValueLengthLimit?: <span class="tok-keyword">number</span></code></h5>
+
+<p>attributeValueLengthLimit property on SpanLimits.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLimits[<span class="tok-string">&#39;attributeValueLengthLimit&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLimits.eventCountLimit">
+<h5><code>eventCountLimit?: <span class="tok-keyword">number</span></code></h5>
+
+<p>eventCountLimit property on SpanLimits.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLimits[<span class="tok-string">&#39;eventCountLimit&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLimits.linkCountLimit">
+<h5><code>linkCountLimit?: <span class="tok-keyword">number</span></code></h5>
+
+<p>linkCountLimit property on SpanLimits.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLimits[<span class="tok-string">&#39;linkCountLimit&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanLinkContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLinkContext">SpanLinkContext</a> {</code></h3>
+
+<p>SpanLinkContext interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanLinkContext = {} <span class="tok-keyword">as</span> SpanLinkContext;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanLinkContext.traceId">
+<h5><code>traceId: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceId property on SpanLinkContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLinkContext[<span class="tok-string">&#39;traceId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLinkContext.spanId">
+<h5><code>spanId: <span class="tok-keyword">string</span></code></h5>
+
+<p>spanId property on SpanLinkContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLinkContext[<span class="tok-string">&#39;spanId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLinkContext.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceState property on SpanLinkContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLinkContext[<span class="tok-string">&#39;traceState&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLinkContext.flags">
+<h5><code>flags?: <span class="tok-keyword">number</span></code></h5>
+
+<p>flags property on SpanLinkContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLinkContext[<span class="tok-string">&#39;flags&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanLinkRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLinkRecord">SpanLinkRecord</a> <span class="tok-keyword">extends</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLinkContext">SpanLinkContext</a> {</code></h3>
+
+<p>SpanLinkRecord interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanLinkRecord = {} <span class="tok-keyword">as</span> SpanLinkRecord;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanLinkRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a></code></h5>
+
+<p>attributes property on SpanLinkRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLinkRecord[<span class="tok-string">&#39;attributes&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanLinkRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+<p>droppedAttributesCount property on SpanLinkRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanLinkRecord[<span class="tok-string">&#39;droppedAttributesCount&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanRecord">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanRecord">SpanRecord</a> {</code></h3>
+
+<p>SpanRecord interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanRecord = {} <span class="tok-keyword">as</span> SpanRecord;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.schemaVersion">
+<h5><code>schemaVersion?: <span class="tok-keyword">number</span></code></h5>
+
+<p>schemaVersion property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;schemaVersion&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.operation">
+<h5><code>operation?: <span class="tok-keyword">string</span></code></h5>
+
+<p>operation property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;operation&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.name">
+<h5><code>name?: <span class="tok-keyword">string</span></code></h5>
+
+<p>name property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;name&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.traceId">
+<h5><code>traceId: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceId property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;traceId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.spanId">
+<h5><code>spanId: <span class="tok-keyword">string</span></code></h5>
+
+<p>spanId property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;spanId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.parentSpanId">
+<h5><code>parentSpanId?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+<p>parentSpanId property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;parentSpanId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceState property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;traceState&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.timeUnixNano">
+<h5><code>timeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+<p>timeUnixNano property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;timeUnixNano&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.startTimeUnixNano">
+<h5><code>startTimeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+<p>startTimeUnixNano property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;startTimeUnixNano&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.endTimeUnixNano">
+<h5><code>endTimeUnixNano?: <span class="tok-keyword">number</span></code></h5>
+
+<p>endTimeUnixNano property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;endTimeUnixNano&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.attributes">
+<h5><code>attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a></code></h5>
+
+<p>attributes property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;attributes&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.scope">
+<h5><code>scope?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.ScopeInfo">ScopeInfo</a></code></h5>
+
+<p>scope property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;scope&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.resource">
+<h5><code>resource?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Resource">Resource</a></code></h5>
+
+<p>resource property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;resource&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.kind">
+<h5><code>kind?: <span class="tok-keyword">string</span></code></h5>
+
+<p>kind property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;kind&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.status">
+<h5><code>status?: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStatus">SpanStatus</a> | <span class="tok-keyword">null</span></code></h5>
+
+<p>status property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;status&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.events">
+<h5><code>events?: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanEventRecord">SpanEventRecord</a>[]</code></h5>
+
+<p>events property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;events&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.links">
+<h5><code>links?: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLinkRecord">SpanLinkRecord</a>[]</code></h5>
+
+<p>links property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;links&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.droppedAttributesCount">
+<h5><code>droppedAttributesCount?: <span class="tok-keyword">number</span></code></h5>
+
+<p>droppedAttributesCount property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;droppedAttributesCount&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.droppedEventsCount">
+<h5><code>droppedEventsCount?: <span class="tok-keyword">number</span></code></h5>
+
+<p>droppedEventsCount property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;droppedEventsCount&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.droppedLinksCount">
+<h5><code>droppedLinksCount?: <span class="tok-keyword">number</span></code></h5>
+
+<p>droppedLinksCount property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;droppedLinksCount&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.flags">
+<h5><code>flags?: <span class="tok-keyword">number</span></code></h5>
+
+<p>flags property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;flags&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanRecord.injectedHeaders">
+<h5><code>injectedHeaders?: <a class="tok-type" href="https://www.typescriptlang.org/docs/handbook/utility-types.html#recordkeys-type">Record</a>&lt;<span class="tok-keyword">string</span>, <span class="tok-keyword">unknown</span>&gt;</code></h5>
+
+<p>injectedHeaders property on SpanRecord.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanRecord[<span class="tok-string">&#39;injectedHeaders&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanStartOptions">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStartOptions">SpanStartOptions</a> {</code></h3>
+
+<p>SpanStartOptions interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanStartOptions = {} <span class="tok-keyword">as</span> SpanStartOptions;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanStartOptions.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceId property on SpanStartOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStartOptions[<span class="tok-string">&#39;traceId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanStartOptions.parentSpanId">
+<h5><code>parentSpanId?: <span class="tok-keyword">string</span> | <span class="tok-keyword">null</span></code></h5>
+
+<p>parentSpanId property on SpanStartOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStartOptions[<span class="tok-string">&#39;parentSpanId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanStartOptions.attributes">
+<h5><code>attributes?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Attributes">Attributes</a></code></h5>
+
+<p>attributes property on SpanStartOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStartOptions[<span class="tok-string">&#39;attributes&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanStartOptions.links">
+<h5><code>links?: <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanLinkRecord">SpanLinkRecord</a>[]</code></h5>
+
+<p>links property on SpanStartOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStartOptions[<span class="tok-string">&#39;links&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanStartOptions.kind">
+<h5><code>kind?: <span class="tok-keyword">string</span></code></h5>
+
+<p>kind property on SpanStartOptions.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStartOptions[<span class="tok-string">&#39;kind&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.SpanStatus">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.SpanStatus">SpanStatus</a> {</code></h3>
+
+<p>SpanStatus interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: SpanStatus = {} <span class="tok-keyword">as</span> SpanStatus;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.SpanStatus.code">
+<h5><code>code?: <span class="tok-keyword">string</span></code></h5>
+
+<p>code property on SpanStatus.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStatus[<span class="tok-string">&#39;code&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.SpanStatus.message">
+<h5><code>message?: <span class="tok-keyword">string</span></code></h5>
+
+<p>message property on SpanStatus.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: SpanStatus[<span class="tok-string">&#39;message&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+<section class="docs-symbol" id="js-opentelemetry-traces.TraceContext">
+<h3><code><span class="tok-keyword">interface</span> <a class="tok-type" href="traces.html#js-opentelemetry-traces.TraceContext">TraceContext</a> {</code></h3>
+
+<p>TraceContext interface used by the internal OpenTelemetry runtime.</p>
+<p>Documents the interface&#39;s shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">const</span> value: TraceContext = {} <span class="tok-keyword">as</span> TraceContext;</code></pre>
+
+<h4>Properties</h4>
+
+<section class="member" id="js-opentelemetry-traces.TraceContext.traceId">
+<h5><code>traceId?: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceId property on TraceContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: TraceContext[<span class="tok-string">&#39;traceId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.TraceContext.spanId">
+<h5><code>spanId?: <span class="tok-keyword">string</span></code></h5>
+
+<p>spanId property on TraceContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: TraceContext[<span class="tok-string">&#39;spanId&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.TraceContext.traceFlags">
+<h5><code>traceFlags?: <span class="tok-keyword">number</span></code></h5>
+
+<p>traceFlags property on TraceContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: TraceContext[<span class="tok-string">&#39;traceFlags&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.TraceContext.traceState">
+<h5><code>traceState?: <span class="tok-keyword">string</span></code></h5>
+
+<p>traceState property on TraceContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: TraceContext[<span class="tok-string">&#39;traceState&#39;</span>];</code></pre>
+</section>
+
+<section class="member" id="js-opentelemetry-traces.TraceContext.baggage">
+<h5><code>baggage?: <a class="tok-type" href="../opentelemetry.html#opentelemetry.Baggage">Baggage</a> | <span class="tok-keyword">null</span></code></h5>
+
+<p>baggage property on TraceContext.</p>
+<p>Omitted optional values default to <code>undefined</code>; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.</p>
+<pre><code class="language-typescript"><span class="tok-keyword">let</span> value: TraceContext[<span class="tok-string">&#39;baggage&#39;</span>];</code></pre>
+</section>
+
+
+</section>
+
+
+
+</main>
+</div>
+</body>
+</html>
