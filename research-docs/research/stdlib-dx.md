@@ -47,14 +47,10 @@ their app-specific code starts.
 The standard library should prefer high-level APIs where the user intent is
 stable and repetitive:
 
-- define and emit structured logs;
-- validate runtime data at trust boundaries;
-- load typed config from environment, files, and CLI overrides;
-- route HTTP requests;
 - run database migrations;
 - schedule background work;
 - cache small values locally;
-- secure cookies, tokens, headers, and credentials.
+- manage project tasks and workflows.
 
 Those high-level APIs should sit over solid lower-level primitives. Internals
 can remain private while they are still settling. Expose the public modules only
@@ -65,116 +61,16 @@ until the API shape is stable.
 
 The immediate sequence should be:
 
-1. `fino:log`
-2. `fino:validate`
-3. `fino:config`
+1. `fino:database/migrate`
+2. `fino:jobs`
+3. `fino:cache` / `fino:kv`
+4. `fino:task`
 
-This order keeps the first implementation focused on observability, then adds
-the validation layer that config should depend on. Conceptually, validation is
-foundational for config, even though logging should ship first.
+This order starts with the SQLite adjacency — turning embedded SQLite from
+"available" into "ready for app state" — then layers on background work,
+caching, and project workflows that build on those foundations.
 
-### 3.1 `fino:log`
-
-Structured logging is the first backend DX multiplier. Every server, CLI, job,
-test fixture, and future standard-library module needs a consistent way to emit
-machine-readable events.
-
-Core goals:
-
-- structured log records with level, message, timestamp, module/source, fields,
-  error details, and optional span/request context;
-- context-aware request IDs and correlation IDs, ideally flowing through async
-  request handling and realm boundaries where practical;
-- text output for local development and JSON output for production ingestion;
-- OpenTelemetry correlation, so logs can connect to traces and metrics without
-  every application rebuilding the bridge;
-- simple logger construction for common cases and enough hooks for tests,
-  custom sinks, and future runtime instrumentation.
-
-Design pressure:
-
-- The API should be useful from tiny scripts through multi-realm services.
-- The default output should be readable locally without sacrificing structured
-  production output.
-- Hot paths should avoid unnecessary allocations when a level is disabled.
-
-### 3.2 `fino:validate`
-
-Validation should become the shared boundary layer for runtime data. It should
-not be scoped only to HTTP. Backend applications need validation anywhere data
-crosses from "untrusted or dynamic" into "application logic."
-
-Primary use cases:
-
-- request params, query strings, headers, and bodies;
-- environment variables and config files;
-- CLI inputs and tool arguments;
-- database rows, migration inputs, and seed data;
-- message payloads crossing realm, queue, or worker boundaries;
-- AI/tool inputs later, where precise contracts are part of the safety model.
-
-Core goals:
-
-- define schemas in plain JavaScript/TypeScript-friendly code;
-- parse and transform values, not merely check them;
-- produce useful error trees for HTTP responses, config failures, and tests;
-- infer or expose typed access patterns where the runtime's type story allows;
-- support object, array, tuple, enum, literal, union, optional/defaulted,
-  numeric/string/date/boolean, and custom refinement cases;
-- compose cleanly with `fino:config`, HTTP routing, jobs, and database helpers.
-
-Design pressure:
-
-- Config should be built on validation, not the other way around.
-- Error output needs to be stable enough for tests and user-facing diagnostics.
-- The module should avoid becoming a full application framework by accident.
-
-### 3.3 `fino:config`
-
-Config should give backend apps a typed, validated startup boundary. Its job is
-to make the common app lifecycle boring: collect values, merge sources, validate
-once, and expose typed access.
-
-Core goals:
-
-- load `.env` files for local development;
-- read TOML and JSON config files where appropriate;
-- merge environment variables, config files, CLI overrides, and defaults using a
-  clear precedence model;
-- validate the final shape through `fino:validate`;
-- provide typed access to required, optional, defaulted, secret, and derived
-  values;
-- emit useful startup errors without leaking secret values;
-- integrate with `fino:log` for clear config-source diagnostics.
-
-Design pressure:
-
-- The module should make simple apps simple while still supporting deployment
-  environments that inject everything through env vars.
-- Precedence must be explicit and documented from the first public version.
-- Secrets should have redaction semantics in errors and logs.
-
-## 4. Broader future backlog
-
-These modules are valuable, but they should not displace the first three. They
-represent the rest of the backend-first standard-library surface.
-
-### `fino:http/app`
-
-A small application layer over the existing HTTP primitives:
-
-- routing with params;
-- middleware or layered request handling;
-- cookies;
-- static files;
-- body parsing;
-- typed validation integration for params, query, headers, and bodies;
-- centralized error handling;
-- predictable response helpers without hiding streaming primitives.
-
-This should remain a backend app layer, not a full-stack framework.
-
-### `fino:database/migrate`
+### 3.1 `fino:database/migrate`
 
 SQLite needs a first-class migration and seed workflow:
 
@@ -187,7 +83,7 @@ SQLite needs a first-class migration and seed workflow:
 
 This would turn embedded SQLite from "available" into "ready for app state."
 
-### `fino:jobs`
+### 3.2 `fino:jobs`
 
 Background work is a common backend need and SQLite makes a local durable queue
 possible:
@@ -202,7 +98,7 @@ possible:
 
 This can start local and later grow into realm/cluster-aware execution.
 
-### `fino:cache` / `fino:kv`
+### 3.3 `fino:cache` / `fino:kv`
 
 Small services need a simple key-value layer before they need an external cache:
 
@@ -216,21 +112,7 @@ Small services need a simple key-value layer before they need an external cache:
 Keep the first version honest: local process and local SQLite, not a distributed
 cache promise.
 
-### `fino:security`
-
-Security helpers should cover the repetitive pieces that backend apps get wrong:
-
-- secure cookie signing/encryption helpers;
-- token generation and verification;
-- CORS and security-header helpers;
-- password hashing;
-- JWT/JWK helpers;
-- constant-time comparison and safe random helpers where not already exposed.
-
-This module needs conservative API design because mistakes become security
-footguns. Prefer small, boring, well-documented helpers over a broad framework.
-
-### `fino:task`
+### 3.4 `fino:task`
 
 Project task scripts can give fino projects a native workflow without forcing a
 package manager convention:
@@ -242,6 +124,8 @@ package manager convention:
 - integration with tests, benchmarks, migrations, and local servers.
 
 This should complement the runtime, not become a replacement shell language.
+
+## 4. Future backlog
 
 ### Later AI modules
 
@@ -263,12 +147,6 @@ storage.
 
 These remain useful but are intentionally not the immediate backend-DX focus.
 
-### Formatting and linting
-
-OXC-based formatting and linting would improve project polish, but it should not
-preempt the first backend APIs. Revisit when the runtime has a clearer project
-workflow story around `fino:task`.
-
 ### Frontend app/build pipeline
 
 A frontend build pipeline is outside the near-term posture. fino can eventually
@@ -285,11 +163,13 @@ not let broad compatibility work obscure the curated standard-library path.
 
 The standard library should earn trust in this order:
 
-1. Make runtime behavior observable (`fino:log`).
-2. Make dynamic boundaries explicit and safe (`fino:validate`).
-3. Make application startup deterministic (`fino:config`).
-4. Add higher-level app primitives once those foundations exist.
+1. Make persistent state manageable (`fino:database/migrate`).
+2. Make background work reliable (`fino:jobs`).
+3. Make local caching practical (`fino:cache` / `fino:kv`).
+4. Give projects a native workflow (`fino:task`).
+5. Layer on AI and advanced capabilities once those foundations exist.
 
 That sequence keeps fino's backend story coherent: services should start with
-clear config, validate their inputs, emit useful logs, persist locally when
-needed, and scale into realms or clusters without rewriting their core shape.
+clear data shape, run background work reliably, cache where it helps, manage
+local workflows, and scale into realms or clusters without rewriting their core
+shape.
