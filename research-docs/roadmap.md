@@ -40,3 +40,9 @@ Long-term, strategic investments. High value but very large effort.
 - **Depends on**: TLS (done, ALPN negotiation for `h2`).
 - **Complexity**: Very large. HTTP/2 framing, HPACK header compression, stream multiplexing, and flow control are each substantial projects.
 
+### 4.2 QUIC and HTTP/3
+
+- **Why**: QUIC unlocks UDP-based multiplexed transport, lower connection setup latency, connection migration, and the foundation for HTTP/3, WebTransport, HTTP/3 WebSockets, and DATAGRAM-based real-time protocols.
+- **Approach**: Build `fino:net/quic` first as a JS-first thin-FFI module over ngtcp2 and `ngtcp2_crypto_ossl` with OpenSSL 3.5+. Then layer `fino:net/http/h3` over nghttp3 and eventually refactor H1/H2/H3 around one HTTP session/stream model while keeping Fetch-compatible handlers as the default developer experience.
+- **Phasing**: Phase 1 is QUIC only. HTTP/3, unified HTTP architecture, fetch pooling, Alt-Svc, 0-RTT, DATAGRAM, WebTransport, HTTP/3 WebSockets, migration, and qlog diagnostics are tracked separately in `research-docs/research/quic-http3.md`.
+- **Complexity**: Extremely large. QUIC requires packet routing by connection ID, UDP event-loop integration, QUIC-specific TLS APIs, timers, ACK-driven buffer lifetime, flow control, stream cancellation, and interoperability testing.
