@@ -164,7 +164,11 @@ interface IoUringLoop {
   sqTailLocal:   number;
   sqSubmittedLocal: number;
   timerBufs:     Map<number, ArrayBuffer>;
+  waitTimerBufs: Map<number, ArrayBuffer>;
+  canceledTimers: Set<number>;
+  nextWaitTimerId: number;
   fileBufs:      Map<number, ArrayBuffer[]>;
+  persistentReads: Set<number>;
   signalFds:     Map<number, number>;     // signo → fd
   signalFdToSig: Map<number, number>;     // fd → signo
 }
@@ -177,6 +181,16 @@ interface CqeEvent {
   res:    number;
 }
 
+const USER_DATA_SHIFT = 48n;
+const USER_DATA_MASK  = (1n << USER_DATA_SHIFT) - 1n;
+const USER_DATA_READ  = 1n;
+const USER_DATA_WRITE = 2n;
+const USER_DATA_TIMER = 3n;
+const USER_DATA_FILE  = 4n;
+const USER_DATA_SIGNAL = 5n;
+const USER_DATA_TIMER_CANCEL = 6n;
+const USER_DATA_WAIT_TIMER = 7n;
+
 const lib = dlopen('libc.so.6', {
   // long syscall(long number, ...)  — declared with 7 i64 params (register-based ABI)
   syscall: { parameters: ['i64', 'i64', 'i64', 'i64', 'i64', 'i64', 'i64'], result: 'i64' },
@@ -188,6 +202,10 @@ const lib = dlopen('libc.so.6', {
   close:   { parameters: ['i32'], result: 'i32' },
   // ssize_t read(int fd, void *buf, size_t count) — used to drain signalfd
   read:    { parameters: ['i32', 'buffer', 'usize'], result: 'isize' },
+  // int sigprocmask(int how, const sigset_t *set, sigset_t *oldset)
+  sigprocmask: { parameters: ['i32', 'buffer', 'pointer'], result: 'i32' },
+  // int signalfd(int fd, const sigset_t *mask, int flags)
+  signalfd: { parameters: ['i32', 'buffer', 'i32'], result: 'i32' },
 });
 
 // ---------------------------------------------------------------------------
@@ -214,6 +232,7 @@ const IORING_OFF_SQES    = 0x10000000n;
 const IORING_OP_NOP       = 0;
 const IORING_OP_POLL_ADD  = 6;
 const IORING_OP_TIMEOUT   = 11;
+const IORING_OP_TIMEOUT_REMOVE = 12;
 const IORING_OP_OPENAT    = 18;
 const IORING_OP_CLOSE     = 19;
 const IORING_OP_READ      = 22;
@@ -289,11 +308,10 @@ export const EVFILT_SIGNAL     = -6;
 export const EVFILT_COMPLETION = -10;
 
 // Signal handling via signalfd(2)
-const SYS_RT_SIGPROCMASK = 14n;  // same on x86_64 and arm64 Linux
-const SYS_SIGNALFD4      = 289n; // same on x86_64 and arm64 Linux
-const SIG_BLOCK   = 0n;
+const SIG_BLOCK   = 0;
 const SFD_NONBLOCK = 0x800n;
 const SFD_CLOEXEC  = 0x80000n;
+const GLIBC_SIGSET_SIZE = 128;     // sizeof(sigset_t) used by glibc signalfd/sigprocmask wrappers
 const SIGNALFD_SIGINFO_SIZE = 128; // sizeof(struct signalfd_siginfo)
 
 // io_uring_params struct (120 bytes)
@@ -326,6 +344,17 @@ function syscall(nr: bigint, a1: bigint | number = 0n, a2: bigint | number = 0n,
 
 function bufPtr(ab: ArrayBuffer): bigint {
   return Pointer.addr(ab);
+}
+
+function packUserData(kind: bigint, ident: number): bigint {
+  return (kind << USER_DATA_SHIFT) | (BigInt(ident) & USER_DATA_MASK);
+}
+
+function unpackUserData(raw: bigint): { kind: bigint; ident: number } {
+  return {
+    kind: raw >> USER_DATA_SHIFT,
+    ident: Number(raw & USER_DATA_MASK),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,9 +439,16 @@ export function create(entries: number = 256): IoUringLoop {
     sqSubmittedLocal: 0,
     // Keeps timer ArrayBuffers alive until their completions are received
     timerBufs: new Map(),
+    // Internal wait timers used only to wake io_uring_enter(GETEVENTS).
+    waitTimerBufs: new Map(),
+    // Public timers canceled through loop.timeout().cancel().
+    canceledTimers: new Set(),
+    nextWaitTimerId: 1,
     // Keeps buffers for async file ops alive until completions are received.
     // Maps userData → [buf, ...] (any buffers that must outlive the SQE).
     fileBufs: new Map(),
+    // Persistent read readiness watches used for runtime wake pipes.
+    persistentReads: new Set(),
     // signalfd tracking for signal handling
     signalFds:     new Map(), // signo → fd
     signalFdToSig: new Map(), // fd → signo
@@ -423,7 +459,11 @@ export function create(entries: number = 256): IoUringLoop {
 // SQE submission
 // ---------------------------------------------------------------------------
 
-function submitSqe(loop: IoUringLoop, opcode: number, fd: number, addr: number, len: number, off: number | bigint, userData: number, pollEvents: number): void {
+function submitSqe(loop: IoUringLoop, opcode: number, fd: number, addr: number | bigint, len: number, off: number | bigint, userData: bigint, pollEvents: number): void {
+  if (loop.sqTailLocal - loop.sqSubmittedLocal >= loop.sqEntries) {
+    submitPending(loop);
+  }
+
   const mask  = Pointer.readU32(loop.sqRing, loop.sqOff.ring_mask);
   const tail  = loop.sqTailLocal;
   const index = tail & mask;
@@ -441,7 +481,7 @@ function submitSqe(loop: IoUringLoop, opcode: number, fd: number, addr: number, 
   Pointer.writeU64(loop.sqes, sqeBase + 16, BigInt(addr));
   Pointer.writeU32(loop.sqes, sqeBase + 24, len);
   Pointer.writeU32(loop.sqes, sqeBase + 28, pollEvents);   // poll_events union field
-  Pointer.writeU64(loop.sqes, sqeBase + 32, BigInt(userData));
+  Pointer.writeU64(loop.sqes, sqeBase + 32, userData);
 
   // Write the index into the SQ array
   const arrayOff = loop.sqOff.array + index * 4;
@@ -464,6 +504,7 @@ function submitPending(loop: IoUringLoop): void {
       0n,
     ));
     if (ret < 0) throw new Error(`io_uring_enter (submit) failed: ${ret}`);
+    if (ret === 0) throw new Error('io_uring_enter (submit) made no progress');
     loop.sqSubmittedLocal += ret;
     toSubmit -= ret;
   }
@@ -475,42 +516,62 @@ function submitPending(loop: IoUringLoop): void {
 
 function drainCqes(loop: IoUringLoop): CqeEvent[] {
   const events = [];
+  const rearmPersistentReads: number[] = [];
   let head = Pointer.readU32(loop.cqRing, loop.cqOff.head);
   const tail = Pointer.readU32(loop.cqRing, loop.cqOff.tail);
   const mask = Pointer.readU32(loop.cqRing, loop.cqOff.ring_mask);
 
   while (head !== tail) {
     const cqeBase  = loop.cqOff.cqes + (head & mask) * 16;
-    const userData = Number(Pointer.readU64(loop.cqRing, cqeBase));
+    const userData = unpackUserData(Pointer.readU64(loop.cqRing, cqeBase));
     const res      = Pointer.readI32(loop.cqRing, cqeBase + 8);
 
     // Determine which kind of completion this is so loop.mjs can dispatch it
     // the same way as a kqueue event (using filter constants).
     let filter;
-    let ident = userData;
-    if (loop.timerBufs.has(userData)) {
-      loop.timerBufs.delete(userData);
+    let ident = userData.ident;
+    if (userData.kind === USER_DATA_TIMER) {
+      loop.timerBufs.delete(ident);
+      if (loop.canceledTimers.delete(ident)) {
+        head++;
+        continue;
+      }
       filter = EVFILT_TIMER;
-    } else if (loop.fileBufs.has(userData)) {
-      loop.fileBufs.delete(userData);
+    } else if (userData.kind === USER_DATA_TIMER_CANCEL) {
+      if (!loop.timerBufs.has(ident)) loop.canceledTimers.delete(ident);
+      head++;
+      continue;
+    } else if (userData.kind === USER_DATA_WAIT_TIMER) {
+      loop.waitTimerBufs.delete(ident);
+      head++;
+      continue;
+    } else if (userData.kind === USER_DATA_FILE) {
+      loop.fileBufs.delete(ident);
       filter = EVFILT_COMPLETION;
-    } else if (loop.signalFdToSig.has(userData)) {
+    } else if (userData.kind === USER_DATA_SIGNAL && loop.signalFdToSig.has(ident)) {
       // IORING_OP_POLL_ADD fired on a signalfd — drain and re-arm.
-      const signo = loop.signalFdToSig.get(userData);
+      const signo = loop.signalFdToSig.get(ident);
       if (signo === undefined) {
         head++;
         continue;
       }
       const infoBuf = new ArrayBuffer(SIGNALFD_SIGINFO_SIZE);
-      lib.symbols.read(userData, infoBuf, SIGNALFD_SIGINFO_SIZE);
+      lib.symbols.read(ident, infoBuf, SIGNALFD_SIGINFO_SIZE);
       // Re-arm POLL_ADD on the signalfd so the next signal is also caught.
-      if (loop.signalFdToSig.has(userData)) {
-        submitSqe(loop, IORING_OP_POLL_ADD, userData, 0, 0, 0, userData, POLLIN);
+      if (loop.signalFdToSig.has(ident)) {
+        submitSqe(loop, IORING_OP_POLL_ADD, ident, 0, 0, 0, packUserData(USER_DATA_SIGNAL, ident), POLLIN);
       }
       filter = EVFILT_SIGNAL;
       ident  = signo;
+    } else if (userData.kind === USER_DATA_READ) {
+      if (loop.persistentReads.has(ident)) {
+        rearmPersistentReads.push(ident);
+      }
+      filter = EVFILT_READ;
+    } else if (userData.kind === USER_DATA_WRITE) {
+      filter = EVFILT_WRITE;
     } else {
-      // IORING_OP_POLL_ADD completion — res is the poll event mask.
+      // Legacy/unexpected POLL_ADD completion — fall back to the poll mask.
       filter = (res & POLLIN) ? EVFILT_READ : EVFILT_WRITE;
     }
     events.push({ ident, filter, flags: 0, res });
@@ -519,6 +580,10 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
 
   // Advance the CQ head
   Pointer.writeU32(loop.cqRing, loop.cqOff.head, head);
+  for (const fd of rearmPersistentReads) {
+    submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, fd), POLLIN);
+  }
+  if (rearmPersistentReads.length > 0) submitPending(loop);
   return events;
 }
 
@@ -540,7 +605,27 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
  * @internal
  */
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
-  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, userData, POLLIN);
+  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, userData), POLLIN);
+}
+
+/**
+ * Submit a persistent read readiness watch.
+ *
+ * io_uring `POLL_ADD` is one-shot, so this backend re-arms the watch after
+ * every completion. The runtime uses this for wake pipes that must interrupt
+ * `io_uring_enter(GETEVENTS)` without counting as live application I/O.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.addPersistentRead(loop, fd, fd);
+ * ```
+ *
+ * @internal
+ */
+export function addPersistentRead(loop: IoUringLoop, fd: number, userData: number): void {
+  loop.persistentReads.add(userData);
+  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, userData), POLLIN);
+  submitPending(loop);
 }
 
 /**
@@ -554,7 +639,7 @@ export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
  * @internal
  */
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
-  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, userData, POLLOUT);
+  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_WRITE, userData), POLLOUT);
 }
 
 /**
@@ -573,7 +658,7 @@ export function addWrite(loop: IoUringLoop, fd: number, userData: number): void 
 export function removeRead(loop: IoUringLoop, _fd: number): void {
   // POLL_ADD is one-shot by default in io_uring — no explicit removal needed.
   // For persistent watches, IORING_OP_POLL_REMOVE would be used here.
-  void loop;
+  loop.persistentReads.delete(_fd);
 }
 
 /**
@@ -607,23 +692,26 @@ export function removeWrite(loop: IoUringLoop, _fd: number): void {
 export function addSignal(loop: IoUringLoop, signo: number): void {
   if (loop.signalFds.has(signo)) return; // already watching
 
-  // Build sigset_t (8 bytes on Linux 64-bit): bit (signo-1) set
-  const sigset = new ArrayBuffer(8);
+  // Build glibc sigset_t: bit (signo-1) set.
+  const sigset = new ArrayBuffer(GLIBC_SIGSET_SIZE);
   const sigsetView = new DataView(sigset);
   sigsetView.setBigUint64(0, 1n << BigInt(signo - 1), true);
 
   // Block the signal so it does not kill the process
-  syscall(SYS_RT_SIGPROCMASK, SIG_BLOCK, bufPtr(sigset), 0n, 8n);
+  const maskRc = lib.symbols.sigprocmask(SIG_BLOCK, sigset, Pointer.null()) as number;
+  if (maskRc !== 0) throw new Error(`sigprocmask failed: ${maskRc}`);
 
-  // Create a signalfd for this signal (non-blocking, close-on-exec)
-  const fd = Number(syscall(SYS_SIGNALFD4, -1n, bufPtr(sigset), BigInt(SIGNALFD_SIGINFO_SIZE), SFD_NONBLOCK | SFD_CLOEXEC));
+  // Create a signalfd for this signal (non-blocking, close-on-exec). Use the
+  // libc wrapper instead of raw syscall numbers; signalfd4 differs across Linux
+  // architectures.
+  const fd = Number(lib.symbols.signalfd(-1, sigset, Number(SFD_NONBLOCK | SFD_CLOEXEC)));
   if (fd < 0) throw new Error(`signalfd4 failed: ${fd}`);
 
   loop.signalFds.set(signo, fd);
   loop.signalFdToSig.set(fd, signo);
 
   // Register POLL_ADD on the signalfd; userData = fd (used as drainCqes lookup key)
-  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, fd, POLLIN);
+  submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_SIGNAL, fd), POLLIN);
 }
 
 /**
@@ -662,7 +750,37 @@ export function addTimer(loop: IoUringLoop, id: number, ms: number): void {
 
   loop.timerBufs.set(id, buf); // Keep buffer alive until completion
 
-  submitSqe(loop, IORING_OP_TIMEOUT, -1, Number(bufPtr(buf)), 1, 0, id, 0);
+  submitSqe(loop, IORING_OP_TIMEOUT, -1, Number(bufPtr(buf)), 1, 0, packUserData(USER_DATA_TIMER, id), 0);
+}
+
+/**
+ * Cancel a pending one-shot timer by its public timer id.
+ *
+ * io_uring timeout removal targets the original timeout by its SQE
+ * `user_data`, passed in the remove SQE's `addr` field. The original timeout
+ * still completes, usually with `-ECANCELED`; drainCqes suppresses that
+ * completion for callers that already canceled the JS timer.
+ *
+ * ```typescript no_run
+ * import * as uring from 'internal:runtime/io_uring';
+ * uring.removeTimer(loop, 1);
+ * ```
+ *
+ * @internal
+ */
+export function removeTimer(loop: IoUringLoop, id: number): void {
+  if (!loop.timerBufs.has(id)) return;
+  loop.canceledTimers.add(id);
+  submitSqe(
+    loop,
+    IORING_OP_TIMEOUT_REMOVE,
+    -1,
+    packUserData(USER_DATA_TIMER, id),
+    0,
+    0,
+    packUserData(USER_DATA_TIMER_CANCEL, id),
+    0,
+  );
 }
 
 /**
@@ -701,7 +819,15 @@ export function wait(loop: IoUringLoop, timeoutMs: number | null = null): CqeEve
   // For timed waits: submit a timeout SQE then enter with min_complete=1.
   // For infinite waits: just enter with min_complete=1.
   if (timeoutMs !== null) {
-    addTimer(loop, Number.MAX_SAFE_INTEGER, timeoutMs);
+    const waitTimerId = loop.nextWaitTimerId++;
+    const buf  = new ArrayBuffer(16);
+    const view = new DataView(buf);
+    const sec  = Math.floor(timeoutMs / 1000);
+    const nsec = (timeoutMs % 1000) * 1_000_000;
+    view.setBigInt64(0, BigInt(sec),  true);
+    view.setBigInt64(8, BigInt(nsec), true);
+    loop.waitTimerBufs.set(waitTimerId, buf);
+    submitSqe(loop, IORING_OP_TIMEOUT, -1, Number(bufPtr(buf)), 1, 0, packUserData(USER_DATA_WAIT_TIMER, waitTimerId), 0);
   }
 
   submitPending(loop);
@@ -743,7 +869,7 @@ export function asyncOpen(loop: IoUringLoop, pathBuf: ArrayBuffer, flags: number
   loop.fileBufs.set(userData, [pathBuf]);
   // sqe->fd = AT_FDCWD, sqe->addr = path, sqe->len = mode,
   // sqe->off = 0 (unused), sqe->open_flags (union@+28) = flags
-  submitSqe(loop, IORING_OP_OPENAT, AT_FDCWD, addr, mode, 0, userData, flags);
+  submitSqe(loop, IORING_OP_OPENAT, AT_FDCWD, addr, mode, 0, packUserData(USER_DATA_FILE, userData), flags);
 }
 
 /**
@@ -763,7 +889,7 @@ export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: 
   const addr = Number(bufPtr(buf));
   loop.fileBufs.set(userData, [buf]);
   // sqe->off = UINT64_MAX means "use current file position" (same as read(2))
-  submitSqe(loop, IORING_OP_READ, fd, addr, len, IORING_READ_AT_CURPOS, userData, 0);
+  submitSqe(loop, IORING_OP_READ, fd, addr, len, IORING_READ_AT_CURPOS, packUserData(USER_DATA_FILE, userData), 0);
 }
 
 /**
@@ -779,7 +905,7 @@ export function asyncRead(loop: IoUringLoop, fd: number, buf: ArrayBuffer, len: 
  */
 export function asyncClose(loop: IoUringLoop, fd: number, userData: number): void {
   loop.fileBufs.set(userData, []);
-  submitSqe(loop, IORING_OP_CLOSE, fd, 0, 0, 0, userData, 0);
+  submitSqe(loop, IORING_OP_CLOSE, fd, 0, 0, 0, packUserData(USER_DATA_FILE, userData), 0);
 }
 
 /**

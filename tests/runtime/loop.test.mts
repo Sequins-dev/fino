@@ -42,6 +42,18 @@ describe('Basic operations', () => {
     }
     t.ok(true, '3 sequential timeouts resolved');
   });
+
+  it('cancelled timer churn does not delay later timers', (t) => {
+    for (let i = 0; i < 1024; i++) {
+      const timer = loop.timeout(10_000);
+      timer.cancel();
+    }
+
+    const t0 = Date.now();
+    wait(loop.timeout(20));
+    const elapsed = Date.now() - t0;
+    t.ok(elapsed < 500, 'short timeout was not delayed by cancelled timers (' + elapsed + 'ms)');
+  });
 });
 
 describe('I/O watchers', () => {

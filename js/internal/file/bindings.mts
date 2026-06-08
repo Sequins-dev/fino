@@ -132,7 +132,7 @@ export let loopModule: LoopModule | null = null;
 export let asyncOps: AsyncOpsModule | null = null;
 loopModule = await import('internal:runtime/loop');
 if (!isDarwin) {
-  asyncOps = await import('internal:runtime/io_uring');
+  asyncOps = await import('internal:runtime/loop-backend');
 }
 const errnoFn = isDarwin ? '__error' : '__errno_location';
 

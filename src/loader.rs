@@ -41,12 +41,12 @@ const LOOP_BACKEND_MAP: &str = include_str!(concat!(
 #[cfg(not(target_os = "macos"))]
 const LOOP_BACKEND_SRC: &str = include_str!(concat!(
     env!("OUT_DIR"),
-    "/js/internal/runtime/io_uring.mjs"
+    "/js/internal/runtime/linux.mjs"
 ));
 #[cfg(not(target_os = "macos"))]
 const LOOP_BACKEND_MAP: &str = include_str!(concat!(
     env!("OUT_DIR"),
-    "/js/internal/runtime/io_uring.mjs.map"
+    "/js/internal/runtime/linux.mjs.map"
 ));
 
 macro_rules! source_builtin {
@@ -196,6 +196,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:runtime/kqueue", "internal/runtime/kqueue"),
     source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
+    source_builtin!("internal:runtime/poll", "internal/runtime/poll"),
+    source_builtin!("internal:runtime/linux", "internal/runtime/linux"),
     (
         "internal:runtime/loop-backend",
         BuiltinKind::Source {

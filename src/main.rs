@@ -19,7 +19,22 @@ fn main() {
     // Server processes must not die on broken-pipe writes. Network connections
     // can be reset by the remote at any time; SIGPIPE would kill the process.
     #[cfg(unix)]
-    unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN); }
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+
+    // Linux signalfd only receives signals that are blocked in the receiving
+    // thread. Block the user-defined signals before V8/runtime worker threads
+    // are created so the mask is inherited process-wide; JS signal() then
+    // creates signalfds for the selected signal numbers.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGUSR1);
+        libc::sigaddset(&mut set, libc::SIGUSR2);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
 
     let args: Vec<String> = std::env::args().collect();
 
