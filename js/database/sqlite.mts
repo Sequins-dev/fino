@@ -393,7 +393,7 @@ export class Statement {
 
     const rc = await s.sqlite3_prepare_v2(
       this.#db.ptr,
-      Pointer.of(sqlBuf),
+      sqlBuf,
       -1,
       Pointer.of(ppStmt),
       null,
@@ -992,7 +992,7 @@ export class Database {
     }
 
     const rc = await s.sqlite3_open_v2(
-      Pointer.of(pathBuf),
+      pathBuf,
       Pointer.of(ppDb),
       flags,
       vfs.nameCstrPointer,
@@ -1033,9 +1033,11 @@ export class Database {
   async exec(sql: string): Promise<void> {
     this.#checkOpen();
     const s  = requireSqlite().symbols;
+    const sqlBuf = cstr(sql);
     const rc = await s.sqlite3_exec(
-      this.#ptr, Pointer.of(cstr(sql)), null, null, null,
+      this.#ptr, sqlBuf, null, null, null,
     ) as number;
+    void sqlBuf;
     if (rc !== SQLITE_OK) {
       throw new Error(`sqlite3_exec: ${dbErrMsg(this.#ptr)}`);
     }

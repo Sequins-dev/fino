@@ -28,6 +28,7 @@ import {
   isDarwin,
   S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
 } from './bindings.mts';
+import { arch } from 'internal:process';
 
 /**
  * File metadata parsed from a struct stat buffer.
@@ -678,6 +679,34 @@ export class Stat {
         size, blksize, blocks,
         toMs(atimeSec, atimeNs), toMs(mtimeSec, mtimeNs),
         toMs(ctimeSec, ctimeNs), toMs(btimeSec, btimeNs));
+    } else if (arch === 'aarch64') {
+      // Linux aarch64 glibc struct stat (128 bytes):
+      //  0: u64 dev     8: u64 ino    16: u32 mode   20: u32 nlink
+      // 24: u32 uid    28: u32 gid    32: u64 rdev
+      // 48: i64 size   56: i64 blksize 64: i64 blocks
+      // 72: timespec atime  (tv_sec i64 @72, tv_nsec i64 @80)
+      // 88: timespec mtime  (tv_sec i64 @88, tv_nsec i64 @96)
+      // 104: timespec ctime (tv_sec i64 @104, tv_nsec i64 @112)
+      const dev       = Number(v.getBigUint64(0,  true));
+      const ino       = Number(v.getBigUint64(8,  true));
+      const mode      = v.getUint32(16, true);
+      const nlink     = v.getUint32(20, true);
+      const uid       = v.getUint32(24, true);
+      const gid       = v.getUint32(28, true);
+      const rdev      = Number(v.getBigUint64(32, true));
+      const size      = Number(v.getBigInt64(48,  true));
+      const blksize   = Number(v.getBigInt64(56,  true));
+      const blocks    = Number(v.getBigInt64(64,  true));
+      const atimeSec  = v.getBigInt64(72,  true);
+      const atimeNs   = v.getBigInt64(80,  true);
+      const mtimeSec  = v.getBigInt64(88,  true);
+      const mtimeNs   = v.getBigInt64(96,  true);
+      const ctimeSec  = v.getBigInt64(104, true);
+      const ctimeNs   = v.getBigInt64(112, true);
+      return new Stat(dev, ino, mode, nlink, uid, gid, rdev,
+        size, blksize, blocks,
+        toMs(atimeSec, atimeNs), toMs(mtimeSec, mtimeNs),
+        toMs(ctimeSec, ctimeNs), 0); // Linux has no birthtime
     } else {
       // Linux x86_64 struct stat (144 bytes):
       //  0: u64 dev     8: u64 ino    16: u64 nlink

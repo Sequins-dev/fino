@@ -43,7 +43,7 @@
 
 import {
   lib, Pointer, isDarwin, loopModule, asyncOps,
-  cstr, throwErrno, readCStr, _toStr, _toPath, joinPath,
+  cstr, throwErrno, throwErrnoCode, readCStr, _toStr, _toPath, joinPath,
   O_CREAT, O_RDONLY, O_WRONLY, O_RDWR, O_TRUNC, O_APPEND, O_EXCL,
   S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
   SEEK_SET, SEEK_CUR, SEEK_END,
@@ -105,6 +105,18 @@ export class DiskFileSystem extends FileSystem {
    * ```
    */
   async stat(path: Path | string): Promise<Stat> {
+    return this.statSync(path);
+  }
+
+  /**
+   * Synchronously stat a path.
+   *
+   * This low-level helper exists for native callback integrations such as the
+   * SQLite VFS, whose C callbacks must complete without awaiting Promises.
+   *
+   * @internal
+   */
+  statSync(path: Path | string): Stat {
     const s = _toStr(path);
     const buf = new ArrayBuffer(256);
     const rc = lib.symbols.stat(cstr(s), buf);
@@ -177,7 +189,7 @@ export class DiskFileSystem extends FileSystem {
         ops.asyncOpen(raw, pathBuf.buffer as ArrayBuffer, flags, 0o666, id);
       });
       fd = result.res;
-      if (fd < 0) throwErrno('open', s);
+      if (fd < 0) throwErrnoCode('open', s, fd);
     } else {
       // macOS: synchronous open(2).
       // Note: libffi on macOS ARM64 may not correctly pass the mode argument
@@ -186,6 +198,24 @@ export class DiskFileSystem extends FileSystem {
       fd = lib.symbols.open(cstr(s), flags, 0o666);
       if (fd < 0) throwErrno('open', s);
     }
+    if (flags & O_CREAT) lib.symbols.fchmod(fd, 0o644);
+    return new File(fd, this, p, mode);
+  }
+
+  /**
+   * Synchronously open a file and return a File handle.
+   *
+   * This bypasses io_uring even on Linux and is intended for synchronous native
+   * callback paths such as SQLite VFS methods.
+   *
+   * @internal
+   */
+  openSync(path: Path | string, mode: string = 'r'): File {
+    const p = _toPath(path);
+    const s = p.toString();
+    const flags = modeToFlags(mode);
+    const fd = lib.symbols.open(cstr(s), flags, 0o666);
+    if (fd < 0) throwErrno('open', s);
     if (flags & O_CREAT) lib.symbols.fchmod(fd, 0o644);
     return new File(fd, this, p, mode);
   }
@@ -305,6 +335,15 @@ export class DiskFileSystem extends FileSystem {
    * ```
    */
   async unlink(path: Path | string): Promise<void> {
+    this.unlinkSync(path);
+  }
+
+  /**
+   * Synchronously unlink a path.
+   *
+   * @internal
+   */
+  unlinkSync(path: Path | string): void {
     const s = _toStr(path);
     const rc = lib.symbols.unlink(cstr(s));
     if (rc !== 0) throwErrno('unlink', s);
@@ -674,7 +713,7 @@ export class DiskFileSystem extends FileSystem {
                   new Uint8Array(data);
       const w = file.writer();
       await w.write(buf);
-      w.close();
+      await w.close();
     } finally {
       await file.close();
     }

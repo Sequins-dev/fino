@@ -49,9 +49,9 @@ pub struct FfiSymbol {
     pub result_type: NativeType,
     pub fast_call_kind: FastCallKind,
     /// When `true`, calls are dispatched to the blocking thread pool and
-    /// return a JS `Promise`. Only scalar param/return types are supported
-    /// (no `pointer` or `buffer`) — the GC may collect ArrayBuffers before
-    /// the background thread reads them.
+    /// return a JS `Promise`. Buffer params pin their backing stores in
+    /// `AsyncFfiWork`; pointer params are raw addresses and callers must ensure
+    /// the pointed-to memory outlives the call.
     pub nonblocking: bool,
 }
 
@@ -61,6 +61,7 @@ impl FfiSymbol {
         param_types: Vec<NativeType>,
         result_type: NativeType,
         nonblocking: bool,
+        fast_enabled: bool,
         variadic: Option<usize>,
     ) -> Result<Self, String> {
         // Validate: void may only appear as the return type.
@@ -90,7 +91,7 @@ impl FfiSymbol {
         Ok(Self {
             code_ptr,
             cif,
-            fast_call_kind: if nonblocking || variadic.is_some() {
+            fast_call_kind: if !fast_enabled || nonblocking || variadic.is_some() {
                 // Async symbols: Promise return can't be a scalar fast-call return.
                 // Variadic symbols: call_direct uses non-variadic extern-C fn types
                 // which misplace variadic args on ARM64 and other platforms.
@@ -116,6 +117,7 @@ mod tests {
             vec![NativeType::I32, NativeType::U32, NativeType::USize],
             NativeType::I32,
             false,
+            true,
             None,
         )
         .unwrap();
@@ -133,6 +135,7 @@ mod tests {
             vec![NativeType::I32, NativeType::Buffer],
             NativeType::I32,
             false,
+            true,
             None,
         )
         .unwrap();
@@ -150,6 +153,7 @@ mod tests {
             vec![NativeType::F64],
             NativeType::I32,
             false,
+            true,
             None,
         )
         .unwrap();
@@ -167,7 +171,26 @@ mod tests {
             vec![NativeType::I32, NativeType::I32, NativeType::I32],
             NativeType::I32,
             false,
+            true,
             Some(2),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            sym.fast_call_kind,
+            crate::ffi::fast::FastCallKind::None
+        ));
+    }
+
+    #[test]
+    fn explicit_fast_disable_forces_no_fast_call() {
+        let sym = FfiSymbol::new(
+            CodePtr::from_ptr(std::ptr::null()),
+            vec![NativeType::Pointer, NativeType::USize],
+            NativeType::I32,
+            false,
+            false,
+            None,
         )
         .unwrap();
 

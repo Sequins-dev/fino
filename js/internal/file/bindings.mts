@@ -443,6 +443,20 @@ export function cstr(s: string): Uint8Array {
 export function throwErrno(syscall: string, path: string): never {
   const getErrno = lib.symbols[errnoFn] as () => object;
   const num  = Pointer.readI32(getErrno(), 0);
+  throwErrnoCode(syscall, path, num);
+}
+
+/**
+ * Throw an error annotated with an explicit errno value.
+ *
+ * Linux io_uring completions report failures as negative errno values rather
+ * than setting thread-local errno in the JavaScript thread. Use this helper for
+ * those completion results.
+ *
+ * @internal
+ */
+export function throwErrnoCode(syscall: string, path: string, errno: number): never {
+  const num = Math.abs(errno);
   const code = _ERRNO_CODES[num] ?? `E${num}`;
   const err: ErrnoError = new Error(`${syscall}('${path}'): ${code}`);
   err.code    = code;
@@ -532,8 +546,9 @@ export function joinPath(dir: Path | string, name: string): string {
 /**
  * Convert a file mode string into platform `O_*` flags.
  *
- * Supports `r`, `w`, `a`, `r+`, `w+`, and `a+`. Unknown modes throw before any
- * syscall is attempted.
+ * Supports `r`, `w`, `a`, `r+`, `w+`, `a+`, and internal `c+` (read-write,
+ * create if missing, no append/truncate). Unknown modes throw before any syscall
+ * is attempted.
  *
  * ```typescript no_run
  * import { modeToFlags } from 'internal:file/bindings';
@@ -550,6 +565,7 @@ export function modeToFlags(mode: string): number {
     case 'r+': return O_RDWR;
     case 'w+': return O_RDWR   | O_CREAT | O_TRUNC;
     case 'a+': return O_RDWR   | O_CREAT | O_APPEND;
+    case 'c+': return O_RDWR   | O_CREAT;
     default:   throw new Error(`Unknown file mode: '${mode}'`);
   }
 }
@@ -568,7 +584,7 @@ export function modeToFlags(mode: string): number {
  * @internal
  */
 export function modeIsReadable(mode: string): boolean {
-  return mode === 'r' || mode === 'r+' || mode === 'w+' || mode === 'a+';
+  return mode === 'r' || mode === 'r+' || mode === 'w+' || mode === 'a+' || mode === 'c+';
 }
 
 /**

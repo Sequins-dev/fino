@@ -20,9 +20,11 @@ struct AsyncFfiWork {
     code_ptr: CodePtr,
     result_type: NativeType,
     owned_args: Vec<OwnedScalarArg>,
+    _store_pins: SmallVec<[v8::SharedRef<v8::BackingStore>; 4]>,
 }
 // SAFETY: Cif / CodePtr are immutable read-only ABI metadata used only on the
-// background thread during the call. They are dropped before the thread exits.
+// background thread during the call. BackingStore references are thread-safe
+// handles used only to keep ArrayBuffer storage alive until the C call returns.
 unsafe impl Send for AsyncFfiWork {}
 
 impl AsyncFfiWork {
@@ -30,7 +32,12 @@ impl AsyncFfiWork {
     /// Consuming `self` via a method keeps the captured variable as
     /// `AsyncFfiWork` (not decomposed into individual non-Send fields).
     fn execute(self) -> Result<crate::async_rt::RawFfiResult, String> {
-        call_scalar_sync(&self.cif, self.code_ptr, &self.result_type, &self.owned_args)
+        call_scalar_sync(
+            &self.cif,
+            self.code_ptr,
+            &self.result_type,
+            &self.owned_args,
+        )
     }
 }
 
@@ -189,8 +196,8 @@ fn js_to_native<'s>(
 // ---------------------------------------------------------------------------
 
 /// Owned scalar argument value (Send + 'static so it can be sent to a thread).
-/// Buffer params are forbidden for async symbols; pointer params are allowed
-/// because the address is just an integer that's safe to copy across threads.
+/// Buffer params are kept alive by `AsyncFfiWork::_store_pins`; pointer params
+/// are raw addresses copied as integers.
 #[derive(Clone)]
 pub(crate) struct OwnedScalarArg {
     bytes: [u8; 8],
@@ -215,37 +222,56 @@ impl OwnedScalarArg {
                 NativeType::ISize => bytes.copy_from_slice(&val.isize_val.to_le_bytes()),
                 NativeType::F32 => bytes[..4].copy_from_slice(&val.f32_val.to_le_bytes()),
                 NativeType::F64 => bytes.copy_from_slice(&val.f64_val.to_le_bytes()),
-                // Pointer: store the address as a usize. Buffer is rejected at dlopen time.
-                NativeType::Pointer => {
+                NativeType::Pointer | NativeType::Buffer => {
                     bytes.copy_from_slice(&(val.ptr_val as usize).to_le_bytes());
                 }
-                NativeType::Buffer => {}
             }
         }
-        Self { bytes, ty: ty.clone() }
+        Self {
+            bytes,
+            ty: ty.clone(),
+        }
     }
 
     fn to_native_value(&self) -> NativeValue {
         let b = self.bytes;
-        unsafe {
-            match self.ty {
-                NativeType::Void | NativeType::Buffer => NativeValue { u8_val: 0 },
-                NativeType::Pointer => NativeValue {
-                    ptr_val: usize::from_le_bytes(b) as *mut c_void,
-                },
-                NativeType::Bool | NativeType::U8 => NativeValue { u8_val: b[0] },
-                NativeType::I8 => NativeValue { i8_val: b[0] as i8 },
-                NativeType::U16 => NativeValue { u16_val: u16::from_le_bytes([b[0], b[1]]) },
-                NativeType::I16 => NativeValue { i16_val: i16::from_le_bytes([b[0], b[1]]) },
-                NativeType::U32 => NativeValue { u32_val: u32::from_le_bytes([b[0], b[1], b[2], b[3]]) },
-                NativeType::I32 => NativeValue { i32_val: i32::from_le_bytes([b[0], b[1], b[2], b[3]]) },
-                NativeType::U64 => NativeValue { u64_val: u64::from_le_bytes(b) },
-                NativeType::I64 => NativeValue { i64_val: i64::from_le_bytes(b) },
-                NativeType::USize => NativeValue { usize_val: usize::from_le_bytes(b) },
-                NativeType::ISize => NativeValue { isize_val: isize::from_le_bytes(b) },
-                NativeType::F32 => NativeValue { f32_val: f32::from_le_bytes([b[0], b[1], b[2], b[3]]) },
-                NativeType::F64 => NativeValue { f64_val: f64::from_le_bytes(b) },
-            }
+        match self.ty {
+            NativeType::Void => NativeValue { u8_val: 0 },
+            NativeType::Pointer | NativeType::Buffer => NativeValue {
+                ptr_val: usize::from_le_bytes(b) as *mut c_void,
+            },
+            NativeType::Bool | NativeType::U8 => NativeValue { u8_val: b[0] },
+            NativeType::I8 => NativeValue { i8_val: b[0] as i8 },
+            NativeType::U16 => NativeValue {
+                u16_val: u16::from_le_bytes([b[0], b[1]]),
+            },
+            NativeType::I16 => NativeValue {
+                i16_val: i16::from_le_bytes([b[0], b[1]]),
+            },
+            NativeType::U32 => NativeValue {
+                u32_val: u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            },
+            NativeType::I32 => NativeValue {
+                i32_val: i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            },
+            NativeType::U64 => NativeValue {
+                u64_val: u64::from_le_bytes(b),
+            },
+            NativeType::I64 => NativeValue {
+                i64_val: i64::from_le_bytes(b),
+            },
+            NativeType::USize => NativeValue {
+                usize_val: usize::from_le_bytes(b),
+            },
+            NativeType::ISize => NativeValue {
+                isize_val: isize::from_le_bytes(b),
+            },
+            NativeType::F32 => NativeValue {
+                f32_val: f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            },
+            NativeType::F64 => NativeValue {
+                f64_val: f64::from_le_bytes(b),
+            },
         }
     }
 }
@@ -282,8 +308,6 @@ pub fn ffi_call_async<'s>(
         let nv = js_to_native(scope, *val, ty, &mut store_pins)?;
         owned_args.push(OwnedScalarArg::from_native(nv, ty));
     }
-    drop(store_pins); // all args are now owned copies
-
     // Create the JS Promise resolver.
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);
@@ -308,6 +332,7 @@ pub fn ffi_call_async<'s>(
         code_ptr: symbol.code_ptr,
         result_type: symbol.result_type.clone(),
         owned_args,
+        _store_pins: store_pins,
     };
 
     // Submit to the shared blocking pool (see src/async_rt/blocking.rs).
@@ -315,10 +340,13 @@ pub fn ffi_call_async<'s>(
     // the closure type is Send despite Cif/CodePtr not being Send.
     crate::async_rt::blocking::spawn(move || {
         let result = work.execute();
-        completions.lock().unwrap().push(crate::async_rt::FfiCompletion {
-            resolver_id,
-            result,
-        });
+        completions
+            .lock()
+            .unwrap()
+            .push(crate::async_rt::FfiCompletion {
+                resolver_id,
+                result,
+            });
         // Wake the main thread's event loop (kqueue/io_uring readable on pipe).
         unsafe { libc::write(wake_write, b"\x01".as_ptr() as *const c_void, 1) };
     });

@@ -209,6 +209,7 @@ interface DocsDatabase {
   prepare(sql: string): {
     run(...params: unknown[]): Promise<unknown>;
     all(...params: unknown[]): Promise<Array<Record<string, unknown>>>;
+    finalize(): void;
   };
   close(): Promise<void>;
 }
@@ -2579,7 +2580,7 @@ async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
 async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
   for (const statement of DOCS_INDEX_SCHEMA_STATEMENTS) await db.exec(statement);
   for (const guide of api.guides ?? []) {
-    await db.prepare('INSERT INTO guides VALUES (?, ?, ?, ?, ?, ?)').run(
+    await runDocsStatement(db, 'INSERT INTO guides VALUES (?, ?, ?, ?, ?, ?)',
       guide.id,
       guide.title,
       guide.path,
@@ -2587,7 +2588,7 @@ async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
       guide.summary,
       guide.text,
     );
-    await db.prepare('INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)').run(
+    await runDocsStatement(db, 'INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)',
       guide.id,
       guide.title,
       'guide',
@@ -2596,7 +2597,7 @@ async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
     );
   }
   for (const moduleDoc of api.modules) {
-    await db.prepare('INSERT INTO modules VALUES (?, ?, ?, ?)').run(
+    await runDocsStatement(db, 'INSERT INTO modules VALUES (?, ?, ?, ?)',
       moduleDoc.id ?? `module:${moduleDoc.name}`,
       moduleDoc.name,
       moduleDoc.path,
@@ -2605,7 +2606,7 @@ async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
     for (const symbol of flatten({ modules: [moduleDoc] })) {
       const parentId = symbol.member ? (symbol.export.id ?? `${moduleDoc.name}.${symbol.export.name}`) : null;
       const docText = searchableText(symbol);
-      await db.prepare('INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      await runDocsStatement(db, 'INSERT INTO symbols VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         symbol.id,
         moduleDoc.id ?? `module:${moduleDoc.name}`,
         parentId,
@@ -2616,7 +2617,7 @@ async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
         BigInt(symbol.location.line),
         BigInt(symbol.location.column),
       );
-      await db.prepare('INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)').run(
+      await runDocsStatement(db, 'INSERT INTO docs_fts (id, name, kind, signature, doc) VALUES (?, ?, ?, ?, ?)',
         symbol.id,
         symbol.name,
         symbol.kind,
@@ -2624,10 +2625,10 @@ async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
         docText,
       );
       const aliases = symbol.member ? (symbol.member.aliases ?? []) : (symbol.export.aliases ?? []);
-      for (const alias of aliases) await db.prepare('INSERT INTO aliases VALUES (?, ?)').run(symbol.id, alias);
+      for (const alias of aliases) await runDocsStatement(db, 'INSERT INTO aliases VALUES (?, ?)', symbol.id, alias);
       let ordinal = 0;
       for (const block of symbol.doc.blocks ?? []) {
-        await db.prepare('INSERT INTO doc_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+        await runDocsStatement(db, 'INSERT INTO doc_blocks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           symbol.id,
           BigInt(ordinal++),
           block.kind,
@@ -2640,6 +2641,15 @@ async function populateDocsIndex(db: DocsDatabase, api: ApiDoc): Promise<void> {
         );
       }
     }
+  }
+}
+
+async function runDocsStatement(db: DocsDatabase, sql: string, ...params: unknown[]): Promise<void> {
+  const stmt = db.prepare(sql);
+  try {
+    await stmt.run(...params);
+  } finally {
+    stmt.finalize();
   }
 }
 
@@ -2790,9 +2800,8 @@ async function searchSqlite(dbPath: string, query: string): Promise<string> {
   const db = await sqlite.Database.open(dbPath, { readonly: true }) as DocsDatabase;
 
   try {
-    const rows = await db
-      .prepare('SELECT id, name, kind, signature FROM docs_fts WHERE docs_fts MATCH ? ORDER BY bm25(docs_fts) LIMIT 20')
-      .all(ftsQuery);
+    const stmt = db.prepare('SELECT id, name, kind, signature FROM docs_fts WHERE docs_fts MATCH ? ORDER BY bm25(docs_fts) LIMIT 20');
+    const rows = await stmt.all(ftsQuery).finally(() => stmt.finalize());
     if (rows.length === 0) return `No results for ${query}\n`;
     return rows.map((row) => `${String(row.id)} (${String(row.kind)})\n  ${String(row.signature)}`).join('\n') + '\n';
   } finally {

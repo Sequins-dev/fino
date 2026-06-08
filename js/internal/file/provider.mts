@@ -127,7 +127,7 @@ export interface FileHandle {
   stat(): Promise<Stat>;
   /**
    * Returns an async iterable that yields chunks of the file's contents.
-   * Only valid for modes that allow reading ('r', 'r+', 'w+', 'a+').
+   * Only valid for modes that allow reading ('r', 'r+', 'w+', 'a+', 'c+').
    *
    * ```typescript no_run
    * for await (const chunk of file.reader()) {
@@ -138,7 +138,7 @@ export interface FileHandle {
   reader(): AsyncIterable<Uint8Array>;
   /**
    * Returns a writer for this file.
-   * Only valid for modes that allow writing ('w', 'a', 'r+', 'w+', 'a+').
+   * Only valid for modes that allow writing ('w', 'a', 'r+', 'w+', 'a+', 'c+').
    *
    * ```typescript no_run
    * const writer = file.writer();
@@ -173,6 +173,16 @@ export interface FileHandle {
    */
   pread(pos: number | bigint, len: number): Promise<Uint8Array>;
   /**
+   * Synchronous positional read for native callback integrations.
+   *
+   * Providers that support SQLite VFS or other synchronous C callback APIs can
+   * implement this to avoid returning Promises while C is blocked on the
+   * callback result.
+   *
+   * @internal
+   */
+  preadSync?(pos: number | bigint, len: number): Uint8Array;
+  /**
    * Write `data` at byte position `pos` without moving the file offset.
    *
    * Returns the number of bytes written. Short writes are possible for some
@@ -184,6 +194,12 @@ export interface FileHandle {
    */
   pwrite(pos: number | bigint, data: Uint8Array): Promise<number>;
   /**
+   * Synchronous positional write for native callback integrations.
+   *
+   * @internal
+   */
+  pwriteSync?(pos: number | bigint, data: Uint8Array): number;
+  /**
    * Flush provider write buffers to stable storage when supported.
    *
    * ```typescript no_run
@@ -191,6 +207,12 @@ export interface FileHandle {
    * ```
    */
   sync(): Promise<void>;
+  /**
+   * Synchronous stable-storage flush for native callback integrations.
+   *
+   * @internal
+   */
+  syncSync?(): void;
   /**
    * Set the file size.
    *
@@ -202,6 +224,12 @@ export interface FileHandle {
    */
   truncate(len: number | bigint): Promise<void>;
   /**
+   * Synchronous truncate for native callback integrations.
+   *
+   * @internal
+   */
+  truncateSync?(len: number | bigint): void;
+  /**
    * Return the current file size in bytes.
    *
    * ```typescript no_run
@@ -209,6 +237,12 @@ export interface FileHandle {
    * ```
    */
   size(): Promise<bigint>;
+  /**
+   * Synchronous file size query for native callback integrations.
+   *
+   * @internal
+   */
+  sizeSync?(): bigint;
   /**
    * Close the handle and release its underlying resource.
    *
@@ -219,6 +253,18 @@ export interface FileHandle {
    * ```
    */
   close(): Promise<void>;
+  /**
+   * Close this handle synchronously when the provider can do so safely.
+   *
+   * This is intended for low-level integrations such as SQLite VFS callbacks
+   * that already run inside native lifecycle code and must release descriptors
+   * without scheduling additional async work. Providers without a synchronous
+   * close path can omit it; callers must fall back to `close()`.
+   *
+   * @returns Nothing.
+   * @internal
+   */
+  closeSync?(): void;
 }
 
 /**
@@ -247,6 +293,12 @@ export abstract class FileSystem {
    * ```
    */
   abstract stat(path: Path | string): Promise<Stat>;
+  /**
+   * Synchronous `stat` for native callback integrations.
+   *
+   * @internal
+   */
+  statSync?(path: Path | string): Stat;
 
   /**
    * Stat a path without following symlinks.
@@ -260,13 +312,25 @@ export abstract class FileSystem {
   /**
    * Open a file and return a handle.
    *
-   * Mode defaults to `r`. Unsupported modes should throw before opening.
+   * Mode defaults to `r`. Providers used by low-level integrations should also
+   * support internal `c+`: read-write, create if missing, preserve if present.
+   * Unsupported modes should throw before opening.
    *
    * ```typescript no_run
    * const file = await fs.open('/tmp/file.txt', 'r');
    * ```
    */
   abstract open(path: Path | string, mode?: string): Promise<FileHandle>;
+  /**
+   * Synchronous open for native callback integrations.
+   *
+   * SQLite VFS callbacks are synchronous C calls, so providers used with
+   * `fino:database/sqlite` should implement this together with synchronous
+   * handle methods.
+   *
+   * @internal
+   */
+  openSync?(path: Path | string, mode?: string): FileHandle;
 
   /**
    * Open a directory handle. Returns a `DirEntry` (fino:file) or equivalent
@@ -321,6 +385,12 @@ export abstract class FileSystem {
    * ```
    */
   abstract unlink(path: Path | string): Promise<void>;
+  /**
+   * Synchronous unlink for native callback integrations.
+   *
+   * @internal
+   */
+  unlinkSync?(path: Path | string): void;
 
   /**
    * Rename or move a file or directory.

@@ -43,11 +43,11 @@ const _CANDIDATES = _IS_DARWIN
 
 const _SYMBOLS = {
   // Lifecycle (async: run on pool thread so VFS callbacks fire cross-thread)
-  sqlite3_open_v2:           { parameters: ['pointer', 'pointer', 'i32', 'pointer'],                    result: 'i32', async: true },
+  sqlite3_open_v2:           { parameters: ['buffer', 'pointer', 'i32', 'pointer'],                     result: 'i32', async: true },
   sqlite3_close_v2:          { parameters: ['pointer'],                                                  result: 'i32', async: true },
   // Execution (async: may call VFS)
-  sqlite3_exec:              { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'pointer'],      result: 'i32', async: true },
-  sqlite3_prepare_v2:        { parameters: ['pointer', 'pointer', 'i32', 'pointer', 'pointer'],          result: 'i32', async: true },
+  sqlite3_exec:              { parameters: ['pointer', 'buffer', 'pointer', 'pointer', 'pointer'],       result: 'i32', async: true },
+  sqlite3_prepare_v2:        { parameters: ['pointer', 'buffer', 'i32', 'pointer', 'pointer'],           result: 'i32', async: true },
   sqlite3_step:              { parameters: ['pointer'],                                                  result: 'i32', async: true },
   // Statement management (sync: in-memory operations)
   sqlite3_reset:             { parameters: ['pointer'],                                                  result: 'i32' },

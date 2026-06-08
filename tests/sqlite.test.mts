@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { Database, sqliteAvailable, vec, vecDecode } from 'fino:database/sqlite';
+import { DiskFileSystem } from 'fino:file';
 
 if (!sqliteAvailable) {
   console.log('SKIP: libsqlite3 not found (install via: brew install sqlite or apt install libsqlite3-0)');
@@ -34,6 +35,30 @@ describe('fino:database/sqlite — basic', () => {
     await db.exec("INSERT INTO t VALUES (1, 'hello')");
     t.equal(db.changes, 1, 'one row inserted');
     await db.close();
+  });
+
+  it('exec creates file-backed schema visible to later prepares', async (t) => {
+    const fs = new DiskFileSystem();
+    const dbPath = '/tmp/fino-sqlite-schema-' + Math.floor(Math.random() * 1_000_000_000) + '.db';
+    try { await fs.unlink(dbPath); } catch {}
+    const db = await Database.open(dbPath);
+    try {
+      await db.exec('CREATE TABLE modules (id TEXT PRIMARY KEY, name TEXT NOT NULL)');
+      await db.exec('CREATE TABLE guides (id TEXT PRIMARY KEY, title TEXT NOT NULL)');
+      await db.exec('CREATE TABLE symbols (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, name TEXT NOT NULL)');
+      const row = await db.prepare(`
+        SELECT COUNT(*) AS n
+        FROM sqlite_master
+        WHERE type = 'table' AND name IN ('modules', 'guides', 'symbols')
+      `).get();
+      t.equal(row!['n'], 3n, 'schema tables are visible on the same connection');
+      await db.prepare('INSERT INTO symbols VALUES (?, ?, ?)').run('symbol:one', 'module:one', 'one');
+      const inserted = await db.prepare('SELECT name FROM symbols WHERE id = ?').get('symbol:one');
+      t.equal(inserted!['name'], 'one', 'prepared insert can use file-backed schema');
+    } finally {
+      await db.close();
+      try { await fs.unlink(dbPath); } catch {}
+    }
   });
 
   it('prepare + run (positional params)', async (t) => {

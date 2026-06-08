@@ -158,6 +158,17 @@ fn dlopen_callback(
                 .unwrap_or(false)
         };
 
+        // Parse optional `fast: false` flag. Some native functions synchronously
+        // invoke FFI callbacks back into JS and must use the normal HandleScope
+        // path instead of V8 Fast API.
+        let fast_enabled = {
+            let fast_key = v8::String::new(scope, "fast").unwrap();
+            def_obj
+                .get(scope, fast_key.into())
+                .map(|v| !v.is_boolean() || v.boolean_value(scope))
+                .unwrap_or(true)
+        };
+
         // Parse optional `variadic: N` — number of fixed named parameters for
         // variadic C functions (e.g. fcntl has 2 fixed params: fd, cmd).
         // Using the correct variadic CIF (ffi_prep_cif_var) is required on
@@ -166,27 +177,15 @@ fn dlopen_callback(
             let var_key = v8::String::new(scope, "variadic").unwrap();
             def_obj
                 .get(scope, var_key.into())
-                .and_then(|v| if v.is_number() { v.integer_value(scope) } else { None })
+                .and_then(|v| {
+                    if v.is_number() {
+                        v.integer_value(scope)
+                    } else {
+                        None
+                    }
+                })
                 .map(|n| n as usize)
         };
-
-        // Validate: async symbols may not use pointer/buffer params (GC safety).
-        if nonblocking {
-            use types::NativeType;
-            for ty in &param_types {
-                if matches!(ty, NativeType::Buffer) {
-                    throw_error(
-                        scope,
-                        &format!(
-                            "dlopen: '{key_str}': async symbols cannot use 'buffer' \
-                             parameters (GC may collect the ArrayBuffer before the \
-                             background thread reads it); use 'pointer' instead"
-                        ),
-                    );
-                    return;
-                }
-            }
-        }
 
         // Get the code pointer from the library.
         let code_ptr = {
@@ -206,7 +205,14 @@ fn dlopen_callback(
             }
         };
 
-        let sym = match FfiSymbol::new(code_ptr, param_types, result_type, nonblocking, variadic) {
+        let sym = match FfiSymbol::new(
+            code_ptr,
+            param_types,
+            result_type,
+            nonblocking,
+            fast_enabled,
+            variadic,
+        ) {
             Ok(s) => s,
             Err(e) => {
                 throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
@@ -334,7 +340,10 @@ fn ffi_callback_constructor(
     let def_obj = match v8::Local::<v8::Object>::try_from(args.get(0)) {
         Ok(o) => o,
         Err(_) => {
-            throw_error(scope, "FfiCallback: expected descriptor object as first argument");
+            throw_error(
+                scope,
+                "FfiCallback: expected descriptor object as first argument",
+            );
             return;
         }
     };

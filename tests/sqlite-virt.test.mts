@@ -48,6 +48,10 @@ class MemoryFileHandle implements FileHandle {
   async text() { return new TextDecoder().decode(this.#store.data); }
 
   async pread(pos: number | bigint, len: number): Promise<Uint8Array> {
+    return this.preadSync(pos, len);
+  }
+
+  preadSync(pos: number | bigint, len: number): Uint8Array {
     const off  = Number(pos);
     const data = this.#store.data;
     const end  = Math.min(off + len, data.byteLength);
@@ -56,6 +60,10 @@ class MemoryFileHandle implements FileHandle {
   }
 
   async pwrite(pos: number | bigint, src: Uint8Array): Promise<number> {
+    return this.pwriteSync(pos, src);
+  }
+
+  pwriteSync(pos: number | bigint, src: Uint8Array): number {
     const off     = Number(pos);
     const needed  = off + src.byteLength;
     const current = this.#store.data;
@@ -69,8 +77,13 @@ class MemoryFileHandle implements FileHandle {
   }
 
   async sync(): Promise<void> {}
+  syncSync(): void {}
 
   async truncate(len: number | bigint): Promise<void> {
+    this.truncateSync(len);
+  }
+
+  truncateSync(len: number | bigint): void {
     const n = Number(len);
     if (n < this.#store.data.byteLength) {
       this.#store.data = this.#store.data.slice(0, n);
@@ -82,10 +95,18 @@ class MemoryFileHandle implements FileHandle {
   }
 
   async size(): Promise<bigint> {
+    return this.sizeSync();
+  }
+
+  sizeSync(): bigint {
     return BigInt(this.#store.data.byteLength);
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
+  }
+
+  closeSync(): void {
     this.#closed = true;
   }
 }
@@ -94,6 +115,10 @@ class MemoryFileSystem {
   #files: Map<string, { data: Uint8Array }> = new Map();
 
   async stat(path: string | Path) {
+    return this.statSync(path);
+  }
+
+  statSync(path: string | Path): Stat {
     const p = String(path);
     if (!this.#files.has(p)) throw new Error(`ENOENT: ${p}`);
     return {} as unknown as Stat;
@@ -102,12 +127,27 @@ class MemoryFileSystem {
   async lstat(path: string | Path) { return this.stat(path); }
 
   async open(path: string | Path, mode = 'r'): Promise<FileHandle> {
+    return this.openSync(path, mode);
+  }
+
+  openSync(path: string | Path, mode = 'r'): FileHandle {
     const p = String(path);
-    if (mode === 'r' || mode === 'r+') {
-      if (!this.#files.has(p)) throw new Error(`ENOENT: ${p}`);
-    }
-    if (mode === 'a+' || mode === 'w+' || mode === 'w') {
-      if (!this.#files.has(p)) this.#files.set(p, { data: new Uint8Array(0) });
+    switch (mode) {
+      case 'r':
+      case 'r+':
+        if (!this.#files.has(p)) throw new Error(`ENOENT: ${p}`);
+        break;
+      case 'w':
+      case 'w+':
+        this.#files.set(p, { data: new Uint8Array(0) });
+        break;
+      case 'a':
+      case 'a+':
+      case 'c+':
+        if (!this.#files.has(p)) this.#files.set(p, { data: new Uint8Array(0) });
+        break;
+      default:
+        throw new Error(`Unknown file mode: '${mode}'`);
     }
     const store = this.#files.get(p)!;
     return new MemoryFileHandle(store, p);
@@ -118,6 +158,7 @@ class MemoryFileSystem {
   async mkdir()    {}
   async rmdir()    {}
   async unlink(path: string | Path) { this.#files.delete(String(path)); }
+  unlinkSync(path: string | Path): void { this.#files.delete(String(path)); }
   async rename(src: string | Path, dst: string | Path) {
     const s = String(src), d = String(dst);
     const store = this.#files.get(s);

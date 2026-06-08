@@ -96,6 +96,21 @@ const SZ_IOMETHODS = 152;
 const SZ_OS_FILE   = 16;  // pMethods ptr (8) + fileId slot (8)
 const MX_PATHNAME  = 512;
 
+type SyncFileSystem = FileSystem & {
+  openSync?: (path: string, mode?: string) => FileHandle;
+  unlinkSync?: (path: string) => void;
+  statSync?: (path: string) => unknown;
+};
+
+type SyncFileHandle = FileHandle & {
+  preadSync?: (pos: number | bigint, len: number) => Uint8Array;
+  pwriteSync?: (pos: number | bigint, data: Uint8Array) => number;
+  truncateSync?: (len: number | bigint) => void;
+  syncSync?: () => void;
+  sizeSync?: () => bigint;
+  closeSync?: () => void;
+};
+
 // ---------------------------------------------------------------------------
 // Struct initialization helpers — operate on local ArrayBuffer (not via ptr)
 // ---------------------------------------------------------------------------
@@ -124,7 +139,7 @@ function _writeBufAddr(struct: ArrayBuffer, offset: number, buf: Uint8Array | nu
 function _openMode(flags: number): string {
   const rw  = (flags & SQLITE_OPEN_READWRITE) !== 0;
   const cr8 = (flags & SQLITE_OPEN_CREATE)    !== 0;
-  if (rw && cr8) return 'a+';  // create if missing, preserve if exists; pread/pwrite ignore O_APPEND
+  if (rw && cr8) return 'c+';  // create if missing, preserve if exists; no O_APPEND for pwrite correctness
   if (rw)        return 'r+';  // read-write, must exist
   return 'r';                  // read-only
 }
@@ -390,25 +405,31 @@ export class FinoVFS {
 
     const xClose = new FfiCallback(
       { parameters: ['pointer'], result: 'i32' },
-      async (pFile: ArrayBuffer) => {
+      (pFile: ArrayBuffer) => {
         // fileId is at pFile[8] in the sqlite3_file struct
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
         const h  = handles.get(id);
         handles.delete(id);
         if (!h) return SQLITE_OK;
-        try { await h.close(); return SQLITE_OK; }
+        try {
+          const syncHandle = h as SyncFileHandle;
+          if (typeof syncHandle.closeSync !== 'function') return SQLITE_IOERR_CLOSE;
+          syncHandle.closeSync();
+          return SQLITE_OK;
+        }
         catch { return SQLITE_IOERR_CLOSE; }
       },
     );
 
     const xRead = new FfiCallback(
       { parameters: ['pointer', 'pointer', 'i32', 'i64'], result: 'i32' },
-      async (pFile: ArrayBuffer, pBuf: ArrayBuffer, iAmt: number, iOfst: bigint) => {
+      (pFile: ArrayBuffer, pBuf: ArrayBuffer, iAmt: number, iOfst: bigint) => {
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id);
+        const h  = handles.get(id) as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_READ;
         try {
-          const data = await h.pread(iOfst, iAmt);
+          if (typeof h.preadSync !== 'function') return SQLITE_IOERR_READ;
+          const data = h.preadSync(iOfst, iAmt);
           if (data.byteLength > 0) Pointer.copyTo(pBuf, data);
           if (data.byteLength < iAmt) {
             for (let i = data.byteLength; i < iAmt; i++) Pointer.writeU8(pBuf, i, 0);
@@ -421,13 +442,14 @@ export class FinoVFS {
 
     const xWrite = new FfiCallback(
       { parameters: ['pointer', 'pointer', 'i32', 'i64'], result: 'i32' },
-      async (pFile: ArrayBuffer, pBuf: ArrayBuffer, iAmt: number, iOfst: bigint) => {
+      (pFile: ArrayBuffer, pBuf: ArrayBuffer, iAmt: number, iOfst: bigint) => {
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id);
+        const h  = handles.get(id) as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_WRITE;
         try {
+          if (typeof h.pwriteSync !== 'function') return SQLITE_IOERR_WRITE;
           const data    = Pointer.copyFrom(pBuf, iAmt) as Uint8Array;
-          const written = await h.pwrite(iOfst, data);
+          const written = h.pwriteSync(iOfst, data);
           return written === iAmt ? SQLITE_OK : SQLITE_IOERR_WRITE;
         } catch { return SQLITE_IOERR_WRITE; }
       },
@@ -435,34 +457,43 @@ export class FinoVFS {
 
     const xTruncate = new FfiCallback(
       { parameters: ['pointer', 'i64'], result: 'i32' },
-      async (pFile: ArrayBuffer, size: bigint) => {
+      (pFile: ArrayBuffer, size: bigint) => {
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id);
+        const h  = handles.get(id) as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_TRUNCATE;
-        try { await h.truncate(size); return SQLITE_OK; }
+        try {
+          if (typeof h.truncateSync !== 'function') return SQLITE_IOERR_TRUNCATE;
+          h.truncateSync(size);
+          return SQLITE_OK;
+        }
         catch { return SQLITE_IOERR_TRUNCATE; }
       },
     );
 
     const xSync = new FfiCallback(
       { parameters: ['pointer', 'i32'], result: 'i32' },
-      async (pFile: ArrayBuffer, _flags: number) => {
+      (pFile: ArrayBuffer, _flags: number) => {
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id);
+        const h  = handles.get(id) as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_FSYNC;
-        try { await h.sync(); return SQLITE_OK; }
+        try {
+          if (typeof h.syncSync !== 'function') return SQLITE_IOERR_FSYNC;
+          h.syncSync();
+          return SQLITE_OK;
+        }
         catch { return SQLITE_IOERR_FSYNC; }
       },
     );
 
     const xFileSize = new FfiCallback(
       { parameters: ['pointer', 'pointer'], result: 'i32' },
-      async (pFile: ArrayBuffer, pSize: ArrayBuffer) => {
+      (pFile: ArrayBuffer, pSize: ArrayBuffer) => {
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id);
+        const h  = handles.get(id) as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_FSTAT;
         try {
-          const sz = await h.size();
+          if (typeof h.sizeSync !== 'function') return SQLITE_IOERR_FSTAT;
+          const sz = h.sizeSync();
           Pointer.writeI64(pSize, 0, sz);
           return SQLITE_OK;
         } catch { return SQLITE_IOERR_FSTAT; }
@@ -581,7 +612,9 @@ export class FinoVFS {
         if (!path) return SQLITE_OK;  // anonymous temp — skip (sqlite handles in-memory itself)
         const mode = _openMode(flags);
         try {
-          const handle = await fs.open(path, mode);
+          const openSync = (fs as SyncFileSystem).openSync;
+          if (typeof openSync !== 'function') return SQLITE_IOERR;
+          const handle = openSync.call(fs, path, mode);
           const id     = nextId++;
           handles.set(id, handle);
           // pFile[0]: pMethods — write address of io_methods struct
@@ -596,17 +629,28 @@ export class FinoVFS {
 
     const xDelete = new FfiCallback(
       { parameters: ['pointer', 'pointer', 'i32'], result: 'i32' },
-      async (_pVfs: ArrayBuffer, zName: ArrayBuffer, _syncDir: number) => {
-        try { await fs.unlink(readCStr(zName)); return SQLITE_OK; }
+      (_pVfs: ArrayBuffer, zName: ArrayBuffer, _syncDir: number) => {
+        try {
+          const unlinkSync = (fs as SyncFileSystem).unlinkSync;
+          if (typeof unlinkSync !== 'function') return SQLITE_IOERR;
+          unlinkSync.call(fs, readCStr(zName));
+          return SQLITE_OK;
+        }
         catch { return SQLITE_IOERR; }
       },
     );
 
     const xAccess = new FfiCallback(
       { parameters: ['pointer', 'pointer', 'i32', 'pointer'], result: 'i32' },
-      async (_pVfs: ArrayBuffer, zName: ArrayBuffer, _flags: number, pResOut: ArrayBuffer) => {
+      (_pVfs: ArrayBuffer, zName: ArrayBuffer, _flags: number, pResOut: ArrayBuffer) => {
         let exists = 0;
-        try { await fs.stat(readCStr(zName)); exists = 1; } catch {}
+        try {
+          const statSync = (fs as SyncFileSystem).statSync;
+          if (typeof statSync === 'function') {
+            statSync.call(fs, readCStr(zName));
+            exists = 1;
+          }
+        } catch {}
         Pointer.writeI32(pResOut, 0, exists);
         return SQLITE_OK;
       },

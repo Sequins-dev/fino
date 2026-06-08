@@ -30,7 +30,7 @@
 
 import {
   lib, isDarwin, loopModule, asyncOps,
-  throwErrno, _toPath, modeIsReadable, modeIsWritable,
+  throwErrno, throwErrnoCode, _toPath, modeIsReadable, modeIsWritable,
   SEEK_CUR, O_CREAT, decodeUtf8,
   Pointer,
 } from './bindings.mts';
@@ -221,7 +221,7 @@ export class File {
     this.#path   = _toPath(path);
     this.#mode   = mode;
     this.#closed = false;
-    // split() is only available for read-write modes (r+, w+, a+). Defined as
+    // split() is only available for read-write modes (r+, w+, a+, c+). Defined as
     // an instance property so `file.split` is undefined (falsy) for r/w/a modes.
     if (modeIsReadable(mode) && modeIsWritable(mode)) {
       this.split = () => [this.reader(), this.writer()];
@@ -269,7 +269,7 @@ export class File {
 
   /**
    * Return an async iterable that yields Uint8Array chunks for this file.
-   * Only valid for readable modes (r, r+, w+, a+).
+   * Only valid for readable modes (r, r+, w+, a+, c+).
    *
    * On Linux: uses IORING_OP_READ for genuine async I/O.
    * On macOS: uses kqueue EVFILT_READ to yield to the event loop between reads.
@@ -318,6 +318,7 @@ export class File {
                 ops.asyncRead(raw, fd, buf, bufSize, id);
               });
               n = result.res;
+              if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
             } else {
               // macOS: check EOF via lseek before calling readable() to avoid
               // hanging (EVFILT_READ does not fire when offset == file_size).
@@ -344,7 +345,7 @@ export class File {
   }
 
   /**
-   * Return a Writer for this file. Only valid for writable modes (w, a, r+, w+, a+).
+   * Return a Writer for this file. Only valid for writable modes (w, a, r+, w+, a+, c+).
    * The writer shares the fd; close the File when done, not the writer.
    * @returns {FdWriter}
    *
@@ -402,6 +403,7 @@ export class File {
           ops.asyncRead(raw, fd, buf, bufSize, id);
         });
         n = result.res;
+        if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
       } else {
         // macOS: check EOF via lseek before calling readable() to avoid
         // hanging (EVFILT_READ does not fire when offset == file_size).
@@ -445,6 +447,15 @@ export class File {
    * ```
    */
   async pread(pos: number | bigint, len: number): Promise<Uint8Array> {
+    return this.preadSync(pos, len);
+  }
+
+  /**
+   * Synchronous `pread(2)` for native callback integrations.
+   *
+   * @internal
+   */
+  preadSync(pos: number | bigint, len: number): Uint8Array {
     if (this.#closed) throw new Error('File is closed');
     if (len === 0) return new Uint8Array(0);
     const buf = new ArrayBuffer(len);
@@ -464,6 +475,15 @@ export class File {
    * ```
    */
   async pwrite(pos: number | bigint, data: Uint8Array): Promise<number> {
+    return this.pwriteSync(pos, data);
+  }
+
+  /**
+   * Synchronous `pwrite(2)` for native callback integrations.
+   *
+   * @internal
+   */
+  pwriteSync(pos: number | bigint, data: Uint8Array): number {
     if (this.#closed) throw new Error('File is closed');
     const n = Number(lib.symbols.pwrite(this.#fd, data, data.byteLength, BigInt(pos)));
     if (n < 0) throwErrno('pwrite', this.#path.toString());
@@ -480,6 +500,15 @@ export class File {
    * ```
    */
   async sync(): Promise<void> {
+    this.syncSync();
+  }
+
+  /**
+   * Synchronous `fsync(2)` for native callback integrations.
+   *
+   * @internal
+   */
+  syncSync(): void {
     if (this.#closed) throw new Error('File is closed');
     const rc = lib.symbols.fsync(this.#fd);
     if (rc !== 0) throwErrno('fsync', this.#path.toString());
@@ -495,6 +524,15 @@ export class File {
    * ```
    */
   async truncate(len: number | bigint): Promise<void> {
+    this.truncateSync(len);
+  }
+
+  /**
+   * Synchronous `ftruncate(2)` for native callback integrations.
+   *
+   * @internal
+   */
+  truncateSync(len: number | bigint): void {
     if (this.#closed) throw new Error('File is closed');
     const rc = lib.symbols.ftruncate(this.#fd, BigInt(len));
     if (rc !== 0) throwErrno('ftruncate', this.#path.toString());
@@ -511,6 +549,15 @@ export class File {
    * ```
    */
   async size(): Promise<bigint> {
+    return this.sizeSync();
+  }
+
+  /**
+   * Synchronous `fstat(2)` size query for native callback integrations.
+   *
+   * @internal
+   */
+  sizeSync(): bigint {
     if (this.#closed) throw new Error('File is closed');
     const buf = new ArrayBuffer(256);
     const rc = lib.symbols.fstat(this.#fd, buf);
@@ -550,5 +597,24 @@ export class File {
 
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();
+  }
+
+  /**
+   * Close this file handle synchronously with `close(2)`.
+   *
+   * This low-level path is for native callbacks that must release descriptors
+   * without scheduling io_uring work from inside another async FFI operation.
+   * Normal application code should use `close()`.
+   *
+   * @returns Nothing.
+   * @internal
+   */
+  closeSync(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#activeWriter !== null && !this.#activeWriter.closed) {
+      this.#activeWriter.flushSync();
+    }
+    lib.symbols.close(this.#fd);
   }
 }
