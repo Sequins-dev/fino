@@ -8,7 +8,7 @@ use v8;
 
 use crate::{
     async_context, async_runtime_module, ffi, inspector_module, platform, profiler, realm,
-    state::get_state, state::ImportDirective, typescript_format,
+    state::ImportDirective, state::get_state, typescript_format,
 };
 
 // ---------------------------------------------------------------------------
@@ -415,6 +415,65 @@ fn source_specifier_path(specifier: &str) -> Option<PathBuf> {
         return Some(PathBuf::from(specifier));
     }
     None
+}
+
+fn builtin_source_override_root(scope: &mut v8::HandleScope) -> Option<PathBuf> {
+    let state_rc = get_state(scope);
+    state_rc
+        .borrow()
+        .process_env
+        .env_vars
+        .get("FINO_BUILTIN_SOURCE_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn builtin_source_override_enabled(scope: &mut v8::HandleScope, spec: &str) -> bool {
+    let state_rc = get_state(scope);
+    let state = state_rc.borrow();
+    let Some(filter) = state.process_env.env_vars.get("FINO_BUILTIN_SOURCE_FILTER") else {
+        return true;
+    };
+    if filter.is_empty() {
+        return true;
+    }
+    filter.split(',').map(str::trim).any(|pattern| {
+        if pattern.is_empty() {
+            false
+        } else if let Some(prefix) = pattern.strip_suffix('*') {
+            spec.starts_with(prefix)
+        } else {
+            spec == pattern || spec.starts_with(pattern)
+        }
+    })
+}
+
+fn load_builtin_source_override<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    spec: &str,
+    path: &str,
+) -> Option<v8::Local<'s, v8::Module>> {
+    if !builtin_source_override_enabled(scope, spec) {
+        return None;
+    }
+    let root = builtin_source_override_root(scope)?;
+    let base = root.join(path);
+    let mjs_path = base.with_extension("mjs");
+    if let Ok(source) = std::fs::read_to_string(&mjs_path) {
+        return compile_source_module(scope, &source, spec, None);
+    }
+
+    let mts_path = base.with_extension("mts");
+    let source = std::fs::read_to_string(&mts_path).ok()?;
+    let stripped = match typescript_format::strip_typescript_module(&mts_path, &source) {
+        Ok(stripped) => stripped,
+        Err(message) => {
+            throw_loader_error(scope, &format!("TypeScript error in {}: {message}", mts_path.display()));
+            return None;
+        }
+    };
+    register_source_map_from_json(scope, spec, &stripped.map);
+    compile_source_module(scope, &stripped.code, spec, Some(stripped.map.as_str()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,11 +1183,7 @@ fn get_or_load_builtin_inner<'s>(
                     || f.starts_with("internal:")
                     || st.builtin_specifiers.values().any(|v| v == f)
             });
-            if is_builtin_from {
-                None
-            } else {
-                d
-            }
+            if is_builtin_from { None } else { d }
         } else {
             d
         }
@@ -1239,10 +1294,14 @@ fn get_or_load_builtin_inner<'s>(
         BuiltinKind::Source {
             code,
             source_map,
-            path: _,
+            path,
         } => {
-            register_source_map_from_json(scope, spec, source_map);
-            let m = compile_source_module(scope, code, spec, Some(source_map))?;
+            let m = if let Some(m) = load_builtin_source_override(scope, spec, path) {
+                m
+            } else {
+                register_source_map_from_json(scope, spec, source_map);
+                compile_source_module(scope, code, spec, Some(source_map))?
+            };
             if let Some(id) = m.script_id() {
                 state_rc
                     .borrow_mut()

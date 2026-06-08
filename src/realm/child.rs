@@ -130,7 +130,8 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
         let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
-        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
+        let bootstrap_map =
+            include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
 
         let t = timing_enabled().then(Instant::now);
         let bootstrap_module = {
@@ -144,8 +145,9 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             ) {
                 Some(m) => m,
                 None => {
-                    return Err(catch_message(tc)
-                        .unwrap_or_else(|| "Failed to compile internal/bootstrap.mjs".to_string()));
+                    return Err(catch_message(tc).unwrap_or_else(|| {
+                        "Failed to compile internal/bootstrap.mjs".to_string()
+                    }));
                 }
             }
         };
@@ -165,8 +167,9 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 .instantiate_module(tc, loader::resolve_module_callback)
                 .is_none()
             {
-                return Err(catch_message(tc)
-                    .unwrap_or_else(|| "Failed to instantiate internal/bootstrap.mjs".to_string()));
+                return Err(catch_message(tc).unwrap_or_else(|| {
+                    "Failed to instantiate internal/bootstrap.mjs".to_string()
+                }));
             }
         }
         if let Some(t) = t {

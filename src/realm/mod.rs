@@ -301,7 +301,8 @@ fn create_child_context(
         //    auto-imports the entry module, and calls driveLoop — so
         //    loop_step_fn is registered by the time pump_and_checkpoint returns.
         let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
-        let bootstrap_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
+        let bootstrap_map =
+            include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs.map"));
 
         let compile_start = if realm_timing_enabled() {
             Some(Instant::now())
@@ -415,14 +416,18 @@ fn pump_and_checkpoint_in(scope: &mut v8::HandleScope) {
     let state_rc = get_state(scope);
     loop {
         let mut progress = false;
-        while crate::async_rt::try_tick() { progress = true; }
+        while crate::async_rt::try_tick() {
+            progress = true;
+        }
         progress |= crate::async_rt::drain_all(scope, &state_rc);
         {
             let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
             let isolate: &mut v8::Isolate = scope.as_mut();
             unsafe { &*queue_ptr }.perform_checkpoint(isolate);
         }
-        if !progress { break; }
+        if !progress {
+            break;
+        }
     }
 }
 

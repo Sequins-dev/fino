@@ -149,8 +149,8 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         {
             let tc = &mut v8::TryCatch::new(scope);
             if main_module.evaluate(tc).is_none() {
-                let msg =
-                    catch_message(tc).unwrap_or_else(|| "Failed to evaluate internal/main.mjs".to_string());
+                let msg = catch_message(tc)
+                    .unwrap_or_else(|| "Failed to evaluate internal/main.mjs".to_string());
                 return Err(msg);
             }
         }
@@ -325,14 +325,18 @@ fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
     let state_rc = crate::state::get_state(scope);
     loop {
         let mut progress = false;
-        while crate::async_rt::try_tick() { progress = true; }
+        while crate::async_rt::try_tick() {
+            progress = true;
+        }
         progress |= crate::async_rt::drain_all(scope, &state_rc);
         {
             let queue_ptr = unsafe { crate::state::root_queue_ptr(&state_rc) };
             let isolate: &mut v8::Isolate = scope.as_mut();
             unsafe { &*queue_ptr }.perform_checkpoint(isolate);
         }
-        if !progress { break; }
+        if !progress {
+            break;
+        }
     }
 }
 

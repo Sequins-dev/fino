@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     rc::Rc,
-    sync::{atomic::AtomicBool, Arc},
+    sync::{Arc, atomic::AtomicBool},
 };
 
 pub use crate::async_rt::bridge::PendingResolution;

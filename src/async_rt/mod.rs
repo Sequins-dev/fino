@@ -159,7 +159,9 @@ pub fn get_wake_read_fd() -> i32 {
 /// Returns None if `init()` hasn't been called on this thread.
 pub fn completion_handle() -> Option<(Arc<Mutex<Vec<FfiCompletion>>>, RawFd)> {
     STATE.with(|s| {
-        s.borrow().as_ref().map(|st| (Arc::clone(&st.completions), st.wake_write))
+        s.borrow()
+            .as_ref()
+            .map(|st| (Arc::clone(&st.completions), st.wake_write))
     })
 }
 
@@ -167,14 +169,19 @@ pub fn completion_handle() -> Option<(Arc<Mutex<Vec<FfiCompletion>>>, RawFd)> {
 /// Returns None if `init()` hasn't been called on this thread.
 pub fn js_call_handle() -> Option<(Arc<Mutex<Vec<js_calls::JsCallRequest>>>, RawFd)> {
     STATE.with(|s| {
-        s.borrow().as_ref().map(|st| (Arc::clone(&st.js_call_requests), st.wake_write))
+        s.borrow()
+            .as_ref()
+            .map(|st| (Arc::clone(&st.js_call_requests), st.wake_write))
     })
 }
 
 /// Poll the executor once. Returns true if a task ran.
 pub fn try_tick() -> bool {
     STATE.with(|s| {
-        s.borrow().as_ref().map(|st| st.executor.try_tick()).unwrap_or(false)
+        s.borrow()
+            .as_ref()
+            .map(|st| st.executor.try_tick())
+            .unwrap_or(false)
     })
 }
 
@@ -341,10 +348,17 @@ fn raw_to_v8<'s>(
         NativeType::Bool => v8::Boolean::new(scope, b[0] != 0).into(),
         NativeType::U8 => v8::Integer::new_from_unsigned(scope, b[0] as u32).into(),
         NativeType::I8 => v8::Integer::new(scope, b[0] as i8 as i32).into(),
-        NativeType::U16 => v8::Integer::new_from_unsigned(scope, u16::from_le_bytes([b[0], b[1]]) as u32).into(),
+        NativeType::U16 => {
+            v8::Integer::new_from_unsigned(scope, u16::from_le_bytes([b[0], b[1]]) as u32).into()
+        }
         NativeType::I16 => v8::Integer::new(scope, i16::from_le_bytes([b[0], b[1]]) as i32).into(),
-        NativeType::U32 => v8::Integer::new_from_unsigned(scope, u32::from_le_bytes([b[0], b[1], b[2], b[3]])).into(),
-        NativeType::I32 => v8::Integer::new(scope, i32::from_le_bytes([b[0], b[1], b[2], b[3]])).into(),
+        NativeType::U32 => {
+            v8::Integer::new_from_unsigned(scope, u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .into()
+        }
+        NativeType::I32 => {
+            v8::Integer::new(scope, i32::from_le_bytes([b[0], b[1], b[2], b[3]])).into()
+        }
         NativeType::U64 => {
             let v = u64::from_le_bytes(b);
             v8::BigInt::new_from_u64(scope, v).into()

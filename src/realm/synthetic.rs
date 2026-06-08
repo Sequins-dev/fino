@@ -16,7 +16,9 @@
 
 use ::v8;
 
-use crate::state::{ImportDirective, ImportPattern, ImportRule, SyntheticMode, SyntheticSpec, get_state};
+use crate::state::{
+    ImportDirective, ImportPattern, ImportRule, SyntheticMode, SyntheticSpec, get_state,
+};
 
 // ---------------------------------------------------------------------------
 // Source generation
@@ -53,16 +55,19 @@ fn create_rpc_source(spec: &SyntheticSpec) -> String {
     let has_sinks = !spec.sinks.is_empty();
 
     let import_line = match (has_streams, has_sinks) {
-        (true,  true)  => "import { call as __rpc, callStream as __rpcStream, callSink as __rpcSink } from 'internal:parent-rpc';",
-        (true,  false) => "import { call as __rpc, callStream as __rpcStream } from 'internal:parent-rpc';",
-        (false, true)  => "import { call as __rpc, callSink as __rpcSink } from 'internal:parent-rpc';",
+        (true, true) => {
+            "import { call as __rpc, callStream as __rpcStream, callSink as __rpcSink } from 'internal:parent-rpc';"
+        }
+        (true, false) => {
+            "import { call as __rpc, callStream as __rpcStream } from 'internal:parent-rpc';"
+        }
+        (false, true) => {
+            "import { call as __rpc, callSink as __rpcSink } from 'internal:parent-rpc';"
+        }
         (false, false) => "import { call as __rpc } from 'internal:parent-rpc';",
     };
 
-    let mut lines = vec![
-        import_line.to_string(),
-        format!("const __s = {spec_json};"),
-    ];
+    let mut lines = vec![import_line.to_string(), format!("const __s = {spec_json};")];
     for name in &spec.exports {
         let name_json = json_str(name);
         lines.push(format!(
@@ -94,8 +99,15 @@ pub fn install_synthetic_module(
 ) -> Result<(), String> {
     let state_rc = get_state(scope);
 
-    if state_rc.borrow().builtin_cache.contains_key(&spec.specifier) {
-        return Err(format!("SyntheticModule already installed: {}", spec.specifier));
+    if state_rc
+        .borrow()
+        .builtin_cache
+        .contains_key(&spec.specifier)
+    {
+        return Err(format!(
+            "SyntheticModule already installed: {}",
+            spec.specifier
+        ));
     }
 
     let code = create_module_source(spec);
@@ -150,10 +162,11 @@ pub fn uninstall_synthetic_module(
 // ---------------------------------------------------------------------------
 
 pub fn create_install_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let names: Vec<v8::Local<v8::String>> = ["_installSyntheticModule", "_uninstallSyntheticModule"]
-        .iter()
-        .map(|n| v8::String::new(scope, n).unwrap())
-        .collect();
+    let names: Vec<v8::Local<v8::String>> =
+        ["_installSyntheticModule", "_uninstallSyntheticModule"]
+            .iter()
+            .map(|n| v8::String::new(scope, n).unwrap())
+            .collect();
     let mod_name = v8::String::new(scope, "internal:synthetic-install").unwrap();
     v8::Module::create_synthetic_module(scope, mod_name, &names, install_module_eval)
 }
@@ -196,14 +209,19 @@ fn js_install(
     let exports_arr = match v8::Local::<v8::Array>::try_from(exports_val) {
         Ok(a) => a,
         Err(_) => {
-            throw_str(scope, "_installSyntheticModule: second argument must be an Array");
+            throw_str(
+                scope,
+                "_installSyntheticModule: second argument must be an Array",
+            );
             return;
         }
     };
 
     let mut exports = Vec::with_capacity(exports_arr.length() as usize);
     for i in 0..exports_arr.length() {
-        let item = exports_arr.get_index(scope, i).unwrap_or_else(|| v8::undefined(scope).into());
+        let item = exports_arr
+            .get_index(scope, i)
+            .unwrap_or_else(|| v8::undefined(scope).into());
         if let Some(s) = item.to_string(scope) {
             exports.push(s.to_rust_string_lossy(scope));
         }
@@ -255,7 +273,12 @@ mod tests {
     use super::*;
     use crate::state::{SyntheticMode, SyntheticSpec};
 
-    fn rpc_spec(specifier: &str, exports: &[&str], streams: &[&str], sinks: &[&str]) -> SyntheticSpec {
+    fn rpc_spec(
+        specifier: &str,
+        exports: &[&str],
+        streams: &[&str],
+        sinks: &[&str],
+    ) -> SyntheticSpec {
         SyntheticSpec {
             specifier: specifier.to_string(),
             exports: exports.iter().map(|s| s.to_string()).collect(),
@@ -289,7 +312,9 @@ mod tests {
     fn rpc_single_export_generates_forwarding_function() {
         let spec = rpc_spec("fino:file", &["readFile"], &[], &[]);
         let src = create_module_source(&spec);
-        assert!(src.contains(r#"export const readFile = (...args) => __rpc(__s, "readFile", args);"#));
+        assert!(
+            src.contains(r#"export const readFile = (...args) => __rpc(__s, "readFile", args);"#)
+        );
         assert!(!src.contains("callStream"));
     }
 
@@ -299,7 +324,9 @@ mod tests {
         let src = create_module_source(&spec);
         assert!(src.contains("callStream as __rpcStream"));
         assert!(src.contains(r#"export const stat = (...args) => __rpc(__s, "stat", args);"#));
-        assert!(src.contains(r#"export const read = (...args) => __rpcStream(__s, "read", args);"#));
+        assert!(
+            src.contains(r#"export const read = (...args) => __rpcStream(__s, "read", args);"#)
+        );
     }
 
     #[test]
@@ -308,7 +335,9 @@ mod tests {
         let src = create_module_source(&spec);
         assert!(src.contains("callSink as __rpcSink"));
         assert!(!src.contains("callStream"));
-        assert!(src.contains(r#"export const write = (...args) => __rpcSink(__s, "write", args);"#));
+        assert!(
+            src.contains(r#"export const write = (...args) => __rpcSink(__s, "write", args);"#)
+        );
     }
 
     #[test]

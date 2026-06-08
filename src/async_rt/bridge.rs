@@ -77,10 +77,7 @@ impl JsValueRepr {
     /// Build from a `v8::Local` at a point where a scope is available (e.g.,
     /// inside `promise_to_future` callbacks). Prefers lightweight reprs; falls
     /// back to `Global` for objects.
-    pub fn from_v8<'s>(
-        scope: &mut v8::HandleScope<'s>,
-        val: v8::Local<'s, v8::Value>,
-    ) -> Self {
+    pub fn from_v8<'s>(scope: &mut v8::HandleScope<'s>, val: v8::Local<'s, v8::Value>) -> Self {
         if val.is_undefined() {
             return Self::Undefined;
         }
@@ -133,34 +130,54 @@ pub trait IntoJsValueRepr {
 }
 
 impl IntoJsValueRepr for () {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::Undefined }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::Undefined
+    }
 }
 impl IntoJsValueRepr for bool {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::Bool(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::Bool(self)
+    }
 }
 impl IntoJsValueRepr for i32 {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::I32(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::I32(self)
+    }
 }
 impl IntoJsValueRepr for u32 {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::U32(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::U32(self)
+    }
 }
 impl IntoJsValueRepr for i64 {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::BigIntI64(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::BigIntI64(self)
+    }
 }
 impl IntoJsValueRepr for u64 {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::BigIntU64(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::BigIntU64(self)
+    }
 }
 impl IntoJsValueRepr for f64 {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::F64(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::F64(self)
+    }
 }
 impl IntoJsValueRepr for String {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::String(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::String(self)
+    }
 }
 impl IntoJsValueRepr for Vec<u8> {
-    fn into_js_repr(self) -> JsValueRepr { JsValueRepr::Bytes(self) }
+    fn into_js_repr(self) -> JsValueRepr {
+        JsValueRepr::Bytes(self)
+    }
 }
 impl IntoJsValueRepr for JsValueRepr {
-    fn into_js_repr(self) -> JsValueRepr { self }
+    fn into_js_repr(self) -> JsValueRepr {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,9 +205,8 @@ impl FromV8 for f64 {
         scope: &mut v8::HandleScope<'s>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError> {
-        val.number_value(scope).ok_or_else(|| {
-            JsValueRepr::String("expected number".to_string())
-        })
+        val.number_value(scope)
+            .ok_or_else(|| JsValueRepr::String("expected number".to_string()))
     }
 }
 
@@ -199,9 +215,8 @@ impl FromV8 for i32 {
         scope: &mut v8::HandleScope<'s>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError> {
-        val.int32_value(scope).ok_or_else(|| {
-            JsValueRepr::String("expected i32".to_string())
-        })
+        val.int32_value(scope)
+            .ok_or_else(|| JsValueRepr::String("expected i32".to_string()))
     }
 }
 
@@ -332,7 +347,9 @@ pub fn promise_to_future(
         match rx.await {
             Ok(Ok(repr)) => JsValueRepr::from_v8_repr(repr),
             Ok(Err(repr)) => Err(repr),
-            Err(_) => Err(JsValueRepr::String("promise_to_future: channel dropped".into())),
+            Err(_) => Err(JsValueRepr::String(
+                "promise_to_future: channel dropped".into(),
+            )),
         }
     }
 }
@@ -365,7 +382,9 @@ fn settle_fulfilled_cb<'s>(
         return;
     };
     let tx_ptr = ext.value() as *mut TxType;
-    if tx_ptr.is_null() { return; }
+    if tx_ptr.is_null() {
+        return;
+    }
     let tx = unsafe { Box::from_raw(tx_ptr) };
     let val = JsValueRepr::from_v8(scope, args.get(0));
     let _ = tx.send(Ok(val));
@@ -380,7 +399,9 @@ fn settle_rejected_cb<'s>(
         return;
     };
     let tx_ptr = ext.value() as *mut TxType;
-    if tx_ptr.is_null() { return; }
+    if tx_ptr.is_null() {
+        return;
+    }
     let tx = unsafe { Box::from_raw(tx_ptr) };
     let val = JsValueRepr::from_v8(scope, args.get(0));
     let _ = tx.send(Err(val));

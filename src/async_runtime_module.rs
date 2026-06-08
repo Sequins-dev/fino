@@ -62,13 +62,17 @@ fn drain_wakes_cb(
     let state_rc = crate::state::get_state(scope);
     loop {
         let mut progress = false;
-        while crate::async_rt::try_tick() { progress = true; }
+        while crate::async_rt::try_tick() {
+            progress = true;
+        }
         progress |= crate::async_rt::drain_all(scope, &state_rc);
         {
             let queue_ptr = unsafe { crate::state::root_queue_ptr(&state_rc) };
             let isolate: &mut v8::Isolate = scope.as_mut();
             unsafe { &*queue_ptr }.perform_checkpoint(isolate);
         }
-        if !progress { break; }
+        if !progress {
+            break;
+        }
     }
 }

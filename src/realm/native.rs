@@ -187,7 +187,10 @@ fn parse_and_merge_rules(
         // Capability narrowing: reject non-Block, non-Inherit rules that would
         // grant access to a specifier the parent has blocked.
         // Inherit is exempted: it defers to the parent's rule and cannot escalate.
-        if !matches!(rule.directive, ImportDirective::Block | ImportDirective::Inherit) {
+        if !matches!(
+            rule.directive,
+            ImportDirective::Block | ImportDirective::Inherit
+        ) {
             narrowing_check(&parent_rules, &rule)?;
         }
         // Include ALL child rules — even Inherit ones. An explicit Inherit
@@ -500,8 +503,11 @@ fn step_thread_context(
             .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
             .unwrap_or(false);
         let reload = if !running {
-            h.map(|h| h.reload_requested.load(std::sync::atomic::Ordering::Acquire))
-                .unwrap_or(false)
+            h.map(|h| {
+                h.reload_requested
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+            .unwrap_or(false)
         } else {
             false
         };
@@ -771,8 +777,11 @@ fn step_process_context(
             .map(|h| !h.done.load(std::sync::atomic::Ordering::Acquire))
             .unwrap_or(false);
         let reload = if !running {
-            h.map(|h| h.reload_requested.load(std::sync::atomic::Ordering::Acquire))
-                .unwrap_or(false)
+            h.map(|h| {
+                h.reload_requested
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+            .unwrap_or(false)
         } else {
             false
         };

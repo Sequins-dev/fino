@@ -1,11 +1,11 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
 use oxc_allocator::Allocator;
-use oxc_ast::{ast::CommentKind, Comment};
+use oxc_ast::{Comment, ast::CommentKind};
 use oxc_codegen::{Codegen, CodegenOptions};
 use oxc_data_structures::code_buffer::IndentChar;
-use oxc_parser::{config::RuntimeParserConfig, Parser};
+use oxc_parser::{Parser, config::RuntimeParserConfig};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::{GetSpan, SourceType};
 use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
@@ -271,6 +271,11 @@ struct TranspileResult {
     errors: Vec<DiagnosticResult>,
 }
 
+pub(crate) struct StrippedModule {
+    pub code: String,
+    pub map: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct FormatResult {
@@ -331,22 +336,49 @@ fn parse_source(source: &str, options: &ParseOptions) -> Result<String, String> 
 }
 
 fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, String> {
+    let path = options
+        .filename
+        .as_deref()
+        .map(Path::new)
+        .unwrap_or_else(|| Path::new("module.ts"));
+    match strip_typescript_module(path, source) {
+        Ok(stripped) => {
+            let result = TranspileResult {
+                ok: true,
+                code: stripped.code,
+                map: stripped.map,
+                errors: Vec::new(),
+            };
+            return serde_json::to_string(&result)
+                .map_err(|err| format!("failed to serialize transpile result: {err}"));
+        }
+        Err(message) => {
+            let result = TranspileResult {
+                ok: false,
+                code: String::new(),
+                map: String::new(),
+                errors: vec![diagnostic_result(source, "transform", &message, None, "error")],
+            };
+            return serde_json::to_string(&result)
+                .map_err(|err| format!("failed to serialize transpile result: {err}"));
+        }
+    }
+}
+
+pub(crate) fn strip_typescript_module(
+    path: &Path,
+    source: &str,
+) -> Result<StrippedModule, String> {
     let allocator = Allocator::default();
-    let source_type = resolve_source_type(options);
+    let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
     let ret = Parser::new(&allocator, source, source_type).parse();
     if !ret.errors.is_empty() || ret.panicked {
-        let result = TranspileResult {
-            ok: false,
-            code: String::new(),
-            map: String::new(),
-            errors: ret
-                .errors
-                .iter()
-                .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
-                .collect(),
-        };
-        return serde_json::to_string(&result)
-            .map_err(|err| format!("failed to serialize transpile result: {err}"));
+        let messages = ret
+            .errors
+            .iter()
+            .map(|error| error.message.to_string())
+            .collect::<Vec<_>>();
+        return Err(messages.join("\n"));
     }
 
     let mut program = ret.program;
@@ -359,26 +391,15 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
         typescript: TypeScriptOptions::default(),
         ..TransformOptions::default()
     };
-    let path = options
-        .filename
-        .as_deref()
-        .map(Path::new)
-        .unwrap_or_else(|| Path::new("module.ts"));
     let transformer_ret = Transformer::new(&allocator, path, &options_transform)
         .build_with_scoping(scoping, &mut program);
     if !transformer_ret.errors.is_empty() {
-        let result = TranspileResult {
-            ok: false,
-            code: String::new(),
-            map: String::new(),
-            errors: transformer_ret
-                .errors
-                .iter()
-                .map(|error| diagnostic_result(source, "transform", &error.message.to_string(), None, "error"))
-                .collect(),
-        };
-        return serde_json::to_string(&result)
-            .map_err(|err| format!("failed to serialize transpile result: {err}"));
+        let messages = transformer_ret
+            .errors
+            .iter()
+            .map(|error| error.message.to_string())
+            .collect::<Vec<_>>();
+        return Err(messages.join("\n"));
     }
 
     let generated = Codegen::new()
@@ -388,17 +409,13 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
         })
         .with_source_text(source)
         .build(&program);
-    let result = TranspileResult {
-        ok: true,
+    Ok(StrippedModule {
         code: generated.code,
         map: generated
             .map
             .map(|map| map.to_json_string())
             .unwrap_or_default(),
-        errors: Vec::new(),
-    };
-    serde_json::to_string(&result)
-        .map_err(|err| format!("failed to serialize transpile result: {err}"))
+    })
 }
 
 fn format_source(source: &str, options: &ParseOptions) -> Result<String, String> {
@@ -412,7 +429,9 @@ fn format_source(source: &str, options: &ParseOptions) -> Result<String, String>
             errors: ret
                 .errors
                 .iter()
-                .map(|error| diagnostic_result(source, "parse", &error.message.to_string(), None, "error"))
+                .map(|error| {
+                    diagnostic_result(source, "parse", &error.message.to_string(), None, "error")
+                })
                 .collect(),
         };
         return serde_json::to_string(&result)
@@ -466,8 +485,7 @@ fn lint_source(source: &str, options: &ParseOptions) -> Result<String, String> {
         diagnostics,
         fixed_code: None,
     };
-    serde_json::to_string(&result)
-        .map_err(|err| format!("failed to serialize lint result: {err}"))
+    serde_json::to_string(&result).map_err(|err| format!("failed to serialize lint result: {err}"))
 }
 
 fn resolve_source_type(options: &ParseOptions) -> SourceType {

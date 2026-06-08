@@ -151,7 +151,11 @@ fn read_exact(fd: RawFd, buf: &mut [u8]) -> std::io::Result<()> {
                 std::io::ErrorKind::Interrupted => continue,
                 std::io::ErrorKind::WouldBlock => {
                     // fd is O_NONBLOCK; wait for it to become readable.
-                    let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                    let mut pfd = libc::pollfd {
+                        fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
                     unsafe { libc::poll(&mut pfd, 1, -1) };
                     continue;
                 }
@@ -300,7 +304,9 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
     write_message(parent_fd, &config_msg).map_err(|e| format!("write config: {e}"))?;
 
     // Now switch parent_fd to non-blocking for the async event-loop phase.
-    unsafe { libc::fcntl(parent_fd, libc::F_SETFL, libc::O_NONBLOCK); };
+    unsafe {
+        libc::fcntl(parent_fd, libc::F_SETFL, libc::O_NONBLOCK);
+    };
 
     // Bridge threads.
     let (reader_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
@@ -320,9 +326,9 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
                     Ok(msg) => {
                         // Check for a child-side entry-error sentinel.
                         if msg.data.starts_with(ENTRY_ERROR_PREFIX) {
-                            let err_msg = String::from_utf8_lossy(
-                                &msg.data[ENTRY_ERROR_PREFIX.len()..],
-                            ).into_owned();
+                            let err_msg =
+                                String::from_utf8_lossy(&msg.data[ENTRY_ERROR_PREFIX.len()..])
+                                    .into_owned();
                             *error.lock().unwrap() = Some(err_msg);
                             continue;
                         }

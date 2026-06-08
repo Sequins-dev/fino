@@ -463,6 +463,10 @@ export class WriteSink {
     _sendMsg({ __rpc_send_end: true, reqId: this.#reqId });
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   /**
    * Abort the stream with an error.
    *

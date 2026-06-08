@@ -8,41 +8,36 @@
  * to retrieve from JS (e.g. `execPath` needs the Rust binary's own path, and
  * `env` needs to snapshot the environ at startup).
  *
- * **Why fork+execve instead of posix_spawn?**
- * `fork(2)` + `execve(2)` is the classic UNIX child-process primitive. We use
- * it here rather than `posix_spawn` because it gives us full control over the
- * child's environment between fork and exec: we can call `dup2` to wire up
- * pipes, `chdir` to set the working directory, and close file descriptors -
- * all without the `posix_spawn` attribute machinery. The child side of the
- * fork runs between the `childPid === 0` branch and the `execve` call; any
- * failure in that branch causes `_exit(127)` (the shell convention for
- * "command not found").
+ * **Why posix_spawn?**
+ * `execve(2)` replaces the current process image, so spawning a different
+ * program while keeping Fino alive requires a primitive that creates a child
+ * process and then execs it. `posix_spawnp(3)` provides that operation while
+ * keeping the child-side fd setup inside libc file actions.
  *
  *
  * ## Pipe lifecycle
  *
- * Three `pipe(2)` calls create six file descriptors before the fork:
+ * Three `pipe(2)` calls create six file descriptors before spawning:
  *
  *   stdin:  [stdinR  -> child stdin,  stdinW  -> parent Writer]
  *   stdout: [stdoutR -> parent Reader, stdoutW -> child stdout]
  *   stderr: [stderrR -> parent Reader, stderrW -> child stderr]
  *
- * After the fork, each process immediately closes the ends it doesn't own.
- * The parent-side fds are set to O_NONBLOCK so they can be used with the
- * event loop. The child-side fds are left blocking - they run inside
- * `execve`'d code that doesn't know about fino's event loop.
+ * `posix_spawn_file_actions_*` wires the child-side fds before exec. The
+ * parent-side fds are set to O_NONBLOCK so they can be used with the event
+ * loop.
  *
  *
  * ## buildCStringArray and GC lifetime
  *
- * `execve(2)` takes a `char**` argv and a `char**` envp. We build these from
+ * `posix_spawnp(3)` takes a `char**` argv and a `char**` envp. We build these from
  * JS strings by encoding each string to a null-terminated UTF-8 buffer and
  * placing pointers to those buffers into a pointer array. The tricky part is
  * GC lifetime: if the individual string buffers (`bufs`) are collected before
- * `execve` runs, the pointer array will contain dangling pointers. To prevent
+ * `posix_spawnp` copies them, the pointer array will contain dangling pointers. To prevent
  * this, `buildCStringArray` returns both the pointer array and the `bufs`
  * array; callers keep `bufs` as a local variable so it remains in scope (and
- * therefore kept alive by the GC) through the `execve` call.
+ * therefore kept alive by the GC) through the spawn call.
  *
  *
  * ## Waiting for the child process
@@ -51,12 +46,12 @@
  *
  * - **macOS**: `loop.proc(lp, pid)` registers an EVFILT_PROC kevent. kqueue
  *   delivers a NOTE_EXIT event the instant the child changes state, with zero
- *   CPU overhead between fork and exit.
+ *   CPU overhead while the parent waits for exit.
  *
  * - **Linux**: `pidfd_open(2)` (syscall 434) returns a file descriptor that
  *   becomes readable when the child exits. We poll it with `loop.readable()`
  *   just like any other fd, then close the pidfd. This is the modern
- *   alternative to `waitpid(WNOHANG)` polling loops.
+ *   alternative to `waitpid(2)` polling loops.
  *
  * In both cases, after the kernel signals exit, a single `waitpid(pid, 0)` is
  * called to reap the zombie and retrieve the exit status. The status integer
@@ -110,8 +105,8 @@ export interface ProcessOptions {
    * Working directory for the child process.
    *
    * When omitted, the child inherits the parent's current working directory.
-   * If the directory cannot be entered after fork, the child exits with the
-   * same failure path as other exec setup errors.
+   * If the directory cannot be entered during spawn setup, construction throws
+   * before a child process is returned.
    *
    * ```ts no_run
    * import type { ProcessOptions } from 'fino:process';
@@ -121,7 +116,7 @@ export interface ProcessOptions {
    */
   cwd?:  string;
   /**
-   * Environment passed to `execve`.
+   * Environment passed to the spawned process.
    *
    * When omitted, the runtime startup environment snapshot is used. Supplying
    * this object replaces, rather than merges with, the inherited environment.
@@ -223,9 +218,6 @@ const F_GETFL    = isLinux ? 3 : 3;
 const F_SETFL    = 4;
 const O_NONBLOCK = isLinux ? 0x0800 : 0x0004;
 
-// waitpid(2) flags
-const WNOHANG = 1;
-
 // Linux syscall number for pidfd_open(2) - same on x86_64 and arm64.
 const SYS_PIDFD_OPEN = 434n;
 
@@ -244,14 +236,26 @@ const lib = dlopen(LIBC, {
   chdir:   { parameters: ['buffer'],                      result: 'i32'    },
   kill:    { parameters: ['i32', 'i32'],                  result: 'i32'    },
   pipe:    { parameters: ['buffer'],                      result: 'i32'    },
-  fork:    { parameters: [],                              result: 'i32'    },
-  dup2:    { parameters: ['i32', 'i32'],                  result: 'i32'    },
-  execve:  { parameters: ['buffer', 'buffer', 'buffer'],  result: 'i32'    },
   close:   { parameters: ['i32'],                         result: 'i32'    },
   fcntl:   { parameters: ['i32', 'i32', 'i32'],           result: 'i32'    },
   waitpid: { parameters: ['i32', 'buffer', 'i32'],        result: 'i32'    },
   syscall: { parameters: ['i64', 'i64', 'i64'],           result: 'i64'    },
+  posix_spawnp: { parameters: ['buffer', 'buffer', 'buffer', 'pointer', 'buffer', 'buffer'], result: 'i32' },
+  posix_spawn_file_actions_init:     { parameters: ['buffer'], result: 'i32' },
+  posix_spawn_file_actions_destroy:  { parameters: ['buffer'], result: 'i32' },
+  posix_spawn_file_actions_adddup2:  { parameters: ['buffer', 'i32', 'i32'], result: 'i32' },
+  posix_spawn_file_actions_addclose: { parameters: ['buffer', 'i32'], result: 'i32' },
 });
+
+const spawnChdirLib = (() => {
+  try {
+    return dlopen(LIBC, {
+      posix_spawn_file_actions_addchdir_np: { parameters: ['buffer', 'buffer'], result: 'i32' },
+    });
+  } catch (_) {
+    return null;
+  }
+})();
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -266,9 +270,9 @@ function cstr(s: string): Uint8Array {
 }
 
 /**
- * Build a null-terminated array of C string pointers (char**) for execve.
+ * Build a null-terminated array of C string pointers (char**) for posix_spawnp.
  * Returns { ptrBuf: ArrayBuffer, bufs: Uint8Array[] }.
- * Callers must keep `bufs` alive (in scope) through the execve call so the
+ * Callers must keep `bufs` alive (in scope) through the spawn call so the
  * GC does not reclaim the backing memory before the syscall completes.
  */
 function buildCStringArray(strings: string[]): { ptrBuf: ArrayBuffer; bufs: Uint8Array[] } {
@@ -294,6 +298,22 @@ function setNonblocking(fd: number): void {
   if (flags < 0) throw new Error(`fcntl(F_GETFL) failed on fd ${fd}`);
   const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   if (rc < 0) throw new Error(`fcntl(F_SETFL) failed on fd ${fd}`);
+}
+
+// Opaque libc storage for posix_spawn_file_actions_t. The exact struct differs
+// by platform; this is intentionally larger than current Linux/macOS layouts.
+const POSIX_SPAWN_FILE_ACTIONS_BYTES = 512;
+
+function addSpawnAction(rc: number, action: string): void {
+  if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);
+}
+
+function addCloseIfNeeded(actions: ArrayBuffer, fd: number, targetFd: number): void {
+  if (fd === targetFd) return;
+  addSpawnAction(
+    Number(lib.symbols.posix_spawn_file_actions_addclose(actions, fd)),
+    `posix_spawn_file_actions_addclose(${fd})`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -659,13 +679,13 @@ export function signal(name: string): Topic {
 /**
  * Spawn a child process with piped stdin, stdout, and stderr.
  *
- * The child is launched via fork()+execve(). The parent receives:
+ * The child is launched via `posix_spawnp()`. The parent receives:
  * - `stdin` - a Writer to send bytes to the child's stdin
  * - `stdout` - a Reader to receive bytes from the child's stdout
  * - `stderr` - a Reader to receive bytes from the child's stderr
  *
- * Construction throws if pipe creation, fork, or parent-side non-blocking setup
- * fails. If `execve` fails in the child, the child exits with status 127.
+ * Construction throws if pipe creation, spawn file-action setup, process spawn,
+ * or parent-side non-blocking setup fails.
  *
  * ```ts no_run
  * import { Process } from 'fino:process';
@@ -772,10 +792,10 @@ export class Process {
   /**
    * Spawn a child process.
    *
-   * The command should be an executable path accepted by `execve(2)`. Arguments
-   * exclude `argv[0]`; the constructor prepends `command`. `opts.env` replaces
-   * the inherited environment snapshot, and `opts.cwd` is applied in the child
-   * before `execve`.
+   * The command should be an executable path accepted by `posix_spawnp(3)`.
+   * Arguments exclude `argv[0]`; the constructor prepends `command`. `opts.env`
+   * replaces the inherited environment snapshot, and `opts.cwd` is applied by
+   * libc spawn file actions when supported by the platform.
    *
    * ```ts no_run
    * import { Process } from 'fino:process';
@@ -815,7 +835,7 @@ export class Process {
     const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
     const [stderrR, stderrW] = readPipeFds(stderrBuf);
 
-    // Build execve argv / envp before fork so GC state is consistent.
+    // Build posix_spawnp argv / envp while the backing buffers are still local.
     const execArgv   = [command, ...cmdArgs];
     const envVars    = opts.env ?? env;
     const envStrings = Object.entries(envVars).map(([k, v]) => `${k}=${v}`);
@@ -825,36 +845,48 @@ export class Process {
     const commandBuf = cstr(command);
     const cwdBuf     = opts.cwd != null ? cstr(opts.cwd) : null;
 
-    const childPid = Number(lib.symbols.fork());
+    const actions = new ArrayBuffer(POSIX_SPAWN_FILE_ACTIONS_BYTES);
+    let actionsInitialized = false;
+    let childPid = -1;
 
-    if (childPid < 0) {
+    try {
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_init(actions)), 'posix_spawn_file_actions_init');
+      actionsInitialized = true;
+
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stdinR, 0)), 'posix_spawn_file_actions_adddup2(stdin)');
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stdoutW, 1)), 'posix_spawn_file_actions_adddup2(stdout)');
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stderrW, 2)), 'posix_spawn_file_actions_adddup2(stderr)');
+
+      addCloseIfNeeded(actions, stdinR, 0);
+      addCloseIfNeeded(actions, stdoutW, 1);
+      addCloseIfNeeded(actions, stderrW, 2);
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdinW)), 'posix_spawn_file_actions_addclose(parent stdin)');
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdoutR)), 'posix_spawn_file_actions_addclose(parent stdout)');
+      addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)), 'posix_spawn_file_actions_addclose(parent stderr)');
+
+      if (cwdBuf !== null) {
+        if (spawnChdirLib === null) {
+          throw new Error('cwd option requires posix_spawn_file_actions_addchdir_np, which is unavailable on this platform');
+        }
+        addSpawnAction(
+          Number(spawnChdirLib.symbols.posix_spawn_file_actions_addchdir_np(actions, cwdBuf)),
+          'posix_spawn_file_actions_addchdir_np',
+        );
+      }
+
+      const pidBuf = new ArrayBuffer(4);
+      const spawnRc = Number(lib.symbols.posix_spawnp(pidBuf, commandBuf, actions, Pointer.null(), argvBuf, envpBuf));
+      if (spawnRc !== 0) throw new Error(`posix_spawnp('${command}') failed: errno ${spawnRc}`);
+      childPid = new DataView(pidBuf).getInt32(0, true);
+    } catch (err) {
       lib.symbols.close(stdinR);  lib.symbols.close(stdinW);
       lib.symbols.close(stdoutR); lib.symbols.close(stdoutW);
       lib.symbols.close(stderrR); lib.symbols.close(stderrW);
-      throw new Error('fork() failed');
-    }
-
-    if (childPid === 0) {
-      // ---- Child process ------------------------------------------------
-      // Close the parent-side ends of each pipe.
-      lib.symbols.close(stdinW);
-      lib.symbols.close(stdoutR);
-      lib.symbols.close(stderrR);
-
-      // Wire child's stdio to the pipe ends.
-      lib.symbols.dup2(stdinR,  0); lib.symbols.close(stdinR);
-      lib.symbols.dup2(stdoutW, 1); lib.symbols.close(stdoutW);
-      lib.symbols.dup2(stderrW, 2); lib.symbols.close(stderrW);
-
-      // Optionally change working directory before exec.
-      if (cwdBuf !== null) lib.symbols.chdir(cwdBuf);
-
-      // Replace the process image.  argvBufs/envpBufs are kept in scope here
-      // so their backing memory remains valid through the syscall.
-      lib.symbols.execve(commandBuf, argvBuf, envpBuf);
-
-      // execve only returns on failure - exit with a recognisable code.
-      lib.symbols._exit(127);
+      throw err;
+    } finally {
+      if (actionsInitialized) {
+        lib.symbols.posix_spawn_file_actions_destroy(actions);
+      }
     }
 
     // ---- Parent process -------------------------------------------------
@@ -872,8 +904,9 @@ export class Process {
     this.#stdin  = new FdWriter(stdinW,  function closeStdin()  { lib.symbols.close(stdinW);  });
     this.#stdout = new FdReader(stdoutR, function closeStdout() { lib.symbols.close(stdoutR); });
     this.#stderr = new FdReader(stderrR, function closeStderr() { lib.symbols.close(stderrR); });
-    // argvBufs and envpBufs remain alive as local variables through the
-    // execve call in the child. No explicit retention needed in the parent.
+    // Keep CString buffers definitely live until after posix_spawnp returns.
+    void argvBufs;
+    void envpBufs;
   }
 
   /**
@@ -923,7 +956,7 @@ export class Process {
   get stderr() { return this.#stderr; }
 
   /**
-   * Child process ID returned by `fork()`.
+   * Child process ID returned by `posix_spawnp()`.
    *
    * The PID is available immediately after construction and remains the same
    * after the child exits.
