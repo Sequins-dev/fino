@@ -77,10 +77,12 @@ impl ChannelImpl for InspectorChannel {
             let mut slot = self.pending_eval.borrow_mut();
             if slot.as_ref().map_or(false, |e| e.call_id == call_id) {
                 let eval = slot.take().unwrap();
-                eval.pending_resolutions.borrow_mut().push(PendingResolution {
-                    resolver: eval.resolver,
-                    result: Ok(JsValueRepr::String(json.clone())),
-                });
+                eval.pending_resolutions
+                    .borrow_mut()
+                    .push(PendingResolution {
+                        resolver: eval.resolver,
+                        result: Ok(JsValueRepr::String(json.clone())),
+                    });
             }
         }
         self.buffered_messages.borrow_mut().push(json);
@@ -111,7 +113,9 @@ fn extract_context_id(json: &str) -> Option<i32> {
     let after_id = &after_ctx[id_pos + 5..]; // skip `"id":`
     let trimmed = after_id.trim_start_matches(' ');
     // Read digits (possibly negative, though context IDs are positive)
-    let end = trimmed.find(|c: char| !c.is_ascii_digit()).unwrap_or(trimmed.len());
+    let end = trimmed
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(trimmed.len());
     trimmed[..end].parse::<i32>().ok()
 }
 
@@ -205,8 +209,7 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
     let context = scope.get_current_context();
 
     // V8Inspector::create takes &mut Isolate; HandleScope coerces via AsMut.
-    let mut inspector =
-        v8::inspector::V8Inspector::create(scope.as_mut(), &mut *client);
+    let mut inspector = v8::inspector::V8Inspector::create(scope.as_mut(), &mut *client);
 
     let name_bytes = b"realm" as &[u8];
     let aux_bytes = b"{}" as &[u8];
@@ -261,7 +264,12 @@ fn drain_messages(scope: &mut v8::HandleScope, insp: &mut InspectorState) {
             return;
         }
     };
-    let msgs: Vec<String> = insp.channel.buffered_messages.borrow_mut().drain(..).collect();
+    let msgs: Vec<String> = insp
+        .channel
+        .buffered_messages
+        .borrow_mut()
+        .drain(..)
+        .collect();
     for msg in msgs {
         let s = match v8::String::new(scope, &msg) {
             Some(s) => s,
@@ -277,15 +285,10 @@ fn drain_messages(scope: &mut v8::HandleScope, insp: &mut InspectorState) {
 // ---------------------------------------------------------------------------
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = [
-        "dispatch",
-        "onMessage",
-        "nextId",
-        "evaluate",
-    ]
-    .iter()
-    .map(|n| v8::String::new(scope, n).unwrap())
-    .collect();
+    let export_names: Vec<v8::Local<v8::String>> = ["dispatch", "onMessage", "nextId", "evaluate"]
+        .iter()
+        .map(|n| v8::String::new(scope, n).unwrap())
+        .collect();
 
     let module_name = v8::String::new(scope, "internal:inspector").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
@@ -414,12 +417,21 @@ fn evaluate_cb(
             let name_val = obj.get(scope, name_key.into());
 
             let repl = repl_val.map_or(true, |v| {
-                if v.is_boolean() { v.boolean_value(scope) } else { true }
+                if v.is_boolean() {
+                    v.boolean_value(scope)
+                } else {
+                    true
+                }
             });
             let await_p = await_val.map_or(true, |v| {
-                if v.is_boolean() { v.boolean_value(scope) } else { true }
+                if v.is_boolean() {
+                    v.boolean_value(scope)
+                } else {
+                    true
+                }
             });
-            let name = name_val.and_then(|v| v.to_string(scope))
+            let name = name_val
+                .and_then(|v| v.to_string(scope))
                 .map(|s| s.to_rust_string_lossy(scope))
                 .unwrap_or_default();
             (repl, await_p, name)
@@ -450,9 +462,7 @@ fn evaluate_cb(
     let promise = resolver.get_promise(scope);
     let global_resolver = v8::Global::new(scope, resolver);
 
-    let pending_resolutions = Rc::clone(
-        &get_state(scope).borrow().pending_resolutions,
-    );
+    let pending_resolutions = Rc::clone(&get_state(scope).borrow().pending_resolutions);
 
     *insp.pending_eval.borrow_mut() = Some(PendingEval {
         call_id,

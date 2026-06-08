@@ -14,6 +14,36 @@ use ::v8;
 use crate::async_rt::bridge::{JsValueRepr, promise_to_future};
 use crate::ffi::types::NativeType;
 
+macro_rules! caught_exception_message {
+    ($scope:expr) => {{
+        if let Some(exception) = (&mut *$scope).exception() {
+            if let Ok(obj) = v8::Local::<v8::Object>::try_from(exception) {
+                if let Some(key) = v8::String::new(&mut *$scope, "stack") {
+                    if let Some(stack) = obj.get(&mut *$scope, key.into()) {
+                        if !stack.is_null_or_undefined() {
+                            if let Some(stack) = stack.to_string(&mut *$scope) {
+                                stack.to_rust_string_lossy(&mut *$scope)
+                            } else {
+                                exception.to_rust_string_lossy(&mut *$scope)
+                            }
+                        } else {
+                            exception.to_rust_string_lossy(&mut *$scope)
+                        }
+                    } else {
+                        exception.to_rust_string_lossy(&mut *$scope)
+                    }
+                } else {
+                    exception.to_rust_string_lossy(&mut *$scope)
+                }
+            } else {
+                exception.to_rust_string_lossy(&mut *$scope)
+            }
+        } else {
+            "unknown exception".into()
+        }
+    }};
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -102,7 +132,10 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
         });
 
         let Some(func) = func_local else {
-            fill_slot(&req.result_slot, Err("FfiCallback: callback has been closed".into()));
+            fill_slot(
+                &req.result_slot,
+                Err("FfiCallback: callback has been closed".into()),
+            );
             continue;
         };
 
@@ -119,10 +152,7 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
         let call_result = func.call(tc, this, &js_args);
 
         if tc.has_caught() {
-            let msg = tc
-                .exception()
-                .map(|e| e.to_rust_string_lossy(tc))
-                .unwrap_or_else(|| "unknown exception".into());
+            let msg = caught_exception_message!(tc);
             tc.reset();
             fill_slot(&req.result_slot, Err(format!("FfiCallback: {msg}")));
             continue;
@@ -186,17 +216,16 @@ pub fn invoke_registered_callback_sync(
     let call_result = func.call(tc, this, &js_args);
 
     if tc.has_caught() {
-        let msg = tc
-            .exception()
-            .map(|e| e.to_rust_string_lossy(tc))
-            .unwrap_or_else(|| "unknown exception".into());
+        let msg = caught_exception_message!(tc);
         tc.reset();
         return Err(format!("FfiCallback: {msg}"));
     }
 
     let val = call_result.unwrap_or_else(|| v8::undefined(tc).into());
     if v8::Local::<v8::Promise>::try_from(val).is_ok() {
-        return Err("FfiCallback: Promise return is not supported for same-thread callbacks".into());
+        return Err(
+            "FfiCallback: Promise return is not supported for same-thread callbacks".into(),
+        );
     }
 
     Ok(local_to_call_result(tc, val))
@@ -219,13 +248,15 @@ fn send_arg_to_v8<'s>(
     match arg {
         SendArg::Integer(n) => int_to_v8(scope, *n, ty),
         SendArg::Float(f) => v8::Number::new(scope, *f).into(),
-        SendArg::Pointer(addr) => {
-            crate::ffi::pointer::into_js(scope, *addr as *mut c_void)
-        }
+        SendArg::Pointer(addr) => crate::ffi::pointer::into_js(scope, *addr as *mut c_void),
     }
 }
 
-fn int_to_v8<'s>(scope: &mut v8::HandleScope<'s>, n: i64, ty: &NativeType) -> v8::Local<'s, v8::Value> {
+fn int_to_v8<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    n: i64,
+    ty: &NativeType,
+) -> v8::Local<'s, v8::Value> {
     match ty {
         NativeType::Bool => v8::Boolean::new(scope, n != 0).into(),
         NativeType::U8 => v8::Number::new(scope, (n as u8) as f64).into(),
@@ -291,8 +322,7 @@ fn local_to_call_result(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) 
         let len = bs.byte_length();
         let mut bytes = vec![0u8; len];
         if let Some(data) = bs.data() {
-            let src =
-                unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, len) };
+            let src = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, len) };
             bytes.copy_from_slice(src);
         }
         return CallResult::Bytes(bytes);
@@ -348,9 +378,7 @@ pub unsafe fn read_c_arg(arg_ptr: *const c_void, ty: &NativeType) -> SendArg {
     unsafe {
         match ty {
             NativeType::Void => SendArg::Integer(0),
-            NativeType::Bool | NativeType::U8 => {
-                SendArg::Integer(*(arg_ptr as *const u8) as i64)
-            }
+            NativeType::Bool | NativeType::U8 => SendArg::Integer(*(arg_ptr as *const u8) as i64),
             NativeType::I8 => SendArg::Integer(*(arg_ptr as *const i8) as i64),
             NativeType::U16 => SendArg::Integer(*(arg_ptr as *const u16) as i64),
             NativeType::I16 => SendArg::Integer(*(arg_ptr as *const i16) as i64),

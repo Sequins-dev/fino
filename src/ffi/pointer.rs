@@ -131,7 +131,9 @@ fn copy_from(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let Some(ptr) = from_js(scope, args.get(0)) else { return };
+    let Some(ptr) = from_js(scope, args.get(0)) else {
+        return;
+    };
     let len = args.get(1).integer_value(scope).unwrap_or(0) as usize;
     if len == 0 {
         let ab = v8::ArrayBuffer::new(scope, 0);
@@ -156,22 +158,26 @@ fn copy_from(
 
 /// `Pointer.copyTo(ptr, src)` — copy bytes from `src` (Uint8Array or
 /// ArrayBuffer) into the C buffer at the address stored in `ptr`.
-fn copy_to(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
-    let Some(ptr) = from_js(scope, args.get(0)) else { return };
+fn copy_to(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+    let Some(ptr) = from_js(scope, args.get(0)) else {
+        return;
+    };
     let src_val = args.get(1);
     let (src_ptr, len): (*const u8, usize) =
         if let Ok(ta) = v8::Local::<v8::TypedArray>::try_from(src_val) {
             (ta.data() as *const u8, ta.byte_length())
         } else if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(src_val) {
             let bs = ab.get_backing_store();
-            let p = bs.data().map(|d| d.as_ptr() as *const u8).unwrap_or(std::ptr::null());
+            let p = bs
+                .data()
+                .map(|d| d.as_ptr() as *const u8)
+                .unwrap_or(std::ptr::null());
             (p, bs.byte_length())
         } else {
-            throw_type_error(scope, "Pointer.copyTo: expected Uint8Array or ArrayBuffer as second argument");
+            throw_type_error(
+                scope,
+                "Pointer.copyTo: expected Uint8Array or ArrayBuffer as second argument",
+            );
             return;
         };
     if len > 0 && !src_ptr.is_null() && !ptr.is_null() {

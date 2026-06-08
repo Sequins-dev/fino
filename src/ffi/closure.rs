@@ -172,8 +172,8 @@ pub fn new_callback(
     result_type: NativeType,
     func_global: v8::Global<v8::Function>,
 ) -> Result<(*mut CallbackHandle, *mut c_void), String> {
-    let (js_call_requests, wake_write) = crate::async_rt::js_call_handle()
-        .ok_or("FfiCallback: runtime not initialised")?;
+    let (js_call_requests, wake_write) =
+        crate::async_rt::js_call_handle().ok_or("FfiCallback: runtime not initialised")?;
 
     let callback_id = js_calls::register_callback(func_global);
 
@@ -207,7 +207,10 @@ pub fn new_callback(
     // Extract the callable function pointer (valid as long as closure lives).
     let code_ptr = *closure.code_ptr() as usize as *mut c_void;
 
-    let inner = FfiCallbackInner { _closure: closure, userdata_ptr };
+    let inner = FfiCallbackInner {
+        _closure: closure,
+        userdata_ptr,
+    };
     let handle = Box::new(CallbackHandle {
         inner: Some(inner),
         id: callback_id,

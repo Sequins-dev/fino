@@ -176,8 +176,14 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:stream", "internal/stream"),
     source_builtin!("internal:openssl", "internal/openssl"),
     // sqlite
-    source_builtin!("internal:database/sqlite/bindings", "internal/database/sqlite/bindings"),
-    source_builtin!("internal:database/sqlite/vfs", "internal/database/sqlite/vfs"),
+    source_builtin!(
+        "internal:database/sqlite/bindings",
+        "internal/database/sqlite/bindings"
+    ),
+    source_builtin!(
+        "internal:database/sqlite/vfs",
+        "internal/database/sqlite/vfs"
+    ),
     source_builtin!("fino:database/sqlite", "database/sqlite"),
     // internal: file sub-modules
     source_builtin!("internal:file/provider", "internal/file/provider"),
@@ -186,7 +192,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:file/handle", "internal/file/handle"),
     source_builtin!("internal:file/entry", "internal/file/entry"),
     source_builtin!("internal:file/glob", "internal/file/glob"),
-    source_builtin!("internal:file/watch-bindings", "internal/file/watch-bindings"),
+    source_builtin!(
+        "internal:file/watch-bindings",
+        "internal/file/watch-bindings"
+    ),
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
     source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
@@ -221,8 +230,14 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/http/driver", "net/http/driver"),
     source_builtin!("fino:net/http/h1", "net/http/h1"),
     source_builtin!("fino:net/http/server", "net/http/server"),
-    source_builtin!("internal:net/http/h2/bindings", "internal/net/http/h2/bindings"),
-    source_builtin!("internal:net/http/h2/session", "internal/net/http/h2/session"),
+    source_builtin!(
+        "internal:net/http/h2/bindings",
+        "internal/net/http/h2/bindings"
+    ),
+    source_builtin!(
+        "internal:net/http/h2/session",
+        "internal/net/http/h2/session"
+    ),
     source_builtin!("internal:net/http/h2/server", "internal/net/http/h2/server"),
     source_builtin!("internal:net/http/h2/client", "internal/net/http/h2/client"),
     source_builtin!("fino:net/http/h2", "net/http/h2"),
@@ -250,10 +265,19 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
     source_builtin!("fino:cluster", "cluster"),
     source_builtin!("internal:opentelemetry/core", "internal/opentelemetry/core"),
-    source_builtin!("internal:opentelemetry/common", "internal/opentelemetry/common"),
-    source_builtin!("internal:opentelemetry/traces", "internal/opentelemetry/traces"),
+    source_builtin!(
+        "internal:opentelemetry/common",
+        "internal/opentelemetry/common"
+    ),
+    source_builtin!(
+        "internal:opentelemetry/traces",
+        "internal/opentelemetry/traces"
+    ),
     source_builtin!("internal:opentelemetry/logs", "internal/opentelemetry/logs"),
-    source_builtin!("internal:opentelemetry/metrics", "internal/opentelemetry/metrics"),
+    source_builtin!(
+        "internal:opentelemetry/metrics",
+        "internal/opentelemetry/metrics"
+    ),
     source_builtin!(
         "internal:opentelemetry/exporters",
         "internal/opentelemetry/exporters"

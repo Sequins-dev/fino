@@ -20,6 +20,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:net/tls` | `benchmarks/net/tls.bench.mts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.mts` |
 | `fino:net/http` | `benchmarks/net/http/index.bench.mts` |
+| `fino:net/http/app` | `benchmarks/net/http/app.bench.mts` |
 | `fino:net/http/driver` | `benchmarks/net/http/driver.bench.mts` |
 | `fino:net/http/h1` | `benchmarks/net/http/h1.bench.mts` |
 | `fino:net/http/server` | `benchmarks/net/http/server.bench.mts` |
@@ -32,6 +33,10 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:archive` | `benchmarks/archive.bench.mts` |
 | `fino:cluster` | `benchmarks/cluster.bench.mts` |
 | `fino:opentelemetry` | `benchmarks/opentelemetry.bench.mts` |
+| `fino:opentelemetry/logs` | `benchmarks/opentelemetry/logs.bench.mts` |
+| `fino:opentelemetry/metrics` | `benchmarks/opentelemetry/metrics.bench.mts` |
+| `fino:opentelemetry/sdk` | `benchmarks/opentelemetry/sdk.bench.mts` |
+| `fino:opentelemetry/traces` | `benchmarks/opentelemetry/traces.bench.mts` |
 | `fino:parsing/scanner` | `benchmarks/parsing/scanner.bench.mts` |
 | `fino:semver` | `benchmarks/semver.bench.mts` |
 | `fino:uuid` | `benchmarks/uuid.bench.mts` |

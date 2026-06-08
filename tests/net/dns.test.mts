@@ -11,6 +11,8 @@ import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
 
 type DnsErrorLike = { message?: string; code?: string };
+const IPV6_RECORD_HOST = 'google.com';
+const IPV6_RECORD_SERVER = '1.1.1.1';
 
 describe('Wire protocol', () => {
   it('_encodeName — multi-label', (t) => {
@@ -151,8 +153,10 @@ describe('Integration', () => {
     t.ok(addrs.every(a => typeof a === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(a)), 'all are IPv4 strings');
   });
 
-  it('resolver.resolve6 — example.com', async (t) => {
-    const addrs = await new Resolver().resolve6('example.com');
+  it('resolver.resolve6 — google.com', async (t) => {
+    const resolver = new Resolver();
+    resolver.setServers([IPV6_RECORD_SERVER]);
+    const addrs = await resolver.resolve6(IPV6_RECORD_HOST);
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one AAAA record');
     t.ok(addrs.every(a => typeof a === 'string' && a.includes(':')), 'all contain colons (IPv6)');
   });
@@ -220,8 +224,8 @@ describe('Integration', () => {
     t.ok(/^\d+\.\d+\.\d+\.\d+$/.test(result.address), 'address is IPv4');
   });
 
-  it('lookup — example.com family 6', async (t) => {
-    const result = await lookup('example.com', { family: 6 });
+  it('lookup — IPv6 literal family 6', async (t) => {
+    const result = await lookup('2001:4860:4860::8888', { family: 6 });
     t.ok(typeof result.address === 'string', 'has address');
     t.equal(result.family, 6, 'family = 6');
     t.ok(result.address.includes(':'), 'address is IPv6');

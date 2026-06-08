@@ -1,0 +1,15 @@
+/.git
+/target
+/node_modules
+/research-docs
+*.pb
+*.profraw
+*.profdata
+profile.pb
+
+pnpm-lock.yaml
+package-lock.json
+yarn.lock
+
+/.fino
+/docs
