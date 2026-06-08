@@ -517,6 +517,10 @@ export class Watcher {
     this.#waiters.length = 0;
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   /**
    * Return an async iterator of filesystem events.
    *
@@ -826,12 +830,6 @@ export class Watcher {
     const fullPath = ev.name ? `${dirPath}/${ev.name}` : dirPath;
     const isDir = !!(ev.mask & IN_ISDIR);
 
-    if (ev.mask & IN_IGNORED) {
-      // Watch was removed (file deleted or inotify_rm_watch called).
-      this.#wds.delete(ev.wd);
-      return;
-    }
-
     if (ev.mask & IN_CREATE) {
       this.#emit({ type: 'create', path: fullPath });
       // Auto-add watch for new subdirectories.
@@ -853,6 +851,10 @@ export class Watcher {
       if (this.#recursive && isDir && ev.name) {
         this.#watchLinux(fullPath, true);
       }
+    }
+    if (ev.mask & IN_IGNORED) {
+      // Watch was removed (file deleted or inotify_rm_watch called).
+      this.#wds.delete(ev.wd);
     }
   }
 
@@ -937,7 +939,13 @@ export class Watcher {
       if (winner === closedTag || this.#closed) break;
 
       const n = inotifyRead(this.#inotifyFd, buf);
-      for (const ev of parseEvents(buf, n)) {
+      const events = parseEvents(buf, n);
+      const deletedWds = new Set<number>();
+      for (const ev of events) {
+        if (ev.mask & IN_DELETE_SELF) deletedWds.add(ev.wd);
+      }
+      for (const ev of events) {
+        if ((ev.mask & IN_ATTRIB) && deletedWds.has(ev.wd)) continue;
         this.#handleInotify(ev);
       }
     }

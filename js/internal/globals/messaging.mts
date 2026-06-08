@@ -778,6 +778,10 @@ export class MessagePort extends EventTarget {
     this.#transitWakeReadFd = -1;
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   /**
    * Message event handler property.
    *
@@ -1108,6 +1112,10 @@ export abstract class BaseTransportPort extends EventTarget {
     this._closed  = true;
     this._started = false;
     this._onClose();
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
   }
 
   /**

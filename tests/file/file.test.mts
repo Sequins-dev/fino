@@ -53,6 +53,22 @@ describe('DiskFileSystem', () => {
   });
 
   describe('open / read / write / append', () => {
+    it('fs.open file supports await using disposal', async (t) => {
+      const path = TEST_DIR + '/using-dispose.txt';
+      await fs.writeFile(path, 'scoped file');
+      let fileRef: any = null;
+
+      {
+        await using file = await fs.open(path, 'r');
+        t.equal(await file.text(), 'scoped file', 'file is usable inside await using scope');
+        t.equal(file.closed, false, 'file is open inside await using scope');
+        fileRef = file;
+      }
+
+      t.equal(fileRef.closed, true, 'file closes when await using scope exits');
+      await fs.unlink(path);
+    });
+
     it('fs.open — read mode, file.text()', async (t) => {
       const path = TEST_DIR + '/read-test.txt';
       await fs.writeFile(path, 'hello world');

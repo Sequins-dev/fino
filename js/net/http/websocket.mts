@@ -1487,6 +1487,10 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
     closeTimer.cancel(); // no-op if timeout already fired
   }
 
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+
   // ---------------------------------------------------------------------------
   // Async iterator (alternative to events)
   // ---------------------------------------------------------------------------
@@ -2805,5 +2809,9 @@ export class WebSocket extends EventTarget {
 
     // Fire and forget — close event will fire through the forwarded listener
     this.#conn.close(code, reason).catch(() => {});
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
   }
 }

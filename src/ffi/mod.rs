@@ -396,8 +396,29 @@ fn ffi_callback_constructor(
     let close_key = v8::String::new(scope, "close").unwrap();
     result_obj.set(scope, ptr_key.into(), ptr_val);
     result_obj.set(scope, close_key.into(), close_fn.into());
+    if let Some(dispose_key) = symbol_property(scope, "dispose") {
+        result_obj.set(scope, dispose_key, close_fn.into());
+    }
 
     rv.set(result_obj.into());
+}
+
+fn symbol_property<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    name: &str,
+) -> Option<v8::Local<'s, v8::Value>> {
+    let context = scope.get_current_context();
+    let global = context.global(scope);
+    let symbol_key = v8::String::new(scope, "Symbol")?;
+    let symbol_obj =
+        v8::Local::<v8::Object>::try_from(global.get(scope, symbol_key.into())?).ok()?;
+    let name_key = v8::String::new(scope, name)?;
+    let symbol = symbol_obj.get(scope, name_key.into())?;
+    if symbol.is_symbol() {
+        Some(symbol)
+    } else {
+        None
+    }
 }
 
 fn ffi_callback_close(

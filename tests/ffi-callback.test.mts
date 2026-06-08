@@ -61,6 +61,19 @@ describe('FfiCallback same-thread (qsort)', () => {
 // ---------------------------------------------------------------------------
 
 describe('FfiCallback basic', () => {
+  it('supports using disposal', (t) => {
+    let cbRef: { close(): void; pointer: ArrayBuffer } | null = null;
+    {
+      using cb = new FfiCallback({ parameters: [], result: 'void' }, () => {});
+      cbRef = cb;
+      t.ok(cb.pointer instanceof ArrayBuffer, 'callback is usable inside using scope');
+    }
+
+    let threw = false;
+    try { cbRef!.close(); } catch { threw = true; }
+    t.equal(threw, false, 'using disposal closes callback idempotently');
+  });
+
   it('constructor returns an object with pointer and close', (t) => {
     const cb = new FfiCallback(
       { parameters: ['i32', 'i32'], result: 'i32' },

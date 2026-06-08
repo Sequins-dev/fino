@@ -373,6 +373,10 @@ export class Compressor implements CompressionTransform {
   close(): void {
     this.#impl.close();
   }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
 }
 
 /**
@@ -524,6 +528,10 @@ export class Decompressor implements CompressionTransform {
    */
   close(): void {
     this.#impl.close();
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
   }
 }
 

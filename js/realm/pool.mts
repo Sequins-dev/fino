@@ -675,6 +675,10 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     }
   }
 
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+
   // ---------------------------------------------------------------------------
   // Internal
   // ---------------------------------------------------------------------------

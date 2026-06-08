@@ -1048,6 +1048,10 @@ export class Nghttp2Session {
     this.#streamHasData.clear();
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   /**
    * Whether this wrapper has been closed.
    *

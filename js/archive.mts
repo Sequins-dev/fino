@@ -1665,6 +1665,10 @@ export class Archive {
     this.#closed = true;
   }
 
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+
   /**
    * Private method `#serialize` used by `Archive`.
    *

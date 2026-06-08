@@ -769,6 +769,11 @@ export class Statement {
     if (this.#finalized) return;
     this.#finalized = true;
     if (this.#ptr) requireSqlite().symbols.sqlite3_finalize(this.#ptr);
+    this.#db._untrackStatement(this);
+  }
+
+  [Symbol.dispose](): void {
+    this.finalize();
   }
 }
 
@@ -781,7 +786,8 @@ export class Statement {
  *
  * Open connections with `Database.open()`. The connection owns a native
  * `sqlite3*` pointer and a per-connection VFS registration; call `close()` when
- * finished. Methods throw after the connection has been closed.
+ * finished. Close finalizes any statements that were not explicitly finalized.
+ * Methods throw after the connection has been closed.
  *
  * ```ts no_run
  * import { Database } from 'fino:database/sqlite';
@@ -902,6 +908,7 @@ export class Database {
    * @internal
    */
   #vectorsAvailable: boolean | null = null;
+  #statements = new Set<Statement>();
 
   /**
    * Generated-doc-visible constructor `constructor`.
@@ -1056,7 +1063,23 @@ export class Database {
    */
   prepare(sql: string): Statement {
     this.#checkOpen();
-    return new Statement(this, sql, this.#safeIntegers ?? true);
+    const stmt = new Statement(this, sql, this.#safeIntegers ?? true);
+    this.#statements.add(stmt);
+    return stmt;
+  }
+
+  /**
+   * Stop tracking a statement that has been explicitly finalized.
+   *
+   * Statement wrappers call this during `finalize()` so `close()` only has to
+   * finalize wrappers that still own native statement pointers.
+   *
+   * @param {Statement} stmt Statement to remove from the connection registry.
+   * @returns Nothing.
+   * @internal
+   */
+  _untrackStatement(stmt: Statement): void {
+    this.#statements.delete(stmt);
   }
 
   /**
@@ -1253,9 +1276,8 @@ export class Database {
   /**
    * Close the database and unregister the VFS.
    *
-   * Calling `close()` more than once is allowed. Statements should be finalized
-   * before closing; SQLite may defer native cleanup until active statements are
-   * released.
+   * Calling `close()` more than once is allowed. Any statements created by this
+   * connection are finalized before the native database handle is closed.
    *
    * @returns {Promise<void>}
    *
@@ -1269,8 +1291,14 @@ export class Database {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    for (const stmt of Array.from(this.#statements)) stmt.finalize();
+    this.#statements.clear();
     await requireSqlite().symbols.sqlite3_close_v2(this.#ptr);
     if (this.#vfs) this.#vfs.unregister();
+  }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
   }
 
   /**

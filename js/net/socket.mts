@@ -335,6 +335,8 @@ export interface Server {
    * ```
    */
   address:  Address;
+  /** Whether the listening fd has been closed. */
+  readonly closed: boolean;
   /** Accept the next connection, or `null` after a spurious wakeup.
    *
    * ```ts no_run
@@ -350,6 +352,8 @@ export interface Server {
    * ```
    */
   close():  void;
+  /** Explicit resource-management hook for `using` declarations. */
+  [Symbol.dispose](): void;
   /** Iterate accepted sockets until the server is closed or accept throws.
    *
    * ```ts no_run
@@ -1321,6 +1325,10 @@ export class Socket {
     close(this.#fd);
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   /**
    * Open a non-blocking TCP or Unix-domain client connection.
    *
@@ -1403,6 +1411,7 @@ export class Socket {
     return {
       fd: serverFd,
       address: boundAddr,
+      get closed() { return serverClosed; },
 
       /** Await the next incoming connection. Returns a Socket, or null if closed. */
       accept: acceptOne,
@@ -1413,6 +1422,10 @@ export class Socket {
         serverClosed = true;
         loop.removeRead(serverFd);
         close(serverFd);
+      },
+
+      [Symbol.dispose]() {
+        this.close();
       },
 
       [Symbol.asyncIterator]() {

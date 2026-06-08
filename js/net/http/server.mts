@@ -84,6 +84,7 @@ interface ServeServer {
   address: { family: string; ip: string; port: number };
   readonly port: number;
   close(): Promise<void>;
+  [Symbol.asyncDispose](): Promise<void>;
 }
 
 const _h1Driver = new H1ServerDriver();
@@ -209,6 +210,11 @@ export function serve(
       if (alpnCb !== null) { (alpnCb as any).close(); alpnCb = null; }
       if (sslCtx !== null) { sslCtxFree(sslCtx); sslCtx = null; }
       return finished;
+    },
+
+    /** Explicit resource-management hook for `await using` declarations. */
+    [Symbol.asyncDispose](): Promise<void> {
+      return this.close();
     },
   };
 }

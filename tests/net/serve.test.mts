@@ -31,6 +31,26 @@ async function roundtrip(port: number, rawRequest: string): Promise<string> {
 }
 
 describe('Request / Response basics', () => {
+  it('server supports await using disposal', async (t) => {
+    let serverRef: ReturnType<typeof serve> | null = null;
+
+    {
+      await using server = serve({ port: 0 }, async () => new Response('unused'));
+      serverRef = server;
+      t.ok(server.port > 0, 'server is listening inside await using scope');
+    }
+
+    const closedServer = serverRef!;
+    let connectFailed = false;
+    try {
+      const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: closedServer.port });
+      sock.close();
+    } catch {
+      connectFailed = true;
+    }
+    t.ok(connectFailed, 'server closes when await using scope exits');
+  });
+
   it('basic GET request/response', async (t) => {
     const server = serve({ port: 0 }, async (req) => {
       t.equal(req.method, 'GET', 'method is GET');

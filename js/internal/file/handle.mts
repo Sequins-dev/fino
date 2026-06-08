@@ -547,4 +547,8 @@ export class File {
       lib.symbols.close(this.#fd);
     }
   }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
 }

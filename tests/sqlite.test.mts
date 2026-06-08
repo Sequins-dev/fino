@@ -7,6 +7,21 @@ if (!sqliteAvailable) {
 }
 
 describe('fino:database/sqlite — basic', () => {
+  it('Database supports await using disposal', async (t) => {
+    let dbRef: Database | null = null;
+    {
+      await using db = await Database.open(':memory:');
+      await db.exec('CREATE TABLE scoped (value TEXT)');
+      dbRef = db;
+    }
+
+    await t.rejects(
+      () => dbRef!.exec('SELECT 1'),
+      /closed/,
+      'database closes when await using scope exits',
+    );
+  });
+
   it('opens and closes an in-memory database', async (t) => {
     const db = await Database.open(':memory:');
     t.ok(!db['#closed'], 'db should be open');  // just tests open() doesn't throw
@@ -188,6 +203,26 @@ describe('fino:database/sqlite — transactions', () => {
 });
 
 describe('fino:database/sqlite — Statement finalize', () => {
+  it('Statement supports using disposal', async (t) => {
+    const db = await Database.open(':memory:');
+    let stmtRef: any = null;
+    try {
+      {
+        using stmt = db.prepare('SELECT 1 AS value');
+        t.equal((await stmt.get())!['value'], 1n, 'statement works inside using scope');
+        stmtRef = stmt;
+      }
+
+      await t.rejects(
+        () => stmtRef.get(),
+        /finalized/,
+        'statement finalizes when using scope exits',
+      );
+    } finally {
+      await db.close();
+    }
+  });
+
   it('finalize is idempotent', async (t) => {
     const db   = await Database.open(':memory:');
     const stmt = db.prepare('SELECT 1');

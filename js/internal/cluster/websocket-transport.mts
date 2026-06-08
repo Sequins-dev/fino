@@ -314,6 +314,10 @@ export class WebSocketSeedTransport implements ClusterTransport {
     });
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   /**
    * Private method `#handleConnection` used by `WebSocketSeedTransport`.
    *
@@ -595,5 +599,9 @@ export class WebSocketWorkerTransport implements ClusterTransport {
   close(): void {
     if (this.#ws) asWS(this.#ws).close();
     this.#ws = null;
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
   }
 }

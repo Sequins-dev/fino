@@ -883,6 +883,10 @@ export class EventSource extends EventTarget {
     }
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   // ---------------------------------------------------------------------------
   // Internal: connection and reconnection loop
   // ---------------------------------------------------------------------------

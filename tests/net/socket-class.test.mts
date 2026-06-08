@@ -32,6 +32,16 @@ async function readAll(reader: AsyncIterable<Uint8Array>) {
 }
 
 describe('Connect / Listen', () => {
+  it('Socket supports using disposal', (t) => {
+    let server: Socket | null = null;
+    {
+      using scoped = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+      server = scoped;
+      t.ok(!scoped.closed, 'socket is open inside using scope');
+    }
+    t.ok(server.closed, 'socket closes when using scope exits');
+  });
+
   it('ephemeral IPv4 bind reports the assigned port', async (t) => {
     const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
     try {

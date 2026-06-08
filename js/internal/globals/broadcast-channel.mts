@@ -237,6 +237,10 @@ export class BroadcastChannel extends EventTarget {
     wakeSubscriber(this.#handle);
   }
 
+  [Symbol.dispose](): void {
+    this.close();
+  }
+
   // ---------------------------------------------------------------------------
   // Internal loop
   // ---------------------------------------------------------------------------
