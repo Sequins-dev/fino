@@ -245,6 +245,17 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/http/h2/server", "internal/net/http/h2/server"),
     source_builtin!("internal:net/http/h2/client", "internal/net/http/h2/client"),
     source_builtin!("fino:net/http/h2", "net/http/h2"),
+    source_builtin!(
+        "internal:net/http/h3/bindings",
+        "internal/net/http/h3/bindings"
+    ),
+    source_builtin!(
+        "internal:net/http/h3/session",
+        "internal/net/http/h3/session"
+    ),
+    source_builtin!("internal:net/http/h3/server", "internal/net/http/h3/server"),
+    source_builtin!("internal:net/http/h3/client", "internal/net/http/h3/client"),
+    source_builtin!("fino:net/http/h3", "net/http/h3"),
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
     source_builtin!("fino:net/http/eventsource", "net/http/eventsource"),
     source_builtin!("fino:net/http/websocket", "net/http/websocket"),

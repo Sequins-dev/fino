@@ -429,6 +429,21 @@
       "matrixRow": "Active CID limit migration rotation",
       "testFile": "tests/net/quic-sim.test.mts",
       "testName": "RFC 9000 section 5.1.1: active CID limit migration rotation retires old CIDs and replenishes the pool"
+    },
+    {
+      "matrixRow": "HTTP/3 request/response (GET, POST, headers, binary, concurrent, errors)",
+      "testFile": "tests/net/quic-h3.test.mts",
+      "testName": "GET request/response round-trip"
+    },
+    {
+      "matrixRow": "HTTP/3 request/response (GET, POST, headers, binary, concurrent, errors)",
+      "testFile": "tests/net/quic-h3.test.mts",
+      "testName": "POST with request body"
+    },
+    {
+      "matrixRow": "QPACK header compression",
+      "testFile": "tests/net/quic-h3.test.mts",
+      "testName": "custom request and response headers round-trip"
     }
   ],
   "packetCases": [

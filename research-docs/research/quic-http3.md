@@ -242,8 +242,6 @@ Legend: `not started`, `researching`, `in progress`, `blocked`, `done`.
 
 | Phase | Area | Status | Notes |
 | --- | --- | --- | --- |
-| 1 | QUIC module | not started | Deliver `fino:net/quic` without HTTP/3. |
-| 2 | HTTP/3 module | not started | Build on Phase 1 QUIC streams. |
 | 3 | Unified HTTP architecture | not started | Shared session/stream model for H1/H2/H3. |
 | 4 | fetch, pooling, Alt-Svc | not started | H3 origin pool and fallback policy. |
 | 5 | Advanced QUIC/H3 features | not started | 0-RTT, DATAGRAM, WebTransport, H3 WebSockets. |
@@ -644,29 +642,8 @@ Status: deferred.
 
 ## 12. Near-Term Implementation Checklist
 
-Phase 1 checklist:
+Phase 3+ checklist:
 
-- [ ] Bind/load ngtcp2.
-- [ ] Bind/load ngtcp2_crypto_ossl.
-- [ ] Extend OpenSSL bindings for QUIC-capable sessions.
-- [ ] Add UDP endpoint abstraction.
-- [ ] Implement QUIC endpoint packet loop.
-- [ ] Implement server connection creation and CID routing.
-- [ ] Implement client connection creation.
-- [ ] Implement handshake and ALPN.
-- [ ] Implement timers and write pump.
-- [ ] Implement stream open/read/write/reset.
-- [ ] Implement outbound buffer retention and ACK cleanup.
-- [ ] Implement connection close and cleanup.
-- [ ] Add loopback tests.
-- [ ] Add optional ngtcp2 interop tests.
-
-Phase 2+ checklist:
-
-- [ ] Bind/load nghttp3.
-- [ ] Implement H3 session setup.
-- [ ] Bridge H3 to QUIC streams.
-- [ ] Add H3 server/client tests.
 - [ ] Refactor HTTP core around session/stream adapters.
 - [ ] Integrate H3 into serve/fetch/app.
 - [ ] Add Alt-Svc and H3 pooling.
