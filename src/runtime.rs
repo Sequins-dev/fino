@@ -1,6 +1,6 @@
 //! V8 runtime entry point.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::OnceLock};
+use std::{cell::RefCell, rc::Rc, sync::OnceLock};
 
 use ::v8;
 

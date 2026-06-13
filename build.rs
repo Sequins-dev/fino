@@ -20,6 +20,10 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .flag("-std=c++20")
+        // V8 headers intentionally leave many virtual/interface parameters
+        // unnamed by use. Keep profiler shim builds quiet without disabling
+        // broader diagnostics for our C++ source.
+        .flag_if_supported("-Wno-unused-parameter")
         .include(&v8_include)
         .include(&v8_src)
         .file("src/profiler/binding.cc")

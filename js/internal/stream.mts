@@ -98,6 +98,33 @@ function getErrno(): number {
 type ReaderCloseCallback = () => void | Promise<void>;
 
 /**
+ * Options for byte-reader pull operations.
+ *
+ * `maxBytes` bounds the returned chunk size. `signal` lets backends cancel a
+ * pending source read without consuming future bytes for an abandoned caller.
+ *
+ * @internal
+ */
+export interface BytesReadOptions {
+  maxBytes?: number;
+  signal?: AbortSignal | null;
+}
+
+function normalizeMaxBytes(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < 0) throw new RangeError(`${label} must be a non-negative integer`);
+  return value;
+}
+
+function normalizeReadOptions(input?: number | BytesReadOptions): BytesReadOptions {
+  if (input === undefined) return {};
+  if (typeof input === 'number') return { maxBytes: normalizeMaxBytes(input, 'maxBytes') };
+  const out: BytesReadOptions = {};
+  if (input.maxBytes !== undefined) out.maxBytes = normalizeMaxBytes(input.maxBytes, 'maxBytes');
+  if (input.signal !== undefined) out.signal = input.signal;
+  return out;
+}
+
+/**
  * Abstract base class for asynchronous producers.
  *
  * Subclasses implement `read()` and return either the next value or `null` for
@@ -251,6 +278,10 @@ export abstract class Reader<T> implements AsyncIterator<T> {
     await this.#onClose();
   }
 
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
+
   /**
    * Advance the async iterator.
    *
@@ -304,11 +335,13 @@ export abstract class Reader<T> implements AsyncIterator<T> {
 /**
  * Abstract byte-stream reader with structural read helpers.
  *
- * Subclasses implement `doRead(maxBytes)` and must return at most `maxBytes`
+ * Subclasses implement `doRead(maxBytes, options)` and must return at most `maxBytes`
  * bytes or `null` on EOF. `readExactly()`, `readUntil()`, and `readByte()` are
  * built on that hook and avoid over-fetching. If EOF interrupts an unbuffered
  * structural read, partially consumed bytes are stashed and replayed on the
- * next read operation.
+ * next read operation. `onConsume(bytes)` is invoked only after bytes are
+ * delivered to the caller, which lets transports such as QUIC return receive
+ * credit when application code actually pulls buffered data.
  *
  * ```js
  * import { BytesReader } from 'internal:stream';
@@ -373,7 +406,20 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns A byte chunk, or `null` on EOF.
    * @internal
    */
-  protected abstract doRead(maxBytes: number): Promise<Uint8Array | null>;
+  protected abstract doRead(maxBytes: number, options?: BytesReadOptions): Promise<Uint8Array | null>;
+
+  /**
+   * Called after bytes are delivered to the public reader caller.
+   *
+   * The default implementation is a no-op. Protocol adapters can override this
+   * to report backpressure progress, for example by extending QUIC stream and
+   * connection flow-control credit. The hook is not called for bytes pulled
+   * internally and then stashed after an incomplete structural read.
+   *
+   * @param bytes Number of bytes consumed by the caller-facing read operation.
+   * @internal
+   */
+  protected onConsume(_bytes: number): void {}
 
   // Internal: drain the stash before calling doRead. Used by all structural
   // read methods so that bytes saved on a previous partial failure are replayed.
@@ -400,7 +446,8 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    *
    * @internal
    */
-  #fetch(maxBytes: number): Promise<Uint8Array | null> {
+  #fetch(maxBytes: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
+    if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     if (this.#stash !== null) {
       const s = this.#stash;
       if (s.byteLength <= maxBytes) {
@@ -410,7 +457,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
       this.#stash = s.subarray(maxBytes);
       return Promise.resolve(s.subarray(0, maxBytes).slice());
     }
-    return this.doRead(maxBytes);
+    return this.doRead(maxBytes, options);
   }
 
   /**
@@ -431,8 +478,49 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns A byte chunk, or `null` on EOF.
    * @internal
    */
-  async read(): Promise<Uint8Array | null> {
-    return this.#fetch(65536);
+  async read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
+    const readOptions = normalizeReadOptions(options);
+    const maxBytes = readOptions.maxBytes ?? 65536;
+    if (maxBytes === 0) return new Uint8Array(0);
+    const chunk = await this.#fetch(maxBytes, readOptions);
+    if (chunk !== null && chunk.byteLength > 0) this.onConsume(chunk.byteLength);
+    return chunk;
+  }
+
+  /**
+   * Read at most `maxBytes` bytes.
+   *
+   * This is a named convenience around `read({ maxBytes })` for protocols that
+   * need explicit bounded consumption.
+   *
+   * @param maxBytes Maximum returned byte count.
+   * @param options Optional abort signal.
+   * @returns A byte chunk, or `null` on EOF.
+   * @internal
+   */
+  readAtMost(maxBytes: number, options: Omit<BytesReadOptions, 'maxBytes'> = {}): Promise<Uint8Array | null> {
+    return this.read({ ...options, maxBytes });
+  }
+
+  /**
+   * Read bytes directly into caller-provided storage.
+   *
+   * Returns the number of bytes copied, or `null` on EOF. The method never
+   * copies more than `buffer.byteLength` and relies on `readAtMost()` for
+   * consumption accounting.
+   *
+   * @param buffer Destination byte buffer.
+   * @param options Optional abort signal.
+   * @returns Number of bytes copied, or `null` on EOF.
+   * @internal
+   */
+  async readInto(buffer: Uint8Array, options: Omit<BytesReadOptions, 'maxBytes'> = {}): Promise<number | null> {
+    if (!(buffer instanceof Uint8Array)) throw new TypeError('readInto buffer must be a Uint8Array');
+    if (buffer.byteLength === 0) return 0;
+    const chunk = await this.readAtMost(buffer.byteLength, options);
+    if (chunk === null) return null;
+    buffer.set(chunk);
+    return chunk.byteLength;
   }
 
   /**
@@ -462,12 +550,14 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns Exactly `n` bytes, or `null` if EOF arrives first.
    * @internal
    */
-  async readExactly(n: number): Promise<Uint8Array | null> {
+  async readExactly(n: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
+    n = normalizeMaxBytes(n, 'n');
     if (n === 0) return new Uint8Array(0);
     const out = new Uint8Array(n);
     let off = 0;
+    const readOptions = normalizeReadOptions(options);
     while (off < n) {
-      const chunk = await this.#fetch(n - off);
+      const chunk = await this.#fetch(n - off, readOptions);
       if (chunk === null) {
         // Stash whatever was read so the caller can still see it on the next read.
         if (off > 0) this.#stash = out.subarray(0, off).slice();
@@ -476,6 +566,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
       out.set(chunk, off);
       off += chunk.byteLength;
     }
+    this.onConsume(n);
     return out;
   }
 
@@ -502,9 +593,11 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns One byte as a number, or `null` on EOF.
    * @internal
    */
-  async readByte(): Promise<number | null> {
-    const c = await this.#fetch(1);
+  async readByte(options?: BytesReadOptions): Promise<number | null> {
+    const readOptions = normalizeReadOptions(options);
+    const c = await this.#fetch(1, readOptions);
     if (c === null || c.byteLength === 0) return null;
+    this.onConsume(1);
     return c[0]!;
   }
 
@@ -535,18 +628,21 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns Bytes through the delimiter, or `null` on EOF before a match.
    * @internal
    */
-  async readUntil(delim: Uint8Array, max: number = 1 << 20): Promise<Uint8Array | null> {
+  async readUntil(delim: Uint8Array, max: number = 1 << 20, options?: BytesReadOptions): Promise<Uint8Array | null> {
     if (delim.byteLength === 0) throw new Error('readUntil: empty delimiter');
+    max = normalizeMaxBytes(max, 'max');
+    const readOptions = normalizeReadOptions(options);
     // Growable accumulator — starts at 256, doubles up to max.
     let buf = new Uint8Array(256);
     let len = 0;
     while (true) {
-      const b = await this.readByte();
-      if (b === null) {
+      const chunk = await this.#fetch(1, readOptions);
+      if (chunk === null || chunk.byteLength === 0) {
         // Stash whatever was read so the caller can still see it on the next read.
         if (len > 0) this.#stash = buf.subarray(0, len).slice();
         return null;
       }
+      const b = chunk[0]!;
       if (len >= buf.byteLength) {
         if (len >= max) throw new Error(`readUntil: max ${max} bytes exceeded`);
         const grown = new Uint8Array(Math.min(buf.byteLength * 2, max + 1));
@@ -561,10 +657,24 @@ export abstract class BytesReader extends Reader<Uint8Array> {
         for (let i = 0; i < delim.byteLength; i++) {
           if (buf[start + i] !== delim[i]) { match = false; break; }
         }
-        if (match) return buf.subarray(0, len);
+        if (match) {
+          this.onConsume(len);
+          return buf.subarray(0, len);
+        }
       }
     }
   }
+
+  /**
+   * Bytes already held by this reader before another source pull is required.
+   *
+   * For the base unbuffered reader this only includes bytes stashed after a
+   * partial structural read. Buffered readers include their chunk-list buffer.
+   *
+   * @returns Number of immediately buffered bytes.
+   * @internal
+   */
+  get bufferedBytes(): number { return this.#stash?.byteLength ?? 0; }
 }
 
 // ---------------------------------------------------------------------------
@@ -723,7 +833,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @returns A byte chunk, or `null` on EOF.
    * @internal
    */
-  protected async doRead(maxBytes: number): Promise<Uint8Array | null> {
+  protected async doRead(maxBytes: number, _options?: BytesReadOptions): Promise<Uint8Array | null> {
     while (this.#chunks.length === 0) {
       if (this.#upstreamDone) return null;
       const chunk = await this.doPull();
@@ -763,6 +873,8 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @internal
    */
   get buffered(): number { return this.#bufferedBytes; }
+
+  override get bufferedBytes(): number { return super.bufferedBytes + this.#bufferedBytes; }
 
   /**
    * Whether upstream EOF has been reached and all buffered bytes are drained.
@@ -914,10 +1026,13 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @internal
    */
   takeBuffered(n: number): Uint8Array {
+    n = normalizeMaxBytes(n, 'n');
     if (n > this.#bufferedBytes) {
       throw new Error(`takeBuffered: requested ${n} but only ${this.#bufferedBytes} buffered`);
     }
-    return this.#sliceBuffered(n, true);
+    const out = this.#sliceBuffered(n, true);
+    if (n > 0) this.onConsume(n);
+    return out;
   }
 
   // ── Structural read overrides with non-consuming-on-failure semantics ─────
@@ -944,7 +1059,9 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @returns Exactly `n` bytes, or `null` if EOF arrives first.
    * @internal
    */
-  async readExactly(n: number): Promise<Uint8Array | null> {
+  override async readExactly(n: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
+    n = normalizeMaxBytes(n, 'n');
+    if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     if (n === 0) return new Uint8Array(0);
     const peeked = await this.peek(n);
     if (peeked.byteLength < n) return null; // EOF before n bytes — nothing consumed
@@ -974,8 +1091,10 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @returns Bytes through the delimiter, or `null` on EOF before a match.
    * @internal
    */
-  async readUntil(delim: Uint8Array, max: number = 1 << 20): Promise<Uint8Array | null> {
+  override async readUntil(delim: Uint8Array, max: number = 1 << 20, options?: BytesReadOptions): Promise<Uint8Array | null> {
     if (delim.byteLength === 0) throw new Error('readUntil: empty delimiter');
+    max = normalizeMaxBytes(max, 'max');
+    if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     while (true) {
       // Scan buffered data first (no upstream pull needed if already buffered).
       const end = this.scanBuffered(delim);
@@ -1444,6 +1563,10 @@ export abstract class Writer<T> {
     this.#closed = true;
     await this.#onClose();
   }
+
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1454,9 +1577,9 @@ export abstract class Writer<T> {
  * Abstract byte-stream writer.
  *
  * Subclasses implement `doWrite(buf)` to emit all bytes to the underlying
- * resource. `write()` accepts `Uint8Array` or `ArrayBuffer`, rejects writes
- * after close, and delegates to the hook. `writev()` defaults to sequential
- * writes and can be overridden for scatter/gather implementations.
+ * resource. `write()` accepts `ArrayBuffer` and `ArrayBufferView` sources,
+ * rejects writes after close, and delegates to the hook. `writev()` defaults to
+ * sequential writes and can be overridden for scatter/gather implementations.
  *
  * ```js
  * import { BytesWriter } from 'internal:stream';
@@ -1495,8 +1618,9 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
   /**
    * Write one byte buffer.
    *
-   * `ArrayBuffer` inputs are wrapped in a `Uint8Array`. The method throws
-   * `Writer is closed` after close and forwards errors from `doWrite()`.
+   * `ArrayBuffer` and `ArrayBufferView` inputs are wrapped in a `Uint8Array`
+   * preserving view byte offsets. The method throws `Writer is closed` after
+   * close and forwards errors from `doWrite()`.
    *
    * ```js
    * import { BytesWriter } from 'internal:stream';
@@ -1513,9 +1637,11 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
    * @returns A promise that resolves after all bytes are accepted.
    * @internal
    */
-  async write(data: Uint8Array | ArrayBuffer): Promise<void> {
+  async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
     if (this.closed) throw new Error('Writer is closed');
-    const arr = data instanceof Uint8Array ? data : new Uint8Array(data);
+    const arr = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data);
     await this.doWrite(arr);
   }
 

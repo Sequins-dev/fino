@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    name: Linux Full Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build test image
+        run: docker build -t fino-test .
+
+      - name: Run full test suite
+        run: docker run --rm fino-test
+
+  macos:
+    name: macOS Full Suite
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native dependencies
+        run: brew install gnutls libngtcp2 openssl@3 sqlite
+
+      - name: Build
+        run: cargo build
+
+      - name: Run JS test suite
+        run: ./target/debug/fino --test tests
+
+      - name: Run Rust tests
+        run: cargo test --quiet

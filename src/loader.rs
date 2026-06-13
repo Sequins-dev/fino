@@ -221,6 +221,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:tty", "tty"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
+    source_builtin!(
+        "internal:net/simulated-provider",
+        "internal/net/simulated-provider"
+    ),
     source_builtin!("internal:net/dns-provider", "internal/net/dns-provider"),
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/tls", "net/tls"),
@@ -244,8 +248,22 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
     source_builtin!("fino:net/http/eventsource", "net/http/eventsource"),
     source_builtin!("fino:net/http/websocket", "net/http/websocket"),
-    source_builtin!("internal:net/quic/ngtcp2/bindings", "internal/net/quic/ngtcp2/bindings"),
-    source_builtin!("internal:net/quic/ngtcp2/crypto-ossl", "internal/net/quic/ngtcp2/crypto-ossl"),
+    source_builtin!(
+        "internal:net/quic/ngtcp2/bindings",
+        "internal/net/quic/ngtcp2/bindings"
+    ),
+    source_builtin!(
+        "internal:net/quic/ngtcp2/crypto-ossl",
+        "internal/net/quic/ngtcp2/crypto-ossl"
+    ),
+    source_builtin!(
+        "internal:net/quic/ngtcp2/crypto-gnutls",
+        "internal/net/quic/ngtcp2/crypto-gnutls"
+    ),
+    source_builtin!(
+        "internal:net/quic/ngtcp2/crypto",
+        "internal/net/quic/ngtcp2/crypto"
+    ),
     source_builtin!("internal:net/quic/endpoint", "internal/net/quic/endpoint"),
     source_builtin!("fino:net/quic", "net/quic"),
     // file

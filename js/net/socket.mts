@@ -384,6 +384,8 @@ const _defs = {
   recv:       { parameters: ['i32', 'buffer', 'usize', 'i32'],  result: 'isize' },
   sendto:     { parameters: ['i32', 'buffer', 'usize', 'i32', 'buffer', 'u32'], result: 'isize' },
   recvfrom:   { parameters: ['i32', 'buffer', 'usize', 'i32', 'buffer', 'buffer'], result: 'isize' },
+  sendmsg:    { parameters: ['i32', 'buffer', 'i32'],           result: 'isize' },
+  recvmsg:    { parameters: ['i32', 'buffer', 'i32'],           result: 'isize' },
   setsockopt: { parameters: ['i32', 'i32', 'i32', 'buffer', 'u32'], result: 'i32' },
   getsockopt: { parameters: ['i32', 'i32', 'i32', 'buffer', 'buffer'], result: 'i32' },
   shutdown:   { parameters: ['i32', 'i32'],                     result: 'i32' },
@@ -398,6 +400,8 @@ const _defs = {
 // accept4 is Linux-only (sets SOCK_NONBLOCK atomically on the accepted socket)
 if (isLinux) {
   _defs.accept4 = { parameters: ['i32', 'buffer', 'buffer', 'i32'], result: 'i32' };
+  _defs.sendmmsg = { parameters: ['i32', 'buffer', 'u32', 'i32'], result: 'i32' };
+  _defs.recvmmsg = { parameters: ['i32', 'buffer', 'u32', 'i32', 'buffer'], result: 'i32' };
 }
 
 const lib = dlopen(LIBC, _defs);
@@ -405,6 +409,46 @@ const errnoPtr = lib.symbols[errnoFn]!() as ArrayBuffer;
 
 function getErrno(): number {
   return Pointer.readI32(errnoPtr, 0);
+}
+
+// Native datagram ancillary-data layouts on supported 64-bit platforms.
+const IOVEC_SIZE = 16;
+const IOVEC_BASE = 0;
+const IOVEC_LEN = 8;
+const MSGHDR_SIZE = isDarwin ? 48 : 56;
+const MSG_NAME = 0;
+const MSG_NAMELEN = 8;
+const MSG_IOV = 16;
+const MSG_IOVLEN = 24;
+const MSG_CONTROL = 32;
+const MSG_CONTROLLEN = 40;
+const MSG_FLAGS = isDarwin ? 44 : 48;
+const CMSG_LEN = 0;
+const CMSG_LEVEL = isDarwin ? 4 : 8;
+const CMSG_TYPE = isDarwin ? 8 : 12;
+const CMSG_DATA = isDarwin ? 12 : 16;
+const CMSG_SPACE = 32;
+const CMSG_DATA_LEN = 4;
+const MMSGHDR_SIZE = 64;
+const MMSG_HDR = 0;
+const MMSG_LEN = MSGHDR_SIZE;
+
+function writePtrValue(view: DataView, offset: number, value: ArrayBuffer | ArrayBufferView | bigint | null): void {
+  const addr = value === null
+    ? 0n
+    : typeof value === 'bigint'
+      ? value
+      : Pointer.addr(value) as bigint;
+  view.setBigUint64(offset, addr, true);
+}
+
+function writeSize(view: DataView, offset: number, value: number): void {
+  if (isDarwin) view.setUint32(offset, value, true);
+  else view.setBigUint64(offset, BigInt(value), true);
+}
+
+function readSize(view: DataView, offset: number): number {
+  return isDarwin ? view.getUint32(offset, true) : Number(view.getBigUint64(offset, true));
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +508,10 @@ export const SOCK_NONBLOCK = isLinux ? 0x80000 : 0;
  * ```
  */
 export const IPPROTO_TCP = 6;
+/** IPv4 option level used with setsockopt. */
+export const IPPROTO_IP = 0;
+/** IPv6 option level used with setsockopt. */
+export const IPPROTO_IPV6 = isDarwin ? 41 : 41;
 /** UDP protocol number.
  *
  * ```ts no_run
@@ -500,6 +548,10 @@ export const SO_REUSEPORT = isDarwin ? 0x0200 : 15;
  * ```
  */
 export const SO_KEEPALIVE = isDarwin ? 0x0008 : 9;
+/** Receive buffer size socket option. */
+export const SO_RCVBUF = isDarwin ? 0x1002 : 8;
+/** Send buffer size socket option. */
+export const SO_SNDBUF = isDarwin ? 0x1001 : 7;
 /** Socket option used to read pending connection errors.
  *
  * ```ts no_run
@@ -522,6 +574,20 @@ export const IPPROTO_TCP_LEVEL = 6;   // same as IPPROTO_TCP, used with setsocko
  * ```
  */
 export const TCP_NODELAY = 1;
+/** IPv4 unicast TTL option. */
+export const IP_TTL = isDarwin ? 4 : 2;
+/** IPv4 type-of-service / traffic-class option. */
+export const IP_TOS = isDarwin ? 3 : 1;
+/** IPv4 receive type-of-service ancillary-data option. */
+export const IP_RECVTOS = isDarwin ? 27 : 13;
+/** IPv6-only bind option. */
+export const IPV6_V6ONLY = isDarwin ? 27 : 26;
+/** IPv6 unicast hop-limit option. */
+export const IPV6_UNICAST_HOPS = isDarwin ? 4 : 16;
+/** IPv6 receive traffic-class ancillary-data option. */
+export const IPV6_RECVTCLASS = isDarwin ? 35 : 66;
+/** IPv6 traffic-class option. */
+export const IPV6_TCLASS = isDarwin ? 36 : 67;
 
 /** Shut down the read side of a socket.
  *
@@ -972,6 +1038,117 @@ export function sendto(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Add
 }
 
 /**
+ * Send one UDP datagram with ECN traffic-class ancillary data.
+ *
+ * The ECN value is masked to its low two bits. IPv4 sends `IP_TOS`; IPv6 sends
+ * `IPV6_TCLASS`. Returns bytes sent or a negative errno.
+ *
+ * ```ts no_run
+ * sendmsgEcn(fd, packet, { family: 'ipv4', ip: '127.0.0.1', port: 4433 }, 2);
+ * ```
+ */
+export function sendmsgEcn(fd: number, data: Uint8Array | ArrayBuffer, destAddr: Address, ecn: number, flags: number = 0): number {
+  const { buf: addrBuf, len: addrLen } = encodeAddr(destAddr);
+  const dataView = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+  const controlBuf = new ArrayBuffer(CMSG_SPACE);
+  const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+  const msgBuf = new ArrayBuffer(MSGHDR_SIZE);
+  const control = new DataView(controlBuf);
+  const iov = new DataView(iovBuf);
+  const msg = new DataView(msgBuf);
+  const cmsgLen = CMSG_DATA + CMSG_DATA_LEN;
+  const family = destAddr.family === 'ipv6' ? IPPROTO_IPV6 : IPPROTO_IP;
+  const type = destAddr.family === 'ipv6' ? IPV6_TCLASS : IP_TOS;
+  const value = ecn & 0x03;
+
+  writeSize(control, CMSG_LEN, cmsgLen);
+  control.setInt32(CMSG_LEVEL, family, true);
+  control.setInt32(CMSG_TYPE, type, true);
+  control.setInt32(CMSG_DATA, value, true);
+
+  writePtrValue(iov, IOVEC_BASE, dataView);
+  iov.setBigUint64(IOVEC_LEN, BigInt(dataView.byteLength), true);
+  writePtrValue(msg, MSG_NAME, addrBuf);
+  msg.setUint32(MSG_NAMELEN, addrLen, true);
+  writePtrValue(msg, MSG_IOV, iovBuf);
+  writeSize(msg, MSG_IOVLEN, 1);
+  writePtrValue(msg, MSG_CONTROL, controlBuf);
+  writeSize(msg, MSG_CONTROLLEN, CMSG_SPACE);
+  msg.setInt32(MSG_FLAGS, 0, true);
+
+  const rc = Number(lib.symbols.sendmsg(fd, msgBuf, flags));
+  return rc < 0 ? -getErrno() : rc;
+}
+
+export type SendmsgBatchPacket = {
+  data: Uint8Array | ArrayBuffer;
+  dest: Address;
+  ecn?: number;
+};
+
+/**
+ * Send a batch of UDP datagrams with Linux `sendmmsg(2)`.
+ *
+ * Returns `null` on platforms without `sendmmsg`, otherwise returns the number
+ * of messages accepted by the kernel or a negative errno when none were sent.
+ * Per-message ECN values are carried as ancillary traffic-class data.
+ */
+export function sendmmsgBatch(fd: number, packets: SendmsgBatchPacket[], flags: number = 0): { sent: number; errno: number | null } | null {
+  if (!isLinux || packets.length === 0) return isLinux ? { sent: 0, errno: null } : null;
+  const fn = (lib.symbols as any).sendmmsg;
+  if (typeof fn !== 'function') return null;
+
+  const msgvec = new ArrayBuffer(MMSGHDR_SIZE * packets.length);
+  const msg = new DataView(msgvec);
+  const addrs: ArrayBuffer[] = [];
+  const iovs: ArrayBuffer[] = [];
+  const controls: ArrayBuffer[] = [];
+  const datas: Uint8Array[] = [];
+
+  for (let i = 0; i < packets.length; i++) {
+    const packet = packets[i]!;
+    const data = packet.data instanceof ArrayBuffer ? new Uint8Array(packet.data) : packet.data;
+    const { buf: addrBuf, len: addrLen } = encodeAddr(packet.dest);
+    const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+    const iov = new DataView(iovBuf);
+    const base = i * MMSGHDR_SIZE + MMSG_HDR;
+    addrs.push(addrBuf);
+    iovs.push(iovBuf);
+    datas.push(data);
+
+    writePtrValue(iov, IOVEC_BASE, data);
+    iov.setBigUint64(IOVEC_LEN, BigInt(data.byteLength), true);
+    writePtrValue(msg, base + MSG_NAME, addrBuf);
+    msg.setUint32(base + MSG_NAMELEN, addrLen, true);
+    writePtrValue(msg, base + MSG_IOV, iovBuf);
+    writeSize(msg, base + MSG_IOVLEN, 1);
+    msg.setInt32(base + MSG_FLAGS, 0, true);
+
+    if (packet.ecn !== undefined) {
+      const controlBuf = new ArrayBuffer(CMSG_SPACE);
+      const control = new DataView(controlBuf);
+      const cmsgLen = CMSG_DATA + CMSG_DATA_LEN;
+      const family = packet.dest.family === 'ipv6' ? IPPROTO_IPV6 : IPPROTO_IP;
+      const type = packet.dest.family === 'ipv6' ? IPV6_TCLASS : IP_TOS;
+      writeSize(control, CMSG_LEN, cmsgLen);
+      control.setInt32(CMSG_LEVEL, family, true);
+      control.setInt32(CMSG_TYPE, type, true);
+      control.setInt32(CMSG_DATA, packet.ecn & 0x03, true);
+      controls.push(controlBuf);
+      writePtrValue(msg, base + MSG_CONTROL, controlBuf);
+      writeSize(msg, base + MSG_CONTROLLEN, CMSG_SPACE);
+    } else {
+      writePtrValue(msg, base + MSG_CONTROL, null);
+      writeSize(msg, base + MSG_CONTROLLEN, 0);
+    }
+  }
+
+  const rc = Number(fn(fd, msgvec, packets.length, flags));
+  if (rc < 0) return { sent: 0, errno: -getErrno() };
+  return { sent: rc, errno: null };
+}
+
+/**
  * Receive a datagram (UDP). Returns `{ data, addr }` or null on EAGAIN.
  *
  * This implementation returns a negative errno for receive errors, including
@@ -995,6 +1172,140 @@ export function recvfrom(fd: number, maxBytes: number = 65536, flags: number = 0
     data: new Uint8Array(dataBuf, 0, n),
     addr: decodeAddr(addrBuf.slice(0, addrLen)),
   };
+}
+
+/**
+ * Receive one UDP datagram and parse ECN traffic-class ancillary data.
+ *
+ * The socket must have `IP_RECVTOS` or `IPV6_RECVTCLASS` enabled first. The
+ * returned `ecn` value is masked to the two ECN bits when present; kernels may
+ * omit ancillary data for packets that arrived without a traffic-class mark.
+ *
+ * ```ts no_run
+ * setsockopt(fd, IPPROTO_IP, IP_RECVTOS, true);
+ * const packet = recvmsgEcn(fd, 4096);
+ * ```
+ */
+export function recvmsgEcn(fd: number, maxBytes: number = 65536, flags: number = 0): { data: Uint8Array; addr: Address | UnknownAddress; ecn?: number } | number {
+  const dataBuf = new ArrayBuffer(maxBytes);
+  const addrBuf = new ArrayBuffer(128);
+  const controlBuf = new ArrayBuffer(CMSG_SPACE);
+  const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+  const msgBuf = new ArrayBuffer(MSGHDR_SIZE);
+  const iov = new DataView(iovBuf);
+  const msg = new DataView(msgBuf);
+
+  writePtrValue(iov, IOVEC_BASE, dataBuf);
+  iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
+  writePtrValue(msg, MSG_NAME, addrBuf);
+  msg.setUint32(MSG_NAMELEN, addrBuf.byteLength, true);
+  writePtrValue(msg, MSG_IOV, iovBuf);
+  writeSize(msg, MSG_IOVLEN, 1);
+  writePtrValue(msg, MSG_CONTROL, controlBuf);
+  writeSize(msg, MSG_CONTROLLEN, controlBuf.byteLength);
+  msg.setInt32(MSG_FLAGS, flags, true);
+
+  const n = Number(lib.symbols.recvmsg(fd, msgBuf, flags));
+  if (n < 0) return -getErrno();
+
+  const addrLen = msg.getUint32(MSG_NAMELEN, true);
+  const controlLen = readSize(msg, MSG_CONTROLLEN);
+  const control = new DataView(controlBuf);
+  let ecn: number | undefined;
+
+  if (controlLen >= CMSG_DATA) {
+    const cmsgLen = readSize(control, CMSG_LEN);
+    if (cmsgLen >= CMSG_DATA + 1 && cmsgLen <= controlLen) {
+      const level = control.getInt32(CMSG_LEVEL, true);
+      const type = control.getInt32(CMSG_TYPE, true);
+      if ((level === IPPROTO_IP && type === IP_TOS) || (level === IPPROTO_IPV6 && type === IPV6_TCLASS)) {
+        ecn = (cmsgLen >= CMSG_DATA + CMSG_DATA_LEN
+          ? control.getInt32(CMSG_DATA, true)
+          : control.getUint8(CMSG_DATA)) & 0x03;
+      }
+    }
+  }
+
+  return {
+    data: new Uint8Array(dataBuf, 0, n),
+    addr: decodeAddr(addrBuf.slice(0, addrLen)),
+    ...(ecn === undefined ? {} : { ecn }),
+  };
+}
+
+function readCmsgEcn(controlBuf: ArrayBuffer, controlLen: number): number | undefined {
+  if (controlLen < CMSG_DATA) return undefined;
+  const control = new DataView(controlBuf);
+  const cmsgLen = readSize(control, CMSG_LEN);
+  if (cmsgLen < CMSG_DATA + 1 || cmsgLen > controlLen) return undefined;
+  const level = control.getInt32(CMSG_LEVEL, true);
+  const type = control.getInt32(CMSG_TYPE, true);
+  if ((level !== IPPROTO_IP || type !== IP_TOS) && (level !== IPPROTO_IPV6 || type !== IPV6_TCLASS)) return undefined;
+  return (cmsgLen >= CMSG_DATA + CMSG_DATA_LEN
+    ? control.getInt32(CMSG_DATA, true)
+    : control.getUint8(CMSG_DATA)) & 0x03;
+}
+
+/**
+ * Receive multiple UDP datagrams with Linux `recvmmsg(2)`.
+ *
+ * Returns `null` on platforms without `recvmmsg`, a negative errno when no
+ * packet was received, or an array of datagrams with optional ECN metadata.
+ */
+export function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number = 65536, flags: number = 0): Array<{ data: Uint8Array; addr: Address | UnknownAddress; ecn?: number }> | number | null {
+  if (!isLinux) return null;
+  if (maxPackets <= 0) return [];
+  const fn = (lib.symbols as any).recvmmsg;
+  if (typeof fn !== 'function') return null;
+
+  const msgvec = new ArrayBuffer(MMSGHDR_SIZE * maxPackets);
+  const msg = new DataView(msgvec);
+  const dataBufs: ArrayBuffer[] = [];
+  const addrBufs: ArrayBuffer[] = [];
+  const controlBufs: ArrayBuffer[] = [];
+  const iovBufs: ArrayBuffer[] = [];
+  const timeoutBuf = new ArrayBuffer(16);
+
+  for (let i = 0; i < maxPackets; i++) {
+    const dataBuf = new ArrayBuffer(maxBytes);
+    const addrBuf = new ArrayBuffer(128);
+    const controlBuf = new ArrayBuffer(CMSG_SPACE);
+    const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+    const iov = new DataView(iovBuf);
+    const base = i * MMSGHDR_SIZE + MMSG_HDR;
+    dataBufs.push(dataBuf);
+    addrBufs.push(addrBuf);
+    controlBufs.push(controlBuf);
+    iovBufs.push(iovBuf);
+
+    writePtrValue(iov, IOVEC_BASE, dataBuf);
+    iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
+    writePtrValue(msg, base + MSG_NAME, addrBuf);
+    msg.setUint32(base + MSG_NAMELEN, addrBuf.byteLength, true);
+    writePtrValue(msg, base + MSG_IOV, iovBuf);
+    writeSize(msg, base + MSG_IOVLEN, 1);
+    writePtrValue(msg, base + MSG_CONTROL, controlBuf);
+    writeSize(msg, base + MSG_CONTROLLEN, controlBuf.byteLength);
+    msg.setInt32(base + MSG_FLAGS, 0, true);
+  }
+
+  const rc = Number(fn(fd, msgvec, maxPackets, flags, timeoutBuf));
+  if (rc < 0) return -getErrno();
+
+  const packets: Array<{ data: Uint8Array; addr: Address | UnknownAddress; ecn?: number }> = [];
+  for (let i = 0; i < rc; i++) {
+    const base = i * MMSGHDR_SIZE + MMSG_HDR;
+    const n = msg.getUint32(i * MMSGHDR_SIZE + MMSG_LEN, true);
+    const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
+    const controlLen = readSize(msg, base + MSG_CONTROLLEN);
+    const ecn = readCmsgEcn(controlBufs[i]!, controlLen);
+    packets.push({
+      data: new Uint8Array(dataBufs[i]!, 0, n),
+      addr: decodeAddr(addrBufs[i]!.slice(0, addrLen)),
+      ...(ecn === undefined ? {} : { ecn }),
+    });
+  }
+  return packets;
 }
 
 /**

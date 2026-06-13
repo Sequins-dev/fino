@@ -1,5 +1,9 @@
 # QUIC and HTTP/3 Research Plan
 
+Current transport conformance evidence is tracked in
+`research-docs/research/quic-conformance-matrix.md`. This older note preserves
+the original research plan and may describe deferred work that has since landed.
+
 > Status: research and project tracker. This document records the current
 > design intent for QUIC and HTTP/3 in fino. It is not an implementation
 > commitment for every item at once; Phase 1 is deliberately scoped to QUIC.
@@ -123,36 +127,66 @@ Phase 1 should introduce:
 ```ts
 import { QuicEndpoint } from 'fino:net/quic';
 
-const endpoint = QuicEndpoint.listen({
-  hostname: '127.0.0.1',
-  port: 4433,
+const endpoint = new QuicEndpoint({
   tls: { cert: './localhost.crt', key: './localhost.key' },
   alpn: ['fino-quic'],
 });
 
-for await (const conn of endpoint) {
-  for await (const stream of conn.streams) {
-    // stream.readable / stream.writable
-  }
+await endpoint.listen({ hostname: '127.0.0.1', port: 4433 });
+
+endpoint.addEventListener('connection', (event) => {
+  const conn = event.connection;
+
+  conn.addEventListener('stream', (event) => {
+    void handleStream(event.stream);
+  });
+});
+
+async function handleStream(stream) {
+  // stream.readable / stream.writable
 }
 ```
+
+The primary server-side shape should be EventTarget-based rather than
+AsyncIterator-based. Connections and streams are inherently concurrent; a
+`for await` loop encourages serial processing unless every loop body manually
+spawns work. EventTarget also aligns with the web platform and gives the runtime
+a concrete reason to keep its EventTarget implementation fast on hot network
+paths.
+
+The endpoint should be a long-lived object rather than only the value returned
+from a static `listen()` call. That lets one endpoint own multiple UDP listeners,
+share CID routing across those listeners, support future connection migration,
+and make client/server use cases symmetric. A static `QuicEndpoint.listen(...)`
+helper may still be useful as sugar, but it should delegate to construction plus
+an instance `listen(...)` call.
 
 Potential Phase 1 types:
 
 - `quicAvailable: boolean`
 - `quicVersion: string | null`
 - `QuicEndpoint`
+- `QuicConnectionEvent`
 - `QuicConnection`
+- `QuicStreamEvent`
 - `QuicStream`
 - `QuicDatagram` only if needed internally; public DATAGRAM is deferred.
 
 Potential `QuicEndpoint` API:
 
-- `listen(options): QuicEndpoint`
+- `new QuicEndpoint(options)`
+- `listen(options): Promise<QuicListener>`
+- `listeners: ReadonlyArray<QuicListener>`
 - `connect(options): Promise<QuicConnection>`
+- `accept(): Promise<QuicConnection>`
+- EventTarget event: `connection`
+- EventTarget event: `error`
+- `close(): Promise<void>`
+
+Potential `QuicListener` API:
+
 - `address`
 - `close(): Promise<void>`
-- `[Symbol.asyncIterator](): AsyncIterator<QuicConnection>`
 
 Potential `QuicConnection` API:
 
@@ -160,7 +194,10 @@ Potential `QuicConnection` API:
 - `localAddress`
 - `alpnProtocol`
 - `handshakeComplete`
-- `streams`
+- `acceptStream(): Promise<QuicStream>`
+- EventTarget event: `stream`
+- EventTarget event: `close`
+- EventTarget event: `error`
 - `openBidirectionalStream(): Promise<QuicStream>`
 - `openUnidirectionalStream(): Promise<QuicStream>`
 - `close(errorCode?, reason?): Promise<void>`
@@ -174,6 +211,11 @@ Potential `QuicStream` API:
 - `reset(errorCode): void`
 - `stopSending(errorCode): void`
 - close/error state inspection
+
+Pull APIs such as `accept()` and `acceptStream()` should exist for tests,
+protocol tools, and manual orchestration. They should not be the recommended
+server style for production QUIC listeners unless the documentation shows
+explicit concurrent dispatch.
 
 ### 4.3 FFI Boundary
 
@@ -235,9 +277,11 @@ Open questions:
 Tasks:
 
 - Add a small UDP endpoint abstraction over existing low-level socket helpers.
-- Bind IPv4 and IPv6 addresses.
+- Bind IPv4 and IPv6 addresses, potentially more than one listener per
+  endpoint.
 - Receive datagrams through `loop.readable(fd)` and `recvfrom()`.
 - Send datagrams through `sendto()`.
+- Close individual listeners without closing the whole endpoint.
 - Close endpoints without leaving readable waits alive.
 
 Notes:
@@ -245,6 +289,8 @@ Notes:
 - QUIC packet flow is message-oriented. Do not adapt UDP to the current
   `BytesReader` / `BytesWriter` stream model.
 - Keep each datagram and peer address available to the packet dispatcher.
+- The endpoint owns all listener sockets and the shared CID router. Listeners
+  are bound packet sources, not independent QUIC routing domains.
 
 ### 6.3 Connection and CID Routing
 
@@ -260,7 +306,8 @@ Tasks:
 Notes:
 
 - This is also the future foundation for connection migration.
-- The endpoint owns the routing table; `QuicConnection` owns ngtcp2 state.
+- The endpoint owns the routing table and all listener registrations;
+  `QuicConnection` owns ngtcp2 state.
 
 ### 6.4 TLS and Handshake
 
@@ -513,9 +560,9 @@ API direction:
 
 ```ts
 app.webtransport('/session', async (session) => {
-  for await (const stream of session.incomingBidirectionalStreams) {
-    // ...
-  }
+  session.addEventListener('bidirectionalstream', (event) => {
+    void handleBidirectionalStream(event.stream);
+  });
 });
 ```
 

@@ -7,7 +7,6 @@
 
 use std::{
     cell::RefCell,
-    collections::HashMap,
     os::unix::io::RawFd,
     rc::Rc,
     sync::{Arc, atomic::AtomicBool, mpsc},

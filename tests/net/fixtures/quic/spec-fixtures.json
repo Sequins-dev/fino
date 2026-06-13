@@ -1,0 +1,671 @@
+{
+  "version": 1,
+  "notes": [
+    "Packet fixtures are intentionally minimal and are constructed in tests from these field values.",
+    "Expected outcomes follow RFC 9000 packet handling and the repository's ngtcp2-backed loopback behavior."
+  ],
+  "evidence": [
+    {
+      "matrixRow": "Version Negotiation",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 6: unsupported-version Initial receives Version Negotiation"
+    },
+    {
+      "matrixRow": "RFC 9368 compatible Version Negotiation retry",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9368 section 2: default client first flight uses v1 and upgrades after compatible VN"
+    },
+    {
+      "matrixRow": "Initial packet size and padding",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 sections 6, 7, and 14.1: v2 handshake completes and Initial datagrams are at least 1200 bytes"
+    },
+    {
+      "matrixRow": "Retry address validation",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "listener rejects tampered and address-mismatched Retry tokens"
+    },
+    {
+      "matrixRow": "Expired Retry token",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "listener rejects expired Retry tokens with an immediate close"
+    },
+    {
+      "matrixRow": "NEW_TOKEN receipt and reuse",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 8.1.3: same-address NEW_TOKEN reconnect validates without Retry"
+    },
+    {
+      "matrixRow": "NEW_TOKEN tamper/expiry/replay rejection",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 8.1.3: tampered, expired, and wrong-address NEW_TOKENs are rejected"
+    },
+    {
+      "matrixRow": "Node-aligned endpoint policy defaults",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "uses Node-aligned transport defaults while keeping 0-RTT opt-in"
+    },
+    {
+      "matrixRow": "Node API parity",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "supports async disposal for endpoints, listeners, and connections"
+    },
+    {
+      "matrixRow": "Node API parity",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "supports AbortSignal on QUIC stream reads"
+    },
+    {
+      "matrixRow": "Endpoint packet diagnostics",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "Node transport parity: source-address deny filtering blocks packets before QUIC parsing"
+    },
+    {
+      "matrixRow": "QUIC lifecycle topics",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "publishes Node-aligned QUIC transport lifecycle topics through Fino topics"
+    },
+    {
+      "matrixRow": "Transport parameter snapshots",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "exposes local and remote transport parameter snapshots after handshake"
+    },
+    {
+      "matrixRow": "Configurable transport parameters",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "advertises configured transport parameters to the peer"
+    },
+    {
+      "matrixRow": "Streams and flow control",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "reassembles stream data by QUIC offset before exposing reads"
+    },
+    {
+      "matrixRow": "Streams and flow control",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 sections 3.5, 4.4, and 4.5: RESET_STREAM surfaces public stream errors"
+    },
+    {
+      "matrixRow": "Stream half-close and stats",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "tracks finalSize and bytesAcked across stream half-close"
+    },
+    {
+      "matrixRow": "Stream reset edge cases",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "rejects peer reads when RESET_STREAM arrives before data"
+    },
+    {
+      "matrixRow": "Stream reset edge cases",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "rejects peer reads when RESET_STREAM crosses data in flight"
+    },
+    {
+      "matrixRow": "Stream reset edge cases",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "ignores a local RESET_STREAM after FIN is fully consumed by the peer"
+    },
+    {
+      "matrixRow": "STOP_SENDING crossing data",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "rejects peer writes after STOP_SENDING drains in-flight data"
+    },
+    {
+      "matrixRow": "Stream-level MAX_STREAM_DATA",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "unblocks stream-level MAX_STREAM_DATA writes after peer read credit returns"
+    },
+    {
+      "matrixRow": "Unidirectional MAX_STREAMS exhaustion",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "pends unidirectional stream opens at MAX_STREAMS until peer returns credit"
+    },
+    {
+      "matrixRow": "Unidirectional stream sides",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "pre-closes unavailable unidirectional stream sides"
+    },
+    {
+      "matrixRow": "Unidirectional stream sides",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "client-initiated unidirectional streams expose only the writable side locally"
+    },
+    {
+      "matrixRow": "Unidirectional stream sides",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "server-initiated unidirectional streams expose only the writable side locally"
+    },
+    {
+      "matrixRow": "Stream source handling",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "copies QUIC stream source bytes before delayed transport flush"
+    },
+    {
+      "matrixRow": "Stream source handling",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "accepts Node-covered QUIC stream source view types"
+    },
+    {
+      "matrixRow": "Stream source handling",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "copies Web Streams QUIC writable chunks before delayed transport flush"
+    },
+    {
+      "matrixRow": "Connection-level flow-control unblock",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 sections 4.1 and 4.2: connection flow-control credit unblocks aggregate writes across streams"
+    },
+    {
+      "matrixRow": "Node send-drain reentrancy",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "coalesces stream FIN with pending write data"
+    },
+    {
+      "matrixRow": "Send-path batching",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "Node transport parity: write drain flushes encoded packets through sendBatch"
+    },
+    {
+      "matrixRow": "Before/after QUIC throughput benchmark",
+      "testFile": "benchmarks/net/quic-loopback-transfer.bench.mts",
+      "testName": "QUIC loopback transfer benchmark"
+    },
+    {
+      "matrixRow": "Read-path batching",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "keeps UDP receive bursts aligned with Node flush pacing"
+    },
+    {
+      "matrixRow": "ECN metadata",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "Node transport parity: ECN metadata marks simulator packets as ECT(0)"
+    },
+    {
+      "matrixRow": "ECN metadata",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "exchanges DATAGRAM frames over real UDP with ECN enabled"
+    },
+    {
+      "matrixRow": "Migration and path validation",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 9: NAT rebinding validates a new peer path and preserves streams"
+    },
+    {
+      "matrixRow": "Migration and path validation",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 9.6: ignores preferred address unless client opts in"
+    },
+    {
+      "matrixRow": "DATAGRAM across migration",
+      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testName": "delivers DATAGRAM frames before and after active migration"
+    },
+    {
+      "matrixRow": "Path-validation NEW_TOKEN flag",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "surfaces NEW_TOKEN requests on path-validation events"
+    },
+    {
+      "matrixRow": "Path-validation abort on close",
+      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testName": "reports path-validation abort when a connection closes mid-validation"
+    },
+    {
+      "matrixRow": "CID lifecycle and stateless reset",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "registers and unregisters issued CIDs in the endpoint route table"
+    },
+    {
+      "matrixRow": "Configurable CID length",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "uses configured connection ID lengths for local CIDs"
+    },
+    {
+      "matrixRow": "Idle timeout",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 10.1: idle timeout closes connections and rejects stream operations"
+    },
+    {
+      "matrixRow": "Keep-alive PINGs",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "sends keep-alive PINGs only when keep-alive is enabled"
+    },
+    {
+      "matrixRow": "Peer stream idle timeout",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "Node transport parity: peer-initiated stream idle timeout closes only the idle stream"
+    },
+    {
+      "matrixRow": "Handshake timeout",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 10.1: handshake timeout rejects pending connect and accept"
+    },
+        {
+            "matrixRow": "Connection close and draining",
+            "testFile": "tests/net/quic-sim.test.mts",
+            "testName": "Node transport parity: custom drainingPeriodMultiplier extends draining route retention"
+    },
+    {
+      "matrixRow": "Node-aligned close API",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "exposes Node-aligned connection close state and destroy API"
+    },
+    {
+      "matrixRow": "Endpoint UDP socket options",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "validates endpoint UDP socket options"
+    },
+        {
+            "matrixRow": "TLS 1.3 integration and ALPN",
+            "testFile": "tests/net/quic.test.mts",
+            "testName": "negotiates h3 ALPN over raw QUIC streams without HTTP integration"
+        },
+        {
+            "matrixRow": "Handshake diagnostics metadata",
+            "testFile": "tests/net/quic.test.mts",
+            "testName": "publishes Node-aligned QUIC transport lifecycle topics through Fino topics"
+        },
+        {
+            "matrixRow": "Fino boolean peer verification",
+            "testFile": "tests/net/quic.test.mts",
+            "testName": "covers Fino boolean verifyPeer modes for self-signed loopback certificates"
+        },
+    {
+      "matrixRow": "TLS CA trust options",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "accepts pinned CA trust for self-signed loopback certificates"
+    },
+    {
+      "matrixRow": "TLS CA trust options",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "accepts in-memory PEM CA trust for self-signed loopback certificates"
+    },
+    {
+      "matrixRow": "mTLS client certificates",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "requires and exposes client certificates for mTLS listeners"
+    },
+    {
+      "matrixRow": "Per-SNI server TLS contexts",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "selects per-SNI server TLS contexts with wildcard matching"
+    },
+    {
+      "matrixRow": "TLS supported groups",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "negotiates QUIC TLS with configured supported groups"
+    },
+        {
+            "matrixRow": "Key update",
+            "testFile": "tests/net/quic-sim.test.mts",
+            "testName": "RFC 9001 key update behavior: peer-initiated key update preserves stream traffic"
+    },
+    {
+      "matrixRow": "Key-updated traffic under loss",
+      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testName": "preserves bulk stream traffic after repeated key updates under loss"
+    },
+    {
+      "matrixRow": "Parsed TLS keylog validity",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "writes TLS keylog output when keylog path is configured"
+    },
+    {
+      "matrixRow": "Session tickets and 0-RTT",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "returns resumed early-data connections before handshake completion"
+    },
+    {
+      "matrixRow": "PTO recovery",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9002 sections 6.2 and 6.2.1: dropped first flight recovers through PTO"
+    },
+    {
+      "matrixRow": "Retransmission behavior",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9002 sections 5 and 6: corrupted stream packets are dropped and retransmitted"
+    },
+    {
+      "matrixRow": "Sustained-loss recovery",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9002 sustained-loss recovery completes a 4MiB transfer"
+    },
+    {
+      "matrixRow": "Blackhole recovery and RTT stats",
+      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testName": "records persistent congestion collapse and RTT after a simulated blackhole window"
+    },
+    {
+      "matrixRow": "Congestion control and ACK delay",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9002 congestion-control selections complete stream traffic"
+    },
+    {
+      "matrixRow": "DATAGRAM negotiation and sizing",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "exchanges unreliable datagrams when DATAGRAM is negotiated"
+    },
+        {
+            "matrixRow": "Delivery and status events",
+            "testFile": "tests/net/quic.test.mts",
+            "testName": "returns DATAGRAM ids that correlate with status events and topics"
+        },
+        {
+            "matrixRow": "DATAGRAM source handling",
+            "testFile": "tests/net/quic.test.mts",
+            "testName": "accepts Node-covered DATAGRAM source types and copies source bytes"
+        },
+    {
+      "matrixRow": "Non-retransmission",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9221 section 5.3: lost DATAGRAMs are not retransmitted and surface loss status"
+    },
+    {
+      "matrixRow": "0-RTT DATAGRAM",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9221 section 5: 0-RTT DATAGRAM rejects when remembered peer parameters omit DATAGRAM support"
+    },
+    {
+      "matrixRow": "Raw QUIC and `h3` ALPN interop",
+      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testName": "exchanges raw h3 streams with Node QUIC when configured"
+    },
+    {
+      "matrixRow": "Large raw QUIC Node interop",
+      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testName": "exchanges large raw h3 streams with Node QUIC when configured"
+    },
+    {
+      "matrixRow": "Node interop ALPN mismatch",
+      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testName": "fails cleanly on ALPN mismatch with Node QUIC when configured"
+    },
+    {
+      "matrixRow": "Node interop key-update scenario",
+      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testName": "exchanges key-update scenario traffic with Node QUIC when configured"
+    },
+    {
+      "matrixRow": "Node interop Retry scenario",
+      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testName": "exchanges Retry scenario traffic with Node QUIC when configured"
+    },
+    {
+      "matrixRow": "Graceful close stream behaviors",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "graceful close rejects new stream operations and drains existing streams"
+    },
+    {
+      "matrixRow": "Graceful close stream behaviors",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "graceful close does not surface new peer streams to acceptStream"
+    },
+    {
+      "matrixRow": "Graceful close stream behaviors",
+      "testFile": "tests/net/quic-streams.test.mts",
+      "testName": "graceful close half-close nudge lets read-ended streams complete"
+    },
+    {
+      "matrixRow": "Per-SNI server TLS contexts",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "runtime setSNIContexts updates per-SNI cert for new handshakes"
+    },
+    {
+      "matrixRow": "mTLS client certificates",
+      "testFile": "tests/net/quic.test.mts",
+      "testName": "completes mTLS handshake and surfaces peer cert when rejectUnauthorized is false"
+    },
+    {
+      "matrixRow": "Client Version Negotiation bad-CID rejection",
+      "testFile": "tests/net/quic-raw-packets.test.mts",
+      "testName": "silently ignores Version Negotiation with a mismatched destination connection ID"
+    },
+    {
+      "matrixRow": "Client incompatible Version Negotiation failure",
+      "testFile": "tests/net/quic-raw-packets.test.mts",
+      "testName": "rejects connect with QuicVersionNegotiationError when no mutual version found"
+    },
+    {
+      "matrixRow": "Active CID limit migration rotation",
+      "testFile": "tests/net/quic-sim.test.mts",
+      "testName": "RFC 9000 section 5.1.1: active CID limit migration rotation retires old CIDs and replenishes the pool"
+    }
+  ],
+  "packetCases": [
+    {
+            "id": "unsupported-version-initial",
+            "source": "RFC 9000 section 6 Version Negotiation; Node/quiche/ngtcp2-style unsupported Initial probes",
+            "matrixRow": "Version Negotiation",
+      "packet": {
+        "firstByte": "0xc0",
+        "version": "0x57414954",
+        "dcidLength": 8,
+        "scidLength": 8,
+        "tokenLength": 0,
+        "payloadLength": 1200
+      },
+      "expected": {
+        "outcome": "version-negotiation",
+        "responseVersion": "0x00000000",
+        "advertisesSupportedVersion": true
+      }
+    },
+    {
+            "id": "unvalidated-v1-initial",
+            "source": "RFC 9000 section 8.1.2 Retry for address validation",
+            "matrixRow": "Retry address validation",
+      "packet": {
+        "firstByte": "0xc0",
+        "version": "0x00000001",
+        "dcidLength": 8,
+        "scidLength": 8,
+        "tokenLength": 0,
+        "payloadLength": 1200
+      },
+      "expected": {
+        "outcome": "retry",
+        "responseVersion": "0x00000001",
+        "tokenRequired": true
+      }
+    },
+    {
+            "id": "malformed-initial-no-accept",
+            "source": "RFC 9000 sections 7.2 and 14.1 malformed Initial handling",
+            "matrixRow": "Initial packet size and padding",
+      "packet": {
+        "firstByte": "0xc0",
+        "version": "0x00000001",
+        "dcidLength": 21,
+        "scidLength": 8,
+        "tokenLength": 0,
+        "payloadLength": 1200
+      },
+      "expected": {
+        "outcome": "drop",
+        "createsAcceptState": false,
+        "amplifies": false
+      }
+    }
+  ],
+  "simulatorCases": [
+    {
+            "id": "v2-handshake-and-initial-padding",
+            "source": "RFC 9000 sections 6, 7, and 14.1",
+            "matrixRow": "Initial packet size and padding",
+      "expected": {
+        "outcome": "handshake-complete",
+        "publicOracle": "QuicConnection.handshakeComplete and simulator datagram length trace"
+      }
+    },
+    {
+            "id": "first-flight-pto-recovery",
+            "source": "RFC 9002 sections 6.2 and 6.2.1",
+            "matrixRow": "PTO recovery",
+      "link": {
+        "scriptedDrop": 1
+      },
+      "expected": {
+        "outcome": "handshake-complete-after-retransmission",
+        "publicOracle": "simulator loss and queued datagram trace"
+      }
+    },
+        {
+            "id": "new-token-persistence",
+            "source": "RFC 9000 section 8.1.3 NEW_TOKEN",
+            "matrixRow": "NEW_TOKEN receipt and reuse",
+            "expected": {
+                "outcome": "client-session-state-address-token",
+                "publicOracle": "QuicSessionStore state"
+            }
+        },
+        {
+            "id": "new-token-same-address-reuse",
+            "source": "RFC 9000 section 8.1.3 NEW_TOKEN",
+            "matrixRow": "NEW_TOKEN receipt and reuse",
+            "expected": {
+                "outcome": "same-address-reconnect-accepted-without-retry",
+                "publicOracle": "QuicConnection.handshakeComplete and @internal address-validation counters"
+            }
+        },
+        {
+            "id": "new-token-invalid-rejection",
+            "source": "RFC 9000 section 8.1.3 NEW_TOKEN address validation",
+            "matrixRow": "NEW_TOKEN tamper/expiry/replay rejection",
+            "expected": {
+                "outcome": "tampered-expired-and-wrong-ip-regular-tokens-not-accepted",
+                "publicOracle": "@internal address-validation counters and optional Retry/drop response"
+            }
+        },
+        {
+            "id": "reordered-stream-delivery",
+            "source": "RFC 9000 sections 2 and 3 stream byte ordering",
+            "matrixRow": "Streams and flow control",
+            "link": {
+        "latencyMs": 1,
+        "reorderRate": 1,
+        "reorderDelayMs": 3
+      },
+      "expected": {
+        "outcome": "ordered-stream-bytes",
+        "publicOracle": "QuicStream.reader.read()"
+      }
+    },
+    {
+            "id": "duplicate-packet-deduplication",
+            "source": "RFC 9000 sections 12.3 and 13.4 duplicate packet handling",
+            "matrixRow": "Streams and flow control",
+      "link": {
+        "duplicateRate": 1
+      },
+      "expected": {
+        "outcome": "stream-bytes-exposed-once",
+        "publicOracle": "QuicStream.reader.read()"
+            }
+        },
+        {
+            "id": "connection-flow-control-unblock",
+            "source": "RFC 9000 sections 4.1 and 4.2 flow control",
+            "matrixRow": "Connection-level flow-control unblock",
+            "expected": {
+                "outcome": "aggregate-connection-credit-blocks-then-resumes-multi-stream-writes",
+                "publicOracle": "QuicStream.reader.read() and @internal send-state counters"
+            }
+        },
+        {
+            "id": "nat-rebinding-path-validation",
+            "source": "RFC 9000 section 9 path validation",
+            "matrixRow": "Migration and path validation",
+            "expected": {
+        "outcome": "pathvalidation-success-and-stream-preserved",
+        "publicOracle": "QuicPathValidationEvent and stream read"
+      }
+    },
+    {
+            "id": "active-migration-failure-fallback",
+            "source": "RFC 9000 section 9 active migration",
+            "matrixRow": "Migration and path validation",
+      "link": {
+        "lossRate": 1
+      },
+      "expected": {
+        "outcome": "pathvalidation-failure-and-fallback-stream-preserved",
+        "publicOracle": "QuicPathValidationEvent and QuicConnection.localAddress"
+      }
+    },
+    {
+            "id": "preferred-address-failure-fallback",
+            "source": "RFC 9000 section 9.6 preferred address",
+            "matrixRow": "Migration and path validation",
+      "link": {
+        "lossRate": 1
+      },
+      "expected": {
+        "outcome": "preferred-pathvalidation-failure-and-original-path-preserved",
+        "publicOracle": "QuicPathValidationEvent.preferredAddress and stream read"
+      }
+    },
+    {
+            "id": "datagram-delivery-and-oversize",
+            "source": "RFC 9221 sections 3 and 5.2 DATAGRAM negotiation and size limit",
+            "matrixRow": "DATAGRAM negotiation and sizing",
+      "expected": {
+        "outcome": "datagram-event-and-local-reject",
+        "publicOracle": "QuicDatagramEvent and sendDatagram rejection"
+            }
+        },
+        {
+            "id": "zero-rtt-datagram-without-remembered-peer-support",
+            "source": "RFC 9221 section 3 and RFC 9001 0-RTT transport parameters",
+            "matrixRow": "0-RTT DATAGRAM",
+            "expected": {
+                "outcome": "early-datagram-send-rejects-before-handshake",
+                "publicOracle": "QuicConnection.sendDatagram() rejection"
+            }
+        },
+        {
+            "id": "datagram-loss-and-abandonment",
+            "source": "RFC 9221 section 5.3 DATAGRAM non-retransmission",
+            "matrixRow": "Non-retransmission",
+            "expected": {
+        "outcome": "lost-and-abandoned-status-without-payload-retransmit",
+        "publicOracle": "QuicDatagramStatusEvent and simulator loss trace"
+            }
+        },
+        {
+            "id": "peer-transport-and-protocol-close",
+            "source": "RFC 9000 section 10.2 CONNECTION_CLOSE",
+            "matrixRow": "Connection close and draining",
+            "expected": {
+                "outcome": "peer-close-event-and-post-close-operation-rejection",
+                "publicOracle": "close event, rejected stream/datagram operations, and simulator trace"
+            }
+        },
+        {
+            "id": "idle-and-handshake-timeouts",
+            "source": "RFC 9000 section 10.1",
+            "matrixRow": "Idle timeout",
+            "expected": {
+        "outcome": "connection-close-and-pending-connect-reject",
+        "publicOracle": "close event and rejected connect/open/send operations"
+      }
+    },
+    {
+            "id": "draining-known-cid-no-stateless-reset",
+            "source": "RFC 9000 sections 10 and 10.3",
+            "matrixRow": "Connection close and draining",
+      "expected": {
+        "outcome": "known-cid-retained-during-draining-and-late-packets-ignored",
+        "publicOracle": "CidRoutingTable and absence of response datagrams"
+      }
+    },
+    {
+      "id": "closing-period-close-retransmit",
+      "source": "RFC 9000 section 10.2.1",
+      "matrixRow": "Connection close and draining",
+      "expected": {
+        "outcome": "closing-endpoint-retransmits-connection-close-with-backoff",
+        "publicOracle": "simulator trace observes close retransmits for late packets"
+      }
+    }
+  ]
+}

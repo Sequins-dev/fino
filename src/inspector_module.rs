@@ -147,7 +147,7 @@ impl V8InspectorClientImpl for InspectorClient {
 // ---------------------------------------------------------------------------
 
 pub struct InspectorState {
-    client: Box<InspectorClient>,
+    _client: Box<InspectorClient>,
     channel: Box<InspectorChannel>,
     // Dropped in declaration order: session first, then inspector, then client/channel.
     // We use Option so we can take() them in the correct order during Drop.
@@ -237,7 +237,7 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
     channel.buffered_messages.borrow_mut().clear();
 
     let insp = Box::new(InspectorState {
-        client,
+        _client: client,
         channel,
         session: Some(session),
         inspector: Some(inspector),

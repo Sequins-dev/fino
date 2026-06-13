@@ -13,7 +13,7 @@
 //! `Future` awaits the channel; the `LocalExecutor`'s `try_tick` drives it
 //! forward after each microtask checkpoint.
 
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
 use ::v8;
 

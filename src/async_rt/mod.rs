@@ -24,7 +24,7 @@ use std::{
 
 use ::v8;
 
-pub use bridge::{BridgeError, FromV8, IntoJsValueRepr, JsValueRepr, PendingResolution};
+pub use bridge::PendingResolution;
 
 // ---------------------------------------------------------------------------
 // FFI completion (from background threads)
@@ -138,6 +138,7 @@ pub fn init() -> RawFd {
 }
 
 /// Tear down the per-isolate async state (pipes closed via Drop).
+#[allow(dead_code)]
 pub fn shutdown() {
     STATE.with(|s| {
         *s.borrow_mut() = None;

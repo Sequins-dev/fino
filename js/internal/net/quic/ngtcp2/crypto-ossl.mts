@@ -50,12 +50,17 @@ const _SYMBOLS = {
   ngtcp2_crypto_update_key_cb: { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
   ngtcp2_crypto_delete_crypto_aead_ctx_cb: { parameters: ['pointer', 'pointer'], result: 'void' },
   ngtcp2_crypto_delete_crypto_cipher_ctx_cb: { parameters: ['pointer', 'pointer'], result: 'void' },
-  ngtcp2_crypto_get_path_challenge_data_cb: { parameters: ['pointer', 'pointer'], result: 'i32' },
-  ngtcp2_crypto_get_path_challenge_data2_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
+  ngtcp2_crypto_get_path_challenge_data_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
   ngtcp2_crypto_version_negotiation_cb: { parameters: ['pointer', 'pointer', 'pointer', 'usize', 'pointer'], result: 'i32' },
   ngtcp2_crypto_recv_retry_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
-  ngtcp2_crypto_read_write_crypto_data: { parameters: ['pointer', 'pointer', 'usize'], result: 'i32' },
-  ngtcp2_crypto_write_connection_close: { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'usize', 'pointer', 'u64'], result: 'isize' },
+  ngtcp2_crypto_read_write_crypto_data: { parameters: ['pointer', 'i32', 'pointer', 'usize'], result: 'i32' },
+  ngtcp2_crypto_write_connection_close: { parameters: ['buffer', 'usize', 'u32', 'pointer', 'pointer', 'u64', 'buffer', 'usize'], result: 'isize' },
+  ngtcp2_crypto_generate_stateless_reset_token: { parameters: ['buffer', 'buffer', 'usize', 'pointer'], result: 'i32' },
+  ngtcp2_crypto_generate_regular_token: { parameters: ['buffer', 'buffer', 'usize', 'pointer', 'u32', 'u64'], result: 'isize' },
+  ngtcp2_crypto_verify_regular_token: { parameters: ['buffer', 'usize', 'buffer', 'usize', 'pointer', 'u32', 'u64', 'u64'], result: 'i32' },
+  ngtcp2_crypto_generate_retry_token2: { parameters: ['buffer', 'buffer', 'usize', 'u32', 'pointer', 'u32', 'pointer', 'pointer', 'u64'], result: 'isize' },
+  ngtcp2_crypto_verify_retry_token2: { parameters: ['pointer', 'buffer', 'usize', 'buffer', 'usize', 'u32', 'pointer', 'u32', 'pointer', 'u64', 'u64'], result: 'i32' },
+  ngtcp2_crypto_write_retry: { parameters: ['buffer', 'usize', 'u32', 'pointer', 'pointer', 'pointer', 'buffer', 'usize'], result: 'isize' },
 };
 
 let _lib: ReturnType<typeof dlopen> | null = null;

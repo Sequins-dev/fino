@@ -323,6 +323,9 @@ const _sslSymbols = {
   // async: true — runs on the blocking pool so ALPN select FfiCallbacks fire via condvar
   SSL_accept:   { parameters: ['pointer'], result: 'i32', async: true },
   SSL_CTX_set_alpn_select_cb: { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
+  SSL_CTX_callback_ctrl: { parameters: ['pointer', 'i32', 'pointer'], result: 'i64' },
+  SSL_CTX_ctrl: { parameters: ['pointer', 'i32', 'i64', 'buffer'], result: 'i64' },
+  SSL_set_SSL_CTX: { parameters: ['pointer', 'pointer'], result: 'pointer' },
   SSL_read:     { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_write:    { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_read_ex:  { parameters: ['pointer', 'buffer', 'usize', 'buffer'], result: 'i32' },
@@ -332,12 +335,42 @@ const _sslSymbols = {
   SSL_pending:   { parameters: ['pointer'], result: 'i32' },
   SSL_is_init_finished: { parameters: ['pointer'], result: 'i32' },
   SSL_CTX_set_verify:               { parameters: ['pointer', 'i32', 'pointer'], result: 'void' },
+  SSL_set_verify:                   { parameters: ['pointer', 'i32', 'pointer'], result: 'void' },
   SSL_CTX_set_default_verify_paths: { parameters: ['pointer'], result: 'i32' },
   SSL_CTX_load_verify_locations:    { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
+  SSL_CTX_get_cert_store:           { parameters: ['pointer'], result: 'pointer' },
+  BIO_new_mem_buf:                  { parameters: ['buffer', 'i32'], result: 'pointer' },
+  BIO_free:                         { parameters: ['pointer'], result: 'i32' },
+  PEM_read_bio_X509:                { parameters: ['pointer', 'pointer', 'pointer', 'pointer'], result: 'pointer' },
+  X509_STORE_add_cert:              { parameters: ['pointer', 'pointer'], result: 'i32' },
+  SSL_CTX_set_ciphersuites: { parameters: ['pointer', 'buffer'], result: 'i32' },
+  SSL_CTX_set_max_early_data: { parameters: ['pointer', 'u32'], result: 'i32' },
+  SSL_CTX_set_recv_max_early_data: { parameters: ['pointer', 'u32'], result: 'i32' },
+  SSL_CTX_set_keylog_callback: { parameters: ['pointer', 'pointer'], result: 'void' },
   // SSL_ctrl(ssl, cmd, larg, parg) — used for SNI (cmd=55)
   // larg is C `long` (64-bit on LP64); parg is a buffer (hostname string for SNI)
   SSL_ctrl:      { parameters: ['pointer', 'i32', 'i64', 'buffer'], result: 'i64' },
   SSL_set1_host: { parameters: ['pointer', 'buffer'], result: 'i32' },
+  SSL_new_session_ticket: { parameters: ['pointer'], result: 'i32' },
+  SSL_set_max_early_data: { parameters: ['pointer', 'u32'], result: 'i32' },
+  SSL_set_recv_max_early_data: { parameters: ['pointer', 'u32'], result: 'i32' },
+  SSL_set_quic_tls_early_data_enabled: { parameters: ['pointer', 'i32'], result: 'void' },
+  SSL_get1_session: { parameters: ['pointer'], result: 'pointer' },
+  SSL_get_current_cipher: { parameters: ['pointer'], result: 'pointer' },
+  SSL_CIPHER_get_name: { parameters: ['pointer'], result: 'pointer' },
+  SSL_CIPHER_get_version: { parameters: ['pointer'], result: 'pointer' },
+  SSL_get_verify_result: { parameters: ['pointer'], result: 'i64' },
+  SSL_get_servername: { parameters: ['pointer', 'i32'], result: 'pointer' },
+  SSL_get1_peer_certificate: { parameters: ['pointer'], result: 'pointer' },
+  X509_verify_cert_error_string: { parameters: ['i64'], result: 'pointer' },
+  X509_free: { parameters: ['pointer'], result: 'void' },
+  i2d_X509: { parameters: ['pointer', 'buffer'], result: 'i32' },
+  SSL_set_session: { parameters: ['pointer', 'pointer'], result: 'i32' },
+  SSL_SESSION_get_max_early_data: { parameters: ['pointer'], result: 'u32' },
+  SSL_SESSION_set_max_early_data: { parameters: ['pointer', 'u32'], result: 'i32' },
+  SSL_SESSION_free: { parameters: ['pointer'], result: 'void' },
+  i2d_SSL_SESSION: { parameters: ['pointer', 'buffer'], result: 'i32' },
+  d2i_SSL_SESSION: { parameters: ['pointer', 'buffer', 'i64'], result: 'pointer' },
   // Server certificate and private key loading
   SSL_CTX_use_certificate_file: { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
   SSL_CTX_use_PrivateKey_file:  { parameters: ['pointer', 'buffer', 'i32'], result: 'i32' },
@@ -370,6 +403,8 @@ const _sslQuicSymbols = {
   SSL_get_stream_id: { parameters: ['pointer'], result: 'u64' },
   SSL_stream_conclude: { parameters: ['pointer', 'u64'], result: 'i32' },
 } satisfies NativeSymbolMap;
+
+const SSL_CTRL_SET_GROUPS_LIST = 92;
 
 // ---------------------------------------------------------------------------
 // Library loading
@@ -2488,6 +2523,44 @@ export function sslCtxSetAlpnProtos(ctx: object, protocols: string[]): void {
 }
 
 /**
+ * Restrict TLS 1.3 cipher suites on an `SSL_CTX`.
+ *
+ * OpenSSL expects standard TLS 1.3 suite names separated by colons, for example
+ * `TLS_CHACHA20_POLY1305_SHA256`. QUIC uses TLS 1.3 exclusively, so callers
+ * should validate the suite list before it reaches this low-level helper.
+ *
+ * @param ctx SSL_CTX* to configure.
+ * @param cipherSuites Ordered TLS 1.3 cipher-suite names.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslCtxSetCipherSuites(ctx: object, cipherSuites: readonly string[]): void {
+  if (cipherSuites.length === 0) throw new TypeError('TLS cipher suite list must not be empty');
+  const lib = _requireSsl();
+  const buf = encodeUtf8(cipherSuites.join(':') + '\0');
+  const rc = lib.symbols.SSL_CTX_set_ciphersuites(ctx, buf);
+  if (rc !== 1) throw new Error('SSL_CTX_set_ciphersuites failed: ' + getErrorString());
+}
+
+/**
+ * Restrict TLS supported groups on an `SSL_CTX`.
+ *
+ * OpenSSL expects colon-separated group names such as `P-256` or `X25519`.
+ *
+ * @param ctx SSL_CTX* to configure.
+ * @param groups Ordered TLS group names.
+ * @returns Nothing.
+ * @internal
+ */
+export function sslCtxSetGroups(ctx: object, groups: readonly string[]): void {
+  if (groups.length === 0) throw new TypeError('TLS group list must not be empty');
+  const lib = _requireSsl();
+  const buf = encodeUtf8(groups.join(':') + '\0');
+  const rc = lib.symbols.SSL_CTX_ctrl(ctx, SSL_CTRL_SET_GROUPS_LIST, 0n, buf);
+  if (rc !== 1n && rc !== 1) throw new Error('SSL_CTX_set1_groups_list failed: ' + getErrorString());
+}
+
+/**
  * Set the ALPN protocol list on a single SSL connection object.
  *
  * This is used by ngtcp2's OpenSSL crypto backend, which configures QUIC TLS
@@ -2531,6 +2604,102 @@ export function sslGetAlpnSelected(ssl: object): string | null {
   // dataBuf holds the raw address OpenSSL wrote; copyFrom extracts it and reads len bytes from it.
   const bytes = Pointer.copyFrom(dataBuf, len) as Uint8Array;
   return decodeUtf8(bytes);
+}
+
+/** Return the current TLS cipher name and protocol version for an `SSL*`. */
+export function sslGetCurrentCipherInfo(ssl: object): { cipher: string | null; cipherVersion: string | null } {
+  const lib = _requireSsl();
+  const cipher = lib.symbols.SSL_get_current_cipher(ssl) as ArrayBuffer | null;
+  if (cipher === null) return { cipher: null, cipherVersion: null };
+  return {
+    cipher: readCStr(lib.symbols.SSL_CIPHER_get_name(cipher) as ArrayBuffer | null) || null,
+    cipherVersion: readCStr(lib.symbols.SSL_CIPHER_get_version(cipher) as ArrayBuffer | null) || null,
+  };
+}
+
+/** Return OpenSSL peer verification status for an `SSL*`. */
+export function sslGetVerifyResult(ssl: object): { code: number; reason: string | null } {
+  const lib = _requireSsl();
+  const code = Number(lib.symbols.SSL_get_verify_result(ssl) as number);
+  const reason = code === 0
+    ? null
+    : readCStr(lib.symbols.X509_verify_cert_error_string(code) as ArrayBuffer | null) || null;
+  return { code, reason };
+}
+
+/** Return the peer certificate as DER bytes, or `null` when absent. */
+export function sslGetPeerCertificate(ssl: object): Uint8Array | null {
+  const lib = _requireSsl();
+  const cert = lib.symbols.SSL_get1_peer_certificate(ssl) as ArrayBuffer | null;
+  if (cert === null) return null;
+  try {
+    const len = lib.symbols.i2d_X509(cert, null);
+    if (len <= 0) return null;
+    const der = new Uint8Array(len);
+    const pp = _ptrPtrBuf(der);
+    const written = lib.symbols.i2d_X509(cert, pp);
+    if (written <= 0) return null;
+    return der;
+  } finally {
+    lib.symbols.X509_free(cert);
+  }
+}
+
+/** Return the SNI server name associated with an `SSL*`, when available. */
+export function sslGetServername(ssl: object): string | null {
+  const ptr = _requireSsl().symbols.SSL_get_servername(ssl, 0) as ArrayBuffer | null;
+  return readCStr(ptr) || null;
+}
+
+const SSL_CTRL_SET_TLSEXT_SERVERNAME_CB = 53;
+const SSL_TLSEXT_ERR_OK = 0;
+const SSL_TLSEXT_ERR_NOACK = 3;
+
+function _normalizeServername(name: string): string {
+  return name.endsWith('.') ? name.slice(0, -1).toLowerCase() : name.toLowerCase();
+}
+
+function _matchServername(name: string, entries: ReadonlyMap<string, object>): object | null {
+  const normalized = _normalizeServername(name);
+  const exact = entries.get(normalized);
+  if (exact !== undefined) return exact;
+  for (const [pattern, ctx] of entries) {
+    if (!pattern.startsWith('*.')) continue;
+    const suffix = pattern.slice(1);
+    if (!normalized.endsWith(suffix)) continue;
+    const prefix = normalized.slice(0, normalized.length - suffix.length);
+    if (prefix.length > 0 && !prefix.includes('.')) return ctx;
+  }
+  return null;
+}
+
+/** Install an OpenSSL SNI callback that swaps SSL_CTX based on server name. */
+export function sslCtxSetServernameCallback(ctx: object, entries: ReadonlyMap<string, object>): object {
+  const lib = _requireSsl();
+  const normalizedEntries = new Map<string, object>();
+  for (const [name, entryCtx] of entries) normalizedEntries.set(_normalizeServername(name), entryCtx);
+
+  const cb = new FfiCallback(
+    {
+      parameters: ['pointer', 'pointer', 'pointer'],
+      result: 'i32',
+    },
+    (ssl: ArrayBuffer): number => {
+      const servername = sslGetServername(ssl);
+      if (servername === null) return SSL_TLSEXT_ERR_NOACK;
+      const selected = _matchServername(servername, normalizedEntries);
+      if (selected === null) return SSL_TLSEXT_ERR_NOACK;
+      lib.symbols.SSL_set_SSL_CTX(ssl, selected);
+      return SSL_TLSEXT_ERR_OK;
+    },
+  );
+
+  const rc = lib.symbols.SSL_CTX_callback_ctrl(ctx, SSL_CTRL_SET_TLSEXT_SERVERNAME_CB, cb.pointer);
+  if (rc !== 1n && rc !== 1) {
+    cb.close();
+    throw new Error('SSL_CTX_set_tlsext_servername_callback failed: ' + getErrorString());
+  }
+  return cb;
 }
 
 /**
@@ -2580,6 +2749,40 @@ export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, ca
   if (rc !== 1) throw new Error('SSL_CTX_load_verify_locations failed: ' + getErrorString());
 }
 
+/** Add PEM-encoded CA certificates to an SSL_CTX trust store. */
+export function sslCtxAddCaCertificates(ctx: object, pem: string | Uint8Array | Array<string | Uint8Array>): void {
+  const lib = _requireSsl();
+  const store = lib.symbols.SSL_CTX_get_cert_store(ctx) as ArrayBuffer | null;
+  if (store === null) throw new Error('SSL_CTX_get_cert_store failed: ' + getErrorString());
+
+  const entries = Array.isArray(pem) ? pem : [pem];
+  if (entries.length === 0) throw new TypeError('QUIC ca.pem must include at least one PEM certificate');
+
+  for (const entry of entries) {
+    const bytes = typeof entry === 'string' ? encodeUtf8(entry) : entry;
+    if (bytes.byteLength === 0) throw new TypeError('QUIC ca.pem entries must not be empty');
+    const bio = lib.symbols.BIO_new_mem_buf(bytes, bytes.byteLength) as ArrayBuffer | null;
+    if (bio === null) throw new Error('BIO_new_mem_buf failed: ' + getErrorString());
+    try {
+      let added = 0;
+      while (true) {
+        const cert = lib.symbols.PEM_read_bio_X509(bio, null, null, null) as ArrayBuffer | null;
+        if (cert === null) break;
+        try {
+          const rc = lib.symbols.X509_STORE_add_cert(store, cert) as number;
+          if (rc !== 1) throw new Error('X509_STORE_add_cert failed: ' + getErrorString());
+          added++;
+        } finally {
+          lib.symbols.X509_free(cert);
+        }
+      }
+      if (added === 0) throw new Error('PEM_read_bio_X509 failed to read a CA certificate: ' + getErrorString());
+    } finally {
+      lib.symbols.BIO_free(bio);
+    }
+  }
+}
+
 /**
  * Set TLS peer verification mode on a context.
  *
@@ -2599,6 +2802,43 @@ export function sslCtxLoadVerifyLocations(ctx: object, caFile: string | null, ca
  */
 export function sslCtxSetVerify(ctx: object, mode: number): void {
   _requireSsl().symbols.SSL_CTX_set_verify(ctx, mode, null);
+}
+
+/** Set TLS verification mode with a callback that records but allows failures. */
+export function sslCtxSetPermissiveVerify(ctx: object, mode: number): object {
+  const cb = new FfiCallback(
+    { parameters: ['i32', 'pointer'], result: 'i32' },
+    () => 1,
+  );
+  _requireSsl().symbols.SSL_CTX_set_verify(ctx, mode, cb.pointer);
+  return cb;
+}
+
+/** Set TLS verification mode on a single SSL connection. */
+export function sslSetVerify(ssl: object, mode: number): void {
+  _requireSsl().symbols.SSL_set_verify(ssl, mode, null);
+}
+
+function readCStr(ptr: ArrayBuffer | null): string {
+  if (ptr === null) return '';
+  const bytes: number[] = [];
+  for (let offset = 0; ; offset++) {
+    const byte = Pointer.readU8(ptr, offset);
+    if (byte === 0) break;
+    bytes.push(byte);
+  }
+  return decodeUtf8(new Uint8Array(bytes));
+}
+
+export function sslCtxSetKeylogCallback(ctx: object, onLine: (line: string) => void): object {
+  const cb = new FfiCallback(
+    { parameters: ['pointer', 'pointer'], result: 'void' },
+    (_ssl: ArrayBuffer | null, line: ArrayBuffer | null) => {
+      onLine(readCStr(line));
+    },
+  );
+  _requireSsl().symbols.SSL_CTX_set_keylog_callback(ctx, cb.pointer);
+  return cb;
 }
 
 // ---------------------------------------------------------------------------
@@ -2653,6 +2893,78 @@ export function sslSetConnectState(ssl: object): void {
  */
 export function sslSetAcceptState(ssl: object): void {
   _requireSsl().symbols.SSL_set_accept_state(ssl);
+}
+
+export function sslNewSessionTicket(ssl: object): void {
+  if (_requireSsl().symbols.SSL_new_session_ticket(ssl) !== 1) {
+    throw new Error('SSL_new_session_ticket failed: ' + getErrorString());
+  }
+}
+
+export function sslSetMaxEarlyData(ssl: object, maxBytes: number): void {
+  const max = Math.max(0, Math.min(0xffffffff, Math.floor(maxBytes)));
+  if (_requireSsl().symbols.SSL_set_max_early_data(ssl, max) !== 1) {
+    throw new Error('SSL_set_max_early_data failed: ' + getErrorString());
+  }
+}
+
+export function sslSetRecvMaxEarlyData(ssl: object, maxBytes: number): void {
+  const max = Math.max(0, Math.min(0xffffffff, Math.floor(maxBytes)));
+  if (_requireSsl().symbols.SSL_set_recv_max_early_data(ssl, max) !== 1) {
+    throw new Error('SSL_set_recv_max_early_data failed: ' + getErrorString());
+  }
+}
+
+export function sslCtxSetMaxEarlyData(ctx: object, maxBytes: number): void {
+  const max = Math.max(0, Math.min(0xffffffff, Math.floor(maxBytes)));
+  if (_requireSsl().symbols.SSL_CTX_set_max_early_data(ctx, max) !== 1) {
+    throw new Error('SSL_CTX_set_max_early_data failed: ' + getErrorString());
+  }
+}
+
+export function sslCtxSetRecvMaxEarlyData(ctx: object, maxBytes: number): void {
+  const max = Math.max(0, Math.min(0xffffffff, Math.floor(maxBytes)));
+  if (_requireSsl().symbols.SSL_CTX_set_recv_max_early_data(ctx, max) !== 1) {
+    throw new Error('SSL_CTX_set_recv_max_early_data failed: ' + getErrorString());
+  }
+}
+
+export function sslEnableQuicEarlyData(ssl: object, enabled: boolean): void {
+  _requireSsl().symbols.SSL_set_quic_tls_early_data_enabled(ssl, enabled ? 1 : 0);
+}
+
+export function sslExportSession(ssl: object): Uint8Array | null {
+  const lib = _requireSsl();
+  const session = lib.symbols.SSL_get1_session(ssl);
+  if (session === null) return null;
+  try {
+    const len = lib.symbols.i2d_SSL_SESSION(session, null);
+    if (len <= 0) return null;
+    const der = new Uint8Array(len);
+    const pp = _ptrPtrBuf(der);
+    const written = lib.symbols.i2d_SSL_SESSION(session, pp);
+    if (written <= 0) return null;
+    return der;
+  } finally {
+    lib.symbols.SSL_SESSION_free(session);
+  }
+}
+
+export function sslImportSession(ssl: object, data: Uint8Array, earlyDataMax = 0): { imported: boolean; maxEarlyData: number } {
+  const lib = _requireSsl();
+  const pp = _ptrPtrBuf(data);
+  const session = lib.symbols.d2i_SSL_SESSION(null, pp, data.byteLength);
+  if (session === null) return { imported: false, maxEarlyData: 0 };
+  try {
+    let maxEarlyData = Number(lib.symbols.SSL_SESSION_get_max_early_data(session) ?? 0);
+    const restoredMax = Math.max(0, Math.min(0xffffffff, Math.floor(earlyDataMax)));
+    if (maxEarlyData === 0 && restoredMax > 0 && lib.symbols.SSL_SESSION_set_max_early_data(session, restoredMax) === 1) {
+      maxEarlyData = restoredMax;
+    }
+    return { imported: lib.symbols.SSL_set_session(ssl, session) === 1, maxEarlyData };
+  } finally {
+    lib.symbols.SSL_SESSION_free(session);
+  }
 }
 
 /**
@@ -3227,3 +3539,6 @@ export const SSL_ERROR_ZERO_RETURN = 6;
  * @internal
  */
 export const SSL_VERIFY_PEER = 0x01;
+
+/** OpenSSL verification mode bit requiring clients to send a certificate. */
+export const SSL_VERIFY_FAIL_IF_NO_PEER_CERT = 0x02;

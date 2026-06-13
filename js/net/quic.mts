@@ -13,14 +13,17 @@
  * writer objects for code that needs direct structural reads or explicit write
  * control.
  *
- * Phase 1 is intentionally transport-level only. It does not implement HTTP/3,
- * QUIC DATAGRAM, 0-RTT, WebTransport, qlog, migration, or GSO. The default
- * ALPN for local HQ validation fixtures is `fino-hq`.
+ * This is intentionally transport-level only and does not implement HTTP/3 or
+ * WebTransport. Endpoints advertise `h3` by default so callers can build raw
+ * HTTP/3-compatible transports, but no `fino:net/http` integration is performed
+ * here. QUIC DATAGRAM and controlled key updates are exposed for lower protocol
+ * work. Replay-sensitive features such as 0-RTT stay disabled unless callers
+ * explicitly provide the required policy and storage.
  *
  * ```ts no_run
  * import { QuicEndpoint } from 'fino:net/quic';
  *
- * const endpoint = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });
+ * const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
  * const listener = await endpoint.listen({
  *   address: { family: 'ipv4', ip: '127.0.0.1', port: 4433 },
  * });
@@ -39,18 +42,55 @@ export {
   CidRoutingTable,
   QuicConnection,
   QuicConnectionEvent,
+  QuicDatagramEvent,
+  QuicDatagramStatusEvent,
+  QuicEarlyDataEvent,
   QuicEndpoint,
   QuicErrorEvent,
+  QuicVersionNegotiationError,
   QuicListener,
+  QuicNewTokenEvent,
+  QuicPathValidationEvent,
   QuicStream,
+  QuicStreamBlockedEvent,
+  QuicStreamResetEvent,
   QuicStreamEvent,
+  QuicStopSendingEvent,
+  __inspectQuicCallbackTable,
+  __inspectQuicRuntimeTuning,
   cryptoBackend,
   quicAvailable,
   quicVersion,
   requireQuic,
   type QuicAddress,
   type QuicConnectOptions,
+  type QuicConnectionOptions,
+  type QuicConnectionStats,
   type QuicConnectionState,
+  type QuicDatagramOptions,
+  type QuicDatagramStatus,
+  type QuicEarlyDataPolicy,
   type QuicEndpointOptions,
+  type QuicEndpointStats,
+  type QuicKeylogOptions,
   type QuicListenOptions,
+  type QuicMigrationOptions,
+  type QuicPath,
+  type QuicPathValidationResult,
+  type QuicQlogOptions,
+  type QuicRateLimitOptions,
+  type QuicResolvedRateLimitOptions,
+  type QuicResolvedConnectionOptions,
+  type QuicResolvedSourceAddressOptions,
+  type QuicResolvedTransportOptions,
+  type QuicRetryOptions,
+  type QuicSessionState,
+  type QuicSNIContextOptions,
+  type QuicSessionStore,
+  type QuicSourceAddressOptions,
+  type QuicStreamStats,
+  type QuicTlsCipherSuite,
+  type QuicTransportOptions,
+  type QuicTransportParameterSnapshot,
+  type QuicVersion,
 } from '../internal/net/quic/endpoint.mts';
