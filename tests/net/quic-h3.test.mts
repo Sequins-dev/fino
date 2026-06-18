@@ -1,7 +1,12 @@
 import { describe, it } from 'fino:test/test';
 import { quicAvailable, QuicStreamEvent } from 'fino:net/quic';
 import type { QuicStream } from 'fino:net/quic';
-import { h3Available } from 'fino:net/http/h3';
+import {
+  fetch as h3Fetch,
+  h3Available,
+  requireH3,
+  serve as h3Serve,
+} from 'fino:net/http/h3';
 import { H3ServerDriver } from '../../js/internal/net/http/h3/server.mts';
 import { H3ClientSession } from '../../js/internal/net/http/h3/client.mts';
 import { Nghttp3Session } from '../../js/internal/net/http/h3/session.mts';
@@ -22,6 +27,27 @@ async function h3Handshake(pipe: QuicPipe) {
 }
 
 describe('HTTP/3 (h3 ALPN)', () => {
+  it('public module exports availability, guard, client, and server helpers', (t) => {
+    t.equal(typeof h3Available, 'boolean', 'h3Available is a boolean');
+    t.equal(typeof requireH3, 'function', 'requireH3 is exported');
+    t.equal(typeof h3Fetch, 'function', 'fetch is exported');
+    t.equal(typeof h3Serve, 'function', 'serve is exported');
+  });
+
+  it('public helpers fail fast when libnghttp3 is unavailable', async (t) => {
+    if (h3Available) {
+      t.ok(requireH3(), 'requireH3 returns bindings when libnghttp3 is installed');
+      return;
+    }
+
+    t.throws(() => requireH3(), /libnghttp3 not found/, 'requireH3 reports missing libnghttp3');
+    await t.rejects(() => h3Fetch('https://127.0.0.1/'), /libnghttp3 not found/, 'fetch rejects before opening a connection');
+    await t.rejects(() => h3Serve({
+      port: 0,
+      tls: { cert: '', key: '' },
+    }, () => new Response('unused')), /libnghttp3 not found/, 'serve rejects before opening a listener');
+  });
+
   it('h3Available is truthy when libnghttp3 is installed', async (t) => {
     if (!quicAvailable) return;
     t.ok(h3Available !== undefined, 'h3Available is exported');
