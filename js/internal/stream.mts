@@ -59,7 +59,7 @@
  * coalescing, and async-iterator protocol are all inherited.
  *
  * ```js
- * import { BufferedBytesReader } from 'internal:stream';
+ * import { BufferedBytesReader } from 'fino:stream';
  * console.log(typeof BufferedBytesReader.over);
  * ```
  *
@@ -133,7 +133,7 @@ function normalizeReadOptions(input?: number | BytesReadOptions): BytesReadOptio
  * callers should always await it when resources are involved.
  *
  * ```js
- * import { Reader } from 'internal:stream';
+ * import { Reader } from 'fino:stream';
  * class OnceReader extends Reader {
  *   value = 'hello';
  *   async read() {
@@ -203,7 +203,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * the close operation.
    *
    * ```js
-   * import { Reader } from 'internal:stream';
+   * import { Reader } from 'fino:stream';
    * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader(() => console.log('closed'));
    * await reader.close();
@@ -223,7 +223,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * the reader is open, even if EOF has not yet been checked.
    *
    * ```js
-   * import { Reader } from 'internal:stream';
+   * import { Reader } from 'fino:stream';
    * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader();
    * console.log(reader.closed);
@@ -244,7 +244,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * errors; the async iterator forwards those errors to the caller.
    *
    * ```js
-   * import { Reader } from 'internal:stream';
+   * import { Reader } from 'fino:stream';
    * class EmptyReader extends Reader { async read() { return null; } }
    * console.log(await new EmptyReader().read());
    * ```
@@ -262,7 +262,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * the returned promise.
    *
    * ```js
-   * import { Reader } from 'internal:stream';
+   * import { Reader } from 'fino:stream';
    * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader();
    * await reader.close();
@@ -290,7 +290,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * errors reject the returned promise.
    *
    * ```js
-   * import { Reader } from 'internal:stream';
+   * import { Reader } from 'fino:stream';
    * class EmptyReader extends Reader { async read() { return null; } }
    * const result = await new EmptyReader().next();
    * console.log(result.done);
@@ -314,7 +314,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * This enables `for await` consumption without allocating a wrapper iterator.
    *
    * ```js
-   * import { Reader } from 'internal:stream';
+   * import { Reader } from 'fino:stream';
    * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader();
    * console.log(reader[Symbol.asyncIterator]() === reader);
@@ -344,7 +344,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
  * credit when application code actually pulls buffered data.
  *
  * ```js
- * import { BytesReader } from 'internal:stream';
+ * import { BytesReader } from 'fino:stream';
  * class MemoryReader extends BytesReader {
  *   data = new Uint8Array([65, 10]);
  *   async doRead(maxBytes) {
@@ -395,7 +395,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * helpers to loop, so backends should avoid returning them when possible.
    *
    * ```js
-   * import { BytesReader } from 'internal:stream';
+   * import { BytesReader } from 'fino:stream';
    * class EmptyBytes extends BytesReader {
    *   async doRead(_maxBytes) { return null; }
    * }
@@ -468,7 +468,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * the underlying `doRead()` hook is called. `null` means EOF.
    *
    * ```js
-   * import { BytesReader } from 'internal:stream';
+   * import { BytesReader } from 'fino:stream';
    * class EmptyBytes extends BytesReader {
    *   async doRead(_maxBytes) { return null; }
    * }
@@ -532,7 +532,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * non-consuming failure semantics.
    *
    * ```js
-   * import { BytesReader } from 'internal:stream';
+   * import { BytesReader } from 'fino:stream';
    * class MemoryReader extends BytesReader {
    *   data = new Uint8Array([1, 2]);
    *   async doRead(maxBytes) {
@@ -578,7 +578,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * the underlying source is queried.
    *
    * ```js
-   * import { BytesReader } from 'internal:stream';
+   * import { BytesReader } from 'fino:stream';
    * class OneByte extends BytesReader {
    *   done = false;
    *   async doRead(_maxBytes) {
@@ -609,7 +609,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * next read. Scanning more than `max` bytes without a delimiter throws.
    *
    * ```js
-   * import { BytesReader } from 'internal:stream';
+   * import { BytesReader } from 'fino:stream';
    * class MemoryReader extends BytesReader {
    *   data = new TextEncoder().encode('ok\\nrest');
    *   async doRead(maxBytes) {
@@ -691,7 +691,7 @@ export abstract class BytesReader extends Reader<Uint8Array> {
  * that need to inspect pipelined data without forcing another read.
  *
  * ```js
- * import { BufferedBytesReader, BytesReader } from 'internal:stream';
+ * import { BufferedBytesReader, BytesReader } from 'fino:stream';
  * class EmptyBytes extends BytesReader { async doRead() { return null; } }
  * const reader = BufferedBytesReader.over(new EmptyBytes());
  * console.log(await reader.peek(1));
@@ -775,7 +775,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * avoid busy loops.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class EmptyBuffered extends BufferedBytesReader {
    *   async doPull() { return null; }
    * }
@@ -795,7 +795,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * consuming `peek()` and `readUntil()` behavior to an unbuffered source.
    *
    * ```js
-   * import { BufferedBytesReader, BytesReader } from 'internal:stream';
+   * import { BufferedBytesReader, BytesReader } from 'fino:stream';
    * class EmptyBytes extends BytesReader { async doRead() { return null; } }
    * const buffered = BufferedBytesReader.over(new EmptyBytes());
    * console.log(buffered.buffered);
@@ -821,7 +821,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * does not over-read from the buffered chunk list.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
    *   async doPull() { if (this.done) return null; this.done = true; return new Uint8Array([1, 2]); }
@@ -864,7 +864,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * underlying resource.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class EmptyBuffered extends BufferedBytesReader { async doPull() { return null; } }
    * console.log(new EmptyBuffered().buffered);
    * ```
@@ -883,7 +883,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * currently buffered. Use `peek()` or `read()` to discover EOF.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class EmptyBuffered extends BufferedBytesReader { async doPull() { return null; } }
    * const reader = new EmptyBuffered();
    * await reader.peek(1);
@@ -903,7 +903,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * can mutate the returned array without changing the internal buffer.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
    *   async doPull() {
@@ -941,7 +941,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * The method can match delimiters that cross chunk boundaries.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class Chunked extends BufferedBytesReader {
    *   chunks = [new Uint8Array([65]), new Uint8Array([10])];
    *   async doPull() { return this.chunks.shift() ?? null; }
@@ -1007,7 +1007,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * buffered. The returned bytes are copied so callers own the buffer.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
    *   async doPull() {
@@ -1045,7 +1045,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * untouched. For `n === 0`, it returns an empty array.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
    *   async doPull() { if (this.done) return null; this.done = true; return new Uint8Array([1]); }
@@ -1077,7 +1077,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * `max` throw.
    *
    * ```js
-   * import { BufferedBytesReader } from 'internal:stream';
+   * import { BufferedBytesReader } from 'fino:stream';
    * class Lines extends BufferedBytesReader {
    *   chunks = [new TextEncoder().encode('a\\n')];
    *   async doPull() { return this.chunks.shift() ?? null; }
@@ -1189,7 +1189,7 @@ export abstract class BufferedBytesReader extends BytesReader {
  * Fatal read errors are treated as EOF by this low-level adapter.
  *
  * ```js
- * import { FdReader } from 'internal:stream';
+ * import { FdReader } from 'fino:stream';
  * const reader = new FdReader(0, () => {});
  * console.log(reader.fd);
  * await reader.close();
@@ -1299,7 +1299,7 @@ export class FdReader extends BufferedBytesReader {
    * half-close, or reference counting in the owning abstraction.
    *
    * ```js
-   * import { FdReader } from 'internal:stream';
+   * import { FdReader } from 'fino:stream';
    * const reader = new FdReader(0, () => console.log('stdin reader closed'));
    * console.log(reader.closed);
    * ```
@@ -1320,7 +1320,7 @@ export class FdReader extends BufferedBytesReader {
    * with the creator; reading this property does not keep the descriptor alive.
    *
    * ```js
-   * import { FdReader } from 'internal:stream';
+   * import { FdReader } from 'fino:stream';
    * const reader = new FdReader(0, () => {});
    * console.log(reader.fd);
    * ```
@@ -1338,7 +1338,7 @@ export class FdReader extends BufferedBytesReader {
    * read failures as EOF.
    *
    * ```js
-   * import { FdReader } from 'internal:stream';
+   * import { FdReader } from 'fino:stream';
    * const reader = new FdReader(0, () => {});
    * console.log(typeof reader.read);
    * ```
@@ -1380,7 +1380,7 @@ export class FdReader extends BufferedBytesReader {
  * unless a subclass overrides it.
  *
  * ```js
- * import { Writer } from 'internal:stream';
+ * import { Writer } from 'fino:stream';
  * class ArrayWriter extends Writer {
  *   values = [];
  *   async write(value) { this.values.push(value); }
@@ -1445,7 +1445,7 @@ export abstract class Writer<T> {
    * failures reject `close()`.
    *
    * ```js
-   * import { Writer } from 'internal:stream';
+   * import { Writer } from 'fino:stream';
    * class NullWriter extends Writer { async write(_value) {} }
    * const writer = new NullWriter(() => console.log('closed'));
    * await writer.close();
@@ -1465,7 +1465,7 @@ export abstract class Writer<T> {
    * before the close callback is awaited.
    *
    * ```js
-   * import { Writer } from 'internal:stream';
+   * import { Writer } from 'fino:stream';
    * class NullWriter extends Writer { async write(_value) {} }
    * const writer = new NullWriter();
    * await writer.close();
@@ -1484,7 +1484,7 @@ export abstract class Writer<T> {
    * `Writer` does not enforce the closed state; byte writers do.
    *
    * ```js
-   * import { Writer } from 'internal:stream';
+   * import { Writer } from 'fino:stream';
    * class ArrayWriter extends Writer {
    *   values = [];
    *   async write(value) { this.values.push(value); }
@@ -1505,7 +1505,7 @@ export abstract class Writer<T> {
    * preserving backpressure. It does not close the writer or the source.
    *
    * ```js
-   * import { Writer } from 'internal:stream';
+   * import { Writer } from 'fino:stream';
    * class ArrayWriter extends Writer {
    *   values = [];
    *   async write(value) { this.values.push(value); }
@@ -1531,7 +1531,7 @@ export abstract class Writer<T> {
    * failures.
    *
    * ```js
-   * import { Writer } from 'internal:stream';
+   * import { Writer } from 'fino:stream';
    * class NullWriter extends Writer { async write(_value) {} }
    * await new NullWriter().flush();
    * ```
@@ -1548,7 +1548,7 @@ export abstract class Writer<T> {
    * buffers should override close to flush first.
    *
    * ```js
-   * import { Writer } from 'internal:stream';
+   * import { Writer } from 'fino:stream';
    * class NullWriter extends Writer { async write(_value) {} }
    * const writer = new NullWriter();
    * await writer.close();
@@ -1582,7 +1582,7 @@ export abstract class Writer<T> {
  * sequential writes and can be overridden for scatter/gather implementations.
  *
  * ```js
- * import { BytesWriter } from 'internal:stream';
+ * import { BytesWriter } from 'fino:stream';
  * class MemoryWriter extends BytesWriter {
  *   chunks = [];
  *   async doWrite(buf) { this.chunks.push(buf.slice()); }
@@ -1602,7 +1602,7 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
    * `Uint8Array` and checked the closed state.
    *
    * ```js
-   * import { BytesWriter } from 'internal:stream';
+   * import { BytesWriter } from 'fino:stream';
    * class MemoryWriter extends BytesWriter {
    *   async doWrite(buf) { console.log(buf.byteLength); }
    * }
@@ -1623,7 +1623,7 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
    * close and forwards errors from `doWrite()`.
    *
    * ```js
-   * import { BytesWriter } from 'internal:stream';
+   * import { BytesWriter } from 'fino:stream';
    * class MemoryWriter extends BytesWriter {
    *   bytes = 0;
    *   async doWrite(buf) { this.bytes += buf.byteLength; }
@@ -1653,7 +1653,7 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
    * system calls. Errors from any individual write abort the sequence.
    *
    * ```js
-   * import { BytesWriter } from 'internal:stream';
+   * import { BytesWriter } from 'fino:stream';
    * class MemoryWriter extends BytesWriter {
    *   bytes = 0;
    *   async doWrite(buf) { this.bytes += buf.byteLength; }
@@ -1689,7 +1689,7 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
  * pending bytes are flushed.
  *
  * ```js
- * import { BufferedBytesWriter, BytesWriter } from 'internal:stream';
+ * import { BufferedBytesWriter, BytesWriter } from 'fino:stream';
  * class Sink extends BytesWriter { async doWrite(_buf) {} }
  * const writer = BufferedBytesWriter.over(new Sink());
  * await writer.write(new Uint8Array([1]));
@@ -1774,7 +1774,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * is invoked after pending bytes are flushed.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
    * const writer = new Sink(() => {}, 1024);
    * await writer.close();
@@ -1797,7 +1797,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * resolves.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter {
    *   async doFlush(buf) { console.log(buf.byteLength); }
    * }
@@ -1817,7 +1817,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * when the wrapper closes. `bufferSize` defaults to 64 KiB.
    *
    * ```js
-   * import { BufferedBytesWriter, BytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter, BytesWriter } from 'fino:stream';
    * class Sink extends BytesWriter { async doWrite(_buf) {} }
    * const buffered = BufferedBytesWriter.over(new Sink(), 4096);
    * await buffered.close();
@@ -1845,7 +1845,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * buffer, flushing first if needed.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
    * await new Sink().write(new Uint8Array([1, 2]));
    * ```
@@ -1875,7 +1875,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * Only safe to call when `buf.byteLength < this.#buf.byteLength`.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter {
    *   async doFlush(_buf) {}
    *   tryAccumulate(buf) { return this._directAccumulate(buf); }
@@ -1901,7 +1901,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * reject the returned promise and the pending count has already been reset.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
    * const writer = new Sink();
    * await writer.write(new Uint8Array([1]));
@@ -1924,7 +1924,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * process exit) without going through the async flush path.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter {
    *   async doFlush(_buf) {}
    *   take() { return this._takePending(); }
@@ -1951,7 +1951,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * through the `finally` block and the flush error is rethrown.
    *
    * ```js
-   * import { BufferedBytesWriter } from 'internal:stream';
+   * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
    * const writer = new Sink();
    * await writer.close();
@@ -1987,7 +1987,7 @@ const COALESCE_LIMIT = 65536;
  * scatter/gather `writev(2)` for large batches.
  *
  * ```js
- * import { FdWriter } from 'internal:stream';
+ * import { FdWriter } from 'fino:stream';
  * const writer = new FdWriter(1, () => {});
  * console.log(writer.fd);
  * await writer.close();
@@ -2095,7 +2095,7 @@ export class FdWriter extends BufferedBytesWriter {
    * half-close, or reference counting in the owning abstraction.
    *
    * ```js
-   * import { FdWriter } from 'internal:stream';
+   * import { FdWriter } from 'fino:stream';
    * const writer = new FdWriter(1, () => console.log('stdout writer closed'));
    * console.log(writer.closed);
    * ```
@@ -2116,7 +2116,7 @@ export class FdWriter extends BufferedBytesWriter {
    * with the creator; reading this property does not keep the descriptor alive.
    *
    * ```js
-   * import { FdWriter } from 'internal:stream';
+   * import { FdWriter } from 'fino:stream';
    * const writer = new FdWriter(1, () => {});
    * console.log(writer.fd);
    * ```
@@ -2132,7 +2132,7 @@ export class FdWriter extends BufferedBytesWriter {
    * (partial writes are accepted on a best-effort basis).
    *
    * ```js
-   * import { FdWriter } from 'internal:stream';
+   * import { FdWriter } from 'fino:stream';
    * const writer = new FdWriter(1, () => {});
    * writer.flushSync();
    * ```
@@ -2160,7 +2160,7 @@ export class FdWriter extends BufferedBytesWriter {
    * `Writer closed during write`; other failures throw `write failed`.
    *
    * ```js
-   * import { FdWriter } from 'internal:stream';
+   * import { FdWriter } from 'fino:stream';
    * const writer = new FdWriter(1, () => {});
    * await writer.write(new Uint8Array());
    * ```
@@ -2196,7 +2196,7 @@ export class FdWriter extends BufferedBytesWriter {
    * failures, and writev errors throw.
    *
    * ```js
-   * import { FdWriter } from 'internal:stream';
+   * import { FdWriter } from 'fino:stream';
    * const writer = new FdWriter(1, () => {});
    * await writer.writev([new Uint8Array(), new Uint8Array()], 2);
    * ```

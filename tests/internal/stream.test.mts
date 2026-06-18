@@ -1,5 +1,13 @@
 import { describe, it } from 'fino:test/test';
-import { BytesReader, BytesWriter } from 'internal:stream';
+import { DiskFileSystem } from 'fino:file';
+import {
+  BufferedBytesReader,
+  BufferedBytesWriter,
+  BytesReader,
+  BytesWriter,
+  FdReader,
+  FdWriter,
+} from 'fino:stream';
 
 class MemoryBytesReader extends BytesReader {
   chunks: Uint8Array[];
@@ -92,6 +100,43 @@ describe('BytesReader', () => {
   });
 });
 
+describe('BufferedBytesReader', () => {
+  it('peek, scanBuffered, and takeBuffered inspect without over-consuming', async (t) => {
+    const reader = BufferedBytesReader.over(new MemoryBytesReader([
+      new Uint8Array([1, 2]),
+      new Uint8Array([3, 4]),
+    ]));
+
+    t.deepEqual([...(await reader.peek(3))], [1, 2, 3], 'peek pulls enough bytes without consuming');
+    t.equal(reader.buffered, 4, 'peek leaves pulled bytes buffered');
+    t.equal(reader.scanBuffered(new Uint8Array([2, 3])), 3, 'scanBuffered matches across chunks');
+    t.deepEqual([...reader.takeBuffered(2)], [1, 2], 'takeBuffered consumes only requested bytes');
+    t.deepEqual([...(await reader.readExactly(2))!], [3, 4], 'remaining buffered bytes stay readable');
+  });
+
+  it('readUntil preserves bytes on short EOF', async (t) => {
+    const reader = BufferedBytesReader.over(new MemoryBytesReader([
+      new TextEncoder().encode('partial'),
+    ]));
+
+    t.equal(await reader.readUntil(new Uint8Array([10])), null, 'missing delimiter returns null');
+    t.equal(reader.buffered, 7, 'short read keeps bytes buffered');
+    t.equal(new TextDecoder().decode(reader.takeBuffered(7)), 'partial', 'caller can recover buffered bytes');
+  });
+
+  it('readUntil consumes through a delimiter', async (t) => {
+    const reader = BufferedBytesReader.over(new MemoryBytesReader([
+      new TextEncoder().encode('hello'),
+      new TextEncoder().encode('\nworld'),
+    ]));
+
+    const line = await reader.readUntil(new Uint8Array([10]));
+
+    t.equal(new TextDecoder().decode(line!), 'hello\n', 'readUntil includes the delimiter');
+    t.equal(new TextDecoder().decode(await reader.readExactly(5)!), 'world', 'tail bytes remain readable');
+  });
+});
+
 describe('BytesWriter', () => {
   it('accepts ArrayBufferView sources with their byte offsets', async (t) => {
     const writer = new MemoryBytesWriter();
@@ -112,5 +157,73 @@ describe('BytesWriter', () => {
       [8, 9],
       [1, 2],
     ], 'writer normalizes ArrayBuffer, DataView, typed-array, and shared-buffer views');
+  });
+
+  it('writev writes selected vectors in order', async (t) => {
+    const writer = new MemoryBytesWriter();
+
+    await writer.writev([
+      new Uint8Array([1]),
+      new Uint8Array([]),
+      new Uint8Array([2, 3]),
+      new Uint8Array([4]),
+    ], 3);
+
+    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [
+      [1],
+      [2, 3],
+    ], 'writev skips empty vectors and honors count');
+  });
+});
+
+describe('BufferedBytesWriter', () => {
+  it('coalesces small writes and flushes on close', async (t) => {
+    const sink = new MemoryBytesWriter();
+    const writer = BufferedBytesWriter.over(sink, 4);
+
+    await writer.write(new Uint8Array([1]));
+    await writer.write(new Uint8Array([2]));
+    t.deepEqual(sink.chunks, [], 'small writes stay buffered before flush');
+
+    await writer.write(new Uint8Array([3, 4, 5]));
+    t.deepEqual(sink.chunks.map((chunk) => [...chunk]), [[1, 2]], 'overflow flushes pending bytes');
+
+    await writer.close();
+    t.deepEqual(sink.chunks.map((chunk) => [...chunk]), [[1, 2], [3, 4, 5]], 'close flushes the remaining bytes');
+    t.ok(sink.closed, 'closing the buffered wrapper closes the target writer');
+  });
+});
+
+describe('FdReader / FdWriter', () => {
+  it('exposes borrowed descriptor metadata', (t) => {
+    const reader = new FdReader(0, () => {});
+    const writer = new FdWriter(1, () => {});
+
+    t.equal(reader.fd, 0, 'FdReader exposes its borrowed fd');
+    t.equal(writer.fd, 1, 'FdWriter exposes its borrowed fd');
+  });
+
+  it('DiskFileSystem writers expose FdWriter.writev', async (t) => {
+    const fs = new DiskFileSystem();
+    const path = `/tmp/fino-stream-writev-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+    const file = await fs.open(path, 'w');
+    try {
+      const writer = file.writer();
+      t.ok(writer instanceof FdWriter, 'file.writer() returns an FdWriter');
+
+      await writer.writev([
+        new TextEncoder().encode('ab'),
+        new TextEncoder().encode('cd'),
+      ]);
+      await writer.close();
+    } finally {
+      await file.close();
+    }
+
+    try {
+      t.equal(await fs.readFile(path), 'abcd', 'FdWriter.writev writes all vectors in order');
+    } finally {
+      await fs.unlink(path).catch(() => {});
+    }
   });
 });
