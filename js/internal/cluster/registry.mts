@@ -185,6 +185,25 @@ export class RealmRegistry {
   }
 
   /**
+   * Return the parent port ID for a registered port.
+   *
+   * Root ports return `null`, and unknown ports return `undefined`. Seed
+   * routing uses this before removing an exited child so the parent host can be
+   * notified after the registry entry is gone.
+   *
+   * ```ts
+   * import { RealmRegistry } from 'internal:cluster/registry';
+   * const registry = new RealmRegistry();
+   * registry.register('node-a/p-parent', null, 'node-a');
+   * registry.register('node-b/p-child', 'node-a/p-parent', 'node-b');
+   * registry.getParentPortId('node-b/p-child');
+   * ```
+   */
+  getParentPortId(portId: string): string | null | undefined {
+    return this.#ports.get(portId)?.parentPortId;
+  }
+
+  /**
    * Return direct child port IDs for a parent port.
    *
    * The returned array is a snapshot and can be mutated by the caller without

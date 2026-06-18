@@ -2708,6 +2708,7 @@ export class Realm<F extends RealmFn = RealmFn> {
             const idx = _activeChildren.indexOf(entry);
             if (idx >= 0) _activeChildren.splice(idx, 1);
             if (error) reject(new Error(error));
+            else reject(new Error('Realm exited before returning a call result'));
           });
           const handler = (ev: unknown) => {
             const data = (ev as { data?: unknown }).data;

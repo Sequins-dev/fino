@@ -368,7 +368,12 @@ export class SeedServer {
 
       case 'REALM_EXIT': {
         const portId = msg.realmId; // realmId doubles as the child's portId
+        const parentPortId = this.#registry.getParentPortId(portId);
         const removed = this.#registry.exit(portId);
+        if (parentPortId) {
+          const parentHostId = this.#portNodes.get(parentPortId);
+          if (parentHostId) this.#transport.send(parentHostId, msg);
+        }
         // Propagate TERMINATE to every node hosting a descendant of the exiting
         // realm, mirroring the crash path in #handleNodeDown.  The exiting realm
         // itself has already left - skip it (p !== portId) to avoid redundant

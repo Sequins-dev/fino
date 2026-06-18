@@ -237,6 +237,7 @@ export class ClusterClient {
    * @internal
    */
   #exitHandlers = new Map<string, (error?: string) => void>(); // childPortId -> exit callback
+  #exitedRealms = new Map<string, string | undefined>(); // childPortId -> optional error
   /**
    * Private property `#pendingSpawns` used by `ClusterClient`.
    *
@@ -389,6 +390,12 @@ export class ClusterClient {
    * ```
    */
   onRealmExit(childPortId: string, handler: (error?: string) => void): void {
+    if (this.#exitedRealms.has(childPortId)) {
+      const error = this.#exitedRealms.get(childPortId);
+      this.#exitedRealms.delete(childPortId);
+      Promise.resolve().then(() => handler(error));
+      return;
+    }
     this.#exitHandlers.set(childPortId, handler);
   }
 
@@ -578,6 +585,8 @@ export class ClusterClient {
         if (handler) {
           this.#exitHandlers.delete(msg.realmId);
           handler(msg.error);
+        } else {
+          this.#exitedRealms.set(msg.realmId, msg.error);
         }
         break;
       }
@@ -702,6 +711,7 @@ export class ClusterClient {
 
     const finalize = () => {
       if (relay.closed) return;
+      this.#drainInbound(relay, () => {});
       relay.closed = true;
       removeRead(wakeReadFd);
       this.#relays.delete(relay.childPortId);
@@ -718,6 +728,7 @@ export class ClusterClient {
       if (relay.closed) { clearInterval(stepInterval); return; }
       try {
         const alive = (stepThreadContext(threadHandle) as boolean) !== false;
+        if (!relay.closed) this.#drainInbound(relay, finalize);
         if (!alive) finalize();
       } catch (err: unknown) {
         stepError = String(err);

@@ -103,10 +103,7 @@ Status: DONE
 Status: DONE
 
 ## Cluster
-Status: Needs work
-- Add public integration coverage for `startCluster()`, `joinCluster()`, `leaveCluster()`, and `new Realm({ remote: true }).call()` over the real WebSocket cluster path.
-- Resolve public export intent for `ClusterPort` and `getCluster`.
-- Replace or expand `benchmarks/cluster.bench.mts` so it covers documented public cluster operations.
+Status: DONE
 
 ## Testing
 Status: DONE

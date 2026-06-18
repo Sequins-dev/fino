@@ -70,6 +70,15 @@ describe('RealmRegistry', () => {
     t.equal(children.length, 2, 'exactly 2 children');
   });
 
+  it('getParentPortId returns the parent edge', (t) => {
+    const reg = new RealmRegistry();
+    reg.register('parent', null, 'node1');
+    reg.register('child', 'parent', 'node2');
+    t.equal(reg.getParentPortId('parent'), null, 'root port has null parent');
+    t.equal(reg.getParentPortId('child'), 'parent', 'child returns parent port');
+    t.equal(reg.getParentPortId('missing'), undefined, 'unknown port returns undefined');
+  });
+
   it('exit of parent removes portId from parent-of-parent children set', (t) => {
     const reg = new RealmRegistry();
     reg.register('root', null, 'n1');

@@ -33,8 +33,8 @@ import { WebSocketSeedTransport, WebSocketWorkerTransport } from 'internal:clust
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 
-// Re-export ClusterPort as a public type so fino:realm can import it from
-// fino:cluster rather than reaching into internal:cluster/client directly.
+// Internal support export for fino:realm. Application code should use
+// startCluster(), joinCluster(), leaveCluster(), and Realm({ remote: true }).
 export { ClusterPort };
 
 // ---------------------------------------------------------------------------
@@ -197,9 +197,9 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
  * Return the active cluster client, or null if not connected.
  * Used by `fino:realm` to route `remote: true` realm creation.
  *
- * Application code usually does not need the client directly. The return value
- * is `null` before `startCluster()` or `joinCluster()` succeeds and after
- * `leaveCluster()` runs.
+ * This is an internal support hook for `fino:realm`; application code usually
+ * does not need the client directly. The return value is `null` before
+ * `startCluster()` or `joinCluster()` succeeds and after `leaveCluster()` runs.
  *
  * ```ts no_run
  * import { getCluster } from 'fino:cluster';

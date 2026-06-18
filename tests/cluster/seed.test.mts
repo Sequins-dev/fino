@@ -212,6 +212,27 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     t.equal(terminates.length, 0, 'no TERMINATE sent — exiting realm had no descendants');
   });
 
+  it('REALM_EXIT is forwarded to the parent host', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+
+    transport.inject('worker-1', {
+      t: 'SPAWN', spawnReqId: 'r-parent-exit', parentPortId: 'worker-1/p-11',
+      config: { entry: './fn.mts', root: '', rules: [] },
+    });
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK', spawnReqId: 'r-parent-exit', childPortId: 'worker-2/11', ok: true,
+    });
+    transport.sent = [];
+
+    transport.inject('worker-2', { t: 'REALM_EXIT', realmId: 'worker-2/11' });
+
+    const exits = transport.sent.filter(s => s.to === 'worker-1' && s.msg.t === 'REALM_EXIT');
+    t.equal(exits.length, 1, 'REALM_EXIT forwarded to parent host');
+    t.equal((exits[0]!.msg as { realmId: string }).realmId, 'worker-2/11', 'child realmId preserved');
+  });
+
   it('REALM_EXIT sends TERMINATE to nodes hosting grandchildren', (t) => {
     const { transport } = makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
