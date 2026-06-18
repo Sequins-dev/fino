@@ -1,5 +1,5 @@
 /**
- * fino:abort — AbortController and AbortSignal (WHATWG DOM spec)
+ * internal:globals/abort — AbortController and AbortSignal globals.
  *
  * AbortController / AbortSignal is the cancellation primitive used across
  * the web platform: fetch(), stream readers, and any API that accepts a
@@ -10,7 +10,7 @@
  * ## AbortSignal extends EventTarget
  *
  * AbortSignal inherits addEventListener / removeEventListener / dispatchEvent
- * from `fino:eventtarget`. The abort event is dispatched as a proper Event
+ * from the EventTarget global implementation. The abort event is dispatched as a proper Event
  * instance. The `onabort` IDL event handler fires before registered listeners
  * (consistent with browsers and the previous ad-hoc implementation).
  *

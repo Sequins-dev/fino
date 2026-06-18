@@ -1,5 +1,5 @@
 /**
- * fino:encoding — UTF-8 TextEncoder / TextDecoder (WHATWG Encoding Standard)
+ * internal:globals/encoding — UTF-8 TextEncoder / TextDecoder globals.
  *
  * This module provides two layers:
  *

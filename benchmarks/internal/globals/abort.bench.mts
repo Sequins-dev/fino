@@ -1,10 +1,9 @@
 /**
- * Benchmarks for fino:abort
+ * Benchmarks for AbortController and AbortSignal globals
  *
  * Run with: cargo run -- --bench benchmarks/abort.bench.mjs
  */
 
-import { AbortController, AbortSignal } from 'fino:abort';
 import { bench } from 'fino:bench';
 
 bench('AbortController / AbortSignal creation', (b) => {

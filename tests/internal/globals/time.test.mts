@@ -1,9 +1,9 @@
 /**
- * Tests for fino:time — setTimeout, setInterval, clearTimeout, clearInterval,
+ * Tests for timer globals: setTimeout, setInterval, clearTimeout, clearInterval,
  * queueMicrotask, and performance.now().
  *
- * Also tests atob/btoa (fino:encoding) and structuredClone (fino:encoding),
- * and console.count / console.countReset (fino:console).
+ * Also tests atob/btoa, structuredClone, console.count, and
+ * console.countReset as globals.
  */
 
 import { describe, it } from 'fino:test/test';

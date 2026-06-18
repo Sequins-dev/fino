@@ -21,7 +21,7 @@
  * bridges the gap between JS and the OS by opening libc and exposing
  * `write(2)` directly.
  *
- * By centralising this here, other modules (`fino:console`, etc.) don't each
+ * By centralising this here, other modules (the console global, etc.) don't each
  * need to open libc themselves for simple output needs. Modules that need more
  * libc functions (sockets, files, etc.) open libc themselves with their
  * specific function signatures.
@@ -43,7 +43,7 @@
  * Both `printfRaw` and `writeLine` ultimately write to stdout, but via
  * different C functions. `writeLine` uses `write(2)` which is the raw POSIX
  * syscall wrapper — it writes exactly the bytes given, no formatting. This is
- * what `fino:console` uses because it formats strings in JS first.
+ * what the console global uses because it formats strings in JS first.
  *
  * `printfRaw` uses `printf(3)` and is provided as an alternative for cases
  * where the C-level buffering of printf is acceptable. The string must not

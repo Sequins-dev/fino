@@ -1,11 +1,10 @@
 
 /**
- * Benchmarks for fino:url
+ * Benchmarks for URL and URLSearchParams globals
  *
  * Run with: cargo run -- --bench benchmarks/url.bench.mjs
  */
 
-import { URL, URLSearchParams } from 'fino:url';
 import { bench } from 'fino:bench';
 
 bench('URL parsing', (b) => {

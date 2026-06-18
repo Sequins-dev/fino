@@ -1,10 +1,9 @@
 /**
- * Benchmarks for fino:blob
+ * Benchmarks for Blob and File globals
  *
  * Run with: cargo run -- --bench benchmarks/blob.bench.mjs
  */
 
-import { Blob, File } from 'fino:blob';
 import { bench } from 'fino:bench';
 
 const KB_STR    = 'x'.repeat(1024);

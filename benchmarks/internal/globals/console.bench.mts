@@ -1,5 +1,5 @@
 /**
- * Benchmarks for fino:console
+ * Benchmarks for the console global
  *
  * Run with: cargo run -- --bench benchmarks/console.bench.mjs
  *
@@ -9,7 +9,6 @@
  *   cargo run -- --bench benchmarks/console.bench.mjs 2>/dev/null
  */
 
-import console from 'fino:console';
 import { bench } from 'fino:bench';
 
 // Pre-build test values to isolate formatting cost from allocation

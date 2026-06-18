@@ -1,5 +1,5 @@
 /**
- * Tests for fino:encoding —
+ * Tests for encoding globals:
  * TextEncoder, TextDecoder, btoa, atob, structuredClone.
  */
 

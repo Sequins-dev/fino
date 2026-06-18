@@ -1,5 +1,5 @@
 /**
- * Tests for URLPattern (fino:urlpattern / globalThis).
+ * Tests for the URLPattern global.
  */
 
 import { describe, it } from 'fino:test/test';

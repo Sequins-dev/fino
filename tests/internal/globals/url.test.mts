@@ -1,5 +1,5 @@
 /**
- * Tests for fino:url — URL and URLSearchParams.
+ * Tests for URL and URLSearchParams globals.
  */
 
 import { describe, it } from 'fino:test/test';

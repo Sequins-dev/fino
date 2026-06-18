@@ -1,11 +1,10 @@
 
 /**
- * Benchmarks for fino:formdata
+ * Benchmarks for the FormData global
  *
  * Run with: cargo run -- --bench benchmarks/formdata.bench.mts
  */
 
-import { FormData } from 'fino:formdata';
 import { bench } from 'fino:bench';
 
 function fdWith(n: number): FormData {

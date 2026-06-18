@@ -1,11 +1,10 @@
 
 /**
- * Benchmarks for fino:urlpattern
+ * Benchmarks for the URLPattern global
  *
  * Run with: cargo run -- --bench benchmarks/urlpattern.bench.mjs
  */
 
-import { URLPattern } from 'fino:urlpattern';
 import { bench } from 'fino:bench';
 
 bench('URLPattern construction', (b) => {

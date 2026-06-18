@@ -1,5 +1,5 @@
 /**
- * Tests for FormData (fino:formdata / globalThis).
+ * Tests for the FormData global.
  */
 
 import { describe, it } from 'fino:test/test';

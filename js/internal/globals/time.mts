@@ -1,5 +1,5 @@
 /**
- * fino:time — Timer globals and performance.now().
+ * internal:globals/time — timer globals and performance.now().
  *
  * Implements the web-standard timer API:
  *   - `setTimeout(fn, ms, ...args)`  → integer id
@@ -9,11 +9,10 @@
  *   - `queueMicrotask(fn)`
  *   - `performance.now()`            → milliseconds (float, monotonic)
  *
- * All timer functions are automatically installed on `globalThis` when this
- * module is first imported, so importing the module is sufficient:
+ * All timer functions are automatically installed on `globalThis` before
+ * user scripts run:
  *
  * ```ts no_run
- *   import 'fino:time';
  *   setTimeout(() => console.log('hi'), 500);
  * ```
  *

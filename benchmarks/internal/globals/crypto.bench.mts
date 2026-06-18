@@ -1,5 +1,5 @@
 /**
- * Benchmarks for fino:crypto
+ * Benchmarks for the crypto global
  *
  * Run with: cargo run -- --bench benchmarks/crypto.bench.mts
  *
@@ -10,8 +10,9 @@
  * - Raw key bytes are generated once at module level using getRandomValues() (sync).
  */
 
-import { crypto } from 'fino:crypto';
 import { bench } from 'fino:bench';
+
+const crypto = globalThis.crypto;
 
 // Pre-generate raw key material synchronously — used in async import inside fn
 const HMAC_KEY_BYTES = new Uint8Array(32);

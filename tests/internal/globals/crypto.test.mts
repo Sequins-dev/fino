@@ -1,5 +1,5 @@
 /**
- * Tests for fino:crypto — Web Crypto API backed by OpenSSL FFI.
+ * Tests for the crypto global — Web Crypto API backed by OpenSSL FFI.
  *
  * All tests skip gracefully when OpenSSL is not available, so the test suite
  * passes on systems without OpenSSL installed.

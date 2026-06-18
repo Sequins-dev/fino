@@ -1,5 +1,5 @@
 /**
- * fino:global — web-standard globals registry.
+ * internal:globals/global — web-standard globals registry.
  *
  * This module is a barrel re-export that collects all web-platform APIs that
  * should be available as globals. It serves two purposes:
@@ -8,19 +8,18 @@
  *    assigns each export onto `globalThis`, making them available without an
  *    explicit import in user scripts (just like browsers and Node.js).
  *
- * 2. **Explicit import** — userland code can import from `fino:global`
- *    directly if it needs a named import that is guaranteed to be the same
- *    object as the global, or if the script is running in a context where
- *    globals aren't set up yet.
+ * 2. **Internal collection** — runtime bootstrap imports this module to keep
+ *    global registration centralized without exposing duplicate public module
+ *    names for APIs that are already globals.
  *
  *
  * ## Why a separate module?
  *
  * Separating global registration from the individual module implementations
- * keeps each module self-contained and independently importable. `fino:url`
- * doesn't know or care that `URL` ends up on `globalThis` — that is
- * `fino:global`'s concern. This also makes it easy to add or remove globals:
- * add an export here and `internal/main.mjs`'s assignment loop picks it up.
+ * keeps each module self-contained. The URL implementation does not need to
+ * know or care that `URL` ends up on `globalThis`; that is this registry's
+ * concern. This also makes it easy to add or remove globals: add an export
+ * here and `internal/main.mjs`'s assignment loop picks it up.
  *
  *
  * ## What is NOT here

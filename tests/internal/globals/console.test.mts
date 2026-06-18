@@ -1,5 +1,5 @@
 /**
- * Tests for fino:console.
+ * Tests for the console global.
  *
  * Since console output goes directly to fd 1/2 via libc (not capturable in
  * tests), these tests focus on behavioral correctness: functions are callable,

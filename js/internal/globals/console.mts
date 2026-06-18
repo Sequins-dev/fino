@@ -1,10 +1,10 @@
 /**
- * fino:console — standard Console API implemented in JS via fino:libc.
+ * internal:globals/console — standard Console API installed on globalThis.
  *
  * Provides `console.log`, `warn`, `error`, `info`, `debug`, `assert`,
  * `dir`, `table`, `group`, `groupCollapsed`, `groupEnd`, `time`, `timeEnd`,
  * and `timeLog`. Output goes to stdout (fd 1) or stderr (fd 2) through
- * `writeLine()` from `fino:libc`, which calls `write(2)` directly.
+ * `writeLine()` from `internal:runtime/libc`, which calls `write(2)` directly.
  *
  * **Why JS instead of Rust?**
  * Implementing console in JS keeps all output on a single path through
@@ -52,16 +52,13 @@
  *
  * - `console.table()` currently falls back to JSON.stringify. A proper
  *   column-aligned table renderer would be a good first contribution.
- * - `console.count()` / `console.countReset()` are stubs. Add a counter
- *   Map if you need them.
+ * - `console.count()` and `console.countReset()` maintain per-label counters.
  * - Do not switch output to process.stdout streams — the direct `writeLine`
  *   call is intentional (no buffering, works before the event loop starts).
  *
  * ## Example
  *
  * ```typescript no_run
- * import { console } from 'internal:globals/console';
- *
  * console.group('request');
  * console.log({ method: 'GET', url: '/health' });
  * console.time('work');

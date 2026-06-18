@@ -1,5 +1,5 @@
 /**
- * fino:urlpattern — URLPattern (WHATWG URL Pattern API)
+ * internal:globals/urlpattern — URLPattern global (WHATWG URL Pattern API)
  *
  * URLPattern lets you declare a pattern for URL matching and then test or
  * match URLs against it. It is used primarily in HTTP routing (matching

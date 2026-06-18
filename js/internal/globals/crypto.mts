@@ -1,5 +1,5 @@
 /**
- * fino:crypto — Web Crypto API.
+ * internal:globals/crypto — Web Crypto API global.
  *
  * Implements a useful subset of the W3C Web Cryptography API:
  *

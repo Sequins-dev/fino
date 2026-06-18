@@ -1,10 +1,9 @@
 /**
- * Benchmarks for fino:time
+ * Benchmarks for timer and performance globals
  *
  * Run with: cargo run -- --bench benchmarks/time.bench.mts
  */
 
-import { setTimeout, clearTimeout, setInterval, clearInterval, performance } from 'fino:time';
 import { bench } from 'fino:bench';
 
 bench('performance.now()', (b) => {

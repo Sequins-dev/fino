@@ -1,5 +1,5 @@
 /**
- * fino:blob — Blob and File (WHATWG File API)
+ * internal:globals/blob — Blob and File globals (WHATWG File API)
  *
  * `Blob` is an immutable byte sequence with an associated MIME type. It is
  * the standard way to carry binary data in web APIs: fetch Request/Response

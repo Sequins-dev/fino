@@ -1,41 +1,42 @@
 
 /**
- * Benchmarks for fino:encoding
+ * Benchmarks for Encoding globals
  *
  * Run with: cargo run -- --bench benchmarks/encoding.bench.mjs
  */
 
-import { encodeUtf8, decodeUtf8, TextEncoder, TextDecoder, btoa, atob, structuredClone } from 'fino:encoding';
 import { bench } from 'fino:bench';
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 const SMALL_ASCII  = 'hello, world!!!';                     // 15 bytes
 const KB_ASCII     = 'a'.repeat(1024);
 const LARGE_ASCII  = 'a'.repeat(65536);
-const MIXED        = 'Hello Ã©Ã¨ä¸–ç•Œí ½í¸€'.repeat(50);
+const MIXED        = 'Hello e-world'.repeat(50);
 
-const SMALL_BYTES  = encodeUtf8(SMALL_ASCII);
-const KB_BYTES     = encodeUtf8(KB_ASCII);
-const LARGE_BYTES  = encodeUtf8(LARGE_ASCII);
-const MIXED_BYTES  = encodeUtf8(MIXED);
+const SMALL_BYTES  = encoder.encode(SMALL_ASCII);
+const KB_BYTES     = encoder.encode(KB_ASCII);
+const LARGE_BYTES  = encoder.encode(LARGE_ASCII);
+const MIXED_BYTES  = encoder.encode(MIXED);
 
-bench('encodeUtf8 by size', (b) => {
-  b.measure('ascii 15 bytes',  () => encodeUtf8(SMALL_ASCII));
-  b.measure('ascii 1KB',       () => encodeUtf8(KB_ASCII));
-  b.measure('ascii 64KB',      () => encodeUtf8(LARGE_ASCII));
-  b.measure('mixed unicode',   () => encodeUtf8(MIXED));
+bench('TextEncoder.encode by size', (b) => {
+  b.measure('ascii 15 bytes',  () => encoder.encode(SMALL_ASCII));
+  b.measure('ascii 1KB',       () => encoder.encode(KB_ASCII));
+  b.measure('ascii 64KB',      () => encoder.encode(LARGE_ASCII));
+  b.measure('mixed unicode',   () => encoder.encode(MIXED));
 });
 
-bench('decodeUtf8 by size', (b) => {
-  b.measure('ascii 15 bytes',  () => decodeUtf8(SMALL_BYTES));
-  b.measure('ascii 1KB',       () => decodeUtf8(KB_BYTES));
-  b.measure('ascii 64KB',      () => decodeUtf8(LARGE_BYTES));
-  b.measure('mixed unicode',   () => decodeUtf8(MIXED_BYTES));
+bench('TextDecoder.decode by size', (b) => {
+  b.measure('ascii 15 bytes',  () => decoder.decode(SMALL_BYTES));
+  b.measure('ascii 1KB',       () => decoder.decode(KB_BYTES));
+  b.measure('ascii 64KB',      () => decoder.decode(LARGE_BYTES));
+  b.measure('mixed unicode',   () => decoder.decode(MIXED_BYTES));
 });
 
-bench('TextEncoder vs encodeUtf8', (b) => {
+bench('TextEncoder', (b) => {
   const enc = new TextEncoder();
   b.group('1KB string', (g) => {
-    g.measure('encodeUtf8', () => encodeUtf8(KB_ASCII));
     g.measure('TextEncoder.encode', () => enc.encode(KB_ASCII));
   });
 

@@ -1,5 +1,5 @@
 /**
- * fino:eventtarget — Event, CustomEvent, and EventTarget
+ * internal:globals/eventtarget — Event, CustomEvent, and EventTarget globals
  *
  * Pure JS implementation of the WHATWG EventTarget interface:
  * https://dom.spec.whatwg.org/#interface-eventtarget

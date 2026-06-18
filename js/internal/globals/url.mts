@@ -1,5 +1,5 @@
 /**
- * fino:url — WHATWG URL and URLSearchParams implementation.
+ * internal:globals/url — WHATWG URL and URLSearchParams globals.
  *
  * This is a pure-JS implementation of the WHATWG URL Standard
  * (https://url.spec.whatwg.org/). It handles absolute URL parsing, relative

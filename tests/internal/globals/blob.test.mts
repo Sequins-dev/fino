@@ -1,5 +1,5 @@
 /**
- * Tests for Blob and File (fino:blob / globalThis).
+ * Tests for Blob and File globals.
  */
 
 import { describe, it } from 'fino:test/test';

@@ -1,5 +1,5 @@
 /**
- * fino:formdata — FormData (WHATWG XHR / Fetch spec)
+ * internal:globals/formdata — FormData global (WHATWG XHR / Fetch spec)
  *
  * `FormData` is the standard representation of an HTML form submission. It
  * holds an ordered list of name/value entries where values are either strings

@@ -1,5 +1,5 @@
 /**
- * fino:fetch — spec-compliant Fetch API implementation.
+ * internal:globals/fetch — spec-compliant Fetch API global implementation.
  *
  * Implements the WHATWG Fetch spec's core flow:
  *   - HTTP and HTTPS support (plain TCP and TLS)

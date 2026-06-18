@@ -1,11 +1,10 @@
 
 /**
- * Benchmarks for fino:eventtarget
+ * Benchmarks for EventTarget and Event globals
  *
  * Run with: cargo run -- --bench benchmarks/eventtarget.bench.mjs
  */
 
-import { EventTarget, Event, CustomEvent } from 'fino:eventtarget';
 import { bench } from 'fino:bench';
 
 bench('Event construction', (b) => {

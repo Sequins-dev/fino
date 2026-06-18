@@ -6,7 +6,7 @@
  *   - `h2Version`:   library version string, or null if unavailable
  *
  * The H2 server and client drivers are wired into `fino:net/http/server` and
- * `fino:fetch` automatically; applications do not import this module unless
+ * the global `fetch` implementation automatically; applications do not import this module unless
  * they need to check library availability.
  *
  * @example
