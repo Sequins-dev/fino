@@ -48,9 +48,9 @@ import type {
 import { getActiveSpanContext } from './traces.mts';
 
 /**
- * MeterProvider class used by the internal OpenTelemetry runtime.
+ * MeterProvider class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = MeterProvider;
@@ -76,9 +76,9 @@ export class MeterProvider extends BaseProvider {
 }
 
 /**
- * Counter class used by the internal OpenTelemetry runtime.
+ * Counter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Counter;
@@ -146,9 +146,9 @@ export class Counter {
 }
 
 /**
- * UpDownCounter class used by the internal OpenTelemetry runtime.
+ * UpDownCounter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = UpDownCounter;
@@ -219,9 +219,9 @@ export class UpDownCounter {
 const DEFAULT_HISTOGRAM_BOUNDARIES = [0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000];
 
 /**
- * HistogramInstrument class used by the internal OpenTelemetry runtime.
+ * HistogramInstrument class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = HistogramInstrument;
@@ -302,9 +302,9 @@ export class HistogramInstrument {
 }
 
 /**
- * ObservableGauge class used by the internal OpenTelemetry runtime.
+ * ObservableGauge class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = ObservableGauge;
@@ -350,9 +350,9 @@ export class ObservableGauge {
 }
 
 /**
- * Gauge class used by the internal OpenTelemetry runtime.
+ * Gauge class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Gauge;
@@ -420,9 +420,9 @@ export class Gauge {
 }
 
 /**
- * ObservableCounter class used by the internal OpenTelemetry runtime.
+ * ObservableCounter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = ObservableCounter;
@@ -430,9 +430,9 @@ export class Gauge {
  */
 export class ObservableCounter extends ObservableGauge {}
 /**
- * ObservableUpDownCounter class used by the internal OpenTelemetry runtime.
+ * ObservableUpDownCounter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = ObservableUpDownCounter;
@@ -440,9 +440,9 @@ export class ObservableCounter extends ObservableGauge {}
  */
 export class ObservableUpDownCounter extends ObservableGauge {}
 /**
- * Histogram const used by the internal OpenTelemetry runtime.
+ * Histogram const exposed by the OpenTelemetry API.
  *
- * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value = Histogram;
@@ -451,9 +451,9 @@ export class ObservableUpDownCounter extends ObservableGauge {}
 export const Histogram = HistogramInstrument;
 
 /**
- * Meter class used by the internal OpenTelemetry runtime.
+ * Meter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Meter;
@@ -715,9 +715,9 @@ export class Meter {
 }
 
 /**
- * cloneMetric function used by the internal OpenTelemetry runtime.
+ * cloneMetric function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = cloneMetric;
@@ -756,9 +756,9 @@ export function cloneMetric(metric: MetricRecord): MetricRecord {
 }
 
 /**
- * zeroMetric function used by the internal OpenTelemetry runtime.
+ * zeroMetric function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = zeroMetric;
@@ -788,9 +788,9 @@ function sortAttributeEntries(attributes: Attributes): Array<[string, unknown]> 
 }
 
 /**
- * attributesKey function used by the internal OpenTelemetry runtime.
+ * attributesKey function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = attributesKey;
@@ -801,9 +801,9 @@ export function attributesKey(attributes: Attributes): string {
 }
 
 /**
- * normalizeMetricKind function used by the internal OpenTelemetry runtime.
+ * normalizeMetricKind function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = normalizeMetricKind;
@@ -816,9 +816,9 @@ export function normalizeMetricKind(kind: string | undefined): string {
 }
 
 /**
- * metricInstrumentKey function used by the internal OpenTelemetry runtime.
+ * metricInstrumentKey function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = metricInstrumentKey;
@@ -829,9 +829,9 @@ export function metricInstrumentKey(metric: MetricRecord): string {
 }
 
 /**
- * metricSeriesKey function used by the internal OpenTelemetry runtime.
+ * metricSeriesKey function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = metricSeriesKey;
@@ -905,9 +905,9 @@ function initializeAggregate(metric: MetricRecord): MetricRecord {
 }
 
 /**
- * accumulateMetric function used by the internal OpenTelemetry runtime.
+ * accumulateMetric function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = accumulateMetric;
@@ -940,9 +940,9 @@ export function accumulateMetric(store: Map<string, MetricRecord>, key: string, 
 }
 
 /**
- * applyMetricView function used by the internal OpenTelemetry runtime.
+ * applyMetricView function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = applyMetricView;
@@ -991,9 +991,9 @@ const meterProviderContext = new Context<MeterProvider | null>('otel:meter-provi
 let defaultMeterProvider = new MeterProvider();
 
 /**
- * getMeterProvider function used by the internal OpenTelemetry runtime.
+ * getMeterProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = getMeterProvider;
@@ -1004,9 +1004,9 @@ export function getMeterProvider(): MeterProvider {
 }
 
 /**
- * setMeterProvider function used by the internal OpenTelemetry runtime.
+ * setMeterProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = setMeterProvider;
@@ -1017,9 +1017,9 @@ export function setMeterProvider(provider: MeterProvider): void {
 }
 
 /**
- * runWithMeterProvider function used by the internal OpenTelemetry runtime.
+ * runWithMeterProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithMeterProvider;
@@ -1030,9 +1030,9 @@ export function runWithMeterProvider<R>(provider: MeterProvider, fn: () => R): R
 }
 
 /**
- * runWithoutMeterProvider function used by the internal OpenTelemetry runtime.
+ * runWithoutMeterProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithoutMeterProvider;

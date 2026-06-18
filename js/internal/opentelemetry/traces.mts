@@ -59,9 +59,9 @@ import type {
 } from './common.mts';
 
 /**
- * Sampler class used by the internal OpenTelemetry runtime.
+ * Sampler class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Sampler;
@@ -83,9 +83,9 @@ export class Sampler {
 }
 
 /**
- * AlwaysOnSampler class used by the internal OpenTelemetry runtime.
+ * AlwaysOnSampler class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = AlwaysOnSampler;
@@ -94,9 +94,9 @@ export class Sampler {
 export class AlwaysOnSampler extends Sampler {}
 
 /**
- * TracerProvider class used by the internal OpenTelemetry runtime.
+ * TracerProvider class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = TracerProvider;
@@ -122,9 +122,9 @@ export class TracerProvider extends BaseProvider {
 }
 
 /**
- * Span class used by the internal OpenTelemetry runtime.
+ * Span class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Span;
@@ -493,9 +493,9 @@ export class Span {
 }
 
 /**
- * Tracer class used by the internal OpenTelemetry runtime.
+ * Tracer class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Tracer;
@@ -606,9 +606,9 @@ export class Tracer {
 
 
 /**
- * applySpanLimits function used by the internal OpenTelemetry runtime.
+ * applySpanLimits function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = applySpanLimits;
@@ -661,9 +661,9 @@ export function applySpanLimits(span: SpanRecord, limits: SpanLimits = {}): Span
 }
 
 /**
- * isScopedTraceTopic function used by the internal OpenTelemetry runtime.
+ * isScopedTraceTopic function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = isScopedTraceTopic;
@@ -687,9 +687,9 @@ const activeSpanContext = new Context<Span>('otel:active-span');
 let defaultTracerProvider = new TracerProvider();
 
 /**
- * getTracerProvider function used by the internal OpenTelemetry runtime.
+ * getTracerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = getTracerProvider;
@@ -700,9 +700,9 @@ export function getTracerProvider(): TracerProvider {
 }
 
 /**
- * setTracerProvider function used by the internal OpenTelemetry runtime.
+ * setTracerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = setTracerProvider;
@@ -713,9 +713,9 @@ export function setTracerProvider(provider: TracerProvider): void {
 }
 
 /**
- * runWithTracerProvider function used by the internal OpenTelemetry runtime.
+ * runWithTracerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithTracerProvider;
@@ -726,9 +726,9 @@ export function runWithTracerProvider<R>(provider: TracerProvider, fn: () => R):
 }
 
 /**
- * runWithoutTracerProvider function used by the internal OpenTelemetry runtime.
+ * runWithoutTracerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithoutTracerProvider;
@@ -739,9 +739,9 @@ export function runWithoutTracerProvider<R>(fn: () => R): R {
 }
 
 /**
- * isTracerProviderContextEnabled function used by the internal OpenTelemetry runtime.
+ * isTracerProviderContextEnabled function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = isTracerProviderContextEnabled;
@@ -752,9 +752,9 @@ export function isTracerProviderContextEnabled(): boolean {
 }
 
 /**
- * getActiveSpan function used by the internal OpenTelemetry runtime.
+ * getActiveSpan function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = getActiveSpan;
@@ -765,9 +765,9 @@ export function getActiveSpan(): Span | undefined {
 }
 
 /**
- * getActiveSpanContext function used by the internal OpenTelemetry runtime.
+ * getActiveSpanContext function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = getActiveSpanContext;
@@ -794,9 +794,9 @@ export function getActiveSpanContext(): TraceContext | null {
 }
 
 /**
- * runWithActiveSpan function used by the internal OpenTelemetry runtime.
+ * runWithActiveSpan function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithActiveSpan;

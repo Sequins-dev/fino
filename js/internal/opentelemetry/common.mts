@@ -34,9 +34,9 @@ import { topic } from '../../context/topic.mts';
 export { topic } from '../../context/topic.mts';
 
 /**
- * Attributes type used by the internal OpenTelemetry runtime.
+ * Attributes type exposed by the OpenTelemetry API.
  *
- * Documents the type's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: Attributes = {} as Attributes;
@@ -44,9 +44,9 @@ export { topic } from '../../context/topic.mts';
  */
 export type Attributes = Record<string, unknown>;
 /**
- * ScopeInfo type used by the internal OpenTelemetry runtime.
+ * ScopeInfo type exposed by the OpenTelemetry API.
  *
- * Documents the type's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ScopeInfo = {} as ScopeInfo;
@@ -56,7 +56,7 @@ export type ScopeInfo = {
   /**
    * name property on ScopeInfo.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ScopeInfo['name'];
@@ -66,7 +66,7 @@ export type ScopeInfo = {
   /**
    * version property on ScopeInfo.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ScopeInfo['version'];
@@ -76,7 +76,7 @@ export type ScopeInfo = {
   /**
    * schemaUrl property on ScopeInfo.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ScopeInfo['schemaUrl'];
@@ -86,7 +86,7 @@ export type ScopeInfo = {
   /**
    * attributes property on ScopeInfo.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ScopeInfo['attributes'];
@@ -96,7 +96,7 @@ export type ScopeInfo = {
   /**
    * droppedAttributesCount property on ScopeInfo.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ScopeInfo['droppedAttributesCount'];
@@ -105,9 +105,9 @@ export type ScopeInfo = {
   droppedAttributesCount?: number;
 };
 /**
- * SignalName type used by the internal OpenTelemetry runtime.
+ * SignalName type exposed by the OpenTelemetry API.
  *
- * Documents the type's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SignalName = {} as SignalName;
@@ -115,9 +115,9 @@ export type ScopeInfo = {
  */
 export type SignalName = 'trace' | 'log' | 'metric';
 /**
- * MetricTemporality type used by the internal OpenTelemetry runtime.
+ * MetricTemporality type exposed by the OpenTelemetry API.
  *
- * Documents the type's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: MetricTemporality = {} as MetricTemporality;
@@ -125,9 +125,9 @@ export type SignalName = 'trace' | 'log' | 'metric';
  */
 export type MetricTemporality = 'delta' | 'cumulative';
 /**
- * MetricAggregationType type used by the internal OpenTelemetry runtime.
+ * MetricAggregationType type exposed by the OpenTelemetry API.
  *
- * Documents the type's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: MetricAggregationType = {} as MetricAggregationType;
@@ -135,9 +135,9 @@ export type MetricTemporality = 'delta' | 'cumulative';
  */
 export type MetricAggregationType = 'histogram' | 'lastValue' | 'sum';
 /**
- * CarrierLike type used by the internal OpenTelemetry runtime.
+ * CarrierLike type exposed by the OpenTelemetry API.
  *
- * Documents the type's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: CarrierLike = {} as CarrierLike;
@@ -148,7 +148,7 @@ export type CarrierLike = {
   /**
    * get method on CarrierLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: CarrierLike['get'] = undefined as never;
@@ -158,7 +158,7 @@ export type CarrierLike = {
   /**
    * set method on CarrierLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: CarrierLike['set'] = undefined as never;
@@ -168,7 +168,7 @@ export type CarrierLike = {
   /**
    * keys method on CarrierLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: CarrierLike['keys'] = undefined as never;
@@ -178,9 +178,9 @@ export type CarrierLike = {
 };
 
 /**
- * CarrierApi interface used by the internal OpenTelemetry runtime.
+ * CarrierApi interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: CarrierApi = {} as CarrierApi;
@@ -190,7 +190,7 @@ export interface CarrierApi<TCarrier = CarrierLike> {
   /**
    * get method on CarrierApi.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: CarrierApi['get'] = undefined as never;
@@ -200,7 +200,7 @@ export interface CarrierApi<TCarrier = CarrierLike> {
   /**
    * set method on CarrierApi.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: CarrierApi['set'] = undefined as never;
@@ -210,7 +210,7 @@ export interface CarrierApi<TCarrier = CarrierLike> {
   /**
    * keys method on CarrierApi.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: CarrierApi['keys'] = undefined as never;
@@ -229,9 +229,9 @@ function writeCarrierValue(carrier: unknown, key: string, value: unknown): void 
 }
 
 /**
- * TraceContext interface used by the internal OpenTelemetry runtime.
+ * TraceContext interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: TraceContext = {} as TraceContext;
@@ -241,7 +241,7 @@ export interface TraceContext {
   /**
    * traceId property on TraceContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: TraceContext['traceId'];
@@ -251,7 +251,7 @@ export interface TraceContext {
   /**
    * spanId property on TraceContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: TraceContext['spanId'];
@@ -261,7 +261,7 @@ export interface TraceContext {
   /**
    * traceFlags property on TraceContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: TraceContext['traceFlags'];
@@ -271,7 +271,7 @@ export interface TraceContext {
   /**
    * traceState property on TraceContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: TraceContext['traceState'];
@@ -281,7 +281,7 @@ export interface TraceContext {
   /**
    * baggage property on TraceContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: TraceContext['baggage'];
@@ -291,9 +291,9 @@ export interface TraceContext {
 }
 
 /**
- * SpanStatus interface used by the internal OpenTelemetry runtime.
+ * SpanStatus interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanStatus = {} as SpanStatus;
@@ -303,7 +303,7 @@ export interface SpanStatus {
   /**
    * code property on SpanStatus.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStatus['code'];
@@ -313,7 +313,7 @@ export interface SpanStatus {
   /**
    * message property on SpanStatus.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStatus['message'];
@@ -323,9 +323,9 @@ export interface SpanStatus {
 }
 
 /**
- * SpanLinkContext interface used by the internal OpenTelemetry runtime.
+ * SpanLinkContext interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanLinkContext = {} as SpanLinkContext;
@@ -335,7 +335,7 @@ export interface SpanLinkContext {
   /**
    * traceId property on SpanLinkContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLinkContext['traceId'];
@@ -345,7 +345,7 @@ export interface SpanLinkContext {
   /**
    * spanId property on SpanLinkContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLinkContext['spanId'];
@@ -355,7 +355,7 @@ export interface SpanLinkContext {
   /**
    * traceState property on SpanLinkContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLinkContext['traceState'];
@@ -365,7 +365,7 @@ export interface SpanLinkContext {
   /**
    * flags property on SpanLinkContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLinkContext['flags'];
@@ -375,9 +375,9 @@ export interface SpanLinkContext {
 }
 
 /**
- * SpanLinkRecord interface used by the internal OpenTelemetry runtime.
+ * SpanLinkRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanLinkRecord = {} as SpanLinkRecord;
@@ -387,7 +387,7 @@ export interface SpanLinkRecord extends SpanLinkContext {
   /**
    * attributes property on SpanLinkRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLinkRecord['attributes'];
@@ -397,7 +397,7 @@ export interface SpanLinkRecord extends SpanLinkContext {
   /**
    * droppedAttributesCount property on SpanLinkRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLinkRecord['droppedAttributesCount'];
@@ -407,9 +407,9 @@ export interface SpanLinkRecord extends SpanLinkContext {
 }
 
 /**
- * SpanEventRecord interface used by the internal OpenTelemetry runtime.
+ * SpanEventRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanEventRecord = {} as SpanEventRecord;
@@ -419,7 +419,7 @@ export interface SpanEventRecord {
   /**
    * name property on SpanEventRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanEventRecord['name'];
@@ -429,7 +429,7 @@ export interface SpanEventRecord {
   /**
    * attributes property on SpanEventRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanEventRecord['attributes'];
@@ -439,7 +439,7 @@ export interface SpanEventRecord {
   /**
    * timeUnixNano property on SpanEventRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanEventRecord['timeUnixNano'];
@@ -449,7 +449,7 @@ export interface SpanEventRecord {
   /**
    * droppedAttributesCount property on SpanEventRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanEventRecord['droppedAttributesCount'];
@@ -459,9 +459,9 @@ export interface SpanEventRecord {
 }
 
 /**
- * SpanRecord interface used by the internal OpenTelemetry runtime.
+ * SpanRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanRecord = {} as SpanRecord;
@@ -471,7 +471,7 @@ export interface SpanRecord {
   /**
    * schemaVersion property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['schemaVersion'];
@@ -481,7 +481,7 @@ export interface SpanRecord {
   /**
    * operation property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['operation'];
@@ -491,7 +491,7 @@ export interface SpanRecord {
   /**
    * name property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['name'];
@@ -501,7 +501,7 @@ export interface SpanRecord {
   /**
    * traceId property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['traceId'];
@@ -511,7 +511,7 @@ export interface SpanRecord {
   /**
    * spanId property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['spanId'];
@@ -521,7 +521,7 @@ export interface SpanRecord {
   /**
    * parentSpanId property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['parentSpanId'];
@@ -531,7 +531,7 @@ export interface SpanRecord {
   /**
    * traceState property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['traceState'];
@@ -541,7 +541,7 @@ export interface SpanRecord {
   /**
    * timeUnixNano property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['timeUnixNano'];
@@ -551,7 +551,7 @@ export interface SpanRecord {
   /**
    * startTimeUnixNano property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['startTimeUnixNano'];
@@ -561,7 +561,7 @@ export interface SpanRecord {
   /**
    * endTimeUnixNano property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['endTimeUnixNano'];
@@ -571,7 +571,7 @@ export interface SpanRecord {
   /**
    * attributes property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['attributes'];
@@ -581,7 +581,7 @@ export interface SpanRecord {
   /**
    * scope property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['scope'];
@@ -591,7 +591,7 @@ export interface SpanRecord {
   /**
    * resource property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['resource'];
@@ -601,7 +601,7 @@ export interface SpanRecord {
   /**
    * kind property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['kind'];
@@ -611,7 +611,7 @@ export interface SpanRecord {
   /**
    * status property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['status'];
@@ -621,7 +621,7 @@ export interface SpanRecord {
   /**
    * events property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['events'];
@@ -631,7 +631,7 @@ export interface SpanRecord {
   /**
    * links property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['links'];
@@ -641,7 +641,7 @@ export interface SpanRecord {
   /**
    * droppedAttributesCount property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['droppedAttributesCount'];
@@ -651,7 +651,7 @@ export interface SpanRecord {
   /**
    * droppedEventsCount property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['droppedEventsCount'];
@@ -661,7 +661,7 @@ export interface SpanRecord {
   /**
    * droppedLinksCount property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['droppedLinksCount'];
@@ -671,7 +671,7 @@ export interface SpanRecord {
   /**
    * flags property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['flags'];
@@ -681,7 +681,7 @@ export interface SpanRecord {
   /**
    * injectedHeaders property on SpanRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanRecord['injectedHeaders'];
@@ -691,9 +691,9 @@ export interface SpanRecord {
 }
 
 /**
- * LogRecord interface used by the internal OpenTelemetry runtime.
+ * LogRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: LogRecord = {} as LogRecord;
@@ -703,7 +703,7 @@ export interface LogRecord {
   /**
    * schemaVersion property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['schemaVersion'];
@@ -713,7 +713,7 @@ export interface LogRecord {
   /**
    * body property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['body'];
@@ -723,7 +723,7 @@ export interface LogRecord {
   /**
    * severityText property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['severityText'];
@@ -733,7 +733,7 @@ export interface LogRecord {
   /**
    * severityNumber property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['severityNumber'];
@@ -743,7 +743,7 @@ export interface LogRecord {
   /**
    * timeUnixNano property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['timeUnixNano'];
@@ -753,7 +753,7 @@ export interface LogRecord {
   /**
    * observedTimeUnixNano property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['observedTimeUnixNano'];
@@ -763,7 +763,7 @@ export interface LogRecord {
   /**
    * attributes property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['attributes'];
@@ -773,7 +773,7 @@ export interface LogRecord {
   /**
    * droppedAttributesCount property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['droppedAttributesCount'];
@@ -783,7 +783,7 @@ export interface LogRecord {
   /**
    * scope property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['scope'];
@@ -793,7 +793,7 @@ export interface LogRecord {
   /**
    * resource property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['resource'];
@@ -803,7 +803,7 @@ export interface LogRecord {
   /**
    * traceId property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['traceId'];
@@ -813,7 +813,7 @@ export interface LogRecord {
   /**
    * spanId property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['spanId'];
@@ -823,7 +823,7 @@ export interface LogRecord {
   /**
    * traceFlags property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['traceFlags'];
@@ -833,7 +833,7 @@ export interface LogRecord {
   /**
    * baggage property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['baggage'];
@@ -843,7 +843,7 @@ export interface LogRecord {
   /**
    * eventName property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['eventName'];
@@ -853,7 +853,7 @@ export interface LogRecord {
   /**
    * categoryName property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['categoryName'];
@@ -863,7 +863,7 @@ export interface LogRecord {
   /**
    * flags property on LogRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: LogRecord['flags'];
@@ -873,9 +873,9 @@ export interface LogRecord {
 }
 
 /**
- * ExemplarRecord interface used by the internal OpenTelemetry runtime.
+ * ExemplarRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ExemplarRecord = {} as ExemplarRecord;
@@ -885,7 +885,7 @@ export interface ExemplarRecord {
   /**
    * timeUnixNano property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['timeUnixNano'];
@@ -895,7 +895,7 @@ export interface ExemplarRecord {
   /**
    * traceId property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['traceId'];
@@ -905,7 +905,7 @@ export interface ExemplarRecord {
   /**
    * spanId property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['spanId'];
@@ -915,7 +915,7 @@ export interface ExemplarRecord {
   /**
    * value property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['value'];
@@ -925,7 +925,7 @@ export interface ExemplarRecord {
   /**
    * asInt property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['asInt'];
@@ -935,7 +935,7 @@ export interface ExemplarRecord {
   /**
    * asDouble property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['asDouble'];
@@ -945,7 +945,7 @@ export interface ExemplarRecord {
   /**
    * filteredAttributes property on ExemplarRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExemplarRecord['filteredAttributes'];
@@ -955,9 +955,9 @@ export interface ExemplarRecord {
 }
 
 /**
- * QuantileValueRecord interface used by the internal OpenTelemetry runtime.
+ * QuantileValueRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: QuantileValueRecord = {} as QuantileValueRecord;
@@ -967,7 +967,7 @@ export interface QuantileValueRecord {
   /**
    * quantile property on QuantileValueRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: QuantileValueRecord['quantile'];
@@ -977,7 +977,7 @@ export interface QuantileValueRecord {
   /**
    * value property on QuantileValueRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: QuantileValueRecord['value'];
@@ -987,9 +987,9 @@ export interface QuantileValueRecord {
 }
 
 /**
- * ExponentialBuckets interface used by the internal OpenTelemetry runtime.
+ * ExponentialBuckets interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ExponentialBuckets = {} as ExponentialBuckets;
@@ -999,7 +999,7 @@ export interface ExponentialBuckets {
   /**
    * offset property on ExponentialBuckets.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExponentialBuckets['offset'];
@@ -1009,7 +1009,7 @@ export interface ExponentialBuckets {
   /**
    * bucketCounts property on ExponentialBuckets.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExponentialBuckets['bucketCounts'];
@@ -1019,9 +1019,9 @@ export interface ExponentialBuckets {
 }
 
 /**
- * MetricExemplarContext interface used by the internal OpenTelemetry runtime.
+ * MetricExemplarContext interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: MetricExemplarContext = {} as MetricExemplarContext;
@@ -1031,7 +1031,7 @@ export interface MetricExemplarContext {
   /**
    * traceId property on MetricExemplarContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricExemplarContext['traceId'];
@@ -1041,7 +1041,7 @@ export interface MetricExemplarContext {
   /**
    * spanId property on MetricExemplarContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricExemplarContext['spanId'];
@@ -1051,7 +1051,7 @@ export interface MetricExemplarContext {
   /**
    * traceFlags property on MetricExemplarContext.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricExemplarContext['traceFlags'];
@@ -1061,9 +1061,9 @@ export interface MetricExemplarContext {
 }
 
 /**
- * MetricRecord interface used by the internal OpenTelemetry runtime.
+ * MetricRecord interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: MetricRecord = {} as MetricRecord;
@@ -1073,7 +1073,7 @@ export interface MetricRecord {
   /**
    * schemaVersion property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['schemaVersion'];
@@ -1083,7 +1083,7 @@ export interface MetricRecord {
   /**
    * name property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['name'];
@@ -1093,7 +1093,7 @@ export interface MetricRecord {
   /**
    * value property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['value'];
@@ -1103,7 +1103,7 @@ export interface MetricRecord {
   /**
    * count property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['count'];
@@ -1113,7 +1113,7 @@ export interface MetricRecord {
   /**
    * sum property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['sum'];
@@ -1123,7 +1123,7 @@ export interface MetricRecord {
   /**
    * min property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['min'];
@@ -1133,7 +1133,7 @@ export interface MetricRecord {
   /**
    * max property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['max'];
@@ -1143,7 +1143,7 @@ export interface MetricRecord {
   /**
    * unit property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['unit'];
@@ -1153,7 +1153,7 @@ export interface MetricRecord {
   /**
    * description property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['description'];
@@ -1163,7 +1163,7 @@ export interface MetricRecord {
   /**
    * kind property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['kind'];
@@ -1173,7 +1173,7 @@ export interface MetricRecord {
   /**
    * aggregationKind property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['aggregationKind'];
@@ -1183,7 +1183,7 @@ export interface MetricRecord {
   /**
    * aggregationTemporality property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['aggregationTemporality'];
@@ -1193,7 +1193,7 @@ export interface MetricRecord {
   /**
    * isMonotonic property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['isMonotonic'];
@@ -1203,7 +1203,7 @@ export interface MetricRecord {
   /**
    * attributes property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['attributes'];
@@ -1213,7 +1213,7 @@ export interface MetricRecord {
   /**
    * metadata property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['metadata'];
@@ -1223,7 +1223,7 @@ export interface MetricRecord {
   /**
    * scope property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['scope'];
@@ -1233,7 +1233,7 @@ export interface MetricRecord {
   /**
    * resource property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['resource'];
@@ -1243,7 +1243,7 @@ export interface MetricRecord {
   /**
    * timeUnixNano property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['timeUnixNano'];
@@ -1253,7 +1253,7 @@ export interface MetricRecord {
   /**
    * startTimeUnixNano property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['startTimeUnixNano'];
@@ -1263,7 +1263,7 @@ export interface MetricRecord {
   /**
    * explicitBounds property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['explicitBounds'];
@@ -1273,7 +1273,7 @@ export interface MetricRecord {
   /**
    * bucketCounts property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['bucketCounts'];
@@ -1283,7 +1283,7 @@ export interface MetricRecord {
   /**
    * quantileValues property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['quantileValues'];
@@ -1293,7 +1293,7 @@ export interface MetricRecord {
   /**
    * exemplars property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['exemplars'];
@@ -1303,7 +1303,7 @@ export interface MetricRecord {
   /**
    * flags property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['flags'];
@@ -1313,7 +1313,7 @@ export interface MetricRecord {
   /**
    * exemplarContext property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['exemplarContext'];
@@ -1323,7 +1323,7 @@ export interface MetricRecord {
   /**
    * scale property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['scale'];
@@ -1333,7 +1333,7 @@ export interface MetricRecord {
   /**
    * zeroCount property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['zeroCount'];
@@ -1343,7 +1343,7 @@ export interface MetricRecord {
   /**
    * zeroThreshold property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['zeroThreshold'];
@@ -1353,7 +1353,7 @@ export interface MetricRecord {
   /**
    * positive property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['positive'];
@@ -1363,7 +1363,7 @@ export interface MetricRecord {
   /**
    * negative property on MetricRecord.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricRecord['negative'];
@@ -1373,9 +1373,9 @@ export interface MetricRecord {
 }
 
 /**
- * ObservableMetricObservation interface used by the internal OpenTelemetry runtime.
+ * ObservableMetricObservation interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ObservableMetricObservation = {} as ObservableMetricObservation;
@@ -1385,7 +1385,7 @@ export interface ObservableMetricObservation {
   /**
    * value property on ObservableMetricObservation.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricObservation['value'];
@@ -1395,7 +1395,7 @@ export interface ObservableMetricObservation {
   /**
    * attributes property on ObservableMetricObservation.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricObservation['attributes'];
@@ -1405,7 +1405,7 @@ export interface ObservableMetricObservation {
   /**
    * timeUnixNano property on ObservableMetricObservation.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricObservation['timeUnixNano'];
@@ -1415,9 +1415,9 @@ export interface ObservableMetricObservation {
 }
 
 /**
- * ObservableMetricRegistration interface used by the internal OpenTelemetry runtime.
+ * ObservableMetricRegistration interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ObservableMetricRegistration = {} as ObservableMetricRegistration;
@@ -1427,7 +1427,7 @@ export interface ObservableMetricRegistration {
   /**
    * kind property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['kind'];
@@ -1437,7 +1437,7 @@ export interface ObservableMetricRegistration {
   /**
    * name property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['name'];
@@ -1447,7 +1447,7 @@ export interface ObservableMetricRegistration {
   /**
    * unit property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['unit'];
@@ -1457,7 +1457,7 @@ export interface ObservableMetricRegistration {
   /**
    * description property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['description'];
@@ -1467,7 +1467,7 @@ export interface ObservableMetricRegistration {
   /**
    * scope property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['scope'];
@@ -1477,7 +1477,7 @@ export interface ObservableMetricRegistration {
   /**
    * resource property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['resource'];
@@ -1487,7 +1487,7 @@ export interface ObservableMetricRegistration {
   /**
    * callback property on ObservableMetricRegistration.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ObservableMetricRegistration['callback'];
@@ -1497,9 +1497,9 @@ export interface ObservableMetricRegistration {
 }
 
 /**
- * MetricInstrumentOptions interface used by the internal OpenTelemetry runtime.
+ * MetricInstrumentOptions interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: MetricInstrumentOptions = {} as MetricInstrumentOptions;
@@ -1509,7 +1509,7 @@ export interface MetricInstrumentOptions {
   /**
    * unit property on MetricInstrumentOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricInstrumentOptions['unit'];
@@ -1519,7 +1519,7 @@ export interface MetricInstrumentOptions {
   /**
    * description property on MetricInstrumentOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricInstrumentOptions['description'];
@@ -1529,7 +1529,7 @@ export interface MetricInstrumentOptions {
   /**
    * attributes property on MetricInstrumentOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricInstrumentOptions['attributes'];
@@ -1539,7 +1539,7 @@ export interface MetricInstrumentOptions {
   /**
    * kind property on MetricInstrumentOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricInstrumentOptions['kind'];
@@ -1549,9 +1549,9 @@ export interface MetricInstrumentOptions {
 }
 
 /**
- * MetricView interface used by the internal OpenTelemetry runtime.
+ * MetricView interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: MetricView = {} as MetricView;
@@ -1561,7 +1561,7 @@ export interface MetricView {
   /**
    * instrumentName property on MetricView.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricView['instrumentName'];
@@ -1571,7 +1571,7 @@ export interface MetricView {
   /**
    * name property on MetricView.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricView['name'];
@@ -1581,7 +1581,7 @@ export interface MetricView {
   /**
    * description property on MetricView.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricView['description'];
@@ -1591,7 +1591,7 @@ export interface MetricView {
   /**
    * attributeKeys property on MetricView.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricView['attributeKeys'];
@@ -1601,7 +1601,7 @@ export interface MetricView {
   /**
    * aggregation property on MetricView.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: MetricView['aggregation'];
@@ -1615,9 +1615,9 @@ export interface MetricView {
 }
 
 /**
- * PartialSuccessResult interface used by the internal OpenTelemetry runtime.
+ * PartialSuccessResult interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: PartialSuccessResult = {} as PartialSuccessResult;
@@ -1627,7 +1627,7 @@ export interface PartialSuccessResult {
   /**
    * rejectedSpans property on PartialSuccessResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: PartialSuccessResult['rejectedSpans'];
@@ -1637,7 +1637,7 @@ export interface PartialSuccessResult {
   /**
    * rejectedLogs property on PartialSuccessResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: PartialSuccessResult['rejectedLogs'];
@@ -1647,7 +1647,7 @@ export interface PartialSuccessResult {
   /**
    * rejectedDataPoints property on PartialSuccessResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: PartialSuccessResult['rejectedDataPoints'];
@@ -1657,7 +1657,7 @@ export interface PartialSuccessResult {
   /**
    * errorMessage property on PartialSuccessResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: PartialSuccessResult['errorMessage'];
@@ -1667,9 +1667,9 @@ export interface PartialSuccessResult {
 }
 
 /**
- * ExportResult interface used by the internal OpenTelemetry runtime.
+ * ExportResult interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ExportResult = {} as ExportResult;
@@ -1679,7 +1679,7 @@ export interface ExportResult {
   /**
    * code property on ExportResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ExportResult['code'];
@@ -1689,9 +1689,9 @@ export interface ExportResult {
 }
 
 /**
- * OtelExporter interface used by the internal OpenTelemetry runtime.
+ * OtelExporter interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: OtelExporter = {} as OtelExporter;
@@ -1701,7 +1701,7 @@ export interface OtelExporter {
   /**
    * exportSpans method on OtelExporter.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelExporter['exportSpans'] = undefined as never;
@@ -1711,7 +1711,7 @@ export interface OtelExporter {
   /**
    * exportLogs method on OtelExporter.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelExporter['exportLogs'] = undefined as never;
@@ -1721,7 +1721,7 @@ export interface OtelExporter {
   /**
    * exportMetrics method on OtelExporter.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelExporter['exportMetrics'] = undefined as never;
@@ -1731,7 +1731,7 @@ export interface OtelExporter {
   /**
    * shutdown method on OtelExporter.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelExporter['shutdown'] = undefined as never;
@@ -1741,9 +1741,9 @@ export interface OtelExporter {
 }
 
 /**
- * OtelSdkLike interface used by the internal OpenTelemetry runtime.
+ * OtelSdkLike interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: OtelSdkLike = {} as OtelSdkLike;
@@ -1753,7 +1753,7 @@ export interface OtelSdkLike {
   /**
    * propagator property on OtelSdkLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: OtelSdkLike['propagator'];
@@ -1763,7 +1763,7 @@ export interface OtelSdkLike {
   /**
    * recordSpanStart method on OtelSdkLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelSdkLike['recordSpanStart'] = undefined as never;
@@ -1773,7 +1773,7 @@ export interface OtelSdkLike {
   /**
    * recordSpan method on OtelSdkLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelSdkLike['recordSpan'] = undefined as never;
@@ -1783,7 +1783,7 @@ export interface OtelSdkLike {
   /**
    * recordLog method on OtelSdkLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelSdkLike['recordLog'] = undefined as never;
@@ -1793,7 +1793,7 @@ export interface OtelSdkLike {
   /**
    * recordMetric method on OtelSdkLike.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: OtelSdkLike['recordMetric'] = undefined as never;
@@ -1803,9 +1803,9 @@ export interface OtelSdkLike {
 }
 
 /**
- * Disposable interface used by the internal OpenTelemetry runtime.
+ * Disposable interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: Disposable = {} as Disposable;
@@ -1815,7 +1815,7 @@ export interface Disposable {
   /**
    * dispose method on Disposable.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: Disposable['dispose'] = undefined as never;
@@ -1825,9 +1825,9 @@ export interface Disposable {
 }
 
 /**
- * Instrumentation interface used by the internal OpenTelemetry runtime.
+ * Instrumentation interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: Instrumentation = {} as Instrumentation;
@@ -1837,7 +1837,7 @@ export interface Instrumentation {
   /**
    * enable method on Instrumentation.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * const member: Instrumentation['enable'] = undefined as never;
@@ -1847,9 +1847,9 @@ export interface Instrumentation {
 }
 
 /**
- * RuntimeHttpRequestEvent interface used by the internal OpenTelemetry runtime.
+ * RuntimeHttpRequestEvent interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: RuntimeHttpRequestEvent = {} as RuntimeHttpRequestEvent;
@@ -1859,7 +1859,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * requestId property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['requestId'];
@@ -1869,7 +1869,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * method property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['method'];
@@ -1879,7 +1879,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * route property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['route'];
@@ -1889,7 +1889,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * url property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['url'];
@@ -1899,7 +1899,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * headers property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['headers'];
@@ -1909,7 +1909,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * statusCode property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['statusCode'];
@@ -1919,7 +1919,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * error property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['error'];
@@ -1929,7 +1929,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * timeUnixNano property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['timeUnixNano'];
@@ -1939,7 +1939,7 @@ export interface RuntimeHttpRequestEvent {
   /**
    * resource property on RuntimeHttpRequestEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeHttpRequestEvent['resource'];
@@ -1949,9 +1949,9 @@ export interface RuntimeHttpRequestEvent {
 }
 
 /**
- * RuntimeDnsEvent interface used by the internal OpenTelemetry runtime.
+ * RuntimeDnsEvent interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: RuntimeDnsEvent = {} as RuntimeDnsEvent;
@@ -1961,7 +1961,7 @@ export interface RuntimeDnsEvent {
   /**
    * lookupId property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['lookupId'];
@@ -1971,7 +1971,7 @@ export interface RuntimeDnsEvent {
   /**
    * requestId property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['requestId'];
@@ -1981,7 +1981,7 @@ export interface RuntimeDnsEvent {
   /**
    * hop property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['hop'];
@@ -1991,7 +1991,7 @@ export interface RuntimeDnsEvent {
   /**
    * hostname property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['hostname'];
@@ -2001,7 +2001,7 @@ export interface RuntimeDnsEvent {
   /**
    * address property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['address'];
@@ -2011,7 +2011,7 @@ export interface RuntimeDnsEvent {
   /**
    * family property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['family'];
@@ -2021,7 +2021,7 @@ export interface RuntimeDnsEvent {
   /**
    * error property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['error'];
@@ -2031,7 +2031,7 @@ export interface RuntimeDnsEvent {
   /**
    * timeUnixNano property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['timeUnixNano'];
@@ -2041,7 +2041,7 @@ export interface RuntimeDnsEvent {
   /**
    * resource property on RuntimeDnsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeDnsEvent['resource'];
@@ -2051,9 +2051,9 @@ export interface RuntimeDnsEvent {
 }
 
 /**
- * RuntimeSocketEvent interface used by the internal OpenTelemetry runtime.
+ * RuntimeSocketEvent interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: RuntimeSocketEvent = {} as RuntimeSocketEvent;
@@ -2063,7 +2063,7 @@ export interface RuntimeSocketEvent {
   /**
    * connectId property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['connectId'];
@@ -2073,7 +2073,7 @@ export interface RuntimeSocketEvent {
   /**
    * requestId property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['requestId'];
@@ -2083,7 +2083,7 @@ export interface RuntimeSocketEvent {
   /**
    * hop property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['hop'];
@@ -2093,7 +2093,7 @@ export interface RuntimeSocketEvent {
   /**
    * host property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['host'];
@@ -2103,7 +2103,7 @@ export interface RuntimeSocketEvent {
   /**
    * port property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['port'];
@@ -2113,7 +2113,7 @@ export interface RuntimeSocketEvent {
   /**
    * transport property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['transport'];
@@ -2123,7 +2123,7 @@ export interface RuntimeSocketEvent {
   /**
    * error property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['error'];
@@ -2133,7 +2133,7 @@ export interface RuntimeSocketEvent {
   /**
    * timeUnixNano property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['timeUnixNano'];
@@ -2143,7 +2143,7 @@ export interface RuntimeSocketEvent {
   /**
    * resource property on RuntimeSocketEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeSocketEvent['resource'];
@@ -2153,9 +2153,9 @@ export interface RuntimeSocketEvent {
 }
 
 /**
- * RuntimeTlsEvent interface used by the internal OpenTelemetry runtime.
+ * RuntimeTlsEvent interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: RuntimeTlsEvent = {} as RuntimeTlsEvent;
@@ -2165,7 +2165,7 @@ export interface RuntimeTlsEvent {
   /**
    * handshakeId property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['handshakeId'];
@@ -2175,7 +2175,7 @@ export interface RuntimeTlsEvent {
   /**
    * requestId property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['requestId'];
@@ -2185,7 +2185,7 @@ export interface RuntimeTlsEvent {
   /**
    * hop property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['hop'];
@@ -2195,7 +2195,7 @@ export interface RuntimeTlsEvent {
   /**
    * hostname property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['hostname'];
@@ -2205,7 +2205,7 @@ export interface RuntimeTlsEvent {
   /**
    * port property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['port'];
@@ -2215,7 +2215,7 @@ export interface RuntimeTlsEvent {
   /**
    * protocol property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['protocol'];
@@ -2225,7 +2225,7 @@ export interface RuntimeTlsEvent {
   /**
    * error property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['error'];
@@ -2235,7 +2235,7 @@ export interface RuntimeTlsEvent {
   /**
    * timeUnixNano property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['timeUnixNano'];
@@ -2245,7 +2245,7 @@ export interface RuntimeTlsEvent {
   /**
    * resource property on RuntimeTlsEvent.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RuntimeTlsEvent['resource'];
@@ -2255,9 +2255,9 @@ export interface RuntimeTlsEvent {
 }
 
 /**
- * ResourceOptions interface used by the internal OpenTelemetry runtime.
+ * ResourceOptions interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ResourceOptions = {} as ResourceOptions;
@@ -2267,7 +2267,7 @@ export interface ResourceOptions {
   /**
    * droppedAttributesCount property on ResourceOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ResourceOptions['droppedAttributesCount'];
@@ -2277,7 +2277,7 @@ export interface ResourceOptions {
   /**
    * entityRefs property on ResourceOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ResourceOptions['entityRefs'];
@@ -2287,7 +2287,7 @@ export interface ResourceOptions {
   /**
    * schemaUrl property on ResourceOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ResourceOptions['schemaUrl'];
@@ -2297,9 +2297,9 @@ export interface ResourceOptions {
 }
 
 /**
- * ProviderOptions interface used by the internal OpenTelemetry runtime.
+ * ProviderOptions interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ProviderOptions = {} as ProviderOptions;
@@ -2309,7 +2309,7 @@ export interface ProviderOptions {
   /**
    * resource property on ProviderOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: ProviderOptions['resource'];
@@ -2319,9 +2319,9 @@ export interface ProviderOptions {
 }
 
 /**
- * SpanStartOptions interface used by the internal OpenTelemetry runtime.
+ * SpanStartOptions interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanStartOptions = {} as SpanStartOptions;
@@ -2331,7 +2331,7 @@ export interface SpanStartOptions {
   /**
    * traceId property on SpanStartOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStartOptions['traceId'];
@@ -2341,7 +2341,7 @@ export interface SpanStartOptions {
   /**
    * parentSpanId property on SpanStartOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStartOptions['parentSpanId'];
@@ -2351,7 +2351,7 @@ export interface SpanStartOptions {
   /**
    * attributes property on SpanStartOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStartOptions['attributes'];
@@ -2361,7 +2361,7 @@ export interface SpanStartOptions {
   /**
    * links property on SpanStartOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStartOptions['links'];
@@ -2371,7 +2371,7 @@ export interface SpanStartOptions {
   /**
    * kind property on SpanStartOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanStartOptions['kind'];
@@ -2381,9 +2381,9 @@ export interface SpanStartOptions {
 }
 
 /**
- * SpanEndOptions interface used by the internal OpenTelemetry runtime.
+ * SpanEndOptions interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanEndOptions = {} as SpanEndOptions;
@@ -2393,7 +2393,7 @@ export interface SpanEndOptions {
   /**
    * attributes property on SpanEndOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanEndOptions['attributes'];
@@ -2403,7 +2403,7 @@ export interface SpanEndOptions {
   /**
    * status property on SpanEndOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanEndOptions['status'];
@@ -2413,9 +2413,9 @@ export interface SpanEndOptions {
 }
 
 /**
- * ActiveTelemetryContext interface used by the internal OpenTelemetry runtime.
+ * ActiveTelemetryContext interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: ActiveTelemetryContext = {} as ActiveTelemetryContext;
@@ -2424,9 +2424,9 @@ export interface SpanEndOptions {
 export interface ActiveTelemetryContext extends TraceContext {}
 
 /**
- * SamplingResult interface used by the internal OpenTelemetry runtime.
+ * SamplingResult interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SamplingResult = {} as SamplingResult;
@@ -2436,7 +2436,7 @@ export interface SamplingResult {
   /**
    * sample property on SamplingResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SamplingResult['sample'];
@@ -2446,7 +2446,7 @@ export interface SamplingResult {
   /**
    * attributes property on SamplingResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SamplingResult['attributes'];
@@ -2456,7 +2456,7 @@ export interface SamplingResult {
   /**
    * traceState property on SamplingResult.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SamplingResult['traceState'];
@@ -2466,9 +2466,9 @@ export interface SamplingResult {
 }
 
 /**
- * SpanLimits interface used by the internal OpenTelemetry runtime.
+ * SpanLimits interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: SpanLimits = {} as SpanLimits;
@@ -2478,7 +2478,7 @@ export interface SpanLimits {
   /**
    * attributeCountLimit property on SpanLimits.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLimits['attributeCountLimit'];
@@ -2488,7 +2488,7 @@ export interface SpanLimits {
   /**
    * attributeValueLengthLimit property on SpanLimits.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLimits['attributeValueLengthLimit'];
@@ -2498,7 +2498,7 @@ export interface SpanLimits {
   /**
    * eventCountLimit property on SpanLimits.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLimits['eventCountLimit'];
@@ -2508,7 +2508,7 @@ export interface SpanLimits {
   /**
    * linkCountLimit property on SpanLimits.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: SpanLimits['linkCountLimit'];
@@ -2518,9 +2518,9 @@ export interface SpanLimits {
 }
 
 /**
- * RetryOptions interface used by the internal OpenTelemetry runtime.
+ * RetryOptions interface exposed by the OpenTelemetry API.
  *
- * Documents the interface's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value: RetryOptions = {} as RetryOptions;
@@ -2530,7 +2530,7 @@ export interface RetryOptions {
   /**
    * maxAttempts property on RetryOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RetryOptions['maxAttempts'];
@@ -2540,7 +2540,7 @@ export interface RetryOptions {
   /**
    * initialBackoffMillis property on RetryOptions.
    *
-   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in private telemetry payloads.
+   * Omitted optional values default to `undefined`; required values are expected from the producer before the record is exported or published. Consumers should tolerate missing optional fields in telemetry payloads.
    *
    * ```typescript no_run
    * let value: RetryOptions['initialBackoffMillis'];
@@ -2556,9 +2556,9 @@ const DEFAULT_RESOURCE_ATTRIBUTES: Attributes = {
 };
 
 /**
- * requireRecord function used by the internal OpenTelemetry runtime.
+ * requireRecord function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = requireRecord;
@@ -2573,9 +2573,9 @@ export function requireRecord(kind: string, value: unknown): Record<string, unkn
 }
 
 /**
- * OTEL_SCHEMA_VERSION const used by the internal OpenTelemetry runtime.
+ * OTEL_SCHEMA_VERSION const exposed by the OpenTelemetry API.
  *
- * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value = OTEL_SCHEMA_VERSION;
@@ -2584,9 +2584,9 @@ export function requireRecord(kind: string, value: unknown): Record<string, unkn
 export const OTEL_SCHEMA_VERSION = 1;
 
 /**
- * OTEL_TOPIC_SUFFIXES const used by the internal OpenTelemetry runtime.
+ * OTEL_TOPIC_SUFFIXES const exposed by the OpenTelemetry API.
  *
- * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value = OTEL_TOPIC_SUFFIXES;
@@ -2600,9 +2600,9 @@ export const OTEL_TOPIC_SUFFIXES = Object.freeze({
 });
 
 /**
- * nowUnixNano function used by the internal OpenTelemetry runtime.
+ * nowUnixNano function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = nowUnixNano;
@@ -2613,9 +2613,9 @@ export function nowUnixNano(): number {
 }
 
 /**
- * randomHex function used by the internal OpenTelemetry runtime.
+ * randomHex function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = randomHex;
@@ -2629,9 +2629,9 @@ export function randomHex(length: number): string {
 }
 
 /**
- * encodeSegment function used by the internal OpenTelemetry runtime.
+ * encodeSegment function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = encodeSegment;
@@ -2642,9 +2642,9 @@ export function encodeSegment(value: unknown): string {
 }
 
 /**
- * requireNonEmptyName function used by the internal OpenTelemetry runtime.
+ * requireNonEmptyName function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = requireNonEmptyName;
@@ -2657,9 +2657,9 @@ export function requireNonEmptyName(kind: string, value: unknown): string {
 }
 
 /**
- * scopeSegment function used by the internal OpenTelemetry runtime.
+ * scopeSegment function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = scopeSegment;
@@ -2671,9 +2671,9 @@ export function scopeSegment(scope: ScopeInfo): string {
 }
 
 /**
- * normalizeScope function used by the internal OpenTelemetry runtime.
+ * normalizeScope function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = normalizeScope;
@@ -2696,9 +2696,9 @@ export function normalizeScope(
 }
 
 /**
- * topicNames function used by the internal OpenTelemetry runtime.
+ * topicNames function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = topicNames;
@@ -2719,9 +2719,9 @@ export function topicNames(signal: string, scope: ScopeInfo, ...suffixes: string
 }
 
 /**
- * publishScoped function used by the internal OpenTelemetry runtime.
+ * publishScoped function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = publishScoped;
@@ -2734,9 +2734,9 @@ export function publishScoped<TPayload>(signal: SignalName, scope: ScopeInfo, su
 }
 
 /**
- * hexToBytes function used by the internal OpenTelemetry runtime.
+ * hexToBytes function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = hexToBytes;
@@ -2752,9 +2752,9 @@ export function hexToBytes(hex: string, size: number): Uint8Array {
 }
 
 /**
- * bytesEqual function used by the internal OpenTelemetry runtime.
+ * bytesEqual function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = bytesEqual;
@@ -2769,9 +2769,9 @@ export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Resource class used by the internal OpenTelemetry runtime.
+ * Resource class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Resource;
@@ -2899,9 +2899,9 @@ export class Resource {
 }
 
 /**
- * normalizeResource function used by the internal OpenTelemetry runtime.
+ * normalizeResource function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = normalizeResource;
@@ -2922,9 +2922,9 @@ export function normalizeResource(resource?: Resource | Attributes | null): Reso
 }
 
 /**
- * mergeAttributes function used by the internal OpenTelemetry runtime.
+ * mergeAttributes function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = mergeAttributes;
@@ -2935,9 +2935,9 @@ export function mergeAttributes(a?: Attributes, b?: Attributes): Attributes {
 }
 
 /**
- * Baggage class used by the internal OpenTelemetry runtime.
+ * Baggage class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Baggage;
@@ -3067,9 +3067,9 @@ export class Baggage {
 }
 
 /**
- * TextMapPropagator class used by the internal OpenTelemetry runtime.
+ * TextMapPropagator class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = TextMapPropagator;
@@ -3109,9 +3109,9 @@ export class TextMapPropagator {
 }
 
 /**
- * defaultCarrierApiFor function used by the internal OpenTelemetry runtime.
+ * defaultCarrierApiFor function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = defaultCarrierApiFor;
@@ -3146,9 +3146,9 @@ export function defaultCarrierApiFor<TCarrier extends CarrierLike>(carrier: TCar
 }
 
 /**
- * carrierApiFor function used by the internal OpenTelemetry runtime.
+ * carrierApiFor function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = carrierApiFor;
@@ -3159,9 +3159,9 @@ export function carrierApiFor<TCarrier>(carrier: TCarrier, carrierApi?: CarrierA
 }
 
 /**
- * snapshotCarrier function used by the internal OpenTelemetry runtime.
+ * snapshotCarrier function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = snapshotCarrier;
@@ -3183,9 +3183,9 @@ let activeSpanContextGetter: () => TraceContext | null = () => null;
 let _globalPropagator: TextMapPropagator | null = null;
 
 /**
- * registerActiveSpanContextGetter function used by the internal OpenTelemetry runtime.
+ * registerActiveSpanContextGetter function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = registerActiveSpanContextGetter;
@@ -3196,9 +3196,9 @@ export function registerActiveSpanContextGetter(getter: () => TraceContext | nul
 }
 
 /**
- * getActiveBaggage function used by the internal OpenTelemetry runtime.
+ * getActiveBaggage function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = getActiveBaggage;
@@ -3209,9 +3209,9 @@ export function getActiveBaggage(): Baggage {
 }
 
 /**
- * currentActiveTelemetryContext function used by the internal OpenTelemetry runtime.
+ * currentActiveTelemetryContext function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = currentActiveTelemetryContext;
@@ -3222,9 +3222,9 @@ export function currentActiveTelemetryContext(): ActiveTelemetryContext | undefi
 }
 
 /**
- * runWithActiveContext function used by the internal OpenTelemetry runtime.
+ * runWithActiveContext function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithActiveContext;
@@ -3247,9 +3247,9 @@ export function runWithActiveContext<R>(context: ActiveTelemetryContext, fn: () 
 }
 
 /**
- * runWithBaggage function used by the internal OpenTelemetry runtime.
+ * runWithBaggage function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithBaggage;
@@ -3271,9 +3271,9 @@ const _PENDING_REQUEST_TTL_MS = 5 * 60 * 1_000;
 const _MAX_PENDING_REQUEST_CONTEXTS = 10_000;
 
 /**
- * installRequestContext function used by the internal OpenTelemetry runtime.
+ * installRequestContext function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = installRequestContext;
@@ -3298,9 +3298,9 @@ export function installRequestContext(requestId: string, context: ActiveTelemetr
 }
 
 /**
- * consumeRequestContext function used by the internal OpenTelemetry runtime.
+ * consumeRequestContext function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = consumeRequestContext;
@@ -3313,9 +3313,9 @@ export function consumeRequestContext(requestId: string): ActiveTelemetryContext
 }
 
 /**
- * Propagation const used by the internal OpenTelemetry runtime.
+ * Propagation const exposed by the OpenTelemetry API.
  *
- * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value = Propagation;
@@ -3381,9 +3381,9 @@ export const Propagation = {
 };
 
 /**
- * W3CTraceContextPropagator class used by the internal OpenTelemetry runtime.
+ * W3CTraceContextPropagator class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = W3CTraceContextPropagator;
@@ -3452,9 +3452,9 @@ export class W3CTraceContextPropagator extends TextMapPropagator {
 }
 
 /**
- * BaseProvider class used by the internal OpenTelemetry runtime.
+ * BaseProvider class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = BaseProvider;
@@ -3500,9 +3500,9 @@ export class BaseProvider {
 }
 
 /**
- * truncateAttributeValue function used by the internal OpenTelemetry runtime.
+ * truncateAttributeValue function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = truncateAttributeValue;
@@ -3516,9 +3516,9 @@ export function truncateAttributeValue(value: unknown, limit: number): unknown {
 }
 
 /**
- * limitAttributeEntries function used by the internal OpenTelemetry runtime.
+ * limitAttributeEntries function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = limitAttributeEntries;
@@ -3539,9 +3539,9 @@ export function limitAttributeEntries(
 }
 
 /**
- * otelTopic function used by the internal OpenTelemetry runtime.
+ * otelTopic function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = otelTopic;
@@ -3554,9 +3554,9 @@ export function otelTopic(signal: string, scope: ScopeInfo, ...suffixes: string[
 }
 
 /**
- * otelRuntimeTopic function used by the internal OpenTelemetry runtime.
+ * otelRuntimeTopic function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = otelRuntimeTopic;
@@ -3567,9 +3567,9 @@ export function otelRuntimeTopic(domain: string, operation: string, phase: strin
 }
 
 /**
- * otelRuntimeEvent function used by the internal OpenTelemetry runtime.
+ * otelRuntimeEvent function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = otelRuntimeEvent;

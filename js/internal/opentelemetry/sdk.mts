@@ -64,9 +64,9 @@ import { AlwaysOnSampler, Sampler, applySpanLimits } from './traces.mts';
 import { W3CTraceContextPropagator } from './common.mts';
 
 /**
- * InMemoryExporter class used by the internal OpenTelemetry runtime.
+ * InMemoryExporter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = InMemoryExporter;
@@ -187,9 +187,9 @@ export class InMemoryExporter {
 }
 
 /**
- * SpanProcessor class used by the internal OpenTelemetry runtime.
+ * SpanProcessor class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = SpanProcessor;
@@ -239,9 +239,9 @@ export class SpanProcessor {
 }
 
 /**
- * LogRecordProcessor class used by the internal OpenTelemetry runtime.
+ * LogRecordProcessor class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = LogRecordProcessor;
@@ -281,9 +281,9 @@ export class LogRecordProcessor {
 }
 
 /**
- * MetricReader class used by the internal OpenTelemetry runtime.
+ * MetricReader class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = MetricReader;
@@ -370,9 +370,9 @@ export class MetricReader {
 }
 
 /**
- * ManualMetricReader class used by the internal OpenTelemetry runtime.
+ * ManualMetricReader class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = ManualMetricReader;
@@ -435,9 +435,9 @@ export class ManualMetricReader extends MetricReader {
 }
 
 /**
- * BatchSpanProcessor class used by the internal OpenTelemetry runtime.
+ * BatchSpanProcessor class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = BatchSpanProcessor;
@@ -507,7 +507,7 @@ export class BatchSpanProcessor extends SpanProcessor {
   /**
    * #droppedSpanCount private field on BatchSpanProcessor.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'BatchSpanProcessor.#droppedSpanCount';
@@ -603,9 +603,9 @@ export class BatchSpanProcessor extends SpanProcessor {
 }
 
 /**
- * BatchLogRecordProcessor class used by the internal OpenTelemetry runtime.
+ * BatchLogRecordProcessor class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = BatchLogRecordProcessor;
@@ -784,7 +784,7 @@ class FanoutExporter implements OtelExporter {
   /**
    * #exporters private field on FanoutExporter.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'FanoutExporter.#exporters';
@@ -816,9 +816,9 @@ class FanoutExporter implements OtelExporter {
 }
 
 /**
- * PeriodicMetricReader class used by the internal OpenTelemetry runtime.
+ * PeriodicMetricReader class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = PeriodicMetricReader;
@@ -948,9 +948,9 @@ export class PeriodicMetricReader extends MetricReader {
 }
 
 /**
- * PeriodicExportingMetricReader const used by the internal OpenTelemetry runtime.
+ * PeriodicExportingMetricReader const exposed by the OpenTelemetry API.
  *
- * Documents the const's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value = PeriodicExportingMetricReader;
@@ -973,9 +973,9 @@ function applySamplingResult(span: SpanRecord, result: SamplingResult | boolean)
 }
 
 /**
- * OtelSDK class used by the internal OpenTelemetry runtime.
+ * OtelSDK class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = OtelSDK;
@@ -1055,7 +1055,7 @@ export class OtelSDK {
   /**
    * #started private field on OtelSDK.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'OtelSDK.#started';
@@ -1065,7 +1065,7 @@ export class OtelSDK {
   /**
    * #sampledSpans private field on OtelSDK.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'OtelSDK.#sampledSpans';
@@ -1075,7 +1075,7 @@ export class OtelSDK {
   /**
    * #metricAggregates private field on OtelSDK.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'OtelSDK.#metricAggregates';
@@ -1085,7 +1085,7 @@ export class OtelSDK {
   /**
    * #metricDeltaAggregates private field on OtelSDK.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'OtelSDK.#metricDeltaAggregates';
@@ -1095,7 +1095,7 @@ export class OtelSDK {
   /**
    * #observableMetrics private field on OtelSDK.
    *
-   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot outside include-private documentation audits.
+   * Stores internal runtime state only. Defaults are assigned by field initializers or the constructor, and callers should not depend on this private slot.
    *
    * ```typescript no_run
    * const field = 'OtelSDK.#observableMetrics';

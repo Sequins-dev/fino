@@ -556,9 +556,9 @@ function normalizeStatus(status: { code?: string } | null | undefined): number {
 }
 
 /**
- * OTLPHttpJsonExporter class used by the internal OpenTelemetry runtime.
+ * OTLPHttpJsonExporter class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = OTLPHttpJsonExporter;

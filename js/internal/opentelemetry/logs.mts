@@ -37,9 +37,9 @@ import type { Attributes, LogRecord, ScopeInfo, TraceContext } from './common.mt
 import { getActiveSpanContext } from './traces.mts';
 
 /**
- * SeverityNumber enum used by the internal OpenTelemetry runtime.
+ * SeverityNumber enum exposed by the OpenTelemetry API.
  *
- * Documents the enum's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const value = SeverityNumber;
@@ -289,9 +289,9 @@ export enum SeverityNumber {
 }
 
 /**
- * LoggerProvider class used by the internal OpenTelemetry runtime.
+ * LoggerProvider class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = LoggerProvider;
@@ -317,9 +317,9 @@ export class LoggerProvider extends BaseProvider {
 }
 
 /**
- * Logger class used by the internal OpenTelemetry runtime.
+ * Logger class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = Logger;
@@ -555,9 +555,9 @@ export class Logger {
 }
 
 /**
- * LogRecordBuilder class used by the internal OpenTelemetry runtime.
+ * LogRecordBuilder class exposed by the OpenTelemetry API.
  *
- * Documents the class's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const ctor = LogRecordBuilder;
@@ -758,9 +758,9 @@ export class LogRecordBuilder {
 }
 
 /**
- * applyLogLimits function used by the internal OpenTelemetry runtime.
+ * applyLogLimits function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = applyLogLimits;
@@ -784,9 +784,9 @@ const loggerProviderContext = new Context<LoggerProvider | null>('otel:logger-pr
 let defaultLoggerProvider = new LoggerProvider();
 
 /**
- * getLoggerProvider function used by the internal OpenTelemetry runtime.
+ * getLoggerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = getLoggerProvider;
@@ -797,9 +797,9 @@ export function getLoggerProvider(): LoggerProvider {
 }
 
 /**
- * setLoggerProvider function used by the internal OpenTelemetry runtime.
+ * setLoggerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = setLoggerProvider;
@@ -810,9 +810,9 @@ export function setLoggerProvider(provider: LoggerProvider): void {
 }
 
 /**
- * runWithLoggerProvider function used by the internal OpenTelemetry runtime.
+ * runWithLoggerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithLoggerProvider;
@@ -823,9 +823,9 @@ export function runWithLoggerProvider<R>(provider: LoggerProvider, fn: () => R):
 }
 
 /**
- * runWithoutLoggerProvider function used by the internal OpenTelemetry runtime.
+ * runWithoutLoggerProvider function exposed by the OpenTelemetry API.
  *
- * Documents the function's shape, defaults, and failure caveats for private documentation builds. Runtime behavior is defined by the implementation below; this comment does not make the symbol stable API.
+ * Documents behavior, defaults, return shape, and failure caveats for generated API documentation.
  *
  * ```typescript no_run
  * const fn = runWithoutLoggerProvider;
