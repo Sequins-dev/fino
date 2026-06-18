@@ -138,6 +138,20 @@ describe('iterative compression', () => {
     t.throws(() => compressor.write(HELLO), /closed/i, 'write after close rejected');
     t.throws(() => compressor.finish(), /closed/i, 'finish after close rejected');
   });
+
+  for (const format of supportedFormats()) {
+    it(`${format} rejects truncated input on finish`, (t) => {
+      const compressed = compress(bytes(`truncated ${format} payload `.repeat(20)), { format });
+      const truncated = compressed.slice(0, compressed.byteLength - 1);
+      const decompressor = createDecompressor({ format });
+      decompressor.write(truncated);
+      t.throws(
+        () => decompressor.finish(),
+        /unexpected end|truncated|incomplete/i,
+        'finish rejects incomplete compressed streams',
+      );
+    });
+  }
 });
 
 describe('async iterable transforms', () => {

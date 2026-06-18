@@ -36,10 +36,7 @@ Status: Needs work
 - Decide, document, or implement the VFS `xFileControl` `SQLITE_NOTIMPL` behavior.
 
 ## Compression
-Status: Needs work
-- Fix streaming decompressor EOF validation so truncated zlib/Brotli streams are detected as documented.
-- Replace the CompressionStream truncated-gzip spec-gap test with an enforcing regression test after the fix.
-- Expand benchmarks beyond one-shot gzip to include deflate, deflate-raw, Brotli, and streaming APIs.
+Status: DONE
 
 ## `net/socket`
 Status: DONE

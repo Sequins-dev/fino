@@ -255,7 +255,7 @@ describe('non-buffer data written to writable side', () => {
 });
 
 describe('truncated compressed data', () => {
-  it('DecompressionStream: truncated gzip data — documents current behavior', async (t) => {
+  it('DecompressionStream: truncated gzip data rejects on readable', async (t) => {
     // Create valid gzip data then truncate it
     const original = enc('some data to truncate');
     const cs = new CompressionStream('gzip');
@@ -277,8 +277,7 @@ describe('truncated compressed data', () => {
     } catch (_) {
       threw = true;
     }
-    // Document current behavior: does NOT propagate error for truncated data (spec gap)
-    t.equal(threw, false, 'truncated gzip does not currently propagate error (spec gap)');
+    t.equal(threw, true, 'truncated gzip propagates an error');
   });
 });
 

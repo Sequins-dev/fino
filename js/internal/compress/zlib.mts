@@ -254,7 +254,7 @@ class ZlibCodec implements CompressionTransform {
 
   finish(): Uint8Array[] {
     this.#assertOpen();
-    if (this.#finished && this.#isDeflate) return [];
+    if (this.#finished) return [];
 
     const parts: Uint8Array[] = [];
     try {
@@ -270,6 +270,8 @@ class ZlibCodec implements CompressionTransform {
             throw new Error(`zlib finish error (${r})`);
           }
         } while (r !== Z_STREAM_END);
+      } else {
+        throw new Error('zlib inflate: unexpected end of compressed data');
       }
       this.#finished = true;
       return parts;
@@ -337,7 +339,8 @@ export class ZlibCompressor extends ZlibCodec {
  * Streaming zlib decompressor.
  *
  * `write` may produce chunks before the compressed stream is complete. `finish`
- * closes native state and returns no additional data for inflate streams.
+ * verifies the stream reached EOF and throws if the compressed input was
+ * truncated.
  *
  * ```typescript no_run
  * import { ZlibCompressor, ZlibDecompressor } from 'internal:compress/zlib';

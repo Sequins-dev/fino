@@ -444,9 +444,8 @@ export class BrotliCompressor extends BrotliCodec {
 /**
  * Streaming Brotli decompressor.
  *
- * `write` returns decompressed chunks as input arrives. `finish` marks the
- * stream closed and returns no extra data, so callers must feed a complete
- * Brotli stream before finishing.
+ * `write` returns decompressed chunks as input arrives. `finish` validates that
+ * the stream reached EOF and throws when callers feed truncated Brotli input.
  *
  * ```typescript no_run
  * import { BrotliDecompressor } from 'internal:compress/brotli';
@@ -548,8 +547,8 @@ export class BrotliDecompressor extends BrotliCodec {
   /**
    * Finish and close the Brotli decoder.
    *
-   * Returns an empty array. This does not synthesize missing output for
-   * incomplete compressed data.
+   * Returns an empty array after a complete stream. Throws if the compressed
+   * data ended before the Brotli EOF marker.
    *
    * ```typescript no_run
    * import { BrotliDecompressor } from 'internal:compress/brotli';
@@ -560,6 +559,9 @@ export class BrotliDecompressor extends BrotliCodec {
   finish(): Uint8Array[] {
     this.assertOpen();
     try {
+      if (!this.finished) {
+        throw new Error('BrotliDecoderDecompressStream failed: unexpected end of compressed data');
+      }
       this.finished = true;
       return [];
     } finally {
