@@ -115,3 +115,30 @@ describe('fino:security token helpers', () => {
     t.ok(verifyDirectToken(token, 'token-secret', { purpose: 'session', now: exp + 1, clockTolerance: 5 }) !== null, 'clock tolerance is honored');
   });
 });
+
+describe('fino:security encoding edge cases', () => {
+  it('handles ArrayBufferView secrets with offsets through signed cookies', (t) => {
+    const backing = new Uint8Array([9, 115, 101, 99, 114, 101, 116, 9]);
+    const secretView = backing.subarray(1, 7);
+    const equivalent = new TextEncoder().encode('secret');
+
+    const signed = signCookie('view-secret', secretView);
+
+    t.equal(verifyCookie(signed, equivalent), 'view-secret', 'view byteOffset and byteLength are honored');
+  });
+
+  it('normalizes short secrets through sealed cookies', (t) => {
+    const sealed = sealCookie('normalized', 'short secret');
+
+    t.equal(unsealCookie(sealed, 'short secret'), 'normalized', 'short secret normalizes consistently');
+    t.equal(unsealCookie(sealed, 'other secret'), null, 'different normalized secret fails authentication');
+  });
+
+  it('rejects malformed base64url payloads and timing-safe mismatches through verifiers', (t) => {
+    const signed = signCookie('hello', 'secret');
+    const [payload, sig] = signed.split('.');
+
+    t.equal(verifyCookie(`${payload}=${sig}`, 'secret'), null, 'non-canonical padded payload is rejected');
+    t.equal(verifyCookie(`${payload}.${sig!.slice(0, -1)}x`, 'secret'), null, 'signature mismatch is rejected');
+  });
+});

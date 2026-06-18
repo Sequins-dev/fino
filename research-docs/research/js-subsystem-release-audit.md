@@ -94,8 +94,7 @@ Status: Needs work
 - Add focused coverage for `BufferedBytesReader`, `BufferedBytesWriter`, `FdReader`, `FdWriter`, `readUntil`, `peek`/`takeBuffered`, and `writev`.
 
 ## Security Encoding
-Status: Needs work
-- Add direct focused tests for canonical base64url rejection, view-offset handling in `toBytes`, `normalizeSecretKey`, and timing-safe equality.
+Status: DONE
 
 ## UUID
 Status: DONE
