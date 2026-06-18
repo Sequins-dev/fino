@@ -13,8 +13,7 @@ Status: Needs work
 Status: DONE
 
 ## `fino:module`
-Status: Needs work
-- Expand benchmark coverage beyond construction to cover install, import, and uninstall lifecycle paths.
+Status: DONE
 
 ## `fino:config`
 Status: Needs work
