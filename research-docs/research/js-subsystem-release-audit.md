@@ -104,8 +104,7 @@ Status: Needs work
 Status: DONE
 
 ## Template
-Status: Needs work
-- Decide whether Mustache partials are in release scope, or narrow the module wording to match the current explicit rejection.
+Status: DONE
 
 ## Semver
 Status: DONE

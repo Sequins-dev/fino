@@ -1,9 +1,10 @@
 /**
- * fino:template — small Mustache-compatible template rendering.
+ * fino:template — small Mustache-style template rendering.
  *
  * Supports escaped variables, triple-mustache/unescaped variables, truthy and
- * inverted sections, list iteration, and dotted-name lookup. Partials are
- * intentionally not implemented yet.
+ * inverted sections, list iteration, and dotted-name lookup. Mustache partials
+ * are intentionally out of scope for this release and are rejected during
+ * compilation.
  *
  * @example
  * ```ts no_run
