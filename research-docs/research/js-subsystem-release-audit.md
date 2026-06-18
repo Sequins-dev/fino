@@ -75,18 +75,13 @@ Status: Needs work
 - Add generated API documentation for `fino:net/quic`.
 
 ## Web Globals
-Status: Needs work
-- Align the public import surface: globals are registered as `internal:globals/*`, while ambient declarations and benchmarks refer to `fino:*` global modules such as `fino:console`, `fino:crypto`, `fino:url`, and `fino:webstreams`.
-- Remove or correct stale docs that still describe implemented `console.count()` and `console.countReset()` behavior as stubs.
+Status: DONE
 
 ## WHATWG Web Streams
-Status: Needs work
-- Resolve the `fino:webstreams` benchmark/import mismatch before release.
+Status: DONE
 
 ## Internal Stream
-Status: Needs work
-- Decide whether the stream module is public `fino:stream` or internal-only; current docs and registration do not agree.
-- Add focused coverage for `BufferedBytesReader`, `BufferedBytesWriter`, `FdReader`, `FdWriter`, `readUntil`, `peek`/`takeBuffered`, and `writev`.
+Status: DONE
 
 ## Security Encoding
 Status: DONE
