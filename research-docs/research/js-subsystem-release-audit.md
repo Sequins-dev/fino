@@ -66,13 +66,10 @@ Status: DONE
 Status: DONE
 
 ## `net/http/h3`
-Status: Needs work
-- Add module and symbol JSDoc for `fino:net/http/h3`.
-- Expand release tests for HTTP/3 availability, fallback, and error paths.
+Status: DONE
 
 ## `net/quic`
-Status: Needs work
-- Add generated API documentation for `fino:net/quic`.
+Status: DONE
 
 ## Web Globals
 Status: DONE
@@ -123,5 +120,4 @@ Status: Needs work
 Status: DONE
 
 ## OpenTelemetry
-Status: Needs work
-- Replace public split-module docs that still describe symbols as internal/private documentation.
+Status: DONE
