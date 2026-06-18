@@ -121,8 +121,7 @@ Status: Needs work
 Status: DONE
 
 ## Logging
-Status: Needs work
-- Add focused tests for `getLogContext()`, `Logger.child()`, `createConsoleSink()`, `createOtelSink()`, sink level filtering, and dispose behavior.
+Status: DONE
 
 ## Realm
 Status: DONE
