@@ -46,8 +46,7 @@ Status: DONE
 
 ## `net/dns`
 Status: Needs work
-- Decide or release-gate documented gaps: DNSSEC validation and TCP fallback for truncated UDP responses are not implemented.
-- Reduce live public DNS reliance in focused tests.
+- Design and implement DNSSEC validation before marking the resolver release-ready.
 
 ## `net/http`
 Status: DONE

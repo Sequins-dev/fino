@@ -1,10 +1,11 @@
 /**
- * fino:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.
+ * fino:dns — async DNS resolution via the RFC 1035 wire protocol.
  *
  * This module implements DNS resolution entirely in JS by speaking the DNS
- * wire protocol directly over UDP sockets (from `fino:socket`). It reads
- * nameservers from `/etc/resolv.conf` via `fino:file`. No blocking libc
- * calls are made — the entire resolution path is async and event-loop driven.
+ * wire protocol directly over UDP sockets (from `fino:socket`) and falls back
+ * to DNS-over-TCP when a UDP response is marked truncated. It reads nameservers
+ * from `/etc/resolv.conf` via `fino:file`. No blocking libc calls are made —
+ * the entire resolution path is async and event-loop driven.
  *
  *
  * ## Why not use libc getaddrinfo?
@@ -12,9 +13,9 @@
  * `getaddrinfo(3)` is the standard libc function for DNS resolution, but it
  * blocks the calling thread. Calling it from Fino would freeze the entire
  * event loop for the duration of the DNS query — potentially hundreds of
- * milliseconds. Using raw UDP lets us await the response asynchronously via
- * `loop.readable()`, keeping the process responsive to other I/O while the
- * query is in flight.
+ * milliseconds. Using raw sockets lets us await readiness asynchronously via
+ * `loop.readable()` / `loop.writable()`, keeping the process responsive to
+ * other I/O while the query is in flight.
  *
  *
  * ## DNS wire protocol overview (RFC 1035)
@@ -1062,12 +1063,12 @@ function formatRecords(records: DnsResourceRecord[], rrtype: RecordTypeName): Dn
 // ---------------------------------------------------------------------------
 
 /**
- * UDP DNS resolver with configurable nameservers, timeout, and retries.
+ * DNS resolver with configurable nameservers, timeout, and retries.
  *
  * The resolver lazily reads `/etc/resolv.conf` on first use, falls back to
- * public IPv4 DNS servers if none are found, and follows CNAME chains for A and
- * AAAA lookups up to a fixed hop limit. DNSSEC validation and TCP fallback for
- * truncated UDP responses are not implemented.
+ * public IPv4 DNS servers if none are found, follows CNAME chains for A and
+ * AAAA lookups up to a fixed hop limit, and retries over TCP when a UDP
+ * response has the DNS truncated bit set. DNSSEC validation is not implemented.
  *
  * ```ts no_run
  * import { Resolver } from 'fino:net/dns';
@@ -1479,7 +1480,7 @@ export class Resolver {
   // -------------------------------------------------------------------------
 
   /**
-   * Send a DNS UDP query and return the parsed response.
+   * Send a DNS query and return the parsed response.
    * Tries each nameserver in order, with up to #retries total rounds.
    *
    * @example
@@ -1559,17 +1560,13 @@ export class Resolver {
         // Discard responses with wrong transaction ID
         if (response.id !== id) continue;
 
-        // Handle non-zero RCODE
-        if (response.rcode !== 0) {
-          const rcodeInfo = RCODE_ERRORS[response.rcode];
-          if (rcodeInfo) {
-            const err: DnsError = new Error(`dns: ${rcodeInfo.msg} for '${name}'`);
-            err.code     = rcodeInfo.code;
-            err.hostname = name;
-            throw err;
-          }
-          continue; // unknown rcode, try next
+        if (response.truncated) {
+          const tcpResponse = await this.#sendTcpQuery(server, packet, id, name);
+          if (tcpResponse === null) continue;
+          response = tcpResponse;
         }
+
+        if (!this.#handleResponseCode(response, name)) continue;
 
         return response;
       }
@@ -1577,6 +1574,102 @@ export class Resolver {
 
     const err: DnsError = new Error(`dns: query timed out for '${name}'`);
     err.code     = 'ETIMEOUT';
+    err.hostname = name;
+    throw err;
+  }
+
+  async #sendTcpQuery(server: DnsServer, packet: Uint8Array, id: number, name: string): Promise<DnsResponse | null> {
+    const fd = sock.socket(server.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_STREAM, 0);
+    try {
+      sock.setNonblocking(fd);
+      const rc = sock.connect(fd, { family: server.family, ip: server.ip, port: server.port });
+      if (rc !== 0) {
+        const ready = await this.#waitForFd(fd, 'write');
+        if (!ready) return null;
+        const errBuf = sock.getsockopt(fd, sock.SOL_SOCKET, sock.SO_ERROR);
+        const errno = new DataView(errBuf).getInt32(0, true);
+        if (errno !== 0) return null;
+      }
+
+      const framedQuery = new Uint8Array(packet.byteLength + 2);
+      new DataView(framedQuery.buffer).setUint16(0, packet.byteLength, false);
+      framedQuery.set(packet, 2);
+      if (!await this.#sendAll(fd, framedQuery)) return null;
+
+      const lenBytes = await this.#recvExact(fd, 2);
+      if (lenBytes === null) return null;
+      const responseLength = new DataView(lenBytes.buffer, lenBytes.byteOffset, lenBytes.byteLength).getUint16(0, false);
+      if (responseLength < 12) return null;
+      const responseBytes = await this.#recvExact(fd, responseLength);
+      if (responseBytes === null) return null;
+
+      let response;
+      try {
+        response = _parseResponse(responseBytes);
+      } catch {
+        return null;
+      }
+      if (response.id !== id) return null;
+      if (!this.#handleResponseCode(response, name)) return null;
+      return response;
+    } finally {
+      loop.removeRead(fd);
+      loop.removeWrite(fd);
+      sock.close(fd);
+    }
+  }
+
+  async #sendAll(fd: number, bytes: Uint8Array): Promise<boolean> {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const sent = sock.send(fd, bytes.slice(offset));
+      if (sent > 0) {
+        offset += sent;
+        continue;
+      }
+      if (!await this.#waitForFd(fd, 'write')) return false;
+    }
+    return true;
+  }
+
+  async #recvExact(fd: number, length: number): Promise<Uint8Array | null> {
+    const out = new Uint8Array(length);
+    let offset = 0;
+    while (offset < length) {
+      const chunk = sock.recv(fd, length - offset);
+      if (chunk === null) return null;
+      if (typeof chunk === 'number') {
+        if (!await this.#waitForFd(fd, 'read')) return null;
+        continue;
+      }
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out;
+  }
+
+  async #waitForFd(fd: number, direction: 'read' | 'write'): Promise<boolean> {
+    const dnsTimer = loop.timeout(this.#timeout);
+    const result = await Promise.race([
+      (direction === 'read' ? loop.readable(fd) : loop.writable(fd)).then(function dnsReady() {
+        dnsTimer.cancel();
+        return true;
+      }),
+      dnsTimer.then(function dnsTimedOut() { return false; }),
+    ]);
+    if (!result) {
+      if (direction === 'read') loop.removeRead(fd);
+      else loop.removeWrite(fd);
+    }
+    return result;
+  }
+
+  #handleResponseCode(response: DnsResponse, name: string): boolean {
+    if (response.rcode === 0) return true;
+    const rcodeInfo = RCODE_ERRORS[response.rcode];
+    if (!rcodeInfo) return false;
+    const err: DnsError = new Error(`dns: ${rcodeInfo.msg} for '${name}'`);
+    err.code     = rcodeInfo.code;
     err.hostname = name;
     throw err;
   }
