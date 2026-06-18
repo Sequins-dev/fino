@@ -92,19 +92,32 @@
  *
  * Mirrors the Node.js AssertionError shape: `actual`, `expected`, `operator`.
  */
-interface AssertionErrorOptions {
+/**
+ * Constructor options for `AssertionError`.
+ */
+export interface AssertionErrorOptions {
   message?: string;
   actual?: unknown;
   expected?: unknown;
   operator?: string;
 }
 
-interface AssertCallbacks {
+/**
+ * Callback hooks used by `Assert` to report pass and fail events.
+ */
+export interface AssertCallbacks {
   onPass?: () => void;
   onFail?: (err: AssertionError) => void;
 }
 
-type ErrorCheck = ((e: unknown) => boolean) | RegExp | null;
+/**
+ * Matcher accepted by `throws()` and `rejects()`.
+ *
+ * A function receives the thrown value and must return true. A regular
+ * expression is tested against the error message. `null` and `undefined`
+ * accept any thrown or rejected value.
+ */
+export type ErrorCheck = ((e: unknown) => boolean) | RegExp | null;
 type IndexableRecord = Record<string, unknown>;
 
 function _isRecord(value: unknown): value is IndexableRecord {

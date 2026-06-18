@@ -24,16 +24,35 @@
 
 import { Headers, Request, Response } from '../net/http/index.mts';
 
-type FetchInput = string | URL | Request;
-type FetchInit = {
+/**
+ * Input accepted by scoped fetch mocks.
+ */
+export type FetchInput = string | URL | Request;
+
+/**
+ * Minimal fetch init shape captured by scoped fetch mocks.
+ */
+export type FetchInit = {
   method?: string;
   headers?: unknown;
   body?: unknown;
   signal?: unknown;
 };
-type HeaderMatcher = string | RegExp | ((value: string | null, call: MockFetchCall) => boolean);
-type BodyMatcher = string | Uint8Array | RegExp | ((body: Uint8Array, text: string, call: MockFetchCall) => boolean);
-type MockResponseFactory = Response | ((call: MockFetchCall) => Response | Promise<Response>);
+
+/**
+ * Matcher accepted by `MockFetchExpectation.header()`.
+ */
+export type HeaderMatcher = string | RegExp | ((value: string | null, call: MockFetchCall) => boolean);
+
+/**
+ * Matcher accepted by `MockFetchExpectation.body()`.
+ */
+export type BodyMatcher = string | Uint8Array | RegExp | ((body: Uint8Array, text: string, call: MockFetchCall) => boolean);
+
+/**
+ * Static or request-dependent response used by `replyWith()`.
+ */
+export type MockResponseFactory = Response | ((call: MockFetchCall) => Response | Promise<Response>);
 
 /**
  * Captured fetch call passed to mock matchers and response factories.
@@ -129,12 +148,22 @@ export interface MockFetchCall {
   text: string;
 }
 
-interface HeaderExpectation {
+/**
+ * Internal normalized header expectation.
+ *
+ * @internal
+ */
+export interface HeaderExpectation {
   name: string;
   matcher: HeaderMatcher;
 }
 
-interface FetchExpectation {
+/**
+ * Internal normalized fetch expectation.
+ *
+ * @internal
+ */
+export interface FetchExpectation {
   method?: string;
   url?: string;
   headers: HeaderExpectation[];

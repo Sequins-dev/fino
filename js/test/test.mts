@@ -94,12 +94,46 @@ interface GroupNode {
 type TestNode = LeafNode | GroupNode;
 
 interface RunResult { passed: number; failed: number; skipped: number; }
-interface RunOptions { filter?: string; }
-type SkipOption = boolean | string;
-type RegisterOptions = { skip?: SkipOption };
-type TestFn = (t: Assert) => void | Promise<void>;
-type GroupFn = () => void;
-type HookFn = () => void | Promise<void>;
+
+/**
+ * Options passed to `run()` when executing registered tests manually.
+ *
+ * `filter` keeps only matching `describe()` paths and their ancestors. The CLI
+ * passes this from `fino test --filter`.
+ */
+export interface RunOptions { filter?: string; }
+
+/**
+ * Value accepted by the `skip` registration option.
+ *
+ * `true` skips without a reason, and a string is printed as the TAP skip
+ * reason.
+ */
+export type SkipOption = boolean | string;
+
+/**
+ * Options accepted by `test()`, `suite()`, `describe()`, and `it()`.
+ */
+export type RegisterOptions = { skip?: SkipOption };
+
+/**
+ * Callback used by `test()` and `it()`.
+ *
+ * The assertion helper collects failures for TAP output. Returning a promise
+ * lets the runner await async test work.
+ */
+export type TestFn = (t: Assert) => void | Promise<void>;
+
+/**
+ * Registration callback used by `suite()` and `describe()`.
+ */
+export type GroupFn = () => void;
+
+/**
+ * Lifecycle hook callback used by `before()`, `after()`, `beforeEach()`, and
+ * `afterEach()`.
+ */
+export type HookFn = () => void | Promise<void>;
 
 /** Top-level test/suite/describe entries. */
 const _tests: TestNode[] = [];
