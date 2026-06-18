@@ -16,8 +16,7 @@ Status: DONE
 Status: DONE
 
 ## `fino:config`
-Status: Needs work
-- Add a representative load benchmark covering defaults, file/env/argv merge, coercion, and validation.
+Status: DONE
 
 ## `fino:tty`
 Status: Needs work
