@@ -23,6 +23,16 @@ function coveredBuiltins(source: string): Set<string> {
   return specs;
 }
 
+function listedBenchmarkPaths(source: string): string[] {
+  const paths = new Set<string>();
+  const re = /\|\s*`fino:[^`]+`\s*\|\s*`(?<path>benchmarks\/[^`]+)`\s*\|/g;
+  for (const match of source.matchAll(re)) {
+    const path = match.groups?.path;
+    if (path) paths.add(path);
+  }
+  return [...paths].sort();
+}
+
 describe('benchmark coverage map', () => {
   it('documents every public fino builtin registered in the loader', async (t) => {
     const loader = await fs.readFile('src/loader.rs', 'utf8');
@@ -58,5 +68,21 @@ describe('benchmark coverage map', () => {
       const stat = await fs.stat(file);
       t.ok(stat.isFile(), `${file} exists as a separate benchmark file`);
     }
+  });
+
+  it('points only at benchmark files that exist', async (t) => {
+    const coverage = await fs.readFile('benchmarks/COVERAGE.md', 'utf8');
+    const missing: string[] = [];
+
+    for (const file of listedBenchmarkPaths(coverage)) {
+      try {
+        const stat = await fs.stat(file);
+        if (!stat.isFile()) missing.push(file);
+      } catch {
+        missing.push(file);
+      }
+    }
+
+    t.deepEqual(missing, [], 'all listed benchmark files exist');
   });
 });
