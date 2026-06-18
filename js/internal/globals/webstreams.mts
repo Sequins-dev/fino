@@ -1,5 +1,5 @@
 /**
- * fino:webstreams — ReadableStream, WritableStream, TransformStream
+ * internal:globals/webstreams — ReadableStream, WritableStream, TransformStream globals.
  *
  * WHATWG Streams specification: https://streams.spec.whatwg.org/
  *
@@ -41,9 +41,6 @@
  * ## Example
  *
  * ```typescript no_run
- * const { ReadableStream, TransformStream } =
- *   import 'internal:globals/webstreams';
- *
  * const stream = ReadableStream.from(['hello'])
  *   .pipeThrough(new TransformStream({
  *     transform(chunk, controller) {
