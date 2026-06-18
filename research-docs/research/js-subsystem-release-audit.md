@@ -111,9 +111,7 @@ Status: DONE
 Status: DONE
 
 ## Formats
-Status: Needs work
-- Expand TypeScript formatter/linter JSDoc for public option and result shapes.
-- Add focused Markdown security tests for unsafe links, unsafe image URLs, `allowUnsafeLinks`, and `resolveLink` returning unsafe URLs.
+Status: DONE
 
 ## Validation
 Status: DONE

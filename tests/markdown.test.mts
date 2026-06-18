@@ -42,4 +42,32 @@ const value = "<safe>";
     t.ok(html.includes('<a href="advanced.html#advanced.ResourceBox">ResourceBox</a>'), 'renders reference link');
     t.ok(html.includes('<a href="https://example.test/docs">https://example.test/docs</a>.'), 'linkifies bare URL without trailing punctuation');
   });
+
+  it('omits unsafe links and image URLs by default', (t) => {
+    t.equal(renderMarkdownInline('[run](javascript:alert(1))'), 'run', 'unsafe link renders as label text');
+    t.equal(renderMarkdownInline('![logo](javascript:alert(1))'), 'logo', 'unsafe image renders as alt text');
+  });
+
+  it('allows unsafe links only when explicitly requested', (t) => {
+    t.equal(
+      renderMarkdownInline('[run](javascript:alert(1))', { allowUnsafeLinks: true }),
+      '<a href="javascript:alert(1)">run</a>',
+      'allowUnsafeLinks permits protocol URLs',
+    );
+    t.equal(
+      renderMarkdownInline('![logo](javascript:alert(1))', { allowUnsafeLinks: true }),
+      '<img src="javascript:alert(1)" alt="logo">',
+      'allowUnsafeLinks permits image URLs',
+    );
+  });
+
+  it('checks resolved links against the safe-link policy', (t) => {
+    const html = renderMarkdownInline('[docs](/docs)', {
+      resolveLink() {
+        return 'javascript:alert(1)';
+      },
+    });
+
+    t.equal(html, 'docs', 'unsafe resolved URL is omitted');
+  });
 });

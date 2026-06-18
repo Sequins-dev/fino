@@ -606,31 +606,77 @@ export interface TranspileResult {
 
 /**
  * Options controlling source formatting.
+ *
+ * Formatting uses the same source parsing controls as `transpile()`, including
+ * `filename`, `sourceType`, JSX handling, and source-map choices where the
+ * native formatter supports them. Invalid source returns `ok: false` with
+ * diagnostics instead of emitting partial formatted code.
+ *
+ * ```ts no_run
+ * import type { FormatOptions } from 'fino:format/typescript';
+ *
+ * const options: FormatOptions = { filename: 'app.ts', sourceType: 'ts' };
+ * ```
  */
 export interface FormatOptions extends TranspileOptions {}
 
 /**
  * Result returned by `format()`.
+ *
+ * `code` contains the complete formatted source only when `ok` is `true`.
+ * `errors` contains parse or formatter diagnostics and is empty on success.
+ *
+ * ```ts no_run
+ * import { format } from 'fino:format/typescript';
+ *
+ * const result: FormatResult = format('const value = "x";');
+ * ```
  */
 export interface FormatResult {
+  /** Whether formatting succeeded without diagnostics. */
   ok: boolean;
+  /** Formatted source text, or the empty string on failure. */
   code: string;
+  /** Parse or formatter diagnostics. */
   errors: ParseDiagnostic[];
 }
 
 /**
  * Options controlling source linting.
+ *
+ * Linting shares the parser options from `transpile()`. When `fix` is true,
+ * supported automatic fixes are returned in `fixedCode`; unsupported fixes
+ * remain diagnostics and do not rewrite the input.
+ *
+ * ```ts no_run
+ * import type { LintOptions } from 'fino:format/typescript';
+ *
+ * const options: LintOptions = { filename: 'app.ts', fix: true };
+ * ```
  */
 export interface LintOptions extends TranspileOptions {
+  /** Return fixed source text when the default rule set can safely apply fixes. */
   fix?: boolean;
 }
 
 /**
  * Result returned by `lint()`.
+ *
+ * `ok` is `true` only when no diagnostics remain. `fixedCode` is present when
+ * `fix: true` produced a changed source string.
+ *
+ * ```ts no_run
+ * import { lint } from 'fino:format/typescript';
+ *
+ * const result: LintResult = lint('debugger;');
+ * ```
  */
 export interface LintResult {
+  /** Whether linting completed with no diagnostics. */
   ok: boolean;
+  /** Parse and lint diagnostics from the default rule set. */
   diagnostics: ParseDiagnostic[];
+  /** Fixed source text when requested and available. */
   fixedCode?: string;
 }
 
