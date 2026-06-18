@@ -5972,6 +5972,150 @@
       },
       "exports": [
         {
+          "id": "fs.F_OK",
+          "name": "F_OK",
+          "kind": "const",
+          "signature": "const F_OK",
+          "signatures": [
+            "const F_OK"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Access flag that checks whether a path exists.\n\nPass this to `DiskFileSystem.access()` when existence is the only required\ncondition. This is the default mode.\n\n```ts no_run\nimport { DiskFileSystem, F_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', F_OK);\n```",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Access flag that checks whether a path exists."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Pass this to `DiskFileSystem.access()` when existence is the only required\ncondition. This is the default mode."
+              },
+              {
+                "kind": "code",
+                "lang": "ts",
+                "meta": "no_run",
+                "code": "import { DiskFileSystem, F_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', F_OK);",
+                "hiddenCode": "import { DiskFileSystem, F_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', F_OK);"
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 74,
+            "column": 1
+          }
+        },
+        {
+          "id": "fs.R_OK",
+          "name": "R_OK",
+          "kind": "const",
+          "signature": "const R_OK",
+          "signatures": [
+            "const R_OK"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Access flag that checks read permission for the current process.\n\nCombine with `W_OK` or `X_OK` using bitwise OR when multiple permissions are\nrequired.\n\n```ts no_run\nimport { DiskFileSystem, R_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', R_OK);\n```",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Access flag that checks read permission for the current process."
+              },
+              {
+                "kind": "paragraph",
+                "text": "Combine with `W_OK` or `X_OK` using bitwise OR when multiple permissions are\nrequired."
+              },
+              {
+                "kind": "code",
+                "lang": "ts",
+                "meta": "no_run",
+                "code": "import { DiskFileSystem, R_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', R_OK);",
+                "hiddenCode": "import { DiskFileSystem, R_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', R_OK);"
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 89,
+            "column": 1
+          }
+        },
+        {
+          "id": "fs.W_OK",
+          "name": "W_OK",
+          "kind": "const",
+          "signature": "const W_OK",
+          "signatures": [
+            "const W_OK"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Access flag that checks write permission for the current process.\n\nThe result reflects the process credentials and platform `access(2)`\nbehavior; it is not a guarantee that a later write will succeed.\n\n```ts no_run\nimport { DiskFileSystem, W_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', W_OK);\n```",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Access flag that checks write permission for the current process."
+              },
+              {
+                "kind": "paragraph",
+                "text": "The result reflects the process credentials and platform `access(2)`\nbehavior; it is not a guarantee that a later write will succeed."
+              },
+              {
+                "kind": "code",
+                "lang": "ts",
+                "meta": "no_run",
+                "code": "import { DiskFileSystem, W_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', W_OK);",
+                "hiddenCode": "import { DiskFileSystem, W_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/app.log', W_OK);"
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 104,
+            "column": 1
+          }
+        },
+        {
+          "id": "fs.X_OK",
+          "name": "X_OK",
+          "kind": "const",
+          "signature": "const X_OK",
+          "signatures": [
+            "const X_OK"
+          ],
+          "aliases": [],
+          "doc": {
+            "text": "Access flag that checks execute/search permission for the current process.\n\nFor directories this checks search permission. For files this checks\nexecutable permission according to the platform.\n\n```ts no_run\nimport { DiskFileSystem, X_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/script.sh', X_OK);\n```",
+            "tags": [],
+            "blocks": [
+              {
+                "kind": "paragraph",
+                "text": "Access flag that checks execute/search permission for the current process."
+              },
+              {
+                "kind": "paragraph",
+                "text": "For directories this checks search permission. For files this checks\nexecutable permission according to the platform."
+              },
+              {
+                "kind": "code",
+                "lang": "ts",
+                "meta": "no_run",
+                "code": "import { DiskFileSystem, X_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/script.sh', X_OK);",
+                "hiddenCode": "import { DiskFileSystem, X_OK } from 'fino:file';\n\nconst fs = new DiskFileSystem();\nawait fs.access('/tmp/script.sh', X_OK);"
+              }
+            ]
+          },
+          "members": [],
+          "location": {
+            "line": 119,
+            "column": 1
+          }
+        },
+        {
           "id": "fs.DiskFileSystem",
           "name": "DiskFileSystem",
           "kind": "class",
@@ -6042,7 +6186,7 @@
                 ]
               },
               "location": {
-                "line": 107,
+                "line": 167,
                 "column": 3
               }
             },
@@ -6086,7 +6230,7 @@
                 ]
               },
               "location": {
-                "line": 145,
+                "line": 205,
                 "column": 3
               }
             },
@@ -6134,7 +6278,7 @@
                 ]
               },
               "location": {
-                "line": 177,
+                "line": 237,
                 "column": 3
               }
             },
@@ -6178,7 +6322,7 @@
                 ]
               },
               "location": {
-                "line": 241,
+                "line": 301,
                 "column": 3
               }
             },
@@ -6222,7 +6366,7 @@
                 ]
               },
               "location": {
-                "line": 267,
+                "line": 327,
                 "column": 3
               }
             },
@@ -6266,7 +6410,7 @@
                 ]
               },
               "location": {
-                "line": 293,
+                "line": 353,
                 "column": 3
               }
             },
@@ -6306,7 +6450,7 @@
                 ]
               },
               "location": {
-                "line": 315,
+                "line": 375,
                 "column": 3
               }
             },
@@ -6346,7 +6490,7 @@
                 ]
               },
               "location": {
-                "line": 337,
+                "line": 397,
                 "column": 3
               }
             },
@@ -6390,7 +6534,7 @@
                 ]
               },
               "location": {
-                "line": 368,
+                "line": 428,
                 "column": 3
               }
             },
@@ -6438,7 +6582,7 @@
                 ]
               },
               "location": {
-                "line": 392,
+                "line": 452,
                 "column": 3
               }
             },
@@ -6486,7 +6630,7 @@
                 ]
               },
               "location": {
-                "line": 415,
+                "line": 475,
                 "column": 3
               }
             },
@@ -6534,7 +6678,7 @@
                 ]
               },
               "location": {
-                "line": 439,
+                "line": 499,
                 "column": 3
               }
             },
@@ -6578,7 +6722,7 @@
                 ]
               },
               "location": {
-                "line": 471,
+                "line": 531,
                 "column": 3
               }
             },
@@ -6622,7 +6766,7 @@
                 ]
               },
               "location": {
-                "line": 494,
+                "line": 554,
                 "column": 3
               }
             },
@@ -6666,7 +6810,7 @@
                 ]
               },
               "location": {
-                "line": 518,
+                "line": 578,
                 "column": 3
               }
             },
@@ -6710,7 +6854,7 @@
                 ]
               },
               "location": {
-                "line": 542,
+                "line": 602,
                 "column": 3
               }
             },
@@ -6754,7 +6898,7 @@
                 ]
               },
               "location": {
-                "line": 580,
+                "line": 640,
                 "column": 3
               }
             },
@@ -6798,7 +6942,7 @@
                 ]
               },
               "location": {
-                "line": 604,
+                "line": 664,
                 "column": 3
               }
             },
@@ -6842,7 +6986,7 @@
                 ]
               },
               "location": {
-                "line": 629,
+                "line": 689,
                 "column": 3
               }
             },
@@ -6886,7 +7030,7 @@
                 ]
               },
               "location": {
-                "line": 653,
+                "line": 713,
                 "column": 3
               }
             },
@@ -6930,7 +7074,7 @@
                 ]
               },
               "location": {
-                "line": 682,
+                "line": 742,
                 "column": 3
               }
             },
@@ -6974,7 +7118,7 @@
                 ]
               },
               "location": {
-                "line": 708,
+                "line": 768,
                 "column": 3
               }
             },
@@ -7022,13 +7166,13 @@
                 ]
               },
               "location": {
-                "line": 740,
+                "line": 800,
                 "column": 3
               }
             }
           ],
           "location": {
-            "line": 87,
+            "line": 147,
             "column": 1
           }
         }

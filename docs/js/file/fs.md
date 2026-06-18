@@ -39,6 +39,78 @@ produced by `file.reader()` / `file.writer()` borrow the fd with a no-op
 `onClose` callback — do not close the Reader/Writer to release the fd; call
 `file.close()` instead.
 
+## F_OK
+
+```ts
+const F_OK
+```
+
+Access flag that checks whether a path exists.
+
+Pass this to `DiskFileSystem.access()` when existence is the only required
+condition. This is the default mode.
+
+```ts
+import { DiskFileSystem, F_OK } from 'fino:file';
+
+const fs = new DiskFileSystem();
+await fs.access('/tmp/app.log', F_OK);
+```
+
+## R_OK
+
+```ts
+const R_OK
+```
+
+Access flag that checks read permission for the current process.
+
+Combine with `W_OK` or `X_OK` using bitwise OR when multiple permissions are
+required.
+
+```ts
+import { DiskFileSystem, R_OK } from 'fino:file';
+
+const fs = new DiskFileSystem();
+await fs.access('/tmp/app.log', R_OK);
+```
+
+## W_OK
+
+```ts
+const W_OK
+```
+
+Access flag that checks write permission for the current process.
+
+The result reflects the process credentials and platform `access(2)`
+behavior; it is not a guarantee that a later write will succeed.
+
+```ts
+import { DiskFileSystem, W_OK } from 'fino:file';
+
+const fs = new DiskFileSystem();
+await fs.access('/tmp/app.log', W_OK);
+```
+
+## X_OK
+
+```ts
+const X_OK
+```
+
+Access flag that checks execute/search permission for the current process.
+
+For directories this checks search permission. For files this checks
+executable permission according to the platform.
+
+```ts
+import { DiskFileSystem, X_OK } from 'fino:file';
+
+const fs = new DiskFileSystem();
+await fs.access('/tmp/script.sh', X_OK);
+```
+
 ## DiskFileSystem
 
 ```ts

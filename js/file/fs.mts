@@ -48,7 +48,7 @@ import {
   S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
   SEEK_SET, SEEK_CUR, SEEK_END,
   DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
-  F_OK, R_OK, W_OK, X_OK,
+  F_OK as _F_OK, R_OK as _R_OK, W_OK as _W_OK, X_OK as _X_OK,
   modeToFlags, encodeUtf8, decodeUtf8,
 } from '../internal/file/bindings.mts';
 import { Stat } from '../internal/file/stat.mts';
@@ -57,6 +57,66 @@ import { Entry, FileEntry, DirEntry } from '../internal/file/entry.mts';
 import { Glob, glob as globWalk, type GlobOptions } from '../internal/file/glob.mts';
 import type { Path } from './path.mts';
 import { FileSystem } from '../internal/file/provider.mts';
+
+/**
+ * Access flag that checks whether a path exists.
+ *
+ * Pass this to `DiskFileSystem.access()` when existence is the only required
+ * condition. This is the default mode.
+ *
+ * ```ts no_run
+ * import { DiskFileSystem, F_OK } from 'fino:file';
+ *
+ * const fs = new DiskFileSystem();
+ * await fs.access('/tmp/app.log', F_OK);
+ * ```
+ */
+export const F_OK = _F_OK;
+
+/**
+ * Access flag that checks read permission for the current process.
+ *
+ * Combine with `W_OK` or `X_OK` using bitwise OR when multiple permissions are
+ * required.
+ *
+ * ```ts no_run
+ * import { DiskFileSystem, R_OK } from 'fino:file';
+ *
+ * const fs = new DiskFileSystem();
+ * await fs.access('/tmp/app.log', R_OK);
+ * ```
+ */
+export const R_OK = _R_OK;
+
+/**
+ * Access flag that checks write permission for the current process.
+ *
+ * The result reflects the process credentials and platform `access(2)`
+ * behavior; it is not a guarantee that a later write will succeed.
+ *
+ * ```ts no_run
+ * import { DiskFileSystem, W_OK } from 'fino:file';
+ *
+ * const fs = new DiskFileSystem();
+ * await fs.access('/tmp/app.log', W_OK);
+ * ```
+ */
+export const W_OK = _W_OK;
+
+/**
+ * Access flag that checks execute/search permission for the current process.
+ *
+ * For directories this checks search permission. For files this checks
+ * executable permission according to the platform.
+ *
+ * ```ts no_run
+ * import { DiskFileSystem, X_OK } from 'fino:file';
+ *
+ * const fs = new DiskFileSystem();
+ * await fs.access('/tmp/script.sh', X_OK);
+ * ```
+ */
+export const X_OK = _X_OK;
 
 // Re-export the public API surface
 export { FileSystem };
@@ -747,5 +807,3 @@ export class DiskFileSystem extends FileSystem {
     return globWalk(listDir, pattern, options) as AsyncGenerator<Entry>;
   }
 }
-
-export { F_OK, R_OK, W_OK, X_OK };

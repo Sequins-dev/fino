@@ -5,7 +5,6 @@
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Watcher } from 'fino:file/watch';
-import * as loop from 'internal:runtime/loop';
 
 const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1_000_000);
 
@@ -19,10 +18,13 @@ async function collectEvents(watcher: Watcher, n: number, timeoutMs = 2000): Pro
   const iter = watcher[Symbol.asyncIterator]();
 
   for (let i = 0; i < n; i++) {
-    const t = loop.timeout(timeoutMs);
+    let timeoutId = 0;
+    const timeout = new Promise<{ value: null; done: false; timedOut: true }>((resolve) => {
+      timeoutId = setTimeout(() => resolve({ value: null, done: false, timedOut: true }), timeoutMs);
+    });
     const result = await Promise.race([
-      iter.next().then(r => { t.cancel(); return r; }),
-      t.then(() => ({ value: null, done: false, timedOut: true })),
+      iter.next().then(r => { clearTimeout(timeoutId); return r; }),
+      timeout,
     ]);
     if ((result as any).timedOut) break;
     if (result.done) break;
@@ -37,6 +39,10 @@ async function collectEvents(watcher: Watcher, n: number, timeoutMs = 2000): Pro
 
 describe('Watcher', () => {
   let fs: DiskFileSystem;
+
+  function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   before(async () => {
     fs = new DiskFileSystem();
@@ -220,7 +226,7 @@ describe('Watcher', () => {
     watcher.watch(dir);
 
     // Give watcher time to set up recursive watches
-    await loop.timeout(50);
+    await delay(50);
 
     // Write to a file in the subdirectory
     const newFile = sub + '/deep.txt';
