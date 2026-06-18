@@ -66,8 +66,7 @@ Status: Needs work
 Status: DONE
 
 ## `net/http/app`
-Status: Needs work
-- Add the missing `benchmarks/net/http/app.bench.mts` listed in `benchmarks/COVERAGE.md`, or correct the coverage map.
+Status: DONE
 
 ## `net/http/h2`
 Status: DONE
