@@ -19,8 +19,7 @@ Status: DONE
 Status: DONE
 
 ## `fino:tty`
-Status: Needs work
-- Add focused tests for `isatty`, TTY flag snapshots, `readLine` EOF/line behavior, and `writeStdout`/`writeStderr`.
+Status: DONE
 
 ## Builtin Registration
 Status: DONE
