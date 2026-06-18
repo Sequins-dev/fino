@@ -21,7 +21,7 @@
 <li><code>h2Available</code>: whether libnghttp2 was found on this system</li>
 <li><code>h2Version</code>:   library version string, or null if unavailable</li>
 </ul>
-<p>The H2 server and client drivers are wired into <code>fino:net/http/server</code> and <code>fino:fetch</code> automatically; applications do not import this module unless they need to check library availability.</p>
+<p>The H2 server and client drivers are wired into <code>fino:net/http/server</code> and the global <code>fetch</code> implementation automatically; applications do not import this module unless they need to check library availability.</p>
 <pre><code class="language-ts"><span class="tok-keyword">import</span> { h2Available, h2Version } from <span class="tok-string">&#39;fino:net/http/h2&#39;</span>;
 
 <span class="tok-keyword">if</span> (h2Available) {

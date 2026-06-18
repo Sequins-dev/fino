@@ -23572,7 +23572,7 @@
       "name": "h2",
       "sourceModule": "h2",
       "doc": {
-        "text": "fino:net/http/h2 — public HTTP/2 module.\n\nCurrently exposes:\n  - `h2Available`: whether libnghttp2 was found on this system\n  - `h2Version`:   library version string, or null if unavailable\n\nThe H2 server and client drivers are wired into `fino:net/http/server` and\n`fino:fetch` automatically; applications do not import this module unless\nthey need to check library availability.\n\n```ts no_run\nimport { h2Available, h2Version } from 'fino:net/http/h2';\n\nif (h2Available) {\n  console.log(`HTTP/2 available through nghttp2 ${h2Version ?? 'unknown'}`);\n}\n```",
+        "text": "fino:net/http/h2 — public HTTP/2 module.\n\nCurrently exposes:\n  - `h2Available`: whether libnghttp2 was found on this system\n  - `h2Version`:   library version string, or null if unavailable\n\nThe H2 server and client drivers are wired into `fino:net/http/server` and\nthe global `fetch` implementation automatically; applications do not import this module unless\nthey need to check library availability.\n\n```ts no_run\nimport { h2Available, h2Version } from 'fino:net/http/h2';\n\nif (h2Available) {\n  console.log(`HTTP/2 available through nghttp2 ${h2Version ?? 'unknown'}`);\n}\n```",
         "tags": [
           {
             "name": "example",
@@ -23590,7 +23590,7 @@
           },
           {
             "kind": "paragraph",
-            "text": "The H2 server and client drivers are wired into `fino:net/http/server` and\n`fino:fetch` automatically; applications do not import this module unless\nthey need to check library availability."
+            "text": "The H2 server and client drivers are wired into `fino:net/http/server` and\nthe global `fetch` implementation automatically; applications do not import this module unless\nthey need to check library availability."
           },
           {
             "kind": "code",
