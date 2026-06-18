@@ -6,7 +6,7 @@ import {
 } from 'fino:opentelemetry';
 import { argv } from 'fino:process';
 
-if (argv[1] !== '--test' && argv[1] !== 'test') {
+if (argv[1] !== 'test') {
   globalThis.fetch = async function otelCliFetch(url) {
     console.log(String(url));
     console.log(String(arguments[1]?.headers?.['content-type'] || ''));

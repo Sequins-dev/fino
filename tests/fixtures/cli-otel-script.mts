@@ -33,7 +33,7 @@ async function readBodyText(body: unknown): Promise<string> {
   return '';
 }
 
-if (argv[1] !== '--test' && argv[1] !== 'test') {
+if (argv[1] !== 'test') {
   globalThis.fetch = async function otelCliFetch(url: string | URL | Request, options: RequestInit = {}) {
     console.log(String(url));
     console.log(new Headers(options.headers).get('content-type') ?? '');

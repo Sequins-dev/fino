@@ -191,7 +191,7 @@ The meta-test in quic.test.mts already enforces that every `Direct` row has an `
 - `tests/net/*` + `tests/net/fixtures/quic/*` + `research-docs/research/quic-conformance-matrix.md` — per B5/B6
 
 ## Verification
-- Each phase: `cargo run -- --test 'tests/net/quic*.test.mts'` and `tests/internal/stream.test.mts` green; matrix meta-test enforces evidence mapping.
+- Each phase: `cargo run -- test 'tests/net/quic*.test.mts'` and `tests/internal/stream.test.mts` green; matrix meta-test enforces evidence mapping.
 - Interop scenarios run when `NODE_QUIC_BIN` points at the Node checkout's binary; otherwise skip cleanly.
 - P2-1 requires a before/after throughput benchmark (loopback bulk transfer) — no perf claims without data.
 - Final pass: conformance matrix has zero `Missing` rows except documented deferrals (CRL, GSO, pluggable CID factories, per-SNI on GnuTLS).

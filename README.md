@@ -50,7 +50,7 @@ cargo run -- path/to/script.mts
 Run tests:
 
 ```sh
-./target/release/fino --test tests/net/serve.test.mts
+./target/release/fino test tests/net/serve.test.mts
 ```
 
 Run benchmarks:
@@ -101,8 +101,8 @@ Useful commands:
 
 ```sh
 cargo test --quiet
-./target/release/fino --test tests/net/socket-class.test.mts
-./target/release/fino --test tests/net/serve.test.mts
+./target/release/fino test tests/net/socket-class.test.mts
+./target/release/fino test tests/net/serve.test.mts
 ```
 
 If you are working on performance-sensitive code, prefer benchmarking on a unique port and keep profiling runs separate from general local testing.

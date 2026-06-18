@@ -19,6 +19,7 @@
 
 import { cwd } from '../../process.mts';
 import { Command, type CommandContext } from '../../process/argv.mts';
+import { DiskFileSystem } from '../../file/fs.mts';
 
 function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
@@ -26,6 +27,34 @@ function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('./') || path.startsWith('../')) return `file://${cwd()}/${path}`;
   if (path.includes(':')) return path;
   return `file://${cwd()}/./${path}`;
+}
+
+/**
+ * Expand a single CLI argument into benchmark files to import.
+ *
+ * Glob arguments resolve from cwd. Directory-like arguments expand to
+ * descendant `.bench.mts` files. Direct file paths and non-file specifiers are
+ * returned unchanged so the loader keeps handling them.
+ */
+async function expandArg(arg: string): Promise<string[]> {
+  const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
+  const isDir  = arg.endsWith('/') || !/\.[^/]+$/.test(arg);
+
+  if (!isGlob && !isDir) {
+    return [arg];
+  }
+
+  const fs = new DiskFileSystem();
+  const pattern = isGlob ? arg : arg.replace(/\/$/, '') + '/**/*.bench.mts';
+  const base    = cwd();
+  const results: string[] = [];
+
+  for await (const entry of fs.glob(pattern, { cwd: base, onlyFiles: true })) {
+    results.push(entry.path.toString());
+  }
+
+  results.sort();
+  return results;
 }
 
 /**
@@ -58,7 +87,11 @@ export function createBenchCommand(): Command {
         throw new Error('fino bench: no benchmark files specified');
       }
 
-      for (const file of benchFiles) await import(normalizeModuleSpecifier(String(file)));
+      for (const raw of benchFiles) {
+        const expanded = await expandArg(String(raw));
+        for (const file of expanded) await import(normalizeModuleSpecifier(file));
+      }
+
       const { run } = await import('fino:bench');
       return filter === undefined ? run({}) : run({ filter });
     },

@@ -217,6 +217,14 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('# pass  1'), 'test subcommand ran the requested suite');
   });
 
+  it('does not accept the legacy --test shortcut', async (t) => {
+    const { stdout, stderr, result } = await runCli(['--test', './tests/util/topic.test.mts']);
+
+    t.equal(result.code, 1, 'legacy --test shortcut exits with an error');
+    t.equal(stdout, '', 'legacy --test shortcut does not run tests');
+    t.ok(stderr.includes('Unknown option "--test"'), 'legacy --test shortcut reports an unknown option');
+  });
+
   it('accepts bare repo-relative paths in the test subcommand', async (t) => {
     const { stdout, stderr, result } = await runCli(['test', 'tests/util/topic.test.mts']);
 
@@ -245,6 +253,64 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('# beta bench'), 'ancestor suite of matching nested group retained');
     t.ok(stdout.includes('# needle group'), 'matching nested benchmark group included');
     t.ok(!stdout.includes('other group'), 'unmatched nested benchmark group omitted');
+  });
+
+  it('expands benchmark directories in the bench command', async (t) => {
+    await withTempProject({
+      'benchmarks/alpha.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "bench('alpha directory bench', (b) => {",
+        "  b.group('needle directory group', (g) => {",
+        "    g.measure('directory measure', () => 1);",
+        "  });",
+        "});",
+        '',
+      ].join('\n'),
+      'benchmarks/nested/beta.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "bench('beta directory bench', (b) => {",
+        "  b.measure('beta measure', () => 2);",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle directory', 'benchmarks'], { cwd: dir });
+
+      t.equal(result.code, 0, 'bench directory input exits successfully');
+      t.equal(stderr, '', 'bench directory input does not write stderr');
+      t.ok(stdout.includes('# alpha directory bench'), 'bench directory input imports matching file');
+      t.ok(stdout.includes('# needle directory group'), 'bench directory input runs matching group');
+      t.ok(!stdout.includes('# beta directory bench'), 'bench directory input omits unmatched benchmark groups');
+    });
+  });
+
+  it('expands benchmark globs in the bench command', async (t) => {
+    await withTempProject({
+      'benchmarks/alpha.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "bench('alpha glob bench', (b) => {",
+        "  b.group('needle glob group', (g) => {",
+        "    g.measure('glob measure', () => 1);",
+        "  });",
+        "});",
+        '',
+      ].join('\n'),
+      'benchmarks/nested/beta.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "bench('beta glob bench', (b) => {",
+        "  b.measure('beta measure', () => 2);",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle glob', 'benchmarks/**/*.bench.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'bench glob input exits successfully');
+      t.equal(stderr, '', 'bench glob input does not write stderr');
+      t.ok(stdout.includes('# alpha glob bench'), 'bench glob input imports matching file');
+      t.ok(stdout.includes('# needle glob group'), 'bench glob input runs matching group');
+      t.ok(!stdout.includes('# beta glob bench'), 'bench glob input omits unmatched benchmark groups');
+    });
   });
 
   it('prints mapped ts locations to stderr', async (t) => {

@@ -250,7 +250,7 @@ async function run(options: RunOptions = {}): Promise<void>
 
 Run all registered tests and print TAP-13 output.
 
-Called automatically by the fino CLI in `--test` mode. User test files
+Called automatically by the `fino test` command. User test files
 only need to call `test()` / `suite()` / `describe()` — never `run()`.
 
 ```ts

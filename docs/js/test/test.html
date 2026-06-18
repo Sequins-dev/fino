@@ -171,7 +171,7 @@ describe(<span class="tok-string">&#39;temp files&#39;</span>, () =&gt; {
 <h3><code><span class="tok-keyword">async</span> <span class="tok-keyword">function</span> run(options: RunOptions = {}): <a class="tok-type" href="https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&lt;<span class="tok-keyword">void</span>&gt;</code></h3>
 
 <p>Run all registered tests and print TAP-13 output.</p>
-<p>Called automatically by the fino CLI in <code>--test</code> mode. User test files only need to call <code>test()</code> / <code>suite()</code> / <code>describe()</code> — never <code>run()</code>.</p>
+<p>Called automatically by the <code>fino test</code> command. User test files only need to call <code>test()</code> / <code>suite()</code> / <code>describe()</code> — never <code>run()</code>.</p>
 <pre><code class="language-ts"><span class="tok-keyword">import</span> { run, test } from <span class="tok-string">&#39;fino:test/test&#39;</span>;
 
 test(<span class="tok-string">&#39;manual runner&#39;</span>, (t) =&gt; t.ok(<span class="tok-keyword">true</span>));

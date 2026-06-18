@@ -37,7 +37,6 @@ import('fino:realm').then(
 );
 
 function normalizeCliArgv(args: string[]): string[] {
-  if (args[0] === '--test') return ['test', ...args.slice(1)];
   if (args[0] === '--bench') return ['bench', ...args.slice(1)];
   return args;
 }

@@ -39,7 +39,7 @@
  *   go install github.com/summerwind/h2spec/cmd/h2spec@latest  # any platform
  *
  * Then:
- *   cargo run -- --test tests/integration/h2spec.test.mts
+ *   cargo run -- test tests/integration/h2spec.test.mts
  */
 
 import { describe, it, before, after } from 'fino:test/test';

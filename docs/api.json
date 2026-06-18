@@ -70354,7 +70354,7 @@
           ],
           "aliases": [],
           "doc": {
-            "text": "Run all registered tests and print TAP-13 output.\n\nCalled automatically by the fino CLI in `--test` mode. User test files\nonly need to call `test()` / `suite()` / `describe()` — never `run()`.\n\n\n```ts no_run\nimport { run, test } from 'fino:test/test';\n\ntest('manual runner', (t) => t.ok(true));\nawait run({ filter: 'manual' });\n```",
+            "text": "Run all registered tests and print TAP-13 output.\n\nCalled automatically by the `fino test` command. User test files\nonly need to call `test()` / `suite()` / `describe()` — never `run()`.\n\n\n```ts no_run\nimport { run, test } from 'fino:test/test';\n\ntest('manual runner', (t) => t.ok(true));\nawait run({ filter: 'manual' });\n```",
             "tags": [
               {
                 "name": "throws",
@@ -70368,7 +70368,7 @@
               },
               {
                 "kind": "paragraph",
-                "text": "Called automatically by the fino CLI in `--test` mode. User test files\nonly need to call `test()` / `suite()` / `describe()` — never `run()`."
+                "text": "Called automatically by the `fino test` command. User test files\nonly need to call `test()` / `suite()` / `describe()` — never `run()`."
               },
               {
                 "kind": "code",

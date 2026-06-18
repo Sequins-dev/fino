@@ -7,7 +7,7 @@
 - `cargo build` builds the debug binary with symbols.
 - `cargo build --release` builds the optimized runtime used for benchmarks.
 - `cargo test --quiet` runs Rust-side tests.
-- `./target/release/fino --test tests/net/serve.test.mts` runs a specific JS test file.
+- `./target/release/fino test tests/net/serve.test.mts` runs a specific JS test file.
 - `PORT=3001 cargo run -- example.mts` starts the benchmark server on a custom port.
 - `PORT=3002 cargo run -- example_profile.mts` starts the profiled server and writes `profile.pb` on `/stop`.
 

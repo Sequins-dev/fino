@@ -566,7 +566,7 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
 /**
  * Run all registered tests and print TAP-13 output.
  *
- * Called automatically by the fino CLI in `--test` mode. User test files
+ * Called automatically by the `fino test` command. User test files
  * only need to call `test()` / `suite()` / `describe()` — never `run()`.
  *
  * @throws {Error} If any test fails (causes the process to exit with code 1).

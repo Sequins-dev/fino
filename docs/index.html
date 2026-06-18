@@ -47,7 +47,7 @@ cargo build --release</code></pre>
 <p>Run a script:</p>
 <pre><code class="language-sh">cargo run -- path/to/script.mts</code></pre>
 <p>Run tests:</p>
-<pre><code class="language-sh">./target/release/fino --test tests/net/serve.test.mts</code></pre>
+<pre><code class="language-sh">./target/release/fino test tests/net/serve.test.mts</code></pre>
 <p>Run benchmarks:</p>
 <pre><code class="language-sh">./target/release/fino --bench benchmarks/http.bench.mjs</code></pre>
 <h2>Example HTTP Server</h2>
@@ -74,8 +74,8 @@ go tool pprof profile.pb</code></pre>
 <h2>Development Notes</h2>
 <p>Useful commands:</p>
 <pre><code class="language-sh">cargo test --quiet
-./target/release/fino --test tests/net/socket-class.test.mts
-./target/release/fino --test tests/net/serve.test.mts</code></pre>
+./target/release/fino test tests/net/socket-class.test.mts
+./target/release/fino test tests/net/serve.test.mts</code></pre>
 <p>If you are working on performance-sensitive code, prefer benchmarking on a unique port and keep profiling runs separate from general local testing.</p>
 
 </main>

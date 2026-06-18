@@ -6,7 +6,7 @@ import {
 } from 'fino:opentelemetry';
 import { argv } from 'fino:process';
 
-if (argv[1] !== '--test' && argv[1] !== 'test') {
+if (argv[1] !== 'test') {
   globalThis.fetch = async function otelEntrypointFetch(url) {
     console.log(`export:${String(url)}`);
     const options = arguments[1] || {};
