@@ -266,7 +266,8 @@ SQLite database connection backed by Fino's SQLite VFS.
 
 Open connections with `Database.open()`. The connection owns a native
 `sqlite3*` pointer and a per-connection VFS registration; call `close()` when
-finished. Methods throw after the connection has been closed.
+finished. Close finalizes any statements that were not explicitly finalized.
+Methods throw after the connection has been closed.
 
 ```ts
 import { Database } from 'fino:database/sqlite';
@@ -476,9 +477,8 @@ async close(): Promise<void>
 
 Close the database and unregister the VFS.
 
-Calling `close()` more than once is allowed. Statements should be finalized
-before closing; SQLite may defer native cleanup until active statements are
-released.
+Calling `close()` more than once is allowed. Any statements created by this
+connection are finalized before the native database handle is closed.
 
 ```ts
 import { Database } from 'fino:database/sqlite';

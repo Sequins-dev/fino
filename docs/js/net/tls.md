@@ -1,4 +1,4 @@
-# js/net/tls
+# tls
 
 fino:tls — TLS socket layer.
 

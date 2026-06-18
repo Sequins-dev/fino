@@ -1,4 +1,4 @@
-# js/test/test
+# test
 
 fino:test — TAP-13 test framework with nesting and BDD-style describe/it.
 
@@ -64,6 +64,72 @@ Both APIs share a tree of nodes:
 `_current` points at the group being registered into (`null` = top level).
 The unified runner `_runEntries(entries, depth, parentNode)` recurses the tree,
 applying hooks from `parentNode` to each leaf inside a `describe` group.
+
+## RunOptions
+
+```ts
+interface RunOptions {
+```
+
+Options passed to `run()` when executing registered tests manually.
+
+`filter` keeps only matching `describe()` paths and their ancestors. The CLI
+passes this from `fino test --filter`.
+
+### filter
+
+```ts
+filter?: string
+```
+
+## SkipOption
+
+```ts
+type SkipOption = boolean | string
+```
+
+Value accepted by the `skip` registration option.
+
+`true` skips without a reason, and a string is printed as the TAP skip
+reason.
+
+## RegisterOptions
+
+```ts
+type RegisterOptions = {
+  skip?: SkipOption;
+}
+```
+
+Options accepted by `test()`, `suite()`, `describe()`, and `it()`.
+
+## TestFn
+
+```ts
+type TestFn = (t: Assert) => void | Promise<void>
+```
+
+Callback used by `test()` and `it()`.
+
+The assertion helper collects failures for TAP output. Returning a promise
+lets the runner await async test work.
+
+## GroupFn
+
+```ts
+type GroupFn = () => void
+```
+
+Registration callback used by `suite()` and `describe()`.
+
+## HookFn
+
+```ts
+type HookFn = () => void | Promise<void>
+```
+
+Lifecycle hook callback used by `before()`, `after()`, `beforeEach()`, and
+`afterEach()`.
 
 ## test
 

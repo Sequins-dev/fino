@@ -1,4 +1,4 @@
-# js/net/dns
+# dns
 
 fino:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.
 

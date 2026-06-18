@@ -1,4 +1,4 @@
-# js/net/http/server
+# server
 
 fino:serve — HTTP server convenience.
 

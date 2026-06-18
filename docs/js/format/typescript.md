@@ -718,6 +718,17 @@ interface FormatOptions extends TranspileOptions {
 
 Options controlling source formatting.
 
+Formatting uses the same source parsing controls as `transpile()`, including
+`filename`, `sourceType`, JSX handling, and source-map choices where the
+native formatter supports them. Invalid source returns `ok: false` with
+diagnostics instead of emitting partial formatted code.
+
+```ts
+import type { FormatOptions } from 'fino:format/typescript';
+
+const options: FormatOptions = { filename: 'app.ts', sourceType: 'ts' };
+```
+
 ## FormatResult
 
 ```ts
@@ -726,11 +737,22 @@ interface FormatResult {
 
 Result returned by `format()`.
 
+`code` contains the complete formatted source only when `ok` is `true`.
+`errors` contains parse or formatter diagnostics and is empty on success.
+
+```ts
+import { format } from 'fino:format/typescript';
+
+const result: FormatResult = format('const value = "x";');
+```
+
 ### ok
 
 ```ts
 ok: boolean
 ```
+
+Whether formatting succeeded without diagnostics.
 
 ### code
 
@@ -738,11 +760,15 @@ ok: boolean
 code: string
 ```
 
+Formatted source text, or the empty string on failure.
+
 ### errors
 
 ```ts
 errors: ParseDiagnostic[]
 ```
+
+Parse or formatter diagnostics.
 
 ## LintOptions
 
@@ -752,11 +778,23 @@ interface LintOptions extends TranspileOptions {
 
 Options controlling source linting.
 
+Linting shares the parser options from `transpile()`. When `fix` is true,
+supported automatic fixes are returned in `fixedCode`; unsupported fixes
+remain diagnostics and do not rewrite the input.
+
+```ts
+import type { LintOptions } from 'fino:format/typescript';
+
+const options: LintOptions = { filename: 'app.ts', fix: true };
+```
+
 ### fix
 
 ```ts
 fix?: boolean
 ```
+
+Return fixed source text when the default rule set can safely apply fixes.
 
 ## LintResult
 
@@ -766,11 +804,22 @@ interface LintResult {
 
 Result returned by `lint()`.
 
+`ok` is `true` only when no diagnostics remain. `fixedCode` is present when
+`fix: true` produced a changed source string.
+
+```ts
+import { lint } from 'fino:format/typescript';
+
+const result: LintResult = lint('debugger;');
+```
+
 ### ok
 
 ```ts
 ok: boolean
 ```
+
+Whether linting completed with no diagnostics.
 
 ### diagnostics
 
@@ -778,11 +827,15 @@ ok: boolean
 diagnostics: ParseDiagnostic[]
 ```
 
+Parse and lint diagnostics from the default rule set.
+
 ### fixedCode
 
 ```ts
 fixedCode?: string
 ```
+
+Fixed source text when requested and available.
 
 ## parse
 

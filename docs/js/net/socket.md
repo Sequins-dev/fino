@@ -1,4 +1,4 @@
-# js/net/socket
+# socket
 
 fino:socket — POSIX socket API for TCP, UDP, and Unix domain sockets.
 
@@ -410,6 +410,14 @@ Bound address, including the assigned port when port zero was used.
 console.log(server.address);
 ```
 
+### closed
+
+```ts
+readonly closed: boolean
+```
+
+Whether the listening fd has been closed.
+
 ### accept
 
 ```ts
@@ -519,6 +527,22 @@ TCP protocol number.
 const fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 ```
 
+## IPPROTO_IP
+
+```ts
+const IPPROTO_IP
+```
+
+IPv4 option level used with setsockopt.
+
+## IPPROTO_IPV6
+
+```ts
+const IPPROTO_IPV6
+```
+
+IPv6 option level used with setsockopt.
+
 ## IPPROTO_UDP
 
 ```ts
@@ -579,6 +603,22 @@ Enable TCP keepalive probes.
 setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, true);
 ```
 
+## SO_RCVBUF
+
+```ts
+const SO_RCVBUF
+```
+
+Receive buffer size socket option.
+
+## SO_SNDBUF
+
+```ts
+const SO_SNDBUF
+```
+
+Send buffer size socket option.
+
 ## SO_ERROR
 
 ```ts
@@ -614,6 +654,62 @@ Disable Nagle's algorithm for TCP sockets.
 ```ts
 setsockopt(fd, IPPROTO_TCP_LEVEL, TCP_NODELAY, true);
 ```
+
+## IP_TTL
+
+```ts
+const IP_TTL
+```
+
+IPv4 unicast TTL option.
+
+## IP_TOS
+
+```ts
+const IP_TOS
+```
+
+IPv4 type-of-service / traffic-class option.
+
+## IP_RECVTOS
+
+```ts
+const IP_RECVTOS
+```
+
+IPv4 receive type-of-service ancillary-data option.
+
+## IPV6_V6ONLY
+
+```ts
+const IPV6_V6ONLY
+```
+
+IPv6-only bind option.
+
+## IPV6_UNICAST_HOPS
+
+```ts
+const IPV6_UNICAST_HOPS
+```
+
+IPv6 unicast hop-limit option.
+
+## IPV6_RECVTCLASS
+
+```ts
+const IPV6_RECVTCLASS
+```
+
+IPv6 receive traffic-class ancillary-data option.
+
+## IPV6_TCLASS
+
+```ts
+const IPV6_TCLASS
+```
+
+IPv6 traffic-class option.
 
 ## SHUT_RD
 
@@ -890,6 +986,52 @@ connected.
 sendto(fd, packet, { family: 'ipv4', ip: '8.8.8.8', port: 53 });
 ```
 
+## sendmsgEcn
+
+```ts
+function sendmsgEcn(
+  fd: number,
+  data: Uint8Array | ArrayBuffer,
+  destAddr: Address,
+  ecn: number,
+  flags: number = 0
+): number
+```
+
+Send one UDP datagram with ECN traffic-class ancillary data.
+
+The ECN value is masked to its low two bits. IPv4 sends `IP_TOS`; IPv6 sends
+`IPV6_TCLASS`. Returns bytes sent or a negative errno.
+
+```ts
+sendmsgEcn(fd, packet, { family: 'ipv4', ip: '127.0.0.1', port: 4433 }, 2);
+```
+
+## SendmsgBatchPacket
+
+```ts
+type SendmsgBatchPacket = {
+  data: Uint8Array | ArrayBuffer;
+  dest: Address;
+  ecn?: number;
+}
+```
+
+## sendmmsgBatch
+
+```ts
+function sendmmsgBatch(fd: number, packets: SendmsgBatchPacket[], flags: number = 0): {
+  sent: number;
+  errno: number | null;
+} | null
+```
+
+Send a batch of UDP datagrams with Linux `sendmmsg(2)`.
+
+Returns `null` on platforms without `sendmmsg`, otherwise returns the number
+of messages accepted by the kernel or a negative errno when none were sent.
+Per-message ECN values are carried as ancillary traffic-class data.
+
 ## recvfrom
 
 ```ts
@@ -908,6 +1050,42 @@ EAGAIN, rather than `null`. Successful results include the sender address.
 const packet = recvfrom(fd, 4096);
 if (typeof packet !== 'number') console.log(packet.addr, packet.data);
 ```
+
+## recvmsgEcn
+
+```ts
+function recvmsgEcn(fd: number, maxBytes: number = 65536, flags: number = 0): {
+  data: Uint8Array;
+  addr: Address | UnknownAddress;
+  ecn?: number;
+} | number
+```
+
+Receive one UDP datagram and parse ECN traffic-class ancillary data.
+
+The socket must have `IP_RECVTOS` or `IPV6_RECVTCLASS` enabled first. The
+returned `ecn` value is masked to the two ECN bits when present; kernels may
+omit ancillary data for packets that arrived without a traffic-class mark.
+
+```ts
+setsockopt(fd, IPPROTO_IP, IP_RECVTOS, true);
+const packet = recvmsgEcn(fd, 4096);
+```
+
+## recvmmsgBatch
+
+```ts
+function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number = 65536, flags: number = 0): Array<{
+  data: Uint8Array;
+  addr: Address | UnknownAddress;
+  ecn?: number;
+}> | number | null
+```
+
+Receive multiple UDP datagrams with Linux `recvmmsg(2)`.
+
+Returns `null` on platforms without `recvmmsg`, a negative errno when no
+packet was received, or an array of datagrams with optional ECN metadata.
 
 ## shutdown
 

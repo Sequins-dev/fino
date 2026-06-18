@@ -22,6 +22,57 @@ await mockFetch('https://collector.example', async (mock) => {
 The original global is always restored in `finally`, even if the callback
 throws or an expectation fails.
 
+## FetchInput
+
+```ts
+type FetchInput = string | URL | Request
+```
+
+Input accepted by scoped fetch mocks.
+
+## FetchInit
+
+```ts
+type FetchInit = {
+  method?: string;
+  headers?: unknown;
+  body?: unknown;
+  signal?: unknown;
+}
+```
+
+Minimal fetch init shape captured by scoped fetch mocks.
+
+## HeaderMatcher
+
+```ts
+type HeaderMatcher = string | RegExp | ((value: string | null, call: MockFetchCall) => boolean)
+```
+
+Matcher accepted by `MockFetchExpectation.header()`.
+
+## BodyMatcher
+
+```ts
+type BodyMatcher = string | Uint8Array | RegExp | (
+  (
+    body: Uint8Array,
+    text: string,
+    call: MockFetchCall
+  ) => boolean
+)
+```
+
+Matcher accepted by `MockFetchExpectation.body()`.
+
+## MockResponseFactory
+
+```ts
+type MockResponseFactory = Response | ((call: MockFetchCall) => Response | Promise<Response>)
+```
+
+Static or request-dependent response used by `replyWith()`.
+
 ## MockFetchCall
 
 ```ts

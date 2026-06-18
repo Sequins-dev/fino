@@ -1,4 +1,4 @@
-# js/test/bench
+# bench
 
 fino:bench — benchmark suite, a JS port of benc.h.
 

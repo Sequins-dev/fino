@@ -77,6 +77,70 @@ assert.deepEqual({ a: 1 }, { a: 1 }, 'same shape');
 await assert.rejects(async () => { throw new Error('oops'); }, /oops/);
 ```
 
+## AssertionErrorOptions
+
+```ts
+interface AssertionErrorOptions {
+```
+
+Constructor options for `AssertionError`.
+
+### message
+
+```ts
+message?: string
+```
+
+### actual
+
+```ts
+actual?: unknown
+```
+
+### expected
+
+```ts
+expected?: unknown
+```
+
+### operator
+
+```ts
+operator?: string
+```
+
+## AssertCallbacks
+
+```ts
+interface AssertCallbacks {
+```
+
+Callback hooks used by `Assert` to report pass and fail events.
+
+### onPass
+
+```ts
+onPass?: () => void
+```
+
+### onFail
+
+```ts
+onFail?: (err: AssertionError) => void
+```
+
+## ErrorCheck
+
+```ts
+type ErrorCheck = ((e: unknown) => boolean) | RegExp | null
+```
+
+Matcher accepted by `throws()` and `rejects()`.
+
+A function receives the thrown value and must return true. A regular
+expression is tested against the error message. `null` and `undefined`
+accept any thrown or rejected value.
+
 ## AssertionError
 
 ```ts
