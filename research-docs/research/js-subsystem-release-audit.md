@@ -24,10 +24,7 @@ Status: DONE
 Status: DONE
 
 ## File APIs
-Status: Needs work
-- Fix or replace focused tests that import blocked internal modules directly.
-- Add generated-doc entries for exported `F_OK`, `R_OK`, `W_OK`, and `X_OK`.
-- Broaden `fino:file/watch` benchmarks beyond constructing and closing a `Watcher`.
+Status: DONE
 
 ## Archive
 Status: DONE
@@ -48,8 +45,7 @@ Status: Needs work
 Status: DONE
 
 ## `net/tls`
-Status: Needs work
-- Add deterministic local TLS socket tests; current focused coverage relies on public network hosts.
+Status: DONE
 
 ## `net/dns`
 Status: Needs work
