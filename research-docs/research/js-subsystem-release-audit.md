@@ -6,8 +6,7 @@ This is a release-readiness work tracker for the `js/` subsystem, not generated 
 Status: DONE
 
 ## CLI Commands And Tooling
-Status: Needs work
-- Bring `fino bench` behavior in line with its CLI docs by supporting directory/glob inputs, then add CLI tests for those benchmark input modes.
+Status: DONE
 
 ## Process And `process/argv`
 Status: DONE
@@ -31,9 +30,7 @@ Status: Needs work
 - Broaden `fino:file/watch` benchmarks beyond constructing and closing a `Watcher`.
 
 ## Archive
-Status: Needs work
-- Replace constructor/reference-only benchmark coverage with real create, list, read, and extract benchmarks.
-- Rebuild and rerun focused archive tests before release to confirm security regressions pass with the current source.
+Status: DONE
 
 ## Database/SQLite
 Status: Needs work
@@ -128,8 +125,7 @@ Status: Needs work
 - Replace or expand `benchmarks/cluster.bench.mts` so it covers documented public cluster operations.
 
 ## Testing
-Status: Needs work
-- Export/document or inline private types that appear in generated public signatures, including runner registration types and mock HTTP matcher/factory types.
+Status: DONE
 
 ## OpenTelemetry
 Status: Needs work
