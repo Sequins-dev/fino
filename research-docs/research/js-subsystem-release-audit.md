@@ -71,7 +71,6 @@ Status: DONE
 ## `net/http/h3`
 Status: Needs work
 - Add module and symbol JSDoc for `fino:net/http/h3`.
-- Add the missing `benchmarks/net/http/h3.bench.mts` listed in `benchmarks/COVERAGE.md`, or correct the coverage map.
 - Expand release tests for HTTP/3 availability, fallback, and error paths.
 
 ## `net/quic`
@@ -135,5 +134,3 @@ Status: Needs work
 ## OpenTelemetry
 Status: Needs work
 - Replace public split-module docs that still describe symbols as internal/private documentation.
-- Add the missing split benchmarks listed in `benchmarks/COVERAGE.md`: `benchmarks/opentelemetry/logs.bench.mts`, `metrics.bench.mts`, `sdk.bench.mts`, and `traces.bench.mts`, or correct the coverage map.
-- Extend benchmark coverage validation to assert listed benchmark files exist.
