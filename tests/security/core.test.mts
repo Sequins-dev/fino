@@ -13,6 +13,7 @@ import {
   verifyCookie,
   verifyPassword,
 } from 'fino:security';
+import { issueToken as issueDirectToken, verifyToken as verifyDirectToken } from 'fino:security/token';
 
 describe('fino:security core helpers', () => {
   it('generates base64url tokens and bounded integers', (t) => {
@@ -78,5 +79,39 @@ describe('fino:security password helpers', () => {
     t.equal(record.startsWith('pbkdf2$sha-256$1000$'), true, 'record encodes algorithm parameters');
     t.equal(verifyPassword('correct horse battery staple', record), true, 'correct password verifies');
     t.equal(verifyPassword('wrong password', record), false, 'wrong password fails');
+  });
+});
+
+describe('fino:security token helpers', () => {
+  it('issues and verifies purpose-bound opaque tokens', (t) => {
+    const token = issueDirectToken({ sub: 'user-123', role: 'admin' }, 'token-secret', {
+      purpose: 'session',
+      expiresIn: 60,
+    });
+    const payload = verifyDirectToken(token, 'token-secret', { purpose: 'session' });
+
+    t.ok(payload !== null, 'token verifies');
+    t.equal(payload!.sub, 'user-123', 'payload data round trips');
+    t.equal(payload!.role, 'admin', 'additional payload fields round trip');
+    t.equal(payload!.purpose, 'session', 'purpose is embedded');
+    t.equal(typeof payload!.exp, 'number', 'expiration is embedded');
+  });
+
+  it('rejects tampered, malformed, expired, and purpose-mismatched tokens', (t) => {
+    const token = issueDirectToken({ sub: 'user-123' }, 'token-secret', {
+      purpose: 'session',
+      expiresIn: 60,
+    });
+    const payload = verifyDirectToken(token, 'token-secret', { purpose: 'session' });
+    const exp = payload!.exp as number;
+    const [body, sig] = token.split('.');
+    const tamperedBody = body!.slice(0, -1) + (body!.endsWith('A') ? 'B' : 'A');
+
+    t.equal(verifyDirectToken(`${tamperedBody}.${sig}`, 'token-secret', { purpose: 'session' }), null, 'tampered payload fails');
+    t.equal(verifyDirectToken(token, 'wrong-secret', { purpose: 'session' }), null, 'wrong secret fails');
+    t.equal(verifyDirectToken('not.a.token', 'token-secret'), null, 'malformed token fails');
+    t.equal(verifyDirectToken(token, 'token-secret', { purpose: 'password-reset' }), null, 'purpose mismatch fails');
+    t.equal(verifyDirectToken(token, 'token-secret', { purpose: 'session', now: exp + 1 }), null, 'expired token fails');
+    t.ok(verifyDirectToken(token, 'token-secret', { purpose: 'session', now: exp + 1, clockTolerance: 5 }) !== null, 'clock tolerance is honored');
   });
 });

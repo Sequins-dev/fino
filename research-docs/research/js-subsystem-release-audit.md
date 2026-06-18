@@ -110,9 +110,7 @@ Status: DONE
 Status: DONE
 
 ## Security
-Status: Needs work
-- Add focused tests for `issueToken()` and `verifyToken()` covering valid, tampered, expired, purpose-mismatch, and malformed tokens.
-- Add import/layout smoke coverage for direct public security submodules such as `fino:security/token`.
+Status: DONE
 
 ## Formats
 Status: Needs work
