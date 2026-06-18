@@ -1,129 +1,140 @@
 /**
- * Tests for fino:tls — TLS socket layer.
+ * Tests for fino:net/tls — TLS socket layer.
  *
- * These tests make real HTTPS connections to public servers. They are skipped
- * automatically when OpenSSL is not available, and may fail if the network is
- * unreachable.
+ * These tests use the local HTTPS server fixtures so they do not depend on
+ * public DNS or external network availability.
  */
 
 import { describe, it } from 'fino:test/test';
+import { serve } from 'fino:net/http/server';
+import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
+
 const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
 const skip = !tlsAvailable && 'OpenSSL (libssl) not available';
-const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
-const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
-import { Resolver } from 'fino:net/dns';
+
+const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
+const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
+
+const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
+const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
+
+async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of reader) chunks.push(chunk);
+  const total = chunks.reduce((n, chunk) => n + chunk.byteLength, 0);
+  const all = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    all.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return decodeUtf8(all);
+}
 
 describe('TlsSocket', () => {
-  it('connects to one.one.one.one:443', { skip }, async (t) => {
-    const ips = await new Resolver().resolve('one.one.one.one', 'A');
-    t.ok(ips.length > 0, 'DNS resolved one.one.one.one');
-    const ip = ips[0];
-    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
-
-    const tls = await TlsSocket.connect(
-      { family: 'ipv4', ip, port: 443 },
-      { hostname: 'one.one.one.one' },
+  it('connects to a local TLS server and exposes an open socket', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('ok'),
     );
-    t.ok(!tls.closed, 'TlsSocket is open');
 
-    const [reader, writer] = tls.split();
-    const request = 'GET / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n';
-    await writer.write(encodeUtf8(request));
-    await writer.flush();
-
-    const chunk = await reader.read();
-    t.ok(chunk !== null, 'received data from server');
-    if (chunk === null) throw new Error('expected chunk');
-    t.ok(chunk.byteLength > 0, 'non-empty response');
-    t.ok(decodeUtf8(chunk).includes('HTTP/'), 'response starts with HTTP/');
-
-    reader.close();
-    writer.close();
-  });
-
-  it('TlsReader/TlsWriter pipe data correctly', { skip }, async (t) => {
-    const ips = await new Resolver().resolve('one.one.one.one', 'A');
-    const ip = ips[0];
-    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
-    const tls = await TlsSocket.connect(
-      { family: 'ipv4', ip, port: 443 },
-      { hostname: 'one.one.one.one' },
-    );
-    const [reader, writer] = tls.split();
-    await writer.write(encodeUtf8('HEAD / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n'));
-    await writer.flush();
-
-    let response = '';
-    let chunk;
-    while ((chunk = await reader.read()) !== null) {
-      response += decodeUtf8(chunk);
-      if (response.includes('\r\n\r\n')) break;
-    }
-    t.ok(response.includes('HTTP/'), 'got HTTP response');
-    t.ok(response.includes('\r\n'), 'response has CRLF headers');
-
-    reader.close();
-    writer.close();
-  });
-
-  it('close() works without split', { skip }, async (t) => {
-    const ips = await new Resolver().resolve('one.one.one.one', 'A');
-    const ip = ips[0];
-    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
-    const tls = await TlsSocket.connect(
-      { family: 'ipv4', ip, port: 443 },
-      { hostname: 'one.one.one.one' },
-    );
-    t.ok(!tls.closed, 'open before close');
-    tls.close();
-    t.ok(tls.closed, 'closed after close');
-    tls.close();
-    t.ok(true, 'double-close is safe');
-  });
-
-  it('rejects bad hostname (wrong cert)', { skip }, async (t) => {
-    let threw = false;
     try {
-      await TlsSocket.connect(
-        { family: 'ipv4', ip: '1.1.1.1', port: 443 },
-        { hostname: 'google.com', rejectUnauthorized: true },
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', rejectUnauthorized: false },
       );
-    } catch (_) {
-      threw = true;
+      t.ok(!tls.closed, 'TlsSocket is open');
+      t.equal(tls.negotiatedProtocol, null, 'no ALPN is negotiated by default');
+      tls.close();
+      t.ok(tls.closed, 'TlsSocket is closed');
+    } finally {
+      await server.close();
     }
-    t.ok(threw, 'hostname mismatch causes handshake failure');
   });
 
-  it('rejectUnauthorized:false skips cert check', { skip }, async (t) => {
-    const ips = await new Resolver().resolve('one.one.one.one', 'A');
-    const ip = ips[0];
-    if (typeof ip !== 'string') throw new Error('expected IPv4 string');
-    const tls = await TlsSocket.connect(
-      { family: 'ipv4', ip, port: 443 },
-      { hostname: 'one.one.one.one', rejectUnauthorized: false },
+  it('TlsReader/TlsWriter pipe request and response bytes over loopback TLS', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      (req) => new Response('tls:' + new URL(req.url).pathname),
     );
-    t.ok(!tls.closed, 'connected with rejectUnauthorized=false');
-    tls.close();
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', rejectUnauthorized: false },
+      );
+      const [reader, writer] = tls.split();
+      await writer.write(encodeUtf8(`GET /pipe HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.close();
+
+      const response = await readAll(reader);
+      await reader.close();
+
+      t.ok(response.startsWith('HTTP/1.1 200'), 'got HTTP response over TLS');
+      t.ok(response.includes('\r\n\r\n'), 'response has header terminator');
+      t.ok(response.endsWith('tls:/pipe'), 'response body came from local TLS server');
+    } finally {
+      await server.close();
+    }
   });
 
-  it('rejectUnauthorized:false succeeds even with wrong hostname (proves bypass works)', { skip }, async (t) => {
-    // Connects to 1.1.1.1 but claims it's google.com — cert mismatch.
-    // With rejectUnauthorized:true this fails (tested above).
-    // With rejectUnauthorized:false it MUST succeed, proving the flag
-    // actually bypasses verification rather than just being a no-op when
-    // the cert is valid anyway.
-    let threw = false;
-    let tls;
+  it('close() works without split and is idempotent', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('unused'),
+    );
+
     try {
-      tls = await TlsSocket.connect(
-        { family: 'ipv4', ip: '1.1.1.1', port: 443 },
-        { hostname: 'google.com', rejectUnauthorized: false },
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', rejectUnauthorized: false },
       );
-    } catch (_) {
-      threw = true;
+      t.ok(!tls.closed, 'open before close');
+      tls.close();
+      t.ok(tls.closed, 'closed after close');
+      tls.close();
+      t.ok(tls.closed, 'double-close remains closed');
+    } finally {
+      await server.close();
     }
-    t.ok(!threw, 'rejectUnauthorized:false bypasses hostname mismatch');
-    if (tls) tls.close();
+  });
+
+  it('rejects the local self-signed certificate by default', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('unreachable'),
+    );
+
+    try {
+      await t.rejects(
+        () => TlsSocket.connect(
+          { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+          { hostname: 'localhost' },
+        ),
+        /TLS handshake failed|certificate|verify|self-signed/i,
+        'self-signed fixture is rejected when verification is enabled',
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('rejectUnauthorized:false accepts the local self-signed certificate', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('accepted'),
+    );
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', rejectUnauthorized: false },
+      );
+      t.ok(!tls.closed, 'connected with rejectUnauthorized=false');
+      tls.close();
+    } finally {
+      await server.close();
+    }
   });
 });
