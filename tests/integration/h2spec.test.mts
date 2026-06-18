@@ -184,12 +184,16 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 // Section 6.9 is also omitted: it has sub-subsections (6.9.1, 6.9.2) and
 // h2spec v2.6 non-deterministically panics in the 6.9→6.9.1 transition. The
 // sub-subsections cannot be run individually (they don't write JUnit output).
+//
+// Section 8 is split into 8.1 and 8.2 for the same inter-section panic reason:
+// running `http2/8` as a unit panics at the 8.1→8.2 transition, producing no
+// JUnit output and no stderr. Running each top-level child separately avoids it.
 const _SECTIONS = [
   'http2/3', 'http2/4',
   'http2/5.1', 'http2/5.1.1', 'http2/5.1.2', 'http2/5.3', 'http2/5.4', 'http2/5.5',
   'http2/6.1', 'http2/6.2', 'http2/6.3', 'http2/6.4', 'http2/6.5',
   'http2/6.7', 'http2/6.8', 'http2/6.10',
-  'http2/7', 'http2/8',
+  'http2/7', 'http2/8.1', 'http2/8.2',
 ];
 
 async function _runSection(
@@ -198,12 +202,12 @@ async function _runSection(
   port: number,
 ): Promise<{ xml: string; stderr: string }> {
   let lastStderr = '';
-  // Retry up to 5 times with 200ms between attempts. After h2spec exits, the
+  // Retry up to 10 times with 500ms between attempts. After h2spec exits, the
   // server has async TLS/nghttp2 cleanup in flight; the next invocation's probe
   // connection can land during that window and get RST/EOF, causing h2spec to
   // exit before writing JUnit. Retrying reliably clears the race.
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    if (attempt > 1) await new Promise<void>(r => setTimeout(r, 200));
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    if (attempt > 1) await new Promise<void>(r => setTimeout(r, 500));
 
     const junitPath = `/tmp/fino-h2spec-${section.replace(/\//g, '-')}-${Date.now()}.xml`;
 

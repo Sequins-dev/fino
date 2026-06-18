@@ -27,6 +27,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:net/http/h2` | `benchmarks/net/http/h2.bench.mts` |
 | `fino:net/http/eventsource` | `benchmarks/net/http/eventsource.bench.mts` |
 | `fino:net/http/websocket` | `benchmarks/net/http/websocket.bench.mts` |
+| `fino:net/http/h3` | `benchmarks/net/http/h3.bench.mts` |
 | `fino:net/quic` | `benchmarks/net/quic.bench.mts` |
 | `fino:file` | `benchmarks/file/fs.bench.mts` |
 | `fino:file/path` | `benchmarks/file/path.bench.mts` |

@@ -29,19 +29,24 @@ export async function serve(options: H3ServeOptions, handler: H3Handler): Promis
   _requireH3();
 
   const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'], tls: options.tls });
-  const listener = await endpoint.listen({ port: options.port, hostname: options.hostname ?? '127.0.0.1' });
+  try {
+    const listener = await endpoint.listen({ port: options.port, hostname: options.hostname ?? '127.0.0.1' });
 
-  endpoint.addEventListener('connection', (event) => {
-    const conn = (event as QuicConnectionEvent).connection;
-    const driver = new H3ServerDriver();
-    void driver.run(conn, handler).catch(() => {});
-  });
+    endpoint.addEventListener('connection', (event) => {
+      const conn = (event as QuicConnectionEvent).connection;
+      const driver = new H3ServerDriver();
+      void driver.run(conn, handler).catch(() => {});
+    });
 
-  return {
-    get port()     { return listener.address.port; },
-    get hostname() { return listener.address.ip; },
-    close()        { return endpoint.close(); },
-  };
+    return {
+      get port()     { return listener.address.port; },
+      get hostname() { return listener.address.ip; },
+      close()        { return endpoint.close(); },
+    };
+  } catch (e) {
+    await endpoint.close();
+    throw e;
+  }
 }
 
 export async function fetch(url: string | URL, init?: RequestInit): Promise<Response> {
@@ -61,9 +66,10 @@ export async function fetch(url: string | URL, init?: RequestInit): Promise<Resp
     using session = await H3ClientSession.create(conn);
     const response = await session.request(url, init);
 
-    // Materialise the body before closing the connection.
+    // Materialise the body and trailers before closing the connection.
     const body = await response.arrayBuffer();
-    return new Response(body, { status: response.status, headers: response.headers });
+    const trailers = await (response as any).trailers as Headers | undefined;
+    return new Response(body, { status: response.status, headers: response.headers, trailers } as any);
   } finally {
     await endpoint.close();
   }

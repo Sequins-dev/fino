@@ -57,6 +57,7 @@ const _SYMBOLS = {
   nghttp3_conn_submit_request:  { parameters: ['pointer', 'i64', 'pointer', 'usize', 'pointer', 'pointer'], result: 'i32' },
   nghttp3_conn_submit_trailers: { parameters: ['pointer', 'i64', 'pointer', 'usize'], result: 'i32' },
   nghttp3_conn_shutdown:        { parameters: ['pointer'], result: 'i32' },
+  nghttp3_conn_close_stream:    { parameters: ['pointer', 'i64', 'u64'], result: 'i32' },
 
   // Fill a settings struct with library defaults.
   nghttp3_settings_default_versioned: { parameters: ['i32', 'pointer'], result: 'void' },
@@ -174,8 +175,12 @@ export const NGHTTP3_H3_REQUEST_INCOMPLETE   = 0x010dn;
 // Library error codes.
 // ---------------------------------------------------------------------------
 
-export const NGHTTP3_ERR_WOULDBLOCK = -103;
-export const NGHTTP3_ERR_FATAL      = -900;
+export const NGHTTP3_ERR_WOULDBLOCK              = -103;
+export const NGHTTP3_ERR_MALFORMED_HTTP_HEADER    = -105;
+export const NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING = -107;
+export const NGHTTP3_ERR_FATAL                    = -900;
+
+export const NGHTTP3_H3_MESSAGE_ERROR = 0x010en;
 
 // ---------------------------------------------------------------------------
 // Helpers

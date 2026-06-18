@@ -24,6 +24,7 @@ export class H3ClientSession {
   #session: Nghttp3Session;
   #pending = new Map<bigint, PendingRequest>();
   #closed = false;
+  #goawayLastStreamId: bigint | null = null;
 
   private constructor(conn: QuicConnection, session: Nghttp3Session) {
     this.#conn = conn;
@@ -43,6 +44,7 @@ export class H3ClientSession {
           // 1xx interim response — reset header state but keep promise handles and body.
           existing.status = '';
           existing.responseHeaders = [];
+          existing.trailerHeaders = [];
           existing.inTrailers = false;
         } else {
           instance.#pending.set(streamId, {
@@ -56,7 +58,7 @@ export class H3ClientSession {
         if (!req) return;
         if (req.inTrailers) { req.trailerHeaders.push([name, value]); return; }
         if (name === ':status') req.status = value;
-        else req.responseHeaders.push([name, value]);
+        else if (!name.startsWith(':')) req.responseHeaders.push([name, value]);
       },
       onEndHeaders(streamId, fin) {
         if (fin) instance.#markDone(streamId);
@@ -67,7 +69,7 @@ export class H3ClientSession {
       },
       onRecvTrailer(streamId, _token, name, value) {
         const req = instance.#pending.get(streamId);
-        if (req) req.trailerHeaders.push([name, value]);
+        if (req && !name.startsWith(':')) req.trailerHeaders.push([name, value]);
       },
       onEndTrailers(streamId) { instance.#markDone(streamId); },
       onRecvData(streamId, data) {
@@ -90,10 +92,35 @@ export class H3ClientSession {
         }
       },
       onAckedStreamData() {},
+      onShutdown(lastStreamId: bigint) {
+        if (instance.#goawayLastStreamId === null || lastStreamId < instance.#goawayLastStreamId) {
+          instance.#goawayLastStreamId = lastStreamId;
+        }
+        for (const [sid, req] of instance.#pending) {
+          if (sid > lastStreamId) {
+            if (!req.done) {
+              req.done = true;
+              req.reject?.(new Error(`H3 stream rejected: server GOAWAY (last accepted: ${lastStreamId})`));
+            }
+            instance.#pending.delete(sid);
+          }
+        }
+      },
     };
 
     session = Nghttp3Session.createClient(callbacks);
     instance = new H3ClientSession(conn, session);
+
+    conn.addEventListener('close', () => {
+      for (const [, req] of instance.#pending) {
+        if (!req.done) {
+          req.done = true;
+          req.reject?.(new Error('H3 stream closed: connection closed'));
+        }
+      }
+      instance.#pending.clear();
+      void instance.#session.closeWhenIdle();
+    }, { once: true });
 
     // Attach stream listener early so remote unidirectional streams
     // (server control/QPACK) are captured as soon as they arrive.
@@ -102,35 +129,46 @@ export class H3ClientSession {
       const sid = BigInt(stream.id);
       if (stream.direction === 'unidirectional') {
         void (async () => {
-          while (true) {
-            const bytes = await stream.reader.read() as Uint8Array | null;
-            const fin = bytes === null;
-            await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
-            if (fin) break;
-          }
+          try {
+            while (true) {
+              const bytes = await stream.reader.read() as Uint8Array | null;
+              const fin = bytes === null;
+              await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              if (fin) break;
+            }
+          } catch { /* session closed or connection error */ }
         })();
       }
     });
 
     // Bind the 3 mandatory local unidirectional streams.
-    const [controlStream, qencStream, qdecStream] = await Promise.all([
-      conn.openUnidirectionalStream(),
-      conn.openUnidirectionalStream(),
-      conn.openUnidirectionalStream(),
-    ]) as QuicStream[];
+    try {
+      const [controlStream, qencStream, qdecStream] = await Promise.all([
+        conn.openUnidirectionalStream(),
+        conn.openUnidirectionalStream(),
+        conn.openUnidirectionalStream(),
+      ]) as QuicStream[];
 
-    for (const s of [controlStream, qencStream, qdecStream]) {
-      session.addQuicStream(BigInt(s.id), s.writer);
+      for (const s of [controlStream, qencStream, qdecStream]) {
+        session.addQuicStream(BigInt(s.id), s.writer);
+      }
+
+      session.bindControlStream(BigInt(controlStream.id));
+      session.bindQpackStreams(BigInt(qencStream.id), BigInt(qdecStream.id));
+      await session.drainWrites();
+    } catch (e) {
+      session.close();
+      throw e;
     }
-
-    session.bindControlStream(BigInt(controlStream.id));
-    session.bindQpackStreams(BigInt(qencStream.id), BigInt(qdecStream.id));
-    await session.drainWrites();
 
     return instance;
   }
 
   async request(url: string | URL, init?: H3RequestInit): Promise<Response> {
+    if (this.#closed) throw new Error('H3 session is closed');
+    if (this.#goawayLastStreamId !== null) {
+      throw new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`);
+    }
     const parsed = typeof url === 'string' ? new URL(url) : url;
     const method = init?.method ?? 'GET';
 
@@ -149,6 +187,13 @@ export class H3ClientSession {
 
     const quicStream = await this.#conn.openBidirectionalStream();
     const sid = BigInt(quicStream.id);
+
+    // If a GOAWAY arrived while we were waiting to open the stream, reject it
+    // immediately rather than letting it linger until connection close.
+    if (this.#goawayLastStreamId !== null && sid > this.#goawayLastStreamId) {
+      void quicStream.writer.close();
+      throw new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`);
+    }
 
     this.#session.addQuicStream(sid, quicStream.writer);
 
@@ -174,10 +219,14 @@ export class H3ClientSession {
 
     let bodyBytes: Uint8Array | undefined;
     if (init?.body) {
-      const ab = init.body instanceof ArrayBuffer
-        ? init.body
-        : await new Request(url, init).arrayBuffer();
-      if (ab.byteLength > 0) bodyBytes = new Uint8Array(ab);
+      if (init.body instanceof Uint8Array) {
+        if (init.body.byteLength > 0) bodyBytes = init.body;
+      } else {
+        const ab = init.body instanceof ArrayBuffer
+          ? init.body
+          : await new Request(url, init).arrayBuffer();
+        if (ab.byteLength > 0) bodyBytes = new Uint8Array(ab);
+      }
     }
 
     const responsePromise = new Promise<Response>((resolve, reject) => {
@@ -211,9 +260,13 @@ export class H3ClientSession {
       this.#pending.set(sid, pending);
     });
 
-    this.#session.submitRequest(sid, reqHeaders, bodyBytes, init?.trailers);
-    await this.#session.drainWrites();
-
+    try {
+      this.#session.submitRequest(sid, reqHeaders, bodyBytes, init?.trailers);
+      await this.#session.drainWrites();
+    } catch (e) {
+      this.#pending.delete(sid);
+      throw e;
+    }
     return responsePromise;
   }
 
@@ -228,7 +281,7 @@ export class H3ClientSession {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#session.close();
+    void this.#session.closeWhenIdle();
   }
 
   [Symbol.dispose](): void { this.close(); }

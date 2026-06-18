@@ -6,6 +6,9 @@ import type { QuicConnection, QuicStream } from 'fino:net/quic';
 
 export type H3Handler = (request: Request) => Response | Promise<Response>;
 
+const _FORBIDDEN_RESP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade']);
+const _FORBIDDEN_REQ  = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade']);
+
 interface H3ServerStream {
   streamId: bigint;
   method: string;
@@ -18,8 +21,8 @@ interface H3ServerStream {
   bodyChunks: Uint8Array[];
   bodyDone: boolean;
   cancelled: boolean;
+  badRequest: boolean;
   dispatched: boolean;
-  resolve: (() => void) | null;
   seenPseudos: Set<string>;
   seenRegular: boolean;
 }
@@ -30,7 +33,7 @@ function makeStream(streamId: bigint): H3ServerStream {
     method: '', path: '', scheme: '', authority: '',
     headers: [], trailerHeaders: [],
     inTrailers: false, bodyChunks: [],
-    bodyDone: false, cancelled: false, dispatched: false, resolve: null,
+    bodyDone: false, cancelled: false, badRequest: false, dispatched: false,
     seenPseudos: new Set(), seenRegular: false,
   };
 }
@@ -56,17 +59,18 @@ export class H3ServerDriver {
           return;
         }
         if (name.startsWith(':')) {
-          if (st.seenRegular || st.seenPseudos.has(name)) { st.cancelled = true; return; }
+          if (st.seenRegular || st.seenPseudos.has(name)) { st.cancelled = true; st.badRequest = true; return; }
           st.seenPseudos.add(name);
           if      (name === ':method')    st.method    = value;
           else if (name === ':path')      st.path      = value;
           else if (name === ':scheme')    st.scheme    = value;
           else if (name === ':authority') st.authority = value;
+          else { st.badRequest = true; return; }  // response-only or unknown pseudo-header in request (RFC 9114 §4.3.1)
         } else {
           const lc = name.toLowerCase();
-          if (lc !== name) { st.cancelled = true; return; }
-          const forbidden = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade'];
-          if (forbidden.includes(lc)) { st.cancelled = true; return; }
+          if (lc !== name) { st.cancelled = true; st.badRequest = true; return; }
+          if (_FORBIDDEN_REQ.has(lc)) { st.cancelled = true; st.badRequest = true; return; }
+          if (lc === 'te') return; // nghttp3 enforces te: trailers-only; not an application header
           st.seenRegular = true;
           st.headers.push([name, value]);
         }
@@ -75,12 +79,14 @@ export class H3ServerDriver {
       onEndHeaders(streamId, fin) {
         const st = streams.get(streamId);
         if (!st) return;
-        const noBody = fin || st.method === 'GET' || st.method === 'HEAD' || st.method === 'OPTIONS';
-        if (noBody) {
+        if (st.badRequest) {
           st.bodyDone = true;
-          st.resolve?.();
+          startDispatch(st);
+          return;
         }
-        if (!st.inTrailers && noBody) startDispatch(st);
+        const noBody = fin || st.method === 'GET' || st.method === 'HEAD' || st.method === 'CONNECT';
+        if (noBody) st.bodyDone = true;
+        if (noBody) startDispatch(st);
       },
 
       onBeginTrailers(streamId) {
@@ -95,7 +101,6 @@ export class H3ServerDriver {
         const st = streams.get(streamId);
         if (!st) return;
         st.bodyDone = true;
-        st.resolve?.();
         startDispatch(st);
       },
 
@@ -108,7 +113,6 @@ export class H3ServerDriver {
         const st = streams.get(streamId);
         if (!st) return;
         st.bodyDone = true;
-        st.resolve?.();
         startDispatch(st);
       },
 
@@ -116,7 +120,7 @@ export class H3ServerDriver {
 
       onResetStream(streamId) {
         const st = streams.get(streamId);
-        if (st) { st.cancelled = true; st.bodyDone = true; st.resolve?.(); }
+        if (st) { st.cancelled = true; st.bodyDone = true; }
       },
 
       onAckedStreamData() {},
@@ -126,17 +130,36 @@ export class H3ServerDriver {
 
     // Dispatch a request to the handler once headers + body are complete.
     function startDispatch(st: H3ServerStream): void {
-      if (st.cancelled || st.dispatched) return;
+      if (st.dispatched) return;
+      if (st.cancelled && !st.badRequest) return;
       st.dispatched = true;
       const p: Promise<void> = dispatch(st).catch(() => {}).then(() => { inFlight.delete(p); });
       inFlight.add(p);
     }
 
     async function dispatch(st: H3ServerStream): Promise<void> {
-      if (!st.bodyDone) {
-        await new Promise<void>((resolve) => { st.resolve = resolve; });
+      if (st.badRequest) {
+        try {
+          session.submitResponse(st.streamId, [[':status', '400']]);
+          await session.drainWrites();
+        } catch { /* stream may already be closed by nghttp3 */ }
+        return;
       }
-      if (st.cancelled || !st.method || !st.path) return;
+      if (st.cancelled) return;
+      if (st.method === 'CONNECT') {
+        try {
+          session.submitResponse(st.streamId, [[':status', '405'], ['allow', 'GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH']]);
+          await session.drainWrites();
+        } catch {}
+        return;
+      }
+      if (!st.method || !st.path) {
+        try {
+          session.submitResponse(st.streamId, [[':status', '400']]);
+          await session.drainWrites();
+        } catch { /* stream may already be reset by nghttp3 */ }
+        return;
+      }
 
       const url = `${st.scheme || 'https'}://${st.authority || 'localhost'}${st.path}`;
 
@@ -151,12 +174,23 @@ export class H3ServerDriver {
       const reqHeaders = new Headers(st.headers);
       if (st.authority) reqHeaders.set('host', st.authority);
 
-      const req = new Request(url, { method: st.method, headers: reqHeaders, body: bodyBytes });
+      let req: Request;
+      try {
+        req = new Request(url, { method: st.method, headers: reqHeaders, body: bodyBytes });
+      } catch {
+        try {
+          session.submitResponse(st.streamId, [[':status', '400']]);
+          await session.drainWrites();
+        } catch {}
+        return;
+      }
       (req as any).trailerHeaders = st.trailerHeaders;
 
       let response: Response;
       try {
-        response = await handler(req);
+        const result = await handler(req);
+        if (!(result instanceof Response)) throw new TypeError('handler did not return a Response');
+        response = result;
       } catch {
         response = new Response('Internal Server Error', { status: 500 });
       }
@@ -164,13 +198,28 @@ export class H3ServerDriver {
       if (st.cancelled) return;
 
       const respHeaders: Array<[string, string]> = [[':status', String(response.status)]];
-      response.headers.forEach((value, name) => respHeaders.push([name.toLowerCase(), value]));
+      response.headers.forEach((value, name) => {
+        const lc = name.toLowerCase();
+        if (!_FORBIDDEN_RESP.has(lc)) respHeaders.push([lc, value]);
+      });
 
       let respBody: Uint8Array | undefined;
-      if (response.body) {
-        const ab = await response.arrayBuffer();
-        if (ab.byteLength > 0) respBody = new Uint8Array(ab);
+      try {
+        if (response.body && st.method !== 'HEAD') {
+          const ab = await response.arrayBuffer();
+          if (ab.byteLength > 0) respBody = new Uint8Array(ab);
+        }
+      } catch {
+        if (!st.cancelled) {
+          try {
+            session.submitResponse(st.streamId, [[':status', '500']]);
+            await session.drainWrites();
+          } catch { /* stream may already be closed */ }
+        }
+        return;
       }
+
+      if (st.cancelled) return;
 
       let respTrailers: Array<[string, string]> | undefined;
       if ((response as any)._hasOutTrailers?.()) {
@@ -185,13 +234,17 @@ export class H3ServerDriver {
           trailersOut = new Headers();
         }
         const trailerList: Array<[string, string]> = [];
-        for (const [k, v] of trailersOut.entries()) trailerList.push([k, v]);
+        for (const [k, v] of trailersOut.entries()) {
+          const lc = k.toLowerCase();
+          if (!_FORBIDDEN_RESP.has(lc)) trailerList.push([lc, v]);
+        }
         if (trailerList.length > 0) respTrailers = trailerList;
       }
       session.submitResponse(st.streamId, respHeaders, respBody, respTrailers);
       await session.drainWrites();
     }
 
+    try {
     // Attach stream listener early so bidirectional streams from the client
     // are captured even if they arrive during local setup.
     conn.addEventListener('stream', (event) => {
@@ -217,7 +270,13 @@ export class H3ServerDriver {
           if (st && !st.cancelled) {
             st.cancelled = true;
             st.bodyDone = true;
-            st.resolve?.();
+          }
+          if (session.isClosed) {
+            conn.destroy();
+          } else {
+            // nghttp3_conn_close_stream does not send any H3 frames. Send RESET_STREAM
+            // at the QUIC level so the client's pending request rejects instead of hanging.
+            try { stream.reset(0x010e); } catch { /* connection may already be closing */ }
           }
         }
       })();
@@ -245,6 +304,9 @@ export class H3ServerDriver {
     });
 
     await Promise.all([...inFlight]);
-    session.close();
+
+    } finally {
+      await session.closeWhenIdle();
+    }
   }
 }

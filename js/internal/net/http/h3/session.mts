@@ -8,11 +8,14 @@ import {
   CB_DEFERRED_CONSUME,
   CB_BEGIN_HEADERS, CB_RECV_HEADER, CB_END_HEADERS,
   CB_BEGIN_TRAILERS, CB_RECV_TRAILER, CB_END_TRAILERS,
-  CB_END_STREAM, CB_RESET_STREAM,
+  CB_END_STREAM, CB_RESET_STREAM, CB_SHUTDOWN,
   NV_ENTRY_SIZE,
   VEC_ENTRY_SIZE,
   DR_READ_DATA, DR_SIZE,
   NGHTTP3_DATA_FLAG_EOF, NGHTTP3_DATA_FLAG_NO_END_STREAM,
+  NGHTTP3_ERR_WOULDBLOCK, NGHTTP3_ERR_FATAL,
+  NGHTTP3_ERR_MALFORMED_HTTP_HEADER, NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING,
+  NGHTTP3_H3_MESSAGE_ERROR, NGHTTP3_H3_REQUEST_CANCELLED,
   buildNvArray, readRcbuf, writeCbPtr,
 } from './bindings.mts';
 
@@ -30,6 +33,7 @@ export interface H3SessionCallbacks {
   onStreamClose(streamId: bigint, appErrorCode: bigint): void;
   onResetStream(streamId: bigint, appErrorCode: bigint): void;
   onAckedStreamData(streamId: bigint, datalen: bigint): void;
+  onShutdown?(lastStreamId: bigint): void;
 }
 
 interface BodySlot {
@@ -50,6 +54,7 @@ export class Nghttp3Session {
   #yieldedBytes = new Map<bigint, Uint8Array>();
   #quicStreams = new Map<bigint, { writer: { write(b: Uint8Array): Promise<void>; close(): Promise<void> } }>();
   #closed = false;
+  #ready = false;   // true once bindControlStream has been called
   #mu: Promise<void> = Promise.resolve();
   readonly #cb: H3SessionCallbacks;
 
@@ -130,6 +135,8 @@ export class Nghttp3Session {
       { parameters: ['pointer', 'i64', 'u64', 'pointer', 'pointer'], result: 'i32' },
       (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
         this.#bodySlots.delete(streamId);
+        this.#pendingTrailers.delete(streamId);
+        this.#yieldedBytes.delete(streamId);
         cb.onStreamClose(streamId, appErrorCode);
         return 0;
       },
@@ -230,12 +237,23 @@ export class Nghttp3Session {
       { parameters: ['pointer', 'i64', 'u64', 'pointer', 'pointer'], result: 'i32' },
       (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
         this.#bodySlots.delete(streamId);
+        this.#pendingTrailers.delete(streamId);
+        this.#yieldedBytes.delete(streamId);
         cb.onResetStream(streamId, appErrorCode);
         return 0;
       },
     );
     writeCbPtr(cbsBuf, CB_RESET_STREAM, resetStream);
     this.#callbacks.push(resetStream);
+
+    if (cb.onShutdown) {
+      const shutdown = new FfiCallback(
+        { parameters: ['pointer', 'i64', 'pointer'], result: 'i32' },
+        (_conn: ArrayBuffer, id: bigint) => { cb.onShutdown!(id); return 0; },
+      );
+      writeCbPtr(cbsBuf, CB_SHUTDOWN, shutdown);
+      this.#callbacks.push(shutdown);
+    }
   }
 
   // Shared read_data callback for all response body submissions.
@@ -257,7 +275,7 @@ export class Nghttp3Session {
           Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF);
           return 0;
         }
-        if (slot.bytes === null) {
+        if (slot.bytes === null || slot.bytes.length === 0) {
           if (slot.trailers !== undefined) {
             // Body done, trailers follow. Signal EOF+NO_END_STREAM so nghttp3 keeps the
             // stream open, then queue trailers for submission after writev_stream returns.
@@ -299,6 +317,7 @@ export class Nghttp3Session {
   bindControlStream(controlStreamId: bigint): void {
     const rc = sym!.nghttp3_conn_bind_control_stream(this.#conn, controlStreamId) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_bind_control_stream failed: ${rc}`);
+    this.#ready = true;
   }
 
   bindQpackStreams(qencId: bigint, qdecId: bigint): void {
@@ -312,14 +331,16 @@ export class Nghttp3Session {
   }
 
   // -------------------------------------------------------------------------
-  // Submit operations (must be called from within #withMu).
+  // Submit operations — synchronous; safe to call outside #withMu on the JS thread.
   // -------------------------------------------------------------------------
 
   submitResponse(streamId: bigint, headers: Array<[string, string]>, body?: Uint8Array, trailers?: Array<[string, string]>): void {
+    if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(headers);
-    const drPtr = body !== undefined ? Pointer.of(this.#drBuf) : null;
-    if (body !== undefined) {
-      this.#bodySlots.set(streamId, { bytes: body, trailers });
+    const effectiveBody = body === undefined && trailers !== undefined ? new Uint8Array(0) : body;
+    const drPtr = effectiveBody !== undefined ? Pointer.of(this.#drBuf) : null;
+    if (effectiveBody !== undefined) {
+      this.#bodySlots.set(streamId, { bytes: effectiveBody, trailers });
     }
     const rc = sym!.nghttp3_conn_submit_response(
       this.#conn, streamId, Pointer.of(nvBuf), nv, drPtr,
@@ -328,10 +349,12 @@ export class Nghttp3Session {
   }
 
   submitRequest(streamId: bigint, headers: Array<[string, string]>, body?: Uint8Array, trailers?: Array<[string, string]>): void {
+    if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(headers);
-    const drPtr = body !== undefined ? Pointer.of(this.#drBuf) : null;
-    if (body !== undefined) {
-      this.#bodySlots.set(streamId, { bytes: body, trailers });
+    const effectiveBody = body === undefined && trailers !== undefined ? new Uint8Array(0) : body;
+    const drPtr = effectiveBody !== undefined ? Pointer.of(this.#drBuf) : null;
+    if (effectiveBody !== undefined) {
+      this.#bodySlots.set(streamId, { bytes: effectiveBody, trailers });
     }
     const rc = sym!.nghttp3_conn_submit_request(
       this.#conn, streamId, Pointer.of(nvBuf), nv, drPtr, null,
@@ -340,6 +363,7 @@ export class Nghttp3Session {
   }
 
   submitTrailers(streamId: bigint, trailers: Array<[string, string]>): void {
+    if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(trailers);
     const rc = sym!.nghttp3_conn_submit_trailers(
       this.#conn, streamId, Pointer.of(nvBuf), nv,
@@ -352,13 +376,21 @@ export class Nghttp3Session {
   // -------------------------------------------------------------------------
 
   async readStream(streamId: bigint, data: Uint8Array, fin: boolean): Promise<void> {
+    if (this.#closed) throw new Error('session closed');
     return this.#withMu(async () => {
+      if (this.#closed) throw new Error('session closed');
       const ts = BigInt(Math.floor(performance.now() * 1_000_000));
       const consumed = sym!.nghttp3_conn_read_stream2(
         this.#conn, streamId, Pointer.of(data), data.byteLength, fin ? 1 : 0, ts,
       ) as number;
       if (consumed < 0) {
-        this.close();
+        const isStreamError = consumed === NGHTTP3_ERR_MALFORMED_HTTP_HEADER
+                           || consumed === NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING;
+        if (isStreamError) {
+          sym!.nghttp3_conn_close_stream(this.#conn, streamId, NGHTTP3_H3_MESSAGE_ERROR);
+        } else {
+          this.close();
+        }
         throw new Error(`nghttp3_conn_read_stream2 error: ${consumed}`);
       }
       await this.#drainWritesInner();
@@ -392,6 +424,12 @@ export class Nghttp3Session {
       const sid   = new DataView(pStreamId).getBigInt64(0, true);
       const isFin = new DataView(pfin).getInt32(0, true) !== 0;
 
+      if (n < 0) {
+        if (n === NGHTTP3_ERR_WOULDBLOCK) break;
+        this.close();
+        throw new Error(`nghttp3_conn_writev_stream error: ${n}`);
+      }
+
       // Flush any trailers deferred by the data reader (calling submit_trailers from
       // within the data reader callback would be a reentrant nghttp3 call and is unsafe).
       let submittedTrailers = false;
@@ -401,14 +439,18 @@ export class Nghttp3Session {
         for (const [tsid, trailers] of pending) {
           const { buf, nv } = buildNvArray(trailers);
           const trc = sym!.nghttp3_conn_submit_trailers(this.#conn, tsid, Pointer.of(buf), nv) as number;
-          if (trc !== 0) throw new Error(`nghttp3_conn_submit_trailers failed: ${trc}`);
+          if (trc === 0) {
+            submittedTrailers = true;
+          } else if (trc <= NGHTTP3_ERR_FATAL) {
+            this.close();
+            throw new Error(`nghttp3_conn_submit_trailers fatal: ${trc}`);
+          }
+          // non-fatal (stream not found / invalid state) → skip this trailer
         }
-        submittedTrailers = true;
       }
 
       // Break only when truly nothing left — not when we just queued trailer frames.
-      if (n <= 0 && sid === -1n && !submittedTrailers) break;
-      if (n < 0) break;
+      if (n === 0 && sid === -1n && !submittedTrailers) break;
 
       // Collect bytes from all returned vecs.
       let totalBytes = 0;
@@ -429,26 +471,39 @@ export class Nghttp3Session {
       // Release the GC pin now that Pointer.copyFrom has copied the raw bytes.
       this.#yieldedBytes.delete(sid);
 
-      // Write to the QUIC stream if we have data.
-      if (totalBytes > 0 && sid !== -1n) {
+      // Write to the QUIC stream and report consumed bytes to nghttp3.
+      if (sid !== -1n) {
         const entry = this.#quicStreams.get(sid);
-        if (entry) {
+        if (!entry) {
+          if (totalBytes > 0) {
+            // Writer is gone but nghttp3 still has data queued — close the stream so
+            // nghttp3 stops producing for it. Without this, add_write_offset(0) would
+            // stall the loop: nghttp3 never advances its buffer pointer.
+            sym!.nghttp3_conn_close_stream(this.#conn, sid, NGHTTP3_H3_REQUEST_CANCELLED);
+          } else {
+            // FIN-only frame, writer already gone — advance by 0 so nghttp3 releases
+            // its internal stream state instead of leaving a stale entry.
+            sym!.nghttp3_conn_add_write_offset(this.#conn, sid, 0);
+          }
+          continue;
+        }
+        let consumed = 0;
+        if (totalBytes > 0 && entry) {
           const combined = new Uint8Array(totalBytes);
           let off = 0;
           for (const p of parts) { combined.set(p, off); off += p.length; }
           await entry.writer.write(combined);
+          if (this.#closed) return;
+          consumed = totalBytes;
         }
-      }
-
-      // Inform nghttp3 how many bytes the QUIC stack accepted.
-      if (sid !== -1n) {
-        sym!.nghttp3_conn_add_write_offset(this.#conn, sid, totalBytes);
-        if (isFin) {
-          const entry = this.#quicStreams.get(sid);
-          if (entry) {
-            void entry.writer.close();
-            this.#quicStreams.delete(sid);
-          }
+        const arc = sym!.nghttp3_conn_add_write_offset(this.#conn, sid, consumed) as number;
+        if (arc !== 0) {
+          this.close();
+          throw new Error(`nghttp3_conn_add_write_offset failed: ${arc}`);
+        }
+        if (isFin && entry) {
+          void entry.writer.close();
+          this.#quicStreams.delete(sid);
         }
       }
     }
@@ -472,6 +527,23 @@ export class Nghttp3Session {
   // -------------------------------------------------------------------------
 
   get isClosed(): boolean { return this.#closed; }
+
+  closeWhenIdle(): Promise<void> {
+    const p = this.#mu.then(async () => {
+      if (this.#closed) return;
+      if (this.#ready) {
+        const src = sym!.nghttp3_conn_shutdown(this.#conn) as number;
+        if (src === 0) {
+          try {
+            await this.#drainWritesInner();
+          } catch { /* non-fatal: GOAWAY sent, proceed to close */ }
+        }
+      }
+      this.close();
+    });
+    this.#mu = p.then(() => {}, () => {});
+    return p;
+  }
 
   close(): void {
     if (this.#closed) return;

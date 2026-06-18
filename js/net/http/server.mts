@@ -169,11 +169,8 @@ export function serve(
                 try { await writer.close(); } catch {}
               }
             },
-            function tlsHandshakeError(err: unknown) {
+            function tlsHandshakeError(_err: unknown) {
               tcpConn.close();
-              if (typeof console !== 'undefined') {
-                console.error('fino:serve TLS handshake failed:', err);
-              }
             },
           );
         } else {
