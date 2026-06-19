@@ -346,10 +346,7 @@ Status: DONE
 Status: DONE
 
 ## YAML Format
-Status: TODO
-
-- Add `parseAll` multi-document edge tests.
-- Add stringify round-trip coverage for documented anchor/merge exclusions.
+Status: DONE
 
 ## XML Format
 Status: DONE

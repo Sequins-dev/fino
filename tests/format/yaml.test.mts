@@ -135,6 +135,23 @@ describe('fino:format/yaml — comments and markers', () => {
     t.deepEqual(docs[0], { a: 1 });
     t.deepEqual(docs[1], { b: 2 });
   });
+
+  it('parseAll handles explicit starts, document ends, comments, and following documents', (t) => {
+    const docs = parseAll([
+      '---',
+      'a: 1',
+      '...',
+      '# separator comment',
+      '---',
+      '- b',
+      '- c',
+      '...',
+    ].join('\n'));
+
+    t.equal(docs.length, 2, 'two documents returned');
+    t.deepEqual(docs[0], { a: 1 }, 'first document parsed');
+    t.deepEqual(docs[1], ['b', 'c'], 'final sequence document parsed');
+  });
 });
 
 describe('fino:format/yaml — anchors & aliases', () => {
@@ -319,6 +336,25 @@ describe('fino:format/yaml — stringify Phase 2 types', () => {
     const back = parse(out) as any;
     t.equal(back.a.x, 1);
     t.equal(back.b.x, 1);
+  });
+
+  it('round-trips parsed merge keys while omitting merge syntax', (t) => {
+    const source = [
+      'base: &base',
+      '  x: 1',
+      '  y: 2',
+      'child:',
+      '  <<: *base',
+      '  y: 3',
+    ].join('\n');
+
+    const parsed = parse(source);
+    const out = stringify(parsed as any);
+    const reparsed = parse(out);
+
+    t.deepEqual(reparsed, parsed, 'merged mapping survives stringify/parse');
+    t.notOk(out.includes('<<'), 'merge key syntax is not re-emitted');
+    t.notOk(out.includes('&base'), 'source anchor name is not preserved');
   });
 
   it('stringifies Map with complex keys', (t) => {
