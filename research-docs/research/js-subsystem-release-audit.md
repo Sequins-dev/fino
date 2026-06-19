@@ -38,10 +38,7 @@ Status: DONE
 Status: DONE
 
 ## Test And Bench Commands
-Status: TODO
-
-- Add directory/glob expansion coverage for `fino test`.
-- Add empty-expanded-input behavior tests.
+Status: DONE
 
 ## Fmt, Lint, And Tooling
 Status: TODO

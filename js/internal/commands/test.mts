@@ -63,7 +63,7 @@ async function expandArg(arg: string): Promise<string[]> {
  * expand to matching `.test.mts` files, glob inputs are resolved from the current working
  * directory, and direct files are imported as given. `--filter` is optional and
  * forwards a substring filter to the test runner. The command throws when no
- * files are supplied.
+ * files are supplied or expansion finds no test files.
  *
  * ```js
  * import { createTestCommand } from 'internal:commands/test';
@@ -85,9 +85,16 @@ export function createTestCommand(): Command {
         throw new Error('fino test: no test files specified');
       }
 
+      let imported = 0;
       for (const raw of testFiles) {
         const expanded = await expandArg(String(raw));
-        for (const file of expanded) await import(normalizeModuleSpecifier(file));
+        for (const file of expanded) {
+          await import(normalizeModuleSpecifier(file));
+          imported++;
+        }
+      }
+      if (imported === 0) {
+        throw new Error(`fino test: no test files matched ${testFiles.map(String).join(', ')}`);
       }
 
       const { run } = await import('fino:test/test');

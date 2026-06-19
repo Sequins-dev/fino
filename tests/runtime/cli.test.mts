@@ -244,6 +244,74 @@ describe('CLI commands', () => {
     t.ok(!stdout.includes('match leaf'), 'unmatched nested group omitted');
   });
 
+  it('expands test directories in the test command', async (t) => {
+    await withTempProject({
+      'tests/alpha.test.mts': [
+        "import { describe, it } from 'fino:test/test';",
+        "describe('alpha directory suite', () => {",
+        "  describe('needle directory group', () => {",
+        "    it('runs directory test', (t) => t.ok(true));",
+        "  });",
+        "});",
+        '',
+      ].join('\n'),
+      'tests/nested/beta.test.mts': [
+        "import { describe, it } from 'fino:test/test';",
+        "describe('beta directory suite', () => {",
+        "  it('runs beta test', (t) => t.ok(true));",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', '--filter', 'needle directory', 'tests'], { cwd: dir });
+
+      t.equal(result.code, 0, 'test directory input exits successfully');
+      t.equal(stderr, '', 'test directory input does not write stderr');
+      t.ok(stdout.includes('alpha directory suite'), 'test directory input imports matching file');
+      t.ok(stdout.includes('needle directory group'), 'test directory input runs matching group');
+      t.ok(!stdout.includes('beta directory suite'), 'test directory input omits unmatched test groups');
+    });
+  });
+
+  it('expands test globs in the test command', async (t) => {
+    await withTempProject({
+      'tests/alpha.test.mts': [
+        "import { describe, it } from 'fino:test/test';",
+        "describe('alpha glob suite', () => {",
+        "  describe('needle glob group', () => {",
+        "    it('runs glob test', (t) => t.ok(true));",
+        "  });",
+        "});",
+        '',
+      ].join('\n'),
+      'tests/nested/beta.test.mts': [
+        "import { describe, it } from 'fino:test/test';",
+        "describe('beta glob suite', () => {",
+        "  it('runs beta test', (t) => t.ok(true));",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', '--filter', 'needle glob', 'tests/**/*.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'test glob input exits successfully');
+      t.equal(stderr, '', 'test glob input does not write stderr');
+      t.ok(stdout.includes('alpha glob suite'), 'test glob input imports matching file');
+      t.ok(stdout.includes('needle glob group'), 'test glob input runs matching group');
+      t.ok(!stdout.includes('beta glob suite'), 'test glob input omits unmatched test groups');
+    });
+  });
+
+  it('fails when expanded test inputs match no files', async (t) => {
+    await withTempProject({}, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'tests'], { cwd: dir });
+
+      t.equal(result.code, 1, 'empty test directory expansion exits with an error');
+      t.equal(stdout, '', 'empty test expansion does not run the TAP runner');
+      t.ok(stderr.includes('fino test: no test files matched'), 'empty test expansion reports no matched files');
+    });
+  });
+
   it('passes --filter to the bench command', async (t) => {
     const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle', './tests/fixtures/filter-bench.mts']);
 
