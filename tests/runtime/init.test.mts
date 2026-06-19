@@ -4,7 +4,9 @@
 
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Process, execPath } from 'fino:process';
+import { Process, chdir, cwd, execPath } from 'fino:process';
+import { PromptSession } from 'fino:tty/prompt';
+import { createInitCommand } from 'internal:commands/init';
 
 const TEST_DIR = '/tmp/fino-init-test-' + Math.floor(Math.random() * 1_000_000);
 
@@ -175,5 +177,63 @@ describe('fino init', () => {
     const pkg = JSON.parse(await fs.readFile(thirdDir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.author, 'Jane Doe <jane@example.com>', 'author pulled from git config');
     t.equal(pkg.repository, 'https://example.com/fino/demo.git', 'repository pulled from git remote');
+  });
+
+  it('rejects existing package.json unless --force is provided', async (t) => {
+    const dir = TEST_DIR + '/force';
+    await fs.mkdir(dir);
+    await fs.writeFile(dir + '/package.json', JSON.stringify({ name: 'old' }) + '\n');
+
+    const rejected = await runCli(['init', '--yes'], dir);
+    t.notEqual(rejected.result.code, 0, 'existing package causes non-zero exit');
+    t.ok(rejected.stderr.includes('package.json already exists'), 'existing package error is reported');
+
+    const forced = await runCli(['init', '--yes', '--force', '--name', 'forced-app'], dir);
+    t.equal(forced.result.code, 0, 'force exits successfully');
+    const pkg = JSON.parse(await fs.readFile(dir + '/package.json')) as PackageJsonShape;
+    t.equal(pkg.name, 'forced-app', 'force overwrites existing package');
+  });
+
+  it('rejects invalid package names before writing', async (t) => {
+    const dir = TEST_DIR + '/invalid-name';
+    await fs.mkdir(dir);
+
+    const run = await runCli(['init', '--name', 'Invalid Name'], dir);
+    t.notEqual(run.result.code, 0, 'invalid name causes non-zero exit');
+    t.ok(run.stderr.includes('Package name must contain only lowercase'), 'invalid name error is reported');
+    t.equal(await exists(fs, dir + '/package.json'), false, 'package.json is not written');
+  });
+
+  it('uses an injected interactive prompt for missing fields', async (t) => {
+    const dir = TEST_DIR + '/prompted';
+    await fs.mkdir(dir);
+    const originalCwd = cwd();
+    const answers = ['prompted-app', '2.0.0', 'Prompted package', 'Apache-2.0', 'Ada', 'https://example.com/prompted.git'];
+    const prompts: string[] = [];
+    const prompt = new PromptSession({
+      isInteractive: true,
+      readLine: async (label) => {
+        prompts.push(label);
+        return answers.shift() ?? '';
+      },
+      write: async () => {},
+      writeError: async () => {},
+    });
+
+    try {
+      chdir(dir);
+      await createInitCommand().parse([], { prompt });
+    } finally {
+      chdir(originalCwd);
+    }
+
+    const pkg = JSON.parse(await fs.readFile(dir + '/package.json')) as PackageJsonShape;
+    t.equal(pkg.name, 'prompted-app', 'name came from prompt');
+    t.equal(pkg.version, '2.0.0', 'version came from prompt');
+    t.equal(pkg.description, 'Prompted package', 'description came from prompt');
+    t.equal(pkg.license, 'Apache-2.0', 'license came from prompt');
+    t.equal(pkg.author, 'Ada', 'author came from prompt');
+    t.equal(pkg.repository, 'https://example.com/prompted.git', 'repository came from prompt');
+    t.equal(prompts.length, 6, 'all missing fields were prompted');
   });
 });

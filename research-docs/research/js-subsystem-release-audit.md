@@ -51,10 +51,7 @@ Status: TODO
 - Add `lint --fix` coverage once fixable rules exist.
 
 ## Init Command
-Status: TODO
-
-- Add existing `package.json` rejection and `--force` overwrite tests.
-- Add invalid package-name and injected interactive prompt coverage.
+Status: DONE
 
 ## Install And Package Manager
 Status: TODO
