@@ -38,7 +38,7 @@ Status: DONE
 Status: DONE
 
 ## Install And Package Manager
-Status: TODO
+Status: DONE
 
 - Add optional/peer dependency warning coverage.
 - Add exports pattern, conditional exports, fallback main/module, and

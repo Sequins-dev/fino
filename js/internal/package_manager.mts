@@ -313,7 +313,8 @@ function expandPatternEntrypoints(entrypoints: Record<string, string>, key: stri
   const keyParts = splitExportPattern(key);
   const targetParts = splitExportPattern(target);
   if (!keyParts || !targetParts) return;
-  const targetPrefix = normalizeRelativePath(targetParts.prefix);
+  let targetPrefix = normalizeRelativePath(targetParts.prefix);
+  if (targetPrefix && /[\\/]$/.test(targetParts.prefix)) targetPrefix += '/';
   const targetSuffix = normalizeRelativePath(targetParts.suffix);
   for (const file of files) {
     if (!file.startsWith(targetPrefix) || !file.endsWith(targetSuffix)) continue;
