@@ -65,6 +65,17 @@ async function flush(n = 2): Promise<void> {
   for (let i = 0; i < n; i++) await flushMicrotasks();
 }
 
+function base64ToUint8(s: string): Uint8Array {
+  const raw = atob(s);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function decodePayload(payload: string): Uint8Array[] {
+  return (JSON.parse(payload) as string[]).map(base64ToUint8);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -93,6 +104,60 @@ describe('ClusterPort._deliver routes to registered port', () => {
     t.ok(received !== undefined, 'message was delivered to port');
     t.equal((received as any).greet, 'hello', 'deserialized payload matches');
 
+    client.stop();
+  });
+
+  it('preserves transferred ArrayBuffer stores across PORT_MSG payloads', async (t) => {
+    const transport = new TestClientTransport('nodeA');
+    const client = new ClusterClient(transport as any, 'nodeA');
+    client.start();
+
+    const sender = new ClusterPort('nodeA/p-send', client);
+    sender._setChildPortId('nodeB/p-recv');
+
+    const input = new Uint8Array([1, 3, 5, 7]).buffer;
+    sender.postMessage({ input }, [input]);
+
+    const sent = transport.sentOfType('PORT_MSG')[0]!;
+    t.equal(sent.fromPort, 'nodeA/p-send', 'source port preserved');
+    t.equal(sent.toPort, 'nodeB/p-recv', 'destination port preserved');
+
+    const parts = decodePayload(sent.payload);
+    t.ok(parts.length >= 2, 'payload includes main bytes and transfer store');
+
+    const receiver = new ClusterPort('nodeB/p-recv-local', client);
+    let received: unknown;
+    receiver.onmessage = (e: Event) => {
+      received = (e as any).data;
+    };
+    receiver._deliver(parts);
+
+    await flush(1);
+
+    const output = new Uint8Array((received as { input: ArrayBuffer }).input);
+    t.deepEqual([...output], [1, 3, 5, 7], 'transferred buffer contents restored');
+
+    client.stop();
+  });
+
+  it('rejects MessagePort transfer entries explicitly', (t) => {
+    const transport = new TestClientTransport('nodeA');
+    const client = new ClusterClient(transport as any, 'nodeA');
+    client.start();
+
+    const sender = new ClusterPort('nodeA/p-send', client);
+    sender._setChildPortId('nodeB/p-recv');
+    const channel = new MessageChannel();
+
+    t.throws(
+      () => sender.postMessage({ ok: true }, [channel.port1 as any]),
+      /ArrayBuffer/,
+      'cluster relay rejects non-ArrayBuffer transfer entries',
+    );
+    t.equal(transport.sentOfType('PORT_MSG').length, 0, 'unsupported transfer was not sent');
+
+    channel.port1.close();
+    channel.port2.close();
     client.stop();
   });
 });
@@ -241,5 +306,34 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
 
     t.ok(threw, 'pending spawnRemote rejected after stop()');
     t.ok(transport.closeCalled, 'transport.close() called by stop()');
+  });
+
+  it('pending spawnRemote has no implicit timeout before stop()', async (t) => {
+    const transport = new TestClientTransport('nodeA');
+    const client = new ClusterClient(transport as any, 'nodeA');
+    client.start();
+
+    const spawnPromise = client.spawnRemote('nodeA/p-3', {
+      entry: './fn.mts',
+      root: '/app',
+      rules: [],
+    });
+
+    let settled = false;
+    spawnPromise.then(
+      () => { settled = true; },
+      () => { settled = true; },
+    );
+
+    await flush(5);
+    t.equal(settled, false, 'spawn remains pending until ack or explicit client stop');
+
+    client.stop();
+    try {
+      await spawnPromise;
+      t.fail('spawnRemote should reject when stop() closes the pending request');
+    } catch (err: any) {
+      t.ok(String(err?.message ?? err).includes('cluster connection closed'), 'stop rejects pending spawn');
+    }
   });
 });

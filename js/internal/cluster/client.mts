@@ -963,7 +963,8 @@ export class ClusterPort extends BaseTransportPort {
    *
    * If the port is closed or has no child port ID yet, the call is a no-op.
    * Transferable `ArrayBuffer`s are preserved as serialized store parts and
-   * forwarded through the cluster payload.
+   * forwarded through the cluster payload. MessagePort transfer is not
+   * supported by the cluster relay and non-ArrayBuffer transfer entries throw.
    *
    * ```ts no_run
    * import { ClusterClient, ClusterPort } from 'internal:cluster/client';
@@ -975,6 +976,9 @@ export class ClusterPort extends BaseTransportPort {
    */
   postMessage(message: unknown, transfer?: ArrayBuffer[]): void {
     if (this._closed || this.#childPortId === null) return;
+    if (transfer !== undefined && !transfer.every((item) => item instanceof ArrayBuffer)) {
+      throw new TypeError('ClusterPort transfer list only supports ArrayBuffer values');
+    }
     const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
       message, transfer && transfer.length > 0 ? transfer : undefined,
     );

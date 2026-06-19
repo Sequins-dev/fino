@@ -37,7 +37,7 @@ class TestSeedTransport {
   // ClusterTransport + SeedTransport interface
   send(to: string, msg: ClusterMessage): void { this.sent.push({ to, msg }); }
   broadcast(msg: ClusterMessage): void { this.sent.push({ to: '__broadcast__', msg }); }
-  broadcastExcept(_except: string, msg: ClusterMessage): void { this.sent.push({ to: '__broadcast__', msg }); }
+  broadcastExcept(except: string, msg: ClusterMessage): void { this.sent.push({ to: `except:${except}`, msg }); }
   on(handler: (from: string, msg: ClusterMessage) => void): void { this.#handlers.push(handler); }
   listen(): void { this.listenCalled = true; }
   close(): void { this.#handlers = []; }
@@ -141,6 +141,57 @@ describe('SeedServer — SPAWN routing', () => {
     t.equal(acks.length, 1, 'SPAWN_ACK forwarded');
     t.equal(acks[0]!.to, 'worker-1', 'SPAWN_ACK routed back to original requester');
     t.ok((acks[0]!.msg as any).ok, 'ok=true preserved');
+  });
+
+  it('reroutes later SPAWN requests after a lower-load peer goes down', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.9, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.1, memory: 0 } });
+    transport.inject('worker-3', { t: 'HELLO', nodeId: 'worker-3', load: { cpu: 0.2, memory: 0 } });
+    transport.sent = [];
+
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-failover-1',
+      parentPortId: 'worker-1/p-failover-1',
+      config: { entry: './fn.mts', root: '/app', rules: [] },
+    });
+    t.equal(transport.sent.find(s => s.msg.t === 'SPAWN')?.to, 'worker-2', 'first spawn chooses lowest-load worker');
+
+    transport.sent = [];
+    transport.inject('worker-2', { t: 'PEER_DOWN', nodeId: 'worker-2' });
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-failover-2',
+      parentPortId: 'worker-1/p-failover-2',
+      config: { entry: './fn.mts', root: '/app', rules: [] },
+    });
+
+    t.equal(transport.sent.find(s => s.msg.t === 'SPAWN')?.to, 'worker-3', 'next spawn skips down peer');
+  });
+
+  it('rejects a pending SPAWN if the selected target goes down before SPAWN_ACK', (t) => {
+    const { transport } = makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.9, memory: 0 } });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.1, memory: 0 } });
+    transport.sent = [];
+
+    transport.inject('worker-1', {
+      t: 'SPAWN',
+      spawnReqId: 'req-target-down',
+      parentPortId: 'worker-1/p-target-down',
+      config: { entry: './fn.mts', root: '/app', rules: [] },
+    });
+    transport.sent = [];
+
+    transport.inject('worker-2', { t: 'PEER_DOWN', nodeId: 'worker-2' });
+
+    const acks = transport.sent.filter(s => s.to === 'worker-1' && s.msg.t === 'SPAWN_ACK');
+    t.equal(acks.length, 1, 'requester gets one failure ack when target disappears');
+    const ack = acks[0]!.msg as Extract<ClusterMessage, { t: 'SPAWN_ACK' }>;
+    t.equal(ack.spawnReqId, 'req-target-down', 'failure ack uses pending spawn id');
+    t.equal(ack.ok, false, 'pending spawn is rejected');
+    t.ok(ack.error?.includes('worker-2'), 'failure mentions the down target');
   });
 });
 
@@ -389,5 +440,43 @@ describe('SeedServer — nodeDown cascade', () => {
     // TERMINATE should NOT be sent to worker-2 (it's dead)
     const toWorker2 = transport.sent.filter(s => s.to === 'worker-2' && s.msg.t === 'TERMINATE');
     t.equal(toWorker2.length, 0, 'dead node does not receive TERMINATE');
+  });
+
+  it('heartbeat timeout broadcasts PEER_DOWN and terminates dependent child ports', (t) => {
+    const { seed, transport } = makeSeed();
+    const realNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+      transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
+      transport.inject('worker-1', {
+        t: 'SPAWN',
+        spawnReqId: 'req-heartbeat',
+        parentPortId: 'worker-1/p-heartbeat',
+        config: { entry: './fn.mts', root: '', rules: [] },
+      });
+      transport.inject('worker-2', {
+        t: 'SPAWN_ACK',
+        spawnReqId: 'req-heartbeat',
+        childPortId: 'worker-2/heartbeat',
+        ok: true,
+      });
+      transport.sent = [];
+
+      now += 4_000;
+      transport.inject('worker-1', { t: 'HEARTBEAT', ts: now });
+      now += 4_000;
+      seed._checkHeartbeatsForTest();
+    } finally {
+      Date.now = realNow;
+    }
+
+    const peerDowns = transport.sentOfType('PEER_DOWN');
+    t.ok(peerDowns.some(msg => msg.nodeId === 'worker-2'), 'timeout announces worker-2 down');
+
+    const terminates = transport.sent.filter(s => s.to === 'worker-1' && s.msg.t === 'TERMINATE');
+    t.equal(terminates.length, 1, 'timeout terminates parent-side child port');
+    t.equal((terminates[0]!.msg as Extract<ClusterMessage, { t: 'TERMINATE' }>).realmId, 'worker-2/heartbeat');
   });
 });

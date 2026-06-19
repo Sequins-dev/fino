@@ -233,13 +233,7 @@ Status: DONE
 Status: DONE
 
 ## Cluster
-Status: TODO
-
-- Add real WebSocket multi-worker tests for routing, peer down, failover, and
-  remote exit cascade.
-- Add heartbeat timeout tests with controlled timers.
-- Add pending remote spawn timeout coverage or explicit behavior.
-- Add cluster port transfer tests for buffers and message ports.
+Status: DONE
 
 ## Test Framework
 Status: DONE

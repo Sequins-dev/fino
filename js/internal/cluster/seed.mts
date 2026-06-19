@@ -143,7 +143,7 @@ export class SeedServer {
    * @internal
    */
   #lastSeen = new Map<string, number>();
-  // spawnReqId -> { requesterNodeId, parentPortId }
+  // spawnReqId -> { requesterNodeId, parentPortId, targetNodeId }
   /**
    * Private property `#pendingSpawns` used by `SeedServer`.
    *
@@ -165,7 +165,7 @@ export class SeedServer {
    *
    * @internal
    */
-  #pendingSpawns = new Map<string, { requesterNodeId: string; parentPortId: string }>();
+  #pendingSpawns = new Map<string, { requesterNodeId: string; parentPortId: string; targetNodeId: string }>();
   // portId -> nodeId for PORT_MSG routing and death propagation.
   // Maintained separately from the registry because nodeDown() removes entries
   // from the registry before we can look up parent nodeIds for TERMINATE routing.
@@ -275,6 +275,19 @@ export class SeedServer {
   }
 
   /**
+   * Run one heartbeat timeout sweep for deterministic internal tests.
+   *
+   * Production uses the periodic timer started by `start()`. Tests call this
+   * hook after controlling `Date.now()` so heartbeat expiry can be asserted
+   * without sleeping for the real timeout.
+   *
+   * @internal
+   */
+  _checkHeartbeatsForTest(): void {
+    this.#checkHeartbeats();
+  }
+
+  /**
    * Private method `#handle` used by `SeedServer`.
    *
    * This implementation detail is included when documentation is built with
@@ -348,7 +361,11 @@ export class SeedServer {
           });
           break;
         }
-        this.#pendingSpawns.set(msg.spawnReqId, { requesterNodeId: from, parentPortId: msg.parentPortId });
+        this.#pendingSpawns.set(msg.spawnReqId, {
+          requesterNodeId: from,
+          parentPortId: msg.parentPortId,
+          targetNodeId: target,
+        });
         this.#portNodes.set(msg.parentPortId, from);
         this.#registry.register(msg.parentPortId, null, from);
         this.#transport.send(target, msg);
@@ -423,6 +440,23 @@ export class SeedServer {
    * @internal
    */
   #handleNodeDown(nodeId: string): void {
+    for (const [spawnReqId, pending] of [...this.#pendingSpawns]) {
+      if (pending.requesterNodeId === nodeId) {
+        this.#pendingSpawns.delete(spawnReqId);
+        continue;
+      }
+      if (pending.targetNodeId === nodeId) {
+        this.#pendingSpawns.delete(spawnReqId);
+        this.#transport.send(pending.requesterNodeId, {
+          t: 'SPAWN_ACK',
+          spawnReqId,
+          childPortId: '',
+          ok: false,
+          error: `target node ${nodeId} went down before spawn completed`,
+        });
+      }
+    }
+
     const affected = this.#registry.nodeDown(nodeId);
     for (const { portId, parentPortId } of affected) {
       this.#portNodes.delete(portId);
