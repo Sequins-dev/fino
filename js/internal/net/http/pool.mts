@@ -51,6 +51,10 @@ import type { BufferedBytesReader, BytesWriter } from '../../stream.mts';
 
 const IDLE_MS = 60_000;
 
+interface H2PoolEntryOptions {
+  idleMs?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Per-stream state inside a pool entry
 // ---------------------------------------------------------------------------
@@ -263,6 +267,7 @@ export class H2PoolEntry {
    * @internal
    */
   #idleTimer: ReturnType<typeof setTimeout> | null = null;
+  readonly #idleMs: number;
 
   /**
    * Create a pool entry around a client nghttp2 session and split streams.
@@ -276,9 +281,10 @@ export class H2PoolEntry {
    * entry.goingAway;
    * ```
    */
-  constructor(session: Nghttp2Session, reader: BufferedBytesReader, writer: BytesWriter) {
+  constructor(session: Nghttp2Session, reader: BufferedBytesReader, writer: BytesWriter, options: H2PoolEntryOptions = {}) {
     this.#session = session;
     this.#writer = writer;
+    this.#idleMs = options.idleMs ?? IDLE_MS;
     // Start the background recv loop (fire and forget - errors are handled inside).
     this.#recvLoop(reader).catch(() => {});
     this.#resetIdleTimer();
@@ -525,7 +531,11 @@ export class H2PoolEntry {
    * @internal
    */
   handleFrameRecv(streamId: number, frameType: number, frameFlags: number): void {
-    const HEADERS = 0x01, DATA = 0x00, END_STREAM = 0x01, END_HEADERS = 0x04;
+    const HEADERS = 0x01, DATA = 0x00, GOAWAY = 0x07, END_STREAM = 0x01, END_HEADERS = 0x04;
+    if (frameType === GOAWAY) {
+      this.handleGoaway(0, 0);
+      return;
+    }
     const s = this.#streams.get(streamId);
     if (!s) return;
     const endStream = (frameFlags & END_STREAM) !== 0;
@@ -575,6 +585,40 @@ export class H2PoolEntry {
     }
     this.#streams.delete(streamId);
     this.#resetIdleTimer();
+  }
+
+  /**
+   * Apply peer GOAWAY state to this entry.
+   *
+   * New streams are refused immediately. Streams with identifiers greater than
+   * `lastStreamId` are rejected because the peer will not process them; lower
+   * stream identifiers remain active and may complete normally.
+   *
+   * @internal
+   */
+  handleGoaway(lastStreamId: number, errorCode: number): void {
+    this.#goingAway = true;
+    this.#clearIdleTimer();
+    for (const [activeStreamId, s] of this.#streams) {
+      if (activeStreamId > lastStreamId && !s.done) {
+        s.done = true;
+        s.reject(new Error(`H2 GOAWAY rejected stream ${activeStreamId} above lastStreamId ${lastStreamId} with error ${errorCode}`));
+        this.#streams.delete(activeStreamId);
+      }
+    }
+    if (this.#streams.size === 0) this.close();
+  }
+
+  /**
+   * Apply transport failure teardown to this entry.
+   *
+   * This is the same path used by the background receive loop when the socket
+   * closes or errors. Exposed for deterministic internal tests.
+   *
+   * @internal
+   */
+  handleTransportError(err: Error): void {
+    this.#teardown(err);
   }
 
   // -------------------------------------------------------------------------
@@ -657,6 +701,7 @@ export class H2PoolEntry {
       trailers: s.trailerHeaders,
     } as any));
     this.#streams.delete(s.streamId);
+    if (this.#goingAway && this.#streams.size === 0) this.close();
   }
 
   /**
@@ -684,12 +729,14 @@ export class H2PoolEntry {
    */
   #teardown(err: Error): void {
     this.#closed = true;
+    this.#goingAway = true;
     this.#clearIdleTimer();
     for (const s of this.#streams.values()) {
       if (!s.done) { s.done = true; s.reject(err); }
     }
     this.#streams.clear();
     try { this.#session.close(); } catch {}
+    try { this.#writer.close().catch(() => {}); } catch {}
   }
 
   /**
@@ -721,7 +768,7 @@ export class H2PoolEntry {
     this.#idleTimer = setTimeout(() => {
       this.#goingAway = true;
       this.close();
-    }, IDLE_MS);
+    }, this.#idleMs);
   }
 
   /**
@@ -903,6 +950,7 @@ export class H2ConnectionPool {
 export function createPoolEntry(
   reader: BufferedBytesReader,
   writer: BytesWriter,
+  options: H2PoolEntryOptions = {},
 ): H2PoolEntry {
   let entry!: H2PoolEntry;
 
@@ -916,6 +964,6 @@ export function createPoolEntry(
 
   const session = Nghttp2Session.createClient(callbacks);
   session.submitSettings([]);
-  entry = new H2PoolEntry(session, reader, writer);
+  entry = new H2PoolEntry(session, reader, writer, options);
   return entry;
 }

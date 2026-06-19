@@ -12,6 +12,7 @@ import { TlsSocket } from 'fino:net/tls';
 import { Response } from 'fino:net/http';
 import { h2Available, createPoolEntry } from 'fino:net/http/h2';
 import { H2ConnectionPool } from 'internal:net/http/pool';
+import * as loop from 'internal:runtime/loop';
 
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
@@ -25,10 +26,10 @@ const skip = !h2Available && 'requires libnghttp2';
 // Helper: connect a pool entry to a local h2c serve() server
 // ---------------------------------------------------------------------------
 
-async function connectPoolEntry(port: number) {
+async function connectPoolEntry(port: number, options?: { idleMs?: number }) {
   const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
   const [reader, writer] = sock.split();
-  return createPoolEntry(reader as any, writer);
+  return createPoolEntry(reader as any, writer, options);
 }
 
 function makeReq(url: string, method = 'GET', body?: string): Request {
@@ -149,6 +150,113 @@ describe('H2PoolEntry — close and GOAWAY', () => {
     }
     t.ok(threw, 'send() throws after close()');
     await server.close();
+  });
+
+  it('idle timeout marks the entry goingAway and rejects new sends', { skip }, async (t) => {
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port, { idleMs: 10 });
+    try {
+      await loop.timeout(30);
+      t.ok(entry.goingAway, 'idle timeout marks entry goingAway');
+      await t.rejects(
+        () => entry.send(makeReq(`http://127.0.0.1:${port}/`)),
+        /going away/i,
+        'idle entry rejects new sends',
+      );
+    } finally {
+      entry.close();
+      await server.close();
+    }
+  });
+
+  it('peer GOAWAY rejects new streams and lets streams at or below lastStreamId finish', { skip }, async (t) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const server = serve({ port: 0 }, async () => {
+      await gate;
+      return new Response('finished');
+    });
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      const first = entry.send(makeReq(`http://127.0.0.1:${port}/first`));
+      await loop.timeout(20);
+      entry.handleGoaway(1, 0);
+      t.ok(entry.goingAway, 'GOAWAY marks entry goingAway');
+      await t.rejects(
+        () => entry.send(makeReq(`http://127.0.0.1:${port}/after-goaway`)),
+        /going away/i,
+        'new streams are rejected after GOAWAY',
+      );
+      release();
+      const res = await first;
+      t.equal(await res.text(), 'finished', 'stream at lastStreamId completes');
+    } finally {
+      release();
+      entry.close();
+      await server.close();
+    }
+  });
+
+  it('peer GOAWAY rejects active streams above lastStreamId', { skip }, async (t) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const server = serve({ port: 0 }, async () => {
+      await gate;
+      return new Response('late');
+    });
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      const first = entry.send(makeReq(`http://127.0.0.1:${port}/first`));
+      const second = entry.send(makeReq(`http://127.0.0.1:${port}/second`));
+      await loop.timeout(20);
+      entry.handleGoaway(1, 0);
+
+      await t.rejects(
+        () => second,
+        /GOAWAY/i,
+        'stream above lastStreamId is rejected',
+      );
+      release();
+      const res = await first;
+      t.equal(await res.text(), 'late', 'stream at or below lastStreamId completes');
+    } finally {
+      release();
+      entry.close();
+      await server.close();
+    }
+  });
+
+  it('transport close rejects an active stream and marks the entry goingAway', { skip }, async (t) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const server = serve({ port: 0 }, async () => {
+      await gate;
+      return new Response('never');
+    });
+    const port = server.port;
+
+    const entry = await connectPoolEntry(port);
+    try {
+      const pending = entry.send(makeReq(`http://127.0.0.1:${port}/slow`));
+      await loop.timeout(20);
+      entry.handleTransportError(new Error('synthetic transport closed'));
+      await t.rejects(
+        () => pending,
+        /closed/i,
+        'active stream rejects when transport closes',
+      );
+      t.ok(entry.goingAway, 'transport failure marks entry goingAway');
+    } finally {
+      release();
+      entry.close();
+      await server.close();
+    }
   });
 });
 

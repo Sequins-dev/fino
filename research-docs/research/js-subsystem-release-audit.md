@@ -145,12 +145,7 @@ Status: TODO
   release-clean yet.
 
 ## HTTP/2 Pool
-Status: TODO
-
-- Add idle timeout tests.
-- Add peer GOAWAY `lastStreamId` handling tests.
-- Add active-stream transport failure and global `fetch()` retry/eviction
-  integration tests.
+Status: DONE
 
 ## HTTP/3
 Status: TODO
