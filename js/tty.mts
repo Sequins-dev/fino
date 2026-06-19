@@ -93,6 +93,7 @@ export const stderrIsTTY = isatty(2);
 
 async function writeTo(writer: BytesWriter, text: string): Promise<void> {
   await writer.write(encodeUtf8(text));
+  await writer.flush();
 }
 
 /**

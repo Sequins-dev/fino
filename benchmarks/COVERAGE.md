@@ -13,6 +13,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:realm/self` | `benchmarks/realm/self.bench.mts` |
 | `fino:realm/messaging` | `benchmarks/realm/messaging.bench.mts` |
 | `fino:database/sqlite` | `benchmarks/database/sqlite.bench.mts` |
+| `fino:stream` | `benchmarks/stream.bench.mts` |
 | `fino:process` | `benchmarks/process.bench.mts` |
 | `fino:context` | `benchmarks/context/index.bench.mts` |
 | `fino:tty` | `benchmarks/tty.bench.mts` |

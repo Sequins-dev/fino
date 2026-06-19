@@ -524,6 +524,33 @@ function trimUrlPunctuation(value: string): { href: string; suffix: string } {
   return { href, suffix };
 }
 
+function readLinkDestination(scanner: Scanner): { href: string; closed: boolean } {
+  let href = '';
+  let depth = 0;
+
+  while (!scanner.done) {
+    const char = scanner.eat();
+    if (char === '\\' && !scanner.done) {
+      href += char + scanner.eat();
+      continue;
+    }
+    if (char === '(') {
+      depth++;
+      href += char;
+      continue;
+    }
+    if (char === ')') {
+      if (depth === 0) return { href: href.trim(), closed: true };
+      depth--;
+      href += char;
+      continue;
+    }
+    href += char;
+  }
+
+  return { href: href.trim(), closed: false };
+}
+
 /**
  * Render inline Markdown spans without wrapping the result in block elements.
  *
@@ -568,8 +595,8 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
     if (scanner.match('![')) {
       const alt = scanner.eatUntil((value) => value === 0x5D);
       if (scanner.eatChar(']') && scanner.eatChar('(')) {
-        const href = scanner.eatUntil((value) => value === 0x29).trim();
-        if (scanner.eatChar(')')) {
+        const { href, closed } = readLinkDestination(scanner);
+        if (closed) {
           html += renderImage(alt, href, options);
           continue;
         }
@@ -584,8 +611,8 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
       const labelSource = scanner.eatUntil((value) => value === 0x5D);
       if (scanner.eatChar(']')) {
         if (scanner.eatChar('(')) {
-          const href = scanner.eatUntil((value) => value === 0x29).trim();
-          if (scanner.eatChar(')')) {
+          const { href, closed } = readLinkDestination(scanner);
+          if (closed) {
             const label = renderMarkdownInline(labelSource, options);
             html += renderLink(label, href, options);
             continue;
