@@ -236,11 +236,7 @@ Status: DONE
 Status: DONE
 
 ## Security JWK, JWT, JWE
-Status: TODO
-
-- Add RFC vectors and algorithm-confusion cases.
-- Add `kid`, `aud` arrays, `nbf`, `iat`, `crit`, wrong key type/use, and
-  unsupported algorithm rejection coverage.
+Status: DONE
 
 ## CSV Format
 Status: DONE

@@ -354,11 +354,33 @@ function hashForJwtAlg(alg: string): string {
   return 'SHA-256';
 }
 
-function keyFor(input: JwtKeyInput, header: Record<string, unknown>, alg: string): JsonWebKeyLike {
+function rejectUnsupportedCrit(header: Record<string, unknown>): void {
+  if (header.crit === undefined) return;
+  if (Array.isArray(header.crit) && header.crit.length === 0) return;
+  throw new Error('Unsupported JOSE crit header');
+}
+
+function keyMatchesPurpose(key: JsonWebKeyLike, purpose?: { use?: string; key_ops?: string[] }): boolean {
+  if (purpose?.use !== undefined && key.use !== undefined && key.use !== purpose.use) return false;
+  if (purpose?.key_ops && Array.isArray(key.key_ops)) {
+    for (const op of purpose.key_ops) {
+      if ((key.key_ops as unknown[]).includes(op)) continue;
+      if (op === 'verify' && key.kty !== 'oct' && (key.key_ops as unknown[]).includes('sign')) continue;
+      return false;
+    }
+  }
+  return true;
+}
+
+function keyFor(input: JwtKeyInput, header: Record<string, unknown>, alg: string, purpose?: { use?: string; key_ops?: string[] }): JsonWebKeyLike {
   if (Array.isArray(input) || 'keys' in input) {
-    const selected = selectJwk(input as JsonWebKeySet | JsonWebKeyLike[], {
-      kid: typeof header.kid === 'string' ? header.kid : undefined,
-      alg,
+    const keys = Array.isArray(input) ? input : input.keys;
+    const selected = keys.find((key) => {
+      const candidate = selectJwk([key], {
+        kid: typeof header.kid === 'string' ? header.kid : undefined,
+        alg,
+      });
+      return candidate !== undefined && keyMatchesPurpose(candidate, purpose);
     });
     if (!selected) throw new Error('No matching JWK found');
     return selected;
@@ -507,9 +529,10 @@ export async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVe
   if (parts.length !== 3) throw new Error('Invalid compact JWT');
   const header = parseBase64urlJson(parts[0]!);
   const payload = parseBase64urlJson(parts[1]!);
+  rejectUnsupportedCrit(header);
   const alg = String(header.alg ?? '');
   if (!alg || alg === 'none') throw new Error('Unsupported JWT algorithm');
-  const selectedKey = keyFor(keys, header, alg);
+  const selectedKey = keyFor(keys, header, alg, { use: 'sig', key_ops: ['verify'] });
   const key = selectedKey.kty === 'oct' ? selectedKey : await exportPublicJwk(selectedKey);
   const cryptoKey = await importJwk({ ...key, alg }, importUsages(alg, 'verify'));
   const signature = base64urlDecode(parts[2]!);
@@ -603,9 +626,10 @@ export async function jwtDecrypt(token: string, keys: JwtKeyInput): Promise<JwtR
   const parts = token.split('.');
   if (parts.length !== 5) throw new Error('Invalid compact JWE');
   const header = parseBase64urlJson(parts[0]!);
+  rejectUnsupportedCrit(header);
   const alg = String(header.alg ?? '') as JweAlgorithm;
   const enc = String(header.enc ?? '') as JweEncryption;
-  const key = keyFor(keys, header, alg);
+  const key = keyFor(keys, header, alg, { use: 'enc', key_ops: ['decrypt'] });
 
   try {
     let cek: Uint8Array;

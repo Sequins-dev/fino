@@ -3,6 +3,7 @@ import {
   exportPublicJwk,
   generateJwk,
   importJwk,
+  jwkFromSecret,
   jwkThumbprint,
   jwtDecrypt,
   jwtEncrypt,
@@ -127,5 +128,117 @@ describe('fino:security JWT/JWE helpers', () => {
       const verified = await jwtVerify(token, { keys: [key] });
       t.equal(verified.payload.sub, algorithm, `${algorithm} round trips`);
     }
+  });
+
+  it('validates JWT audience arrays, nbf, iat, and clock tolerance', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWT claim edge test');
+      return;
+    }
+
+    const key = await generateJwk({ kty: 'oct', alg: 'HS256', kid: 'claims-1', length: 256 });
+    const token = await jwtSign({ sub: 'user-1', aud: ['api', 'admin'], exp: 1_700_000_010, nbf: 1_700_000_005 }, key, {
+      algorithm: 'HS256',
+      issuedAt: 1_700_000_000,
+      header: { kid: 'claims-1' },
+    });
+
+    const verified = await jwtVerify(token, { keys: [key] }, {
+      audience: 'admin',
+      now: 1_700_000_005,
+    });
+    t.equal(verified.payload.iat, 1_700_000_000, 'explicit iat is preserved');
+    t.deepEqual(verified.payload.aud, ['api', 'admin'], 'audience array is preserved');
+
+    await t.rejects(() => jwtVerify(token, key, { audience: 'other', now: 1_700_000_005 }), /audience/);
+    await t.rejects(() => jwtVerify(token, key, { now: 1_700_000_004 }), /not active/);
+    await jwtVerify(token, key, { now: 1_700_000_004, clockTolerance: 1 });
+    await t.rejects(() => jwtVerify(token, key, { now: 1_700_000_011 }), /expired/);
+  });
+
+  it('selects JWT keys by kid and alg and rejects unsupported crit headers', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWT key selection test');
+      return;
+    }
+
+    const wrong = await generateJwk({ kty: 'oct', alg: 'HS256', kid: 'wrong', length: 256 });
+    const right = await generateJwk({ kty: 'oct', alg: 'HS256', kid: 'right', length: 256 });
+    const token = await jwtSign({ sub: 'selected' }, right, {
+      algorithm: 'HS256',
+      issuedAt: false,
+      header: { kid: 'right' },
+    });
+
+    const verified = await jwtVerify(token, { keys: [wrong, right] });
+    t.equal(verified.payload.sub, 'selected', 'JWKS selection uses matching kid');
+    await t.rejects(() => jwtVerify(token, { keys: [wrong] }), /No matching JWK/);
+
+    const critToken = await jwtSign({ sub: 'crit' }, right, {
+      algorithm: 'HS256',
+      issuedAt: false,
+      header: { kid: 'right', crit: ['exp'] },
+    });
+    await t.rejects(() => jwtVerify(critToken, { keys: [right] }), /crit/i);
+  });
+
+  it('rejects JWT algorithm confusion and wrong key intent', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWT confusion test');
+      return;
+    }
+
+    const hmac = await generateJwk({ kty: 'oct', alg: 'HS256', kid: 'hmac', length: 256 });
+    const rsa = await generateJwk({ kty: 'RSA', alg: 'RS256', kid: 'rsa', modulusLength: 2048 });
+    const hmacToken = await jwtSign({ sub: 'hmac' }, hmac, { algorithm: 'HS256', issuedAt: false, header: { kid: 'hmac' } });
+    const rsaToken = await jwtSign({ sub: 'rsa' }, rsa, { algorithm: 'RS256', issuedAt: false, header: { kid: 'rsa' } });
+
+    await t.rejects(() => jwtVerify(hmacToken, rsa), /key|algorithm|JWK|signature/i, 'HS token cannot verify with RSA key');
+    await t.rejects(() => jwtVerify(rsaToken, hmac), /key|algorithm|JWK|signature/i, 'RS token cannot verify with oct key');
+
+    const encUse = { ...hmac, kid: 'hmac', use: 'enc' };
+    const encryptOnly = { ...hmac, kid: 'hmac', key_ops: ['encrypt'] };
+    await t.rejects(() => jwtVerify(hmacToken, { keys: [encUse] }), /No matching JWK|key/i, 'enc use key is not selected for signature verification');
+    await t.rejects(() => jwtVerify(hmacToken, { keys: [encryptOnly] }), /No matching JWK|key/i, 'encrypt-only key_ops are not selected for verification');
+  });
+
+  it('rejects unsupported JWT algorithms and signs deterministic HS256 tokens', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWT algorithm rejection test');
+      return;
+    }
+
+    const key = jwkFromSecret('release-audit-secret', 'HS256', 'deterministic');
+    const first = await jwtSign({ iss: 'issuer', sub: 'subject' }, key, {
+      algorithm: 'HS256',
+      issuedAt: false,
+      header: { kid: 'deterministic' },
+    });
+    const second = await jwtSign({ iss: 'issuer', sub: 'subject' }, key, {
+      algorithm: 'HS256',
+      issuedAt: false,
+      header: { kid: 'deterministic' },
+    });
+    t.equal(first, second, 'fixed HS256 inputs produce a deterministic compact token');
+    t.equal((await jwtVerify(first, key, { issuer: 'issuer', subject: 'subject' })).payload.sub, 'subject');
+
+    const parts = first.split('.');
+    const noneToken = [parts[0], parts[1], ''].join('.');
+    await t.rejects(() => jwtVerify(noneToken.replace(parts[0]!, 'eyJhbGciOiJub25lIn0'), key), /Unsupported JWT algorithm/);
+  });
+
+  it('rejects unsupported crit headers in compact JWE', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWE crit test');
+      return;
+    }
+
+    const key = await generateJwk({ kty: 'oct', alg: 'dir', kid: 'enc-crit', length: 256 });
+    const token = await jwtEncrypt({ sub: 'user-1' }, key, {
+      algorithm: 'dir',
+      encryption: 'A256GCM',
+      header: { kid: 'enc-crit', crit: ['zip'] },
+    });
+    await t.rejects(() => jwtDecrypt(token, { keys: [key] }), /crit/i);
   });
 });
