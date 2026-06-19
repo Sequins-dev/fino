@@ -49,8 +49,26 @@ class PendingBytesReader extends BytesReader {
 
 class MemoryBytesWriter extends BytesWriter {
   chunks: Uint8Array[] = [];
+  closeCount = 0;
+
+  constructor() {
+    super(() => { this.closeCount++; });
+  }
 
   protected async doWrite(buf: Uint8Array): Promise<void> {
+    this.chunks.push(buf.slice());
+  }
+}
+
+class RecordingBufferedWriter extends BufferedBytesWriter {
+  chunks: Uint8Array[] = [];
+  closeCount = 0;
+
+  constructor(bufferSize = 4) {
+    super(() => { this.closeCount++; }, bufferSize);
+  }
+
+  protected async doFlush(buf: Uint8Array): Promise<void> {
     this.chunks.push(buf.slice());
   }
 }
@@ -135,6 +153,16 @@ describe('BufferedBytesReader', () => {
     t.equal(new TextDecoder().decode(line!), 'hello\n', 'readUntil includes the delimiter');
     t.equal(new TextDecoder().decode(await reader.readExactly(5)!), 'world', 'tail bytes remain readable');
   });
+
+  it('readUntil throws when max is exceeded and preserves buffered bytes', async (t) => {
+    const reader = BufferedBytesReader.over(new MemoryBytesReader([
+      new TextEncoder().encode('abcdef'),
+    ]));
+
+    await t.rejects(() => reader.readUntil(new Uint8Array([10]), 3), /max 3 bytes exceeded/, 'readUntil rejects on max overflow');
+    t.equal(reader.buffered, 6, 'overflow does not consume buffered bytes');
+    t.equal(new TextDecoder().decode(reader.takeBuffered(6)), 'abcdef', 'overflow bytes are replayable from the buffer');
+  });
 });
 
 describe('BytesWriter', () => {
@@ -174,6 +202,16 @@ describe('BytesWriter', () => {
       [2, 3],
     ], 'writev skips empty vectors and honors count');
   });
+
+  it('close() is idempotent and rejects writes after close', async (t) => {
+    const writer = new MemoryBytesWriter();
+
+    await writer.close();
+    await writer.close();
+
+    t.equal(writer.closeCount, 1, 'close callback runs once');
+    await t.rejects(() => writer.write(new Uint8Array([1])), /closed/, 'write after close rejects');
+  });
 });
 
 describe('BufferedBytesWriter', () => {
@@ -191,6 +229,33 @@ describe('BufferedBytesWriter', () => {
     await writer.close();
     t.deepEqual(sink.chunks.map((chunk) => [...chunk]), [[1, 2], [3, 4, 5]], 'close flushes the remaining bytes');
     t.ok(sink.closed, 'closing the buffered wrapper closes the target writer');
+  });
+
+  it('flush() and close() are idempotent with no pending bytes', async (t) => {
+    const writer = new RecordingBufferedWriter(4);
+
+    await writer.flush();
+    await writer.write(new Uint8Array([1, 2]));
+    await writer.flush();
+    await writer.flush();
+    await writer.close();
+    await writer.close();
+
+    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1, 2]], 'pending bytes flush once');
+    t.equal(writer.closeCount, 1, 'close callback runs once');
+  });
+
+  it('large writes flush pending bytes first and then bypass the coalesce buffer', async (t) => {
+    const writer = new RecordingBufferedWriter(4);
+
+    await writer.write(new Uint8Array([1, 2]));
+    await writer.write(new Uint8Array([3, 4, 5, 6]));
+    await writer.close();
+
+    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [
+      [1, 2],
+      [3, 4, 5, 6],
+    ], 'large write preserves ordering around short pending write');
   });
 });
 
@@ -225,5 +290,24 @@ describe('FdReader / FdWriter', () => {
     } finally {
       await fs.unlink(path).catch(() => {});
     }
+  });
+
+  it('invalid borrowed descriptors reject reads and writes', async (t) => {
+    const reader = new FdReader(-1, () => {});
+    const writer = new FdWriter(-1, () => {});
+
+    await t.rejects(() => reader.readAtMost(1), null, 'invalid fd read rejects');
+    await t.rejects(() => writer.write(new Uint8Array(65536)), /write failed/, 'invalid fd write rejects');
+
+    await reader.close();
+    await writer.close().catch(() => {});
+  });
+
+  it('FdWriter.writev rejects vector counts over the internal iovec limit', async (t) => {
+    const writer = new FdWriter(1, () => {});
+    const vecs = Array.from({ length: 17 }, () => new Uint8Array([1]));
+
+    await t.rejects(() => writer.writev(vecs), /too many vectors/, 'too many vectors reject before writing');
+    await writer.close();
   });
 });

@@ -1349,6 +1349,7 @@ export class FdReader extends BufferedBytesReader {
   protected async doPull(): Promise<Uint8Array | null> {
     while (true) {
       if (this.closed) return null;
+      if (this.#fd < 0) throw new Error('read failed');
       if (this.#avail <= 0) {
         this.#avail = await loop.readable(this.#fd);
         if (this.closed) return null;

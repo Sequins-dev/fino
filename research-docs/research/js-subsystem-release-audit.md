@@ -237,7 +237,7 @@ Status: TODO
   and transform backpressure failures.
 
 ## Internal Reader And Writer Streams
-Status: TODO
+Status: DONE
 
 - Add fd read/write error path and partial write coverage.
 - Add flush/close idempotence, `readUntil` max/EOF, and `writev` limit tests.
