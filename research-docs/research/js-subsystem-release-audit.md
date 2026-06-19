@@ -94,11 +94,7 @@ Status: TODO
 - Add validation retry and invalid select choice tests.
 
 ## Config
-Status: TODO
-
-- Add dotenv parsing/quoting, env prefix mapping, and argv boolean/value tests.
-- Add TOML/JSON parse error and unknown source tests.
-- Add array/tuple scalar coercion and missing-path `get()` tests.
+Status: DONE
 
 ## Context And Topic
 Status: DONE
