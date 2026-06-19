@@ -109,20 +109,16 @@ const isDarwin = os === 'darwin';
 const _cryptoPaths = isDarwin
   ? [
       '/opt/homebrew/lib/libcrypto.3.dylib',
-      '/opt/homebrew/lib/libcrypto.dylib',
       '/usr/local/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.1.1.dylib',
-      '/usr/local/lib/libcrypto.dylib',
     ]
   : ['libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
 
 const _sslPaths = isDarwin
   ? [
       '/opt/homebrew/lib/libssl.3.dylib',
-      '/opt/homebrew/lib/libssl.dylib',
       '/usr/local/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.1.1.dylib',
-      '/usr/local/lib/libssl.dylib',
     ]
   : ['libssl.so.3', 'libssl.so.1.1', 'libssl.so'];
 
