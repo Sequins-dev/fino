@@ -79,4 +79,99 @@ describe('fino:validate', () => {
       even: 3,
     }).success, false, 'invalid composite schema fails');
   });
+
+  it('supports nullable, const, and string formats', (t) => {
+    const schema = v.object({
+      maybe: v.string().nullable(),
+      fixed: v.literal('ready'),
+      email: v.string().format('email'),
+      uri: v.string().format('uri'),
+    });
+
+    t.deepEqual(parse(schema, {
+      maybe: null,
+      fixed: 'ready',
+      email: 'ops@example.com',
+      uri: 'https://example.com/path',
+    }), {
+      maybe: null,
+      fixed: 'ready',
+      email: 'ops@example.com',
+      uri: 'https://example.com/path',
+    }, 'nullable and formatted values parse');
+
+    const result = safeParse(schema, {
+      maybe: 1,
+      fixed: 'pending',
+      email: 'not-email',
+      uri: 'not uri',
+    });
+
+    t.equal(result.success, false, 'invalid nullable, const, and formats fail');
+    if (!result.success) {
+      const keywords = result.issues.map((issue) => issue.keyword);
+      t.ok(keywords.includes('anyOf'), 'nullable anyOf failure is reported');
+      t.ok(keywords.includes('const'), 'const failure is reported');
+      t.equal(keywords.filter((keyword) => keyword === 'format').length, 2, 'both format failures are reported');
+    }
+  });
+
+  it('clones object and array defaults before returning parsed values', (t) => {
+    const schema = v.object({
+      settings: v.any().default({ tags: ['api'], nested: { enabled: true } }),
+    });
+
+    const first = parse<Record<string, any>>(schema, {});
+    const second = parse<Record<string, any>>(schema, {});
+    first.settings.tags.push('mutated');
+    first.settings.nested.enabled = false;
+
+    t.deepEqual(second, { settings: { tags: ['api'], nested: { enabled: true } } }, 'later defaults are not mutated by earlier parse output');
+  });
+
+  it('validates arrays, tuples, and object edge cases with paths', (t) => {
+    const schema = v.object({
+      list: v.array(v.integer()).min(2).max(3),
+      tuple: v.tuple([v.string(), v.integer()]),
+    }).additionalProperties(false);
+
+    const result = safeParse(schema, {
+      list: [1, 'two', 3, 4],
+      tuple: ['ok', 'bad', 'extra'],
+      extra: true,
+    });
+
+    t.equal(result.success, false, 'invalid arrays, tuples, and extra keys fail');
+    if (!result.success) {
+      t.ok(result.issues.some((issue) => issue.path === 'list' && issue.keyword === 'maxItems'), 'array length issue is reported');
+      t.ok(result.issues.some((issue) => issue.path === 'list[1]' && issue.keyword === 'type'), 'array item issue uses indexed path');
+      t.ok(result.issues.some((issue) => issue.path === 'tuple[1]' && issue.keyword === 'type'), 'tuple item issue uses indexed path');
+      t.ok(result.issues.some((issue) => issue.path === 'tuple' && issue.keyword === 'maxItems'), 'tuple extra item issue is reported');
+      t.ok(result.issues.some((issue) => issue.path === 'extra' && issue.keyword === 'additionalProperties'), 'extra object key issue is reported');
+    }
+  });
+
+  it('validates schema-valued additionalProperties', (t) => {
+    const schema = v.object({
+      known: v.string(),
+    }).additionalProperties(v.integer().min(1).schema);
+
+    t.deepEqual(parse(schema, { known: 'ok', retries: 3 }), { known: 'ok', retries: 3 }, 'valid extra property parses');
+
+    const result = safeParse(schema, { known: 'ok', retries: 0, mode: 'fast' });
+    t.equal(result.success, false, 'invalid extra properties fail against schema');
+    if (!result.success) {
+      t.ok(result.issues.some((issue) => issue.path === 'retries' && issue.keyword === 'minimum'), 'numeric extra property constraint is reported');
+      t.ok(result.issues.some((issue) => issue.path === 'mode' && issue.keyword === 'type'), 'typed extra property constraint is reported');
+    }
+  });
+
+  it('reports invalid schemas and applies refinements after defaults', (t) => {
+    t.throws(() => compile(null), /Expected JSON Schema object/, 'null schema is rejected');
+    t.throws(() => v.array(null as any), /Expected JSON Schema object/, 'invalid item schema is rejected');
+
+    const schema = v.string().default('generated').refine((value) => value.startsWith('gen'), 'must be generated');
+    t.equal(parse(schema, undefined), 'generated', 'refinement sees defaulted value');
+    t.equal(safeParse(schema, 'manual').success, false, 'refinement rejects explicit invalid value');
+  });
 });

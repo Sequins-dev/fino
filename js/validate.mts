@@ -11,6 +11,13 @@
  * tools, or build schemas fluently in code while using the same validator
  * pipeline.
  *
+ * The supported JSON Schema subset is intentionally small and runtime-focused:
+ * `type`, `const`, `enum`, `properties`, `required`, `additionalProperties`,
+ * `items`, `prefixItems`, `anyOf`, string length/pattern/format constraints,
+ * numeric minimum/maximum, and array length constraints. Unknown keywords are
+ * preserved on schemas for tooling compatibility but ignored by validation.
+ * Supported string formats are `email`, `url`, and `uri`.
+ *
  * Validators are compiled into closure graphs. The implementation avoids
  * generated source and `eval`, but still avoids re-walking the schema metadata
  * for every input value.
@@ -351,6 +358,9 @@ function compileSchema(schema: JsonSchema): ValidatorFn {
     : Array.isArray(schema.items)
       ? schema.items.map((item) => compileSchema(schemaOf(item)))
       : null;
+  const additionalPropertyValidator = isRecord(schema.additionalProperties)
+    ? compileSchema(schema.additionalProperties)
+    : null;
   const anyOf = Array.isArray(schema.anyOf) ? schema.anyOf.map((item) => compileSchema(schemaOf(item))) : null;
   const refinements = ((schema as Record<symbol, unknown>)[refinementsSymbol] as Refinement[] | undefined) ?? [];
   const pattern = typeof schema.pattern === 'string' ? new RegExp(schema.pattern) : null;
@@ -445,6 +455,13 @@ function compileSchema(schema: JsonSchema): ValidatorFn {
       if (schema.additionalProperties === false) {
         for (const key of Object.keys(out)) {
           if (!propertyValidators.has(key)) issues.push(issue(childPath(path, key), 'additionalProperties', 'is not allowed', out[key]));
+        }
+      } else if (additionalPropertyValidator !== null) {
+        for (const key of Object.keys(out)) {
+          if (propertyValidators.has(key)) continue;
+          const result = additionalPropertyValidator(out[key], childPath(path, key));
+          out[key] = result.value;
+          issues.push(...result.issues);
         }
       }
       value = out;

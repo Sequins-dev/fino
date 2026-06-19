@@ -126,13 +126,7 @@ Status: DONE
 Status: DONE
 
 ## Validation
-Status: TODO
-
-- Expand tests for `nullable`, default clone behavior, `const`, `email`, `uri`,
-  and array/object edge cases.
-- Document the supported JSON Schema subset.
-- Test or document `additionalProperties` schema-value behavior.
-- Add invalid schema and refinement/default interaction tests.
+Status: DONE
 
 ## Logging
 Status: DONE
