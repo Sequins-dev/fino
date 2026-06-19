@@ -2416,13 +2416,36 @@ export class TransformStream {
         if (transformer?.start) return transformer.start(controller);
       },
       write(chunk: any) {
-        if (transform) return Promise.resolve(transform(chunk, controller));
+        if (transform) {
+          let result: unknown;
+          try {
+            result = transform(chunk, controller);
+          } catch (e) {
+            channel.error(e);
+            return Promise.reject(e);
+          }
+          return Promise.resolve(result).catch(function tsTransformFailed(e) {
+            channel.error(e);
+            throw e;
+          });
+        }
         controller.enqueue(chunk); // identity pass-through
         return Promise.resolve();
       },
       close() {
-        const result = flush ? Promise.resolve(flush(controller)) : Promise.resolve();
-        return result.then(function tsCloseChannel() { channel.close(); });
+        let result: unknown;
+        try {
+          result = flush ? flush(controller) : undefined;
+        } catch (e) {
+          channel.error(e);
+          return Promise.reject(e);
+        }
+        return Promise.resolve(result)
+          .then(function tsCloseChannel() { channel.close(); })
+          .catch(function tsFlushFailed(e) {
+            channel.error(e);
+            throw e;
+          });
       },
       abort(reason: unknown) {
         channel.error(reason);

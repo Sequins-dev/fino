@@ -184,11 +184,7 @@ Status: DONE
 Status: DONE
 
 ## Web Streams
-Status: TODO
-
-- Add WHATWG Streams WPT corpus coverage.
-- Expand negative tests for BYOB semantics, tee cancellation, released locks,
-  and transform backpressure failures.
+Status: DONE
 
 ## Internal Reader And Writer Streams
 Status: DONE

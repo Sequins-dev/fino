@@ -1059,3 +1059,93 @@ describe('ReadableStream.tee() — composite cancel reason', () => {
     t.deepEqual(cancelReason as unknown[], ['reason1', 'reason2'], 'composite cancel reasons');
   });
 });
+
+describe('Web Streams release/cancel conformance edges', () => {
+  it('tee() waits for both branches before canceling the source', async (t) => {
+    let cancelCount = 0;
+    const rs = new ReadableStream({
+      cancel() { cancelCount++; },
+    });
+    const [b1, b2] = rs.tee();
+
+    const firstCancel = b1.cancel('first');
+    await Promise.resolve();
+    await Promise.resolve();
+    t.equal(cancelCount, 0, 'source not canceled after one branch');
+
+    await b2.cancel('second');
+    await firstCancel;
+    t.equal(cancelCount, 1, 'source canceled exactly once after both branches');
+  });
+
+  it('BYOB pending read rejects when the stream is canceled', async (t) => {
+    const rs = new ReadableStream({
+      type: 'bytes',
+      start() {},
+      cancel(reason) {
+        t.equal(reason, 'stop', 'cancel reason forwarded to byte source');
+      },
+    });
+    const reader = rs.getReader({ mode: 'byob' });
+    const pendingRead = reader.read(new Uint8Array(8));
+    await reader.cancel('stop');
+    const result = await pendingRead;
+    t.equal(result.done, true, 'pending BYOB read closes on cancel');
+    t.equal(result.value?.byteLength, 0, 'cancel resolves with an empty BYOB view');
+    reader.releaseLock();
+  });
+
+  it('ReadableStreamBYOBReader.closed rejects when a pending BYOB read lock is released', async (t) => {
+    const rs = new ReadableStream({
+      type: 'bytes',
+      start() {},
+    });
+    const reader = rs.getReader({ mode: 'byob' });
+    const pendingRead = reader.read(new Uint8Array(4));
+    const closed = reader.closed;
+    reader.releaseLock();
+
+    await t.rejects(() => pendingRead, /released|lock/i, 'pending BYOB read rejects');
+    await t.rejects(() => closed, /released|lock/i, 'closed rejects for released reader with pending read');
+  });
+
+  it('WritableStreamDefaultWriter.closed rejects when the writer lock is released before close', async (t) => {
+    const ws = new WritableStream();
+    const writer = ws.getWriter();
+    const closed = writer.closed;
+    writer.releaseLock();
+    await t.rejects(() => closed, /released|lock/i, 'closed rejects for released writer');
+  });
+
+  it('TransformStream transform throw rejects write and errors readable', async (t) => {
+    const reason = new Error('transform failed');
+    const ts = new TransformStream({
+      transform() { throw reason; },
+    });
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+
+    await Promise.all([
+      t.rejects(() => writer.write('x'), /transform failed/, 'write rejects with transform error'),
+      t.rejects(() => reader.read(), /transform failed/, 'readable errors with transform error'),
+    ]);
+  });
+
+  it('TransformStream flush throw rejects close and errors readable', async (t) => {
+    const ts = new TransformStream({
+      transform(chunk, controller) { controller.enqueue(chunk); },
+      flush() { throw new Error('flush failed'); },
+    });
+    const writer = ts.writable.getWriter();
+    const reader = ts.readable.getReader();
+
+    const [writeResult, readResult] = await Promise.all([
+      writer.write('x'),
+      reader.read(),
+    ]);
+    t.equal(writeResult, undefined, 'write resolves');
+    t.deepEqual(readResult, { done: false, value: 'x' }, 'transformed chunk is readable');
+    await t.rejects(() => writer.close(), /flush failed/, 'close rejects with flush error');
+    await t.rejects(() => reader.read(), /flush failed/, 'readable errors with flush error');
+  });
+});
