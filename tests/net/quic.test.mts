@@ -565,6 +565,7 @@ describe('QUIC hardening options', () => {
     try {
       const clientConnection = await idleClient.connect({ address: idleListener.address });
       const serverConnection = await idleServer.accept();
+      await loop.timeout(60);
       const initialPingCount = serverConnection.stats.pingReceived;
 
       await loop.timeout(180);
