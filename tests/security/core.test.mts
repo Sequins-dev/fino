@@ -57,6 +57,68 @@ describe('fino:security core helpers', () => {
     t.equal(cors['access-control-max-age'], '600', 'max age is emitted');
   });
 
+  it('handles CORS denied, wildcard credential, predicate, and invalid list cases', (t) => {
+    const denied = buildCorsHeaders({
+      origin: 'https://evil.example',
+      allowOrigins: ['https://app.example'],
+    });
+    t.equal(denied['access-control-allow-origin'], undefined, 'denied origin is not reflected');
+    t.equal(denied.vary, 'Origin', 'denied origin still varies on Origin');
+
+    const wildcardCredentials = buildCorsHeaders({
+      origin: 'https://app.example',
+      allowOrigins: '*',
+      credentials: true,
+    });
+    t.equal(wildcardCredentials['access-control-allow-origin'], 'https://app.example', 'wildcard with credentials reflects origin');
+    t.equal(wildcardCredentials['access-control-allow-credentials'], 'true', 'credentials header is emitted');
+
+    const predicate = buildCorsHeaders({
+      origin: 'https://api.example',
+      allowOrigins: (origin) => origin.endsWith('.example'),
+      methods: [],
+      allowHeaders: [],
+    });
+    t.equal(predicate['access-control-allow-origin'], 'https://api.example', 'predicate origin is reflected');
+    t.equal(predicate['access-control-allow-methods'], undefined, 'empty method list is omitted');
+    t.equal(predicate['access-control-allow-headers'], undefined, 'empty header list is omitted');
+
+    t.throws(
+      () => buildCorsHeaders({ origin: 'https://app.example', allowOrigins: '*', methods: ['GET\r\nX: yes'] }),
+      /Invalid CORS method/,
+      'invalid CORS method is rejected',
+    );
+    t.throws(
+      () => buildCorsHeaders({ origin: 'https://app.example', allowOrigins: '*', allowHeaders: ['x-ok\nx-bad'] }),
+      /Invalid CORS header name/,
+      'invalid CORS header name is rejected',
+    );
+  });
+
+  it('supports disabling and overriding security headers', (t) => {
+    const headers = createSecurityHeaders({
+      frameOptions: false,
+      strictTransportSecurity: false,
+      referrerPolicy: 'strict-origin',
+      crossOriginOpenerPolicy: false,
+      contentSecurityPolicy: "default-src 'self'",
+      permissionsPolicy: 'geolocation=()',
+      extra: {
+        'X-Content-Type-Options': 'custom-nosniff',
+        'X-App-Policy': 'enabled',
+      },
+    });
+
+    t.equal(headers['x-frame-options'], undefined, 'frame options can be disabled');
+    t.equal(headers['strict-transport-security'], undefined, 'HSTS can be disabled');
+    t.equal(headers['cross-origin-opener-policy'], undefined, 'COOP can be disabled');
+    t.equal(headers['referrer-policy'], 'strict-origin', 'referrer policy can be customized');
+    t.equal(headers['content-security-policy'], "default-src 'self'", 'CSP can be supplied');
+    t.equal(headers['permissions-policy'], 'geolocation=()', 'permissions policy can be supplied');
+    t.equal(headers['x-content-type-options'], 'custom-nosniff', 'extra headers override defaults');
+    t.equal(headers['x-app-policy'], 'enabled', 'extra header names are normalized');
+  });
+
   it('serializes, parses, signs, and verifies cookies', (t) => {
     const header = serializeCookie('sid', 'abc 123', {
       httpOnly: true,
@@ -72,6 +134,19 @@ describe('fino:security core helpers', () => {
     const signed = signCookie('abc', 'secret-key');
     t.equal(verifyCookie(signed, 'secret-key'), 'abc', 'signed cookie verifies');
     t.equal(verifyCookie(signed + 'tamper', 'secret-key'), null, 'tampered cookie is rejected');
+  });
+
+  it('rejects cookie attributes that can inject headers', (t) => {
+    t.throws(
+      () => serializeCookie('sid', 'abc', { domain: 'example.com\r\nSet-Cookie: injected=1' }),
+      /Invalid cookie Domain attribute/,
+      'domain CRLF injection is rejected',
+    );
+    t.throws(
+      () => serializeCookie('sid', 'abc', { path: '/\nX-Injected: yes' }),
+      /Invalid cookie Path attribute/,
+      'path CRLF injection is rejected',
+    );
   });
 
   it('seals cookies and rejects tampering', (t) => {

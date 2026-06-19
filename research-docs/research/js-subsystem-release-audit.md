@@ -291,12 +291,7 @@ Status: DONE
 Status: DONE
 
 ## Security Cookies, Headers, CORS
-Status: TODO
-
-- Add CRLF/header-injection tests for cookie attribute values.
-- Add denied-origin, wildcard-with-credentials, predicate, and invalid
-  header/method CORS tests.
-- Add security header option disabling and custom CSP/HSTS/referrer tests.
+Status: DONE
 
 ## Security JWK, JWT, JWE
 Status: TODO

@@ -141,6 +141,15 @@ function originAllowed(origin: string, allow: CorsOptions['allowOrigins']): bool
   return allow.includes(origin);
 }
 
+function assertTokenList(values: string[] | undefined, label: string): void {
+  if (!values) return;
+  for (const value of values) {
+    if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(value)) {
+      throw new Error(`Invalid CORS ${label}: ${value}`);
+    }
+  }
+}
+
 /**
  * Build CORS response headers for an explicit request origin.
  *
@@ -160,6 +169,9 @@ function originAllowed(origin: string, allow: CorsOptions['allowOrigins']): bool
  * ```
  */
 export function buildCorsHeaders(options: CorsOptions): HeaderMap {
+  assertTokenList(options.methods, 'method');
+  assertTokenList(options.allowHeaders, 'header name');
+  assertTokenList(options.exposeHeaders, 'header name');
   const origin = options.origin ?? '';
   const headers: HeaderMap = {
     vary: 'Origin',
