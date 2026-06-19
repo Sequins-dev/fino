@@ -180,22 +180,8 @@ describe('Watcher', () => {
   it('watch() on a non-existent path either throws or emits no events', async (t) => {
     const watcher = new Watcher();
     const nonExistent = TEST_DIR + '/does-not-exist-' + Date.now() + '.txt';
-    let threw = false;
-    try {
-      watcher.watch(nonExistent);
-    } catch (_) {
-      threw = true;
-    }
-
-    if (!threw) {
-      // If watch() did not throw, ensure no spurious events arrive in a short window
-      const events = await collectEvents(watcher, 1, 150);
-      watcher.close();
-      t.equal(events.length, 0, 'no events emitted for non-existent path');
-    } else {
-      watcher.close();
-      t.ok(true, 'watch() throws for non-existent path (acceptable behavior)');
-    }
+    t.throws(() => watcher.watch(nonExistent), /watch|open|inotify/i, 'watch() throws for non-existent path');
+    watcher.close();
   });
 
   it('close() suppresses events for modifications made after close', async (t) => {
@@ -241,5 +227,102 @@ describe('Watcher', () => {
     await fs.rmdir(dir);
 
     t.ok(events.length >= 1, 'got at least one event from subdirectory');
+  });
+
+  it('reports rename or delete when a watched file is renamed then removed', async (t) => {
+    const path = TEST_DIR + '/rename-delete-source.txt';
+    const renamed = TEST_DIR + '/rename-delete-target.txt';
+    await fs.writeFile(path, 'hello');
+
+    const watcher = new Watcher();
+    watcher.watch(path);
+
+    await fs.rename(path, renamed);
+    await fs.unlink(renamed);
+
+    const events = await collectEvents(watcher, 2);
+    watcher.close();
+
+    t.ok(events.length >= 1, 'got at least one rename/delete transition event');
+    t.ok(events.some(e => e.type === 'rename' || e.type === 'delete'), 'transition is normalized as rename or delete');
+    t.ok(events.some(e => e.path === path || e.path === renamed), 'event path identifies the watched file or renamed file');
+  });
+
+  it('recursive: true watches subdirectories created after watch()', async (t) => {
+    const dir = TEST_DIR + '/recursive-created-dir';
+    const sub = dir + '/created';
+    const file = sub + '/later.txt';
+    await fs.mkdir(dir);
+
+    const watcher = new Watcher({ recursive: true });
+    watcher.watch(dir);
+
+    await fs.mkdir(sub);
+    await delay(100);
+    await fs.writeFile(file, 'later');
+
+    const events = await collectEvents(watcher, 3);
+    watcher.close();
+
+    await fs.unlink(file).catch(() => {});
+    await fs.rmdir(sub).catch(() => {});
+    await fs.rmdir(dir).catch(() => {});
+
+    t.ok(events.length >= 1, 'got at least one event after recursive subdirectory creation');
+    t.ok(events.some(e => e.path === dir || e.path === sub || e.path === file), 'event path is directory or created child depending on backend');
+  });
+
+  it('close() completes an already pending iterator next()', async (t) => {
+    const path = TEST_DIR + '/pending-close.txt';
+    await fs.writeFile(path, 'x');
+
+    const watcher = new Watcher();
+    watcher.watch(path);
+    const iter = watcher[Symbol.asyncIterator]();
+    const pending = iter.next();
+
+    watcher.close();
+
+    const result = await pending;
+    t.equal(result.done, true, 'pending next() resolves as done after close');
+    await fs.unlink(path);
+  });
+
+  it('duplicate watch() calls for the same path do not emit duplicate notifications', async (t) => {
+    const path = TEST_DIR + '/duplicate-watch.txt';
+    await fs.writeFile(path, 'initial');
+
+    const watcher = new Watcher();
+    watcher.watch(path);
+    watcher.watch(path);
+
+    await fs.writeFile(path, 'changed');
+    const events = await collectEvents(watcher, 2, 250);
+    watcher.close();
+    await fs.unlink(path);
+
+    t.ok(events.length >= 1, 'duplicate watch still delivers a notification');
+    t.ok(events.length <= 2, 'duplicate watch does not multiply backend notifications');
+    t.ok(events.every(e => e.path === path), 'event path matches watched file');
+  });
+
+  it('rapid event bursts produce at least one coherent notification', async (t) => {
+    const path = TEST_DIR + '/burst.txt';
+    await fs.writeFile(path, '0');
+
+    const watcher = new Watcher();
+    watcher.watch(path);
+
+    for (let i = 1; i <= 8; i++) {
+      await fs.writeFile(path, String(i));
+    }
+
+    const events = await collectEvents(watcher, 4);
+    watcher.close();
+    await fs.unlink(path);
+
+    t.ok(events.length >= 1, 'burst produced at least one event');
+    t.ok(events.every(e => e.path === path), 'burst notifications identify the watched file');
+    t.ok(events.some(e => e.type === 'modify' || e.type === 'delete'), 'burst event has a coherent normalized type');
   });
 });

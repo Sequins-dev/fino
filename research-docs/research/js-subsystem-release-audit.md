@@ -70,7 +70,7 @@ Status: DONE
 Status: DONE
 
 ## File Watch
-Status: TODO
+Status: DONE
 
 - Make non-existent path failure semantics explicit.
 - Add Linux inotify vs macOS kqueue rename/delete coverage.

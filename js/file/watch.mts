@@ -364,6 +364,7 @@ export class Watcher {
    * @internal
    */
   #wds: Map<number, { path: string; isDir: boolean }> = new Map();
+  #paths: Set<string> = new Set();
   // Used to signal the background read loop to stop.
   /**
    * Private property `#closePromise` used by `Watcher`.
@@ -466,6 +467,7 @@ export class Watcher {
   watch(path: string): void {
     if (this.#closed) throw new Error('Watcher is closed');
     const p = String(path);
+    if (this.#paths.has(p)) return;
     if (isDarwin) {
       this.#watchDarwin(p);
     } else {
@@ -509,6 +511,7 @@ export class Watcher {
       this.#wds.clear();
       inotifyClose(this.#inotifyFd);
     }
+    this.#paths.clear();
 
     // Resolve all pending waiters with done.
     for (const resolve of this.#waiters) {
@@ -631,6 +634,7 @@ export class Watcher {
     if (fd < 0) throw new Error(`watch: cannot open '${path}'`);
 
     this.#fds.set(fd, path);
+    this.#paths.add(path);
     const watcher = this;
     loopMod.vnode(fd, ALL_NOTES, function onVnodeEvent(ev: { fflags: number }) {
       watcher.#handleVnode(fd, path, ev.fflags);
@@ -671,6 +675,7 @@ export class Watcher {
       loopMod.removeVnode(fd);
       lib.symbols.close(fd);
       this.#fds.delete(fd);
+      this.#paths.delete(path);
       return;
     }
     if (fflags & NOTE_RENAME) {
@@ -793,6 +798,7 @@ export class Watcher {
   #watchLinux(path: string, isDir = true): void {
     const wd = inotifyAddWatch(this.#inotifyFd, path, IN_ALL_CHANGES);
     this.#wds.set(wd, { path, isDir });
+    this.#paths.add(path);
 
     if (this.#recursive && isDir) {
       this.#scanDirLinux(path);
@@ -854,6 +860,8 @@ export class Watcher {
     }
     if (ev.mask & IN_IGNORED) {
       // Watch was removed (file deleted or inotify_rm_watch called).
+      const removed = this.#wds.get(ev.wd);
+      if (removed) this.#paths.delete(removed.path);
       this.#wds.delete(ev.wd);
     }
   }
