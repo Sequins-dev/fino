@@ -10,10 +10,12 @@ import { Response } from 'fino:net/http';
 import { serve } from 'fino:net/http/server';
 import {
   BatchSpanProcessor,
+  DnsInstrumentation,
   FetchInstrumentation,
   HttpServerInstrumentation,
   InMemoryExporter,
   OtelSDK,
+  SocketInstrumentation,
 } from 'fino:opentelemetry';
 
 function mark(_message: string): void {
@@ -39,7 +41,12 @@ describe('OpenTelemetry HTTP Integration', () => {
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
       spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 0 })],
-      instrumentations: [new HttpServerInstrumentation(), new FetchInstrumentation()],
+      instrumentations: [
+        new HttpServerInstrumentation(),
+        new FetchInstrumentation(),
+        new DnsInstrumentation(),
+        new SocketInstrumentation(),
+      ],
     }).start();
 
     mark('starting server');
@@ -63,9 +70,13 @@ describe('OpenTelemetry HTTP Integration', () => {
       const spans = exporter.getFinishedSpans();
       const clientSpan = spans.find((span) => span.kind === 'client' && span.attributes?.['url.full'] === url);
       const serverSpan = spans.find((span) => span.kind === 'server' && span.attributes?.['http.route'] === '/items/42');
+      const dnsSpan = spans.find((span) => span.name === 'DNS 127.0.0.1');
+      const socketSpan = spans.find((span) => span.name === `CONNECT 127.0.0.1:${server.port}`);
 
       t.ok(clientSpan, 'real fetch() produced a client span');
       t.ok(serverSpan, 'real serve() produced a server span');
+      t.ok(dnsSpan, 'real fetch() produced a DNS span');
+      t.ok(socketSpan, 'real fetch() produced a socket connect span');
       if (!clientSpan || !serverSpan) throw new Error('expected both client and server spans');
       t.equal(clientSpan.attributes?.['http.request.method'], 'GET', 'client span recorded method');
       t.equal(serverSpan.attributes?.['http.request.method'], 'GET', 'server span recorded method');
@@ -74,6 +85,8 @@ describe('OpenTelemetry HTTP Integration', () => {
       t.equal(serverSpan.attributes?.['http.response.status_code'], 200, 'server span recorded status');
       t.equal(serverSpan.parentSpanId, clientSpan.spanId, 'server span extracted the propagated client context');
       t.equal(serverSpan.traceId, clientSpan.traceId, 'server and client spans share a trace');
+      t.equal(dnsSpan?.attributes?.['dns.question.name'], '127.0.0.1', 'DNS span records lookup host');
+      t.equal(socketSpan?.attributes?.['net.peer.port'], server.port, 'socket span records target port');
     } finally {
       mark('closing server');
       await server.close();

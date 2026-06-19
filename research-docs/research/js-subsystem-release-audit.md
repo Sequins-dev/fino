@@ -271,13 +271,7 @@ Status: DONE
 Status: DONE
 
 ## OpenTelemetry Instrumentations And Bootstrap
-Status: TODO
-
-- Add live-path tests for DNS, socket, and TLS instrumentations.
-- Add CLI/bootstrap startup, shutdown flush, env/options wiring, and disposal
-  coverage.
-- Add exporter tests for 4xx non-retry, 429 retry, `Retry-After`, and non-gzip
-  compression payloads.
+Status: DONE
 
 ## Docs And Benchmarks
 Status: TODO

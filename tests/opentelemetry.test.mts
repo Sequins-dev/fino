@@ -1672,5 +1672,78 @@ describe('fino:opentelemetry', () => {
         t.equal(afterShutdown.code, 'failure', 'shutdown exporter rejects further export');
       });
     });
+
+    it('does not retry non-429 client errors', async (t) => {
+      const received: CapturedFetchRecord[] = [];
+      const fetchCalls: CapturedFetchCall[] = [];
+
+      await mockFetch(async (mock) => {
+        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls, () =>
+          new Response('bad request', { status: 400 })
+        ));
+
+        const exporter = new OTLPHttpJsonExporter({
+          endpoint: 'http://127.0.0.1:4318',
+          retry: {
+            maxAttempts: 3,
+            initialBackoffMillis: 1,
+          },
+        });
+
+        const result = await exporter.exportSpans([{
+          name: 'client-error',
+          kind: 'client',
+          traceId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          spanId: 'bbbbbbbbbbbbbbbb',
+          startTimeUnixNano: 1,
+          endTimeUnixNano: 2,
+          attributes: {},
+          scope: { name: 'retry.scope' },
+          resource: new Resource({ 'service.name': 'retry-test' }),
+        }]);
+
+        t.equal(result.code, 'failure', '400 export fails');
+        t.equal(received.length, 1, 'non-429 4xx is not retried');
+        t.equal(fetchCalls.length, 1, 'only one HTTP call was made');
+      });
+    });
+
+    it('retries 429 responses and honors Retry-After', async (t) => {
+      const received: CapturedFetchRecord[] = [];
+      const fetchCalls: CapturedFetchCall[] = [];
+
+      await mockFetch(async (mock) => {
+        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls, () =>
+          new Response('rate limited', { status: 429, headers: { 'retry-after': '0' } })
+        ));
+        mock.post('http://127.0.0.1:4318/v1/traces').replyWith(captureFetchCall(received, fetchCalls, () =>
+          new Response('ok', { status: 200 })
+        ));
+
+        const exporter = new OTLPHttpJsonExporter({
+          endpoint: 'http://127.0.0.1:4318',
+          retry: {
+            maxAttempts: 2,
+            initialBackoffMillis: 1000,
+          },
+        });
+
+        const result = await exporter.exportSpans([{
+          name: 'rate-limited',
+          kind: 'client',
+          traceId: 'cccccccccccccccccccccccccccccccc',
+          spanId: 'cccccccccccccccc',
+          startTimeUnixNano: 1,
+          endTimeUnixNano: 2,
+          attributes: {},
+          scope: { name: 'retry.scope' },
+          resource: new Resource({ 'service.name': 'retry-test' }),
+        }]);
+
+        t.equal(result.code, 'success', '429 retry can recover');
+        t.equal(received.length, 2, '429 response was retried');
+        t.equal(fetchCalls.length, 2, 'two HTTP calls were made');
+      });
+    });
   });
 });
