@@ -62,14 +62,38 @@
 
 import { Blob, File } from './blob.mts';
 import { encodeUtf8 } from './encoding.mts';
+import { randBytes } from '../openssl.mts';
 
 // ---------------------------------------------------------------------------
 // Multipart/form-data serialization
 // ---------------------------------------------------------------------------
 
-// Escape double-quotes in content-disposition parameter values.
-function _escapeQuotes(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+export function _createMultipartBoundary(): string {
+  const bytes = new ArrayBuffer(18);
+  randBytes(bytes, 18);
+  return '----fino-formdata-' + _base64urlEncodeBytes(new Uint8Array(bytes));
+}
+
+function _base64urlEncodeBytes(bytes: Uint8Array): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let out = '';
+  for (let i = 0; i < bytes.byteLength; i += 3) {
+    const a = bytes[i]!;
+    const b = bytes[i + 1];
+    const c = bytes[i + 2];
+    out += chars[a >> 2]!;
+    out += chars[((a & 0x03) << 4) | ((b ?? 0) >> 4)]!;
+    if (b === undefined) break;
+    out += chars[((b & 0x0f) << 2) | ((c ?? 0) >> 6)]!;
+    if (c === undefined) break;
+    out += chars[c & 0x3f]!;
+  }
+  return out;
+}
+
+// Escape content-disposition parameter values so names cannot inject headers.
+function _escapeParameter(s: string): string {
+  return encodeURIComponent(s.replace(/\r\n|\r|\n/g, '\r\n'));
 }
 
 /**
@@ -92,17 +116,17 @@ function _escapeQuotes(s: string): string {
  * @internal
  */
 export async function _serializeFormData(fd: FormData, boundary?: string): Promise<{ contentType: string; body: Uint8Array }> {
-  if (!boundary) boundary = 'boundary' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  if (!boundary) boundary = _createMultipartBoundary();
   const parts: Uint8Array[] = [];
 
   for (const [name, value] of fd) {
     parts.push(encodeUtf8(`--${boundary}\r\n`));
     if (typeof value === 'string') {
-      parts.push(encodeUtf8(`Content-Disposition: form-data; name="${_escapeQuotes(name)}"\r\n\r\n`));
+      parts.push(encodeUtf8(`Content-Disposition: form-data; name="${_escapeParameter(name)}"\r\n\r\n`));
       parts.push(encodeUtf8(value));
     } else {
       const type = value.type || 'application/octet-stream';
-      parts.push(encodeUtf8(`Content-Disposition: form-data; name="${_escapeQuotes(name)}"; filename="${_escapeQuotes(value.name)}"\r\nContent-Type: ${type}\r\n\r\n`));
+      parts.push(encodeUtf8(`Content-Disposition: form-data; name="${_escapeParameter(name)}"; filename="${_escapeParameter(value.name)}"\r\nContent-Type: ${type}\r\n\r\n`));
       parts.push(new Uint8Array(await value.arrayBuffer()));
     }
     parts.push(encodeUtf8('\r\n'));

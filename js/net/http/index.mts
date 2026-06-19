@@ -118,7 +118,7 @@
 import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';
 import { ReadableStream } from '../../internal/globals/webstreams.mts';
 import { Blob } from '../../internal/globals/blob.mts';
-import { FormData, _serializeFormData } from '../../internal/globals/formdata.mts';
+import { FormData, _createMultipartBoundary, _serializeFormData } from '../../internal/globals/formdata.mts';
 import { Scanner } from '../../parsing/scanner.mts';
 
 // ---------------------------------------------------------------------------
@@ -1415,7 +1415,7 @@ export class Request {
     if (init && init.body != null) {
       if (init.body instanceof FormData) {
         const fd = init.body;
-        const boundary = 'boundary' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+        const boundary = _createMultipartBoundary();
         if (!this.#headers.has('content-type')) {
           this.#headers.set('content-type', `multipart/form-data; boundary=${boundary}`);
         }
@@ -2015,7 +2015,7 @@ export class Response {
     if (body != null) {
       if (body instanceof FormData) {
         const fd = body;
-        const boundary = 'boundary' + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+        const boundary = _createMultipartBoundary();
         if (!this.#headers.has('content-type')) {
           this.#headers.set('content-type', `multipart/form-data; boundary=${boundary}`);
         }

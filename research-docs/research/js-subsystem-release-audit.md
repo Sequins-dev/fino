@@ -246,12 +246,7 @@ Status: TODO
 Status: DONE
 
 ## FormData
-Status: TODO
-
-- Add multipart CRLF/header injection tests for field names and filenames.
-- Use stronger boundary randomness or document that boundaries are not a
-  security primitive.
-- Add multipart wire-output escaping tests.
+Status: DONE
 
 ## Fetch Global
 Status: TODO

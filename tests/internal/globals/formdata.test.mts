@@ -3,6 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
+import { _serializeFormData } from 'internal:globals/formdata';
 
 type SymbolRecord = Record<symbol, unknown>;
 type FormDataConstructor = {
@@ -10,6 +11,7 @@ type FormDataConstructor = {
   new (formData: FormData): FormData;
 };
 const FormDataWithCopy = FormData as unknown as FormDataConstructor;
+const decodeUtf8 = (bytes: Uint8Array): string => new TextDecoder().decode(bytes);
 
 describe('append / get', () => {
   it('FormData -- append and get string value', (t) => {
@@ -376,5 +378,34 @@ describe('FormData copy constructor (F9)', () => {
   it('new FormData() with no arg creates empty instance', (t) => {
     const fd = new FormData();
     t.deepEqual([...fd], [], 'empty FormData from no-arg constructor');
+  });
+});
+
+describe('multipart serialization', () => {
+  it('escapes field names and filenames without injecting headers', async (t) => {
+    const fd = new FormData();
+    fd.append('field"\r\nX-Injected: yes', 'value');
+    fd.append('upload', new File(['file'], 'avatar"\nContent-Type: text/html\r\nx.txt', { type: 'text/plain' }));
+
+    const { contentType, body } = await _serializeFormData(fd, 'fixed-boundary');
+    const wire = decodeUtf8(body);
+
+    t.equal(contentType, 'multipart/form-data; boundary=fixed-boundary', 'content type uses supplied boundary');
+    t.ok(wire.includes('name="field%22%0D%0AX-Injected%3A%20yes"'), 'field name is parameter-escaped');
+    t.ok(wire.includes('filename="avatar%22%0D%0AContent-Type%3A%20text%2Fhtml%0D%0Ax.txt"'), 'filename is parameter-escaped');
+    t.equal(wire.includes('X-Injected: yes'), false, 'field name cannot inject a header line');
+    t.equal(wire.includes('Content-Type: text/html'), false, 'filename cannot inject a header line');
+    t.ok(wire.includes('Content-Type: text/plain\r\n\r\nfile'), 'actual file content type remains intact');
+  });
+
+  it('generates strong unique multipart boundaries when omitted', async (t) => {
+    const first = await _serializeFormData(new FormData());
+    const second = await _serializeFormData(new FormData());
+    const prefix = 'multipart/form-data; boundary=----fino-formdata-';
+
+    t.ok(first.contentType.startsWith(prefix), 'first boundary uses fino multipart prefix');
+    t.ok(second.contentType.startsWith(prefix), 'second boundary uses fino multipart prefix');
+    t.notEqual(first.contentType, second.contentType, 'generated boundaries are unique');
+    t.equal(/Math|random|undefined/.test(first.contentType), false, 'boundary does not expose weak generator details');
   });
 });
