@@ -400,11 +400,7 @@ Status: TODO
 Status: DONE
 
 ## Fetch Mocking
-Status: TODO
-
-- Add method/header/body mismatch, `times`, base URL, `Request` input, binary
-  body, and response factory tests.
-- Verify `fetch` restoration after mock verification failures.
+Status: DONE
 
 ## Bench Harness
 Status: TODO

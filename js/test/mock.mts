@@ -633,7 +633,7 @@ export class MockFetchScope {
    */
   async #dispatch(input: FetchInput, init?: FetchInit): Promise<Response> {
     const request = input instanceof Request
-      ? new Request(input, init)
+      ? (init === undefined ? input.clone() : new Request(input, init))
       : new Request(typeof input === 'string' ? input : input.href, init);
     const body = await _readRequestBody(request);
     const call: MockFetchCall = {
