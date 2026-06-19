@@ -372,7 +372,7 @@ export class UUID {
    * ```
    */
   toBytes(): Uint8Array {
-    return new Uint8Array(this.#bytes);
+    return this.#bytes.slice();
   }
 
   /**
