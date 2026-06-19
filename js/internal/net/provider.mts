@@ -6,10 +6,10 @@
  * Virtual network providers (in-memory channels between Realms) do not have
  * file descriptors - the abstract interface must not expose that detail.
  *
- * Concrete implementations include:
- *   - DiskNetworkProvider - real POSIX sockets backed by libc (fino:net/socket)
- *   - VirtualNetworkProvider - in-memory byte channels between Realms (future)
- *   - RestrictedNetworkProvider - host/CIDR allowlist enforcement (future)
+ * Current callers use OS-backed socket adapters and the deterministic
+ * `SimulatedNetworkProvider` test implementation. Dedicated disk, virtual,
+ * and restricted provider classes are possible future implementations of this
+ * same connection/listener/datagram contract.
  *
  * The concrete reader/writer returned by `Connection.split()` may be backed by
  * real fds (FdReader/FdWriter) or by in-memory channels - callers only see the
@@ -293,8 +293,8 @@ export interface ListenOptions {
 /**
  * A connected bidirectional byte stream.
  *
- * Backed by a real socket fd (DiskNetworkProvider) or an in-memory channel pair
- * (VirtualNetworkProvider). Callers see only the stream interface.
+ * Backed by a real socket fd or an in-memory channel pair. Callers see only
+ * the stream interface.
  *
  * @example
  * ```ts no_run

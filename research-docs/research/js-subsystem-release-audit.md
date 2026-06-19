@@ -119,10 +119,7 @@ Status: TODO
 Status: DONE
 
 ## Network Provider Interface
-Status: TODO
-
-- Add provider conformance tests across implementations.
-- Either implement or docs-adjust future-only disk/restricted provider claims.
+Status: DONE
 
 ## Simulated Network Provider
 Status: DONE
