@@ -59,6 +59,12 @@ describe('resolve()', () => {
     t.ok(resolved.endsWith('typescript.test.mts'), 'resolved URL ends with typescript.test.mts');
   });
 
+  it('import.meta.resolve probes extensions in normal import order', (t) => {
+    const resolved = meta.resolve('./typescript.test');
+    t.ok(resolved.startsWith('file://'), 'resolved URL starts with file://');
+    t.ok(resolved.endsWith('typescript.test.mts'), 'resolved extension matches normal imports');
+  });
+
   it('import.meta.resolve resolves an absolute path', (t) => {
     const resolved = meta.resolve(thisFile);
     t.equal(resolved, 'file://' + thisFile, 'absolute path resolves to file:// URL');

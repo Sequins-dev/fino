@@ -209,10 +209,14 @@ function initImportMeta(
     }
 
     const canonical = realpath(raw);
-    if (canonical === null) {
-      throw new Error(`Cannot resolve '${spec}': No such file or directory`);
+    if (canonical !== null) return 'file://' + canonical;
+
+    for (const ext of ['.ts', '.mts', '.mjs', '.js', '.json']) {
+      const probed = realpath(raw + ext);
+      if (probed !== null) return 'file://' + probed;
     }
-    return 'file://' + canonical;
+
+    throw new Error(`Cannot resolve '${spec}': No such file or directory`);
   };
 }
 

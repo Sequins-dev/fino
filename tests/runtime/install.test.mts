@@ -16,7 +16,7 @@ type ArchiveInput = string | Uint8Array | ArrayBuffer;
 
 interface PackageMapShape {
   rootDependencies: Record<string, string>;
-  packages: Record<string, { dependencies: Record<string, string> }>;
+  packages: Record<string, { dir?: string; entrypoints?: Record<string, string>; dependencies: Record<string, string> }>;
 }
 
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
@@ -306,5 +306,56 @@ describe('fino install', () => {
 
     const packageMap = JSON.parse(await fs.readFile(appDir + '/.fino/package-map.json')) as PackageMapShape;
     t.equal(packageMap.packages['pkg@1.0.0']!.dependencies.dep, 'dep@1.5.0', 'highest comparator match selected');
+  });
+
+  it('resolves package-map entrypoints and reports missing records/subpaths', async (t) => {
+    const manualDir = TEST_DIR + '/manual-map';
+    await fs.mkdir(manualDir);
+    await ensureDir(fs, manualDir + '/.fino/packages/pkg');
+    await fs.writeFile(manualDir + '/package.json', JSON.stringify({ type: 'module' }, null, 2));
+    await fs.writeFile(manualDir + '/.fino/packages/pkg/index.js', 'export default "pkg-index";\n');
+    await fs.writeFile(manualDir + '/.fino/packages/pkg/package-json.js', 'export default "pkg-package-json";\n');
+    await fs.writeFile(manualDir + '/.fino/packages/pkg/deep.js', 'export default "pkg-deep";\n');
+    await fs.writeFile(manualDir + '/.fino/package-map.json', JSON.stringify({
+      version: 1,
+      root: manualDir,
+      rootDependencies: {
+        pkg: 'pkg@1.0.0',
+        missing: 'missing@1.0.0',
+      },
+      packages: {
+        'pkg@1.0.0': {
+          dir: '.fino/packages/pkg',
+          dependencies: {},
+          entrypoints: {
+            '.': 'index.js',
+            './package.json': 'package-json.js',
+            './deep': 'deep.js',
+          },
+        },
+      },
+    }, null, 2));
+    await fs.writeFile(manualDir + '/ok.mts', [
+      'import pkg from "pkg";',
+      'import packageJson from "pkg/package.json";',
+      'import deep from "pkg/deep";',
+      'console.log(pkg + "|" + packageJson + "|" + deep);',
+      '',
+    ].join('\n'));
+    await fs.writeFile(manualDir + '/missing-record.mts', 'import "missing";\n');
+    await fs.writeFile(manualDir + '/missing-subpath.mts', 'import "pkg/not-exported";\n');
+
+    const ok = await runCli(['ok.mts'], manualDir);
+    t.equal(ok.result.code, 0, 'manual package map script exits successfully');
+    t.equal(ok.stderr, '', 'manual package map script has no stderr');
+    t.ok(ok.stdout.includes('pkg-index|pkg-package-json|pkg-deep'), 'bare, package JSON, and deep entrypoints resolved');
+
+    const missingRecord = await runCli(['missing-record.mts'], manualDir);
+    t.equal(missingRecord.result.code, 1, 'missing package record exits nonzero');
+    t.ok(missingRecord.stderr.includes("missing package-map record for 'missing@1.0.0'"), 'missing record is reported');
+
+    const missingSubpath = await runCli(['missing-subpath.mts'], manualDir);
+    t.equal(missingSubpath.result.code, 1, 'missing package subpath exits nonzero');
+    t.ok(missingSubpath.stderr.includes("Cannot resolve package subpath 'pkg/not-exported'"), 'missing subpath is reported');
   });
 });
