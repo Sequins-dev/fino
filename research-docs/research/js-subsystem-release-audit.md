@@ -190,13 +190,7 @@ Status: DONE
 Status: DONE
 
 ## Fetch Global
-Status: TODO
-
-- Prevent or explicitly document `Cookie`/`Cookie2` leakage on cross-origin
-  redirects.
-- Clarify non-enforced `mode`, `credentials`, `cache`, and `keepalive` options.
-- Add streaming request body/duplex, HTTPS/H2 fetch, trailer, and redirect
-  cookie tests.
+Status: DONE
 
 ## Web Streams
 Status: TODO

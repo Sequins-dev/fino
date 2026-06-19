@@ -1384,8 +1384,9 @@ export class Request {
    * Create a Request from a URL string, another Request, or the internal parser
    * sentinel.
    *
-   * Body values may be strings, bytes, ArrayBuffers, FormData, or null. Reading
-   * the body later marks it used; cloning is only allowed before disturbance.
+   * Body values may be strings, bytes, ArrayBuffers, FormData, async iterables,
+   * ReadableStreams, or null. Reading the body later marks it used; cloning is
+   * only allowed before disturbance.
    *
    * ```ts no_run
    * const req = new Request('/submit', { method: 'POST', body: 'hello' });
@@ -1423,6 +1424,9 @@ export class Request {
           const { body } = await _serializeFormData(fd, boundary);
           yield body;
         } };
+      } else if (typeof (init.body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function' ||
+                 (typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream)) {
+        this.#rawBody = init.body as unknown as AsyncIterable<Uint8Array>;
       } else {
         this.#rawBody = _iterableFromBytes(_toBytes(init.body));
       }

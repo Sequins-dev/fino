@@ -39,9 +39,10 @@
  *
  * ## Cross-origin redirect
  *
- * `Authorization` is stripped when following a redirect to a different origin.
- * Other sensitive headers (Cookie, Cookie2) are not currently stripped — this
- * is a server-side runtime where CORS is not enforced.
+ * `Authorization`, `Cookie`, and `Cookie2` are stripped when following a
+ * redirect to a different origin. CORS mode, credentials mode, cache mode, and
+ * keepalive are accepted for RequestInit compatibility but are not otherwise
+ * enforced by this server-side runtime.
  *
  *
  * ## Usage
@@ -872,9 +873,11 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
 
       const nextHeaders = new Headers(currentHeaders);
 
-      // Strip Authorization on cross-origin redirects
+      // Strip origin-bound credentials on cross-origin redirects.
       if (newOrigin && currentOrigin && newOrigin !== currentOrigin) {
         nextHeaders.delete('authorization');
+        nextHeaders.delete('cookie');
+        nextHeaders.delete('cookie2');
       }
 
       // 301, 302, 303 → GET + drop body

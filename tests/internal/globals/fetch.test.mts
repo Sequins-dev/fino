@@ -295,6 +295,65 @@ describe('Redirects — Authorization header security', () => {
       await server.close();
     }
   });
+
+  it('Cookie and Cookie2 headers are stripped on cross-origin redirect', async (t) => {
+    let secondRequestHeaders: Headers | null = null;
+    const origin2 = serve({ port: 0 }, (req) => {
+      secondRequestHeaders = req.headers;
+      return new Response('final');
+    });
+
+    const origin1 = serve({ port: 0 }, (_req) =>
+      new Response(null, {
+        status: 302,
+        headers: { location: `http://127.0.0.1:${origin2.port}/` },
+      }),
+    );
+
+    try {
+      await fetch(`http://127.0.0.1:${origin1.port}/`, {
+        headers: {
+          cookie: 'sid=secret',
+          cookie2: '$Version="1"',
+        },
+      });
+      t.equal(secondRequestHeaders!.get('cookie'), null, 'Cookie header stripped on cross-origin redirect');
+      t.equal(secondRequestHeaders!.get('cookie2'), null, 'Cookie2 header stripped on cross-origin redirect');
+    } finally {
+      await origin1.close();
+      await origin2.close();
+    }
+  });
+
+  it('Cookie and Cookie2 headers are preserved on same-origin redirect', async (t) => {
+    let secondRequestCookie: string | null = null;
+    let secondRequestCookie2: string | null = null;
+    const server = serve({ port: 0 }, (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/first') {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://127.0.0.1:${server.port}/second` },
+        });
+      }
+      secondRequestCookie = req.headers.get('cookie');
+      secondRequestCookie2 = req.headers.get('cookie2');
+      return new Response('ok');
+    });
+
+    try {
+      await fetch(`http://127.0.0.1:${server.port}/first`, {
+        headers: {
+          cookie: 'sid=secret',
+          cookie2: '$Version="1"',
+        },
+      });
+      t.equal(secondRequestCookie, 'sid=secret', 'Cookie header preserved on same-origin redirect');
+      t.equal(secondRequestCookie2, '$Version="1"', 'Cookie2 header preserved on same-origin redirect');
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe('AbortSignal', () => {
@@ -427,6 +486,51 @@ describe('Misc', () => {
       },
     );
   });
+
+  it('accepts non-enforced RequestInit compatibility options', async (t) => {
+    let receivedMethod: string | undefined;
+    await withServer(19831,
+      (req) => {
+        receivedMethod = req.method;
+        return new Response('compat');
+      },
+      async (url) => {
+        const res = await fetch(url, {
+          mode: 'cors',
+          credentials: 'include',
+          cache: 'no-store',
+          keepalive: true,
+        });
+        t.equal(res.status, 200, 'request succeeds with compatibility options');
+        t.equal(receivedMethod, 'GET', 'compatibility options do not alter method');
+        t.equal(await res.text(), 'compat', 'response body is delivered');
+      },
+    );
+  });
+
+  it('sends a streaming request body when duplex is half', async (t) => {
+    let receivedBody = '';
+    await withServer(19832,
+      async (req) => {
+        receivedBody = await req.text();
+        return new Response('stream-ok');
+      },
+      async (url) => {
+        async function* body() {
+          yield new TextEncoder().encode('stream-');
+          yield new TextEncoder().encode('body');
+        }
+        const res = await fetch(url, {
+          method: 'POST',
+          body: body() as any,
+          duplex: 'half',
+        } as any);
+        t.equal(res.status, 200, 'streaming request receives response');
+        t.equal(await res.text(), 'stream-ok', 'response body is delivered');
+        t.equal(receivedBody, 'stream-body', 'server receives streamed request body');
+      },
+    );
+  });
 });
 
 describe('Redirects — additional', () => {
@@ -495,6 +599,33 @@ describe('Redirects — additional', () => {
         const res = await fetch(url);
         t.equal(res.status, 200, 'followed relative redirect');
         t.equal(await res.text(), 'relative redirect worked', 'correct body');
+      },
+    );
+  });
+
+  it('307 redirect rejects a streaming request body instead of replaying it', async (t) => {
+    let finalRequestSeen = false;
+    await withServer(19833,
+      (req) => {
+        if (new URL(req.url).pathname === '/target') {
+          finalRequestSeen = true;
+          return new Response('unexpected');
+        }
+        return new Response(null, {
+          status: 307,
+          headers: { location: new URL('/target', req.url).href },
+        });
+      },
+      async (url) => {
+        async function* body() {
+          yield new TextEncoder().encode('one-shot');
+        }
+        await t.rejects(
+          () => fetch(url, { method: 'POST', body: body() as any, duplex: 'half' } as any),
+          /streaming|replay/i,
+          'streaming 307 redirect rejects',
+        );
+        t.equal(finalRequestSeen, false, 'redirect target is not called with a consumed body');
       },
     );
   });
