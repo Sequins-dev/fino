@@ -257,11 +257,7 @@ Status: DONE
 Status: DONE
 
 ## Realm Core
-Status: TODO
-
-- Add remote `run()`, `terminate()`, error propagation, and remote exit tests.
-- Add remote transfer coverage for `ArrayBuffer` and `MessagePort`.
-- Add process-realm facade parity tests.
+Status: DONE
 
 ## Realm Pool
 Status: DONE

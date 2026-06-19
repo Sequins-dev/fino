@@ -80,3 +80,65 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
     realm.terminate();
   });
 });
+
+describe('Process realm transfer behavior', () => {
+  it('round-trips ArrayBuffer data over the process realm port', async (t) => {
+    const realm = new Realm({
+      process: true,
+      entry: new URL('./fixtures/port-echo.mts', import.meta.url).pathname,
+    });
+    realm.run().catch(() => {/* terminated after test */});
+
+    const buf = new ArrayBuffer(4);
+    const view = new Uint8Array(buf);
+    view[0] = 7;
+    view[3] = 9;
+
+    const reply = new Promise<ArrayBuffer>((resolve, reject) => {
+      const tid = setTimeout(() => reject(new Error('timeout')), 5000);
+      realm.port.onmessage = (ev) => {
+        clearTimeout(tid);
+        resolve((ev as MessageEvent).data.data as ArrayBuffer);
+      };
+    });
+    realm.port.start();
+    realm.port.postMessage({ tag: 1, data: buf });
+
+    const echoed = new Uint8Array(await reply);
+    t.deepEqual(Array.from(echoed), [7, 0, 0, 9], 'process realm port preserves ArrayBuffer bytes');
+    t.equal(buf.byteLength, 4, 'process realm port copies ArrayBuffer when no transfer list is supplied');
+    realm.terminate();
+  });
+
+  it('transfers MessagePort to a process realm or rejects explicitly', async (t) => {
+    const realm = new Realm({
+      process: true,
+      entry: new URL('./fixtures/port-echo-transfer.mts', import.meta.url).pathname,
+    });
+    realm.run().catch(() => {/* terminated after test */});
+
+    const { port1, port2 } = new MessageChannel();
+    realm.port.start();
+    let postError: Error | null = null;
+    try {
+      realm.port.postMessage('use this port', [port1]);
+    } catch (err) {
+      postError = err as Error;
+    }
+
+    if (postError !== null) {
+      t.ok(/transfer|port|process/i.test(postError.message), 'unsupported process MessagePort transfer rejects explicitly');
+    } else {
+      const reply = await Promise.race([
+        new Promise<string>((resolve) => {
+          port2.onmessage = (ev) => resolve(ev.data as string);
+        }),
+        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+      ]);
+      t.equal(reply, 'echo from thread', 'process realm sent message via transferred port');
+    }
+
+    realm.terminate();
+    port2.close();
+  });
+});

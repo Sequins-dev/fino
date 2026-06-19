@@ -7,14 +7,16 @@
  */
 import { port } from 'fino:realm/self';
 
-if (port === undefined) {
+const activePort = port ?? (globalThis as any).realmPort;
+
+if (activePort === undefined) {
   throw new Error('port-echo: expected a port');
 }
 
-port.onmessage = (ev) => {
+activePort.onmessage = (ev) => {
   const msg = (ev as MessageEvent).data as { tag: number; data: unknown };
   if (msg && typeof msg === 'object' && typeof msg.tag === 'number') {
-    port!.postMessage({ tag: msg.tag, data: msg.data });
+    activePort.postMessage({ tag: msg.tag, data: msg.data });
   }
 };
 

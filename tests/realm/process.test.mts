@@ -90,6 +90,34 @@ describe('Process Realm basics', () => {
       t.ok(err instanceof Error, 'run() rejects with Error on non-zero exit');
     }
   });
+
+  it('top-level throw surfaces as run() rejection', async (t) => {
+    const realm = new Realm({
+      process: true,
+      entry: new URL('./fixtures/throw-at-toplevel.mts', import.meta.url).pathname,
+    });
+    await t.rejects(() => realm.run(), /top-level|throw|Error/i, 'run() rejects when child throws during module evaluation');
+  });
+
+  it('terminate() is idempotent and later call rejects promptly', async (t) => {
+    const realm = new Realm<typeof echoFn>({
+      process: true,
+      entry: new URL('./fixtures/long-running.mts', import.meta.url).pathname,
+    });
+    const running = realm.run();
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    realm.terminate();
+    realm.terminate();
+    try { await running; } catch {}
+
+    const callSettled = await Promise.race([
+      realm.call('after-terminate').then(() => 'resolved', () => 'rejected'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('timeout'), 2000)),
+    ]);
+    t.equal(callSettled, 'rejected', 'call after terminate rejects promptly');
+
+    t.ok(true, 'double terminate completed without throwing');
+  });
 });
 
 describe('Process Realm — serialization of complex types over IPC', () => {

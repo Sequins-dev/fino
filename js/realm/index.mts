@@ -1940,8 +1940,10 @@ export class ProcessPort extends BaseTransportPort {
    * Serialize and send a message to the process realm.
    *
    * Messages use the runtime serializer. Transfer lists may include
-   * `ArrayBuffer` instances; unsupported transferable values are ignored by
-   * this method. Calling after `close()` returns without sending.
+   * `ArrayBuffer` instances. Other transferable values, including
+   * `MessagePort`, are rejected because process-realm transport cannot move
+   * live in-process handles across the process boundary. Calling after
+   * `close()` returns without sending.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
@@ -1958,6 +1960,10 @@ export class ProcessPort extends BaseTransportPort {
     const rawTransfer = Array.isArray(transferOrOpts)
       ? (transferOrOpts as Transferable[])
       : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
+    const unsupported = rawTransfer?.find((t) => !(t instanceof ArrayBuffer));
+    if (unsupported !== undefined) {
+      throw new TypeError('ProcessPort transfer list only supports ArrayBuffer values');
+    }
     const transferABs = (rawTransfer?.filter((t) => t instanceof ArrayBuffer) ?? []) as ArrayBuffer[];
     const serResult = (_ser as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
       message, transferABs.length > 0 ? transferABs : undefined,
