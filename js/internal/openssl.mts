@@ -136,6 +136,10 @@ const _cryptoSymbols = {
   EVP_DigestInit_ex:  { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
   EVP_DigestUpdate:   { parameters: ['pointer', 'buffer', 'usize'], result: 'i32' },
   EVP_DigestFinal_ex: { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
+  EVP_DigestSignInit:   { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
+  EVP_DigestSign:       { parameters: ['pointer', 'buffer', 'buffer', 'buffer', 'usize'], result: 'i32' },
+  EVP_DigestVerifyInit: { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'pointer'], result: 'i32' },
+  EVP_DigestVerify:     { parameters: ['pointer', 'buffer', 'usize', 'buffer', 'usize'], result: 'i32' },
   EVP_sha1:   { parameters: [], result: 'pointer' },
   EVP_sha256: { parameters: [], result: 'pointer' },
   EVP_sha384: { parameters: [], result: 'pointer' },
@@ -294,6 +298,10 @@ const _cryptoSymbols = {
   },
   EVP_PKEY_new:           { parameters: [], result: 'pointer' },
   EVP_PKEY_free:          { parameters: ['pointer'], result: 'void' },
+  EVP_PKEY_new_raw_private_key: { parameters: ['i32', 'pointer', 'buffer', 'usize'], result: 'pointer' },
+  EVP_PKEY_new_raw_public_key:  { parameters: ['i32', 'pointer', 'buffer', 'usize'], result: 'pointer' },
+  EVP_PKEY_get_raw_private_key: { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
+  EVP_PKEY_get_raw_public_key:  { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
   // EVP_PKEY_set1_EC_KEY removed in OpenSSL 3; use set1 (increments refcount).
   EVP_PKEY_set1_EC_KEY: { parameters: ['pointer', 'pointer'], result: 'i32' },
   EVP_PKEY_get0_EC_KEY:   { parameters: ['pointer'], result: 'pointer' },
@@ -1234,6 +1242,212 @@ export function evpPkeyGenerateEcP256(): object { return evpPkeyGenerateEc('P-25
  */
 export function evpPkeyFree(pkey: object): void {
   _requireCrypto().symbols.EVP_PKEY_free(pkey);
+}
+
+// ---------------------------------------------------------------------------
+// Ed25519 — raw key import/export and one-shot signing
+// ---------------------------------------------------------------------------
+
+let _ed25519Nid: number | undefined;
+
+function _ed25519Type(): number {
+  if (_ed25519Nid !== undefined) return _ed25519Nid;
+  const lib = _requireCrypto();
+  const nid = lib.symbols.OBJ_txt2nid(encodeUtf8('ED25519\0'));
+  if (nid === 0) throw new Error('OBJ_txt2nid: ED25519 not recognised');
+  _ed25519Nid = nid;
+  return nid;
+}
+
+function _readSizeT(buf: Uint8Array): number {
+  return Number(new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getBigUint64(0, true));
+}
+
+/**
+ * Generate an Ed25519 key pair.
+ *
+ * Returns an owning `EVP_PKEY*` containing private and public key material.
+ * Ed25519 always signs the original message bytes directly; callers must not
+ * prehash input. Unavailable libcrypto or OpenSSL generation failures throw.
+ *
+ * @returns Opaque owning Ed25519 `EVP_PKEY*`.
+ * @internal
+ */
+export function evpPkeyGenerateEd25519(): object {
+  const seed = new Uint8Array(32);
+  randBytes(seed.buffer as ArrayBuffer, seed.byteLength);
+  return evpPkeyImportRawPrivateEd25519(seed);
+}
+
+/**
+ * Import a 32-byte raw Ed25519 public key.
+ *
+ * @param publicKey Raw public key bytes.
+ * @returns Opaque owning Ed25519 public `EVP_PKEY*`.
+ * @internal
+ */
+export function evpPkeyImportRawPublicEd25519(publicKey: Uint8Array): object {
+  if (publicKey.byteLength !== 32) throw new Error(`Ed25519 public key must be 32 bytes (got ${publicKey.byteLength})`);
+  const lib = _requireCrypto();
+  const pkey = lib.symbols.EVP_PKEY_new_raw_public_key(_ed25519Type(), null, publicKey, publicKey.byteLength);
+  if (pkey === null) throw new Error('EVP_PKEY_new_raw_public_key(Ed25519) failed: ' + getErrorString());
+  return pkey;
+}
+
+/**
+ * Import a 32-byte raw Ed25519 private seed.
+ *
+ * @param seed Raw private seed bytes.
+ * @returns Opaque owning Ed25519 private `EVP_PKEY*`.
+ * @internal
+ */
+export function evpPkeyImportRawPrivateEd25519(seed: Uint8Array): object {
+  if (seed.byteLength !== 32) throw new Error(`Ed25519 private seed must be 32 bytes (got ${seed.byteLength})`);
+  const lib = _requireCrypto();
+  const pkey = lib.symbols.EVP_PKEY_new_raw_private_key(_ed25519Type(), null, seed, seed.byteLength);
+  if (pkey === null) throw new Error('EVP_PKEY_new_raw_private_key(Ed25519) failed: ' + getErrorString());
+  return pkey;
+}
+
+/**
+ * Export a 32-byte raw Ed25519 public key from an `EVP_PKEY`.
+ *
+ * @param pkey Ed25519 public or private key.
+ * @returns Raw public key bytes.
+ * @internal
+ */
+export function evpPkeyExportRawPublicEd25519(pkey: object): Uint8Array {
+  const lib = _requireCrypto();
+  const lenBuf = new Uint8Array(8);
+  if (lib.symbols.EVP_PKEY_get_raw_public_key(pkey, null, lenBuf) !== 1) {
+    throw new Error('EVP_PKEY_get_raw_public_key length failed: ' + getErrorString());
+  }
+  const len = _readSizeT(lenBuf);
+  if (len !== 32) throw new Error(`Ed25519 public key export returned ${len} bytes`);
+  const out = new Uint8Array(len);
+  const outLenBuf = new Uint8Array(8);
+  new DataView(outLenBuf.buffer).setBigUint64(0, BigInt(len), true);
+  if (lib.symbols.EVP_PKEY_get_raw_public_key(pkey, out, outLenBuf) !== 1) {
+    throw new Error('EVP_PKEY_get_raw_public_key failed: ' + getErrorString());
+  }
+  return out;
+}
+
+/**
+ * Export a 32-byte raw Ed25519 private seed from an `EVP_PKEY`.
+ *
+ * @param pkey Ed25519 private key.
+ * @returns Raw private seed bytes.
+ * @internal
+ */
+export function evpPkeyExportRawPrivateEd25519(pkey: object): Uint8Array {
+  const lib = _requireCrypto();
+  const lenBuf = new Uint8Array(8);
+  if (lib.symbols.EVP_PKEY_get_raw_private_key(pkey, null, lenBuf) !== 1) {
+    throw new Error('EVP_PKEY_get_raw_private_key length failed: ' + getErrorString());
+  }
+  const len = _readSizeT(lenBuf);
+  if (len !== 32) throw new Error(`Ed25519 private key export returned ${len} bytes`);
+  const out = new Uint8Array(len);
+  const outLenBuf = new Uint8Array(8);
+  new DataView(outLenBuf.buffer).setBigUint64(0, BigInt(len), true);
+  if (lib.symbols.EVP_PKEY_get_raw_private_key(pkey, out, outLenBuf) !== 1) {
+    throw new Error('EVP_PKEY_get_raw_private_key failed: ' + getErrorString());
+  }
+  return out;
+}
+
+/**
+ * Export a public key as DER SubjectPublicKeyInfo with OpenSSL i2d_PUBKEY.
+ *
+ * This generic helper supports RSA and Ed25519 keys and any other `EVP_PKEY`
+ * type OpenSSL can encode. Unavailable libcrypto and OpenSSL failures throw.
+ *
+ * @param pkey Public or private key with a public component.
+ * @returns DER SubjectPublicKeyInfo bytes.
+ * @internal
+ */
+export function evpPkeyExportSpkiDer(pkey: object): Uint8Array {
+  const lib = _requireCrypto();
+  const len = lib.symbols.i2d_PUBKEY(pkey, null);
+  if (len <= 0) throw new Error('i2d_PUBKEY (length) failed: ' + getErrorString());
+  const der = new Uint8Array(len);
+  const pp  = _ptrPtrBuf(der);
+  const written = lib.symbols.i2d_PUBKEY(pkey, pp);
+  if (written <= 0) throw new Error('i2d_PUBKEY (write) failed: ' + getErrorString());
+  return der;
+}
+
+/**
+ * Import a public key from DER SubjectPublicKeyInfo with OpenSSL d2i_PUBKEY.
+ *
+ * @param der DER SubjectPublicKeyInfo bytes.
+ * @returns Opaque owning `EVP_PKEY*`.
+ * @internal
+ */
+export function evpPkeyImportSpkiDer(der: Uint8Array): object {
+  const lib  = _requireCrypto();
+  const pp   = _ptrPtrBuf(der);
+  const pkey = lib.symbols.d2i_PUBKEY(null, pp, der.length);
+  if (pkey === null) throw new Error('d2i_PUBKEY failed: ' + getErrorString());
+  return pkey;
+}
+
+/**
+ * Sign message bytes with Ed25519 using OpenSSL one-shot EVP APIs.
+ *
+ * @param pkey Ed25519 private key.
+ * @param data Message bytes.
+ * @returns 64-byte Ed25519 signature.
+ * @internal
+ */
+export function ed25519Sign(pkey: object, data: Uint8Array): Uint8Array {
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_MD_CTX_new();
+  if (ctx === null) throw new Error('EVP_MD_CTX_new failed');
+  try {
+    if (lib.symbols.EVP_DigestSignInit(ctx, null, null, null, pkey) !== 1) {
+      throw new Error('EVP_DigestSignInit(Ed25519) failed: ' + getErrorString());
+    }
+    const lenBuf = new Uint8Array(8);
+    if (lib.symbols.EVP_DigestSign(ctx, null, lenBuf, data, data.byteLength) !== 1) {
+      throw new Error('EVP_DigestSign length failed: ' + getErrorString());
+    }
+    const sigLen = _readSizeT(lenBuf);
+    const sig = new Uint8Array(sigLen);
+    const sigLenBuf = new Uint8Array(8);
+    new DataView(sigLenBuf.buffer).setBigUint64(0, BigInt(sigLen), true);
+    if (lib.symbols.EVP_DigestSign(ctx, sig, sigLenBuf, data, data.byteLength) !== 1) {
+      throw new Error('EVP_DigestSign failed: ' + getErrorString());
+    }
+    return sig;
+  } finally {
+    lib.symbols.EVP_MD_CTX_free(ctx);
+  }
+}
+
+/**
+ * Verify an Ed25519 signature over message bytes.
+ *
+ * @param pkey Ed25519 public key.
+ * @param sig Signature bytes.
+ * @param data Message bytes.
+ * @returns Whether the signature verifies.
+ * @internal
+ */
+export function ed25519Verify(pkey: object, sig: Uint8Array, data: Uint8Array): boolean {
+  const lib = _requireCrypto();
+  const ctx = lib.symbols.EVP_MD_CTX_new();
+  if (ctx === null) throw new Error('EVP_MD_CTX_new failed');
+  try {
+    if (lib.symbols.EVP_DigestVerifyInit(ctx, null, null, null, pkey) !== 1) {
+      throw new Error('EVP_DigestVerifyInit(Ed25519) failed: ' + getErrorString());
+    }
+    const rc = lib.symbols.EVP_DigestVerify(ctx, sig, sig.byteLength, data, data.byteLength);
+    return rc === 1;
+  } finally {
+    lib.symbols.EVP_MD_CTX_free(ctx);
+  }
 }
 
 /**

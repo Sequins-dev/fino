@@ -225,6 +225,10 @@ function _normalizeAlgorithm(algorithm: string | { name: string; [key: string]: 
   return { ...algorithm, name: algorithm.name.toUpperCase() } as NormalizedAlgorithm;
 }
 
+function _isEd25519Algorithm(name: string): boolean {
+  return name === 'ED25519';
+}
+
 function _hashName(hash: string | { name: string }): string {
   // Accept { name: 'SHA-256' } or just 'SHA-256'
   const name = typeof hash === 'string' ? hash : hash.name;
@@ -536,6 +540,12 @@ const subtle = {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
 
+    if (_isEd25519Algorithm(alg.name)) {
+      if (key.type !== 'private') throw new Error('Ed25519 sign requires a private key');
+      if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+      return _toArrayBuffer(openssl.ed25519Sign(_pkeyPtr(key), _toUint8Array(data)));
+    }
+
     if (alg.name === 'ECDSA') {
       if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
       const hashAlg = _digestAlgorithm(_hashName(_requiredHash(alg.hash, 'ECDSA hash')));
@@ -581,6 +591,14 @@ const subtle = {
   async verify(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, signature: BufferSource, data: BufferSource): Promise<boolean> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
+
+    if (_isEd25519Algorithm(alg.name)) {
+      if (key.type !== 'public') throw new Error('Ed25519 verify requires a public key');
+      if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+      const sig = _toUint8Array(signature);
+      if (sig.byteLength !== 64) return false;
+      return openssl.ed25519Verify(_pkeyPtr(key), sig, _toUint8Array(data));
+    }
 
     if (alg.name === 'ECDSA') {
       if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
@@ -743,6 +761,18 @@ const subtle = {
         x?: string; y?: string; d?: string; alg?: string;
         n?: string; e?: string; p?: string; q?: string; dp?: string; dq?: string; qi?: string;
       };
+      if (jwk.kty === 'OKP') {
+        if (!_isEd25519Algorithm(alg.name)) throw new Error('importKey: OKP JWK requires Ed25519 algorithm');
+        if (jwk.crv !== 'Ed25519') throw new Error('importKey: OKP JWK crv must be "Ed25519"');
+        if (typeof jwk.x !== 'string') throw new Error('importKey: Ed25519 JWK requires "x" field');
+        const x = _base64urlDecode(jwk.x);
+        if (x.byteLength !== 32) throw new Error('importKey: Ed25519 JWK x must be 32 bytes');
+        const pkey = typeof jwk.d === 'string'
+          ? openssl.evpPkeyImportRawPrivateEd25519(_base64urlDecode(jwk.d))
+          : openssl.evpPkeyImportRawPublicEd25519(x);
+        const keyType: KeyType = typeof jwk.d === 'string' ? 'private' : 'public';
+        return new CryptoKey(keyType, extractable, { name: 'Ed25519' }, [...keyUsages], null, pkey);
+      }
       if (jwk.kty === 'EC') {
         // EC JWK import (ECDSA and ECDH).
         if (typeof jwk.x !== 'string' || typeof jwk.y !== 'string') {
@@ -786,7 +816,7 @@ const subtle = {
         return new CryptoKey(keyType, extractable, { name: alg.name, hash: { name: hashName } }, [...keyUsages], null, pkey);
       }
       // JWK symmetric key import — kty must be 'oct'.
-      if (jwk.kty !== 'oct') throw new Error(`importKey: unsupported JWK kty "${jwk.kty}" (supported: "oct", "EC", "RSA")`);
+      if (jwk.kty !== 'oct') throw new Error(`importKey: unsupported JWK kty "${jwk.kty}" (supported: "oct", "EC", "RSA", "OKP")`);
       if (typeof jwk.k !== 'string') throw new Error('importKey: JWK missing "k" field');
       const bytes = _base64urlDecode(jwk.k);
       return subtle.importKey('raw', bytes.buffer as ArrayBuffer, algorithm, extractable, keyUsages);
@@ -794,6 +824,9 @@ const subtle = {
     if (format === 'pkcs8') {
       const derBytes = _toUint8Array(keyData);
       const pkey     = openssl.evpPkeyImportPkcs8(derBytes);
+      if (_isEd25519Algorithm(alg.name)) {
+        return new CryptoKey('private', extractable, { name: 'Ed25519' }, [...keyUsages], null, pkey);
+      }
       if (alg.name === 'RSA-OAEP' || alg.name === 'RSA-PSS' || alg.name === 'RSASSA-PKCS1-V1_5') {
         const hashName = _hashName((alg as { hash?: string | { name: string } }).hash ?? 'SHA-256');
         return new CryptoKey('private', extractable, { name: alg.name, hash: { name: hashName } }, [...keyUsages], null, pkey);
@@ -805,6 +838,10 @@ const subtle = {
 
     if (format === 'spki') {
       // SPKI import for EC and RSA public keys.
+      if (_isEd25519Algorithm(alg.name)) {
+        const pkey = openssl.evpPkeyImportSpkiDer(_toUint8Array(keyData));
+        return new CryptoKey('public', extractable, { name: 'Ed25519' }, [...keyUsages], null, pkey);
+      }
       if (alg.name === 'RSA-OAEP' || alg.name === 'RSA-PSS' || alg.name === 'RSASSA-PKCS1-V1_5') {
         const hashName = _hashName((alg as { hash?: string | { name: string } }).hash ?? 'SHA-256');
         const pkey = openssl.evpPkeyImportSpkiRsa(_toUint8Array(keyData));
@@ -834,6 +871,18 @@ const subtle = {
     if (format !== 'raw') throw new Error(`importKey: unsupported format "${format}"; supported: "raw", "spki", "jwk"`);
 
     const bytes = _toUint8Array(keyData);
+
+    if (_isEd25519Algorithm(alg.name)) {
+      if (bytes.byteLength !== 32) throw new Error('Ed25519 raw public key must be 32 bytes');
+      return new CryptoKey(
+        'public',
+        extractable,
+        { name: 'Ed25519' },
+        [...keyUsages],
+        null,
+        openssl.evpPkeyImportRawPublicEd25519(bytes),
+      );
+    }
 
     if (alg.name === 'HMAC') {
       const hashName = _hashName(alg.hash ?? 'SHA-256');
@@ -900,6 +949,21 @@ const subtle = {
     if (format === 'jwk') {
       if (!key.extractable) throw new Error('CryptoKey is not extractable');
       const algName = key.algorithm.name;
+
+      if (algName === 'Ed25519') {
+        const x = openssl.evpPkeyExportRawPublicEd25519(_pkeyPtr(key));
+        const jwk: Record<string, unknown> = {
+          kty: 'OKP',
+          crv: 'Ed25519',
+          x: _base64urlEncode(x),
+          key_ops: [...key.usages],
+          ext: key.extractable,
+        };
+        if (key.type === 'private') {
+          jwk['d'] = _base64urlEncode(openssl.evpPkeyExportRawPrivateEd25519(_pkeyPtr(key)));
+        }
+        return jwk as unknown as ArrayBuffer;
+      }
 
       // RSA JWK export.
       if (algName === 'RSA-OAEP' || algName === 'RSA-PSS' || algName === 'RSASSA-PKCS1-V1_5') {
@@ -974,6 +1038,9 @@ const subtle = {
     if (format === 'spki') {
       if (!key.extractable) throw new Error('CryptoKey is not extractable');
       const algName = key.algorithm.name;
+      if (algName === 'Ed25519') {
+        return _toArrayBuffer(openssl.evpPkeyExportSpkiDer(_pkeyPtr(key)));
+      }
       if (algName === 'RSA-OAEP' || algName === 'RSA-PSS' || algName === 'RSASSA-PKCS1-V1_5') {
         return _toArrayBuffer(openssl.evpPkeyExportSpkiRsa(_pkeyPtr(key)));
       }
@@ -986,6 +1053,10 @@ const subtle = {
 
     if (format !== 'raw') throw new Error(`exportKey: unsupported format "${format}"; supported: "raw", "pkcs8", "spki", "jwk"`);
     if (!key.extractable) throw new Error('CryptoKey is not extractable');
+    if (key.algorithm.name === 'Ed25519') {
+      if (key.type !== 'public') throw new Error('exportKey: raw Ed25519 requires a public key');
+      return _toArrayBuffer(openssl.evpPkeyExportRawPublicEd25519(_pkeyPtr(key)));
+    }
     return _toArrayBuffer(_keyData(key));
   },
 
@@ -1012,6 +1083,25 @@ const subtle = {
   ): Promise<CryptoKey | { privateKey: CryptoKey; publicKey: CryptoKey }> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
+
+    if (_isEd25519Algorithm(alg.name)) {
+      const pkeyFull = openssl.evpPkeyGenerateEd25519();
+      let pkeyPub: object;
+      try {
+        pkeyPub = openssl.evpPkeyImportRawPublicEd25519(openssl.evpPkeyExportRawPublicEd25519(pkeyFull));
+      } catch (err) {
+        openssl.evpPkeyFree(pkeyFull);
+        throw err;
+      }
+      const algoDescriptor: CryptoKeyAlgorithm = { name: 'Ed25519' };
+      const privateUsages = keyUsages.filter(u => u === 'sign');
+      const publicUsages  = keyUsages.filter(u => u === 'verify');
+      const privateKey = new CryptoKey('private', extractable, algoDescriptor,
+        keyUsages.length === 0 ? ['sign'] : privateUsages, null, pkeyFull);
+      const publicKey  = new CryptoKey('public',  extractable, algoDescriptor,
+        keyUsages.length === 0 ? ['verify'] : publicUsages, null, pkeyPub);
+      return { privateKey, publicKey };
+    }
 
     if (alg.name === 'ECDH') {
       const namedCurve = (alg as { namedCurve?: string }).namedCurve ?? 'P-256';
