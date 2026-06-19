@@ -9,19 +9,10 @@ inspection. `TODO` means there is visible remaining work for feature
 completeness, conformance, docs, or test confidence.
 
 ## Runtime Core, Bootstrap, Main
-Status: TODO
-
-- Add focused coverage for `Atomics.waitAsync` keepalive.
-- Add shutdown-hook failure path coverage from `internal/main.mts`.
-- Add child-realm early `__call` / `__pool_call` replay regression tests.
+Status: DONE
 
 ## Loader, Import Meta, Module
-Status: TODO
-
-- Align `import.meta.resolve()` with normal import extension probing.
-- Add package-map owner dependency lookup, package resolution failure, bare
-  package JSON, and deep-import tests.
-- `SyntheticModule` lifecycle coverage looks solid.
+Status: DONE
 
 ## Runtime Loop And Backends
 Status: TODO
@@ -86,14 +77,7 @@ Status: TODO
 - Add recursive watch, fd cleanup, and rapid event burst lifecycle tests.
 
 ## Archive
-Status: TODO
-
-- Add malformed ZIP/TAR coverage for truncated directories, bad offsets, and bad
-  tar checksums.
-- Validate ZIP CRCs on read/extract.
-- Document or test unsupported ZIP64, data descriptor, PAX, and long-name
-  compatibility limits.
-- Add extraction policy tests for total size and file-count limits.
+Status: DONE
 
 ## Database SQLite
 Status: TODO
@@ -221,11 +205,7 @@ Status: DONE
 Status: DONE
 
 ## Encoding, TextEncoder, Structured Clone
-Status: TODO
-
-- Document TextDecoder as UTF-8-only if that is intentional.
-- Fix or document ArrayBuffer transfer behavior for fixed buffers.
-- Add WPT-style structured clone corpus coverage.
+Status: DONE
 
 ## URL, URLSearchParams, URLPattern
 Status: TODO

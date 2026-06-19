@@ -119,6 +119,31 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('cli fixture ran'), 'script was imported and executed');
   });
 
+  it('keeps the root runtime alive until Atomics.waitAsync settles', async (t) => {
+    const { stdout, stderr, result } = await runCli(['./tests/fixtures/atomics-waitasync-keepalive.mts']);
+
+    t.equal(result.code, 0, 'waitAsync fixture exits successfully');
+    t.equal(stderr, '', 'waitAsync fixture does not write stderr');
+    t.ok(stdout.includes('waitAsync:ok:1'), 'waitAsync settled after async notification');
+  });
+
+  it('reports shutdown hook failure when the script succeeds', async (t) => {
+    const { stdout, stderr, result } = await runCli(['./tests/fixtures/shutdown-hook-fails.mts']);
+
+    t.equal(result.code, 1, 'shutdown-only failure exits nonzero');
+    t.ok(stdout.includes('script completed'), 'script completed before shutdown failed');
+    t.ok(stderr.includes('shutdown hook failed'), 'stderr reports hook failure');
+  });
+
+  it('keeps the script failure primary when shutdown also fails', async (t) => {
+    const { stdout, stderr, result } = await runCli(['./tests/fixtures/script-and-shutdown-fail.mts']);
+
+    t.equal(result.code, 1, 'script failure exits nonzero');
+    t.equal(stdout, '', 'failing script does not write stdout');
+    t.ok(stderr.includes('primary script failure'), 'stderr reports primary script failure');
+    t.ok(!stderr.includes('secondary shutdown failure'), 'shutdown failure does not replace script failure');
+  });
+
   it('runs a script through the run command', async (t) => {
     const { stdout, stderr, result } = await runCli(['run', './tests/fixtures/cli-script.mts']);
 
@@ -358,7 +383,9 @@ describe('CLI commands', () => {
   });
 
   it('passes --filter to the bench command', async (t) => {
-    const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle', './tests/fixtures/filter-bench.mts']);
+    const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle', './tests/fixtures/filter-bench.mts'], {
+      env: { FINO_BENCH_MIN_NS: '1000' },
+    });
 
     t.equal(result.code, 0, 'filtered bench command exits successfully');
     t.equal(stderr, '', 'filtered bench command does not write stderr');
@@ -387,7 +414,10 @@ describe('CLI commands', () => {
         '',
       ].join('\n'),
     }, async (dir) => {
-      const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle directory', 'benchmarks'], { cwd: dir });
+      const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle directory', 'benchmarks'], {
+        cwd: dir,
+        env: { FINO_BENCH_MIN_NS: '1000' },
+      });
 
       t.equal(result.code, 0, 'bench directory input exits successfully');
       t.equal(stderr, '', 'bench directory input does not write stderr');
@@ -416,13 +446,70 @@ describe('CLI commands', () => {
         '',
       ].join('\n'),
     }, async (dir) => {
-      const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle glob', 'benchmarks/**/*.bench.mts'], { cwd: dir });
+      const { stdout, stderr, result } = await runCli(['bench', '--filter', 'needle glob', 'benchmarks/**/*.bench.mts'], {
+        cwd: dir,
+        env: { FINO_BENCH_MIN_NS: '1000' },
+      });
 
       t.equal(result.code, 0, 'bench glob input exits successfully');
       t.equal(stderr, '', 'bench glob input does not write stderr');
       t.ok(stdout.includes('# alpha glob bench'), 'bench glob input imports matching file');
       t.ok(stdout.includes('# needle glob group'), 'bench glob input runs matching group');
       t.ok(!stdout.includes('# beta glob bench'), 'bench glob input omits unmatched benchmark groups');
+    });
+  });
+
+  it('runs async benchmarks and setup/teardown in order', async (t) => {
+    await withTempProject({
+      'benchmarks/async.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "let logged = false;",
+        "bench('async fixture bench', (b) => {",
+        "  b.measure('async measure', {",
+        "    setup() { return { value: 41 }; },",
+        "    async fn(ctx) { if (!logged) { console.log('fn:' + ctx.value); logged = true; } await Promise.resolve(); },",
+        "    teardown(ctx) { console.log('teardown:' + ctx.value); },",
+        "  });",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['bench', 'benchmarks/async.bench.mts'], {
+        cwd: dir,
+        env: { FINO_BENCH_MIN_NS: '1000' },
+      });
+
+      t.equal(result.code, 0, 'async bench exits successfully');
+      t.equal(stderr, '', 'async bench does not write stderr');
+      t.ok(stdout.includes('async measure'), 'async measure ran');
+      t.ok(stdout.includes('fn:41'), 'async measured function received setup context');
+      t.ok(stdout.includes('teardown:41'), 'teardown ran after async measurement');
+    });
+  });
+
+  it('runs benchmark teardown when the measured function throws', async (t) => {
+    await withTempProject({
+      'benchmarks/failing.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "bench('failing fixture bench', (b) => {",
+        "  b.measure('throws measure', {",
+        "    setup() { return 'ctx'; },",
+        "    fn() { throw new Error('measured failure'); },",
+        "    teardown(ctx) { console.log('teardown:' + ctx); },",
+        "  });",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['bench', 'benchmarks/failing.bench.mts'], {
+        cwd: dir,
+        env: { FINO_BENCH_MIN_NS: '1000' },
+      });
+
+      t.equal(result.code, 1, 'failing benchmark exits nonzero');
+      t.equal(stdout.includes('throws measure'), false, 'failed measurement is not reported as completed');
+      t.ok(stdout.includes('teardown:ctx'), 'teardown ran after measurement failure');
+      t.ok(stderr.includes('measured failure'), 'stderr reports measured failure');
     });
   });
 

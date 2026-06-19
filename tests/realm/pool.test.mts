@@ -15,6 +15,7 @@ import type errorFn from './fixtures/error-fn.mts';
 import type corrFn from './fixtures/corr-fn.mts';
 import type workerIdFn from './fixtures/worker-id-fn.mts';
 import type neverFn from './fixtures/never-fn.mts';
+import type slowFn from './fixtures/slow-fn.mts';
 
 describe('RealmPool basics', () => {
   it('dispatches a call to a worker and returns the result', async (t) => {
@@ -104,6 +105,16 @@ describe('RealmPool basics', () => {
     });
     const corrId = await pool.call();
     t.ok(typeof corrId === 'string' && corrId.length > 0, 'correlation ID is a non-empty string');
+    await pool.close();
+  });
+
+  it('replays early __pool_call messages sent before worker handlers are installed', async (t) => {
+    const pool = new RealmPool<typeof slowFn>({
+      entry: new URL('./fixtures/slow-fn.mts', import.meta.url).pathname,
+      size: 1,
+    });
+    const result = await pool.call(5, 'early-pool-ok');
+    t.equal(result, 'early-pool-ok', 'early pool call was replayed after child load');
     await pool.close();
   });
 });

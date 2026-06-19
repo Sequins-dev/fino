@@ -9,6 +9,7 @@ import type echoFn from './fixtures/echo-fn.mts';
 import type asyncFn from './fixtures/async-fn.mts';
 import type errorFn from './fixtures/error-fn.mts';
 import type multiArgFn from './fixtures/multi-arg-fn.mts';
+import type slowFn from './fixtures/slow-fn.mts';
 
 describe('Realm call()', () => {
   it('calls a synchronous default-export function and returns the result', async (t) => {
@@ -67,5 +68,13 @@ describe('Realm call()', () => {
     });
     const result = await realm.call();
     t.equal(result, 0, 'sum of no args is 0');
+  });
+
+  it('replays an early __call message sent before the child handler is installed', async (t) => {
+    const realm = new Realm<typeof slowFn>({
+      entry: new URL('./fixtures/slow-fn.mts', import.meta.url).pathname,
+    });
+    const result = await realm.call(5, 'early-call-ok');
+    t.equal(result, 'early-call-ok', 'early call was replayed after child load');
   });
 });
