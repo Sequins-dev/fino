@@ -89,6 +89,25 @@ describe('RSA-OAEP — encrypt / decrypt', { skip }, () => {
       t.ok(err instanceof Error, 'rejects with Error when wrong key used');
     }
   });
+
+  it('decrypt with the wrong OAEP label rejects', async (t) => {
+    const kp = await crypto.subtle.generateKey(
+      { name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true, ['encrypt', 'decrypt'],
+    ) as CryptoKeyPair;
+    const label = new TextEncoder().encode('label-a');
+    const wrongLabel = new TextEncoder().encode('label-b');
+    const ct = await crypto.subtle.encrypt({ name: 'RSA-OAEP', label }, kp.publicKey, MSG);
+
+    await t.rejects(
+      () => crypto.subtle.decrypt({ name: 'RSA-OAEP', label: wrongLabel }, kp.privateKey, ct),
+      undefined,
+      'OAEP label mismatch rejects',
+    );
+
+    const pt = await crypto.subtle.decrypt({ name: 'RSA-OAEP', label }, kp.privateKey, ct);
+    t.equal(new TextDecoder().decode(pt), new TextDecoder().decode(MSG), 'matching OAEP label decrypts');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -176,6 +195,29 @@ describe('RSA-PSS — sign / verify', { skip }, () => {
     const sig   = await crypto.subtle.sign  ({ name: 'RSA-PSS', saltLength: 32 }, importedPriv, MSG);
     const valid = await crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, importedPub,  sig, MSG);
     t.ok(valid, 'RSA-PSS PKCS8/SPKI round-trip: imported keys sign and verify correctly');
+  });
+
+  it('enforces RSA-PSS sign and verify key usages', async (t) => {
+    const signOnly = await crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true, ['sign'],
+    ) as CryptoKeyPair;
+    const verifyOnly = await crypto.subtle.generateKey(
+      { name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true, ['verify'],
+    ) as CryptoKeyPair;
+
+    const sig = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, signOnly.privateKey, MSG);
+    await t.rejects(
+      () => crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, verifyOnly.privateKey, MSG),
+      /sign/i,
+      'sign rejects private keys without sign usage',
+    );
+    await t.rejects(
+      () => crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, signOnly.publicKey, sig, MSG),
+      /verify/i,
+      'verify rejects public keys without verify usage',
+    );
   });
 });
 

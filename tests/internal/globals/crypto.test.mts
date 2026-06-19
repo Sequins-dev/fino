@@ -904,3 +904,93 @@ describe('crypto.subtle — 192-bit AES key rejection', () => {
     );
   });
 });
+
+describe('WebCrypto release algorithm matrix', { skip }, () => {
+  it('covers required digest, MAC, cipher, KDF, and wrap algorithms', async (t) => {
+    const data = new TextEncoder().encode('release matrix');
+    for (const hash of ['SHA-1', 'SHA-256', 'SHA-384', 'SHA-512']) {
+      const digest = await crypto.subtle.digest(hash, data);
+      t.ok(digest.byteLength > 0, `${hash} digest is available`);
+    }
+
+    const hmac = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+    const sig = await crypto.subtle.sign('HMAC', hmac, data);
+    t.equal(await crypto.subtle.verify('HMAC', hmac, sig, data), true, 'HMAC sign/verify is available');
+
+    const gcm = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']);
+    const gcmIv = crypto.getRandomValues(new Uint8Array(12));
+    const gcmCt = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: gcmIv }, gcm, data);
+    t.equal(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: gcmIv }, gcm, gcmCt)), 'release matrix', 'AES-GCM encrypt/decrypt is available');
+
+    const cbc = await crypto.subtle.generateKey({ name: 'AES-CBC', length: 256 }, false, ['encrypt', 'decrypt']);
+    const cbcIv = crypto.getRandomValues(new Uint8Array(16));
+    const cbcCt = await crypto.subtle.encrypt({ name: 'AES-CBC', iv: cbcIv }, cbc, data);
+    t.equal(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-CBC', iv: cbcIv }, cbc, cbcCt)), 'release matrix', 'AES-CBC encrypt/decrypt is available');
+
+    const pbkdf2 = await crypto.subtle.importKey('raw', data, 'PBKDF2', false, ['deriveBits']);
+    t.equal((await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: data, iterations: 2, hash: 'SHA-256' }, pbkdf2, 256)).byteLength, 32, 'PBKDF2 deriveBits is available');
+
+    const hkdf = await crypto.subtle.importKey('raw', data, 'HKDF', false, ['deriveBits']);
+    t.equal((await crypto.subtle.deriveBits({ name: 'HKDF', salt: data, info: data, hash: 'SHA-256' }, hkdf, 256)).byteLength, 32, 'HKDF deriveBits is available');
+
+    const wrapped = await crypto.subtle.wrapKey('raw', gcm, gcm, { name: 'AES-GCM', iv: gcmIv });
+    const unwrapped = await crypto.subtle.unwrapKey('raw', wrapped, gcm, { name: 'AES-GCM', iv: gcmIv }, { name: 'AES-GCM' }, false, ['encrypt']);
+    t.equal(unwrapped.algorithm.name, 'AES-GCM', 'AES-GCM wrap/unwrap is available');
+  });
+});
+
+describe('WebCrypto key usage and JWK rejection edges', { skip }, () => {
+  it('wrapKey and unwrapKey require explicit wrapping usages', async (t) => {
+    const target = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt']);
+    const wrappingBytes = new Uint8Array(16).fill(0x5a);
+    const encryptOnly = await crypto.subtle.importKey('raw', wrappingBytes, 'AES-GCM', true, ['encrypt', 'decrypt']);
+    const wrapOnly = await crypto.subtle.importKey('raw', wrappingBytes, 'AES-GCM', true, ['wrapKey']);
+    const unwrapOnly = await crypto.subtle.importKey('raw', wrappingBytes, 'AES-GCM', false, ['unwrapKey']);
+    const iv = new Uint8Array(12);
+
+    await t.rejects(
+      () => crypto.subtle.wrapKey('raw', target, encryptOnly, { name: 'AES-GCM', iv }),
+      /wrapKey/i,
+      'wrapKey rejects wrapping keys without wrapKey usage',
+    );
+
+    const wrapped = await crypto.subtle.wrapKey('raw', target, wrapOnly, { name: 'AES-GCM', iv });
+    await t.rejects(
+      () => crypto.subtle.unwrapKey('raw', wrapped, encryptOnly, { name: 'AES-GCM', iv }, { name: 'AES-GCM' }, true, ['encrypt']),
+      /unwrapKey/i,
+      'unwrapKey rejects unwrapping keys without unwrapKey usage',
+    );
+
+    const nonExtractable = await crypto.subtle.unwrapKey('raw', wrapped, unwrapOnly, { name: 'AES-GCM', iv }, { name: 'AES-GCM' }, false, ['encrypt']);
+    await t.rejects(
+      () => crypto.subtle.exportKey('raw', nonExtractable),
+      /extractable/i,
+      'unwrapKey honors requested non-extractability',
+    );
+  });
+
+  it('rejects incompatible symmetric JWK metadata', async (t) => {
+    const valid = await crypto.subtle.exportKey(
+      'jwk',
+      await crypto.subtle.importKey('raw', new Uint8Array(16).fill(7), 'AES-GCM', true, ['encrypt']),
+    ) as JsonWebKey;
+
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { ...valid, kty: 'RSA' } as JsonWebKey, 'AES-GCM', true, ['encrypt']),
+      /kty|oct/i,
+      'wrong kty rejects',
+    );
+
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { ...valid, alg: 'HS256' } as JsonWebKey, 'AES-GCM', true, ['encrypt']),
+      /alg|AES-GCM/i,
+      'wrong alg rejects',
+    );
+
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { ...valid, key_ops: ['decrypt'] } as JsonWebKey, 'AES-GCM', true, ['encrypt']),
+      /key_ops|usage/i,
+      'incompatible key_ops rejects',
+    );
+  });
+});

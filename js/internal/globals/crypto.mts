@@ -408,6 +408,29 @@ function _rsaJwkAlg(algName: string, hashName: string): string {
   /* RSASSA-PKCS1-V1_5 */               return hashName === 'SHA-256' ? 'RS256' : hashName === 'SHA-384' ? 'RS384' : 'RS512';
 }
 
+function _symmetricJwkAlg(algName: string, keyBytes: number, hash?: string | { name: string }): string {
+  if (algName === 'HMAC') {
+    const hashName = _hashName(hash ?? 'SHA-256');
+    return hashName === 'SHA-384' ? 'HS384' : hashName === 'SHA-512' ? 'HS512' : 'HS256';
+  }
+  const bits = keyBytes * 8;
+  if (algName === 'AES-GCM') return bits === 128 ? 'A128GCM' : 'A256GCM';
+  if (algName === 'AES-CBC') return bits === 128 ? 'A128CBC' : 'A256CBC';
+  throw new Error(`JWK not supported for algorithm ${algName}`);
+}
+
+function _validateJwkKeyOps(jwkOps: unknown, requestedUsages: readonly KeyUsage[]): void {
+  if (jwkOps === undefined) return;
+  if (!Array.isArray(jwkOps) || jwkOps.some(op => typeof op !== 'string')) {
+    throw new Error('importKey: JWK key_ops must be an array of strings');
+  }
+  for (const usage of requestedUsages) {
+    if (!jwkOps.includes(usage)) {
+      throw new Error(`importKey: requested usage "${usage}" is not allowed by JWK key_ops`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ECDSA DER ↔ raw signature conversion helpers
 //
@@ -760,7 +783,20 @@ const subtle = {
         kty?: string; k?: string; crv?: string;
         x?: string; y?: string; d?: string; alg?: string;
         n?: string; e?: string; p?: string; q?: string; dp?: string; dq?: string; qi?: string;
+        key_ops?: unknown;
       };
+      if ((alg.name === 'AES-GCM' || alg.name === 'AES-CBC' || alg.name === 'HMAC') && jwk.kty !== 'oct') {
+        throw new Error(`importKey: ${alg.name} JWK requires kty "oct"`);
+      }
+      if ((alg.name === 'ECDSA' || alg.name === 'ECDH') && jwk.kty !== 'EC') {
+        throw new Error(`importKey: ${alg.name} JWK requires kty "EC"`);
+      }
+      if ((alg.name === 'RSA-OAEP' || alg.name === 'RSA-PSS' || alg.name === 'RSASSA-PKCS1-V1_5') && jwk.kty !== 'RSA') {
+        throw new Error(`importKey: ${alg.name} JWK requires kty "RSA"`);
+      }
+      if (_isEd25519Algorithm(alg.name) && jwk.kty !== 'OKP') {
+        throw new Error('importKey: Ed25519 JWK requires kty "OKP"');
+      }
       if (jwk.kty === 'OKP') {
         if (!_isEd25519Algorithm(alg.name)) throw new Error('importKey: OKP JWK requires Ed25519 algorithm');
         if (jwk.crv !== 'Ed25519') throw new Error('importKey: OKP JWK crv must be "Ed25519"');
@@ -819,6 +855,11 @@ const subtle = {
       if (jwk.kty !== 'oct') throw new Error(`importKey: unsupported JWK kty "${jwk.kty}" (supported: "oct", "EC", "RSA", "OKP")`);
       if (typeof jwk.k !== 'string') throw new Error('importKey: JWK missing "k" field');
       const bytes = _base64urlDecode(jwk.k);
+      const expectedAlg = _symmetricJwkAlg(alg.name, bytes.byteLength, alg.hash);
+      if (jwk.alg !== undefined && jwk.alg !== expectedAlg) {
+        throw new Error(`importKey: JWK alg "${jwk.alg}" does not match ${expectedAlg}`);
+      }
+      _validateJwkKeyOps(jwk.key_ops, keyUsages);
       return subtle.importKey('raw', bytes.buffer as ArrayBuffer, algorithm, extractable, keyUsages);
     }
     if (format === 'pkcs8') {
@@ -1165,10 +1206,8 @@ const subtle = {
       const rsaAlgo: CryptoKeyAlgorithm = { name: alg.name, hash: { name: hashName }, modulusLength, publicExponent };
       const privateUsages = keyUsages.filter(u => u === 'decrypt' || u === 'sign' || u === 'unwrapKey');
       const publicUsages  = keyUsages.filter(u => u === 'encrypt' || u === 'verify' || u === 'wrapKey');
-      const privateKey = new CryptoKey('private', extractable, rsaAlgo,
-        privateUsages.length ? privateUsages : (alg.name === 'RSA-OAEP' ? ['decrypt'] : ['sign']), null, pkeyFull);
-      const publicKey  = new CryptoKey('public',  extractable, rsaAlgo,
-        publicUsages.length  ? publicUsages  : (alg.name === 'RSA-OAEP' ? ['encrypt'] : ['verify']), null, pkeyPub);
+      const privateKey = new CryptoKey('private', extractable, rsaAlgo, privateUsages, null, pkeyFull);
+      const publicKey  = new CryptoKey('public',  extractable, rsaAlgo, publicUsages, null, pkeyPub);
       return { privateKey, publicKey };
     }
 

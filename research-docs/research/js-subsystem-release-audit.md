@@ -196,12 +196,7 @@ Status: DONE
 Status: DONE
 
 ## WebCrypto Global
-Status: TODO
-
-- Add a release matrix that fails when expected OpenSSL-backed algorithms are
-  unavailable.
-- Add WPT/RFC vectors for wrap/unwrap, ECDH, RSA-OAEP/PSS, JWK rejection, and
-  key-usage enforcement.
+Status: DONE
 
 ## UUID
 Status: DONE

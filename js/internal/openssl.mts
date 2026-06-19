@@ -249,6 +249,9 @@ const _cryptoSymbols = {
   EVP_PKEY_CTX_set_rsa_padding:   { parameters: ['pointer', 'i32'], result: 'i32' },
   EVP_PKEY_CTX_set_rsa_oaep_md:   { parameters: ['pointer', 'pointer'], result: 'i32' },
   EVP_PKEY_CTX_set_rsa_mgf1_md:   { parameters: ['pointer', 'pointer'], result: 'i32' },
+  EVP_PKEY_CTX_set0_rsa_oaep_label: { parameters: ['pointer', 'pointer', 'i32'], result: 'i32' },
+  CRYPTO_malloc:                   { parameters: ['usize', 'pointer', 'i32'], result: 'pointer' },
+  CRYPTO_free:                     { parameters: ['pointer', 'pointer', 'i32'], result: 'void' },
 
   // RSA-PSS / PKCS1-v1_5 sign and verify.
   // Use the EVP_PKEY_sign* family (hash-then-sign) to avoid the EVP_DigestSignInit
@@ -1659,6 +1662,21 @@ const RSA_PKCS1_OAEP_PADDING = 4;
 const RSA_PKCS1_PSS_PADDING  = 6;
 const RSA_PSS_SALTLEN_AUTO   = -2; // use digest length for verify, set from signature for verify
 
+function _setRsaOaepLabel(lib: DynamicLibrary<typeof _cryptoSymbols>, ctx: object, label: Uint8Array | null): void {
+  if (label === null || label.byteLength === 0) return;
+  const ptr = lib.symbols.CRYPTO_malloc(label.byteLength, null, 0);
+  if (ptr === null) throw new Error('CRYPTO_malloc(OAEP label) failed');
+  try {
+    Pointer.copyTo(ptr, label);
+    if (lib.symbols.EVP_PKEY_CTX_set0_rsa_oaep_label(ctx, ptr, label.byteLength) <= 0) {
+      throw new Error('set0_rsa_oaep_label failed: ' + getErrorString());
+    }
+  } catch (e) {
+    lib.symbols.CRYPTO_free(ptr, null, 0);
+    throw e;
+  }
+}
+
 /**
  * Generate an RSA key pair.
  *
@@ -1773,9 +1791,9 @@ export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
 /**
  * Encrypt bytes with RSA-OAEP.
  *
- * `hashAlg` is used for both OAEP and MGF1. `label` is accepted for API shape
- * but currently ignored and should be `null` or empty to match Web Crypto's
- * default behavior. Unavailable libcrypto, unsupported hashes, invalid keys,
+ * `hashAlg` is used for both OAEP and MGF1. A non-empty `label` is bound into
+ * the OAEP operation and must match during decryption. Unavailable libcrypto,
+ * unsupported hashes, invalid keys,
  * oversize plaintext, and OpenSSL failures throw.
  *
  * ```js
@@ -1790,7 +1808,7 @@ export function evpPkeyImportSpkiRsa(der: Uint8Array): object {
  *
  * @param pkey RSA public or private key.
  * @param hashAlg Digest algorithm for OAEP and MGF1.
- * @param label Optional OAEP label; ignored unless null/empty by callers.
+ * @param label Optional OAEP label.
  * @param data Plaintext bytes.
  * @returns Ciphertext bytes.
  * @internal
@@ -1811,8 +1829,7 @@ export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array 
     if (lib.symbols.EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, md) <= 0) {
       throw new Error('set_rsa_mgf1_md failed: ' + getErrorString());
     }
-    // Note: setting label is omitted (label must be null or empty per Web Crypto default).
-    void label;
+    _setRsaOaepLabel(lib, ctx, label);
 
     // Get output length.
     const outlenBuf = new Uint8Array(8);
@@ -1835,8 +1852,8 @@ export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array 
 /**
  * Decrypt bytes with RSA-OAEP.
  *
- * `hashAlg` is used for both OAEP and MGF1. `label` is accepted for API shape
- * but currently ignored and should be `null` or empty to match encryption.
+ * `hashAlg` is used for both OAEP and MGF1. A non-empty `label` is bound into
+ * the OAEP operation and must match the encryption label.
  * Wrong keys, wrong ciphertext, padding/authentication failures, unavailable
  * libcrypto, and OpenSSL failures throw.
  *
@@ -1853,7 +1870,7 @@ export function rsaOaepEncrypt(pkey: object, hashAlg: string, label: Uint8Array 
  *
  * @param pkey RSA private key.
  * @param hashAlg Digest algorithm for OAEP and MGF1.
- * @param label Optional OAEP label; ignored unless null/empty by callers.
+ * @param label Optional OAEP label.
  * @param data Ciphertext bytes.
  * @returns Plaintext bytes.
  * @internal
@@ -1874,7 +1891,7 @@ export function rsaOaepDecrypt(pkey: object, hashAlg: string, label: Uint8Array 
     if (lib.symbols.EVP_PKEY_CTX_set_rsa_mgf1_md(ctx, md) <= 0) {
       throw new Error('set_rsa_mgf1_md failed: ' + getErrorString());
     }
-    void label;
+    _setRsaOaepLabel(lib, ctx, label);
 
     const outlenBuf = new Uint8Array(8);
     if (lib.symbols.EVP_PKEY_decrypt(ctx, null, outlenBuf, data, data.length) !== 1) {
