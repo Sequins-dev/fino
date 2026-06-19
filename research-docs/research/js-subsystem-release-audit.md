@@ -101,10 +101,7 @@ Status: TODO
 - Replace or document `Math.random()` transaction IDs.
 
 ## DNSSEC
-Status: TODO
-
-- Add live root-anchor validation.
-- Add broader real-world algorithm and negative-response corpus coverage.
+Status: DONE
 
 ## DNS Provider Interface
 Status: DONE

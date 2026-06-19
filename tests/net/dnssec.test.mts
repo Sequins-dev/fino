@@ -567,6 +567,270 @@ describe('DNSSEC signature validation', { skip: skipCrypto }, () => {
     );
   });
 
+  it('validateDnssecResponse bootstraps root DNSKEYs from a trust anchor before validating a child chain', async (t) => {
+    const rootPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const childPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const rootDnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', rootPair.publicKey) as { n: string; e: string });
+    const childDnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', childPair.publicKey) as { n: string; e: string });
+    const rootKeyTag = dnskeyKeyTag(rootDnskey);
+    const childKeyTag = dnskeyKeyTag(childDnskey);
+    const childDsDigest = await digestDnskey('test', childDnskey, 2);
+    const rootDnskeyRecord = {
+      name: '.',
+      type: RECORD_TYPES.DNSKEY,
+      ttl: 300,
+      rawData: rootDnskey,
+      data: { flags: 257, protocol: 3, algorithm: 8, publicKey: rootDnskey.slice(4) },
+    };
+    const rootDnskeySig = await signedRrsig(RECORD_TYPES.DNSKEY, '.', '.', rootKeyTag, rootPair.privateKey, [rootDnskeyRecord]);
+    const dsRecord = {
+      name: 'test',
+      type: RECORD_TYPES.DS,
+      ttl: 300,
+      rawData: concatBytes([writeU16(childKeyTag), new Uint8Array([8, 2]), childDsDigest]),
+      data: { keyTag: childKeyTag, algorithm: 8, digestType: 2, digest: childDsDigest },
+    };
+    const dsSig = await signedRrsig(RECORD_TYPES.DS, 'test', '.', rootKeyTag, rootPair.privateKey, [dsRecord]);
+    const dnskeyRecord = {
+      name: 'test',
+      type: RECORD_TYPES.DNSKEY,
+      ttl: 300,
+      rawData: childDnskey,
+      data: { flags: 257, protocol: 3, algorithm: 8, publicKey: childDnskey.slice(4) },
+    };
+    const dnskeySig = await signedRrsig(RECORD_TYPES.DNSKEY, 'test', 'test', childKeyTag, childPair.privateKey, [dnskeyRecord]);
+    const answer = aRecord('www.test');
+    const answerSig = await signedRrsig(RECORD_TYPES.A, 'www.test', 'test', childKeyTag, childPair.privateKey, [answer]);
+    const fetched: string[] = [];
+
+    await validateDnssecResponse(
+      { rcode: 0, answers: [answer, rrsigRecord('www.test', answerSig)], authorities: [] },
+      'www.test',
+      RECORD_TYPES.A,
+      {
+        trustAnchors: [{ name: '.', rawData: rootDnskey }],
+        now: 2_000,
+        fetch: async (name, qtype) => {
+          fetched.push(`${name}:${qtype}`);
+          if (name === '.' && qtype === RECORD_TYPES.DNSKEY) {
+            return { rcode: 0, answers: [rootDnskeyRecord, rrsigRecord('.', rootDnskeySig)], authorities: [] };
+          }
+          if (name === 'test' && qtype === RECORD_TYPES.DS) {
+            return { rcode: 0, answers: [dsRecord, rrsigRecord('test', dsSig)], authorities: [] };
+          }
+          if (name === 'test' && qtype === RECORD_TYPES.DNSKEY) {
+            return { rcode: 0, answers: [dnskeyRecord, rrsigRecord('test', dnskeySig)], authorities: [] };
+          }
+          throw new Error(`unexpected fetch ${name}:${qtype}`);
+        },
+      },
+    );
+
+    t.equal(fetched[0], `.:${RECORD_TYPES.DNSKEY}`, 'root DNSKEY RRset is fetched before child validation');
+  });
+
+  it('validateDnssecResponse accepts a positive CNAME answer covered by DNSSEC', async () => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const dnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', keyPair.publicKey) as { n: string; e: string });
+    const keyTag = dnskeyKeyTag(dnskey);
+    const cname = {
+      name: 'www.test',
+      type: RECORD_TYPES.CNAME,
+      ttl: 300,
+      rawData: _encodeName('edge.test'),
+      data: 'edge.test',
+    };
+    const cnameSig = await signedRrsig(RECORD_TYPES.CNAME, 'www.test', 'test', keyTag, keyPair.privateKey, [cname]);
+
+    await validateDnssecResponse(
+      { rcode: 0, answers: [cname, rrsigRecord('www.test', cnameSig)], authorities: [] },
+      'www.test',
+      RECORD_TYPES.A,
+      {
+        trustAnchors: [{ name: 'test', rawData: dnskey }],
+        now: 2_000,
+        fetch: async () => { throw new Error('unexpected fetch'); },
+      },
+    );
+  });
+
+  it('validateSignedResponse rejects expired and not-yet-valid RRSIGs', async (t) => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const dnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', keyPair.publicKey) as { n: string; e: string });
+    const keyTag = dnskeyKeyTag(dnskey);
+    const answer = aRecord('www.test');
+    async function responseWithWindow(inception: number, expiration: number) {
+      const rrsig = {
+        typeCovered: RECORD_TYPES.A,
+        algorithm: 8,
+        labels: 2,
+        originalTtl: 300,
+        expiration,
+        inception,
+        keyTag,
+        signerName: 'test',
+        signature: new Uint8Array(),
+      };
+      rrsig.signature = new Uint8Array(await crypto.subtle.sign(
+        { name: 'RSASSA-PKCS1-V1_5' },
+        keyPair.privateKey,
+        rrsigSignedData(rrsig, [answer]),
+      ));
+      return {
+        id: 1,
+        flags: 0x8180,
+        rcode: 0,
+        truncated: false,
+        answers: [answer, rrsigRecord('www.test', rrsig)],
+        authorities: [],
+        additionals: [],
+      };
+    }
+
+    await t.rejects(
+      async () => validateSignedResponse(await responseWithWindow(1, 1_999), 'www.test', RECORD_TYPES.A, {
+        trustAnchors: [{ name: 'test', rawData: dnskey }],
+        now: 2_000,
+      }),
+      (err) => (err as { code?: string }).code === 'EDNSSEC',
+      'expired RRSIG rejects',
+    );
+    await t.rejects(
+      async () => validateSignedResponse(await responseWithWindow(2_001, 4_102_444_800), 'www.test', RECORD_TYPES.A, {
+        trustAnchors: [{ name: 'test', rawData: dnskey }],
+        now: 2_000,
+      }),
+      (err) => (err as { code?: string }).code === 'EDNSSEC',
+      'not-yet-valid RRSIG rejects',
+    );
+  });
+
+  it('validateDnssecResponse rejects a DS digest mismatch', async (t) => {
+    const rootPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const childPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const rootDnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', rootPair.publicKey) as { n: string; e: string });
+    const childDnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', childPair.publicKey) as { n: string; e: string });
+    const rootKeyTag = dnskeyKeyTag(rootDnskey);
+    const childKeyTag = dnskeyKeyTag(childDnskey);
+    const badDigest = new Uint8Array(32).fill(0xaa);
+    const dsRecord = {
+      name: 'test',
+      type: RECORD_TYPES.DS,
+      ttl: 300,
+      rawData: concatBytes([writeU16(childKeyTag), new Uint8Array([8, 2]), badDigest]),
+      data: { keyTag: childKeyTag, algorithm: 8, digestType: 2, digest: badDigest },
+    };
+    const dsSig = await signedRrsig(RECORD_TYPES.DS, 'test', '.', rootKeyTag, rootPair.privateKey, [dsRecord]);
+    const dnskeyRecord = {
+      name: 'test',
+      type: RECORD_TYPES.DNSKEY,
+      ttl: 300,
+      rawData: childDnskey,
+      data: { flags: 257, protocol: 3, algorithm: 8, publicKey: childDnskey.slice(4) },
+    };
+    const answer = aRecord('www.test');
+
+    await t.rejects(
+      () => validateDnssecResponse(
+        { rcode: 0, answers: [answer], authorities: [] },
+        'www.test',
+        RECORD_TYPES.A,
+        {
+          trustAnchors: [{ name: '.', rawData: rootDnskey }],
+          now: 2_000,
+          fetch: async (name, qtype) => {
+            if (name === 'test' && qtype === RECORD_TYPES.DS) {
+              return { rcode: 0, answers: [dsRecord, rrsigRecord('test', dsSig)], authorities: [] };
+            }
+            if (name === 'test' && qtype === RECORD_TYPES.DNSKEY) {
+              return { rcode: 0, answers: [dnskeyRecord], authorities: [] };
+            }
+            throw new Error(`unexpected fetch ${name}:${qtype}`);
+          },
+        },
+      ),
+      (err) => (err as { code?: string }).code === 'EDNSSEC',
+      'DS digest mismatch rejects the chain',
+    );
+  });
+
+  it('validateSignedResponse rejects unsupported-only signatures and falls back to a supported signature', async (t) => {
+    const keyPair = await crypto.subtle.generateKey(
+      { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
+      true,
+      ['sign', 'verify'],
+    ) as { privateKey: CryptoKey; publicKey: CryptoKey };
+    const dnskey = dnskeyFromRsaJwk(await crypto.subtle.exportKey('jwk', keyPair.publicKey) as { n: string; e: string });
+    const keyTag = dnskeyKeyTag(dnskey);
+    const answer = aRecord('www.test');
+    const unsupported = {
+      typeCovered: RECORD_TYPES.A,
+      algorithm: 253,
+      labels: 2,
+      originalTtl: 300,
+      expiration: 4_102_444_800,
+      inception: 1,
+      keyTag,
+      signerName: 'test',
+      signature: new Uint8Array([1, 2, 3]),
+    };
+    const supported = await signedRrsig(RECORD_TYPES.A, 'www.test', 'test', keyTag, keyPair.privateKey, [answer]);
+    const unsupportedResponse = {
+      id: 1,
+      flags: 0x8180,
+      rcode: 0,
+      truncated: false,
+      answers: [answer, rrsigRecord('www.test', unsupported)],
+      authorities: [],
+      additionals: [],
+    };
+    await t.rejects(
+      () => validateSignedResponse(unsupportedResponse, 'www.test', RECORD_TYPES.A, {
+        trustAnchors: [{ name: 'test', rawData: dnskey }],
+        now: 2_000,
+      }),
+      (err) => (err as { code?: string }).code === 'EDNSSEC',
+      'unsupported-only signature rejects',
+    );
+
+    await validateSignedResponse(
+      {
+        ...unsupportedResponse,
+        answers: [answer, rrsigRecord('www.test', unsupported), rrsigRecord('www.test', supported)],
+      },
+      'www.test',
+      RECORD_TYPES.A,
+      {
+        trustAnchors: [{ name: 'test', rawData: dnskey }],
+        now: 2_000,
+      },
+    );
+  });
+
   it('validateDnssecResponse reuses bounded DNSSEC cache entries until TTL expiry', async (t) => {
     const rootPair = await crypto.subtle.generateKey(
       { name: 'RSASSA-PKCS1-V1_5', modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: 'SHA-256' },
