@@ -305,10 +305,7 @@ Status: DONE
 Status: DONE
 
 ## TypeScript Format
-Status: TODO
-
-- Expand smoke tests to JSX/TSX, `.d.ts`, source type matrix, source-map
-  validity, formatter options, and lint rules.
+Status: DONE
 
 ## Markdown Format
 Status: TODO
