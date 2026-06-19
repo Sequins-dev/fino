@@ -735,6 +735,24 @@ export class Group {
 
 const _benches: Array<{ name: string; fn: (g: Group) => void }> = [];
 
+/**
+ * Clear the process-local benchmark registry.
+ *
+ * This is an internal test helper for unit tests that need to exercise
+ * `run()` with isolated benchmark registrations. Application code should not
+ * call it; normal benchmark files register once and then run in process order.
+ *
+ * ```ts no_run
+ * import { _resetBenchmarksForTest } from 'fino:test/bench';
+ * _resetBenchmarksForTest();
+ * ```
+ *
+ * @internal
+ */
+export function _resetBenchmarksForTest(): void {
+  _benches.length = 0;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

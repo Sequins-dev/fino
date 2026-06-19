@@ -306,11 +306,7 @@ Status: DONE
 Status: DONE
 
 ## Bench Harness
-Status: TODO
-
-- Add behavioral tests for async measurement, setup/teardown ordering,
-  filtering, and teardown-on-throw.
-- Keep benchmark-facing coverage, but add unit-level confidence.
+Status: DONE
 
 ## OpenTelemetry API, SDK, Signals
 Status: DONE
