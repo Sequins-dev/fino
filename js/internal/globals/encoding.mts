@@ -14,10 +14,9 @@
  *    that userland code expects. `TextEncoder.encoding` is always `"utf-8"`.
  *    `TextDecoder` accepts any of the WHATWG-defined UTF-8 label aliases
  *    ("utf8", "unicode-1-1-utf-8", etc.) but rejects other encodings with a
- *    RangeError. The `stream: true` option for incremental decoding is
- *    accepted but ignored — splitting UTF-8 input across multiple calls is
- *    not supported; each `decode()` call treats its input as a complete byte
- *    sequence.
+ *    RangeError. `stream: true` is supported for UTF-8 by buffering incomplete
+ *    trailing multi-byte sequences and prepending them to the next `decode()`
+ *    call. Non-UTF-8 labels remain outside the release contract.
  *
  *
  * ## Why UTF-8 only?
@@ -441,7 +440,8 @@ export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
  *
  * The transfer option accepts ArrayBuffers. Without native detach support,
  * transferred resizable buffers are resized to zero and fixed buffers are
- * zero-filled after cloning.
+ * zero-filled after cloning. Supplying the same buffer more than once in the
+ * transfer list throws.
  *
  * ```typescript no_run
  * const original: any = { nested: new Map([['x', 1]]) };
@@ -457,10 +457,17 @@ export function structuredClone<T>(value: T, options?: { transfer?: ArrayBuffer[
   const transferList = options?.transfer;
   const transferSet = transferList ? new Set<ArrayBuffer>(transferList) : null;
   if (transferList) {
+    const seenTransfers = new Set<ArrayBuffer>();
     for (const buf of transferList) {
       if (!(buf instanceof ArrayBuffer)) {
         throw new TypeError('structuredClone: transfer list must contain only ArrayBuffers');
       }
+      if (seenTransfers.has(buf)) {
+        const err = new Error('structuredClone: duplicate ArrayBuffer in transfer list.');
+        err.name = 'DataCloneError';
+        throw err;
+      }
+      seenTransfers.add(buf);
     }
   }
   const seen = new WeakMap<object, unknown>();
@@ -599,7 +606,9 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     const clone = new Array(value.length);
     seen.set(value, clone);
     for (let i = 0; i < value.length; i++) {
-      clone[i] = _clone(value[i], seen, transferSet);
+      if (Object.prototype.hasOwnProperty.call(value, i)) {
+        clone[i] = _clone(value[i], seen, transferSet);
+      }
     }
     return clone;
   }

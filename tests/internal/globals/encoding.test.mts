@@ -327,6 +327,18 @@ describe('structuredClone', () => {
     t.ok(clone[2] !== src[2], 'nested object is new reference');
   });
 
+  it('preserves sparse array holes', (t) => {
+    const src = new Array(4);
+    src[1] = 'one';
+    src[3] = undefined;
+    const clone = structuredClone(src);
+    t.equal(clone.length, 4, 'length preserved');
+    t.equal(0 in clone, false, 'hole at index 0 preserved');
+    t.equal(1 in clone, true, 'present value preserved');
+    t.equal(2 in clone, false, 'hole at index 2 preserved');
+    t.equal(3 in clone, true, 'explicit undefined preserved');
+  });
+
   it('clones Date', (t) => {
     const d = new Date(2024, 0, 15);
     const c = structuredClone(d);
@@ -337,10 +349,12 @@ describe('structuredClone', () => {
 
   it('clones RegExp', (t) => {
     const r = /hello/gi;
+    r.lastIndex = 3;
     const c = structuredClone(r);
     t.ok(c instanceof RegExp, 'is RegExp');
     t.equal(c.source, r.source);
     t.equal(c.flags, r.flags);
+    t.equal(c.lastIndex, 0, 'RegExp lastIndex resets during clone');
   });
 
   it('clones Map', (t) => {
@@ -352,6 +366,14 @@ describe('structuredClone', () => {
     t.ok(c !== m, 'different reference');
   });
 
+  it('clones Map cycles', (t) => {
+    const m = new Map<any, any>();
+    m.set('self', m);
+    const clone = structuredClone(m);
+    t.ok(clone instanceof Map, 'is Map');
+    t.equal(clone.get('self'), clone, 'map cycle points at clone');
+  });
+
   it('clones Set', (t) => {
     const s = new Set([1, 2, 3]);
     const c = structuredClone(s);
@@ -359,6 +381,14 @@ describe('structuredClone', () => {
     t.equal(c.has(1), true);
     t.equal(c.has(3), true);
     t.ok(c !== s, 'different reference');
+  });
+
+  it('clones Set cycles', (t) => {
+    const s = new Set<any>();
+    s.add(s);
+    const clone = structuredClone(s);
+    t.ok(clone instanceof Set, 'is Set');
+    t.ok(clone.has(clone), 'set cycle points at clone');
   });
 
   it('clones ArrayBuffer', (t) => {
@@ -377,6 +407,20 @@ describe('structuredClone', () => {
     t.equal(c[2], 30);
     t.ok(c !== src, 'different reference');
     t.ok(c.buffer !== src.buffer, 'different backing buffer');
+  });
+
+  it('clones typed array views with byte offsets', (t) => {
+    const buf = new ArrayBuffer(8);
+    const full = new Uint8Array(buf);
+    full.set([1, 2, 3, 4, 5, 6, 7, 8]);
+    const src = new Uint16Array(buf, 2, 2);
+    const clone = structuredClone(src);
+    t.ok(clone instanceof Uint16Array, 'is Uint16Array');
+    t.equal(clone.byteOffset, src.byteOffset, 'byteOffset preserved');
+    t.equal(clone.length, 2, 'length preserved');
+    t.equal(clone[0], src[0], 'first offset value preserved');
+    t.equal(clone[1], src[1], 'second offset value preserved');
+    t.ok(clone.buffer !== src.buffer, 'backing buffer copied');
   });
 
   it('clones Error (message + name)', (t) => {
@@ -491,6 +535,18 @@ describe('structuredClone', () => {
     t.ok(clone.buffer !== buf, 'different backing buffer');
   });
 
+  it('clones DataView offsets', (t) => {
+    const buf = new ArrayBuffer(12);
+    const full = new DataView(buf);
+    full.setUint32(4, 0x12345678, true);
+    const view = new DataView(buf, 4, 4);
+    const clone = structuredClone(view);
+    t.ok(clone instanceof DataView, 'is DataView');
+    t.equal(clone.byteOffset, 4, 'byteOffset preserved');
+    t.equal(clone.byteLength, 4, 'byteLength preserved');
+    t.equal(clone.getUint32(0, true), 0x12345678, 'offset data preserved');
+  });
+
   it('transfer option copies ArrayBuffer and zeros source', (t) => {
     const buf = new ArrayBuffer(4);
     new Uint8Array(buf).set([1, 2, 3, 4]);
@@ -498,6 +554,15 @@ describe('structuredClone', () => {
     t.deepEqual(Array.from(new Uint8Array(clone.buf)), [1, 2, 3, 4], 'clone has original data');
     // Source should be zeroed (best-effort detachment)
     t.deepEqual(Array.from(new Uint8Array(buf)), [0, 0, 0, 0], 'source buffer is zeroed');
+  });
+
+  it('transfer option rejects duplicate ArrayBuffer entries', (t) => {
+    const buf = new ArrayBuffer(4);
+    t.throws(
+      () => structuredClone({ buf }, { transfer: [buf, buf] }),
+      /DataCloneError|duplicate/i,
+      'duplicate transfer entry throws',
+    );
   });
 
   it('transfer option throws for non-ArrayBuffer', (t) => {
