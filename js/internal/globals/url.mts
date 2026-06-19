@@ -64,12 +64,16 @@
  * re-implementing the UTF-8 encoder.
  *
  *
+ * ## Host normalization
+ *
+ * Domain hostnames are lowercased and serialized through a small Punycode
+ * encoder for IDNA-style labels. Bracketed IPv6 addresses are validated,
+ * expanded, and compressed to canonical shortest-form text.
+ *
+ *
  * ## What is NOT implemented
  *
- * - IDNA (internationalized domain names) — hostnames are lowercased but not
- *   decoded from Punycode.
  * - Full WHATWG URL state machine with all 20+ parser states.
- * - IPv6 normalization beyond bracket-wrapping.
  * - Opaque path handling (e.g. `blob:` URLs with UUIDs).
  *
  * These omissions are intentional. The implemented subset covers all practical
@@ -513,14 +517,23 @@ export class URLSearchParams {
   /**
    * Iterate over [name, value] pairs.
    *
-   * The iterator uses a snapshot so later mutations do not affect it.
+   * The iterator is live: entries appended during traversal can be observed by
+   * the same iterator, matching URLSearchParams iteration semantics.
    *
    * ```typescript no_run
    * [...new URLSearchParams('a=1').entries()]; // [["a", "1"]]
    * ```
    */
   entries() {
-    return this.#list.slice()[Symbol.iterator]();
+    const list = this.#list;
+    let index = 0;
+    return {
+      next(): IteratorResult<[string, string]> {
+        if (index >= list.length) return { done: true, value: undefined as any };
+        return { done: false, value: list[index++]! };
+      },
+      [Symbol.iterator]() { return this; },
+    };
   }
 
   /**
@@ -531,7 +544,14 @@ export class URLSearchParams {
    * ```
    */
   keys() {
-    return this.#list.map(function(e) { return e[0]; })[Symbol.iterator]();
+    const iter = this.entries();
+    return {
+      next(): IteratorResult<string> {
+        const entry = iter.next();
+        return entry.done ? { done: true, value: undefined as any } : { done: false, value: entry.value[0] };
+      },
+      [Symbol.iterator]() { return this; },
+    };
   }
 
   /**
@@ -542,7 +562,14 @@ export class URLSearchParams {
    * ```
    */
   values() {
-    return this.#list.map(function(e) { return e[1]; })[Symbol.iterator]();
+    const iter = this.entries();
+    return {
+      next(): IteratorResult<string> {
+        const entry = iter.next();
+        return entry.done ? { done: true, value: undefined as any } : { done: false, value: entry.value[1] };
+      },
+      [Symbol.iterator]() { return this; },
+    };
   }
 
   /**
@@ -631,6 +658,113 @@ const _DEFAULT_PORTS: Record<string, string> = {
   ftp: '21',
 };
 
+function _adapt(delta: number, numPoints: number, firstTime: boolean): number {
+  delta = firstTime ? Math.floor(delta / 700) : delta >> 1;
+  delta += Math.floor(delta / numPoints);
+  let k = 0;
+  while (delta > 455) {
+    delta = Math.floor(delta / 35);
+    k += 36;
+  }
+  return k + Math.floor((36 * delta) / (delta + 38));
+}
+
+function _encodeDigit(digit: number): string {
+  return String.fromCharCode(digit + 22 + 75 * (digit < 26 ? 1 : 0));
+}
+
+function _punycodeLabel(label: string): string {
+  const points = Array.from(label, ch => ch.codePointAt(0)!);
+  if (points.every(cp => cp < 0x80)) return label.toLowerCase();
+
+  let output = '';
+  let handled = 0;
+  for (const cp of points) {
+    if (cp < 0x80) {
+      output += String.fromCharCode(cp).toLowerCase();
+      handled++;
+    }
+  }
+  const basic = handled;
+  if (basic > 0) output += '-';
+
+  let n = 128;
+  let delta = 0;
+  let bias = 72;
+
+  while (handled < points.length) {
+    let m = Infinity;
+    for (const cp of points) if (cp >= n && cp < m) m = cp;
+    delta += (m - n) * (handled + 1);
+    n = m;
+    for (const cp of points) {
+      if (cp < n) delta++;
+      if (cp !== n) continue;
+      let q = delta;
+      for (let k = 36; ; k += 36) {
+        const t = k <= bias ? 1 : k >= bias + 26 ? 26 : k - bias;
+        if (q < t) break;
+        output += _encodeDigit(t + ((q - t) % (36 - t)));
+        q = Math.floor((q - t) / (36 - t));
+      }
+      output += _encodeDigit(q);
+      bias = _adapt(delta, handled + 1, handled === basic);
+      delta = 0;
+      handled++;
+    }
+    delta++;
+    n++;
+  }
+  return 'xn--' + output;
+}
+
+function _normalizeDomain(host: string): string {
+  return host.split('.').map(_punycodeLabel).join('.').toLowerCase();
+}
+
+function _normalizeIPv6(host: string): string | null {
+  const inner = host.slice(1, -1).toLowerCase();
+  if (!inner) return null;
+  const pieces = inner.split('::');
+  if (pieces.length > 2) return null;
+
+  const parseSide = (side: string): number[] => {
+    if (side === '') return [];
+    return side.split(':').map((part) => {
+      if (!/^[0-9a-f]{1,4}$/i.test(part)) return NaN;
+      return parseInt(part, 16);
+    });
+  };
+
+  const left = parseSide(pieces[0]!);
+  const right = pieces.length === 2 ? parseSide(pieces[1]!) : [];
+  if (left.some(Number.isNaN) || right.some(Number.isNaN)) return null;
+  const missing = pieces.length === 2 ? 8 - left.length - right.length : 0;
+  if (missing < 0 || (pieces.length === 1 && left.length !== 8)) return null;
+  const nums = [...left, ...Array(missing).fill(0), ...right];
+  if (nums.length !== 8) return null;
+
+  let bestStart = -1;
+  let bestLen = 0;
+  for (let i = 0; i < nums.length;) {
+    if (nums[i] !== 0) { i++; continue; }
+    let j = i;
+    while (j < nums.length && nums[j] === 0) j++;
+    if (j - i > bestLen && j - i >= 2) {
+      bestStart = i;
+      bestLen = j - i;
+    }
+    i = j;
+  }
+
+  if (bestStart >= 0) {
+    const head = nums.slice(0, bestStart).map(n => n.toString(16));
+    const tail = nums.slice(bestStart + bestLen).map(n => n.toString(16));
+    return '[' + head.join(':') + '::' + tail.join(':') + ']';
+  }
+  return '[' + nums.map(n => n.toString(16)).join(':') + ']';
+}
+
 /**
  * Parse a URL string into a state object.
  * @param {string} input
@@ -702,14 +836,16 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
     if (authority.startsWith('[')) {
       const cb = authority.indexOf(']');
       if (cb < 0) return null; // malformed IPv6
-      host = authority.slice(0, cb + 1).toLowerCase();
+      const normalized = _normalizeIPv6(authority.slice(0, cb + 1));
+      if (normalized === null) return null;
+      host = normalized;
       const after = authority.slice(cb + 1);
       if (after.startsWith(':')) port = after.slice(1);
       else if (after.length > 0) return null;
     } else {
       const ci = authority.lastIndexOf(':');
-      if (ci >= 0) { host = authority.slice(0, ci).toLowerCase(); port = authority.slice(ci + 1); }
-      else          { host = authority.toLowerCase(); }
+      if (ci >= 0) { host = _normalizeDomain(authority.slice(0, ci)); port = authority.slice(ci + 1); }
+      else          { host = _normalizeDomain(authority); }
     }
 
     // Strip default port
@@ -742,7 +878,7 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
  */
 function _resolveRelative(input: string, base: URLState): URLState {
   if (!input) {
-    return Object.assign({}, base, { hash: '' });
+    return Object.assign({}, base);
   }
 
   if (input.startsWith('#')) {

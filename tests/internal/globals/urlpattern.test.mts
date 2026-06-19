@@ -242,27 +242,34 @@ describe('repeat modifiers', () => {
   it(':name+ (one-or-more) matches one segment', (t) => {
     const p = new URLPattern({ pathname: '/:name+' });
     t.equal(p.test('https://example.com/foo'), true, 'matches single segment');
+    t.equal(p.exec('https://example.com/foo')?.pathname.groups.name, 'foo', 'captures the single segment');
   });
 
   it(':name+ (one-or-more) matches multiple segments', (t) => {
     const p = new URLPattern({ pathname: '/:name+' });
-    // Whether this matches /a/b depends on implementation
-    // Document current behavior
-    const result = p.test('https://example.com/a/b');
-    t.ok(typeof result === 'boolean', ':name+ test() returns boolean for multi-segment');
+    const result = p.exec('https://example.com/a/b');
+    t.ok(result !== null, 'matches multiple slash-separated segments');
+    t.equal(result?.pathname.groups.name, 'a/b', 'captures all repeated segments');
   });
 
   it(':name* (zero-or-more) matches empty', (t) => {
     const p = new URLPattern({ pathname: '/:name*' });
-    // Zero-or-more should match empty; document current behavior
-    const result = p.test('https://example.com/');
-    t.ok(typeof result === 'boolean', ':name* test() returns boolean for empty segment');
+    const result = p.exec('https://example.com/');
+    t.ok(result !== null, 'matches zero segments');
+    t.equal(result?.pathname.groups.name, undefined, 'empty repeat capture is undefined');
   });
 
   it(':name* (zero-or-more) matches one segment', (t) => {
     const p = new URLPattern({ pathname: '/:name*' });
-    const result = p.test('https://example.com/foo');
-    t.ok(typeof result === 'boolean', ':name* test() returns boolean for one segment');
+    const result = p.exec('https://example.com/foo');
+    t.ok(result !== null, 'matches one segment');
+    t.equal(result?.pathname.groups.name, 'foo', 'captures one segment');
+  });
+
+  it(':name? (optional) matches present and absent segments', (t) => {
+    const p = new URLPattern({ pathname: '/users/:id?' });
+    t.equal(p.exec('https://example.com/users/42')?.pathname.groups.id, '42', 'captures present optional segment');
+    t.equal(p.exec('https://example.com/users/')?.pathname.groups.id, undefined, 'absent optional segment is undefined');
   });
 });
 
@@ -275,9 +282,15 @@ describe('escaped characters in patterns', () => {
 
   it('\\/ matches literal slash', (t) => {
     const p = new URLPattern({ pathname: '/files\\/path' });
-    // Document whether escaped slash is treated as literal
-    const result = p.test('https://example.com/files/path');
-    t.ok(typeof result === 'boolean', 'escaped slash test returns boolean');
+    t.equal(p.test('https://example.com/files/path'), true, 'escaped slash matches a literal slash');
+    t.equal(p.test('https://example.com/filesXpath'), false, 'escaped slash does not match another character');
+  });
+
+  it('captures named groups beside escaped literals', (t) => {
+    const p = new URLPattern({ pathname: '/files\\/:name\\:raw' });
+    const result = p.exec('https://example.com/files/report:raw');
+    t.ok(result !== null, 'matches escaped slash and colon around a named group');
+    t.equal(result?.pathname.groups.name, 'report', 'captures the named segment');
   });
 });
 

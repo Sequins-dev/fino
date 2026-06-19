@@ -40,11 +40,6 @@ Status: DONE
 ## Install And Package Manager
 Status: DONE
 
-- Add optional/peer dependency warning coverage.
-- Add exports pattern, conditional exports, fallback main/module, and
-  deep-import tests.
-- Add registry/tarball failure cleanup tests.
-
 ## Doc Command
 Status: DONE
 
@@ -71,10 +66,6 @@ Status: DONE
 
 ## File Watch
 Status: DONE
-
-- Make non-existent path failure semantics explicit.
-- Add Linux inotify vs macOS kqueue rename/delete coverage.
-- Add recursive watch, fd cleanup, and rapid event burst lifecycle tests.
 
 ## Archive
 Status: DONE
@@ -208,11 +199,7 @@ Status: DONE
 Status: DONE
 
 ## URL, URLSearchParams, URLPattern
-Status: TODO
-
-- Add WPT/corpus coverage for custom URL and URLPattern implementations.
-- Replace weak URLPattern repeat-modifier tests with spec-behavior assertions.
-- Cover IDNA/punycode, IPv6, special schemes, and percent-encoding matrices.
+Status: DONE
 
 ## Blob And File
 Status: DONE
@@ -238,9 +225,6 @@ Status: TODO
 
 ## Internal Reader And Writer Streams
 Status: DONE
-
-- Add fd read/write error path and partial write coverage.
-- Add flush/close idempotence, `readUntil` max/EOF, and `writev` limit tests.
 
 ## Compression Streams
 Status: DONE

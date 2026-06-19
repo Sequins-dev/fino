@@ -685,3 +685,81 @@ describe('URL — C0 controls stripped from input', () => {
     t.equal(u.hostname, 'example.com', 'embedded newline stripped');
   });
 });
+
+describe('URL release corpus', () => {
+  it('IDNA hostnames are serialized as punycode', (t) => {
+    const u = new URL('https://café.example/über');
+    t.equal(u.hostname, 'xn--caf-dma.example', 'unicode hostname is punycoded');
+    t.equal(u.href, 'https://xn--caf-dma.example/%C3%BCber', 'unicode path is percent-encoded');
+  });
+
+  it('IPv6 addresses are normalized and keep brackets in host-facing properties', (t) => {
+    const u = new URL('http://[0000:0000:0000:0000:0000:0000:0000:0001]:8080/');
+    t.equal(u.hostname, '[::1]', 'IPv6 hostname is compressed');
+    t.equal(u.host, '[::1]:8080', 'host includes brackets and port');
+    t.equal(u.origin, 'http://[::1]:8080', 'origin uses normalized IPv6');
+  });
+
+  it('special and non-special schemes preserve different path shapes', (t) => {
+    const special = new URL('http://example.com//a///b');
+    const nonspecial = new URL('custom:opaque/path');
+
+    t.equal(special.pathname, '//a///b', 'special scheme keeps leading path slashes after authority');
+    t.equal(special.origin, 'http://example.com', 'special scheme has tuple origin');
+    t.equal(nonspecial.pathname, 'opaque/path', 'non-special scheme has opaque path without inserted slash');
+    t.equal(nonspecial.origin, 'null', 'non-special scheme has null origin');
+  });
+
+  it('percent-encodes credentials, path, search, and hash through setters', (t) => {
+    const u = new URL('https://example.com/');
+    u.username = 'u@ser';
+    u.password = 'p:ss';
+    u.pathname = '/a b/<tag>';
+    u.searchParams.set('q', 'a b&c');
+    u.hash = 'frag ment';
+
+    t.equal(u.username, 'u%40ser', 'username encodes @');
+    t.equal(u.password, 'p%3Ass', 'password encodes colon');
+    t.equal(u.pathname, '/a%20b/%3Ctag%3E', 'pathname encodes space and angle brackets');
+    t.equal(u.search, '?q=a+b%26c', 'search params encode space as plus and ampersand as percent');
+    t.equal(u.hash, '#frag%20ment', 'hash encodes space');
+  });
+
+  it('relative resolution handles empty, current-directory, parent, query, and hash inputs', (t) => {
+    const base = 'https://example.com/a/b/c?old=1#old';
+
+    t.equal(new URL('', base).href, 'https://example.com/a/b/c?old=1#old', 'empty relative preserves base href');
+    t.equal(new URL('./d', base).href, 'https://example.com/a/b/d', './ resolves against containing directory');
+    t.equal(new URL('../../d', base).href, 'https://example.com/d', '../ segments cannot climb above root');
+    t.equal(new URL('?new=1', base).href, 'https://example.com/a/b/c?new=1', 'query-only relative replaces query and clears hash');
+    t.equal(new URL('#new', base).href, 'https://example.com/a/b/c?old=1#new', 'hash-only relative preserves query');
+  });
+});
+
+describe('URLSearchParams mutation and iteration corpus', () => {
+  it('iteration observes appends made during traversal', (t) => {
+    const p = new URLSearchParams('a=1&b=2');
+    const seen: string[] = [];
+
+    for (const [name, value] of p) {
+      seen.push(name + '=' + value);
+      if (name === 'a') p.append('c', '3');
+    }
+
+    t.deepEqual(seen, ['a=1', 'b=2', 'c=3'], 'iterator sees appended pairs');
+  });
+
+  it('set keeps the first position and removes later duplicates', (t) => {
+    const p = new URLSearchParams('b=2&a=1&b=3&c=4');
+    p.set('b', '9');
+
+    t.deepEqual([...p.entries()], [['b', '9'], ['a', '1'], ['c', '4']], 'set preserves first matching position');
+  });
+
+  it('sort is stable for duplicate names', (t) => {
+    const p = new URLSearchParams('b=1&a=first&b=2&a=second');
+    p.sort();
+
+    t.deepEqual([...p.entries()], [['a', 'first'], ['a', 'second'], ['b', '1'], ['b', '2']], 'sort keeps duplicate value order');
+  });
+});
