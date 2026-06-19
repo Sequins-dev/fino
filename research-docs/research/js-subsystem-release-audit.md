@@ -58,11 +58,7 @@ Status: TODO
 Status: DONE
 
 ## REPL
-Status: TODO
-
-- Add CLI stdin tests for evaluation, multiline input, `.exit`, Ctrl-D/C, and
-  formatted output.
-- Add unserializable/object result formatting coverage.
+Status: DONE
 
 ## Process And Process Class
 Status: DONE

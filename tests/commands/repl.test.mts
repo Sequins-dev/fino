@@ -1,5 +1,38 @@
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
+import { Process, env, execPath } from 'fino:process';
+
+const encodeUtf8 = (value: string): Uint8Array => new TextEncoder().encode(value);
+const decodeUtf8 = (value: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(value);
+
+async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of reader) chunks.push(chunk);
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return decodeUtf8(merged);
+}
+
+async function runRepl(input: string): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
+  const childEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) childEnv[key] = value;
+  }
+  const proc = new Process(execPath, ['repl'], { env: childEnv });
+  await proc.stdin.write(encodeUtf8(input));
+  proc.stdin.close();
+  const [stdout, stderr, result] = await Promise.all([
+    readAll(proc.stdout),
+    readAll(proc.stderr),
+    proc.wait(),
+  ]);
+  return { stdout, stderr, result };
+}
 
 function sendEval(port: MessagePort, id: number, code: string): void {
   port.postMessage({ __eval: true, id, code });
@@ -97,5 +130,64 @@ describe('REPL realm', () => {
       /repl: true is only supported for embedded realms/,
       'throws for thread + repl',
     );
+  });
+});
+
+describe('REPL CLI', () => {
+  it('evaluates stdin expressions and exits on .exit', async (t) => {
+    const { stdout, stderr, result } = await runRepl('1 + 2\n.exit\n');
+
+    t.equal(result.code, 0, 'repl exits successfully');
+    t.equal(stderr, '', 'repl does not write stderr');
+    t.ok(stdout.includes('Fino REPL'), 'repl prints the banner');
+    t.ok(stdout.includes('> 3\n'), 'repl prints expression results');
+  });
+
+  it('continues multiline input until brackets close', async (t) => {
+    const { stdout, stderr, result } = await runRepl('({\nanswer: 42\n})\n.exit\n');
+
+    t.equal(result.code, 0, 'multiline repl exits successfully');
+    t.equal(stderr, '', 'multiline repl does not write stderr');
+    t.ok(stdout.includes('... '), 'multiline repl prints continuation prompts');
+    t.ok(stdout.includes('"answer": 42'), 'multiline expression result is formatted');
+  });
+
+  it('formats object and JSON-compatible results', async (t) => {
+    const { stdout, stderr, result } = await runRepl('({ name: "fino", values: [1, 2] })\n.exit\n');
+
+    t.equal(result.code, 0, 'object repl exits successfully');
+    t.equal(stderr, '', 'object repl does not write stderr');
+    t.ok(stdout.includes('"name": "fino"'), 'object result includes string properties');
+    t.ok(stdout.includes('"values": [\n    1,\n    2\n  ]'), 'object result includes nested JSON values');
+  });
+
+  it('prints thrown errors and keeps the session alive', async (t) => {
+    const { stdout, stderr, result } = await runRepl('throw new Error("boom")\n21 * 2\n.exit\n');
+
+    t.equal(result.code, 0, 'error repl exits successfully');
+    t.equal(stderr, '', 'error repl does not write stderr');
+    t.ok(stdout.includes('boom'), 'thrown error message is printed');
+    t.ok(stdout.includes('> 42\n'), 'repl continues after thrown errors');
+  });
+
+  it('falls back when a result cannot be JSON stringified', async (t) => {
+    const { stdout, stderr, result } = await runRepl('const a = {}; a.self = a; a\n.exit\n');
+
+    t.equal(result.code, 0, 'circular object repl exits successfully');
+    t.equal(stderr, '', 'circular object repl does not write stderr');
+    t.ok(stdout.includes('> Object\n'), 'circular object falls back to inspector description formatting');
+  });
+
+  it('exits on stdin EOF, Ctrl-D, and Ctrl-C', async (t) => {
+    const eof = await runRepl('1 + 1\n');
+    const ctrlD = await runRepl('\x04');
+    const ctrlC = await runRepl('\x03');
+
+    t.equal(eof.result.code, 0, 'EOF exits successfully');
+    t.ok(eof.stdout.includes('> 2\n'), 'EOF still evaluates preceding input');
+    t.equal(ctrlD.result.code, 0, 'Ctrl-D exits successfully');
+    t.equal(ctrlD.stderr, '', 'Ctrl-D does not write stderr');
+    t.equal(ctrlC.result.code, 0, 'Ctrl-C exits successfully');
+    t.equal(ctrlC.stderr, '', 'Ctrl-C does not write stderr');
   });
 });

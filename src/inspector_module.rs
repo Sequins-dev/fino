@@ -383,7 +383,7 @@ fn next_id_cb(
 // ---------------------------------------------------------------------------
 // evaluate(code, options?): Promise<unknown>
 //
-// options: { replMode?: boolean, sourceName?: string, awaitPromise?: boolean }
+// options: { replMode?: boolean, sourceName?: string, awaitPromise?: boolean, returnByValue?: boolean }
 //
 // Resolves with the parsed result value; rejects with a JS Error on
 // exception or compile error.
@@ -406,15 +406,17 @@ fn evaluate_cb(
 
     // Parse options object.
     let opts = args.get(1);
-    let (repl_mode, await_promise, source_name) = if opts.is_object() {
+    let (repl_mode, await_promise, source_name, return_by_value) = if opts.is_object() {
         if let Ok(obj) = v8::Local::<v8::Object>::try_from(opts) {
             let repl_key = v8::String::new(scope, "replMode").unwrap();
             let await_key = v8::String::new(scope, "awaitPromise").unwrap();
             let name_key = v8::String::new(scope, "sourceName").unwrap();
+            let return_by_value_key = v8::String::new(scope, "returnByValue").unwrap();
 
             let repl_val = obj.get(scope, repl_key.into());
             let await_val = obj.get(scope, await_key.into());
             let name_val = obj.get(scope, name_key.into());
+            let return_by_value_val = obj.get(scope, return_by_value_key.into());
 
             let repl = repl_val.map_or(true, |v| {
                 if v.is_boolean() {
@@ -434,12 +436,19 @@ fn evaluate_cb(
                 .and_then(|v| v.to_string(scope))
                 .map(|s| s.to_rust_string_lossy(scope))
                 .unwrap_or_default();
-            (repl, await_p, name)
+            let return_by_value = return_by_value_val.map_or(false, |v| {
+                if v.is_boolean() {
+                    v.boolean_value(scope)
+                } else {
+                    false
+                }
+            });
+            (repl, await_p, name, return_by_value)
         } else {
-            (true, true, String::new())
+            (true, true, String::new(), false)
         }
     } else {
-        (true, true, String::new())
+        (true, true, String::new(), false)
     };
 
     let insp = get_or_init_inspector(scope);
@@ -487,8 +496,8 @@ fn evaluate_cb(
         String::new()
     };
     let msg = format!(
-        r#"{{"id":{},"method":"Runtime.evaluate","params":{{"expression":{},"replMode":{},"awaitPromise":{},"returnByValue":false,"url":{}{}}}}}"#,
-        call_id, code_json, repl_mode, await_promise, source_name_json, context_id_field
+        r#"{{"id":{},"method":"Runtime.evaluate","params":{{"expression":{},"replMode":{},"awaitPromise":{},"returnByValue":{},"url":{}{}}}}}"#,
+        call_id, code_json, repl_mode, await_promise, return_by_value, source_name_json, context_id_field
     );
 
     if let Some(session) = insp.session.as_mut() {
