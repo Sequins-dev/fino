@@ -176,6 +176,50 @@ describe('CLI commands', () => {
     });
   });
 
+  it('fmt reports parse diagnostics with file locations', async (t) => {
+    await withTempProject({
+      'src/broken.ts': 'export function broken( {\n',
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['fmt'], { cwd: dir });
+
+      t.equal(result.code, 1, 'fmt exits nonzero for parse diagnostics');
+      t.equal(stdout, '', 'fmt diagnostics do not write stdout');
+      t.ok(stderr.includes('src/broken.ts'), 'diagnostics include the relative file path');
+      t.ok(stderr.includes('1:1'), 'diagnostics include a source location');
+      t.ok(stderr.includes('error parse'), 'diagnostics include severity and code');
+      t.ok(stderr.includes('fino fmt:'), 'command error summary is printed');
+    });
+  });
+
+  it('fmt recursively discovers source directories and ignores hidden and build output', async (t) => {
+    await withTempProject({
+      'src/app.ts': 'const value = "hello";\n',
+      'src/nested/view.ts': 'const view = "ok";\n',
+      '.hidden/ignored.ts': 'const value = "hidden";\n',
+      'build/ignored.ts': 'const value = "build";\n',
+      'dist/ignored.ts': 'const value = "dist";\n',
+      'target/ignored.ts': 'const value = "target";\n',
+    }, async (dir, fs) => {
+      const { stdout, stderr, result } = await runCli(['fmt'], { cwd: dir });
+      const app = await fs.readFile(dir + '/src/app.ts');
+      const view = await fs.readFile(dir + '/src/nested/view.ts');
+      const hidden = await fs.readFile(dir + '/.hidden/ignored.ts');
+      const build = await fs.readFile(dir + '/build/ignored.ts');
+      const dist = await fs.readFile(dir + '/dist/ignored.ts');
+      const target = await fs.readFile(dir + '/target/ignored.ts');
+
+      t.equal(result.code, 0, 'fmt exits successfully');
+      t.equal(stderr, '', 'fmt recursive discovery does not write stderr');
+      t.ok(stdout.includes('formatted 2 files'), 'fmt reports both discovered source files');
+      t.equal(app, "const value = 'hello';\n", 'fmt formats nested source under cwd');
+      t.equal(view, "const view = 'ok';\n", 'fmt formats recursively discovered nested source');
+      t.equal(hidden, 'const value = "hidden";\n', 'fmt ignores hidden directories');
+      t.equal(build, 'const value = "build";\n', 'fmt ignores build directories');
+      t.equal(dist, 'const value = "dist";\n', 'fmt ignores dist directories');
+      t.equal(target, 'const value = "target";\n', 'fmt ignores target directories');
+    });
+  });
+
   it('lint reports diagnostics and lint --fix does not format', async (t) => {
     await withTempProject({
       'src/app.ts': 'debugger;\nconst value = "hello";\n',
@@ -187,6 +231,7 @@ describe('CLI commands', () => {
       const fixed = await runCli(['lint', '--fix'], { cwd: dir });
       const after = await fs.readFile(dir + '/src/app.ts');
       t.equal(fixed.result.code, 1, 'lint --fix exits nonzero when diagnostics remain');
+      t.ok(fixed.stderr.includes('fino lint: fixed 0 files, 1 remaining'), 'lint --fix reports the current no-op fixer behavior');
       t.equal(after, 'debugger;\nconst value = "hello";\n', 'lint --fix does not format or change unsupported fixes');
     });
   });

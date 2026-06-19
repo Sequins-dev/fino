@@ -41,11 +41,7 @@ Status: DONE
 Status: DONE
 
 ## Fmt, Lint, And Tooling
-Status: TODO
-
-- Add parse-diagnostic formatting tests.
-- Add directory discovery and ignored hidden/build directory coverage.
-- Add `lint --fix` coverage once fixable rules exist.
+Status: DONE
 
 ## Init Command
 Status: DONE
