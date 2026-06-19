@@ -9,9 +9,15 @@ import { describe, it } from 'fino:test/test';
 import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
+import { Socket } from 'fino:net/socket';
+import { h2Available } from 'fino:net/http/h2';
 
 const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
+if (!tlsAvailable && (globalThis as any).process?.env?.FINO_REQUIRE_TLS === '1') {
+  throw new Error('FINO_REQUIRE_TLS=1 but OpenSSL (libssl) is not available');
+}
 const skip = !tlsAvailable && 'OpenSSL (libssl) not available';
+const skipAlpn = (!tlsAvailable || !h2Available) && 'requires OpenSSL + libnghttp2 ALPN server support';
 
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
@@ -135,6 +141,84 @@ describe('TlsSocket', () => {
       tls.close();
     } finally {
       await server.close();
+    }
+  });
+
+  it('custom CA accepts the local self-signed certificate for localhost', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('trusted'),
+    );
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', ca: CERT_PATH },
+      );
+      t.ok(!tls.closed, 'connected with custom CA');
+      tls.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('custom CA still rejects a hostname mismatch', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('unreachable'),
+    );
+
+    try {
+      await t.rejects(
+        () => TlsSocket.connect(
+          { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+          { hostname: 'not-localhost.test', ca: CERT_PATH },
+        ),
+        /hostname|certificate|verify|TLS handshake failed/i,
+        'hostname mismatch is rejected even when the CA is trusted',
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('reports negotiated ALPN protocol when the client offers http/1.1', { skip: skipAlpn }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('alpn'),
+    );
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', rejectUnauthorized: false, alpn: ['http/1.1'] },
+      );
+      t.equal(tls.negotiatedProtocol, 'http/1.1', 'negotiated http/1.1');
+      tls.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('failed upgrade leaves the original socket caller-owned', { skip }, async (t) => {
+    const listener = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    const acceptDone = (async () => {
+      const conn = await listener.accept();
+      conn.close();
+    })();
+    let sock: Socket | null = null;
+    try {
+      sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: listener.address.port });
+      await t.rejects(
+        () => TlsSocket.upgrade(sock!, { hostname: 'localhost', rejectUnauthorized: false }),
+        /TLS handshake failed|wrong version|unexpected|handshake/i,
+        'TLS upgrade rejects against a plaintext server',
+      );
+      t.ok(!sock.closed, 'failed upgrade does not close the caller-owned socket');
+    } finally {
+      if (sock && !sock.closed) sock.close();
+      listener.close();
+      await acceptDone.catch(() => {});
     }
   });
 });

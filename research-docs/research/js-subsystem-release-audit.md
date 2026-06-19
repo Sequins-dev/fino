@@ -95,11 +95,7 @@ Status: DONE
 Status: DONE
 
 ## TLS
-Status: TODO
-
-- Add ALPN client behavior, custom CA success, hostname mismatch, and
-  `upgrade()` ownership/failure tests.
-- Ensure CI cannot silently skip TLS coverage when OpenSSL is expected.
+Status: DONE
 
 ## DNS Resolver
 Status: TODO
