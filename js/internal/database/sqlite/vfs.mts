@@ -85,7 +85,31 @@ import {
   SQLITE_IOERR_READ, SQLITE_IOERR_SHORT_READ,
   SQLITE_IOERR_WRITE, SQLITE_IOERR_FSYNC, SQLITE_IOERR_TRUNCATE,
   SQLITE_IOERR_FSTAT, SQLITE_IOERR_CLOSE,
-  SQLITE_NOTIMPL,
+  SQLITE_NOTFOUND,
+  SQLITE_LOCK_NONE, SQLITE_LOCK_RESERVED,
+  SQLITE_IOCAP_POWERSAFE_OVERWRITE,
+  SQLITE_FCNTL_BEGIN_ATOMIC_WRITE, SQLITE_FCNTL_BLOCK_ON_CONNECT,
+  SQLITE_FCNTL_BUSYHANDLER, SQLITE_FCNTL_CHUNK_SIZE,
+  SQLITE_FCNTL_CKPT_DONE, SQLITE_FCNTL_CKPT_START,
+  SQLITE_FCNTL_COMMIT_ATOMIC_WRITE, SQLITE_FCNTL_COMMIT_PHASETWO,
+  SQLITE_FCNTL_CKSM_FILE, SQLITE_FCNTL_DATA_VERSION,
+  SQLITE_FCNTL_EXTERNAL_READER, SQLITE_FCNTL_FILE_POINTER,
+  SQLITE_FCNTL_FILESTAT, SQLITE_FCNTL_GET_LOCKPROXYFILE,
+  SQLITE_FCNTL_HAS_MOVED, SQLITE_FCNTL_JOURNAL_POINTER,
+  SQLITE_FCNTL_LAST_ERRNO, SQLITE_FCNTL_LOCK_TIMEOUT,
+  SQLITE_FCNTL_LOCKSTATE, SQLITE_FCNTL_MMAP_SIZE,
+  SQLITE_FCNTL_NULL_IO, SQLITE_FCNTL_OVERWRITE,
+  SQLITE_FCNTL_PDB, SQLITE_FCNTL_PERSIST_WAL,
+  SQLITE_FCNTL_POWERSAFE_OVERWRITE, SQLITE_FCNTL_PRAGMA,
+  SQLITE_FCNTL_RBU, SQLITE_FCNTL_RESERVE_BYTES,
+  SQLITE_FCNTL_RESET_CACHE, SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE,
+  SQLITE_FCNTL_SET_LOCKPROXYFILE, SQLITE_FCNTL_SIZE_HINT,
+  SQLITE_FCNTL_SIZE_LIMIT, SQLITE_FCNTL_SYNC,
+  SQLITE_FCNTL_SYNC_OMITTED, SQLITE_FCNTL_TEMPFILENAME,
+  SQLITE_FCNTL_TRACE, SQLITE_FCNTL_VFSNAME,
+  SQLITE_FCNTL_VFS_POINTER, SQLITE_FCNTL_WAL_BLOCK,
+  SQLITE_FCNTL_WIN32_AV_RETRY, SQLITE_FCNTL_WIN32_GET_HANDLE,
+  SQLITE_FCNTL_WIN32_SET_HANDLE, SQLITE_FCNTL_ZIPVFS,
   SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE,
   SQLITE_ACCESS_EXISTS, SQLITE_ACCESS_READWRITE, SQLITE_ACCESS_READ,
   cstr, readCStr, requireSqlite,
@@ -109,6 +133,17 @@ type SyncFileHandle = FileHandle & {
   syncSync?: () => void;
   sizeSync?: () => bigint;
   closeSync?: () => void;
+};
+
+type VfsFileState = {
+  handle: FileHandle;
+  path: string;
+  lockLevel: number;
+  chunkSize: number;
+  persistWal: number;
+  powersafeOverwrite: number;
+  lockTimeout: number;
+  lastErrno: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -302,7 +337,7 @@ export class FinoVFS {
    */
   readonly #callbacks: Array<{ close(): void }> = [];
 
-  // Map from numeric file ID to the open FileHandle.
+  // Map from numeric file ID to the open file state.
   /**
    * Private readonly property `#handles` used by `FinoVFS`.
    *
@@ -324,7 +359,8 @@ export class FinoVFS {
    *
    * @internal
    */
-  readonly #handles: Map<number, FileHandle> = new Map();
+  readonly #handles: Map<number, VfsFileState> = new Map();
+  readonly #dataVersions: Map<string, number> = new Map();
   /**
    * Private property `#nextId` used by `FinoVFS`.
    *
@@ -401,18 +437,29 @@ export class FinoVFS {
   #buildIoMethods(): void {
     const buf     = this.#ioMethodsBuf;
     const handles = this.#handles;
+    const dataVersions = this.#dataVersions;
     _dv(buf).setInt32(0, 1, true);  // iVersion = 1
+
+    const stateFor = (pFile: ArrayBuffer): VfsFileState | undefined => {
+      const id = Number(Pointer.readU64(pFile, 8) as bigint);
+      return handles.get(id);
+    };
+
+    const bumpDataVersion = (state: VfsFileState): void => {
+      const next = (dataVersions.get(state.path) ?? 1) + 1;
+      dataVersions.set(state.path, next > 0x7fffffff ? 1 : next);
+    };
 
     const xClose = new FfiCallback(
       { parameters: ['pointer'], result: 'i32' },
       (pFile: ArrayBuffer) => {
         // fileId is at pFile[8] in the sqlite3_file struct
         const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id);
+        const state = handles.get(id);
         handles.delete(id);
-        if (!h) return SQLITE_OK;
+        if (!state) return SQLITE_OK;
         try {
-          const syncHandle = h as SyncFileHandle;
+          const syncHandle = state.handle as SyncFileHandle;
           if (typeof syncHandle.closeSync !== 'function') return SQLITE_IOERR_CLOSE;
           syncHandle.closeSync();
           return SQLITE_OK;
@@ -424,8 +471,8 @@ export class FinoVFS {
     const xRead = new FfiCallback(
       { parameters: ['pointer', 'pointer', 'i32', 'i64'], result: 'i32' },
       (pFile: ArrayBuffer, pBuf: ArrayBuffer, iAmt: number, iOfst: bigint) => {
-        const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id) as SyncFileHandle | undefined;
+        const state = stateFor(pFile);
+        const h = state?.handle as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_READ;
         try {
           if (typeof h.preadSync !== 'function') return SQLITE_IOERR_READ;
@@ -443,14 +490,16 @@ export class FinoVFS {
     const xWrite = new FfiCallback(
       { parameters: ['pointer', 'pointer', 'i32', 'i64'], result: 'i32' },
       (pFile: ArrayBuffer, pBuf: ArrayBuffer, iAmt: number, iOfst: bigint) => {
-        const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id) as SyncFileHandle | undefined;
+        const state = stateFor(pFile);
+        const h = state?.handle as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_WRITE;
         try {
           if (typeof h.pwriteSync !== 'function') return SQLITE_IOERR_WRITE;
           const data    = Pointer.copyFrom(pBuf, iAmt) as Uint8Array;
           const written = h.pwriteSync(iOfst, data);
-          return written === iAmt ? SQLITE_OK : SQLITE_IOERR_WRITE;
+          if (written !== iAmt) return SQLITE_IOERR_WRITE;
+          if (state) bumpDataVersion(state);
+          return SQLITE_OK;
         } catch { return SQLITE_IOERR_WRITE; }
       },
     );
@@ -458,12 +507,13 @@ export class FinoVFS {
     const xTruncate = new FfiCallback(
       { parameters: ['pointer', 'i64'], result: 'i32' },
       (pFile: ArrayBuffer, size: bigint) => {
-        const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id) as SyncFileHandle | undefined;
+        const state = stateFor(pFile);
+        const h = state?.handle as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_TRUNCATE;
         try {
           if (typeof h.truncateSync !== 'function') return SQLITE_IOERR_TRUNCATE;
           h.truncateSync(size);
+          if (state) bumpDataVersion(state);
           return SQLITE_OK;
         }
         catch { return SQLITE_IOERR_TRUNCATE; }
@@ -473,8 +523,8 @@ export class FinoVFS {
     const xSync = new FfiCallback(
       { parameters: ['pointer', 'i32'], result: 'i32' },
       (pFile: ArrayBuffer, _flags: number) => {
-        const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id) as SyncFileHandle | undefined;
+        const state = stateFor(pFile);
+        const h = state?.handle as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_FSYNC;
         try {
           if (typeof h.syncSync !== 'function') return SQLITE_IOERR_FSYNC;
@@ -488,8 +538,8 @@ export class FinoVFS {
     const xFileSize = new FfiCallback(
       { parameters: ['pointer', 'pointer'], result: 'i32' },
       (pFile: ArrayBuffer, pSize: ArrayBuffer) => {
-        const id = Number(Pointer.readU64(pFile, 8) as bigint);
-        const h  = handles.get(id) as SyncFileHandle | undefined;
+        const state = stateFor(pFile);
+        const h = state?.handle as SyncFileHandle | undefined;
         if (!h) return SQLITE_IOERR_FSTAT;
         try {
           if (typeof h.sizeSync !== 'function') return SQLITE_IOERR_FSTAT;
@@ -502,25 +552,135 @@ export class FinoVFS {
 
     const xLock = new FfiCallback(
       { parameters: ['pointer', 'i32'], result: 'i32' },
-      (_pFile: ArrayBuffer, _lockType: number) => SQLITE_OK,
+      (pFile: ArrayBuffer, lockType: number) => {
+        const state = stateFor(pFile);
+        if (state) state.lockLevel = Math.max(state.lockLevel, lockType);
+        return SQLITE_OK;
+      },
     );
 
     const xUnlock = new FfiCallback(
       { parameters: ['pointer', 'i32'], result: 'i32' },
-      (_pFile: ArrayBuffer, _lockType: number) => SQLITE_OK,
+      (pFile: ArrayBuffer, lockType: number) => {
+        const state = stateFor(pFile);
+        if (state) state.lockLevel = lockType;
+        return SQLITE_OK;
+      },
     );
 
     const xCheckReservedLock = new FfiCallback(
       { parameters: ['pointer', 'pointer'], result: 'i32' },
-      (_pFile: ArrayBuffer, pResOut: ArrayBuffer) => {
-        Pointer.writeI32(pResOut, 0, 0);  // not locked
+      (pFile: ArrayBuffer, pResOut: ArrayBuffer) => {
+        const state = stateFor(pFile);
+        Pointer.writeI32(pResOut, 0, state && state.lockLevel >= SQLITE_LOCK_RESERVED ? 1 : 0);
         return SQLITE_OK;
       },
     );
 
     const xFileControl = new FfiCallback(
       { parameters: ['pointer', 'i32', 'pointer'], result: 'i32' },
-      (_pFile: ArrayBuffer, _op: number, _pArg: ArrayBuffer) => SQLITE_NOTIMPL,
+      (pFile: ArrayBuffer, op: number, pArg: ArrayBuffer | null) => {
+        const state = stateFor(pFile);
+        if (!state) return SQLITE_NOTFOUND;
+
+        switch (op) {
+          case SQLITE_FCNTL_LOCKSTATE:
+            if (pArg) Pointer.writeI32(pArg, 0, state.lockLevel);
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_SIZE_HINT:
+          case SQLITE_FCNTL_SYNC_OMITTED:
+          case SQLITE_FCNTL_OVERWRITE:
+          case SQLITE_FCNTL_BUSYHANDLER:
+          case SQLITE_FCNTL_TRACE:
+          case SQLITE_FCNTL_SYNC:
+          case SQLITE_FCNTL_COMMIT_PHASETWO:
+          case SQLITE_FCNTL_WAL_BLOCK:
+          case SQLITE_FCNTL_CKPT_START:
+          case SQLITE_FCNTL_CKPT_DONE:
+          case SQLITE_FCNTL_RESET_CACHE:
+          case SQLITE_FCNTL_BLOCK_ON_CONNECT:
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_CHUNK_SIZE:
+            if (pArg) {
+              const chunkSize = Pointer.readI32(pArg, 0) as number;
+              if (chunkSize > 0) state.chunkSize = chunkSize;
+            }
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_FILE_POINTER:
+            if (pArg) Pointer.writePointer(pArg, 0, pFile);
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_LAST_ERRNO:
+            if (pArg) Pointer.writeI32(pArg, 0, state.lastErrno);
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_PERSIST_WAL:
+            if (pArg) {
+              const value = Pointer.readI32(pArg, 0) as number;
+              if (value >= 0) state.persistWal = value ? 1 : 0;
+              Pointer.writeI32(pArg, 0, state.persistWal);
+            }
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_POWERSAFE_OVERWRITE:
+            if (pArg) {
+              const value = Pointer.readI32(pArg, 0) as number;
+              if (value >= 0) state.powersafeOverwrite = value ? 1 : 0;
+              Pointer.writeI32(pArg, 0, state.powersafeOverwrite);
+            }
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_MMAP_SIZE:
+            if (pArg) Pointer.writeI64(pArg, 0, 0n);
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_HAS_MOVED:
+            if (pArg) Pointer.writeI32(pArg, 0, 0);
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_LOCK_TIMEOUT:
+            if (pArg) {
+              const previous = state.lockTimeout;
+              state.lockTimeout = Pointer.readI32(pArg, 0) as number;
+              Pointer.writeI32(pArg, 0, previous);
+            }
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_DATA_VERSION:
+            if (pArg) Pointer.writeI32(pArg, 0, dataVersions.get(state.path) ?? 1);
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_GET_LOCKPROXYFILE:
+          case SQLITE_FCNTL_SET_LOCKPROXYFILE:
+          case SQLITE_FCNTL_WIN32_AV_RETRY:
+          case SQLITE_FCNTL_VFSNAME:
+          case SQLITE_FCNTL_PRAGMA:
+          case SQLITE_FCNTL_TEMPFILENAME:
+          case SQLITE_FCNTL_WIN32_SET_HANDLE:
+          case SQLITE_FCNTL_ZIPVFS:
+          case SQLITE_FCNTL_RBU:
+          case SQLITE_FCNTL_VFS_POINTER:
+          case SQLITE_FCNTL_JOURNAL_POINTER:
+          case SQLITE_FCNTL_WIN32_GET_HANDLE:
+          case SQLITE_FCNTL_PDB:
+          case SQLITE_FCNTL_BEGIN_ATOMIC_WRITE:
+          case SQLITE_FCNTL_COMMIT_ATOMIC_WRITE:
+          case SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE:
+          case SQLITE_FCNTL_SIZE_LIMIT:
+          case SQLITE_FCNTL_RESERVE_BYTES:
+          case SQLITE_FCNTL_EXTERNAL_READER:
+          case SQLITE_FCNTL_CKSM_FILE:
+          case SQLITE_FCNTL_NULL_IO:
+          case SQLITE_FCNTL_FILESTAT:
+            return SQLITE_NOTFOUND;
+
+          default:
+            return SQLITE_NOTFOUND;
+        }
+      },
     );
 
     const xSectorSize = new FfiCallback(
@@ -530,7 +690,10 @@ export class FinoVFS {
 
     const xDeviceCharacteristics = new FfiCallback(
       { parameters: ['pointer'], result: 'i32' },
-      (_pFile: ArrayBuffer) => 0,
+      (pFile: ArrayBuffer) => {
+        const state = stateFor(pFile);
+        return state?.powersafeOverwrite ? SQLITE_IOCAP_POWERSAFE_OVERWRITE : 0;
+      },
     );
 
     this.#callbacks.push(
@@ -586,6 +749,7 @@ export class FinoVFS {
     const fs      = this.#fs;
     const ioM     = this.#ioMethodsBuf;
     const handles = this.#handles;
+    const dataVersions = this.#dataVersions;
 
     _dv(buf).setInt32(0, 3,           true);  // iVersion = 3
     _dv(buf).setInt32(4, SZ_OS_FILE,  true);  // szOsFile
@@ -616,7 +780,17 @@ export class FinoVFS {
           if (typeof openSync !== 'function') return SQLITE_IOERR;
           const handle = openSync.call(fs, path, mode);
           const id     = nextId++;
-          handles.set(id, handle);
+          if (!dataVersions.has(path)) dataVersions.set(path, 1);
+          handles.set(id, {
+            handle,
+            path,
+            lockLevel: SQLITE_LOCK_NONE,
+            chunkSize: 0,
+            persistWal: 0,
+            powersafeOverwrite: 1,
+            lockTimeout: 0,
+            lastErrno: 0,
+          });
           // pFile[0]: pMethods — write address of io_methods struct
           Pointer.writeU64(pFile, 0, ioMAddr);
           // pFile[8]: fileId

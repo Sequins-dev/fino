@@ -75,6 +75,7 @@ const _SYMBOLS = {
   sqlite3_errmsg:            { parameters: ['pointer'],                                                  result: 'pointer' },
   sqlite3_errcode:           { parameters: ['pointer'],                                                  result: 'i32' },
   sqlite3_extended_errcode:  { parameters: ['pointer'],                                                  result: 'i32' },
+  sqlite3_file_control:      { parameters: ['pointer', 'buffer', 'i32', 'pointer'],                      result: 'i32' },
   // Metadata
   sqlite3_last_insert_rowid: { parameters: ['pointer'],                                                  result: 'i64' },
   sqlite3_changes:           { parameters: ['pointer'],                                                  result: 'i32' },
@@ -264,13 +265,13 @@ export const SQLITE_IOERR_FSTAT       = SQLITE_IOERR | (7 << 8);
  * ```
  * @internal */
 export const SQLITE_IOERR_CLOSE       = SQLITE_IOERR | (16 << 8);
-/** SQLite not-implemented result code.
+/** SQLite not-found result code.
  * ```typescript no_run
- * import { SQLITE_NOTIMPL } from 'internal:database/sqlite/bindings';
- * void SQLITE_NOTIMPL;
+ * import { SQLITE_NOTFOUND } from 'internal:database/sqlite/bindings';
+ * void SQLITE_NOTFOUND;
  * ```
  * @internal */
-export const SQLITE_NOTIMPL      = 12;
+export const SQLITE_NOTFOUND     = 12;
 
 /** Open database read-only flag.
  * ```typescript no_run
@@ -423,6 +424,65 @@ export const SQLITE_SYNC_NORMAL = 0x00002;
  * ```
  * @internal */
 export const SQLITE_SYNC_FULL   = 0x00003;
+
+/** xDeviceCharacteristics bit for powersafe overwrite support.
+ * ```typescript no_run
+ * import { SQLITE_IOCAP_POWERSAFE_OVERWRITE } from 'internal:database/sqlite/bindings';
+ * void SQLITE_IOCAP_POWERSAFE_OVERWRITE;
+ * ```
+ * @internal */
+export const SQLITE_IOCAP_POWERSAFE_OVERWRITE = 0x00001000;
+
+/** SQLite file-control opcodes used by the JavaScript VFS.
+ * ```typescript no_run
+ * import { SQLITE_FCNTL_LOCKSTATE } from 'internal:database/sqlite/bindings';
+ * void SQLITE_FCNTL_LOCKSTATE;
+ * ```
+ * @internal */
+export const SQLITE_FCNTL_LOCKSTATE              = 1;
+export const SQLITE_FCNTL_GET_LOCKPROXYFILE      = 2;
+export const SQLITE_FCNTL_SET_LOCKPROXYFILE      = 3;
+export const SQLITE_FCNTL_LAST_ERRNO             = 4;
+export const SQLITE_FCNTL_SIZE_HINT              = 5;
+export const SQLITE_FCNTL_CHUNK_SIZE             = 6;
+export const SQLITE_FCNTL_FILE_POINTER           = 7;
+export const SQLITE_FCNTL_SYNC_OMITTED           = 8;
+export const SQLITE_FCNTL_WIN32_AV_RETRY         = 9;
+export const SQLITE_FCNTL_PERSIST_WAL            = 10;
+export const SQLITE_FCNTL_OVERWRITE              = 11;
+export const SQLITE_FCNTL_VFSNAME                = 12;
+export const SQLITE_FCNTL_PRAGMA                 = 14;
+export const SQLITE_FCNTL_POWERSAFE_OVERWRITE    = 13;
+export const SQLITE_FCNTL_BUSYHANDLER            = 15;
+export const SQLITE_FCNTL_TEMPFILENAME           = 16;
+export const SQLITE_FCNTL_MMAP_SIZE              = 18;
+export const SQLITE_FCNTL_TRACE                  = 19;
+export const SQLITE_FCNTL_HAS_MOVED              = 20;
+export const SQLITE_FCNTL_SYNC                   = 21;
+export const SQLITE_FCNTL_COMMIT_PHASETWO        = 22;
+export const SQLITE_FCNTL_WIN32_SET_HANDLE       = 23;
+export const SQLITE_FCNTL_WAL_BLOCK              = 24;
+export const SQLITE_FCNTL_ZIPVFS                 = 25;
+export const SQLITE_FCNTL_RBU                    = 26;
+export const SQLITE_FCNTL_VFS_POINTER            = 27;
+export const SQLITE_FCNTL_JOURNAL_POINTER        = 28;
+export const SQLITE_FCNTL_WIN32_GET_HANDLE       = 29;
+export const SQLITE_FCNTL_PDB                    = 30;
+export const SQLITE_FCNTL_BEGIN_ATOMIC_WRITE     = 31;
+export const SQLITE_FCNTL_COMMIT_ATOMIC_WRITE    = 32;
+export const SQLITE_FCNTL_ROLLBACK_ATOMIC_WRITE  = 33;
+export const SQLITE_FCNTL_LOCK_TIMEOUT           = 34;
+export const SQLITE_FCNTL_DATA_VERSION           = 35;
+export const SQLITE_FCNTL_SIZE_LIMIT             = 36;
+export const SQLITE_FCNTL_CKPT_DONE              = 37;
+export const SQLITE_FCNTL_RESERVE_BYTES          = 38;
+export const SQLITE_FCNTL_CKPT_START             = 39;
+export const SQLITE_FCNTL_EXTERNAL_READER        = 40;
+export const SQLITE_FCNTL_CKSM_FILE              = 41;
+export const SQLITE_FCNTL_RESET_CACHE            = 42;
+export const SQLITE_FCNTL_NULL_IO                = 43;
+export const SQLITE_FCNTL_BLOCK_ON_CONNECT       = 44;
+export const SQLITE_FCNTL_FILESTAT               = 45;
 
 // ---------------------------------------------------------------------------
 // Helpers

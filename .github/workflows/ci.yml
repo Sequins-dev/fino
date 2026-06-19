@@ -38,7 +38,7 @@ jobs:
         run: cargo build
 
       - name: Run JS test suite
-        run: ./target/debug/fino --test tests
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
 
       - name: Run Rust tests
         run: cargo test --quiet

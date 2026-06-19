@@ -3,6 +3,9 @@ import { Database, sqliteAvailable, vec, vecDecode } from 'fino:database/sqlite'
 import { DiskFileSystem } from 'fino:file';
 
 if (!sqliteAvailable) {
+  if (process.env['FINO_REQUIRE_SQLITE'] === '1') {
+    throw new Error('libsqlite3 not found and FINO_REQUIRE_SQLITE=1');
+  }
   console.log('SKIP: libsqlite3 not found (install via: brew install sqlite or apt install libsqlite3-0)');
   process.exit(0);
 }

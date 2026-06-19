@@ -24,4 +24,4 @@ COPY . .
 
 RUN cargo build
 
-CMD ["bash", "-c", "cargo build && ./target/debug/fino --test tests && cargo test --quiet"]
+CMD ["bash", "-c", "cargo build && FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests && cargo test --quiet"]

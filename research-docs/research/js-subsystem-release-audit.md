@@ -30,10 +30,7 @@ Status: DONE
 Status: DONE
 
 ## Database/SQLite
-Status: Needs work
-- Add real SQLite benchmarks for open, prepare, run, get, all, iteration, transaction, and VFS-backed file I/O.
-- Ensure release CI installs `libsqlite3` so focused SQLite tests do not silently exit early.
-- Decide, document, or implement the VFS `xFileControl` `SQLITE_NOTIMPL` behavior.
+Status: DONE
 
 ## Compression
 Status: DONE

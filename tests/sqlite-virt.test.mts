@@ -12,11 +12,30 @@
 
 import { describe, it } from 'fino:test/test';
 import { sqliteAvailable, Database } from 'fino:database/sqlite';
+import { Pointer } from 'fino:ffi';
+import {
+  cstr,
+  requireSqlite,
+  SQLITE_FCNTL_BEGIN_ATOMIC_WRITE,
+  SQLITE_FCNTL_DATA_VERSION,
+  SQLITE_FCNTL_HAS_MOVED,
+  SQLITE_FCNTL_LOCKSTATE,
+  SQLITE_FCNTL_MMAP_SIZE,
+  SQLITE_FCNTL_PERSIST_WAL,
+  SQLITE_FCNTL_POWERSAFE_OVERWRITE,
+  SQLITE_FCNTL_PRAGMA,
+  SQLITE_LOCK_NONE,
+  SQLITE_NOTFOUND,
+  SQLITE_OK,
+} from 'internal:database/sqlite/bindings';
 import type { FileSystem, FileHandle } from 'internal:file/provider';
 import type { Stat } from 'internal:file/stat';
 import type { Path } from 'internal:file/path';
 
 if (!sqliteAvailable) {
+  if (process.env['FINO_REQUIRE_SQLITE'] === '1') {
+    throw new Error('libsqlite3 not found and FINO_REQUIRE_SQLITE=1');
+  }
   console.log('SKIP: libsqlite3 not found');
   process.exit(0);
 }
@@ -230,5 +249,69 @@ describe('fino:database/sqlite — in-memory FileSystem (virtualization)', () =>
     const rows = await db.prepare('SELECT COUNT(*) AS n FROM t').get();
     t.equal(rows!['n'], 0n, 'rolled back');
     await db.close();
+  });
+
+  it('supports deterministic VFS file controls', async (t) => {
+    const memFs = new MemoryFileSystem();
+    const db    = await Database.open('/control.db', { fs: memFs as unknown as FileSystem });
+    const s     = requireSqlite().symbols;
+    const main  = cstr('main');
+
+    const i32Arg = (value: number) => {
+      const buf = new ArrayBuffer(4);
+      new DataView(buf).setInt32(0, value, true);
+      return buf;
+    };
+    const i64Arg = (value: bigint) => {
+      const buf = new ArrayBuffer(8);
+      new DataView(buf).setBigInt64(0, value, true);
+      return buf;
+    };
+    const control = (op: number, arg: ArrayBuffer) =>
+      s.sqlite3_file_control(db.ptr, main, op, Pointer.of(arg)) as number;
+
+    try {
+      let arg = i32Arg(-1);
+      t.equal(control(SQLITE_FCNTL_LOCKSTATE, arg), SQLITE_OK, 'LOCKSTATE succeeds');
+      t.equal(new DataView(arg).getInt32(0, true), SQLITE_LOCK_NONE, 'database starts unlocked');
+
+      arg = i32Arg(1);
+      t.equal(control(SQLITE_FCNTL_PERSIST_WAL, arg), SQLITE_OK, 'PERSIST_WAL set succeeds');
+      arg = i32Arg(-1);
+      t.equal(control(SQLITE_FCNTL_PERSIST_WAL, arg), SQLITE_OK, 'PERSIST_WAL query succeeds');
+      t.equal(new DataView(arg).getInt32(0, true), 1, 'PERSIST_WAL query returns tracked value');
+
+      arg = i32Arg(0);
+      t.equal(control(SQLITE_FCNTL_POWERSAFE_OVERWRITE, arg), SQLITE_OK, 'POWERSAFE_OVERWRITE set succeeds');
+      arg = i32Arg(-1);
+      t.equal(control(SQLITE_FCNTL_POWERSAFE_OVERWRITE, arg), SQLITE_OK, 'POWERSAFE_OVERWRITE query succeeds');
+      t.equal(new DataView(arg).getInt32(0, true), 0, 'POWERSAFE_OVERWRITE query returns tracked value');
+
+      const mmap = i64Arg(-1n);
+      t.equal(control(SQLITE_FCNTL_MMAP_SIZE, mmap), SQLITE_OK, 'MMAP_SIZE query succeeds');
+      t.equal(new DataView(mmap).getBigInt64(0, true), 0n, 'MMAP_SIZE reports disabled mmap');
+
+      arg = i32Arg(-1);
+      t.equal(control(SQLITE_FCNTL_HAS_MOVED, arg), SQLITE_OK, 'HAS_MOVED succeeds');
+      t.equal(new DataView(arg).getInt32(0, true), 0, 'open file has not moved');
+
+      arg = i32Arg(0);
+      t.equal(control(SQLITE_FCNTL_DATA_VERSION, arg), SQLITE_OK, 'DATA_VERSION initial query succeeds');
+      const before = new DataView(arg).getInt32(0, true);
+      await db.exec('CREATE TABLE vfs_data_version (value TEXT)');
+      await db.exec("INSERT INTO vfs_data_version VALUES ('changed')");
+      arg = i32Arg(0);
+      t.equal(control(SQLITE_FCNTL_DATA_VERSION, arg), SQLITE_OK, 'DATA_VERSION second query succeeds');
+      t.ok(new DataView(arg).getInt32(0, true) > before, 'DATA_VERSION advances after writes');
+
+      arg = i32Arg(0);
+      t.equal(control(SQLITE_FCNTL_BEGIN_ATOMIC_WRITE, arg), SQLITE_NOTFOUND, 'unsupported atomic writes return NOTFOUND');
+      t.equal(control(SQLITE_FCNTL_PRAGMA, arg), SQLITE_NOTFOUND, 'unsupported PRAGMA control returns NOTFOUND');
+
+      const pragma = await db.prepare('PRAGMA journal_mode').get();
+      t.ok(typeof pragma!['journal_mode'] === 'string', 'normal PRAGMA handling still works');
+    } finally {
+      await db.close();
+    }
   });
 });
