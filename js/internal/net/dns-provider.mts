@@ -1,12 +1,9 @@
 /**
  * internal:net/dns-provider - Abstract DnsProvider interface.
  *
- * Defines the contract all DNS providers must satisfy. Concrete
- * implementations include:
- *   - SystemDnsProvider - resolves via /etc/resolv.conf over UDP (fino:net/dns)
- *   - StaticDnsProvider - configurable static hostname->IP mapping (future)
- *   - VirtualDnsProvider - resolves Realm names within a VirtualNetwork (future)
- *   - RestrictedDnsProvider - hostname allowlist/blocklist (future)
+ * Defines the contract all DNS providers must satisfy. The system resolver in
+ * `fino:net/dns` is the production provider; static, virtual-network, and
+ * restricted providers are possible future implementations of the same shape.
  *
  * ## Example
  *

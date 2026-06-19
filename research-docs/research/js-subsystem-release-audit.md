@@ -116,11 +116,7 @@ Status: TODO
 - Add broader real-world algorithm and negative-response corpus coverage.
 
 ## DNS Provider Interface
-Status: TODO
-
-- Add direct provider contract tests.
-- Either implement or remove/docs-adjust future-only static, virtual, and
-  restricted providers.
+Status: DONE
 
 ## Network Provider Interface
 Status: TODO
