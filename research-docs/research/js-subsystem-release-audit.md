@@ -131,11 +131,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP Server
-Status: TODO
-
-- Correct stale module header text about H2 dispatch.
-- Add explicit IPv6 bind, TLS ALPN fallback through `serve()`, and close during
-  active TLS/H2 request tests.
+Status: DONE
 
 ## HTTP Driver Interfaces
 Status: DONE

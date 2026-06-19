@@ -31,6 +31,40 @@ async function roundtrip(port: number, rawRequest: string): Promise<string> {
 }
 
 describe('Request / Response basics', () => {
+  it('binds and serves on IPv6 loopback when available', async (t) => {
+    let server: ReturnType<typeof serve> | null = null;
+    try {
+      server = serve({ hostname: '::1', port: 0 }, async () => new Response('ipv6-ok'));
+    } catch (err: unknown) {
+      t.ok(
+        String(err).includes('EADDRNOTAVAIL') || String(err).includes('unsupported') || String(err).includes('address'),
+        'IPv6 loopback unavailable on this host: ' + String(err),
+      );
+      return;
+    }
+
+    try {
+      t.equal(server.address.family, 'ipv6', 'server reports an IPv6 bind');
+      const sock = await Socket.connect({ family: 'ipv6', ip: '::1', port: server.port });
+      const [reader, writer] = sock.split();
+      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: [::1]:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.close();
+
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of reader) chunks.push(chunk);
+      await reader.close();
+      const totalLen = chunks.reduce((n, c) => n + c.byteLength, 0);
+      const all = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const c of chunks) { all.set(c, pos); pos += c.byteLength; }
+      const response = decodeUtf8(all);
+      t.ok(response.startsWith('HTTP/1.1 200'), 'IPv6 request receives 200');
+      t.ok(response.endsWith('ipv6-ok'), 'IPv6 response body is delivered');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('server supports await using disposal', async (t) => {
     let serverRef: ReturnType<typeof serve> | null = null;
 

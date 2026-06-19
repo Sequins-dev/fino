@@ -2,8 +2,9 @@
  * fino:serve — HTTP server convenience.
  *
  * `serve()` wraps `Socket.listen()` and dispatches each accepted connection to
- * an H1ServerDriver (or, in future, an H2ServerDriver based on ALPN/preface
- * detection). The driver owns the per-connection keep-alive, pipelining, and
+ * the HTTP/1.1 driver, the HTTP/2 driver for prior-knowledge h2c prefaces, or
+ * the HTTP/2 driver for TLS connections that negotiate `h2` through ALPN. The
+ * selected driver owns the per-connection keep-alive, pipelining, and
  * protocol-upgrade logic.
  *
  *

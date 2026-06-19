@@ -15,6 +15,7 @@ import { describe, it } from 'fino:test/test';
 import { serve } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
+import * as loop from 'internal:runtime/loop';
 
 const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
 const skip = !tlsAvailable && 'OpenSSL (libssl) not available';
@@ -64,6 +65,77 @@ describe('HTTPS server — basic TLS request/response', () => {
       t.equal(body, 'hello https', 'response body is exactly correct over TLS');
       // Verify TLS was actually used (connection object is a TlsSocket, not plain Socket).
       t.ok(response.includes('HTTP/1.1'), 'response is valid HTTP over TLS (not plain-text garble)');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('falls back to HTTP/1.1 when the TLS client offers only http/1.1', { skip }, async (t) => {
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('alpn h1'),
+    );
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false, alpn: ['http/1.1'] },
+      );
+      t.equal(tls.negotiatedProtocol, 'http/1.1', 'ALPN selected http/1.1');
+      const [reader, writer] = tls.split();
+      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.close();
+
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of reader) chunks.push(chunk);
+      await reader.close();
+      const totalLen = chunks.reduce((n, c) => n + c.byteLength, 0);
+      const all = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const c of chunks) { all.set(c, pos); pos += c.byteLength; }
+      const response = decodeUtf8(all);
+      t.ok(response.startsWith('HTTP/1.1 200'), 'fallback response is HTTP/1.1');
+      t.ok(response.endsWith('alpn h1'), 'fallback response body is delivered');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('close() waits for an already accepted TLS request to finish', { skip }, async (t) => {
+    let handlerStarted = false;
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => {
+        handlerStarted = true;
+        await loop.timeout(25);
+        return new Response('finished before close resolved');
+      },
+    );
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false },
+      );
+      const [reader, writer] = tls.split();
+      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.flush();
+      while (!handlerStarted) await loop.timeout(1);
+
+      const closePromise = server.close();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of reader) chunks.push(chunk);
+      await reader.close();
+      await writer.close();
+      await closePromise;
+
+      const totalLen = chunks.reduce((n, c) => n + c.byteLength, 0);
+      const all = new Uint8Array(totalLen);
+      let pos = 0;
+      for (const c of chunks) { all.set(c, pos); pos += c.byteLength; }
+      const response = decodeUtf8(all);
+      t.ok(response.startsWith('HTTP/1.1 200'), 'active request completes');
+      t.ok(response.endsWith('finished before close resolved'), 'response body is complete before close resolves');
     } finally {
       await server.close();
     }
