@@ -75,12 +75,7 @@ Status: DONE
 Status: DONE
 
 ## TTY And Prompt
-Status: TODO
-
-- Add prompt `text`/`confirm`/`select` interactive and non-interactive tests.
-- Export public prompt option interfaces or hide them from generated public
-  signatures.
-- Add validation retry and invalid select choice tests.
+Status: DONE
 
 ## Config
 Status: DONE

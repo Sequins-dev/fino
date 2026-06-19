@@ -1,6 +1,13 @@
 import { describe, it } from 'fino:test/test';
 import { Process, execPath } from 'fino:process';
 import { isatty, stderrIsTTY, stdinIsTTY, stdoutIsTTY } from 'fino:tty';
+import {
+  PromptSession,
+  type ConfirmPromptOptions,
+  type PromptSessionOptions,
+  type SelectPromptOptions,
+  type TextPromptOptions,
+} from 'fino:tty/prompt';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -40,5 +47,84 @@ describe('fino:tty', () => {
     t.equal(result.code, 0, 'child exits successfully');
     t.equal(joinChunks(stdoutChunks), 'prompt>stdout:hello tty\n', 'readLine strips newline and ignores carriage return');
     t.equal(joinChunks(stderrChunks), 'stderr:ok\n', 'writeStderr writes text');
+  });
+});
+
+describe('fino:tty/prompt', () => {
+  function createPromptSession(input: Array<string | null>) {
+    const prompts: string[] = [];
+    const output: string[] = [];
+    const errors: string[] = [];
+    const options: PromptSessionOptions = {
+      isInteractive: true,
+      readLine: async (prompt) => {
+        prompts.push(prompt);
+        return input.shift() ?? null;
+      },
+      write: async (text) => { output.push(text); },
+      writeError: async (text) => { errors.push(text); },
+    };
+
+    return {
+      prompt: new PromptSession(options),
+      prompts,
+      output,
+      errors,
+    };
+  }
+
+  it('answers text prompts with validation retry and defaults', async (t) => {
+    const { prompt, prompts, errors } = createPromptSession(['', 'bad', 'valid-name']);
+    const options: TextPromptOptions = {
+      label: 'Project',
+      defaultValue: '',
+      validate: (value) => value.length >= 5 ? null : 'Too short',
+    };
+
+    const value = await prompt.text(options);
+
+    t.equal(value, 'valid-name', 'valid text response is returned after retries');
+    t.deepEqual(prompts, ['Project (): ', 'Project (): ', 'Project (): '], 'text prompt repeats with default hint');
+    t.deepEqual(errors, ['Too short\n', 'Too short\n'], 'validation errors are written');
+  });
+
+  it('answers confirm prompts with invalid retry and empty defaults', async (t) => {
+    const { prompt, prompts, errors } = createPromptSession(['maybe', '']);
+    const options: ConfirmPromptOptions = { label: 'Continue', defaultValue: true };
+
+    const value = await prompt.confirm(options);
+
+    t.equal(value, true, 'empty confirm response uses default');
+    t.deepEqual(prompts, ['Continue [Y/n]: ', 'Continue [Y/n]: '], 'confirm prompt repeats after invalid input');
+    t.deepEqual(errors, ['Please answer yes or no.\n'], 'invalid confirm response is reported');
+  });
+
+  it('answers select prompts by retrying invalid choices and accepting labels', async (t) => {
+    const { prompt, prompts, output, errors } = createPromptSession(['9', 'HTTP server']);
+    const options: SelectPromptOptions = {
+      label: 'Template',
+      options: [{ label: 'HTTP server', value: 'server' }, 'empty'],
+      defaultValue: 'empty',
+    };
+
+    const value = await prompt.select(options);
+
+    t.equal(value, 'server', 'select accepts an exact label');
+    t.deepEqual(output, ['Template\n', '  1. HTTP server\n', '  2. empty\n'], 'select choices are written once');
+    t.deepEqual(prompts, ['Select (empty): ', 'Select (empty): '], 'select prompt retries after invalid input');
+    t.deepEqual(errors, ['Please choose one of the listed options.\n'], 'invalid select choice is reported');
+  });
+
+  it('uses non-interactive defaults or throws without defaults', async (t) => {
+    const prompt = new PromptSession({ isInteractive: false });
+
+    t.equal(await prompt.text({ label: 'Name', defaultValue: 'app' }), 'app', 'text default is returned');
+    t.equal(await prompt.confirm({ label: 'Continue', defaultValue: false }), false, 'confirm default is returned');
+    t.equal(await prompt.select({ label: 'Template', options: ['empty'], defaultValue: 'empty' }), 'empty', 'select default is returned');
+    await t.rejects(
+      () => prompt.text({ label: 'Missing' }),
+      /Prompt unavailable for "Missing" in non-interactive mode/,
+      'missing non-interactive default rejects',
+    );
   });
 });

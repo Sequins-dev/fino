@@ -42,7 +42,7 @@ import { readLine, stdinIsTTY, stdoutIsTTY, writeStdout, writeStderr } from '../
  * await prompt.text(options);
  * ```
  */
-interface TextPromptOptions {
+export interface TextPromptOptions {
   /**
    * Label shown before the input field.
    *
@@ -89,7 +89,7 @@ interface TextPromptOptions {
  * await prompt.confirm(options);
  * ```
  */
-interface ConfirmPromptOptions {
+export interface ConfirmPromptOptions {
   /**
    * Question shown before the yes/no hint.
    *
@@ -127,7 +127,7 @@ interface ConfirmPromptOptions {
  * await prompt.select(options);
  * ```
  */
-interface SelectPromptOptions {
+export interface SelectPromptOptions {
   /**
    * Heading printed above the numbered choices.
    *
@@ -180,7 +180,7 @@ interface SelectPromptOptions {
  * const prompt = new PromptSession(options);
  * ```
  */
-interface PromptSessionOptions {
+export interface PromptSessionOptions {
   /**
    * Override automatic TTY detection.
    *
