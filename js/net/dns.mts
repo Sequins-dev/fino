@@ -112,9 +112,8 @@
  *
  * - DNS packets are big-endian. All header fields and record metadata use the
  *   `readU16()` / `readU32()` big-endian helpers defined at the top of the file.
- * - Transaction IDs should be random per query to prevent response spoofing.
- *   The current implementation uses `Math.random()`. A production resolver
- *   would use `getpid()` XOR'd with a counter to reduce collision probability.
+ * - Transaction IDs are generated with `crypto.getRandomValues()` and checked
+ *   against responses to reduce spoofing risk.
  * - UDP datagrams may arrive out of order or be duplicates. We check that the
  *   response ID matches the query ID and discard non-matching packets.
  * - DNSSEC validation is opt-in. DNSSEC-enabled queries request validation
@@ -142,7 +141,15 @@ import { ROOT_TRUST_ANCHORS, validateDnssecResponse, type DnssecCache } from 'in
 type DnsServerFamily = 'ipv4' | 'ipv6';
 type RecordTypeName = keyof typeof RECORD_TYPES;
 
-interface DnsServer { ip: string; family: DnsServerFamily; port: number; }
+/** Parsed DNS nameserver endpoint used internally by the resolver. */
+export interface DnsServer {
+  /** Numeric IPv4 or IPv6 address literal. */
+  ip: string;
+  /** Socket address family for `ip`. */
+  family: DnsServerFamily;
+  /** UDP/TCP DNS port, normally 53. */
+  port: number;
+}
 interface DnsError extends Error { code?: string; hostname?: string; }
 
 /**
@@ -778,6 +785,61 @@ const DEFAULT_SERVERS = [
   { ip: '8.8.8.8', family: 'ipv4', port: 53 },
   { ip: '8.8.4.4', family: 'ipv4', port: 53 },
 ] satisfies DnsServer[];
+
+function isIpv4Literal(value: string): boolean {
+  const parts = value.split('.');
+  return parts.length === 4 && parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) return false;
+    const octet = Number(part);
+    return octet >= 0 && octet <= 255 && String(octet) === String(Number(part));
+  });
+}
+
+function isIpv6Literal(value: string): boolean {
+  return value.includes(':') && !value.includes('.') && /^[0-9a-fA-F:]+$/.test(value);
+}
+
+/**
+ * Parse resolver nameservers from `/etc/resolv.conf` text.
+ *
+ * This internal helper recognizes `nameserver` lines, ignores comments and
+ * unrelated directives, accepts IPv4 and IPv6 literals, and returns the
+ * built-in fallback list when no valid nameservers are present.
+ *
+ * @internal
+ */
+export function _parseResolvConf(text: string): DnsServer[] {
+  const servers: DnsServer[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.replace(/#.*/, '').trim();
+    if (trimmed.length === 0) continue;
+    const parts = trimmed.split(/\s+/);
+    if (parts[0] !== 'nameserver' || !parts[1]) continue;
+    const ip = parts[1];
+    if (isIpv4Literal(ip)) {
+      servers.push({ ip, family: 'ipv4', port: 53 });
+    } else if (isIpv6Literal(ip)) {
+      servers.push({ ip, family: 'ipv6', port: 53 });
+    }
+  }
+  return servers.length > 0 ? servers : DEFAULT_SERVERS.map((server) => ({ ...server }));
+}
+
+/**
+ * Return a cryptographically random DNS transaction ID in the range 1..65535.
+ *
+ * DNS permits zero on the wire, but the resolver keeps IDs non-zero to preserve
+ * the local helper contract used by tests and packet fixtures.
+ *
+ * @internal
+ */
+export function _randomQueryId(): number {
+  const bytes = new Uint16Array(1);
+  do {
+    crypto.getRandomValues(bytes);
+  } while (bytes[0] === 0);
+  return bytes[0]!;
+}
 
 // ---------------------------------------------------------------------------
 // DNS wire protocol — encoder
@@ -1485,7 +1547,7 @@ export class Resolver {
    */
   getServers(): string[] {
     return (this.#servers ?? DEFAULT_SERVERS).map(s =>
-      s.port !== 53 ? `${s.ip}:${s.port}` : s.ip
+      s.port !== 53 ? (s.family === 'ipv6' ? `[${s.ip}]:${s.port}` : `${s.ip}:${s.port}`) : s.ip
     );
   }
 
@@ -1742,17 +1804,7 @@ export class Resolver {
     try {
       const fs   = new DiskFileSystem();
       const text = await fs.readFile('/etc/resolv.conf');
-      const servers: DnsServer[] = [];
-      for (const line of text.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('nameserver')) continue;
-        const parts = trimmed.split(/\s+/);
-        if (parts.length >= 2 && parts[1]) {
-          const ip = parts[1];
-          servers.push({ ip, family: ip.includes(':') ? 'ipv6' : 'ipv4', port: 53 });
-        }
-      }
-      this.#servers = servers.length > 0 ? servers : DEFAULT_SERVERS;
+      this.#servers = _parseResolvConf(text);
     } catch {
       this.#servers = DEFAULT_SERVERS;
     }
@@ -1782,8 +1834,7 @@ export class Resolver {
   async #sendQuery(name: string, qtype: number, validateDnssec = true): Promise<DnsResponse> {
     await this.#ensureServers();
 
-    // Random 16-bit transaction ID (1..65535)
-    const id     = Math.max(1, (Math.random() * 0xFFFF) | 0);
+    const id     = _randomQueryId();
     const packet = _buildQuery(id, name, qtype, { dnssec: this.#dnssec });
 
     const TIMED_OUT = Symbol('timeout');

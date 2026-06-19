@@ -5,7 +5,7 @@
 import { describe, it, before, after } from 'fino:test/test';
 import {
   Resolver, lookup, RECORD_TYPES,
-  _encodeName, _buildQuery, _decodeName, _parseResponse, _reverseIP,
+  _encodeName, _buildQuery, _decodeName, _parseResponse, _parseResolvConf, _randomQueryId, _reverseIP,
 } from 'fino:net/dns';
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
@@ -149,20 +149,30 @@ class LocalDnsServer {
   #closed = false;
   #records = new Map<string, LocalDnsRecord[]>();
   #truncateOnceFor = new Set<string>();
+  #malformedTcpFor = new Set<string>();
+  readonly family: 'ipv4' | 'ipv6';
+  readonly ip: string;
   readonly port: number;
 
-  constructor(records: Record<string, LocalDnsRecord[]>, truncateOnceFor: string[] = []) {
+  constructor(records: Record<string, LocalDnsRecord[]>, truncateOnceFor: string[] = [], options: {
+    family?: 'ipv4' | 'ipv6';
+    malformedTcpFor?: string[];
+  } = {}) {
+    this.family = options.family ?? 'ipv4';
+    this.ip = this.family === 'ipv6' ? '::1' : '127.0.0.1';
     for (const [key, value] of Object.entries(records)) this.#records.set(key, value);
     for (const key of truncateOnceFor) this.#truncateOnceFor.add(key);
+    for (const key of options.malformedTcpFor ?? []) this.#malformedTcpFor.add(key);
 
     let boundPort = 0;
     let lastError: unknown = null;
     for (let i = 0; i < 20; i++) {
       const port = 20_000 + Math.floor(Math.random() * 20_000);
-      const udpFd = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
+      const udpFd = sock.socket(this.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET, sock.SOCK_DGRAM, 0);
       try {
-        bindIpv4Native(udpFd, '127.0.0.1', port);
-        const tcpServer = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port });
+        if (this.family === 'ipv4') bindIpv4Native(udpFd, '127.0.0.1', port);
+        else sock.bind(udpFd, { family: 'ipv6', ip: '::1', port });
+        const tcpServer = Socket.listen({ family: this.family, ip: this.ip, port });
         this.#udpFd = udpFd;
         this.#tcpServer = tcpServer;
         boundPort = port;
@@ -180,7 +190,7 @@ class LocalDnsServer {
   }
 
   address(): string {
-    return `127.0.0.1:${this.port}`;
+    return this.family === 'ipv6' ? `[::1]:${this.port}` : `127.0.0.1:${this.port}`;
   }
 
   close(): void {
@@ -230,6 +240,11 @@ class LocalDnsServer {
       const len = new DataView(lenBytes.buffer, lenBytes.byteOffset, lenBytes.byteLength).getUint16(0, false);
       const query = await reader.readExactly(len);
       if (!query) return;
+      const question = parseQuestion(query);
+      if (this.#malformedTcpFor.has(`${question.name}:${question.type}`)) {
+        await writer.write(new Uint8Array([0, 4, 1, 2]));
+        return;
+      }
       const response = this.#responseFor(query, false);
       const framed = new Uint8Array(2 + response.byteLength);
       new DataView(framed.buffer).setUint16(0, response.byteLength, false);
@@ -307,6 +322,14 @@ describe('Wire protocol', () => {
     t.equal(view.getUint16(optOffset + 3, false), 1232, 'UDP payload size defaults to 1232');
     t.equal((view.getUint16(optOffset + 7, false) & 0x8000) !== 0, true, 'DO bit is set');
     t.equal(view.getUint16(optOffset + 9, false), 0, 'no EDNS options');
+  });
+
+  it('_randomQueryId returns non-zero 16-bit transaction IDs', (t) => {
+    for (let i = 0; i < 128; i++) {
+      const id = _randomQueryId();
+      t.ok(Number.isInteger(id), 'query ID is an integer');
+      t.ok(id >= 1 && id <= 0xffff, 'query ID stays in DNS transaction range');
+    }
   });
 
   it('_decodeName — simple name (no compression)', (t) => {
@@ -492,6 +515,35 @@ describe('Wire protocol', () => {
     t.ok(result.endsWith('.ip6.arpa'), 'ends with .ip6.arpa');
     t.ok(result.startsWith('1.'), 'first nibble is trailing 1');
   });
+
+  it('_parseResolvConf parses comments, whitespace, IPv4, and IPv6 nameservers', (t) => {
+    const servers = _parseResolvConf(`
+      # primary resolver
+      nameserver 192.0.2.53
+      search example.test
+      nameserver 2001:db8::53 # inline comment
+
+      nameserver    198.51.100.7
+    `);
+    t.deepEqual(
+      servers.map((server) => `${server.family}:${server.ip}:${server.port}`),
+      ['ipv4:192.0.2.53:53', 'ipv6:2001:db8::53:53', 'ipv4:198.51.100.7:53'],
+      'valid nameserver lines are parsed in order',
+    );
+  });
+
+  it('_parseResolvConf falls back for empty or malformed config', (t) => {
+    t.deepEqual(
+      _parseResolvConf('').map((server) => server.ip),
+      ['8.8.8.8', '8.8.4.4'],
+      'empty config uses fallback servers',
+    );
+    t.deepEqual(
+      _parseResolvConf('nameserver\nnameserver not-an-ip\nnameserver 192.0.2.1:53').map((server) => server.ip),
+      ['8.8.8.8', '8.8.4.4'],
+      'malformed config uses fallback servers',
+    );
+  });
 });
 
 describe('Integration', () => {
@@ -506,6 +558,19 @@ describe('Integration', () => {
       [`example.test:${RECORD_TYPES.TXT}`]: [{ type: RECORD_TYPES.TXT, data: ['v=spf1', 'include:example.test'] }],
       [`42.0.0.127.in-addr.arpa:${RECORD_TYPES.PTR}`]: [{ type: RECORD_TYPES.PTR, data: 'ptr.example.test' }],
       [`large.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.A, data: '127.0.0.99' }],
+      [`alias.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'target.example.test' }],
+      [`target.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.A, data: '127.0.0.77' }],
+      [`cname0.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname1.example.test' }],
+      [`cname1.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname2.example.test' }],
+      [`cname2.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname3.example.test' }],
+      [`cname3.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname4.example.test' }],
+      [`cname4.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname5.example.test' }],
+      [`cname5.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname6.example.test' }],
+      [`cname6.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname7.example.test' }],
+      [`cname7.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname8.example.test' }],
+      [`cname8.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname9.example.test' }],
+      [`cname9.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname10.example.test' }],
+      [`cname10.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.CNAME, data: 'cname11.example.test' }],
     }, [`large.example.test:${RECORD_TYPES.A}`]);
   });
 
@@ -598,6 +663,25 @@ describe('Integration', () => {
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'still resolves with custom server');
   });
 
+  it('resolver.getServers brackets IPv6 nameservers with non-default ports', (t) => {
+    const resolver = new Resolver();
+    resolver.setServers(['[2001:db8::53]:5353']);
+    t.deepEqual(resolver.getServers(), ['[2001:db8::53]:5353'], 'IPv6 server with custom port is bracketed');
+  });
+
+  it('resolver.resolve4 — follows CNAME chains to an address', async (t) => {
+    const addrs = await localResolver().resolve4('alias.example.test');
+    t.deepEqual(addrs, ['127.0.0.77'], 'CNAME target address is returned');
+  });
+
+  it('resolver.resolve4 — rejects excessive CNAME hops', async (t) => {
+    await t.rejects(
+      () => localResolver().resolve4('cname0.example.test'),
+      (err) => (err as { code?: string }).code === 'ENODATA',
+      'CNAME hop limit rejects loops or excessive chains',
+    );
+  });
+
   it('resolver.reverse — local fixture', async (t) => {
     const names = await localResolver().reverse('127.0.0.42');
     t.ok(Array.isArray(names) && names.length > 0, 'got PTR records');
@@ -607,6 +691,37 @@ describe('Integration', () => {
   it('resolver falls back to TCP when UDP response is truncated', async (t) => {
     const addrs = await localResolver().resolve4('large.example.test');
     t.deepEqual(addrs, ['127.0.0.99'], 'TCP fallback returns full answer');
+  });
+
+  it('resolver retries the next server after malformed TCP fallback', async (t) => {
+    const key = `fallback.example.test:${RECORD_TYPES.A}`;
+    const broken = new LocalDnsServer({
+      [key]: [{ type: RECORD_TYPES.A, data: '127.0.0.1' }],
+    }, [key], { malformedTcpFor: [key] });
+    const healthy = new LocalDnsServer({
+      [key]: [{ type: RECORD_TYPES.A, data: '127.0.0.88' }],
+    });
+    try {
+      const resolver = new Resolver({ timeout: 500, retries: 0 });
+      resolver.setServers([broken.address(), healthy.address()]);
+      t.deepEqual(await resolver.resolve4('fallback.example.test'), ['127.0.0.88'], 'next server resolves after malformed TCP response');
+    } finally {
+      broken.close();
+      healthy.close();
+    }
+  });
+
+  it('resolver.resolve4 — resolves through an IPv6 loopback nameserver', async (t) => {
+    const ipv6Dns = new LocalDnsServer({
+      [`v6ns.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.A, data: '127.0.0.66' }],
+    }, [], { family: 'ipv6' });
+    try {
+      const resolver = new Resolver({ timeout: 500, retries: 0 });
+      resolver.setServers([ipv6Dns.address()]);
+      t.deepEqual(await resolver.resolve4('v6ns.example.test'), ['127.0.0.66'], 'IPv6 nameserver returns local fixture answer');
+    } finally {
+      ipv6Dns.close();
+    }
   });
 
   it('lookup — example.com family 4', async (t) => {

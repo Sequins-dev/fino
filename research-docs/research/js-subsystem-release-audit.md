@@ -93,12 +93,7 @@ Status: DONE
 Status: DONE
 
 ## DNS Resolver
-Status: TODO
-
-- Regenerate or correct stale docs for DNSSEC and TCP fallback support.
-- Add real signed-domain DNSSEC, IPv6 nameserver, `/etc/resolv.conf`, malformed
-  TCP fallback, and CNAME + DNSSEC chain tests.
-- Replace or document `Math.random()` transaction IDs.
+Status: DONE
 
 ## DNSSEC
 Status: DONE
