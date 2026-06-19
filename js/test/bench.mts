@@ -9,7 +9,7 @@
  *
  * Benchmark functions may be **synchronous or async**. Async benchmarks are
  * detected automatically: if `fn()` returns a thenable, the measurement loop
- * spins the global event loop synchronously to completion on every iteration:
+ * awaits it to completion on every iteration:
  *
  * ```js
  * import { DiskFileSystem } from '../file/fs.mts';
@@ -75,11 +75,14 @@
  * `group.measure(name, fn)` defers registration until `finalize()`. When
  * executed, it runs `fn()` repeatedly until at least 1 second of wall time
  * has elapsed (measured by accumulating `now()` deltas in `stats.total`).
+ * Tests can set the internal `FINO_BENCH_MIN_NS` environment variable to lower
+ * this duration for CLI runner fixtures; normal benchmark runs keep the
+ * one-second default.
  * This adaptive approach ensures that fast functions get many samples (better
  * statistics) and slow functions get at least one full second of coverage.
  *
- * For async benchmarks, each iteration spins the global event loop
- * synchronously via `loop.spin()`.
+ * For async benchmarks, each iteration awaits the returned thenable before
+ * recording the elapsed time.
  *
  *
  * ## Comparison output
@@ -119,9 +122,8 @@
  */
 
 import console from '../internal/globals/console.mts';
-import { os } from 'internal:process';
+import { env, os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
-import * as loopModule from '../internal/runtime/loop.mts';
 
 // ---------------------------------------------------------------------------
 // High-resolution timer (nanoseconds) — mirrors benc.h bench_now()
@@ -131,6 +133,13 @@ const NANOS   = 1;
 const MICROS  = NANOS  * 1000;
 const MILLIS  = MICROS * 1000;
 const SECONDS = MILLIS * 1000;
+const DEFAULT_MIN_NS = SECONDS;
+const minDurationNs = (() => {
+  const raw = env.FINO_BENCH_MIN_NS;
+  if (raw === undefined || raw === '') return DEFAULT_MIN_NS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_MIN_NS;
+})();
 
 /** Returns a monotonic nanosecond timestamp as a Number. */
 const now = (() => {
@@ -496,8 +505,7 @@ export class Group {
    * ```
    *
    * `fn` may be synchronous or async. If `fn()` returns a thenable, the
-   * measurement loop spins the global event loop to completion on every
-   * iteration.
+   * measurement loop awaits it to completion on every iteration.
    *
    * `setup()` and `teardown()` are synchronous and are not included in timing.
    * The return value of `setup()` is passed as the first argument to `fn(ctx)`.
@@ -562,7 +570,7 @@ export class Group {
    * group.finalize();
    * ```
    */
-  finalize() {
+  async finalize() {
     const pad = this.#pad();
     const selfMatches = this.#matchesSelf();
 
@@ -572,9 +580,9 @@ export class Group {
         spec.fn(sub);
         if (!sub.shouldRun()) continue;
         console.log(`${pad}  # ${spec.name}`);
-        sub.finalize();
+        await sub.finalize();
       } else if (selfMatches) {
-        this.#executeMeasurement(spec);
+        await this.#executeMeasurement(spec);
       }
     }
 
@@ -584,9 +592,8 @@ export class Group {
   /**
    * Run a single measurement to completion, collect stats, print the result.
    *
-   * For async benchmarks (fn returns a thenable), each iteration calls
-   * `loop.spin(result)` to drive the global event loop synchronously to
-   * completion before recording the elapsed time.
+   * For async benchmarks (fn returns a thenable), each iteration awaits it
+   * before recording the elapsed time.
    *
    * @param {{ name: string, fn: function, setup?: function, teardown?: function }} spec
    *
@@ -603,22 +610,25 @@ export class Group {
    * }
    * ```
    */
-  #executeMeasurement({ name, fn, setup, teardown }: PendingMeasurement) {
+  async #executeMeasurement({ name, fn, setup, teardown }: PendingMeasurement) {
     const pad = this.#pad();
     const stats = new Stats();
     const ctx = setup ? setup() : undefined;
 
-    while (stats.total < SECONDS) {
-      const start = now();
-      const result = ctx !== undefined ? fn(ctx) : fn();
-      if (result !== null && result !== undefined && typeof (result as Record<string, unknown>)['then'] === 'function') {
-        loopModule.spin(result as Promise<unknown>);
-      }
-      const end = now();
-      stats.push(end - start);
+    try {
+      do {
+        const start = now();
+        const result = ctx !== undefined ? fn(ctx) : fn();
+        if (result !== null && result !== undefined && typeof (result as Record<string, unknown>)['then'] === 'function') {
+          await (result as Promise<unknown>);
+        }
+        const end = now();
+        stats.push(end - start);
+      } while (stats.total < minDurationNs);
+    } finally {
+      if (teardown) teardown(ctx);
     }
 
-    if (teardown) teardown(ctx);
     console.log(`${pad}${name} - ${formatStats(stats)}`);
     this.#measurements.push({ name, stats });
   }
@@ -768,6 +778,6 @@ export async function run(options: { filter?: string } = {}) {
     fn(g);
     if (!g.shouldRun()) continue;
     console.log(`# ${name}`);
-    g.finalize();
+    await g.finalize();
   }
 }
