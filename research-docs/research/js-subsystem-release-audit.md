@@ -288,10 +288,7 @@ Status: TODO
 Status: DONE
 
 ## Security Random, Password, Tokens
-Status: TODO
-
-- Add invalid random/token/password option-bound tests.
-- Add malformed password-record variants and non-default hash/key/salt tests.
+Status: DONE
 
 ## Security Cookies, Headers, CORS
 Status: TODO

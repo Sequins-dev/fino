@@ -5,7 +5,9 @@ import {
   hashPassword,
   parseCookieHeader,
   randomBase64Url,
+  randomBytes,
   randomInt,
+  randomToken,
   sealCookie,
   serializeCookie,
   signCookie,
@@ -26,6 +28,14 @@ describe('fino:security core helpers', () => {
       const value = randomInt(10, 20);
       t.equal(value >= 10 && value < 20, true, 'randomInt stays within range');
     }
+  });
+
+  it('rejects invalid random helper bounds', (t) => {
+    t.throws(() => randomBytes(-1), /length must be a non-negative integer/, 'negative random byte length is rejected');
+    t.throws(() => randomBytes(1.5), /length must be a non-negative integer/, 'fractional random byte length is rejected');
+    t.throws(() => randomToken(Number.NaN), /length must be a non-negative integer/, 'invalid token byte count is rejected');
+    t.throws(() => randomInt(10, 10), /max must be greater than min/, 'empty integer range is rejected');
+    t.throws(() => randomInt(0, 2 ** 32 + 1), /range must be <= 2\^32 - 1/, 'too-large integer range is rejected');
   });
 
   it('builds security and CORS headers', (t) => {
@@ -80,6 +90,36 @@ describe('fino:security password helpers', () => {
     t.equal(verifyPassword('correct horse battery staple', record), true, 'correct password verifies');
     t.equal(verifyPassword('wrong password', record), false, 'wrong password fails');
   });
+
+  it('supports non-default PBKDF2 parameters and rejects invalid options', (t) => {
+    const record = hashPassword('secret', {
+      iterations: 1_000,
+      hash: 'sha-512',
+      saltLength: 24,
+      keyLength: 48,
+    });
+    const parts = record.split('$');
+
+    t.equal(record.startsWith('pbkdf2$sha-512$1000$'), true, 'record stores non-default algorithm parameters');
+    t.equal(parts[3]!.length, 32, '24 salt bytes encode to 32 base64url chars');
+    t.equal(parts[4]!.length, 64, '48 key bytes encode to 64 base64url chars');
+    t.equal(verifyPassword('secret', record), true, 'non-default password record verifies');
+    t.throws(() => hashPassword('secret', { iterations: 0 }), /iterations must be a positive integer/, 'zero iterations are rejected');
+    t.throws(() => hashPassword('secret', { saltLength: 0 }), /saltLength must be a positive integer/, 'zero salt length is rejected');
+    t.throws(() => hashPassword('secret', { keyLength: 0 }), /keyLength must be a positive integer/, 'zero key length is rejected');
+  });
+
+  it('rejects malformed PBKDF2 password records', (t) => {
+    const valid = hashPassword('secret', { iterations: 1_000 });
+    const [kind, hash, iterations, salt, derived] = valid.split('$') as [string, string, string, string, string];
+
+    t.equal(verifyPassword('secret', ''), false, 'empty record is rejected');
+    t.equal(verifyPassword('secret', `argon2$${hash}$${iterations}$${salt}$${derived}`), false, 'wrong record kind is rejected');
+    t.equal(verifyPassword('secret', `${kind}$sha-999$${iterations}$${salt}$${derived}`), false, 'unsupported hash is rejected');
+    t.equal(verifyPassword('secret', `${kind}$${hash}$0$${salt}$${derived}`), false, 'invalid iteration count is rejected');
+    t.equal(verifyPassword('secret', `${kind}$${hash}$${iterations}$not+base64$${derived}`), false, 'malformed salt is rejected');
+    t.equal(verifyPassword('secret', `${kind}$${hash}$${iterations}$${salt}$not+base64`), false, 'malformed derived key is rejected');
+  });
 });
 
 describe('fino:security token helpers', () => {
@@ -113,6 +153,19 @@ describe('fino:security token helpers', () => {
     t.equal(verifyDirectToken(token, 'token-secret', { purpose: 'password-reset' }), null, 'purpose mismatch fails');
     t.equal(verifyDirectToken(token, 'token-secret', { purpose: 'session', now: exp + 1 }), null, 'expired token fails');
     t.ok(verifyDirectToken(token, 'token-secret', { purpose: 'session', now: exp + 1, clockTolerance: 5 }) !== null, 'clock tolerance is honored');
+  });
+
+  it('rejects invalid token issue and verify options', (t) => {
+    t.throws(() => issueDirectToken({ sub: 'user-123' }, 'token-secret', { expiresIn: Number.NaN }), /expiresIn must be a finite number/, 'NaN expiresIn is rejected');
+    t.throws(() => issueDirectToken({ sub: 'user-123' }, 'token-secret', { expiresIn: Infinity }), /expiresIn must be a finite number/, 'infinite expiresIn is rejected');
+    t.throws(() => issueDirectToken({ sub: 'user-123' }, 'token-secret', { purpose: 1 as any }), /purpose must be a string/, 'non-string issue purpose is rejected');
+
+    const token = issueDirectToken({ sub: 'user-123' }, 'token-secret', { purpose: 'session', expiresIn: 60 });
+
+    t.equal(verifyDirectToken(token, 'token-secret', { now: Number.NaN }), null, 'invalid verification time fails closed');
+    t.equal(verifyDirectToken(token, 'token-secret', { clockTolerance: Number.NaN }), null, 'invalid clock tolerance fails closed');
+    t.equal(verifyDirectToken(token, 'token-secret', { purpose: 1 as any }), null, 'non-string required purpose fails closed');
+    t.equal(verifyDirectToken('abc.def', 'token-secret'), null, 'malformed signed payload fails closed');
   });
 });
 

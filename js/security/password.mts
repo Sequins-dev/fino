@@ -110,6 +110,8 @@ export function hashPassword(password: string, options: HashPasswordOptions = {}
   const saltLength = options.saltLength ?? 16;
   const keyLength = options.keyLength ?? 32;
   if (!Number.isSafeInteger(iterations) || iterations < 1) throw new RangeError('iterations must be a positive integer');
+  if (!Number.isSafeInteger(saltLength) || saltLength < 1) throw new RangeError('saltLength must be a positive integer');
+  if (!Number.isSafeInteger(keyLength) || keyLength < 1) throw new RangeError('keyLength must be a positive integer');
   const salt = randomBytes(saltLength);
   const derived = pbkdf2(toBytes(password), salt, iterations, hash, keyLength);
   return ['pbkdf2', hash, String(iterations), base64urlEncode(salt), base64urlEncode(derived)].join('$');

@@ -140,6 +140,12 @@ export interface VerifyTokenOptions {
  * ```
  */
 export function issueToken(payload: Record<string, unknown>, secret: BufferLike, options: IssueTokenOptions = {}): string {
+  if (options.expiresIn !== undefined && !Number.isFinite(options.expiresIn)) {
+    throw new RangeError('expiresIn must be a finite number');
+  }
+  if (options.purpose !== undefined && typeof options.purpose !== 'string') {
+    throw new TypeError('purpose must be a string');
+  }
   const now = Math.floor(Date.now() / 1000);
   const body = {
     ...payload,
@@ -167,6 +173,9 @@ export function issueToken(payload: Record<string, unknown>, secret: BufferLike,
  * ```
  */
 export function verifyToken(token: string, secret: BufferLike, options: VerifyTokenOptions = {}): Record<string, unknown> | null {
+  if (options.now !== undefined && !Number.isFinite(options.now)) return null;
+  if (options.clockTolerance !== undefined && (!Number.isFinite(options.clockTolerance) || options.clockTolerance < 0)) return null;
+  if (options.purpose !== undefined && typeof options.purpose !== 'string') return null;
   const parts = token.split('.');
   if (parts.length !== 2) return null;
   const expected = base64urlEncode(hmac('sha-256', toBytes(secret), toBytes(parts[0]!)));
