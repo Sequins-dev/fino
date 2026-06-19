@@ -64,6 +64,119 @@ describe('fino:database/sqlite — basic', () => {
     }
   });
 
+  it('readonly opens existing databases and rejects writes', async (t) => {
+    const fs = new DiskFileSystem();
+    const dbPath = '/tmp/fino-sqlite-readonly-' + Math.floor(Math.random() * 1_000_000_000) + '.db';
+    try { await fs.unlink(dbPath); } catch {}
+
+    const writable = await Database.open(dbPath);
+    try {
+      await writable.exec('CREATE TABLE t (value TEXT)');
+      await writable.prepare('INSERT INTO t VALUES (?)').run('stored');
+    } finally {
+      await writable.close();
+    }
+
+    const readonly = await Database.open(dbPath, { readonly: true });
+    try {
+      const row = await readonly.prepare('SELECT value FROM t').get();
+      t.equal(row!['value'], 'stored', 'readonly connection can read existing data');
+      await t.rejects(
+        () => readonly.exec("INSERT INTO t VALUES ('blocked')"),
+        /readonly|attempt to write/i,
+        'readonly connection rejects writes',
+      );
+    } finally {
+      await readonly.close();
+      try { await fs.unlink(dbPath); } catch {}
+    }
+  });
+
+  it('readonly open rejects missing files', async (t) => {
+    const fs = new DiskFileSystem();
+    const dbPath = '/tmp/fino-sqlite-missing-readonly-' + Math.floor(Math.random() * 1_000_000_000) + '.db';
+    try { await fs.unlink(dbPath); } catch {}
+
+    await t.rejects(
+      () => Database.open(dbPath, { readonly: true }),
+      /open|unable|cannot|IOERR|ENOENT/i,
+      'readonly mode does not create missing databases',
+    );
+  });
+
+  it('closed database operations reject consistently', async (t) => {
+    const db = await Database.open(':memory:');
+    await db.close();
+
+    await t.rejects(() => db.exec('SELECT 1'), /closed/i, 'exec rejects after close');
+    t.throws(() => db.prepare('SELECT 1'), /closed/i, 'prepare rejects after close');
+    await t.rejects(() => db.transaction(async () => {}), /closed/i, 'transaction rejects after close');
+    t.throws(() => db.loadExtension('/definitely/missing.so'), /closed/i, 'loadExtension rejects after close');
+    t.throws(() => db.vectorsAvailable, /closed/i, 'vectorsAvailable rejects after close');
+  });
+
+  it('prepare failures do not poison the connection', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      await t.rejects(
+        () => db.prepare('SELECT * FROM').get(),
+        /prepare|syntax|incomplete/i,
+        'invalid SQL rejects during lazy prepare',
+      );
+      const row = await db.prepare('SELECT 42 AS value').get();
+      t.equal(row!['value'], 42n, 'connection remains usable after prepare failure');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('extension loading failures leave the connection usable', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      t.throws(
+        () => db.loadExtension('/definitely/missing/fino-sqlite-extension.so'),
+        /sqlite3_load_extension/i,
+        'missing extension rejects with sqlite load error',
+      );
+      const row = await db.prepare('SELECT 1 AS ok').get();
+      t.equal(row!['ok'], 1n, 'connection remains usable after load failure');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('vectorsAvailable is a cached boolean probe', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      const first = db.vectorsAvailable;
+      const second = db.vectorsAvailable;
+      t.equal(typeof first, 'boolean', 'probe returns a boolean');
+      t.equal(second, first, 'probe result is cached');
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('separate file-backed connections observe committed writes', async (t) => {
+    const fs = new DiskFileSystem();
+    const dbPath = '/tmp/fino-sqlite-concurrent-' + Math.floor(Math.random() * 1_000_000_000) + '.db';
+    try { await fs.unlink(dbPath); } catch {}
+
+    const first = await Database.open(dbPath);
+    const second = await Database.open(dbPath);
+    try {
+      await first.exec('CREATE TABLE t (value TEXT)');
+      await first.prepare('INSERT INTO t VALUES (?)').run('visible');
+
+      const row = await second.prepare('SELECT value FROM t').get();
+      t.equal(row!['value'], 'visible', 'second connection sees committed write');
+    } finally {
+      await first.close();
+      await second.close();
+      try { await fs.unlink(dbPath); } catch {}
+    }
+  });
+
   it('prepare + run (positional params)', async (t) => {
     const db   = await Database.open(':memory:');
     await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
@@ -266,6 +379,24 @@ describe('fino:database/sqlite — Statement finalize', () => {
     stmt.finalize();  // never compiled
     t.ok(true, 'finalize uncompiled statement is safe');
     await db.close();
+  });
+
+  it('finalized statements reject all execution helpers', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      await db.exec('CREATE TABLE t (value INTEGER)');
+      const stmt = db.prepare('SELECT value FROM t');
+      stmt.finalize();
+
+      await t.rejects(() => stmt.run(), /finalized/i, 'run rejects');
+      await t.rejects(() => stmt.get(), /finalized/i, 'get rejects');
+      await t.rejects(() => stmt.all(), /finalized/i, 'all rejects');
+
+      const iterator = stmt.iterate();
+      await t.rejects(() => iterator.next(), /finalized/i, 'iterate rejects');
+    } finally {
+      await db.close();
+    }
   });
 });
 

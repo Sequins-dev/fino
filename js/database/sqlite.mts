@@ -1137,6 +1137,7 @@ export class Database {
    * ```
    */
   get vectorsAvailable(): boolean {
+    this.#checkOpen();
     if (this.#vectorsAvailable !== null) return this.#vectorsAvailable;
     this.#vectorsAvailable = this.#probeVectors();
     return this.#vectorsAvailable;
@@ -1182,6 +1183,16 @@ export class Database {
     const ppErr = new ArrayBuffer(8);
     for (const p of candidates) {
       try {
+        if (p.startsWith('/')) {
+          try {
+            const fs = new DiskFileSystem();
+            fs.statSync(p);
+          } catch {
+            continue;
+          }
+        } else if (!envPath || p !== envPath) {
+          continue;
+        }
         const rc2 = s.sqlite3_load_extension(
           this.#ptr, Pointer.of(cstr(p)), null, Pointer.of(ppErr),
         ) as number;
@@ -1212,6 +1223,14 @@ export class Database {
    */
   loadExtension(path: string, entryPoint?: string): void {
     this.#checkOpen();
+    if (path.startsWith('/')) {
+      try {
+        const fs = new DiskFileSystem();
+        fs.statSync(path);
+      } catch {
+        throw new Error(`sqlite3_load_extension: extension not found: ${path}`);
+      }
+    }
     const s   = requireSqlite().symbols;
     const ppErr = new ArrayBuffer(8);
     s.sqlite3_enable_load_extension(this.#ptr, 1);

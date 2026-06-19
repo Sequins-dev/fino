@@ -71,14 +71,7 @@ Status: DONE
 Status: DONE
 
 ## Database SQLite
-Status: TODO
-
-- Add readonly open, missing file, closed database/statement, and prepare
-  failure tests.
-- Expand VFS coverage for WAL/journal/temp files, concurrent connections,
-  locking, sync, and truncate errors.
-- Test extension loading failures and `vectorsAvailable` probing.
-- Add custom filesystem persistence tests across reopen.
+Status: DONE
 
 ## Compression
 Status: DONE

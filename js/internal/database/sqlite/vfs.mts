@@ -588,7 +588,6 @@ export class FinoVFS {
             if (pArg) Pointer.writeI32(pArg, 0, state.lockLevel);
             return SQLITE_OK;
 
-          case SQLITE_FCNTL_SIZE_HINT:
           case SQLITE_FCNTL_SYNC_OMITTED:
           case SQLITE_FCNTL_OVERWRITE:
           case SQLITE_FCNTL_BUSYHANDLER:
@@ -600,6 +599,20 @@ export class FinoVFS {
           case SQLITE_FCNTL_CKPT_DONE:
           case SQLITE_FCNTL_RESET_CACHE:
           case SQLITE_FCNTL_BLOCK_ON_CONNECT:
+            return SQLITE_OK;
+
+          case SQLITE_FCNTL_SIZE_HINT:
+            if (pArg) {
+              const h = state.handle as SyncFileHandle;
+              try {
+                if (typeof h.truncateSync !== 'function') return SQLITE_IOERR_TRUNCATE;
+                const size = Pointer.readI64(pArg, 0) as bigint;
+                if (size >= 0n) h.truncateSync(size);
+                bumpDataVersion(state);
+              } catch {
+                return SQLITE_IOERR_TRUNCATE;
+              }
+            }
             return SQLITE_OK;
 
           case SQLITE_FCNTL_CHUNK_SIZE:

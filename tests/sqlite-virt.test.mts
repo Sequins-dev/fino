@@ -24,6 +24,8 @@ import {
   SQLITE_FCNTL_PERSIST_WAL,
   SQLITE_FCNTL_POWERSAFE_OVERWRITE,
   SQLITE_FCNTL_PRAGMA,
+  SQLITE_FCNTL_SIZE_HINT,
+  SQLITE_IOERR_TRUNCATE,
   SQLITE_LOCK_NONE,
   SQLITE_NOTFOUND,
   SQLITE_OK,
@@ -56,6 +58,7 @@ class MemoryFileHandle implements FileHandle {
 
   get path() { return this.#path as unknown as Path; }
   get closed() { return this.#closed; }
+  get storeForTest() { return this.#store; }
 
   async stat(): Promise<Stat> {
     return { size: this.#store.data.byteLength, mtime: 0, atime: 0, ctime: 0, mode: 0o644, ino: 0, dev: 0, nlink: 1, uid: 0, gid: 0, rdev: 0, blksize: 4096, blocks: 0 } as unknown as Stat;
@@ -190,6 +193,48 @@ class MemoryFileSystem {
   async realpath(path: string | Path) { return String(path); }
 }
 
+class FailingSyncFileHandle extends MemoryFileHandle {
+  #failure: 'sync' | 'truncate' | 'write';
+
+  constructor(store: { data: Uint8Array }, path: string, failure: 'sync' | 'truncate' | 'write') {
+    super(store, path);
+    this.#failure = failure;
+  }
+
+  override pwriteSync(pos: number | bigint, src: Uint8Array): number {
+    if (this.#failure === 'write') throw new Error('injected pwrite failure');
+    return super.pwriteSync(pos, src);
+  }
+
+  override syncSync(): void {
+    if (this.#failure === 'sync') throw new Error('injected sync failure');
+    super.syncSync();
+  }
+
+  override truncateSync(len: number | bigint): void {
+    if (this.#failure === 'truncate') throw new Error('injected truncate failure');
+    super.truncateSync(len);
+  }
+}
+
+class FailingSyncFileSystem extends MemoryFileSystem {
+  #failure: 'sync' | 'truncate' | 'write';
+
+  constructor(failure: 'sync' | 'truncate' | 'write') {
+    super();
+    this.#failure = failure;
+  }
+
+  override openSync(path: string | Path, mode = 'r'): FileHandle {
+    const handle = super.openSync(path, mode) as MemoryFileHandle;
+    return new FailingSyncFileHandle(
+      handle.storeForTest,
+      String(path),
+      this.#failure,
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -249,6 +294,72 @@ describe('fino:database/sqlite — in-memory FileSystem (virtualization)', () =>
     const rows = await db.prepare('SELECT COUNT(*) AS n FROM t').get();
     t.equal(rows!['n'], 0n, 'rolled back');
     await db.close();
+  });
+
+  it('persists data across reopen with the same MemoryFileSystem', async (t) => {
+    const memFs = new MemoryFileSystem();
+    const first = await Database.open('/persist.db', { fs: memFs as unknown as FileSystem });
+    try {
+      await first.exec('CREATE TABLE items (id INTEGER PRIMARY KEY, label TEXT)');
+      await first.prepare('INSERT INTO items VALUES (?, ?)').run(1n, 'saved');
+    } finally {
+      await first.close();
+    }
+
+    const second = await Database.open('/persist.db', { fs: memFs as unknown as FileSystem });
+    try {
+      const row = await second.prepare('SELECT label FROM items WHERE id = 1').get();
+      t.equal(row!['label'], 'saved', 'reopened database reads persisted in-memory bytes');
+    } finally {
+      await second.close();
+    }
+  });
+
+  it('reports VFS write failures as sqlite errors', async (t) => {
+    const fs = new FailingSyncFileSystem('write');
+    const db = await Database.open('/write-failure.db', { fs: fs as unknown as FileSystem });
+    try {
+      await t.rejects(
+        () => db.exec('CREATE TABLE t (value TEXT)'),
+        /sqlite3_exec|disk I\/O|I\/O|ioerr/i,
+        'pwrite failures reject the statement',
+      );
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('reports VFS sync failures as sqlite errors', async (t) => {
+    const fs = new FailingSyncFileSystem('sync');
+    const db = await Database.open('/sync-failure.db', { fs: fs as unknown as FileSystem });
+    try {
+      await t.rejects(
+        async () => {
+          await db.exec('PRAGMA synchronous = FULL');
+          await db.exec('CREATE TABLE t (value TEXT)');
+        },
+        /sqlite3_exec|disk I\/O|I\/O|ioerr/i,
+        'sync failures reject the statement',
+      );
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('reports VFS truncate failures as sqlite errors', async (t) => {
+    const fs = new FailingSyncFileSystem('truncate');
+    const db = await Database.open('/truncate-failure.db', { fs: fs as unknown as FileSystem });
+    const s = requireSqlite().symbols;
+    const main = cstr('main');
+    const size = new ArrayBuffer(8);
+    new DataView(size).setBigInt64(0, 8192n, true);
+    try {
+      await db.exec('CREATE TABLE t (value TEXT)');
+      const rc = s.sqlite3_file_control(db.ptr, main, SQLITE_FCNTL_SIZE_HINT, Pointer.of(size)) as number;
+      t.equal(rc, SQLITE_IOERR_TRUNCATE, 'truncate failures return SQLITE_IOERR_TRUNCATE');
+    } finally {
+      await db.close();
+    }
   });
 
   it('supports deterministic VFS file controls', async (t) => {
