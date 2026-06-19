@@ -56,7 +56,23 @@
  *   RDATA   — variable; format depends on TYPE
  *
  * `parseResourceRecord()` handles A, AAAA, CNAME, NS, PTR, MX, TXT, SOA, and
- * SRV. Unknown types return raw bytes.
+ * SRV, plus DNSSEC DS, DNSKEY, RRSIG, NSEC, NSEC3, and NSEC3PARAM records.
+ * Unknown types return raw bytes. Every parsed record also preserves exact
+ * `rawData` RDATA bytes for canonicalization and future validator use.
+ *
+ *
+ * ## DNSSEC wire support
+ *
+ * Passing `{ dnssec: true }` to `new Resolver()` or `lookup()` makes queries
+ * include an EDNS(0) OPT pseudo-record with the DNSSEC OK (DO) bit and a
+ * conservative 1232-byte UDP payload size. Responses parse EDNS metadata and
+ * DNSSEC record payloads locally. Signed positive answers are validated from
+ * embedded IANA root trust anchors. Bogus or indeterminate signed data, broken
+ * DS/DNSKEY chains, expired signatures, unsupported-only signatures, and
+ * missing denial proofs reject with `code: 'EDNSSEC'`. Provably insecure
+ * unsigned delegations are accepted after a signed DS-negative proof. The
+ * resolver never trusts upstream AD bits as proof. Unsupported DNSSEC signing
+ * algorithms still reject unless another supported signature validates.
  *
  *
  * ## CNAME chain following
@@ -101,7 +117,9 @@
  *   would use `getpid()` XOR'd with a counter to reduce collision probability.
  * - UDP datagrams may arrive out of order or be duplicates. We check that the
  *   response ID matches the query ID and discard non-matching packets.
- * - DNSSEC validation is not implemented. Responses are trusted at face value.
+ * - DNSSEC validation is opt-in. DNSSEC-enabled queries request validation
+ *   material with EDNS(0) DO, verify chains locally, and reject bogus or
+ *   indeterminate data with `EDNSSEC`.
  *
  * @example
  * ```ts no_run
@@ -119,6 +137,7 @@ import { DiskFileSystem } from '../file/fs.mts';
 import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
 import { os } from 'internal:process';
 import { Scanner } from '../parsing/scanner.mts';
+import { ROOT_TRUST_ANCHORS, validateDnssecResponse, type DnssecCache } from 'internal:net/dnssec';
 
 type DnsServerFamily = 'ipv4' | 'ipv6';
 type RecordTypeName = keyof typeof RECORD_TYPES;
@@ -266,6 +285,64 @@ export interface SrvRecord {
 }
 
 /**
+ * Delegation signer DNSSEC record payload.
+ *
+ * DS records bind a child zone DNSKEY to its parent zone. The digest is the
+ * raw hash from wire format; callers that display it commonly hex-encode it.
+ */
+export interface DsRecord {
+  keyTag: number;
+  algorithm: number;
+  digestType: number;
+  digest: Uint8Array;
+}
+
+/** DNSSEC DNSKEY record payload. */
+export interface DnskeyRecord {
+  flags: number;
+  protocol: number;
+  algorithm: number;
+  publicKey: Uint8Array;
+}
+
+/** DNSSEC RRSIG record payload. */
+export interface RrsigRecord {
+  typeCovered: number;
+  algorithm: number;
+  labels: number;
+  originalTtl: number;
+  expiration: number;
+  inception: number;
+  keyTag: number;
+  signerName: string;
+  signature: Uint8Array;
+}
+
+/** DNSSEC NSEC authenticated-denial record payload. */
+export interface NsecRecord {
+  nextDomainName: string;
+  types: number[];
+}
+
+/** DNSSEC NSEC3 authenticated-denial record payload. */
+export interface Nsec3Record {
+  hashAlgorithm: number;
+  flags: number;
+  iterations: number;
+  salt: Uint8Array;
+  nextHashedOwnerName: Uint8Array;
+  types: number[];
+}
+
+/** DNSSEC NSEC3PARAM record payload. */
+export interface Nsec3ParamRecord {
+  hashAlgorithm: number;
+  flags: number;
+  iterations: number;
+  salt: Uint8Array;
+}
+
+/**
  * Decoded DNS record payload for supported record types; unknown data is raw
  * bytes and malformed or empty RDATA can surface as `null`.
  *
@@ -276,7 +353,20 @@ export interface SrvRecord {
  * }
  * ```
  */
-export type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord | Uint8Array | null;
+export type DnsRecordData =
+  | string
+  | string[]
+  | MxRecord
+  | SoaRecord
+  | SrvRecord
+  | DsRecord
+  | DnskeyRecord
+  | RrsigRecord
+  | NsecRecord
+  | Nsec3Record
+  | Nsec3ParamRecord
+  | Uint8Array
+  | null;
 
 /**
  * Decoded DNS resource record from a response section.
@@ -311,6 +401,8 @@ export interface DnsResourceRecord {
    * ```
    */
   ttl:  number;
+  /** Exact RDATA bytes from the packet. */
+  rawData: Uint8Array;
   /** Parsed record payload, or raw bytes for unsupported record types.
    *
    * ```ts no_run
@@ -382,6 +474,14 @@ export interface DnsResponse {
    * ```
    */
   additionals: DnsResourceRecord[];
+  /** Parsed EDNS(0) metadata when the response contains an OPT pseudo-RR. */
+  edns?: {
+    udpPayloadSize: number;
+    dnssecOk: boolean;
+    extendedRcode: number;
+    version: number;
+    flags: number;
+  };
 }
 
 /**
@@ -410,6 +510,8 @@ export interface ResolverOptions {
    * ```
    */
   retries?: number;
+  /** Enable local DNSSEC validation and request DNSSEC records with EDNS(0) DO. */
+  dnssec?: boolean;
 }
 
 /**
@@ -430,6 +532,8 @@ export interface LookupOptions {
    * ```
    */
   family?: 4 | 6;
+  /** Enable local DNSSEC validation for this lookup. */
+  dnssec?: boolean;
 }
 
 /**
@@ -473,8 +577,15 @@ const QTYPE_SOA   = 6;
 const QTYPE_PTR   = 12;
 const QTYPE_MX    = 15;
 const QTYPE_TXT   = 16;
+const QTYPE_DS    = 43;
+const QTYPE_RRSIG = 46;
+const QTYPE_NSEC  = 47;
+const QTYPE_DNSKEY = 48;
 const QTYPE_AAAA  = 28;
 const QTYPE_SRV   = 33;
+const QTYPE_OPT   = 41;
+const QTYPE_NSEC3 = 50;
+const QTYPE_NSEC3PARAM = 51;
 
 /**
  * Map from supported DNS record type names to numeric QTYPE values.
@@ -641,6 +752,18 @@ export const RECORD_TYPES = {
    * @internal
    */
   SRV: QTYPE_SRV,
+  /** DNSSEC DS record type constant. */
+  DS: QTYPE_DS,
+  /** DNSSEC RRSIG record type constant. */
+  RRSIG: QTYPE_RRSIG,
+  /** DNSSEC NSEC record type constant. */
+  NSEC: QTYPE_NSEC,
+  /** DNSSEC DNSKEY record type constant. */
+  DNSKEY: QTYPE_DNSKEY,
+  /** DNSSEC NSEC3 record type constant. */
+  NSEC3: QTYPE_NSEC3,
+  /** DNSSEC NSEC3PARAM record type constant. */
+  NSEC3PARAM: QTYPE_NSEC3PARAM,
 };
 
 const RCODE_ERRORS: Partial<Record<number, { code: string; msg: string }>> = {
@@ -716,9 +839,15 @@ export function _encodeName(name: string): Uint8Array {
  *
  * Exported for unit testing.
  */
-export function _buildQuery(id: number, name: string, qtype: number): Uint8Array {
+export function _buildQuery(
+  id: number,
+  name: string,
+  qtype: number,
+  options: { dnssec?: boolean; udpPayloadSize?: number } = {},
+): Uint8Array {
   const encodedName = _encodeName(name);
-  const totalLen    = 12 + encodedName.length + 4; // header + qname + qtype(2) + qclass(2)
+  const addOpt      = options.dnssec === true;
+  const totalLen    = 12 + encodedName.length + 4 + (addOpt ? 11 : 0);
   const out  = new Uint8Array(totalLen);
   const view = new DataView(out.buffer);
 
@@ -726,12 +855,24 @@ export function _buildQuery(id: number, name: string, qtype: number): Uint8Array
   view.setUint16(0, id,     false); // ID
   view.setUint16(2, 0x0100, false); // Flags: RD=1, everything else 0
   view.setUint16(4, 1,      false); // QDCOUNT = 1
+  if (addOpt) view.setUint16(10, 1, false); // ARCOUNT = 1
   // ANCOUNT, NSCOUNT, ARCOUNT = 0 (already zero)
 
   // Question section
   out.set(encodedName, 12);
   view.setUint16(12 + encodedName.length,     qtype, false); // QTYPE
   view.setUint16(12 + encodedName.length + 2, 1,     false); // QCLASS = IN
+
+  if (addOpt) {
+    const optOffset = 12 + encodedName.length + 4;
+    out[optOffset] = 0; // root owner name
+    view.setUint16(optOffset + 1, QTYPE_OPT, false);
+    view.setUint16(optOffset + 3, options.udpPayloadSize ?? 1232, false);
+    out[optOffset + 5] = 0; // extended RCODE
+    out[optOffset + 6] = 0; // EDNS version
+    view.setUint16(optOffset + 7, 0x8000, false); // DO bit
+    view.setUint16(optOffset + 9, 0, false); // RDLEN
+  }
 
   return out;
 }
@@ -804,6 +945,26 @@ export function _decodeName(msg: Uint8Array, startOffset: number): { name: strin
  * Parse one DNS resource record from msg starting at offset.
  * Returns { record, nextOffset } where nextOffset points past the record.
  */
+function decodeTypeBitmap(bytes: Uint8Array): number[] {
+  const types: number[] = [];
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    if (offset + 2 > bytes.byteLength) throw new Error('DNS: truncated DNSSEC type bitmap');
+    const window = bytes[offset++]!;
+    const length = bytes[offset++]!;
+    if (length === 0 || length > 32) throw new Error('DNS: invalid DNSSEC type bitmap length');
+    if (offset + length > bytes.byteLength) throw new Error('DNS: truncated DNSSEC type bitmap window');
+    for (let i = 0; i < length; i++) {
+      const value = bytes[offset + i]!;
+      for (let bit = 0; bit < 8; bit++) {
+        if ((value & (1 << (7 - bit))) !== 0) types.push(window * 256 + i * 8 + bit);
+      }
+    }
+    offset += length;
+  }
+  return types;
+}
+
 function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsResourceRecord; nextOffset: number } {
   const { name, nextOffset: afterName } = _decodeName(msg, offset);
   const scanner = new Scanner(msg, { format: 'dns' });
@@ -818,6 +979,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
   const rdataStart = scanner.offset;
   const rdataEnd   = rdataStart + rdlength;
   if (rdataEnd > msg.length) throw new Error('DNS: truncated resource record data');
+  const rawData = msg.slice(rdataStart, rdataEnd);
 
   let data: DnsRecordData;
   switch (type) {
@@ -884,6 +1046,99 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
       data = { priority, weight, port, name: target };
       break;
     }
+    case QTYPE_DS: {
+      if (rdlength < 4) throw new Error('DNS: truncated DS record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      data = {
+        keyTag: rdata.readU16BEField('DS key tag'),
+        algorithm: rdata.readU8(),
+        digestType: rdata.readU8(),
+        digest: msg.slice(rdataStart + 4, rdataEnd),
+      };
+      break;
+    }
+    case QTYPE_DNSKEY: {
+      if (rdlength < 4) throw new Error('DNS: truncated DNSKEY record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      data = {
+        flags: rdata.readU16BEField('DNSKEY flags'),
+        protocol: rdata.readU8(),
+        algorithm: rdata.readU8(),
+        publicKey: msg.slice(rdataStart + 4, rdataEnd),
+      };
+      break;
+    }
+    case QTYPE_RRSIG: {
+      if (rdlength < 19) throw new Error('DNS: truncated RRSIG record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      const typeCovered = rdata.readU16BEField('RRSIG type covered');
+      const algorithm = rdata.readU8();
+      const labels = rdata.readU8();
+      const originalTtl = rdata.readU32BEField('RRSIG original ttl');
+      const expiration = rdata.readU32BEField('RRSIG expiration');
+      const inception = rdata.readU32BEField('RRSIG inception');
+      const keyTag = rdata.readU16BEField('RRSIG key tag');
+      const { name: signerName, nextOffset: afterSigner } = _decodeName(msg, rdataStart + 18);
+      if (afterSigner > rdataEnd) throw new Error('DNS: truncated RRSIG signer name');
+      data = {
+        typeCovered,
+        algorithm,
+        labels,
+        originalTtl,
+        expiration,
+        inception,
+        keyTag,
+        signerName,
+        signature: msg.slice(afterSigner, rdataEnd),
+      };
+      break;
+    }
+    case QTYPE_NSEC: {
+      const { name: nextDomainName, nextOffset: afterNext } = _decodeName(msg, rdataStart);
+      if (afterNext > rdataEnd) throw new Error('DNS: truncated NSEC record data');
+      data = {
+        nextDomainName,
+        types: decodeTypeBitmap(msg.subarray(afterNext, rdataEnd)),
+      };
+      break;
+    }
+    case QTYPE_NSEC3: {
+      if (rdlength < 5) throw new Error('DNS: truncated NSEC3 record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      const hashAlgorithm = rdata.readU8();
+      const flags = rdata.readU8();
+      const iterations = rdata.readU16BEField('NSEC3 iterations');
+      const saltLength = rdata.readU8();
+      if (rdata.remainingBytes < saltLength + 1) throw new Error('DNS: truncated NSEC3 salt');
+      const salt = rdata.eatBytes(saltLength);
+      const hashLength = rdata.readU8();
+      if (rdata.remainingBytes < hashLength) throw new Error('DNS: truncated NSEC3 next hashed owner');
+      const nextHashedOwnerName = rdata.eatBytes(hashLength);
+      data = {
+        hashAlgorithm,
+        flags,
+        iterations,
+        salt,
+        nextHashedOwnerName,
+        types: decodeTypeBitmap(msg.subarray(rdataStart + rdata.offset, rdataEnd)),
+      };
+      break;
+    }
+    case QTYPE_NSEC3PARAM: {
+      if (rdlength < 5) throw new Error('DNS: truncated NSEC3PARAM record data');
+      const rdata = new Scanner(msg.subarray(rdataStart, rdataEnd), { format: 'dns' });
+      const hashAlgorithm = rdata.readU8();
+      const flags = rdata.readU8();
+      const iterations = rdata.readU16BEField('NSEC3PARAM iterations');
+      const saltLength = rdata.readU8();
+      if (rdata.remainingBytes !== saltLength) throw new Error('DNS: invalid NSEC3PARAM salt length');
+      data = { hashAlgorithm, flags, iterations, salt: rdata.eatBytes(saltLength) };
+      break;
+    }
+    case QTYPE_OPT: {
+      data = rawData;
+      break;
+    }
     default: {
       // Unknown type — return raw bytes
       data = msg.slice(rdataStart, rdataEnd);
@@ -892,7 +1147,7 @@ function parseResourceRecord(msg: Uint8Array, offset: number): { record: DnsReso
   }
 
   return {
-    record: { name, type, ttl, data },
+    record: { name, type, ttl, rawData, data },
     nextOffset: rdataEnd,
   };
 }
@@ -938,6 +1193,7 @@ export function _parseResponse(msg: Uint8Array): DnsResponse {
   const answers: DnsResourceRecord[] = [];
   const authorities: DnsResourceRecord[] = [];
   const additionals: DnsResourceRecord[] = [];
+  let edns: DnsResponse['edns'];
 
   // Closure advances the shared response scanner past each RR.
   function readRRs(out: DnsResourceRecord[], count: number) {
@@ -950,9 +1206,30 @@ export function _parseResponse(msg: Uint8Array): DnsResponse {
 
   readRRs(answers,     ancount);
   readRRs(authorities, nscount);
-  readRRs(additionals, arcount);
+  for (let i = 0; i < arcount; i++) {
+    const rrOffset = scanner.offset;
+    const { record, nextOffset } = parseResourceRecord(msg, scanner.offset);
+    scanner.jump(nextOffset);
+    if (record.type === QTYPE_OPT) {
+      const { nextOffset: afterName } = _decodeName(msg, rrOffset);
+      const optScanner = new Scanner(msg, { format: 'dns' });
+      optScanner.jump(afterName + 2);
+      const udpPayloadSize = optScanner.readU16BEField('OPT UDP payload size');
+      const ttl = optScanner.readU32BEField('OPT ttl');
+      const flags = ttl & 0xffff;
+      edns = {
+        udpPayloadSize,
+        dnssecOk: (flags & 0x8000) !== 0,
+        extendedRcode: (ttl >>> 24) & 0xff,
+        version: (ttl >>> 16) & 0xff,
+        flags,
+      };
+      continue;
+    }
+    additionals.push(record);
+  }
 
-  return { id, flags, rcode, truncated, answers, authorities, additionals };
+  return { id, flags, rcode, truncated, answers, authorities, additionals, edns };
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,7 +1345,9 @@ function formatRecords(records: DnsResourceRecord[], rrtype: RecordTypeName): Dn
  * The resolver lazily reads `/etc/resolv.conf` on first use, falls back to
  * public IPv4 DNS servers if none are found, follows CNAME chains for A and
  * AAAA lookups up to a fixed hop limit, and retries over TCP when a UDP
- * response has the DNS truncated bit set. DNSSEC validation is not implemented.
+ * response has the DNS truncated bit set. Set `dnssec: true` to request DNSSEC
+ * records with EDNS(0) DO and validate signed answers from the root trust
+ * anchor before returning them.
  *
  * ```ts no_run
  * import { Resolver } from 'fino:net/dns';
@@ -1166,6 +1445,8 @@ export class Resolver {
    * @internal
    */
   #retries: number;
+  #dnssec: boolean;
+  #dnssecCache: DnssecCache;
 
   /**
    * Create a resolver.
@@ -1182,6 +1463,8 @@ export class Resolver {
     this.#serversLoaded = null;
     this.#timeout       = opts.timeout ?? 5000;
     this.#retries       = opts.retries ?? 2;
+    this.#dnssec        = opts.dnssec === true;
+    this.#dnssecCache   = { entries: new Map(), maxEntries: 256 };
   }
 
   // -------------------------------------------------------------------------
@@ -1496,12 +1779,12 @@ export class Resolver {
    * }
    * ```
    */
-  async #sendQuery(name: string, qtype: number): Promise<DnsResponse> {
+  async #sendQuery(name: string, qtype: number, validateDnssec = true): Promise<DnsResponse> {
     await this.#ensureServers();
 
     // Random 16-bit transaction ID (1..65535)
     const id     = Math.max(1, (Math.random() * 0xFFFF) | 0);
-    const packet = _buildQuery(id, name, qtype);
+    const packet = _buildQuery(id, name, qtype, { dnssec: this.#dnssec });
 
     const TIMED_OUT = Symbol('timeout');
     const servers = this.#servers ?? DEFAULT_SERVERS;
@@ -1543,7 +1826,7 @@ export class Resolver {
         }
 
         // fd is readable — receive the UDP datagram
-        const recvResult = sock.recvfrom(fd, 4096);
+        const recvResult = sock.recvfrom(fd, this.#dnssec ? 1232 : 4096);
         sock.close(fd);
 
         if (typeof recvResult === 'number' || recvResult === null) {
@@ -1564,6 +1847,24 @@ export class Resolver {
           const tcpResponse = await this.#sendTcpQuery(server, packet, id, name);
           if (tcpResponse === null) continue;
           response = tcpResponse;
+        }
+
+        if (this.#dnssec && validateDnssec) {
+          await validateDnssecResponse(response, name, qtype, {
+            trustAnchors: ROOT_TRUST_ANCHORS,
+            cache: this.#dnssecCache,
+            fetch: async (fetchName, fetchType) => {
+              try {
+                return await this.#sendQuery(fetchName, fetchType, false);
+              } catch (err) {
+                if ((err as { code?: string })?.code === 'EDNSSEC') throw err;
+                const dnssecErr: DnsError = new Error(`dnssec: validation fetch failed for '${fetchName}'`);
+                dnssecErr.code = 'EDNSSEC';
+                dnssecErr.hostname = fetchName;
+                throw dnssecErr;
+              }
+            },
+          });
         }
 
         if (!this.#handleResponseCode(response, name)) continue;
@@ -1610,7 +1911,6 @@ export class Resolver {
         return null;
       }
       if (response.id !== id) return null;
-      if (!this.#handleResponseCode(response, name)) return null;
       return response;
     } finally {
       loop.removeRead(fd);
@@ -1708,9 +2008,9 @@ export async function lookup(hostname: string, opts: LookupOptions = {}): Promis
     return { address: hostname, family: 6 };
   }
 
-  if (!_defaultResolver) _defaultResolver = new Resolver();
+  const resolver = opts.dnssec ? new Resolver({ dnssec: true }) : (_defaultResolver ??= new Resolver());
   const rrtype = family === 6 ? 'AAAA' : 'A';
-  const addresses = await _defaultResolver.resolve(hostname, rrtype);
+  const addresses = await resolver.resolve(hostname, rrtype);
   if (addresses.length === 0) {
     const err: DnsError = new Error(`dns: no ${rrtype} record for '${hostname}'`);
     err.code     = 'ENOTFOUND';

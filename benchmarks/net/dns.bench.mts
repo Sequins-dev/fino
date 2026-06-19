@@ -91,6 +91,82 @@ const A_RESPONSE_SHORT  = buildAResponse('example.com', '93.184.216.34');
 const A_RESPONSE_LONG   = buildAResponse('api.v2.internal.svc.cluster.example.com', '10.0.1.1');
 const AAAA_RESPONSE     = buildAAAAResponse('example.com');
 
+function writeU16(value: number): Uint8Array {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, value, false);
+  return out;
+}
+
+function writeU32(value: number): Uint8Array {
+  const out = new Uint8Array(4);
+  new DataView(out.buffer).setUint32(0, value, false);
+  return out;
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const part of parts) total += part.byteLength;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+function buildDnssecResponse(name: string): Uint8Array {
+  const nameWire = _encodeName(name);
+  const questionLen = nameWire.length + 4;
+  const ds = concatBytes([writeU16(20326), new Uint8Array([8, 2]), new Uint8Array(32).fill(0xaa)]);
+  const dnskey = concatBytes([writeU16(257), new Uint8Array([3, 8, 1, 0, 1, 3, 1, 0, 1])]);
+  const rrsig = concatBytes([
+    writeU16(RECORD_TYPES.A),
+    new Uint8Array([8, 2]),
+    writeU32(300),
+    writeU32(4_102_444_800),
+    writeU32(4_099_852_800),
+    writeU16(20326),
+    nameWire,
+    new Uint8Array(256).fill(0xbb),
+  ]);
+  const rdatas = [
+    { type: RECORD_TYPES.DS, data: ds },
+    { type: RECORD_TYPES.DNSKEY, data: dnskey },
+    { type: RECORD_TYPES.RRSIG, data: rrsig },
+  ];
+  let rrLen = 0;
+  for (const rdata of rdatas) rrLen += 2 + 2 + 2 + 4 + 2 + rdata.data.byteLength;
+  const buf = new Uint8Array(12 + questionLen + rrLen + 11);
+  const view = new DataView(buf.buffer);
+  view.setUint16(0, 0x8888, false);
+  view.setUint16(2, 0x8180, false);
+  view.setUint16(4, 1, false);
+  view.setUint16(6, rdatas.length, false);
+  view.setUint16(10, 1, false);
+  let off = 12;
+  buf.set(nameWire, off); off += nameWire.length;
+  view.setUint16(off, RECORD_TYPES.A, false); off += 2;
+  view.setUint16(off, 1, false); off += 2;
+  for (const record of rdatas) {
+    buf[off++] = 0xc0; buf[off++] = 0x0c;
+    view.setUint16(off, record.type, false); off += 2;
+    view.setUint16(off, 1, false); off += 2;
+    view.setUint32(off, 300, false); off += 4;
+    view.setUint16(off, record.data.byteLength, false); off += 2;
+    buf.set(record.data, off); off += record.data.byteLength;
+  }
+  buf[off++] = 0;
+  view.setUint16(off, 41, false); off += 2;
+  view.setUint16(off, 1232, false); off += 2;
+  off += 2;
+  view.setUint16(off, 0x8000, false); off += 2;
+  view.setUint16(off, 0, false);
+  return buf;
+}
+
+const DNSSEC_RESPONSE = buildDnssecResponse('example.com');
+
 bench('_encodeName', (b) => {
   b.measure('2-label short',   () => _encodeName('example.com'));
   b.measure('2-label long',    () => _encodeName('subdomain.example.com'));
@@ -106,6 +182,7 @@ bench('_buildQuery', (b) => {
     g.measure('MX',    () => _buildQuery(0x1234, 'example.com', RECORD_TYPES.MX));
     g.measure('TXT',   () => _buildQuery(0x1234, 'example.com', RECORD_TYPES.TXT));
     g.measure('SRV',   () => _buildQuery(0x1234, '_http._tcp.example.com', RECORD_TYPES.SRV));
+    g.measure('A + DNSSEC DO', () => _buildQuery(0x1234, 'example.com', RECORD_TYPES.A, { dnssec: true }));
   });
 
   b.group('by name length', (g) => {
@@ -119,6 +196,7 @@ bench('_parseResponse', (b) => {
   b.group('by record type', (g) => {
     g.measure('A record',    () => _parseResponse(A_RESPONSE_SHORT));
     g.measure('AAAA record', () => _parseResponse(AAAA_RESPONSE));
+    g.measure('DNSSEC records + OPT', () => _parseResponse(DNSSEC_RESPONSE));
   });
 
   b.group('by name length', (g) => {

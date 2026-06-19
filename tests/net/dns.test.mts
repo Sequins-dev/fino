@@ -38,7 +38,7 @@ function bindIpv4Native(fd: number, ip: string, port: number): void {
 type LocalDnsRecord = {
   type: number;
   ttl?: number;
-  data: string | string[] | { exchange: string; priority: number };
+  data: string | string[] | Uint8Array | { exchange: string; priority: number };
 };
 
 function concatBytes(parts: Uint8Array[]): Uint8Array {
@@ -93,7 +93,19 @@ function recordRdata(record: LocalDnsRecord): Uint8Array {
     const mx = record.data as { exchange: string; priority: number };
     return concatBytes([writeU16(mx.priority), _encodeName(mx.exchange)]);
   }
+  if (record.data instanceof Uint8Array) return record.data;
   throw new Error(`unsupported fixture record type ${record.type}`);
+}
+
+function bitmapWindow(types: number[]): Uint8Array {
+  let max = 0;
+  for (const type of types) max = Math.max(max, type & 0xff);
+  const bitmap = new Uint8Array((max >> 3) + 1);
+  for (const type of types) {
+    const offset = type & 0xff;
+    bitmap[offset >> 3] |= 1 << (7 - (offset & 7));
+  }
+  return concatBytes([new Uint8Array([0, bitmap.byteLength]), bitmap]);
 }
 
 function buildDnsResponse(query: Uint8Array, records: LocalDnsRecord[], opts: { rcode?: number; truncated?: boolean } = {}): Uint8Array {
@@ -284,6 +296,19 @@ describe('Wire protocol', () => {
     t.equal(view.getUint16(qtypeOff + 2, false), 1,              'QCLASS = IN');
   });
 
+  it('_buildQuery — DNSSEC adds EDNS OPT with DO bit', (t) => {
+    const pkt = _buildQuery(0x1234, 'example.com', RECORD_TYPES.A, { dnssec: true });
+    const view = new DataView(pkt.buffer, pkt.byteOffset, pkt.byteLength);
+    const nameBytes = _encodeName('example.com');
+    const optOffset = 12 + nameBytes.length + 4;
+    t.equal(view.getUint16(10, false), 1, 'ARCOUNT = 1');
+    t.equal(pkt[optOffset], 0, 'OPT owner is root');
+    t.equal(view.getUint16(optOffset + 1, false), 41, 'TYPE = OPT');
+    t.equal(view.getUint16(optOffset + 3, false), 1232, 'UDP payload size defaults to 1232');
+    t.equal((view.getUint16(optOffset + 7, false) & 0x8000) !== 0, true, 'DO bit is set');
+    t.equal(view.getUint16(optOffset + 9, false), 0, 'no EDNS options');
+  });
+
   it('_decodeName — simple name (no compression)', (t) => {
     const encoded = _encodeName('foo.bar');
     const { name, nextOffset } = _decodeName(encoded, 0);
@@ -336,6 +361,104 @@ describe('Wire protocol', () => {
     t.equal(parsed.answers.length, 1, 'one answer');
     t.equal(parsed.answers[0]!.data, '93.184.216.34', 'A record data');
     t.equal(parsed.answers[0]!.ttl,  300, 'TTL');
+    t.deepEqual(Array.from(parsed.answers[0]!.rawData), [93, 184, 216, 34], 'raw RDATA preserved');
+  });
+
+  it('_parseResponse — DNSSEC records and OPT metadata', (t) => {
+    const qname = _encodeName('example.com');
+    const records: LocalDnsRecord[] = [
+      {
+        type: RECORD_TYPES.DS,
+        data: concatBytes([
+          writeU16(20326),
+          new Uint8Array([8, 2]),
+          new Uint8Array(32).fill(0xaa),
+        ]),
+      },
+      {
+        type: RECORD_TYPES.DNSKEY,
+        data: concatBytes([
+          writeU16(257),
+          new Uint8Array([3, 8, 1, 0, 1, 3, 1, 0, 1]),
+        ]),
+      },
+      {
+        type: RECORD_TYPES.RRSIG,
+        data: concatBytes([
+          writeU16(RECORD_TYPES.A),
+          new Uint8Array([8, 2]),
+          writeU32(300),
+          writeU32(4_102_444_800),
+          writeU32(4_099_852_800),
+          writeU16(20326),
+          _encodeName('example.com'),
+          new Uint8Array([1, 2, 3, 4]),
+        ]),
+      },
+      {
+        type: RECORD_TYPES.NSEC,
+        data: concatBytes([
+          _encodeName('next.example.com'),
+          bitmapWindow([RECORD_TYPES.A, RECORD_TYPES.RRSIG, RECORD_TYPES.NSEC]),
+        ]),
+      },
+      {
+        type: RECORD_TYPES.NSEC3,
+        data: concatBytes([
+          new Uint8Array([1, 0]),
+          writeU16(2),
+          new Uint8Array([1, 0xaa, 2, 0xbb, 0xcc]),
+          bitmapWindow([RECORD_TYPES.AAAA, RECORD_TYPES.RRSIG]),
+        ]),
+      },
+      {
+        type: RECORD_TYPES.NSEC3PARAM,
+        data: new Uint8Array([1, 0, 0, 2, 1, 0xaa]),
+      },
+    ];
+    const questionLen = qname.length + 4;
+    let rrBytes = 0;
+    const rdatas = records.map(recordRdata);
+    for (const rdata of rdatas) rrBytes += 2 + 2 + 2 + 4 + 2 + rdata.byteLength;
+    const totalLen = 12 + questionLen + rrBytes + 11;
+    const msg = new Uint8Array(totalLen);
+    const view = new DataView(msg.buffer);
+    view.setUint16(0, 0xBEEF, false);
+    view.setUint16(2, 0x8180, false);
+    view.setUint16(4, 1, false);
+    view.setUint16(6, records.length, false);
+    view.setUint16(10, 1, false);
+    let off = 12;
+    msg.set(qname, off); off += qname.length;
+    view.setUint16(off, RECORD_TYPES.A, false); off += 2;
+    view.setUint16(off, 1, false); off += 2;
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]!;
+      const rdata = rdatas[i]!;
+      msg[off++] = 0xc0; msg[off++] = 0x0c;
+      view.setUint16(off, record.type, false); off += 2;
+      view.setUint16(off, 1, false); off += 2;
+      view.setUint32(off, record.ttl ?? 300, false); off += 4;
+      view.setUint16(off, rdata.byteLength, false); off += 2;
+      msg.set(rdata, off); off += rdata.byteLength;
+    }
+    msg[off++] = 0;
+    view.setUint16(off, 41, false); off += 2;
+    view.setUint16(off, 1232, false); off += 2;
+    msg[off++] = 0;
+    msg[off++] = 0;
+    view.setUint16(off, 0x8000, false); off += 2;
+    view.setUint16(off, 0, false);
+
+    const parsed = _parseResponse(msg);
+    t.equal(parsed.edns?.dnssecOk, true, 'EDNS DO parsed');
+    t.equal(parsed.edns?.udpPayloadSize, 1232, 'EDNS UDP payload size parsed');
+    t.equal((parsed.answers[0]!.data as { keyTag?: number }).keyTag, 20326, 'DS key tag parsed');
+    t.equal((parsed.answers[1]!.data as { algorithm?: number }).algorithm, 8, 'DNSKEY algorithm parsed');
+    t.equal((parsed.answers[2]!.data as { signerName?: string }).signerName, 'example.com', 'RRSIG signer parsed');
+    t.deepEqual((parsed.answers[3]!.data as { types?: number[] }).types, [RECORD_TYPES.A, RECORD_TYPES.RRSIG, RECORD_TYPES.NSEC], 'NSEC bitmap parsed');
+    t.deepEqual((parsed.answers[4]!.data as { types?: number[] }).types, [RECORD_TYPES.AAAA, RECORD_TYPES.RRSIG], 'NSEC3 bitmap parsed');
+    t.equal((parsed.answers[5]!.data as { iterations?: number }).iterations, 2, 'NSEC3PARAM parsed');
   });
 
   it('_parseResponse — rejects truncated packets', (t) => {
@@ -403,6 +526,16 @@ describe('Integration', () => {
     t.equal(addrs[0], '127.0.0.42', 'resolved fixture address');
   });
 
+  it('resolver.resolve4 — dnssec rejects unsigned local fixture', async (t) => {
+    const resolver = new Resolver({ timeout: 500, retries: 0, dnssec: true });
+    resolver.setServers([dns.address()]);
+    await t.rejects(
+      () => resolver.resolve4('example.test'),
+      (err) => (err as { code?: string }).code === 'EDNSSEC',
+      'unsigned fixture is rejected with EDNSSEC when DNSSEC is enabled',
+    );
+  });
+
   it('resolver.resolve6 — local fixture', async (t) => {
     const addrs = await localResolver().resolve6('ipv6.example.test');
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one AAAA record');
@@ -444,6 +577,16 @@ describe('Integration', () => {
     t.ok(
       (e.message ?? '').length > 0,
       'error message is non-empty: ' + e.message,
+    );
+  });
+
+  it('resolver — dnssec NXDOMAIN without denial proof throws EDNSSEC', async (t) => {
+    const resolver = new Resolver({ timeout: 500, retries: 0, dnssec: true });
+    resolver.setServers([dns.address()]);
+    await t.rejects(
+      () => resolver.resolve4('missing.example.test'),
+      (err) => (err as { code?: string }).code === 'EDNSSEC',
+      'DNSSEC NXDOMAIN without NSEC/NSEC3 proof rejects as bogus',
     );
   });
 

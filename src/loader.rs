@@ -227,6 +227,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/net/simulated-provider"
     ),
     source_builtin!("internal:net/dns-provider", "internal/net/dns-provider"),
+    source_builtin!("internal:net/dnssec", "internal/net/dnssec"),
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
