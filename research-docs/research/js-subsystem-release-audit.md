@@ -308,10 +308,7 @@ Status: DONE
 Status: DONE
 
 ## Markdown Format
-Status: TODO
-
-- Add raw HTML, nested lists, escaped punctuation, malformed links, reference
-  collisions, and sanitizer corpus tests.
+Status: DONE
 
 ## Realm Core
 Status: TODO

@@ -571,6 +571,12 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
   let html = '';
 
   while (!scanner.done) {
+    if (scanner.match('\\')) {
+      if (!scanner.done) html += escapeHtml(scanner.eat());
+      else html += '\\';
+      continue;
+    }
+
     if (scanner.match('`')) {
       const code = scanner.eatUntil((value) => value === 0x60);
       if (scanner.eatChar('`')) html += `<code>${escapeHtml(code)}</code>`;
@@ -632,6 +638,8 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
             }
             continue;
           }
+          html += `[${escapeHtml(labelSource)}][${escapeHtml(id)}`;
+          continue;
         }
       }
       html += '[' + escapeHtml(labelSource);
