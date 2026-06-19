@@ -143,10 +143,7 @@ Status: DONE
 Status: DONE
 
 ## Parsing Scanner
-Status: TODO
-
-- Add direct `utf-16be` tests.
-- Add invalid and partial multibyte decoding tests for UTF-8/UTF-16 boundaries.
+Status: DONE
 
 ## Validation
 Status: TODO

@@ -253,6 +253,50 @@ describe('Scanner — text ops (utf-8)', () => {
   });
 });
 
+describe('Scanner — text encodings and malformed boundaries', () => {
+  it('decodes and matches utf-16be text', (t) => {
+    const bytes = new Uint8Array([
+      0x00, 0x41, // A
+      0x00, 0x0A, // \n
+      0x20, 0xAC, // €
+      0xD8, 0x3D, 0xDE, 0x00, // 😀
+    ]);
+    const s = new Scanner(bytes, { encoding: 'utf-16be' });
+
+    t.equal(s.peek(), 'A', 'peek decodes first BE code unit');
+    t.equal(s.eat(), 'A', 'eat decodes first BE code unit');
+    t.equal(s.line, 1, 'line starts at 1');
+    t.equal(s.column, 2, 'column advances by text character');
+    t.equal(s.eat(), '\n', 'newline decodes');
+    t.equal(s.line, 2, 'newline advances line');
+    t.equal(s.column, 1, 'newline resets column');
+    t.equal(s.match('€'), true, 'match encodes utf-16be literal');
+    t.equal(s.peekCode(), 0x1F600, 'surrogate pair codepoint is decoded');
+    t.equal(s.eat(), '😀', 'surrogate pair text is decoded');
+    t.equal(s.done, true, 'scanner consumed full utf-16be input');
+  });
+
+  it('handles partial utf-16 code units at byte boundaries', (t) => {
+    const s = new Scanner(new Uint8Array([0x00, 0x41, 0x00]), { encoding: 'utf-16be' });
+
+    t.equal(s.eatText(3), 'A', 'fixed-byte decode ignores dangling byte');
+    t.equal(s.done, true, 'eatText still consumes requested bytes');
+
+    const textScanner = new Scanner(new Uint8Array([0x00, 0x41, 0x00]), { encoding: 'utf-16be' });
+    t.equal(textScanner.eat(), 'A', 'complete code unit decodes');
+    t.equal(textScanner.peekCode(), -1, 'dangling byte is not exposed as a codepoint');
+  });
+
+  it('replaces partial utf-8 sequences at byte boundaries', (t) => {
+    const s = new Scanner(new Uint8Array([0xE2, 0x82]), { encoding: 'utf-8' });
+
+    t.equal(s.peekCode(), 0xFFFD, 'partial sequence peeks as replacement');
+    t.equal(s.eat(), '\uFFFD', 'partial sequence consumes replacement');
+    t.equal(s.eat(), '\uFFFD', 'remaining continuation byte consumes replacement');
+    t.equal(s.done, true, 'partial sequence bytes are consumed');
+  });
+});
+
 // ── Spans + backtracking ───────────────────────────────────────────────────
 
 describe('Scanner — spans and backtracking', () => {
