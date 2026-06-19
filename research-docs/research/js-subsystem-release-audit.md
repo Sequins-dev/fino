@@ -333,12 +333,7 @@ Status: TODO
 - Add cluster port transfer tests for buffers and message ports.
 
 ## Test Framework
-Status: TODO
-
-- Add runner tests for hooks, skip propagation, nested failures, TAP output, and
-  filters.
-- Investigate filtered top-level `test()` leaves in `_filterEntries`.
-- Add teardown behavior tests after hook failures.
+Status: DONE
 
 ## Assertions
 Status: DONE

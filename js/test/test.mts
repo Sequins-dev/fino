@@ -571,7 +571,15 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
   const filtered: TestNode[] = [];
 
   for (const entry of entries) {
-    if (entry.children === null) continue;
+    const nextPath = entry.children === null || entry.kind === 'describe'
+      ? [...path, entry.name]
+      : path;
+    const fullPath = nextPath.join(' ');
+
+    if (entry.children === null) {
+      if (fullPath.includes(filter)) filtered.push(entry);
+      continue;
+    }
 
     if (entry.kind === 'suite') {
       const children = _filterEntries(entry.children, filter, path);
@@ -579,8 +587,6 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
       continue;
     }
 
-    const nextPath = [...path, entry.name];
-    const fullPath = nextPath.join(' ');
     if (fullPath.includes(filter)) {
       filtered.push(entry);
       continue;
