@@ -140,11 +140,7 @@ Status: DONE
 Status: DONE
 
 ## Semver
-Status: TODO
-
-- Directly test exported `valid()` and `validRange()`.
-- Add more npm-compatible range fixtures for partial caret/tilde, whitespace,
-  and prerelease edge cases.
+Status: DONE
 
 ## Parsing Scanner
 Status: TODO

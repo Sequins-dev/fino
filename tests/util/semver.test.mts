@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { compare, maxSatisfying, parse, satisfies } from 'fino:semver';
+import { compare, maxSatisfying, parse, satisfies, valid, validRange } from 'fino:semver';
 
 describe('fino:semver parse', () => {
   it('parses core, prerelease, and build metadata', (t) => {
@@ -48,6 +48,23 @@ describe('fino:semver satisfies', () => {
     t.equal(satisfies('2.0.0', '>1.x'), true, 'partial greater-than range matches above the target x-range');
   });
 
+  it('supports partial caret and tilde ranges with npm-compatible bounds', (t) => {
+    t.equal(satisfies('1.9.9', '^1'), true, '^1 includes same major');
+    t.equal(satisfies('2.0.0', '^1'), false, '^1 excludes next major');
+    t.equal(satisfies('1.2.9', '^1.2'), true, '^1.2 includes same major after minor floor');
+    t.equal(satisfies('2.0.0', '^1.2'), false, '^1.2 excludes next major');
+    t.equal(satisfies('0.2.9', '^0.2'), true, '^0.2 includes same zero-major minor');
+    t.equal(satisfies('0.3.0', '^0.2'), false, '^0.2 excludes next zero-major minor');
+    t.equal(satisfies('1.2.9', '~1.2'), true, '~1.2 includes patch updates');
+    t.equal(satisfies('1.3.0', '~1.2'), false, '~1.2 excludes next minor');
+  });
+
+  it('trims range whitespace and preserves prerelease admission rules', (t) => {
+    t.equal(satisfies('1.2.3', '  >=1.0.0   <2.0.0  '), true, 'outer and inner whitespace is accepted');
+    t.equal(satisfies('1.2.3-alpha.2', '  >=1.2.3-alpha.1   <1.2.3  '), true, 'prerelease comparator admits matching prerelease base');
+    t.equal(satisfies('1.2.4-alpha.1', '>=1.2.3-alpha.1 <2.0.0'), false, 'different prerelease base remains excluded');
+  });
+
   it('applies npm-style prerelease exclusion for stable ranges', (t) => {
     t.equal(satisfies('1.2.3-alpha.1', '^1.2.3'), false, 'stable caret range excludes prereleases');
     t.equal(satisfies('1.2.3-alpha.2', '>=1.2.3-alpha.1 <1.2.3'), true, 'prerelease comparator range admits prereleases');
@@ -56,6 +73,21 @@ describe('fino:semver satisfies', () => {
   it('rejects malformed disjunctions', (t) => {
     t.throws(() => satisfies('1.2.3', '^1.0.0 ||'), /Invalid semver range/, 'dangling || rejected');
     t.throws(() => satisfies('1.2.3', '|| ^1.0.0'), /Invalid semver range/, 'leading || rejected');
+  });
+});
+
+describe('fino:semver valid helpers', () => {
+  it('valid returns normalized versions or null', (t) => {
+    t.equal(valid('  1.2.3-beta.01  '), null, 'invalid prerelease leading zero returns null');
+    t.equal(valid('  1.2.3-beta.1+build.5  '), '1.2.3-beta.1+build.5', 'valid version is trimmed and normalized');
+    t.equal(valid('1.2'), null, 'invalid version returns null');
+  });
+
+  it('validRange returns trimmed ranges or null', (t) => {
+    t.equal(validRange('  ^1.2.3  '), '^1.2.3', 'valid range is trimmed');
+    t.equal(validRange(''), '*', 'empty range normalizes to wildcard');
+    t.equal(validRange(null), '*', 'null range normalizes to wildcard');
+    t.equal(validRange('^1.0.0 ||'), null, 'invalid range returns null');
   });
 });
 
