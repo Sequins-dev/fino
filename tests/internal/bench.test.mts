@@ -1,6 +1,21 @@
 import { describe, it } from 'fino:test/test';
 import benchConsole from 'internal:globals/console';
+import { env } from 'internal:process';
 import { Group, bench, run, _resetBenchmarksForTest } from 'fino:bench';
+
+async function withBenchMinNs<T>(value: string, fn: () => Promise<T>): Promise<T> {
+  const previous = env.FINO_BENCH_MIN_NS;
+  env.FINO_BENCH_MIN_NS = value;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete env.FINO_BENCH_MIN_NS;
+    } else {
+      env.FINO_BENCH_MIN_NS = previous;
+    }
+  }
+}
 
 async function captureBenchLogs(fn: () => Promise<void>): Promise<string[]> {
   const target = benchConsole as unknown as { log(...args: unknown[]): void };
@@ -37,7 +52,7 @@ describe('bench Group', () => {
       },
     });
 
-    const logs = await captureBenchLogs(() => group.finalize());
+    const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize()));
 
     t.deepEqual(events.slice(0, 2), ['setup', 'fn'], 'setup runs before the measured body');
     t.ok(events[2]?.startsWith('teardown:'), 'teardown runs after measurement');
@@ -56,7 +71,7 @@ describe('bench Group', () => {
       child.measure('needle measure', () => events.push('needle'));
     });
 
-    const logs = await captureBenchLogs(() => group.finalize());
+    const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize()));
 
     t.deepEqual(events, ['needle'], 'only the matching nested measurement runs');
     t.ok(logs.some((line) => line.includes('# needle child')), 'matching nested group heading is printed');
@@ -81,7 +96,7 @@ describe('bench Group', () => {
       },
     });
 
-    await t.rejects(() => captureBenchLogs(() => group.finalize()), /measured failure/, 'measurement failure rejects finalize');
+    await t.rejects(() => withBenchMinNs('1000', () => captureBenchLogs(() => group.finalize())), /measured failure/, 'measurement failure rejects finalize');
     t.deepEqual(events, ['setup', 'fn', 'teardown:ctx'], 'teardown runs after a thrown measurement');
   });
 });
@@ -101,7 +116,7 @@ describe('bench run()', () => {
       });
     });
 
-    const logs = await captureBenchLogs(() => run({ filter: 'needle' }));
+    const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => run({ filter: 'needle' })));
     _resetBenchmarksForTest();
 
     t.deepEqual(events, ['needle'], 'only the nested matching benchmark runs');
@@ -116,7 +131,7 @@ describe('bench run()', () => {
     bench('empty suite', (b) => b.measure('empty measure', () => {}));
     _resetBenchmarksForTest();
 
-    const logs = await captureBenchLogs(() => run());
+    const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => run()));
 
     t.deepEqual(logs, ['benc.h v1.0.0'], 'reset helper leaves no registered suites to run');
   });

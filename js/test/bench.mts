@@ -134,12 +134,13 @@ const MICROS  = NANOS  * 1000;
 const MILLIS  = MICROS * 1000;
 const SECONDS = MILLIS * 1000;
 const DEFAULT_MIN_NS = SECONDS;
-const minDurationNs = (() => {
+
+function minDurationNs(): number {
   const raw = env.FINO_BENCH_MIN_NS;
   if (raw === undefined || raw === '') return DEFAULT_MIN_NS;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_MIN_NS;
-})();
+}
 
 /** Returns a monotonic nanosecond timestamp as a Number. */
 const now = (() => {
@@ -624,7 +625,7 @@ export class Group {
         }
         const end = now();
         stats.push(end - start);
-      } while (stats.total < minDurationNs);
+      } while (stats.total < minDurationNs());
     } finally {
       if (teardown) teardown(ctx);
     }
