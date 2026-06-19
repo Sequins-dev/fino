@@ -135,6 +135,20 @@ export interface ArchiveOpenOptions {
 }
 
 /**
+ * Optional extraction policy limits.
+ *
+ * Limits are opt-in so existing extraction behavior remains unchanged unless a
+ * caller supplies an explicit cap. `maxEntries` counts regular file entries
+ * written to disk. `maxTotalBytes` counts uncompressed file payload bytes.
+ */
+export interface ArchiveExtractOptions extends ArchiveOpenOptions {
+  /** Maximum number of regular file entries to extract. */
+  maxEntries?: number;
+  /** Maximum total uncompressed bytes to extract across regular files. */
+  maxTotalBytes?: number;
+}
+
+/**
  * Metadata used when creating or replacing an archive entry.
  *
  * Omitted fields use archive defaults: file entries default to mode `0o644`,
@@ -1586,10 +1600,11 @@ export class Archive {
    * await archive.close();
    * ```
    */
-  async extract(destination: string, _options: object = {}): Promise<ExtractResult> {
+  async extract(destination: string, options: ArchiveExtractOptions = {}): Promise<ExtractResult> {
     this.#assertOpen();
     await ensureHostDir(destination);
     let extracted = 0;
+    let totalBytes = 0;
     for (const name of this.#entryNames()) {
       const entry = this.#entries.get(name)!;
       if (isUnsafeExtractPath(entry.name)) {
@@ -1600,6 +1615,13 @@ export class Archive {
         await ensureHostDir(outputPath);
         continue;
       }
+      if (options.maxEntries !== undefined && extracted + 1 > options.maxEntries) {
+        throw new Error(`Archive extraction entry limit exceeded: maxEntries=${options.maxEntries}`);
+      }
+      const data = await this.read(entry.name);
+      if (options.maxTotalBytes !== undefined && totalBytes + data.byteLength > options.maxTotalBytes) {
+        throw new Error(`Archive extraction byte limit exceeded: maxTotalBytes=${options.maxTotalBytes}`);
+      }
       await ensureHostDir(hostDirname(outputPath));
       // Guard against a pre-placed symlink at outputPath pointing outside the
       // destination directory. Use lstat (not stat) to detect the symlink itself.
@@ -1609,8 +1631,9 @@ export class Archive {
       } catch (_) {
         // File doesn't exist yet — that's the normal case; continue.
       }
-      await fs.writeFile(outputPath, await this.read(entry.name));
+      await fs.writeFile(outputPath, data);
       extracted++;
+      totalBytes += data.byteLength;
     }
     return { entries: extracted };
   }
@@ -1704,6 +1727,11 @@ export class Archive {
 function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
   const entries: LoadedArchiveEntry[] = [];
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  function ensureRange(offset: number, length: number, label: string): void {
+    if (offset < 0 || length < 0 || offset + length > bytes.byteLength) {
+      throw new Error(`Invalid zip archive: truncated ${label}`);
+    }
+  }
   const maxComment = Math.max(0, bytes.byteLength - 22 - 0xffff);
   let eocdOffset = -1;
   for (let offset = bytes.byteLength - 22; offset >= maxComment; offset--) {
@@ -1715,10 +1743,16 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
   if (eocdOffset < 0) throw new Error('Invalid zip archive: EOCD not found');
   const entryCount = view.getUint16(eocdOffset + 10, true);
   const centralOffset = view.getUint32(eocdOffset + 16, true);
+  ensureRange(centralOffset, 0, 'central directory');
   let offset = centralOffset;
   for (let i = 0; i < entryCount; i++) {
+    ensureRange(offset, 46, 'central directory entry');
     if (view.getUint32(offset, true) !== ZIP_CENTRAL_FILE_HEADER) {
       throw new Error('Invalid zip archive: central directory entry missing');
+    }
+    const flags = view.getUint16(offset + 8, true);
+    if ((flags & 0x08) !== 0) {
+      throw new Error('Unsupported zip archive: data descriptor entries are not supported');
     }
     const method = view.getUint16(offset + 10, true);
     const dosTime = view.getUint16(offset + 12, true);
@@ -1731,15 +1765,21 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
     const commentLength = view.getUint16(offset + 32, true);
     const externalAttrs = view.getUint32(offset + 38, true);
     const localOffset = view.getUint32(offset + 42, true);
+    if (compressedSize === 0xffffffff || size === 0xffffffff || localOffset === 0xffffffff) {
+      throw new Error('Unsupported zip archive: ZIP64 entries are not supported');
+    }
+    ensureRange(offset + 46, nameLength + extraLength + commentLength, 'central directory metadata');
     const nameBytes = bytes.subarray(offset + 46, offset + 46 + nameLength);
     const name = decodeUtf8(nameBytes);
 
+    ensureRange(localOffset, 30, 'local file header');
     if (view.getUint32(localOffset, true) !== ZIP_LOCAL_FILE_HEADER) {
       throw new Error('Invalid zip archive: local file header missing');
     }
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
     const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
+    ensureRange(dataOffset, compressedSize, `local file data for '${name}'`);
     const compressed = bytes.slice(dataOffset, dataOffset + compressedSize);
     const kind: ArchiveKind = name.endsWith('/') || ((externalAttrs >>> 16) & 0o170000) === 0o040000 ? 'directory' : 'file';
 
@@ -1754,7 +1794,12 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
       crc32: crc,
       loader: async () => {
         if (kind === 'directory') return new Uint8Array(0);
-        if (method === ZIP_METHOD_STORE) return compressed;
+        if (method === ZIP_METHOD_STORE) {
+          if (crc32(compressed) !== crc) {
+            throw new Error(`Invalid zip archive: CRC mismatch for '${name}'`);
+          }
+          return compressed;
+        }
         if (method === ZIP_METHOD_DEFLATE) {
           const decompressed = decompress(compressed, { format: 'deflate-raw' });
           if (decompressed.byteLength > MAX_DECOMPRESSED_BYTES) {
@@ -1762,6 +1807,12 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
               `Archive entry '${name}' decompressed to ${decompressed.byteLength} bytes, ` +
               `exceeding the ${MAX_DECOMPRESSED_BYTES}-byte limit`,
             );
+          }
+          if (decompressed.byteLength !== size) {
+            throw new Error(`Invalid zip archive: size mismatch for '${name}'`);
+          }
+          if (crc32(decompressed) !== crc) {
+            throw new Error(`Invalid zip archive: CRC mismatch for '${name}'`);
           }
           return decompressed;
         }
@@ -1847,11 +1898,22 @@ function parseTar(bytes: Uint8Array): LoadedArchiveEntry[] {
   let offset = 0;
   while (offset + 512 <= bytes.byteLength) {
     if (isZeroBlock(bytes, offset)) break;
+    const storedChecksum = parseTarOctal(bytes, offset + 148, 8);
+    let checksum = 0;
+    for (let i = 0; i < 512; i++) {
+      checksum += (i >= 148 && i < 156) ? 0x20 : bytes[offset + i]!;
+    }
+    if (storedChecksum !== checksum) {
+      throw new Error('Invalid tar archive: header checksum mismatch');
+    }
     const name = decodeUtf8(bytes.subarray(offset, offset + 100)).replace(/\0.*$/, '');
     const mode = parseTarOctal(bytes, offset + 100, 8) || DEFAULT_MODE;
     const size = parseTarOctal(bytes, offset + 124, 12);
     const mtimeValue = parseTarOctal(bytes, offset + 136, 12);
     const typeFlag = bytes[offset + 156];
+    if (typeFlag === 55 || typeFlag === 76 || typeFlag === 103 || typeFlag === 120) {
+      throw new Error('Unsupported tar archive: long-name and PAX entries are not supported');
+    }
     const prefix = decodeUtf8(bytes.subarray(offset + 345, offset + 500)).replace(/\0.*$/, '');
     const fullName = normalizedArchivePath(prefix ? `${prefix}/${name}` : name);
     const dataStart = offset + 512;
@@ -1869,6 +1931,9 @@ function parseTar(bytes: Uint8Array): LoadedArchiveEntry[] {
       throw new Error(
         `Tar entry '${fullName}' is ${size} bytes, exceeding the ${MAX_DECOMPRESSED_BYTES}-byte limit`,
       );
+    }
+    if (dataEnd > bytes.byteLength) {
+      throw new Error(`Invalid tar archive: truncated data for '${fullName}'`);
     }
     const payload = bytes.slice(dataStart, dataEnd);
     entries.push({
@@ -2009,7 +2074,7 @@ export async function listArchive(path: string, options: ArchiveOpenOptions = {}
  * console.log(result.entries);
  * ```
  */
-export async function extractArchive(path: string, destination: string, options: ArchiveOpenOptions = {}): Promise<ExtractResult> {
+export async function extractArchive(path: string, destination: string, options: ArchiveExtractOptions = {}): Promise<ExtractResult> {
   const archive = await openArchive(path, { ...options, readOnly: true });
   try {
     return await archive.extract(destination, options);
