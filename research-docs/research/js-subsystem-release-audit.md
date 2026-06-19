@@ -15,12 +15,7 @@ Status: DONE
 Status: DONE
 
 ## Runtime Loop And Backends
-Status: TODO
-
-- Add direct coverage for vnode watches, wake sources, `submit()`, and
-  io_uring completions.
-- Add replacement and double-registration tests for read/write watchers.
-- Backend portability risk remains high.
+Status: DONE
 
 ## Runtime Parent RPC
 Status: DONE

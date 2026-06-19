@@ -4,9 +4,13 @@
 
 import { describe, it } from 'fino:test/test';
 import * as loop from 'internal:runtime/loop';
+import * as backend from 'internal:runtime/loop-backend';
+import * as fileBindings from 'internal:file/bindings';
 import * as sock from 'fino:net/socket';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
+const NOTE_WRITE = 0x00000002;
+const NOTE_EXTEND = 0x00000004;
 
 function requireRecv(value: number | Uint8Array | null): Uint8Array {
   if (!(value instanceof Uint8Array)) throw new Error('Expected recv() to return bytes');
@@ -26,6 +30,25 @@ function listenOnEphemeralPort(): { fd: number; port: number } {
   const address = sock.getsockname(fd);
   if (address.family !== 'ipv4') throw new Error('expected IPv4 socket address');
   return { fd, port: address.port };
+}
+
+function connectedPair(): { server: number; client: number; peer: number } {
+  const { fd: server, port } = listenOnEphemeralPort();
+  const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+  sock.setNonblocking(client);
+  sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port });
+  wait(loop.readable(server));
+  const accepted = sock.accept(server);
+  if (!accepted) throw new Error('accept() returned null');
+  sock.setNonblocking(accepted.fd);
+  wait(loop.writable(client));
+  return { server, client, peer: accepted.fd };
+}
+
+function closeAll(...fds: number[]): void {
+  for (const fd of fds) {
+    try { sock.close(fd); } catch {}
+  }
 }
 
 describe('Basic operations', () => {
@@ -132,6 +155,119 @@ describe('I/O watchers', () => {
     t.ok(p instanceof Promise, 'readable() returned a Promise');
 
     sock.close(server);
+  });
+
+  it('readable() replacement resolves only the newest pending watch', (t) => {
+    const { server, client, peer } = connectedPair();
+    try {
+      let firstResolved = false;
+      let secondResolved = false;
+      const first = loop.readable(peer).then(() => { firstResolved = true; });
+      const second = loop.readable(peer).then(() => { secondResolved = true; });
+
+      sock.send(client, encodeUtf8('replace-read'), 0);
+      wait(second);
+      wait(Promise.resolve());
+
+      t.equal(secondResolved, true, 'newest readable watch resolved');
+      t.equal(firstResolved, false, 'replaced readable watch stayed unsettled');
+      t.ok(first instanceof Promise, 'replaced readable watch is still a promise');
+      t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'replace-read', 'payload remains readable');
+    } finally {
+      closeAll(peer, client, server);
+    }
+  });
+
+  it('writable() replacement resolves only the newest pending watch', (t) => {
+    const { fd: server, port } = listenOnEphemeralPort();
+    const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+    sock.setNonblocking(client);
+    try {
+      sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port });
+      let firstResolved = false;
+      let secondResolved = false;
+      const first = loop.writable(client).then(() => { firstResolved = true; });
+      const second = loop.writable(client).then(() => { secondResolved = true; });
+
+      wait(second);
+      wait(Promise.resolve());
+
+      t.equal(secondResolved, true, 'newest writable watch resolved');
+      t.equal(firstResolved, false, 'replaced writable watch stayed unsettled');
+      t.ok(first instanceof Promise, 'replaced writable watch is still a promise');
+    } finally {
+      closeAll(client, server);
+    }
+  });
+
+  it('removeWrite is idempotent for pending and absent watches', (t) => {
+    const { fd: server, port } = listenOnEphemeralPort();
+    const client = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
+    sock.setNonblocking(client);
+    try {
+      sock.connect(client, { family: 'ipv4', ip: '127.0.0.1', port });
+      const pending = loop.writable(client);
+      loop.removeWrite(client);
+      loop.removeWrite(client);
+      t.ok(pending instanceof Promise, 'writable() returned a Promise before cancellation');
+    } finally {
+      closeAll(client, server);
+    }
+  });
+});
+
+describe('Backend-specific loop hooks', () => {
+  it('registerWakeSource does not keep the loop alive and wakes tick()', (t) => {
+    const { server, client, peer } = connectedPair();
+    try {
+      loop.registerWakeSource(peer);
+      t.equal(loop.alive(), false, 'wake source alone does not keep loop alive');
+
+      sock.send(client, encodeUtf8('wake'), 0);
+      const dispatched = loop.tick(100);
+      t.ok(dispatched >= 1, 'wake source produced a backend event');
+      t.equal(decodeUtf8(requireRecv(sock.recv(peer, 64, 0))), 'wake', 'wake bytes remain consumable');
+    } finally {
+      closeAll(peer, client, server);
+    }
+  });
+
+  it('vnode reports file writes on macOS and throws explicitly elsewhere', (t) => {
+    const path = `/tmp/fino-loop-vnode-${Math.floor(Math.random() * 1_000_000)}.txt`;
+    const fd = fileBindings.lib.symbols.open(
+      fileBindings.cstr(path),
+      fileBindings.O_CREAT | fileBindings.O_RDWR | fileBindings.O_TRUNC,
+      0o600,
+    );
+    if (fd < 0) throw new Error('open vnode fixture failed');
+    try {
+      if (!fileBindings.isDarwin) {
+        t.throws(() => loop.vnode(fd, NOTE_WRITE, () => {}), /not supported/, 'vnode throws when unsupported');
+        return;
+      }
+
+      let fflags = 0;
+      loop.vnode(fd, NOTE_WRITE | NOTE_EXTEND, (event) => { fflags |= event.fflags; });
+      const bytes = encodeUtf8('vnode');
+      const written = fileBindings.lib.symbols.write(fd, bytes, bytes.byteLength);
+      t.equal(Number(written), bytes.byteLength, 'fixture write succeeded');
+      loop.tick(1000);
+      loop.removeVnode(fd);
+      t.ok((fflags & (NOTE_WRITE | NOTE_EXTEND)) !== 0, 'vnode callback saw write or extend flag');
+    } finally {
+      loop.removeVnode(fd);
+      fileBindings.lib.symbols.close(fd);
+      fileBindings.lib.symbols.unlink(fileBindings.cstr(path));
+    }
+  });
+
+  it('submit() has explicit platform behavior', async (t) => {
+    if (backend.EVFILT_COMPLETION === undefined) {
+      t.throws(() => loop.submit(() => {}), /not supported/, 'submit throws when completion backend is unavailable');
+      return;
+    }
+
+    t.ok(typeof loop.submit === 'function', 'submit is exposed when completion backend is available');
   });
 });
 
