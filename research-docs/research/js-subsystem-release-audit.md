@@ -72,12 +72,7 @@ Status: TODO
 - Add unserializable/object result formatting coverage.
 
 ## Process And Process Class
-Status: TODO
-
-- Add custom `env` option coverage.
-- Add failed spawn cleanup tests.
-- Add repeated `wait()` and failed `kill()` behavior coverage or explicit API
-  guards.
+Status: DONE
 
 ## Process Argv Parser
 Status: DONE

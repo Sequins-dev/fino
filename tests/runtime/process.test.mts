@@ -149,12 +149,73 @@ describe('Process class', () => {
     await proc.wait();
   });
 
+  it('env option replaces the child environment', async (t) => {
+    const proc = new Process('/usr/bin/env', [], { env: { FINO_PROCESS_TEST_ENV: 'present' } });
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    for await (const _ of proc.stderr) { /* drain */ }
+    const { code } = await proc.wait();
+    const output = joinChunks(chunks);
+
+    t.equal(code, 0, 'env exits successfully');
+    t.ok(output.includes('FINO_PROCESS_TEST_ENV=present'), 'custom env value is present');
+    t.notOk(output.includes('PATH='), 'ambient PATH is not inherited when env is replaced');
+  });
+
+  it('failed spawn closes setup resources and does not break later spawns', async (t) => {
+    t.throws(
+      () => new Process('/definitely/not/a/fino-command', []),
+      /posix_spawnp/,
+      'missing command throws from constructor',
+    );
+
+    const proc = new Process('/bin/echo', ['after-failed-spawn']);
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    for await (const _ of proc.stderr) { /* drain */ }
+    const { code } = await proc.wait();
+
+    t.equal(code, 0, 'subsequent spawn still succeeds');
+    t.equal(joinChunks(chunks).trim(), 'after-failed-spawn', 'subsequent stdout is readable');
+  });
+
   it('kill() sends signal to child', async (t) => {
     const proc = new Process('/bin/sleep', ['60']);
     proc.kill();
     const { code, signal } = await proc.wait();
     t.equal(code, null);
     t.ok(signal !== null, 'child was signalled');
+  });
+
+  it('wait() rejects when called more than once', async (t) => {
+    const proc = new Process('/bin/sh', ['-c', 'true']);
+    proc.stdin.close();
+    for await (const _ of proc.stdout) { /* drain */ }
+    for await (const _ of proc.stderr) { /* drain */ }
+    const first = await proc.wait();
+    t.equal(first.code, 0, 'first wait succeeds');
+
+    await t.rejects(
+      () => proc.wait(),
+      /already been waited/,
+      'second wait rejects with explicit guard',
+    );
+  });
+
+  it('kill() throws after the process has been reaped', async (t) => {
+    const proc = new Process('/bin/sh', ['-c', 'true']);
+    proc.stdin.close();
+    for await (const _ of proc.stdout) { /* drain */ }
+    for await (const _ of proc.stderr) { /* drain */ }
+    await proc.wait();
+
+    t.throws(
+      () => proc.kill(),
+      /kill\(/,
+      'failed kill is surfaced',
+    );
   });
 });
 

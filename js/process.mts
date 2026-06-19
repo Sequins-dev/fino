@@ -788,6 +788,12 @@ export class Process {
    * @internal
    */
   #stderr: FdReader;
+  /**
+   * True after `wait()` has been called once.
+   *
+   * @internal
+   */
+  #waitStarted: boolean;
 
   /**
    * Spawn a child process.
@@ -904,6 +910,7 @@ export class Process {
     this.#stdin  = new FdWriter(stdinW,  function closeStdin()  { lib.symbols.close(stdinW);  });
     this.#stdout = new FdReader(stdoutR, function closeStdout() { lib.symbols.close(stdoutR); });
     this.#stderr = new FdReader(stderrR, function closeStderr() { lib.symbols.close(stderrR); });
+    this.#waitStarted = false;
     // Keep CString buffers definitely live until after posix_spawnp returns.
     void argvBufs;
     void envpBufs;
@@ -994,6 +1001,9 @@ export class Process {
    * @returns {Promise<{ code: number|null, signal: number|null }>}
    */
   async wait(): Promise<WaitResult> {
+    if (this.#waitStarted) throw new Error(`Process ${this.#pid} has already been waited`);
+    this.#waitStarted = true;
+
     if (isLinux) {
       // pidfd_open(pid, flags=0) returns a pollable file descriptor.
       const pidfd = Number(lib.symbols.syscall(SYS_PIDFD_OPEN, BigInt(this.#pid), 0n));
@@ -1033,6 +1043,7 @@ export class Process {
    * @param {number} [signal=15] SIGTERM by default
    */
   kill(signal: number = _SIGTERM): void {
-    lib.symbols.kill(this.#pid, signal);
+    const ret = Number(lib.symbols.kill(this.#pid, signal));
+    if (ret !== 0) throw new Error(`kill(${this.#pid}, ${signal}) failed`);
   }
 }
