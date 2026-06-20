@@ -219,11 +219,7 @@ Status: DONE
 Status: DONE
 
 ## Cluster
-Status: TODO
-- Add guide/spec docs for heartbeat timeouts, spawn routing, failure
-  propagation, active remote realm ownership, and shutdown expectations.
-- Add public integration tests for remote realm exit/terminate propagation and
-  worker/seed failure cases.
+Status: DONE
 
 ## Test Framework
 Status: DONE

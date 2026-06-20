@@ -1,42 +1,34 @@
-# Cluster — Remaining Work
+# Cluster Release Contract
 
-The core cluster implementation is complete: import rule system, Facade RPC
-(scalar, read-streams, write-streams, handles), process realms, cluster
-realms, seed routing, structured concurrency across nodes.
+The cluster subsystem is release-ready for the current WebSocket transport. A
+node joins with `startCluster()` or `joinCluster()`, and `Realm({ remote: true
+})` uses the active cluster client to spawn work onto another worker node.
 
----
+## Release Behavior
 
-## Deferred items
+- **Heartbeat and membership:** workers send heartbeats every 2500 ms; the seed
+  treats a worker as down after 7500 ms without a heartbeat. Transport-level
+  disconnects also emit peer-down handling immediately.
+- **Spawn routing:** the seed owns spawn routing and selects the eligible worker
+  with the lowest reported CPU load, excluding the requester. If no eligible
+  worker exists, the spawn rejects with a failure `SPAWN_ACK`.
+- **Ownership:** the seed is authoritative for parent and child port ownership.
+  `REALM_EXIT`, `TERMINATE`, and `PEER_DOWN` use that registry to settle active
+  remote `Realm.run()` and `Realm.call()` waiters instead of leaving parent
+  promises pending.
+- **Failure propagation:** remote bootstrap errors, call errors, graceful exits,
+  explicit `terminate()`, worker loss, and local `leaveCluster()` all settle the
+  parent-side realm operation.
+- **Shutdown:** `leaveCluster()` is synchronous and idempotent. It stops the
+  active worker client and local seed if present; active remote realm users
+  should still call `terminate()` or await their operations.
 
-### 1. Direct peer-to-peer PORT_MSG
+## Deferred Scope
 
-Currently all PORT_MSG traffic is routed through the seed.  The plan is for
-nodes to open direct WebSocket connections to each other after `PEER_UP` and
-route PORT_MSG without touching the seed.  This removes the seed as a
-bottleneck and SPOF for the data plane.
-
-Trigger: when data-plane latency or seed throughput becomes a concern.
-
-### 2. QUIC transport
-
-`ClusterTransport` already abstracts the protocol.  `WebSocketTransport` is
-the only implementation today.  A `QuicTransport` would slot in without
-changing anything above the transport layer.
-
-The RPC wire format was designed with QUIC in mind:
-
-| Envelope | QUIC mapping |
-|---|---|
-| `__rpc_req` / `__rpc_res` | request message + response message |
-| `__rpc_chunk` / `__rpc_end` / `__rpc_err` | server-initiated unidirectional stream |
-| `__rpc_send_start` / `__rpc_send_chunk` / `__rpc_send_end` / `__rpc_send_err` | client-initiated unidirectional stream |
-
-Trigger: when WebSocket latency/overhead is a bottleneck for high-throughput
-inter-Realm messaging.
-
-### 3. Seed election and cluster auth
-
-Single seed is acceptable for now.  When needed, tackle election and
-authentication (mTLS or token-based) together.
-
-Deferred until both are ready to design as a unit.
+- Direct peer-to-peer `PORT_MSG` remains deferred. Current data-plane messages
+  route through the seed; this is acceptable until latency or seed throughput
+  requires direct worker connections.
+- QUIC transport remains deferred. `ClusterTransport` is already abstracted, and
+  WebSocket is the release transport.
+- Seed election and cluster authentication remain deferred and should be
+  designed together. The current release assumes a single trusted seed.

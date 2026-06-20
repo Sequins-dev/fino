@@ -575,6 +575,14 @@ export class ClusterClient {
         if (relay && !relay.closed) {
           relay.closed = true;
           this.#sendToThread(relay.threadHandle, { __terminate: true });
+          break;
+        }
+        const handler = this.#exitHandlers.get(msg.realmId);
+        if (handler) {
+          this.#exitHandlers.delete(msg.realmId);
+          handler(`remote realm ${msg.realmId} terminated by cluster`);
+        } else {
+          this.#exitedRealms.set(msg.realmId, `remote realm ${msg.realmId} terminated by cluster`);
         }
         break;
       }
