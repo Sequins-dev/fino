@@ -10,6 +10,7 @@ import {
   createDecompressor,
   brotliAvailable,
 } from 'fino:compress';
+import * as compression from 'fino:compress';
 
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
@@ -171,5 +172,32 @@ describe('async iterable transforms', () => {
     const compressed = compress(new Uint8Array(0), { format: 'gzip' });
     const decompressed = decompress(compressed, { format: 'gzip' });
     t.equal(decompressed.byteLength, 0, 'empty gzip roundtrip');
+  });
+});
+
+describe('fino:compress release contract', () => {
+  it('exposes a compact format/options surface without advanced zlib helpers', (t) => {
+    for (const name of ['createGzip', 'createGunzip', 'constants', 'flush', 'dictionary', 'setOutputLimit']) {
+      t.equal(Object.prototype.hasOwnProperty.call(compression, name), false, `${name} is not exported`);
+    }
+  });
+
+  it('requires explicit formats and binary input', (t) => {
+    t.throws(() => compress(HELLO, {} as any), /unsupported compression format/i, 'compress requires format');
+    t.throws(() => decompress(HELLO, {} as any), /unsupported compression format/i, 'decompress requires format');
+    t.throws(() => compress('hello' as any, { format: 'gzip' }), /binary input/i, 'compress rejects strings');
+    t.throws(() => decompress('hello' as any, { format: 'gzip' }), /binary input/i, 'decompress rejects strings');
+
+    const compressor = createCompressor({ format: 'gzip' });
+    t.throws(() => compressor.write('hello' as any), /binary input/i, 'stream compressor rejects strings');
+    compressor.close();
+  });
+
+  it('keeps one-shot decompression unconstrained by a public output cap option', (t) => {
+    const input = bytes('expanded '.repeat(50_000));
+    const packed = compress(input, { format: 'gzip' });
+    const restored = decompress(packed, { format: 'gzip' });
+    t.equal(restored.byteLength, input.byteLength, 'full output is returned');
+    t.equal(str(restored), str(input), 'expanded payload roundtrips');
   });
 });

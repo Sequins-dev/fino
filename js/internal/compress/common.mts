@@ -203,7 +203,8 @@ export interface CompressionTransform {
  */
 export function toU8(data: ByteInput): Uint8Array {
   if (data instanceof Uint8Array) return data;
-  return new Uint8Array(data);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  throw new TypeError('compression binary input must be a Uint8Array or ArrayBuffer');
 }
 
 /**

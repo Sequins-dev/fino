@@ -21,10 +21,13 @@
  * for each input chunk. Always call `finish()` before using the final output,
  * and call `close()` when abandoning a stream early.
  *
- * Decompression does not impose a built-in output-size limit. Use one-shot
- * `decompress()` only for trusted or externally bounded input. For untrusted
- * compressed data, prefer `Decompressor.transform()` and enforce an application
- * byte budget while consuming yielded chunks.
+ * The release option surface is intentionally compact: `format` is required,
+ * `level` is the only compression tuning option, and byte input must be a
+ * `Uint8Array` or `ArrayBuffer`. Dictionaries, custom flush strategy, window
+ * tuning, zlib constants, and public output-limit controls are not exposed.
+ * Use one-shot `decompress()` only for trusted or externally bounded input.
+ * For untrusted compressed data, prefer `Decompressor.transform()` and enforce
+ * an application byte budget while consuming yielded chunks.
  *
  * ## Examples
  *

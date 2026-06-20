@@ -110,10 +110,7 @@ Status: TODO
 - Strengthen custom VFS documentation and provider compatibility tests.
 
 ## Compression
-Status: TODO
-- Complete Brotli streaming behavior when Brotli support is available.
-- Add decompression output caps for untrusted inputs, or make the release limitation explicit.
-- Add advanced options or document gaps for dictionaries, flush strategy, window tuning, and level parity.
+Status: DONE
 
 ## Template
 Status: DONE
