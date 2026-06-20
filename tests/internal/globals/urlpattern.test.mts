@@ -424,3 +424,29 @@ describe('URLPattern — named param in search component', () => {
     t.equal(r?.search.groups.q, 'foo/bar', 'captures value with /');
   });
 });
+
+describe('URLPattern percent-encoding boundaries', () => {
+  it('percent-encoded tokenizer characters in pathname patterns are literal text', (t) => {
+    const p = new URLPattern({ pathname: '/files/%3Aid/%28raw%29' });
+
+    t.equal(p.test('https://example.com/files/%3Aid/%28raw%29'), true, 'encoded colon and parens match literally');
+    t.equal(p.test('https://example.com/files/:id/(raw)'), false, 'encoded tokenizer characters do not match decoded characters');
+  });
+
+  it('percent-encoded path delimiters stay inside named captures', (t) => {
+    const p = new URLPattern({ pathname: '/files/:name' });
+    const r = p.exec('https://example.com/files/a%2Fb');
+
+    t.ok(r !== null, 'encoded slash does not split the pathname segment');
+    t.equal(r?.pathname.groups.name, 'a%2Fb', 'capture preserves percent-encoded slash');
+  });
+
+  it('string patterns do not split search on percent-encoded question marks', (t) => {
+    const p = new URLPattern('https://example.com/a%3Fb');
+
+    t.equal(p.pathname, '/a%3Fb', 'encoded question mark remains in pathname pattern');
+    t.equal(p.search, '*', 'encoded question mark does not start a search pattern');
+    t.equal(p.test('https://example.com/a%3Fb'), true, 'encoded question mark pathname matches');
+    t.equal(p.test('https://example.com/a?b'), false, 'decoded question mark is a URL delimiter, not pathname text');
+  });
+});

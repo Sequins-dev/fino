@@ -710,6 +710,41 @@ describe('URL release corpus', () => {
     t.equal(nonspecial.origin, 'null', 'non-special scheme has null origin');
   });
 
+  it('opaque paths preserve dot segments while slash paths normalize them', (t) => {
+    const opaque = new URL('custom:opaque/./x/../y');
+    const slashPath = new URL('custom:/a/./b/../c');
+    const special = new URL('https://example.com/a/./b/../c');
+
+    t.equal(opaque.pathname, 'opaque/./x/../y', 'opaque non-special path preserves dot segments');
+    t.equal(slashPath.pathname, '/a/c', 'non-special slash path normalizes dot segments');
+    t.equal(special.pathname, '/a/c', 'special path normalizes dot segments');
+  });
+
+  it('relative resolution rejects opaque bases and resolves non-special slash bases', (t) => {
+    t.throws(() => new URL('child', 'custom:opaque/path'), null, 'relative path cannot resolve against opaque base');
+    t.equal(new URL('child', 'custom:/base/path').href, 'custom:/base/child', 'relative path resolves against slash-path non-special base');
+  });
+
+  it('file URL host and path edge cases follow file-origin serialization', (t) => {
+    const local = new URL('file://localhost/etc/hosts');
+    const unc = new URL('file://server/share/file.txt');
+    const drive = new URL('file:///C:/path/..//file.txt');
+
+    t.equal(local.href, 'file:///etc/hosts', 'localhost file host serializes away');
+    t.equal(local.host, '', 'localhost file host becomes empty');
+    t.equal(local.origin, 'null', 'file URLs have null origin');
+    t.equal(unc.host, 'server', 'non-local file host is preserved');
+    t.equal(unc.pathname, '/share/file.txt', 'non-local file path is preserved');
+    t.equal(drive.pathname, '/C://file.txt', 'file URL drive path normalizes dot segments');
+  });
+
+  it('numeric IPv4 forms normalize to dotted decimal for special URLs', (t) => {
+    t.equal(new URL('http://127.1/').hostname, '127.0.0.1', 'short IPv4 form expands missing pieces');
+    t.equal(new URL('http://0177.0.0.1/').hostname, '127.0.0.1', 'octal IPv4 form normalizes');
+    t.equal(new URL('http://0x7f.1/').hostname, '127.0.0.1', 'hex IPv4 form normalizes');
+    t.equal(new URL('http://2130706433/').hostname, '127.0.0.1', 'single-number IPv4 form normalizes');
+  });
+
   it('percent-encodes credentials, path, search, and hash through setters', (t) => {
     const u = new URL('https://example.com/');
     u.username = 'u@ser';

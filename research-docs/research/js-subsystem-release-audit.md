@@ -179,11 +179,7 @@ Status: DONE
 Status: DONE
 
 ## URL, URLSearchParams, URLPattern
-Status: TODO
-- Import curated WPT-style cases for opaque paths, file URLs, special versus
-  non-special URLs, and numeric IPv4 forms.
-- Tighten URLPattern tokenizer/percent-encoding conformance if claiming spec
-  parity.
+Status: DONE
 
 ## Blob And File
 Status: DONE

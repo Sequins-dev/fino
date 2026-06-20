@@ -41,9 +41,9 @@
  * handled as a special case before falling through to the generic merge-with-
  * base-directory logic.
  *
- * `_normalizePath()` resolves `.` and `..` segments in the output path. It
- * does not percent-encode or decode path segments — characters in the path
- * are preserved exactly as supplied.
+ * `_normalizePath()` resolves `.` and `..` segments in slash-based output
+ * paths. Opaque non-special paths, such as `custom:opaque/./value`, preserve
+ * their path text because relative path merging is not valid for opaque bases.
  *
  *
  * ## Default port stripping
@@ -68,13 +68,14 @@
  *
  * Domain hostnames are lowercased and serialized through a small Punycode
  * encoder for IDNA-style labels. Bracketed IPv6 addresses are validated,
- * expanded, and compressed to canonical shortest-form text.
+ * expanded, and compressed to canonical shortest-form text. Special-scheme
+ * numeric IPv4 host forms are normalized to dotted decimal.
  *
  *
  * ## What is NOT implemented
  *
  * - Full WHATWG URL state machine with all 20+ parser states.
- * - Opaque path handling (e.g. `blob:` URLs with UUIDs).
+ * - The full host parser validation matrix for every invalid IPv4/domain edge.
  *
  * These omissions are intentional. The implemented subset covers all practical
  * HTTP/HTTPS usage. Add missing features only when a concrete use-case
@@ -658,6 +659,12 @@ const _DEFAULT_PORTS: Record<string, string> = {
   ftp: '21',
 };
 
+function _isSpecialScheme(scheme: string): boolean {
+  return scheme === 'http' || scheme === 'https' ||
+         scheme === 'ws'   || scheme === 'wss'   ||
+         scheme === 'ftp'  || scheme === 'file';
+}
+
 function _adapt(delta: number, numPoints: number, firstTime: boolean): number {
   delta = firstTime ? Math.floor(delta / 700) : delta >> 1;
   delta += Math.floor(delta / numPoints);
@@ -720,6 +727,64 @@ function _punycodeLabel(label: string): string {
 
 function _normalizeDomain(host: string): string {
   return host.split('.').map(_punycodeLabel).join('.').toLowerCase();
+}
+
+function _parseIPv4Number(part: string): number | null {
+  if (part === '') return null;
+  let radix = 10;
+  let digits = part;
+  if (digits.length >= 2 && digits[0] === '0' && (digits[1] === 'x' || digits[1] === 'X')) {
+    radix = 16;
+    digits = digits.slice(2);
+  } else if (digits.length >= 2 && digits[0] === '0') {
+    radix = 8;
+    digits = digits.slice(1);
+  }
+
+  const pattern = radix === 16 ? /^[0-9a-fA-F]+$/ : radix === 8 ? /^[0-7]*$/ : /^[0-9]+$/;
+  if (!pattern.test(digits)) return null;
+  return parseInt(digits || '0', radix);
+}
+
+function _normalizeIPv4(host: string): string | null {
+  if (!/^[0-9A-Fa-fxX.]+$/.test(host)) return null;
+  const parts = host.split('.');
+  if (parts.length > 4 || parts.some(part => part === '')) return null;
+
+  const numbers: number[] = [];
+  for (const part of parts) {
+    const n = _parseIPv4Number(part);
+    if (n === null) return null;
+    numbers.push(n);
+  }
+
+  for (let i = 0; i < numbers.length - 1; i++) {
+    if (numbers[i]! > 255) return null;
+  }
+
+  const last = numbers[numbers.length - 1]!;
+  if (last > Math.pow(256, 5 - numbers.length) - 1) return null;
+
+  let value = last;
+  for (let i = 0; i < numbers.length - 1; i++) {
+    value += numbers[i]! * Math.pow(256, 3 - i);
+  }
+
+  return [
+    Math.floor(value / 0x1000000) & 0xff,
+    Math.floor(value / 0x10000) & 0xff,
+    Math.floor(value / 0x100) & 0xff,
+    value & 0xff,
+  ].join('.');
+}
+
+function _normalizeHost(host: string, scheme: string): string {
+  if (scheme === 'file' && host.toLowerCase() === 'localhost') return '';
+  if (_isSpecialScheme(scheme)) {
+    const ipv4 = _normalizeIPv4(host);
+    if (ipv4 !== null) return ipv4;
+  }
+  return _normalizeDomain(host);
 }
 
 function _normalizeIPv6(host: string): string | null {
@@ -795,8 +860,11 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
   let pathname = '';
   let search   = '';
   let hash     = '';
+  let hasAuthority = false;
+  let opaquePath = false;
 
   if (rest.startsWith('//')) {
+    hasAuthority = true;
     rest = rest.slice(2);
 
     // Fragment
@@ -844,8 +912,8 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
       else if (after.length > 0) return null;
     } else {
       const ci = authority.lastIndexOf(':');
-      if (ci >= 0) { host = _normalizeDomain(authority.slice(0, ci)); port = authority.slice(ci + 1); }
-      else          { host = _normalizeDomain(authority); }
+      if (ci >= 0) { host = _normalizeHost(authority.slice(0, ci), scheme); port = authority.slice(ci + 1); }
+      else          { host = _normalizeHost(authority, scheme); }
     }
 
     // Strip default port
@@ -862,11 +930,14 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
     if (searchIdx >= 0) { search = rest.slice(searchIdx + 1); rest = rest.slice(0, searchIdx); }
 
     pathname = rest;
+    opaquePath = !_isSpecialScheme(scheme) && !pathname.startsWith('/');
   }
+
+  const normalizedPath = opaquePath ? pathname : _normalizePath(pathname, hasAuthority);
 
   return {
     scheme, username, password, host, port,
-    pathname: _percentEncode(_normalizePath(pathname, !!host), _PATH_ENCODE_SET),
+    pathname: _percentEncode(normalizedPath, _PATH_ENCODE_SET),
     search: _percentEncode(search, _QUERY_ENCODE_SET),
     hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET),
   };
@@ -877,6 +948,8 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
  * Implements RFC 3986 §5.2.
  */
 function _resolveRelative(input: string, base: URLState): URLState {
+  const baseIsOpaque = !_isSpecialScheme(base.scheme) && base.host === '' && !base.pathname.startsWith('/');
+
   if (!input) {
     return Object.assign({}, base);
   }
@@ -886,6 +959,7 @@ function _resolveRelative(input: string, base: URLState): URLState {
   }
 
   if (input.startsWith('?')) {
+    if (baseIsOpaque) return Object.assign({}, base, { search: _percentEncode(input.slice(1), _QUERY_ENCODE_SET), hash: '' });
     const qi = input.indexOf('#');
     if (qi >= 0) {
       return Object.assign({}, base, {
@@ -899,6 +973,8 @@ function _resolveRelative(input: string, base: URLState): URLState {
   if (input.startsWith('//')) {
     return _parseURL(base.scheme + ':' + input, null)!;
   }
+
+  if (baseIsOpaque) throw new TypeError('Cannot resolve relative URL against opaque base');
 
   // Strip fragment and query from input before resolving path
   let rest = input;
