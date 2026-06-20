@@ -339,9 +339,14 @@ Status: TODO
 - Add hostile-peer and auth-failure tests.
 
 ## Test Framework
-Status: TODO
-- TAP runner is usable, but not Node test parity: no `only`, `todo`, per-test timeout, concurrency, subtest API, or pluggable reporters.
-- `after()` errors are swallowed, which is documented but release-risky for cleanup failures.
+Status: DONE
+- Release baseline covers TAP output, filters, skip reasons, lifecycle hooks,
+  and captured stdout/stderr for failure diagnostics.
+- `after()` errors are reported as failures with captured output, while
+  `after()` still runs after body and setup failures.
+- This is not Node test parity: `only`, `todo`, per-test timeout,
+  concurrency, assertion-object subtests, and pluggable reporters are outside
+  the release contract.
 
 ## Assertions
 Status: DONE

@@ -57,6 +57,12 @@
  * `always` streams output live for debugging, and `never` suppresses captured
  * output even when tests fail.
  *
+ * The release contract is intentionally smaller than Node's `node:test` API:
+ * TAP output, name filters, skip reasons, lifecycle hooks, and captured output
+ * are supported. `only`, `todo`, per-test timeouts, concurrency controls,
+ * subtest creation from an assertion object, and pluggable reporters are not
+ * part of this module.
+ *
  * ## Internal representation
  *
  * Both APIs share a tree of nodes:
@@ -355,9 +361,8 @@ export function before(fn: HookFn): void {
  * Run `fn` once after the last `it` in this `describe` block.
  * Always runs even if tests fail. Throws outside `describe()`.
  *
- * Errors thrown by `after()` are swallowed so cleanup does not mask test
- * failures. Keep assertions inside `it()` or `afterEach()` when failures should
- * be reported.
+ * Errors thrown by `after()` are reported as failures with captured output,
+ * while still running after earlier test or hook failures.
  *
  * ```ts no_run
  * import { after, describe, it } from 'fino:test/test';
@@ -685,7 +690,14 @@ async function _runEntries(ctx: RunContext, entries: TestNode[], depth: number, 
             };
           }
         }
-        catch (_) { /* after() errors are silently swallowed to not mask test failures */ }
+        catch (err) {
+          afterDiagnostic = {
+            title: 'after hook: ' + path.join(' > '),
+            errors: [err],
+            output,
+          };
+          failed++;
+        }
       }
     }
   }

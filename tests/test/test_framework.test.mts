@@ -355,6 +355,30 @@ describe('runner behavior', () => {
     });
   });
 
+  it('reports after hook failures with captured output', async (t) => {
+    await withTempProject({
+      'after-failure.test.mts': [
+        "import { after, describe, it } from 'fino:test/test';",
+        "describe('after failure', () => {",
+        "  after(() => { console.log('hook:after-output'); throw new Error('after failed'); });",
+        "  it('passes body', (t) => t.ok(true));",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'after-failure.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'after hook failure exits nonzero');
+      t.ok(stderr.includes('[error] Error: 1 test(s) failed'), 'command failure summary is written to stderr');
+      t.ok(stdout.includes('ok 1 - passes body'), 'passing body is still reported');
+      t.ok(stdout.includes('not ok 1 - after failure'), 'parent group is marked failed');
+      t.ok(stdout.includes('# 1) after hook: after failure'), 'failure details include after hook title');
+      t.ok(stdout.includes('#   Error: after failed'), 'failure details include after hook error');
+      t.ok(stdout.includes('# Captured stdout:'), 'failure details include captured stdout section');
+      t.ok(stdout.includes('#   hook:after-output'), 'after hook output is captured');
+    });
+  });
+
   it('supports live console output for debugging', async (t) => {
     await withTempProject({
       'show-output.test.mts': [

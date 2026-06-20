@@ -48,6 +48,12 @@ describe('cache', () => {
 Do not mix the two grouping styles in the same group. Use `suite` with `test`,
 or use `describe` with `it` and lifecycle hooks.
 
+The test runner release contract is TAP-13 output, `--filter` name matching,
+skip reasons, `before`/`after`/`beforeEach`/`afterEach` hooks, and captured
+stdout/stderr for failures. It is not a Node `node:test` compatibility layer:
+`only`, `todo`, per-test timeouts, concurrent test scheduling, assertion-object
+subtests, and pluggable reporters are outside this baseline.
+
 ## Running Tests
 
 Run specific files:
