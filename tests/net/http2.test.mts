@@ -775,6 +775,10 @@ describe('H2 server — robustness', () => {
       ...frame(0x01, 0x01, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
       ...frame(0x00, 0x00, 1, new Uint8Array(0)),
     ]));
+    const interruptedByExtension = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x01, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ...frame(0x0b, 0x00, 1, new Uint8Array(0)),
+    ]));
     const stream0 = await rawH2Exchange(server.port, frame(0x09, 0x04, 0, new Uint8Array(0)));
     const unexpectedOnOpen = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_POST_ROOT_LOCALHOST,
@@ -784,12 +788,81 @@ describe('H2 server — robustness', () => {
       ...H2_GET_ROOT_LOCALHOST,
       ...frame(0x09, 0x04, 1, new Uint8Array(0)),
     ]));
+    const afterRstStream = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...rstStreamFrame(1, 0),
+      ...frame(0x09, 0x04, 1, new Uint8Array(0)),
+    ]));
     await server.close();
 
     t.equal(frameErrorCode(findFrame(interrupted, 0x07)!), 0x01, 'interrupted header block gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(interruptedByExtension, 0x07)!), 0x01, 'extension frame during header block gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(stream0, 0x07)!), 0x01, 'CONTINUATION stream 0 gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(unexpectedOnOpen, 0x07)!), 0x01, 'unexpected CONTINUATION gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(onHalfClosed, 0x07)!), 0x01, 'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(afterRstStream, 0x07)!), 0x01, 'closed-stream CONTINUATION after RST_STREAM gets PROTOCOL_ERROR');
+  });
+
+  it('ACKs peer SETTINGS frames after the initial SETTINGS exchange', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x04, 0x00, 0, hexBytes(
+      0x00, 0x03, 0x00, 0x00, 0x00, 0x40,
+    )));
+    await server.close();
+
+    const settingsAcks = frames.filter(f => f.type === 0x04 && f.flags === 0x01 && f.length === 0);
+    t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
+  });
+
+  it('sends GOAWAY for SETTINGS ACK frames with payload', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x04, 0x01, 0, hexBytes(
+      0x00, 0x03, 0x00, 0x00, 0x00, 0x40,
+    )));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x06, 'GOAWAY uses FRAME_SIZE_ERROR');
+  });
+
+  it('sends GOAWAY when a client sends PUSH_PROMISE', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_GET_ROOT_LOCALHOST,
+      ...frame(0x05, 0x04, 1, hexBytes(
+        0x00, 0x00, 0x00, 0x02,
+        0x82, 0x84, 0x86,
+      )),
+    ]));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+  });
+
+  it('closes cleanly for an invalid connection preface', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: server.port });
+    const [reader, writer] = sock.split();
+    await writer.write(_enc.encode('PRI * HTTP/2.0\r\n\r\nbad-preface'));
+    await writer.flush();
+    await writer.close();
+    const frames = await readRawFrames(reader);
+    try { await reader.close(); } catch {}
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway === null || frameErrorCode(goaway) === 0x01, 'server closed or sent GOAWAY(PROTOCOL_ERROR)');
   });
 
   it('RST_STREAMs request HEADERS with response-only pseudo-headers', async (t) => {
