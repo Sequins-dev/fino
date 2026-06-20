@@ -158,6 +158,24 @@ describe('AbortSignal.timeout()', () => {
     t.equal(signal.aborted, true, 'aborted after timeout');
     t.equal(signal.reason.name, 'TimeoutError', 'reason.name is TimeoutError');
   });
+
+  it('coerces finite non-negative delay values with Number()', async (t) => {
+    const signal = AbortSignal.timeout('0' as unknown as number);
+
+    await new Promise((resolve) => {
+      signal.addEventListener('abort', resolve);
+    });
+
+    t.equal(signal.aborted, true, 'string delay coerces and aborts');
+    t.equal(signal.reason.name, 'TimeoutError', 'reason.name is TimeoutError');
+  });
+
+  it('rejects NaN, negative, and infinite delay values', (t) => {
+    t.throws(() => AbortSignal.timeout(NaN), (e) => e instanceof RangeError, 'NaN throws RangeError');
+    t.throws(() => AbortSignal.timeout(-1), (e) => e instanceof RangeError, 'negative throws RangeError');
+    t.throws(() => AbortSignal.timeout(Infinity), (e) => e instanceof RangeError, 'Infinity throws RangeError');
+    t.throws(() => AbortSignal.timeout(-Infinity), (e) => e instanceof RangeError, '-Infinity throws RangeError');
+  });
 });
 
 describe('AbortSignal.abort() — additional cases', () => {

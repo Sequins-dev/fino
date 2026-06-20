@@ -8,9 +8,21 @@
  */
 
 import { describe, it } from 'fino:test/test';
+import { _pushConsoleCapture, type ConsoleCaptureRecord } from 'internal:globals/console';
 
 const { console } = globalThis;
 const consoleRecord = console as unknown as Record<string | symbol, unknown>;
+
+function captureConsole(fn: () => void): ConsoleCaptureRecord[] {
+  const records: ConsoleCaptureRecord[] = [];
+  const release = _pushConsoleCapture((record) => records.push(record));
+  try {
+    fn();
+  } finally {
+    release();
+  }
+  return records;
+}
 
 describe('console exists and has expected methods', () => {
   it('has all required methods', (t) => {
@@ -328,5 +340,95 @@ describe('console format %c specifier (F7)', () => {
     let threw = false;
     try { console.log('%c no style arg'); } catch (_) { threw = true; }
     t.equal(threw, false, '%c with no arg does not throw');
+  });
+});
+
+describe('console capture output', () => {
+  it('captures formatting and stdout routing', (t) => {
+    const records = captureConsole(() => {
+      console.log('hello %s %d %%', 'world', 3.7);
+      console.info({ a: 1 }, ['x']);
+    });
+
+    t.deepEqual(records, [
+      { fd: 1, text: 'hello world 3 %' },
+      { fd: 1, text: '{ a: 1 } [ "x" ]' },
+    ], 'stdout records include formatted text');
+  });
+
+  it('captures stderr routing for warnings, errors, and assertions', (t) => {
+    const records = captureConsole(() => {
+      console.warn('careful');
+      console.error('boom');
+      console.assert(false, 'bad %s', 'state');
+    });
+
+    t.deepEqual(records, [
+      { fd: 2, text: '[warn] careful' },
+      { fd: 2, text: '[error] boom' },
+      { fd: 2, text: '[assert] bad state' },
+    ], 'stderr records include expected prefixes');
+  });
+
+  it('captures groups and collapsed groups with indentation', (t) => {
+    const records = captureConsole(() => {
+      console.group('outer');
+      console.log('inside');
+      console.groupCollapsed('inner');
+      console.log('deep');
+      console.groupEnd();
+      console.groupEnd();
+    });
+
+    t.deepEqual(records, [
+      { fd: 1, text: 'outer' },
+      { fd: 1, text: '  inside' },
+      { fd: 1, text: '  inner' },
+      { fd: 1, text: '    deep' },
+    ], 'group indentation is captured');
+  });
+
+  it('captures counters and missing counter warnings', (t) => {
+    const records = captureConsole(() => {
+      console.count('capture-count');
+      console.count('capture-count');
+      console.countReset('capture-count');
+      console.countReset('capture-count-missing');
+    });
+
+    t.deepEqual(records, [
+      { fd: 1, text: 'capture-count: 1' },
+      { fd: 1, text: 'capture-count: 2' },
+      { fd: 2, text: "[warn] Count for 'capture-count-missing' does not exist" },
+    ], 'counter records are captured');
+  });
+
+  it('captures timer output and missing timer warnings', (t) => {
+    const records = captureConsole(() => {
+      console.time('capture-timer');
+      console.timeLog('capture-timer', 'half');
+      console.timeEnd('capture-timer');
+      console.timeEnd('capture-timer-missing');
+    });
+
+    t.equal(records.length, 3, 'three timer records');
+    t.equal(records[0]!.fd, 1, 'timeLog uses stdout');
+    t.ok(/^capture-timer: [0-9.]+ms half$/.test(records[0]!.text), 'timeLog includes elapsed and args');
+    t.equal(records[1]!.fd, 1, 'timeEnd uses stdout');
+    t.ok(/^capture-timer: [0-9.]+ms$/.test(records[1]!.text), 'timeEnd includes elapsed');
+    t.deepEqual(records[2], {
+      fd: 2,
+      text: "[warn] Timer 'capture-timer-missing' does not exist",
+    }, 'missing timer warning uses stderr');
+  });
+
+  it('captures table JSON output', (t) => {
+    const records = captureConsole(() => {
+      console.table([{ name: 'a', n: 1 }]);
+    });
+
+    t.equal(records.length, 1, 'one table record');
+    t.equal(records[0]!.fd, 1, 'table uses stdout');
+    t.equal(records[0]!.text, '[\n  {\n    "name": "a",\n    "n": 1\n  }\n]', 'table uses JSON output');
   });
 });

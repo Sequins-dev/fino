@@ -14,7 +14,9 @@
  *   - `signal` option auto-removes the listener when the AbortSignal aborts
  *   - `passive` listeners cannot cancel the event via preventDefault()
  *   - dispatchEvent throws if the event is currently being dispatched
- *   - Listener errors do not prevent subsequent listeners from firing
+ *   - Listener errors are swallowed and do not prevent later listeners from
+ *     firing. Fino does not currently report these through a browser-style
+ *     global error event.
  *
  * ## Example
  *
@@ -504,7 +506,8 @@ export class CustomEvent extends Event {
  * WHATWG EventTarget with flat listener dispatch.
  *
  * Listener registration is idempotent for the same callback and capture flag.
- * Listener exceptions are swallowed so later listeners still run.
+ * Listener exceptions are swallowed so later listeners still run; this runtime
+ * does not surface those exceptions through a global error event.
  *
  * ```typescript no_run
  * const target = new EventTarget();

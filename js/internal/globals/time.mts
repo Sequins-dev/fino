@@ -41,6 +41,10 @@
  *   - macOS: `mach_continuous_time()` (advances during sleep)
  *   - Linux: `clock_gettime(CLOCK_MONOTONIC)`
  *
+ * This is intentionally a small Performance subset. Fino exposes `now()`,
+ * `timeOrigin`, and `toJSON()` only; it does not implement PerformanceEntry,
+ * mark(), measure(), observers, or a performance timeline.
+ *
  * @internal
  */
 
@@ -93,6 +97,9 @@ const _startMs = Date.now();
  * - `performance.now()` — milliseconds elapsed since module load (monotonic, float)
  * - `performance.timeOrigin` — Unix timestamp (ms) of module load
  * - `performance.toJSON()` — serializable snapshot
+ *
+ * PerformanceEntry, mark(), measure(), observers, and timeline APIs are not
+ * exposed by this runtime subset.
  *
  * @example
  * ```ts no_run

@@ -190,14 +190,7 @@ Status: DONE
 Status: DONE
 
 ## EventTarget, Abort, Timers, Console
-Status: TODO
-- EventTarget is complete for non-DOM scope; document listener-exception
-  policy if exposed as web parity.
-- Add `AbortSignal.timeout()` coercion/range tests and timeout cleanup docs.
-- Clarify timer/performance subset: no PerformanceEntry, mark, measure, or
-  observer surface.
-- Add console capture-based tests for formatting, fd routing, groups, counters,
-  timers, and `table()`; document simplified/no-op methods.
+Status: DONE
 
 ## Encoding, TextEncoder, Structured Clone
 Status: DONE

@@ -30,8 +30,11 @@
  *
  * ## AbortSignal.timeout(ms)
  *
- * Uses `fino:loop` to set a timer. The import is done lazily to avoid a
- * circular dependency at module load time.
+ * Coerces `ms` with Number() and accepts only finite, non-negative delays.
+ * Invalid values throw RangeError before a signal is created. Uses `fino:loop`
+ * to set a timer. The import is done lazily to avoid a circular dependency at
+ * module load time. The timer is not externally cancelable; it either fires and
+ * aborts the signal or is ignored if the realm exits first.
  *
  *
  * ## AbortSignal.any(signals)
@@ -325,8 +328,9 @@ export class AbortSignal extends EventTarget {
   /**
    * Create a signal that aborts after the given delay in milliseconds.
    *
-   * The timer is scheduled with the runtime loop. The delay is passed through
-   * to the loop timeout implementation, and the reason is an Error named
+   * The delay is coerced with Number() and must be finite and non-negative.
+   * NaN, negative values, and infinities throw RangeError. The timer is
+   * scheduled with the runtime loop, and the reason is an Error named
    * "TimeoutError".
    *
    * ```typescript no_run
@@ -335,10 +339,14 @@ export class AbortSignal extends EventTarget {
    * ```
    */
   static timeout(ms: number): AbortSignal {
+    const delay = Number(ms);
+    if (!Number.isFinite(delay) || delay < 0) {
+      throw new RangeError('AbortSignal.timeout: delay must be a finite non-negative number');
+    }
     const signal = _createSignal();
     const fireAbort = _signalAbort.get(signal);
     import('internal:runtime/loop').then(function (loop) {
-      loop.timeout(ms).then(function () {
+      loop.timeout(delay).then(function () {
         fireAbort?.(defaultAbortError('The operation timed out.', 'TimeoutError'));
       });
     });

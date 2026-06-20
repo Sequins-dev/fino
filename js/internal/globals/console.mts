@@ -53,6 +53,9 @@
  * - `console.table()` currently falls back to JSON.stringify. A proper
  *   column-aligned table renderer would be a good first contribution.
  * - `console.count()` and `console.countReset()` maintain per-label counters.
+ * - `console.clear()` and `console.timeStamp()` are no-ops in this terminal
+ *   runtime, and `console.dirxml()` delegates to normal formatting because
+ *   there is no DOM renderer.
  * - Do not switch output to process.stdout streams — the direct `writeLine`
  *   call is intentional (no buffering, works before the event loop starts).
  *
