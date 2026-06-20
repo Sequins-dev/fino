@@ -243,10 +243,15 @@ Status: TODO
 - Cover HTTPS/H2 fetch behavior in release CI.
 
 ## Web Streams
-Status: TODO
-- Transferable and structured-cloneable streams are unsupported.
-- `ReadableStream.prototype.values({ preventCancel })` is missing or unverified.
-- Add WPT-derived stream conformance fixtures.
+Status: DONE
+- Release baseline covers readable, writable, transform, BYOB, tee,
+  pipeTo/pipeThrough, queuing strategies, lock release, cancellation, and
+  async iterator edges.
+- `ReadableStream.prototype.values({ preventCancel })` is implemented and
+  `[Symbol.asyncIterator]()` delegates to `values()` so early iterator return
+  cancels by default.
+- Transferable and structured-cloneable streams remain explicitly unsupported
+  in this runtime; stream transfer parity is outside the release contract.
 
 ## Internal Reader And Writer Streams
 Status: DONE

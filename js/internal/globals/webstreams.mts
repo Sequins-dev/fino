@@ -1184,15 +1184,18 @@ export class ReadableStream {
    * Async iterator over stream chunks.
    *
    * Iteration locks the stream until completion, error, or iterator return().
+   * Calling return() cancels the stream unless `preventCancel` is true.
    *
    * ```typescript no_run
-   * for await (const chunk of ReadableStream.from(['a'])) console.log(chunk);
+   * const iter = stream.values({ preventCancel: true });
+   * await iter.return?.(); // releases the lock without canceling the source
    * ```
    */
-  [Symbol.asyncIterator]() {
+  values(options?: { preventCancel?: boolean }) {
     const s = _rs.get(this)!;
     if (s.locked) throw new TypeError('ReadableStream is locked');
     s.locked = true;
+    const preventCancel = options?.preventCancel === true;
 
     const iter = s.kind === 'iterable'
       ? _rsIterableIterator(s)
@@ -1212,11 +1215,28 @@ export class ReadableStream {
       },
       return(value: unknown) {
         s.locked = false;
-        if (iter?.return) return iter.return(value);
-        return Promise.resolve({ done: true, value });
+        if (preventCancel) return Promise.resolve({ done: true, value });
+        return _rsCancel(s, value).then(function rsAsyncIterReturn() {
+          return { done: true, value };
+        });
       },
       [Symbol.asyncIterator]() { return this; },
     };
+  }
+
+  /**
+   * Default async iterator over stream chunks.
+   *
+   * Equivalent to `values()` with default options, so early exit cancels the
+   * stream. Use `values({ preventCancel: true })` when early exit should only
+   * release the iterator lock.
+   *
+   * ```typescript no_run
+   * for await (const chunk of ReadableStream.from(['a'])) console.log(chunk);
+   * ```
+   */
+  [Symbol.asyncIterator]() {
+    return this.values();
   }
 
   /**

@@ -96,6 +96,42 @@ describe('ReadableStream basics', () => {
     t.throws(() => rs[Symbol.asyncIterator](), /locked/, 'throws');
   });
 
+  it('[Symbol.asyncIterator] return() cancels the stream by default', async (t) => {
+    let cancelReason: unknown;
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue('first');
+      },
+      cancel(reason) {
+        cancelReason = reason;
+      },
+    });
+
+    const iter = rs[Symbol.asyncIterator]();
+    t.deepEqual(await iter.next(), { done: false, value: 'first' });
+    await iter.return?.('stop');
+    t.equal(cancelReason, 'stop', 'early iterator return forwards cancel reason');
+    t.ok(!rs.locked, 'return releases the stream lock');
+  });
+
+  it('values({ preventCancel: true }) releases the lock without canceling', async (t) => {
+    let cancelCount = 0;
+    const rs = new ReadableStream({
+      start(controller) {
+        controller.enqueue('first');
+      },
+      cancel() {
+        cancelCount++;
+      },
+    });
+
+    const iter = rs.values({ preventCancel: true });
+    t.deepEqual(await iter.next(), { done: false, value: 'first' });
+    await iter.return?.('stop');
+    t.equal(cancelCount, 0, 'preventCancel suppresses source cancel');
+    t.ok(!rs.locked, 'return releases the stream lock');
+  });
+
   it('pull is called when queue is empty', async (t) => {
     let pullCount = 0;
     const values = [1, 2, 3];
