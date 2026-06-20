@@ -193,10 +193,7 @@ Status: DONE
 Status: DONE
 
 ## Web Streams
-Status: TODO
-- Add WPT-style conformance around brand/IDL, promise timing, BYOB detached
-  buffers, and pipe abort ordering.
-- Document stream transfer and structured-clone limitations.
+Status: DONE
 
 ## Internal Reader And Writer Streams
 Status: DONE

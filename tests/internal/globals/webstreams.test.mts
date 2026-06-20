@@ -1061,6 +1061,25 @@ describe('ReadableStream.tee() — composite cancel reason', () => {
 });
 
 describe('Web Streams release/cancel conformance edges', () => {
+  it('methods and getters reject invalid receivers through brand checks', async (t) => {
+    const readableLocked = Object.getOwnPropertyDescriptor(ReadableStream.prototype, 'locked')!.get!;
+    const writableLocked = Object.getOwnPropertyDescriptor(WritableStream.prototype, 'locked')!.get!;
+    const readerClosed = Object.getOwnPropertyDescriptor(ReadableStreamDefaultReader.prototype, 'closed')!.get!;
+    const byobClosed = Object.getOwnPropertyDescriptor(ReadableStreamBYOBReader.prototype, 'closed')!.get!;
+    const writerClosed = Object.getOwnPropertyDescriptor(WritableStreamDefaultWriter.prototype, 'closed')!.get!;
+
+    t.throws(() => readableLocked.call({}), /receiver expected/, 'ReadableStream.locked brand-checks receiver');
+    t.throws(() => writableLocked.call({}), /receiver expected/, 'WritableStream.locked brand-checks receiver');
+    t.throws(() => readerClosed.call({}), /receiver expected/, 'ReadableStreamDefaultReader.closed brand-checks receiver');
+    t.throws(() => byobClosed.call({}), /receiver expected/, 'ReadableStreamBYOBReader.closed brand-checks receiver');
+    t.throws(() => writerClosed.call({}), /receiver expected/, 'WritableStreamDefaultWriter.closed brand-checks receiver');
+    await t.rejects(
+      () => (ReadableStream.prototype.pipeTo as any).call(new ReadableStream(), {}),
+      /WritableStream expected/,
+      'pipeTo validates destination brand',
+    );
+  });
+
   it('tee() waits for both branches before canceling the source', async (t) => {
     let cancelCount = 0;
     const rs = new ReadableStream({
@@ -1109,12 +1128,78 @@ describe('Web Streams release/cancel conformance edges', () => {
     await t.rejects(() => closed, /released|lock/i, 'closed rejects for released reader with pending read');
   });
 
+  it('ReadableStreamDefaultReader.closed rejects asynchronously after releaseLock()', async (t) => {
+    const reader = new ReadableStream({ start() {} }).getReader();
+    const closed = reader.closed;
+    let rejected = false;
+    closed.catch(() => { rejected = true; });
+    reader.releaseLock();
+
+    t.equal(rejected, false, 'closed rejection is not observed synchronously');
+    await t.rejects(() => closed, /released|lock/i, 'closed rejects after release');
+  });
+
   it('WritableStreamDefaultWriter.closed rejects when the writer lock is released before close', async (t) => {
     const ws = new WritableStream();
     const writer = ws.getWriter();
     const closed = writer.closed;
     writer.releaseLock();
     await t.rejects(() => closed, /released|lock/i, 'closed rejects for released writer');
+  });
+
+  it('WritableStreamDefaultWriter.ready rejects when a pending ready promise is released', async (t) => {
+    let finishWrite!: () => void;
+    const ws = new WritableStream({
+      write() { return new Promise<void>(resolve => { finishWrite = resolve; }); },
+    }, new CountQueuingStrategy({ highWaterMark: 0 }));
+    const writer = ws.getWriter();
+    const write = writer.write('x');
+    const ready = writer.ready;
+    writer.releaseLock();
+
+    await t.rejects(() => ready, /released|lock/i, 'pending ready rejects after release');
+    finishWrite();
+    await write;
+  });
+
+  it('BYOB read rejects detached resizable transfer views', async (t) => {
+    const rs = new ReadableStream({ type: 'bytes', start() {} });
+    const reader = rs.getReader({ mode: 'byob' });
+    const buffer = new ArrayBuffer(4, { maxByteLength: 4 });
+    const view = new Uint8Array(buffer);
+    structuredClone(buffer, { transfer: [buffer] });
+
+    t.equal(view.byteLength, 0, 'runtime transfer limitation makes resizable view unusable');
+    await t.rejects(() => reader.read(view), /byteLength|detached/i, 'detached BYOB view rejects');
+    reader.releaseLock();
+  });
+
+  it('pipeTo() already-aborted signals honor preventAbort and preventCancel', async (t) => {
+    const reason = new Error('already aborted');
+
+    {
+      const controller = new AbortController();
+      controller.abort(reason);
+      let cancelReason: unknown;
+      let abortCalled = false;
+      const rs = new ReadableStream({ cancel(r) { cancelReason = r; } });
+      const ws = new WritableStream({ abort() { abortCalled = true; } });
+      await t.rejects(() => rs.pipeTo(ws, { signal: controller.signal, preventAbort: true }), /already aborted/, 'pipe rejects with abort reason');
+      t.equal(cancelReason, reason, 'source cancel still runs without preventCancel');
+      t.equal(abortCalled, false, 'destination abort is suppressed by preventAbort');
+    }
+
+    {
+      const controller = new AbortController();
+      controller.abort(reason);
+      let cancelCalled = false;
+      let abortReason: unknown;
+      const rs = new ReadableStream({ cancel() { cancelCalled = true; } });
+      const ws = new WritableStream({ abort(r) { abortReason = r; } });
+      await t.rejects(() => rs.pipeTo(ws, { signal: controller.signal, preventCancel: true }), /already aborted/, 'pipe rejects with abort reason');
+      t.equal(cancelCalled, false, 'source cancel is suppressed by preventCancel');
+      t.equal(abortReason, reason, 'destination abort still runs without preventAbort');
+    }
   });
 
   it('TransformStream transform throw rejects write and errors readable', async (t) => {

@@ -30,6 +30,13 @@
  *                       equivalent to Writer.pipe(asyncIterable), zero overhead
  *   otherwise         → spec-compliant reader.read() / writer.write() pump
  *
+ * ## Structured clone and transfer
+ *
+ * Streams are not structured-cloneable or transferable in this runtime. Passing
+ * a stream to `structuredClone()` throws, and transfer lists are limited to
+ * ArrayBuffer values. BYOB reads reject views whose backing buffer has become
+ * unusable through the runtime's best-effort transfer limitations.
+ *
  * ## Exports
  *
  * ReadableStream, ReadableStreamDefaultReader, ReadableStreamDefaultController
@@ -151,6 +158,7 @@ interface WritableStreamState {
   closedPromise: Promise<void>;
   readyPromise: Promise<void>;
   readyResolve: (() => void) | null;
+  readyReject: ((e: unknown) => void) | null;
   // writer-kind fields
   sink?: any;
   // sink-kind fields
@@ -1120,7 +1128,11 @@ export class ReadableStream {
    * stream.locked; // false
    * ```
    */
-  get locked() { return _rs.get(this)!.locked; }
+  get locked() {
+    const s = _rs.get(this);
+    if (!s) throw new TypeError('ReadableStream receiver expected');
+    return s.locked;
+  }
 
   /**
    * Cancel the stream with a reason.
@@ -1221,7 +1233,8 @@ export class ReadableStream {
    * ```
    */
   async pipeTo(destination: WritableStream, options?: { preventClose?: boolean; preventAbort?: boolean; preventCancel?: boolean; signal?: AbortSignal | null }) {
-    const src = _rs.get(this)!;
+    const src = _rs.get(this);
+    if (!src) return Promise.reject(new TypeError('ReadableStream receiver expected'));
     const dst = _ws.get(destination);
     if (!dst) return Promise.reject(new TypeError('WritableStream expected'));
     if (src.locked) return Promise.reject(new TypeError('ReadableStream is locked'));
@@ -1463,7 +1476,11 @@ export class ReadableStreamDefaultReader {
    * reader.closed.catch(() => {});
    * ```
    */
-  get closed() { return _rr.get(this)!.closedPromise; }
+  get closed() {
+    const rr = _rr.get(this);
+    if (!rr) throw new TypeError('ReadableStreamDefaultReader receiver expected');
+    return rr.closedPromise;
+  }
 
   /**
    * Read the next chunk.
@@ -1592,7 +1609,11 @@ export class ReadableStreamBYOBReader {
    * reader.closed.catch(() => {});
    * ```
    */
-  get closed() { return _br.get(this)!.closedPromise; }
+  get closed() {
+    const br = _br.get(this);
+    if (!br) throw new TypeError('ReadableStreamBYOBReader receiver expected');
+    return br.closedPromise;
+  }
 
   /**
    * Read bytes into a supplied ArrayBufferView.
@@ -1695,6 +1716,7 @@ function _wsMakeState(kind: WritableStreamState['kind'], extra: Partial<Writable
     // ready promise (backpressure) — starts resolved; only meaningful for 'sink' kind
     readyPromise: Promise.resolve(),
     readyResolve: null, // non-null while ready is pending (backpressure active)
+    readyReject: null,
     ...extra,
   };
 }
@@ -1709,14 +1731,26 @@ function _wsMarkClosed(s: WritableStreamState): void {
 
 function _wsMakeReadyPending(s: WritableStreamState): void {
   if (s.readyResolve !== null) return; // already pending
-  s.readyPromise = new Promise(function captureWsReady(resolve) { s.readyResolve = resolve; });
+  s.readyPromise = new Promise(function captureWsReady(resolve, reject) { s.readyResolve = resolve; s.readyReject = reject; });
 }
 
 function _wsResolveReady(s: WritableStreamState): void {
   if (s.readyResolve === null) return; // already resolved
   s.readyResolve();
   s.readyResolve = null;
+  s.readyReject = null;
   s.readyPromise = Promise.resolve();
+}
+
+function _wsRejectReadyForRelease(s: WritableStreamState, reason: unknown): void {
+  if (s.readyReject === null) return;
+  s.readyReject(reason);
+  s.readyResolve = null;
+  s.readyReject = null;
+  s.readyPromise = Promise.resolve();
+  if (s.kind === 'sink' && s.state === 'writable' && s.queueTotalSize! > s.highWaterMark!) {
+    _wsMakeReadyPending(s);
+  }
 }
 
 function _wsAbort(s: WritableStreamState, reason: unknown): Promise<void> {
@@ -1988,7 +2022,11 @@ export class WritableStream {
    * new WritableStream().locked; // false
    * ```
    */
-  get locked() { return _ws.get(this)!.locked; }
+  get locked() {
+    const s = _ws.get(this);
+    if (!s) throw new TypeError('WritableStream receiver expected');
+    return s.locked;
+  }
 
   /**
    * Close the writable stream after queued writes finish.
@@ -2098,7 +2136,11 @@ export class WritableStreamDefaultWriter {
    * writer.closed.catch(() => {});
    * ```
    */
-  get closed()      { return _ww.get(this)!.closedPromise; }
+  get closed() {
+    const ww = _ww.get(this);
+    if (!ww) throw new TypeError('WritableStreamDefaultWriter receiver expected');
+    return ww.closedPromise;
+  }
 
   /**
    * Remaining queue capacity before backpressure applies.
@@ -2196,7 +2238,9 @@ export class WritableStreamDefaultWriter {
     if (s.writer !== this) return;
     s.locked = false;
     s.writer = null;
-    ww.closedReject?.(new TypeError('Writer was released before the stream closed'));
+    const releaseErr = new TypeError('Writer was released before the stream closed');
+    _wsRejectReadyForRelease(s, releaseErr);
+    ww.closedReject?.(releaseErr);
     _ww.delete(this);
   }
 }
