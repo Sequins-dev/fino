@@ -170,10 +170,17 @@ Status: DONE
 Status: DONE
 
 ## Archive
-Status: TODO
-- Add common ZIP/TAR features: ZIP64, data descriptors, tar PAX/GNU long names, symlinks, and hardlinks.
-- Archive operations are not streaming-oriented and may be risky for large release inputs.
-- Add compatibility tests against real-world archives.
+Status: DONE
+- Release baseline covers ZIP stored and deflate entries, tar and tar.gz
+  regular files and directories, whole-archive in-memory mutation/extraction,
+  extraction traversal protection, CRC validation, decompressed size limits,
+  explicit extraction entry and total-byte limits, and compatibility-style ZIP
+  and TAR fixtures with directory entries and metadata.
+- ZIP64 records, ZIP data descriptors, tar PAX headers, GNU long-name records,
+  symlink restoration, hardlink restoration, and streaming archive APIs are not
+  supported in this baseline.
+- Tar symlink and hardlink entries are skipped during extraction rather than
+  restored.
 
 ## Database SQLite
 Status: TODO

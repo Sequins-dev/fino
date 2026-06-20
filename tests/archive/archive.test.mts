@@ -72,6 +72,88 @@ function makeTarHeader(name: string, size: number, typeflag: number = 48): Uint8
   return hdr;
 }
 
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let i = 0; i < 8; i++) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pushU16(out: number[], value: number): void {
+  out.push(value & 0xff, (value >>> 8) & 0xff);
+}
+
+function pushU32(out: number[], value: number): void {
+  out.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+}
+
+function pushBytes(out: number[], bytes: Uint8Array): void {
+  for (const byte of bytes) out.push(byte);
+}
+
+function makeStoredZip(entries: Array<{ name: string; data?: Uint8Array; directory?: boolean; mode?: number }>): Uint8Array {
+  const out: number[] = [];
+  const central: number[] = [];
+  for (const entry of entries) {
+    const name = entry.directory && !entry.name.endsWith('/') ? entry.name + '/' : entry.name;
+    const nameBytes = encodeUtf8(name);
+    const data = entry.directory ? new Uint8Array() : (entry.data ?? new Uint8Array());
+    const crc = crc32(data);
+    const offset = out.length;
+    const mode = entry.mode ?? (entry.directory ? 0o755 : 0o644);
+    const externalAttrs = ((entry.directory ? 0o040000 : 0o100000) | mode) << 16;
+
+    pushU32(out, 0x04034b50);
+    pushU16(out, 20);
+    pushU16(out, 0);
+    pushU16(out, 0);
+    pushU16(out, 0);
+    pushU16(out, 0);
+    pushU32(out, crc);
+    pushU32(out, data.byteLength);
+    pushU32(out, data.byteLength);
+    pushU16(out, nameBytes.byteLength);
+    pushU16(out, 0);
+    pushBytes(out, nameBytes);
+    pushBytes(out, data);
+
+    pushU32(central, 0x02014b50);
+    pushU16(central, 0x031e);
+    pushU16(central, 20);
+    pushU16(central, 0);
+    pushU16(central, 0);
+    pushU16(central, 0);
+    pushU16(central, 0);
+    pushU32(central, crc);
+    pushU32(central, data.byteLength);
+    pushU32(central, data.byteLength);
+    pushU16(central, nameBytes.byteLength);
+    pushU16(central, 0);
+    pushU16(central, 0);
+    pushU16(central, 0);
+    pushU16(central, 0);
+    pushU32(central, externalAttrs);
+    pushU32(central, offset);
+    pushBytes(central, nameBytes);
+  }
+
+  const centralOffset = out.length;
+  pushBytes(out, Uint8Array.from(central));
+  pushU32(out, 0x06054b50);
+  pushU16(out, 0);
+  pushU16(out, 0);
+  pushU16(out, entries.length);
+  pushU16(out, entries.length);
+  pushU32(out, central.length);
+  pushU32(out, centralOffset);
+  pushU16(out, 0);
+  return Uint8Array.from(out);
+}
+
 describe('fino:archive', () => {
   let fs: DiskFileSystem;
 
@@ -235,17 +317,20 @@ describe('fino:archive', () => {
 
     // Entry 1: symlink (typeflag=50='2'), size 0
     const symlinkHdr = tarHeader('link-target.txt', 0, 50);
-    // Entry 2: regular file (typeflag=48='0')
+    // Entry 2: hardlink (typeflag=49='1'), size 0
+    const hardlinkHdr = tarHeader('hardlink-target.txt', 0, 49);
+    // Entry 3: regular file (typeflag=48='0')
     const fileHdr = tarHeader('safe.txt', fileSize, 48);
     const filePaddedBytes = new Uint8Array(filePadded);
     filePaddedBytes.set(fileContent);
     // Terminal: two zero blocks
     const terminal = new Uint8Array(1024);
 
-    const totalLen = 512 + 512 + filePadded + 1024;
+    const totalLen = 512 + 512 + 512 + filePadded + 1024;
     const tarBytes = new Uint8Array(totalLen);
     let off = 0;
     tarBytes.set(symlinkHdr, off); off += 512;          // symlink header (no data block)
+    tarBytes.set(hardlinkHdr, off); off += 512;         // hardlink header (no data block)
     tarBytes.set(fileHdr, off); off += 512;             // file header
     tarBytes.set(filePaddedBytes, off); off += filePadded; // file data
     tarBytes.set(terminal, off);                         // terminal blocks
@@ -263,6 +348,9 @@ describe('fino:archive', () => {
     let symlinkFileExists = false;
     try { await fs.stat(outputDir + '/link-target.txt'); symlinkFileExists = true; } catch (_) {}
     t.ok(!symlinkFileExists, 'symlink entry was skipped — no file created');
+    let hardlinkFileExists = false;
+    try { await fs.stat(outputDir + '/hardlink-target.txt'); hardlinkFileExists = true; } catch (_) {}
+    t.ok(!hardlinkFileExists, 'hardlink entry was skipped — no file created');
   });
 
   it('A2: tar extraction throws when an entry exceeds MAX_DECOMPRESSED_BYTES', async (t) => {
@@ -485,5 +573,39 @@ describe('fino:archive', () => {
     t.equal(result.entries, 2, 'limits allow exact-size extraction');
     t.equal(await fs.readFile(TEST_DIR + '/limits-ok/a.txt'), 'aa', 'first limited file extracted');
     t.equal(await fs.readFile(TEST_DIR + '/limits-ok/b.txt'), 'bb', 'second limited file extracted');
+  });
+
+  it('reads compatibility-style ZIP and TAR fixtures with directory entries and metadata', async (t) => {
+    const zipPath = TEST_DIR + '/compat.zip';
+    const zipOut = TEST_DIR + '/compat-zip-out';
+    await fs.writeFile(zipPath, makeStoredZip([
+      { name: 'docs/', directory: true, mode: 0o755 },
+      { name: 'docs/readme.txt', data: encodeUtf8('zip compat\n'), mode: 0o644 },
+    ]));
+
+    const zipEntries = await listArchive(zipPath);
+    t.equal(zipEntries.length, 2, 'zip fixture lists directory and file entries');
+    t.equal(zipEntries[0]?.name, 'docs', 'zip directory entry is preserved');
+    t.equal(zipEntries[0]?.kind, 'directory', 'zip directory kind is detected');
+    t.equal(zipEntries[1]?.name, 'docs/readme.txt', 'zip file entry is preserved');
+    await extractArchive(zipPath, zipOut);
+    t.equal(await fs.readFile(zipOut + '/docs/readme.txt'), 'zip compat\n', 'zip fixture extracts file under directory');
+
+    const tarPath = TEST_DIR + '/compat.tar';
+    const payload = encodeUtf8('tar compat\n');
+    const padded = new Uint8Array(Math.ceil(payload.byteLength / 512) * 512);
+    padded.set(payload);
+    const tarBytes = new Uint8Array(512 + 512 + padded.byteLength + 1024);
+    tarBytes.set(makeTarHeader('docs/', 0, 53), 0);
+    tarBytes.set(makeTarHeader('docs/readme.txt', payload.byteLength, 48), 512);
+    tarBytes.set(padded, 1024);
+    await fs.writeFile(tarPath, tarBytes);
+
+    const tarEntries = await listArchive(tarPath);
+    t.equal(tarEntries.length, 2, 'tar fixture lists directory and file entries');
+    t.equal(tarEntries[0]?.kind, 'directory', 'tar directory kind is detected');
+    t.equal(tarEntries[1]?.name, 'docs/readme.txt', 'tar file entry is preserved');
+    await extractArchive(tarPath, TEST_DIR + '/compat-tar-out');
+    t.equal(await fs.readFile(TEST_DIR + '/compat-tar-out/docs/readme.txt'), 'tar compat\n', 'tar fixture extracts file under directory');
   });
 });

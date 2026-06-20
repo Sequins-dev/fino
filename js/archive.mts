@@ -18,7 +18,15 @@
  * in-memory entry table and write the whole archive atomically through a
  * temporary file on `save()` or `close()`. Read-only helpers such as
  * `listArchive()` and `extractArchive()` open the archive, perform the single
- * operation, and close it for you.
+ * operation, and close it for you. These are whole-archive operations, not
+ * streaming reader or writer APIs; callers should avoid using them for archives
+ * that are too large to hold comfortably in memory.
+ *
+ * This release baseline intentionally supports a small, predictable archive
+ * subset. ZIP64 records, ZIP data descriptors, tar PAX headers, GNU long-name
+ * records, symlink restoration, and hardlink restoration are not supported.
+ * Unsupported ZIP and tar extensions are rejected or skipped before extraction
+ * writes file contents.
  *
  * ## Safety model
  *
