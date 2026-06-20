@@ -146,9 +146,7 @@ Status: TODO
 Status: DONE
 
 ## EventSource
-Status: TODO
-- Add redirect handling and TLS EventSource coverage.
-- Document credentials/CORS parity boundaries.
+Status: DONE
 
 ## HTTP App
 Status: DONE

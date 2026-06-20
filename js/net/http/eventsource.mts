@@ -87,12 +87,25 @@
  *
  * - Reconnects on: EOF (stream ended normally), network errors, and HTTP
  *   status codes 429, 500, 502, 503, 504 (retriable errors).
+ * - Follows local HTTP redirects for 301, 302, 303, 307, and 308 responses,
+ *   resolving relative `Location` values against the current request URL.
+ *   Redirects always remain GET requests and are capped to prevent loops.
  * - Does NOT reconnect on: wrong Content-Type, other HTTP error statuses.
  * - HTTP 204 closes the stream gracefully without reconnecting.
  * - Reconnection uses a configurable retry interval (default: 3000ms),
  *   updated dynamically by `retry:` fields in the event stream.
  * - The `Last-Event-ID` header is sent on every reconnect attempt if
  *   a non-empty last event ID has been seen.
+ *
+ * ## Credentials, CORS, and TLS
+ *
+ * This is a server-side EventSource implementation. It supports explicit
+ * caller-provided headers for credentials such as bearer tokens, but it does
+ * not implement browser cookie credential modes or browser CORS enforcement.
+ * TLS verification is enabled by default for `https:` URLs. Tests and private
+ * deployments may pass a pinned CA path through `tls.ca`; disabling certificate
+ * verification with `tls.rejectUnauthorized: false` should be limited to local
+ * development.
  *
  *
  * ## Contributing
@@ -180,6 +193,19 @@ export interface EventSourceInit {
    * ```
    */
   headers?: Record<string, string> | Headers;
+  /** TLS trust options for `https:` EventSource connections.
+   *
+   * `rejectUnauthorized` defaults to `true`; `ca` points at a PEM CA file.
+   * These options are ignored for `http:` URLs.
+   *
+   * ```ts no_run
+   * new EventSource('https://localhost/events', { tls: { ca: '/tmp/test-ca.pem' } });
+   * ```
+   */
+  tls?: {
+    ca?: string;
+    rejectUnauthorized?: boolean;
+  };
 }
 
 interface SseEventOptions {
@@ -519,6 +545,10 @@ const CLOSED     = 2;
 
 /** HTTP status codes that trigger reconnection rather than permanent failure. */
 const RETRIABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+/** HTTP redirect statuses followed by the client before opening the stream. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** Redirect cap for one connection attempt. */
+const MAX_REDIRECTS = 20;
 
 /** Default reconnection interval per W3C spec (3 seconds). */
 const DEFAULT_RETRY_MS = 3000;
@@ -676,6 +706,7 @@ export class EventSource extends EventTarget {
    * @internal
    */
   #extraHeaders: Headers;
+  #tlsOptions: EventSourceInit['tls'] | undefined;
   /**
    * Private property `#currentReader` used by `EventSource`.
    *
@@ -783,6 +814,7 @@ export class EventSource extends EventTarget {
     this.#lastEventId   = null;
     this.#retryInterval = DEFAULT_RETRY_MS;
     this.#extraHeaders  = init?.headers ? new Headers(init.headers) : new Headers();
+    this.#tlsOptions    = init?.tls;
     this.#currentReader = null;
     this.#onopen        = null;
     this.#onmessage     = null;
@@ -921,60 +953,94 @@ export class EventSource extends EventTarget {
       let reader: ClosableAsyncByteReader | null = null;
 
       try {
-        // ---- Parse URL --------------------------------------------------------
-        const parsed  = new URL(this.#url);
-        const isHttps = parsed.protocol === 'https:';
-        const hostname = parsed.hostname;
-        const port = parsed.port
-          ? parseInt(parsed.port, 10)
-          : (isHttps ? 443 : 80);
-        const path = (parsed.pathname + parsed.search) || '/';
-        const origin = parsed.origin;
+        let requestUrl = this.#url;
+        let redirectCount = 0;
+        let response: Awaited<ReturnType<typeof parseResponse>>;
+        let origin = '';
 
-        // ---- DNS lookup -------------------------------------------------------
-        const { address, family } = await lookup(hostname);
-        if (this.#readyState === CLOSED) return;
+        while (true) {
+          // ---- Parse URL ------------------------------------------------------
+          const parsed  = new URL(requestUrl);
+          const isHttps = parsed.protocol === 'https:';
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            throw new Error('EventSource URL must use http: or https:');
+          }
+          const hostname = parsed.hostname;
+          const port = parsed.port
+            ? parseInt(parsed.port, 10)
+            : (isHttps ? 443 : 80);
+          const path = (parsed.pathname + parsed.search) || '/';
+          origin = parsed.origin;
 
-        const addr: IPv4Address | IPv6Address = family === 6
-          ? { family: 'ipv6', ip: address, port }
-          : { family: 'ipv4', ip: address, port };
+          // ---- DNS lookup -----------------------------------------------------
+          const { address, family } = await lookup(hostname);
+          if (this.#readyState === CLOSED) return;
 
-        // ---- TCP / TLS connect ------------------------------------------------
-        if (isHttps) {
-          sock = await TlsSocket.connect(addr, { hostname });
-        } else {
-          sock = await Socket.connect(addr);
+          const addr: IPv4Address | IPv6Address = family === 6
+            ? { family: 'ipv6', ip: address, port }
+            : { family: 'ipv4', ip: address, port };
+
+          // ---- TCP / TLS connect ----------------------------------------------
+          if (isHttps) {
+            sock = await TlsSocket.connect(addr, {
+              hostname,
+              ca: this.#tlsOptions?.ca,
+              rejectUnauthorized: this.#tlsOptions?.rejectUnauthorized,
+            });
+          } else {
+            sock = await Socket.connect(addr);
+          }
+          if (this.#readyState === CLOSED) { _closeSocket(sock); return; }
+
+          // ---- Split and register reader for close() cancellation -------------
+          const [r, writer] = sock.split();
+          reader = r;
+          this.#currentReader = reader;
+
+          // ---- Build and send HTTP request ------------------------------------
+          const headers = new Headers(this.#extraHeaders);
+          headers.set('accept', 'text/event-stream');
+          headers.set('cache-control', 'no-store');
+          if (this.#lastEventId !== null) {
+            headers.set('last-event-id', this.#lastEventId);
+          }
+          const hostHeader = parsed.port
+            ? `${hostname}:${parsed.port}`
+            : hostname;
+
+          let reqStr = `GET ${path} HTTP/1.1\r\nHost: ${hostHeader}\r\n`;
+          for (const [name, value] of headers) {
+            reqStr += `${name}: ${value}\r\n`;
+          }
+          reqStr += '\r\n';
+
+          await _writeToSocket(writer, encodeUtf8(reqStr));
+          if (this.#readyState === CLOSED) return;
+
+          // ---- Parse HTTP response headers -----------------------------------
+          response = await parseResponse(reader);
+          if (this.#readyState === CLOSED) return;
+
+          if (!REDIRECT_STATUSES.has(response.status)) break;
+
+          const location = response.headers.get('location');
+          if (location === null) {
+            this.#readyState = CLOSED;
+            this.#fireError();
+            return;
+          }
+          if (++redirectCount > MAX_REDIRECTS) {
+            this.#readyState = CLOSED;
+            this.#fireError();
+            return;
+          }
+
+          requestUrl = new URL(location, parsed.href).href;
+          if (this.#currentReader === reader) this.#currentReader = null;
+          reader = null;
+          _closeSocket(sock);
+          sock = null;
         }
-        if (this.#readyState === CLOSED) { _closeSocket(sock); return; }
-
-        // ---- Split and register reader for close() cancellation ---------------
-        const [r, writer] = sock.split();
-        reader = r;
-        this.#currentReader = reader;
-
-        // ---- Build and send HTTP request --------------------------------------
-        const headers = new Headers(this.#extraHeaders);
-        headers.set('accept', 'text/event-stream');
-        headers.set('cache-control', 'no-store');
-        if (this.#lastEventId !== null) {
-          headers.set('last-event-id', this.#lastEventId);
-        }
-        const hostHeader = parsed.port
-          ? `${hostname}:${parsed.port}`
-          : hostname;
-
-        let reqStr = `GET ${path} HTTP/1.1\r\nHost: ${hostHeader}\r\n`;
-        for (const [name, value] of headers) {
-          reqStr += `${name}: ${value}\r\n`;
-        }
-        reqStr += '\r\n';
-
-        await _writeToSocket(writer, encodeUtf8(reqStr));
-        if (this.#readyState === CLOSED) return;
-
-        // ---- Parse HTTP response headers -------------------------------------
-        const response = await parseResponse(reader);
-        if (this.#readyState === CLOSED) return;
 
         const status = response.status;
         const ct     = response.headers.get('content-type') ?? '';

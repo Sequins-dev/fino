@@ -10,6 +10,10 @@ import * as loop from 'internal:runtime/loop';
 type EventSourceMessage = { type: string; data: string; lastEventId: string };
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
+const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
+const skipTls = !tlsAvailable && 'OpenSSL (libssl) not available';
+const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
+const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
 
 async function* source(str: string): AsyncIterable<Uint8Array> {
   yield encodeUtf8(str);
@@ -555,6 +559,88 @@ describe('EventSource integration', () => {
     t.equal(seenIds[0], null, 'no Last-Event-ID on first connection');
     // After receiving an empty id:, the reconnect MUST include Last-Event-ID: ''
     t.equal(seenIds[1], '', 'Last-Event-ID with empty value sent on reconnect');
+
+    await server.close();
+  });
+
+  it('follows local redirects with relative Location before opening the stream', async (t) => {
+    const seenPaths: string[] = [];
+    const server = serve({ port: 19972 }, async (req) => {
+      const path = new URL(req.url).pathname;
+      seenPaths.push(path);
+      if (path === '/events') {
+        return new Response(null, { status: 302, headers: { location: '/events-final' } });
+      }
+      return sseResponse(sseBody({ data: 'redirected' }));
+    });
+
+    let received = '';
+    await new Promise<void>((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19972/events');
+      es.onmessage = (e) => { received = e.data; es.close(); resolve(); };
+    });
+
+    t.deepEqual(seenPaths, ['/events', '/events-final'], 'redirect is followed with a relative Location');
+    t.equal(received, 'redirected', 'message received from redirected SSE endpoint');
+
+    await server.close();
+  });
+
+  it('caps redirect loops and fails closed', async (t) => {
+    let requests = 0;
+    const server = serve({ port: 19973 }, async () => {
+      requests++;
+      return new Response(null, { status: 307, headers: { location: '/events' } });
+    });
+
+    await new Promise<void>((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19973/events');
+      es.onerror = () => {
+        t.equal(es.readyState, EventSource.CLOSED, 'redirect loop closes the EventSource');
+        resolve();
+      };
+    });
+
+    t.equal(requests, 21, 'redirect cap stops after the original request plus 20 redirects');
+
+    await server.close();
+  });
+
+  it('sends explicit headers on the SSE request', async (t) => {
+    let auth: string | null = null;
+    let marker: string | null = null;
+    const server = serve({ port: 19974 }, async (req) => {
+      auth = req.headers.get('authorization');
+      marker = req.headers.get('x-fino-test');
+      return sseResponse(sseBody({ data: 'headers' }));
+    });
+
+    await new Promise<void>((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19974/events', {
+        headers: { authorization: 'Bearer token', 'x-fino-test': 'yes' },
+      });
+      es.onmessage = () => { es.close(); resolve(); };
+    });
+
+    t.equal(auth, 'Bearer token', 'authorization header is sent explicitly');
+    t.equal(marker, 'yes', 'custom header is sent explicitly');
+
+    await server.close();
+  });
+
+  it('connects to HTTPS SSE with a fixture CA', { skip: skipTls }, async (t) => {
+    const server = serve(
+      { port: 19975, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => sseResponse(sseBody({ data: 'secure' })),
+    );
+
+    let received = '';
+    await new Promise<void>((resolve) => {
+      const es = new EventSource('https://localhost:19975/events', { tls: { ca: CERT_PATH } });
+      es.onmessage = (e) => { received = e.data; es.close(); resolve(); };
+    });
+
+    t.equal(received, 'secure', 'HTTPS SSE message received with trusted fixture CA');
 
     await server.close();
   });
