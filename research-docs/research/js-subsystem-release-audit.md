@@ -103,9 +103,7 @@ Status: TODO
 Status: DONE
 
 ## Validation
-Status: TODO
-- Fix docs drift: `additionalProperties(schema)` is implemented and tested,
-  but docs still imply only `false` is enforced.
+Status: DONE
 
 ## Logging
 Status: TODO

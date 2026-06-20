@@ -957,13 +957,14 @@ class ObjectBuilder extends SchemaBuilder<Record<string, unknown>> {
   /**
    * Control validation of properties not declared in the object shape.
    *
-   * Passing `false` rejects unknown keys. Passing `true` or a schema records the
-   * value in JSON Schema, but this validator currently only enforces `false`.
+   * Passing `false` rejects unknown keys. Passing `true` accepts unknown keys.
+   * Passing a schema validates each unknown key's value against that schema.
    *
    * ```ts no_run
    * import { v } from 'fino:validate';
    *
-   * const schema = v.object({ name: v.string() }).additionalProperties(false);
+   * const schema = v.object({ name: v.string() })
+   *   .additionalProperties(v.integer().min(1).schema);
    * ```
    */
   additionalProperties(value: boolean | JsonSchema): this {
