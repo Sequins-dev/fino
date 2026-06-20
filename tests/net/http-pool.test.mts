@@ -9,9 +9,10 @@ import { describe, it } from 'fino:test/test';
 import { serve } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
-import { Response } from 'fino:net/http';
+import { Headers, Response } from 'fino:net/http';
 import { h2Available, createPoolEntry } from 'fino:net/http/h2';
 import { H2ConnectionPool } from 'internal:net/http/pool';
+import { _fetchH2PoolHas, _resetFetchH2Pool } from 'internal:globals/fetch';
 import * as loop from 'internal:runtime/loop';
 
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
@@ -328,6 +329,123 @@ describe('ALPN server-side negotiation', () => {
       tlsSock.close();
       t.equal(proto, 'http/1.1', `server negotiated http/1.1 (got: ${proto})`);
     } finally {
+      await server.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Global fetch() HTTPS H2 pool integration
+// ---------------------------------------------------------------------------
+
+function httpsOrigin(port: number): string {
+  return `https://127.0.0.1:${port}`;
+}
+
+describe('global fetch() — HTTPS H2 pool', () => {
+  it('creates and reuses an ALPN-negotiated H2 pool entry', { skip: skipHttps }, async (t) => {
+    _resetFetchH2Pool();
+    let requests = 0;
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response(`hit-${++requests}`),
+    );
+    const origin = httpsOrigin(server.port);
+
+    try {
+      const first = await fetch(`${origin}/one`, { tls: { rejectUnauthorized: false } } as any);
+      t.equal(await first.text(), 'hit-1', 'first pooled fetch response');
+      t.ok(_fetchH2PoolHas(origin), 'pool entry created after ALPN h2 fetch');
+
+      const second = await fetch(`${origin}/two`, { tls: { rejectUnauthorized: false } } as any);
+      t.equal(await second.text(), 'hit-2', 'second pooled fetch response');
+      t.ok(_fetchH2PoolHas(origin), 'pool entry remains reusable');
+      t.equal(requests, 2, 'server handled both requests');
+    } finally {
+      _resetFetchH2Pool();
+      await server.close();
+    }
+  });
+
+  it('keys pooled entries by origin port', { skip: skipHttps }, async (t) => {
+    _resetFetchH2Pool();
+    const serverA = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('a'),
+    );
+    const serverB = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('b'),
+    );
+    const originA = httpsOrigin(serverA.port);
+    const originB = httpsOrigin(serverB.port);
+
+    try {
+      t.equal(await (await fetch(`${originA}/`, { tls: { rejectUnauthorized: false } } as any)).text(), 'a');
+      t.ok(_fetchH2PoolHas(originA), 'first origin is pooled');
+      t.ok(!_fetchH2PoolHas(originB), 'second origin is not populated by first fetch');
+
+      t.equal(await (await fetch(`${originB}/`, { tls: { rejectUnauthorized: false } } as any)).text(), 'b');
+      t.ok(_fetchH2PoolHas(originA), 'first origin remains pooled');
+      t.ok(_fetchH2PoolHas(originB), 'second origin gets its own entry');
+    } finally {
+      _resetFetchH2Pool();
+      await serverA.close();
+      await serverB.close();
+    }
+  });
+
+  it('evicts the pooled entry after server close tears down transport', { skip: skipHttps }, async (t) => {
+    _resetFetchH2Pool();
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    const origin = httpsOrigin(server.port);
+
+    try {
+      t.equal(await (await fetch(`${origin}/`, { tls: { rejectUnauthorized: false } } as any)).text(), 'ok');
+      t.ok(_fetchH2PoolHas(origin), 'pool entry exists before close');
+      await server.close();
+      await loop.timeout(50);
+      t.ok(!_fetchH2PoolHas(origin), 'pool entry is evicted after transport close');
+    } finally {
+      _resetFetchH2Pool();
+      try { await server.close(); } catch {}
+    }
+  });
+
+  it('carries response and request trailers over pooled H2', { skip: skipHttps }, async (t) => {
+    _resetFetchH2Pool();
+    let capturedRequestTrailer: string | null = null;
+    const server = serve(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async (req) => {
+        const body = await req.text();
+        capturedRequestTrailer = (await req.trailers).get('x-upload-checksum');
+        return new Response(`echo:${body}`, {
+          trailers: new Headers({ 'x-response-trailer': 'pooled' }),
+        });
+      },
+    );
+    const origin = httpsOrigin(server.port);
+
+    try {
+      const warm = await fetch(`${origin}/warm`, { tls: { rejectUnauthorized: false } } as any);
+      await warm.text();
+      t.ok(_fetchH2PoolHas(origin), 'warm request created pool entry');
+
+      const res = await fetch(`${origin}/trailers`, {
+        method: 'POST',
+        body: 'payload',
+        trailers: new Headers({ 'x-upload-checksum': 'abc123' }),
+        tls: { rejectUnauthorized: false },
+      } as any);
+      t.equal(await res.text(), 'echo:payload', 'pooled request body echoed');
+      t.equal(capturedRequestTrailer, 'abc123', 'server received pooled request trailer');
+      t.equal((await res.trailers).get('x-response-trailer'), 'pooled', 'client received pooled response trailer');
+    } finally {
+      _resetFetchH2Pool();
       await server.close();
     }
   });

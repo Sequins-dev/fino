@@ -656,9 +656,8 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         const trailerList: Array<[string, string]> = [];
         for (const [k, v] of trailersOut.entries()) trailerList.push([k, v]);
         if (trailerList.length > 0) {
-          session.setStreamData(streamId, null);
-          await drainWrite();
           session.submitTrailer(streamId, trailerList);
+          session.setStreamData(streamId, null);
           await drainWrite();
         } else {
           session.setStreamData(streamId, null);

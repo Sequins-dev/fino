@@ -39,6 +39,7 @@ import {
   NGHTTP2_FRAME_TYPE_HEADERS,
   NGHTTP2_FRAME_TYPE_DATA,
   NGHTTP2_DATA_FLAG_EOF,
+  NGHTTP2_DATA_FLAG_NO_END_STREAM,
   NGHTTP2_ERR_DEFERRED,
   NGHTTP2_NV_FLAG_NONE,
   DP2_SOURCE,
@@ -152,7 +153,9 @@ export interface H2StreamCallbacks {
 }
 
 interface DataSlot {
-  bytes: Uint8Array | null;
+  bytes?: Uint8Array;
+  eof?: boolean;
+  noEndStream?: boolean;
 }
 
 const _dec = new _TextDecoder();
@@ -678,17 +681,22 @@ export class Nghttp2Session {
       ): number => {
         const slot = this.#streamDataSlots.get(streamId);
         if (!slot) return NGHTTP2_ERR_DEFERRED;
-        if (slot.bytes === null) {
-          Pointer.writeU32(dataFlagsPtrBuf, 0, NGHTTP2_DATA_FLAG_EOF);
+        if (slot.eof) {
+          let flags = NGHTTP2_DATA_FLAG_EOF;
+          if (slot.noEndStream) flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+          Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
+          slot.eof = false;
+          slot.noEndStream = false;
           return 0;
         }
+        if (!slot.bytes) return NGHTTP2_ERR_DEFERRED;
         const chunk = slot.bytes;
         const toWrite = Math.min(chunk.byteLength, Number(length));
         Pointer.copyTo(bufPtrBuf, chunk.subarray(0, toWrite));
         if (toWrite < chunk.byteLength) {
           slot.bytes = chunk.subarray(toWrite);
         } else {
-          slot.bytes = null;
+          slot.bytes = undefined;
         }
         return toWrite;
       },
@@ -1001,6 +1009,8 @@ export class Nghttp2Session {
   /**
    * Feed the next body chunk for `streamId`.
    * Pass `null` to signal EOF; the data provider will set the EOF flag on next call.
+   * Use `{ noEndStream: true }` when trailer HEADERS will be submitted after
+   * the data provider reports EOF.
    *
    * The bytes are held by the session until the data provider consumes them.
    * Passing another chunk before the previous one is fully consumed replaces the
@@ -1012,13 +1022,20 @@ export class Nghttp2Session {
    * session.setStreamData(1, new Uint8Array([65]));
    * ```
    */
-  setStreamData(streamId: number, bytes: Uint8Array | null): void {
+  setStreamData(streamId: number, bytes: Uint8Array | null, options?: { noEndStream?: boolean }): void {
     let slot = this.#streamDataSlots.get(streamId);
     if (!slot) {
-      slot = { bytes: null };
+      slot = {};
       this.#streamDataSlots.set(streamId, slot);
     }
-    slot.bytes = bytes;
+    if (bytes === null) {
+      slot.bytes = undefined;
+      slot.eof = true;
+    } else {
+      slot.bytes = bytes;
+      slot.eof = false;
+    }
+    slot.noEndStream = bytes === null && options?.noEndStream === true;
     this.resumeData(streamId);
   }
 

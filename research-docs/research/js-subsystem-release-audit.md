@@ -123,9 +123,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/2 Pool
-Status: TODO
-- Add end-to-end global `fetch()` H2 pool tests for origin keying, reuse after
-  TLS ALPN, GOAWAY/close eviction, and trailers over pooled fetch.
+Status: DONE
 
 ## HTTP/3
 Status: TODO

@@ -121,6 +121,10 @@ interface FetchInit {
   cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
   keepalive?: boolean;
   trailers?: Headers | (() => Headers | Promise<Headers>);
+  tls?: {
+    ca?: string;
+    rejectUnauthorized?: boolean;
+  };
 }
 
 interface TraceRuntime {
@@ -240,6 +244,7 @@ async function _singleFetch(
   signal: MinimalAbortSignal | null,
   runtime: TraceRuntime = {},
   trailers?: Headers | (() => Headers | Promise<Headers>),
+  tls?: FetchInit['tls'],
 ): Promise<{ response: Response; sock: Socket | TlsSocket | null }> {
   const parsed   = _parseHttpUrl(url);
   const isHttps  = parsed.protocol === 'https:';
@@ -328,7 +333,12 @@ async function _singleFetch(
     }));
     try {
       const alpn = h2Available ? ['h2', 'http/1.1'] : undefined;
-      const tlsConnectP = TlsSocket.connect(addr, { hostname, alpn });
+      const tlsConnectP = TlsSocket.connect(addr, {
+        hostname,
+        alpn,
+        ca: tls?.ca,
+        rejectUnauthorized: tls?.rejectUnauthorized,
+      });
       // If abort fires before the connect resolves, the socket still resolves
       // later — close it immediately to prevent a fd leak.
       tlsConnectP.then(s => { if (signal?.aborted) s.close(); }, () => {});
@@ -802,7 +812,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     let sock: Socket | TlsSocket | null;
     try {
       ({ response, sock } = await _singleFetch(
-        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers
+        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers, init?.tls
       ));
     } catch (error) {
       topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {
@@ -941,4 +951,27 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
 
   // Unreachable (the loop always returns or throws), but satisfies the linter.
   throw new TypeError('fetch: internal error');
+}
+
+/**
+ * Return whether the internal global fetch HTTP/2 pool has a live entry.
+ *
+ * This hook exists for runtime tests that need to assert ALPN pooling behavior
+ * without exposing pool state through a public `fino:*` API.
+ *
+ * @internal
+ */
+export function _fetchH2PoolHas(origin: string): boolean {
+  return _h2Pool.has(origin);
+}
+
+/**
+ * Close and clear all internal global fetch HTTP/2 pool entries.
+ *
+ * Use this only in tests to isolate origin-keyed pool state between cases.
+ *
+ * @internal
+ */
+export function _resetFetchH2Pool(): void {
+  _h2Pool.closeAll();
 }

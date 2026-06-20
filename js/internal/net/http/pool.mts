@@ -395,7 +395,8 @@ export class H2PoolEntry {
       } catch { bodyBytes = null; }
     }
 
-    const hasBody = bodyBytes !== null;
+    const hasTrailers = req._hasOutTrailers();
+    const hasBody = bodyBytes !== null || hasTrailers;
     const streamId = this.#session.submitRequest(requestHeaders, hasBody);
 
     // Register deferred for this stream.
@@ -415,9 +416,33 @@ export class H2PoolEntry {
 
     await this.drainWrite();
 
-    if (hasBody && bodyBytes) {
+    if (bodyBytes) {
       this.#session.setStreamData(streamId, bodyBytes);
       await this.drainWrite();
+    }
+
+    if (hasTrailers) {
+      let trailersOut: Headers;
+      const raw = req._getRawOutTrailers();
+      if (raw instanceof Headers) {
+        trailersOut = raw;
+      } else if (typeof raw === 'function') {
+        try { trailersOut = await raw(); }
+        catch { trailersOut = new Headers(); }
+      } else {
+        trailersOut = new Headers();
+      }
+      const trailerList: Array<[string, string]> = [];
+      for (const [k, v] of trailersOut.entries()) trailerList.push([k, v]);
+      if (trailerList.length > 0) {
+        this.#session.submitTrailer(streamId, trailerList);
+        this.#session.setStreamData(streamId, null);
+        await this.drainWrite();
+      } else {
+        this.#session.setStreamData(streamId, null);
+        await this.drainWrite();
+      }
+    } else if (hasBody) {
       this.#session.setStreamData(streamId, null);
       await this.drainWrite();
     }
