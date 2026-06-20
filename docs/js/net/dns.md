@@ -1,20 +1,21 @@
-# dns
+# js/net/dns
 
-fino:dns — async DNS resolution via the RFC 1035 wire protocol over UDP.
+fino:dns — async DNS resolution via the RFC 1035 wire protocol.
 
 This module implements DNS resolution entirely in JS by speaking the DNS
-wire protocol directly over UDP sockets (from `fino:socket`). It reads
-nameservers from `/etc/resolv.conf` via `fino:file`. No blocking libc
-calls are made — the entire resolution path is async and event-loop driven.
+wire protocol directly over UDP sockets (from `fino:socket`) and falls back
+to DNS-over-TCP when a UDP response is marked truncated. It reads nameservers
+from `/etc/resolv.conf` via `fino:file`. No blocking libc calls are made —
+the entire resolution path is async and event-loop driven.
 
 ## Why not use libc getaddrinfo?
 
 `getaddrinfo(3)` is the standard libc function for DNS resolution, but it
 blocks the calling thread. Calling it from Fino would freeze the entire
 event loop for the duration of the DNS query — potentially hundreds of
-milliseconds. Using raw UDP lets us await the response asynchronously via
-`loop.readable()`, keeping the process responsive to other I/O while the
-query is in flight.
+milliseconds. Using raw sockets lets us await readiness asynchronously via
+`loop.readable()` / `loop.writable()`, keeping the process responsive to
+other I/O while the query is in flight.
 
 ## DNS wire protocol overview (RFC 1035)
 
@@ -53,7 +54,22 @@ Each answer/authority/additional record is:
   RDATA   — variable; format depends on TYPE
 
 `parseResourceRecord()` handles A, AAAA, CNAME, NS, PTR, MX, TXT, SOA, and
-SRV. Unknown types return raw bytes.
+SRV, plus DNSSEC DS, DNSKEY, RRSIG, NSEC, NSEC3, and NSEC3PARAM records.
+Unknown types return raw bytes. Every parsed record also preserves exact
+`rawData` RDATA bytes for canonicalization and future validator use.
+
+## DNSSEC wire support
+
+Passing `{ dnssec: true }` to `new Resolver()` or `lookup()` makes queries
+include an EDNS(0) OPT pseudo-record with the DNSSEC OK (DO) bit and a
+conservative 1232-byte UDP payload size. Responses parse EDNS metadata and
+DNSSEC record payloads locally. Signed positive answers are validated from
+embedded IANA root trust anchors. Bogus or indeterminate signed data, broken
+DS/DNSKEY chains, expired signatures, unsupported-only signatures, and
+missing denial proofs reject with `code: 'EDNSSEC'`. Provably insecure
+unsigned delegations are accepted after a signed DS-negative proof. The
+resolver never trusts upstream AD bits as proof. Unsupported DNSSEC signing
+algorithms still reject unless another supported signature validates.
 
 ## CNAME chain following
 
@@ -88,12 +104,13 @@ we throw an `ETIMEOUT` error.
 
 - DNS packets are big-endian. All header fields and record metadata use the
   `readU16()` / `readU32()` big-endian helpers defined at the top of the file.
-- Transaction IDs should be random per query to prevent response spoofing.
-  The current implementation uses `Math.random()`. A production resolver
-  would use `getpid()` XOR'd with a counter to reduce collision probability.
+- Transaction IDs are generated with `crypto.getRandomValues()` and checked
+  against responses to reduce spoofing risk.
 - UDP datagrams may arrive out of order or be duplicates. We check that the
   response ID matches the query ID and discard non-matching packets.
-- DNSSEC validation is not implemented. Responses are trusted at face value.
+- DNSSEC validation is opt-in. DNSSEC-enabled queries request validation
+  material with EDNS(0) DO, verify chains locally, and reject bogus or
+  indeterminate data with `EDNSSEC`.
 
 ```ts
 import { Resolver } from 'fino:dns';
@@ -102,6 +119,38 @@ const resolver = new Resolver({ timeout: 1_000, retries: 2 });
 resolver.setServers(['1.1.1.1', '8.8.8.8']);
 const addresses = await resolver.resolve('example.com', 'A');
 ```
+
+## DnsServer
+
+```ts
+interface DnsServer {
+```
+
+Parsed DNS nameserver endpoint used internally by the resolver.
+
+### ip
+
+```ts
+ip: string
+```
+
+Numeric IPv4 or IPv6 address literal.
+
+### family
+
+```ts
+family: DnsServerFamily
+```
+
+Socket address family for `ip`.
+
+### port
+
+```ts
+port: number
+```
+
+UDP/TCP DNS port, normally 53.
 
 ## MxRecord
 
@@ -311,10 +360,235 @@ Target host name for the service.
 const addrs = await resolver.resolve(srv.name, 'AAAA');
 ```
 
+## DsRecord
+
+```ts
+interface DsRecord {
+```
+
+Delegation signer DNSSEC record payload.
+
+DS records bind a child zone DNSKEY to its parent zone. The digest is the
+raw hash from wire format; callers that display it commonly hex-encode it.
+
+### keyTag
+
+```ts
+keyTag: number
+```
+
+### algorithm
+
+```ts
+algorithm: number
+```
+
+### digestType
+
+```ts
+digestType: number
+```
+
+### digest
+
+```ts
+digest: Uint8Array
+```
+
+## DnskeyRecord
+
+```ts
+interface DnskeyRecord {
+```
+
+DNSSEC DNSKEY record payload.
+
+### flags
+
+```ts
+flags: number
+```
+
+### protocol
+
+```ts
+protocol: number
+```
+
+### algorithm
+
+```ts
+algorithm: number
+```
+
+### publicKey
+
+```ts
+publicKey: Uint8Array
+```
+
+## RrsigRecord
+
+```ts
+interface RrsigRecord {
+```
+
+DNSSEC RRSIG record payload.
+
+### typeCovered
+
+```ts
+typeCovered: number
+```
+
+### algorithm
+
+```ts
+algorithm: number
+```
+
+### labels
+
+```ts
+labels: number
+```
+
+### originalTtl
+
+```ts
+originalTtl: number
+```
+
+### expiration
+
+```ts
+expiration: number
+```
+
+### inception
+
+```ts
+inception: number
+```
+
+### keyTag
+
+```ts
+keyTag: number
+```
+
+### signerName
+
+```ts
+signerName: string
+```
+
+### signature
+
+```ts
+signature: Uint8Array
+```
+
+## NsecRecord
+
+```ts
+interface NsecRecord {
+```
+
+DNSSEC NSEC authenticated-denial record payload.
+
+### nextDomainName
+
+```ts
+nextDomainName: string
+```
+
+### types
+
+```ts
+types: number[]
+```
+
+## Nsec3Record
+
+```ts
+interface Nsec3Record {
+```
+
+DNSSEC NSEC3 authenticated-denial record payload.
+
+### hashAlgorithm
+
+```ts
+hashAlgorithm: number
+```
+
+### flags
+
+```ts
+flags: number
+```
+
+### iterations
+
+```ts
+iterations: number
+```
+
+### salt
+
+```ts
+salt: Uint8Array
+```
+
+### nextHashedOwnerName
+
+```ts
+nextHashedOwnerName: Uint8Array
+```
+
+### types
+
+```ts
+types: number[]
+```
+
+## Nsec3ParamRecord
+
+```ts
+interface Nsec3ParamRecord {
+```
+
+DNSSEC NSEC3PARAM record payload.
+
+### hashAlgorithm
+
+```ts
+hashAlgorithm: number
+```
+
+### flags
+
+```ts
+flags: number
+```
+
+### iterations
+
+```ts
+iterations: number
+```
+
+### salt
+
+```ts
+salt: Uint8Array
+```
+
 ## DnsRecordData
 
 ```ts
-type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord | Uint8Array | null
+type DnsRecordData = string | string[] | MxRecord | SoaRecord | SrvRecord | DsRecord | DnskeyRecord | RrsigRecord | NsecRecord | Nsec3Record | Nsec3ParamRecord | Uint8Array | null
 ```
 
 Decoded DNS record payload for supported record types; unknown data is raw
@@ -378,6 +652,14 @@ Record TTL in seconds.
 ```ts
 console.log(`cacheable for ${record.ttl}s`);
 ```
+
+### rawData
+
+```ts
+rawData: Uint8Array
+```
+
+Exact RDATA bytes from the packet.
 
 ### data
 
@@ -492,6 +774,20 @@ Additional section records.
 console.log(response.additionals.length);
 ```
 
+### edns
+
+```ts
+edns?: {
+  udpPayloadSize: number;
+  dnssecOk: boolean;
+  extendedRcode: number;
+  version: number;
+  flags: number;
+}
+```
+
+Parsed EDNS(0) metadata when the response contains an OPT pseudo-RR.
+
 ## ResolverOptions
 
 ```ts
@@ -532,6 +828,14 @@ Number of retry rounds across the configured nameserver list.
 const resolver = new Resolver({ retries: 3 });
 ```
 
+### dnssec
+
+```ts
+dnssec?: boolean
+```
+
+Enable local DNSSEC validation and request DNSSEC records with EDNS(0) DO.
+
 ## LookupOptions
 
 ```ts
@@ -558,6 +862,14 @@ Requested address family, or omitted for IPv4-then-IPv6 fallback.
 ```ts
 await lookup('example.com', { family: 4 });
 ```
+
+### dnssec
+
+```ts
+dnssec?: boolean
+```
+
+Enable local DNSSEC validation for this lookup.
 
 ## LookupResult
 
@@ -615,6 +927,54 @@ keys.
 const query = _buildQuery(1, 'example.com', RECORD_TYPES.AAAA);
 ```
 
+### DS
+
+```ts
+DS
+```
+
+DNSSEC DS record type constant.
+
+### RRSIG
+
+```ts
+RRSIG
+```
+
+DNSSEC RRSIG record type constant.
+
+### NSEC
+
+```ts
+NSEC
+```
+
+DNSSEC NSEC record type constant.
+
+### DNSKEY
+
+```ts
+DNSKEY
+```
+
+DNSSEC DNSKEY record type constant.
+
+### NSEC3
+
+```ts
+NSEC3
+```
+
+DNSSEC NSEC3 record type constant.
+
+### NSEC3PARAM
+
+```ts
+NSEC3PARAM
+```
+
+DNSSEC NSEC3PARAM record type constant.
+
 ## _encodeName
 
 ```ts
@@ -639,7 +999,10 @@ Exported for unit testing.
 ## _buildQuery
 
 ```ts
-function _buildQuery(id: number, name: string, qtype: number): Uint8Array
+function _buildQuery(id: number, name: string, qtype: number, options: {
+  dnssec?: boolean;
+  udpPayloadSize?: number;
+} = {}): Uint8Array
 ```
 
 Build a complete DNS query packet.
@@ -727,12 +1090,14 @@ Exported for unit testing.
 class Resolver {
 ```
 
-UDP DNS resolver with configurable nameservers, timeout, and retries.
+DNS resolver with configurable nameservers, timeout, and retries.
 
 The resolver lazily reads `/etc/resolv.conf` on first use, falls back to
-public IPv4 DNS servers if none are found, and follows CNAME chains for A and
-AAAA lookups up to a fixed hop limit. DNSSEC validation and TCP fallback for
-truncated UDP responses are not implemented.
+public IPv4 DNS servers if none are found, follows CNAME chains for A and
+AAAA lookups up to a fixed hop limit, and retries over TCP when a UDP
+response has the DNS truncated bit set. Set `dnssec: true` to request DNSSEC
+records with EDNS(0) DO and validate signed answers from the root trust
+anchor before returning them.
 
 ```ts
 import { Resolver } from 'fino:net/dns';

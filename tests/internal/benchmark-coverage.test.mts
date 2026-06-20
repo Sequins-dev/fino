@@ -85,4 +85,27 @@ describe('benchmark coverage map', () => {
 
     t.deepEqual(missing, [], 'all listed benchmark files exist');
   });
+
+  it('keeps release-audit stress and failure benchmarks visible', async (t) => {
+    const required = new Map<string, string[]>([
+      ['benchmarks/archive.bench.mts', ['many-entry zip list', 'malformed archive open rejects']],
+      ['benchmarks/database/sqlite.bench.mts', ['unique constraint failure']],
+      ['benchmarks/file/watch.bench.mts', ['directory event delivery']],
+      ['benchmarks/net/dns.bench.mts', ['malformed truncated response rejects', 'DNSSEC validation corpus']],
+      ['benchmarks/net/tls.bench.mts', ['failed TLS connect rejects']],
+      ['benchmarks/net/quic.bench.mts', ['listen without cert rejects']],
+      ['benchmarks/net/http/h3.bench.mts', ['requireH3 unavailable failure path']],
+      ['benchmarks/net/quic-loopback-transfer.bench.mts', ['loopback client-to-server stream bulk transfer']],
+    ]);
+    const missing: string[] = [];
+
+    for (const [file, markers] of required) {
+      const source = await fs.readFile(file, 'utf8');
+      for (const marker of markers) {
+        if (!source.includes(marker)) missing.push(`${file}: ${marker}`);
+      }
+    }
+
+    t.deepEqual(missing, [], 'release-audit benchmark stress/failure markers are present');
+  });
 });

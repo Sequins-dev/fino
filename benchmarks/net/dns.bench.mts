@@ -9,6 +9,7 @@
  */
 
 import { _encodeName, _buildQuery, _parseResponse, RECORD_TYPES } from 'fino:net/dns';
+import { validateSignedResponse } from '../../js/internal/net/dnssec.mts';
 import { bench } from 'fino:bench';
 
 // ---------------------------------------------------------------------------
@@ -166,6 +167,18 @@ function buildDnssecResponse(name: string): Uint8Array {
 }
 
 const DNSSEC_RESPONSE = buildDnssecResponse('example.com');
+const MALFORMED_TRUNCATED_RESPONSE = A_RESPONSE_SHORT.subarray(0, A_RESPONSE_SHORT.byteLength - 3);
+const DNSSEC_VALIDATION_CORPUS = {
+  rcode: 0,
+  answers: [{
+    name: 'unsigned.test',
+    type: RECORD_TYPES.A,
+    ttl: 60,
+    data: '192.0.2.1',
+    rawData: new Uint8Array([192, 0, 2, 1]),
+  }],
+  authorities: [],
+};
 
 bench('_encodeName', (b) => {
   b.measure('2-label short',   () => _encodeName('example.com'));
@@ -202,5 +215,28 @@ bench('_parseResponse', (b) => {
   b.group('by name length', (g) => {
     g.measure('short name',  () => _parseResponse(A_RESPONSE_SHORT));
     g.measure('long name',   () => _parseResponse(A_RESPONSE_LONG));
+  });
+
+  b.group('failure paths', (g) => {
+    g.measure('malformed truncated response rejects', () => {
+      try {
+        _parseResponse(MALFORMED_TRUNCATED_RESPONSE);
+        throw new Error('malformed truncated response unexpectedly parsed');
+      } catch (err) {
+        if (String((err as Error).message ?? err).includes('unexpectedly parsed')) throw err;
+      }
+    });
+
+    g.measure('DNSSEC validation corpus missing signature rejects', async () => {
+      try {
+        await validateSignedResponse(DNSSEC_VALIDATION_CORPUS as any, 'unsigned.test', RECORD_TYPES.A, {
+          trustAnchors: [],
+          now: 2_000,
+        });
+        throw new Error('DNSSEC validation corpus unexpectedly accepted unsigned answer');
+      } catch (err) {
+        if (String((err as Error).message ?? err).includes('unexpectedly accepted')) throw err;
+      }
+    });
   });
 });

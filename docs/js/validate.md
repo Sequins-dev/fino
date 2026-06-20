@@ -12,6 +12,13 @@ intentional: applications can load schemas from disk, receive schemas from
 tools, or build schemas fluently in code while using the same validator
 pipeline.
 
+The supported JSON Schema subset is intentionally small and runtime-focused:
+`type`, `const`, `enum`, `properties`, `required`, `additionalProperties`,
+`items`, `prefixItems`, `anyOf`, string length/pattern/format constraints,
+numeric minimum/maximum, and array length constraints. Unknown keywords are
+preserved on schemas for tooling compatibility but ignored by validation.
+Supported string formats are `email`, `url`, and `uri`.
+
 Validators are compiled into closure graphs. The implementation avoids
 generated source and `eval`, but still avoids re-walking the schema metadata
 for every input value.

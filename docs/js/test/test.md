@@ -1,4 +1,4 @@
-# test
+# js/test/test
 
 fino:test — TAP-13 test framework with nesting and BDD-style describe/it.
 

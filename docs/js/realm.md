@@ -1066,8 +1066,10 @@ postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeO
 Serialize and send a message to the process realm.
 
 Messages use the runtime serializer. Transfer lists may include
-`ArrayBuffer` instances; unsupported transferable values are ignored by
-this method. Calling after `close()` returns without sending.
+`ArrayBuffer` instances. Other transferable values, including
+`MessagePort`, are rejected because process-realm transport cannot move
+live in-process handles across the process boundary. Calling after
+`close()` returns without sending.
 
 ```ts
 import { Realm } from 'fino:realm';

@@ -1,4 +1,4 @@
-# stream
+# js/stream
 
 fino:stream — generic, byte-specialized, and buffered async I/O abstractions.
 

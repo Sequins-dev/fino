@@ -1,4 +1,4 @@
-# bench
+# js/test/bench
 
 fino:bench — benchmark suite, a JS port of benc.h.
 
@@ -10,7 +10,7 @@ with C benchmarks.
 
 Benchmark functions may be **synchronous or async**. Async benchmarks are
 detected automatically: if `fn()` returns a thenable, the measurement loop
-spins the global event loop synchronously to completion on every iteration:
+awaits it to completion on every iteration:
 
 ```js
 import { DiskFileSystem } from '../file/fs.mts';
@@ -73,11 +73,14 @@ square root of variance. This matches the benc.h implementation exactly
 `group.measure(name, fn)` defers registration until `finalize()`. When
 executed, it runs `fn()` repeatedly until at least 1 second of wall time
 has elapsed (measured by accumulating `now()` deltas in `stats.total`).
+Tests can set the internal `FINO_BENCH_MIN_NS` environment variable to lower
+this duration for CLI runner fixtures; normal benchmark runs keep the
+one-second default.
 This adaptive approach ensures that fast functions get many samples (better
 statistics) and slow functions get at least one full second of coverage.
 
-For async benchmarks, each iteration spins the global event loop
-synchronously via `loop.spin()`.
+For async benchmarks, each iteration awaits the returned thenable before
+recording the elapsed time.
 
 ## Comparison output
 
@@ -223,8 +226,7 @@ b.measure('name', { setup, fn, teardown })
 ```
 
 `fn` may be synchronous or async. If `fn()` returns a thenable, the
-measurement loop spins the global event loop to completion on every
-iteration.
+measurement loop awaits it to completion on every iteration.
 
 `setup()` and `teardown()` are synchronous and are not included in timing.
 The return value of `setup()` is passed as the first argument to `fn(ctx)`.
@@ -262,7 +264,7 @@ bench('runtime', (b) => {
 ### finalize
 
 ```ts
-finalize()
+async finalize()
 ```
 
 Execute all pending measurements and sub-groups, then print the

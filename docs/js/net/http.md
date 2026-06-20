@@ -394,8 +394,9 @@ constructor(input: string | Request | symbol, init?: RequestInit | any)
 Create a Request from a URL string, another Request, or the internal parser
 sentinel.
 
-Body values may be strings, bytes, ArrayBuffers, FormData, or null. Reading
-the body later marks it used; cloning is only allowed before disturbance.
+Body values may be strings, bytes, ArrayBuffers, FormData, async iterables,
+ReadableStreams, or null. Reading the body later marks it used; cloning is
+only allowed before disturbance.
 
 ```ts
 const req = new Request('/submit', { method: 'POST', body: 'hello' });

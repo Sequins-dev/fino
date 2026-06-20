@@ -39,4 +39,15 @@ bench('net/quic public surface', (b) => {
     endpoint.close();
   });
 
+  b.measure('listen without cert rejects', async () => {
+    const endpoint = new QuicEndpoint({ alpnProtocols: ['fino-bench'] });
+    try {
+      await endpoint.listen({ address: { family: 'ipv4', ip: '127.0.0.1', port: 0 } });
+      throw new Error('QUIC listen without cert unexpectedly succeeded');
+    } catch (err) {
+      if (String((err as Error).message ?? err).includes('unexpectedly succeeded')) throw err;
+    } finally {
+      await endpoint.close();
+    }
+  });
 });

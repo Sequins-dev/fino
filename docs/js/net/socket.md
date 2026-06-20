@@ -1,4 +1,4 @@
-# socket
+# js/net/socket
 
 fino:socket — POSIX socket API for TCP, UDP, and Unix domain sockets.
 

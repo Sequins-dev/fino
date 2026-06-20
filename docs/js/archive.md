@@ -120,6 +120,34 @@ const entries = await archive.entries();
 await archive.close();
 ```
 
+## ArchiveExtractOptions
+
+```ts
+interface ArchiveExtractOptions extends ArchiveOpenOptions {
+```
+
+Optional extraction policy limits.
+
+Limits are opt-in so existing extraction behavior remains unchanged unless a
+caller supplies an explicit cap. `maxEntries` counts regular file entries
+written to disk. `maxTotalBytes` counts uncompressed file payload bytes.
+
+### maxEntries
+
+```ts
+maxEntries?: number
+```
+
+Maximum number of regular file entries to extract.
+
+### maxTotalBytes
+
+```ts
+maxTotalBytes?: number
+```
+
+Maximum total uncompressed bytes to extract across regular files.
+
 ## ArchiveWriteOptions
 
 ```ts
@@ -713,7 +741,7 @@ await archive.close();
 ### extract
 
 ```ts
-async extract(destination: string, _options: object = {}): Promise<ExtractResult>
+async extract(destination: string, options: ArchiveExtractOptions = {}): Promise<ExtractResult>
 ```
 
 Extract all entries to `destination`.
@@ -838,7 +866,7 @@ console.log(entries.map((entry) => entry.name));
 async function extractArchive(
   path: string,
   destination: string,
-  options: ArchiveOpenOptions = {
+  options: ArchiveExtractOptions = {
   }
 ): Promise<ExtractResult>
 ```

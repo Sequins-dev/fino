@@ -1,4 +1,4 @@
-# pool
+# js/realm/pool
 
 fino:realm/pool - RealmPool with load-based dispatch.
 

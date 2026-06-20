@@ -242,8 +242,4 @@ Status: DONE
 Status: DONE
 
 ## Docs And Benchmarks
-Status: TODO
-
-- Regenerate or correct stale DNS and HTTP server docs.
-- Add stress/failure benchmarks for archive, SQLite, file watch, DNS resolver,
-  DNSSEC, TLS, QUIC, and H3 where current benchmarks are surface-level.
+Status: DONE

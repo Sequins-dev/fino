@@ -116,4 +116,44 @@ if (!sqliteAvailable) {
     if (row!['label'] !== 'disk') throw new Error('unexpected disk row');
     await db.close();
   });
+
+  bench('database/sqlite db-backed stress and failure', (b) => {
+    b.measure('prepare + get via harness', async () => {
+      const stmt = queryDb.prepare('SELECT label FROM lookup WHERE id = ?');
+      try {
+        const row = await stmt.get(16n);
+        if (row!['label'] !== 'label-16') throw new Error('unexpected row');
+      } finally {
+        stmt.finalize();
+      }
+    });
+
+    b.measure('transaction insert via harness', async () => {
+      await insertDb.transaction(async () => {
+        await runInsertStmt.run('harness-a');
+        await runInsertStmt.run('harness-b');
+      });
+    });
+
+    b.measure('unique constraint failure', async () => {
+      const db = await Database.open(':memory:');
+      try {
+        await db.exec('CREATE TABLE unique_values (value TEXT UNIQUE)');
+        const stmt = db.prepare('INSERT INTO unique_values VALUES (?)');
+        try {
+          await stmt.run('duplicate');
+          try {
+            await stmt.run('duplicate');
+            throw new Error('unique constraint unexpectedly accepted duplicate');
+          } catch (err) {
+            if (String((err as Error).message ?? err).includes('unexpectedly accepted')) throw err;
+          }
+        } finally {
+          stmt.finalize();
+        }
+      } finally {
+        await db.close();
+      }
+    });
+  });
 }
