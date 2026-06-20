@@ -192,6 +192,70 @@ describe('iteration', () => {
     });
     t.deepEqual(results, [['a', '1', true], ['b', '2', true]]);
   });
+
+  it('FormData -- entries() observes entries appended during iteration', (t) => {
+    const fd = new FormData();
+    fd.append('a', '1');
+    fd.append('b', '2');
+
+    const iterator = fd.entries();
+    t.deepEqual(iterator.next().value, ['a', '1'], 'first entry returned');
+    fd.append('c', '3');
+
+    t.deepEqual(iterator.next().value, ['b', '2'], 'existing second entry returned');
+    t.deepEqual(iterator.next().value, ['c', '3'], 'appended entry is visible');
+    t.equal(iterator.next().done, true, 'iterator completes after live entries');
+  });
+
+  it('FormData -- keys() and values() observe deleted entries during iteration', (t) => {
+    const fd = new FormData();
+    fd.append('a', '1');
+    fd.append('b', '2');
+    fd.append('c', '3');
+
+    const keys = fd.keys();
+    const values = fd.values();
+    t.equal(keys.next().value, 'a', 'first key returned');
+    t.equal(values.next().value, '1', 'first value returned');
+
+    fd.delete('b');
+
+    t.equal(keys.next().value, 'c', 'deleted key is skipped');
+    t.equal(values.next().value, '3', 'deleted value is skipped');
+    t.equal(keys.next().done, true, 'keys iterator completes');
+    t.equal(values.next().done, true, 'values iterator completes');
+  });
+
+  it('FormData -- default iterator observes live mutations', (t) => {
+    const fd = new FormData();
+    fd.append('a', '1');
+    fd.append('b', '2');
+
+    const iterator = fd[Symbol.iterator]();
+    t.deepEqual(iterator.next().value, ['a', '1'], 'first entry returned');
+    fd.delete('b');
+    fd.append('c', '3');
+
+    t.deepEqual(iterator.next().value, ['c', '3'], 'default iterator uses current entries');
+    t.equal(iterator.next().done, true, 'default iterator completes');
+  });
+
+  it('FormData -- forEach observes live append and delete mutations', (t) => {
+    const fd = new FormData();
+    fd.append('a', '1');
+    fd.append('b', '2');
+
+    const seen: Array<[string, FormDataEntryValue]> = [];
+    fd.forEach((value, key) => {
+      seen.push([key, value]);
+      if (key === 'a') {
+        fd.delete('b');
+        fd.append('c', '3');
+      }
+    });
+
+    t.deepEqual(seen, [['a', '1'], ['c', '3']], 'forEach follows the current entry list');
+  });
 });
 
 describe('set() with Blob/File values', () => {

@@ -40,7 +40,9 @@
  *
  * The `[Symbol.iterator]()` method delegates to `entries()`, so FormData
  * instances can be iterated with `for...of` to get `[key, value]` pairs,
- * matching the browser API.
+ * matching the browser API. Iterators are live and read from the current entry
+ * list as they advance, so entries appended before completion can be observed
+ * and entries deleted before their turn are skipped.
  *
  *
  * ```ts no_run
@@ -374,8 +376,7 @@ export class FormData {
   /**
    * Iterate over [name, value] pairs in insertion order.
    *
-   * The iterator is backed by a snapshot, so later mutations do not affect the
-   * current iteration.
+   * The iterator is live and reads the current entry list as it advances.
    *
    * ```typescript no_run
    * const form = new FormData();
@@ -383,8 +384,11 @@ export class FormData {
    * [...form.entries()]; // [["x", "1"]]
    * ```
    */
-  entries() {
-    return this.#entries.slice()[Symbol.iterator]();
+  *entries(): IterableIterator<[string, FormDataEntryValue]> {
+    for (let i = 0; i < this.#entries.length; i++) {
+      const entry = this.#entries[i]!;
+      yield [entry[0], entry[1]];
+    }
   }
 
   /**
@@ -398,10 +402,10 @@ export class FormData {
    * [...form.keys()]; // ["x"]
    * ```
    */
-  keys() {
-    const ks: string[] = [];
-    for (let i = 0; i < this.#entries.length; i++) ks.push(this.#entries[i]![0]);
-    return ks[Symbol.iterator]();
+  *keys(): IterableIterator<string> {
+    for (let i = 0; i < this.#entries.length; i++) {
+      yield this.#entries[i]![0];
+    }
   }
 
   /**
@@ -415,10 +419,10 @@ export class FormData {
    * [...form.values()]; // ["1"]
    * ```
    */
-  values() {
-    const vs: FormDataEntryValue[] = [];
-    for (let i = 0; i < this.#entries.length; i++) vs.push(this.#entries[i]![1]);
-    return vs[Symbol.iterator]();
+  *values(): IterableIterator<FormDataEntryValue> {
+    for (let i = 0; i < this.#entries.length; i++) {
+      yield this.#entries[i]![1];
+    }
   }
 
   /**
@@ -434,9 +438,9 @@ export class FormData {
    * ```
    */
   forEach(callback: (value: FormDataEntryValue, name: string, parent: FormData) => void, thisArg?: unknown): void {
-    const entries = this.#entries.slice();
-    for (let i = 0; i < entries.length; i++) {
-      callback.call(thisArg, entries[i]![1], entries[i]![0], this);
+    for (let i = 0; i < this.#entries.length; i++) {
+      const entry = this.#entries[i]!;
+      callback.call(thisArg, entry[1], entry[0], this);
     }
   }
 

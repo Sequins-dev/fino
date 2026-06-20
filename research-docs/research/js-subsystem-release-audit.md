@@ -252,9 +252,9 @@ Status: TODO
 Status: DONE
 
 ## FormData
-Status: TODO
+Status: DONE
 - Incoming multipart/FormData parsing is outside release scope.
-- Verify live iterator mutation behavior against FormData expectations.
+- Live iterator mutation behavior is covered for entries, keys, values, default iteration, and forEach.
 - Multipart serialization is eager, so large untrusted bodies remain a release-risk limit.
 
 ## Fetch Global
