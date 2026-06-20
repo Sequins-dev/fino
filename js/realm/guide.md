@@ -197,6 +197,12 @@ await pool.close();
 Pools are useful when tasks are independent, repeated, and expensive enough that
 keeping workers warm is worthwhile.
 
+`RealmPool` is intentionally local: it keeps thread realms in the current
+process and does not schedule work across cluster workers. Use `Realm({
+remote: true })` directly when a specific task should run on another cluster
+node. A distributed pool abstraction needs separate placement, authentication,
+and slow-worker policy design before it can be part of the public API.
+
 ## Choosing an Isolation Level
 
 - Use an embedded realm for import isolation and reloadable module graphs.

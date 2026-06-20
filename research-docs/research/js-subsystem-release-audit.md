@@ -213,8 +213,7 @@ Status: DONE
 Status: DONE
 
 ## Realm Pool
-Status: TODO
-- Add stress/throughput benchmarks and any missing remote/pool failure cases.
+Status: DONE
 
 ## Realm Messaging And Self
 Status: DONE

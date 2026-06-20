@@ -1,4 +1,4 @@
-# Distribution — Remaining Work
+# Distribution — Deferred Remote Pool Design
 
 ## Status
 
@@ -6,9 +6,13 @@ The original design (`RealmPoolServer`, `pool.addRemote()`, `NetPort`) was
 written before cluster Realms existed.  It is now obsolete.
 
 The cluster already provides `new Realm({ remote: true })` for spawning onto
-a remote node.  The open question is how `RealmPool` should participate in
-this — should a pool be able to dispatch across cluster nodes, and if so,
-what does that look like?
+a remote node. `RealmPool` remains a local thread-realm pool for this release;
+it does not dispatch across cluster nodes.
+
+Remote pool scheduling is deferred until a separate distributed-pool design can
+answer placement, discovery, timeout, and authentication policy questions. Until
+then, applications should use `Realm({ remote: true })` for remote placement and
+`RealmPool` for local warm-worker throughput.
 
 ## Design questions before any code
 

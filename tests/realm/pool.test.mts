@@ -18,6 +18,17 @@ import type neverFn from './fixtures/never-fn.mts';
 import type slowFn from './fixtures/slow-fn.mts';
 
 describe('RealmPool basics', () => {
+  it('rejects an empty pool size at construction', (t) => {
+    t.throws(
+      () => new RealmPool({
+        entry: new URL('./fixtures/sum-fn.mts', import.meta.url).pathname,
+        size: 0,
+      }),
+      /size/i,
+      'empty pool size is rejected before dispatch',
+    );
+  });
+
   it('dispatches a call to a worker and returns the result', async (t) => {
     const pool = new RealmPool<typeof sumFn>({
       entry: new URL('./fixtures/sum-fn.mts', import.meta.url).pathname,

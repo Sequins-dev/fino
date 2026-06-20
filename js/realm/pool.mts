@@ -389,6 +389,9 @@ export class RealmPool<F extends RealmFn = RealmFn> {
    */
   constructor(opts: PoolOptions) {
     const size = opts.size ?? (navigator.hardwareConcurrency || 4);
+    if (!Number.isSafeInteger(size) || size < 1) {
+      throw new Error('RealmPool size must be a positive integer');
+    }
     this.#timeout = opts.timeout ?? 30_000;
     this.#closeTimeout = opts.closeTimeout ?? 5_000;
     this.#entry = opts.entry;
