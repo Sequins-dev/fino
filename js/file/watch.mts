@@ -147,20 +147,22 @@ export interface WatchEvent {
 // ---------------------------------------------------------------------------
 
 /**
- * Generated-doc-visible interface `WatchOptions`.
+ * Options for [Watcher].
  *
- * This implementation detail is included when documentation is built with
- * `--include-private`. It describes state or helper behavior used by the
- * owning module rather than a stable application-facing contract. Prefer the
- * public API around the owning type unless you are maintaining this runtime.
+ * The current option surface controls whether watched directories are scanned
+ * recursively. Watch events are backend notifications, not a transactional
+ * filesystem log: platforms may coalesce rapid changes, directory events may
+ * identify only the watched directory, and recursive watches can miss events
+ * created between directory discovery and backend registration.
  *
- * @example
  * ```ts no_run
- * const documentedType = 'WatchOptions';
- * console.log(documentedType);
- * ```
+ * import { Watcher, type WatchOptions } from 'fino:file/watch';
  *
- * @internal
+ * const options: WatchOptions = { recursive: true };
+ * const watcher = new Watcher(options);
+ * watcher.watch('./src');
+ * watcher.close();
+ * ```
  */
 export interface WatchOptions {
   /**

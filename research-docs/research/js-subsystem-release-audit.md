@@ -72,9 +72,7 @@ Status: DONE
 Status: DONE
 
 ## File Watch
-Status: TODO
-- Make exported `WatchOptions` public-facing documentation instead of
-  generated/internal-looking docs.
+Status: DONE
 
 ## Archive
 Status: DONE
