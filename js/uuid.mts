@@ -6,10 +6,12 @@
  * internal:openssl; no new Rust code is required.
  *
  * v7 same-millisecond monotonicity uses a module-level 12-bit counter (option
- * b from RFC 9562 section 6.2): the counter increments on each v7() call within the
- * same millisecond and resets with fresh random fill when the clock advances.
- * This guarantees strict ascending order within a single process while
- * retaining cryptographic randomness across millisecond boundaries.
+ * b from RFC 9562 section 6.2): the counter increments on each v7() call within
+ * the same millisecond and resets with fresh random fill when the clock
+ * advances. If more than 4096 UUIDs are generated in one observed millisecond,
+ * the module advances a logical millisecond so strings remain strictly
+ * ascending within the same process while retaining cryptographic randomness
+ * across millisecond boundaries.
  *
  * ```ts no_run
  *   import { UUID, v4, v7, parse, validate, version } from 'fino:uuid';
@@ -172,9 +174,11 @@ export class UUID {
   /**
    * Generate a time-ordered RFC 9562 version 7 UUID.
    *
-   * The first 48 bits contain the current Unix millisecond timestamp. Calls in
-   * the same process and millisecond use a 12-bit counter so generated strings
-   * sort in creation order until the counter wraps.
+   * The first 48 bits contain the current or logical Unix millisecond
+   * timestamp. Calls in the same process and millisecond use a 12-bit counter
+   * so generated strings sort in creation order. During extreme bursts that
+   * exhaust the 12-bit counter, generation advances a logical millisecond that
+   * may be slightly ahead of `Date.now()` to preserve same-process ordering.
    *
    * ```ts no_run
    * import { UUID } from 'fino:uuid';
@@ -184,17 +188,22 @@ export class UUID {
    */
   static v7(): UUID {
     _checkAvailable();
-    const ms = Date.now();
+    let ms = Date.now();
     const b = _randomBytes(16);
 
-    if (ms === _v7LastMs) {
-      _v7Counter = (_v7Counter + 1) & 0xfff;
-      // On overflow within the same ms, borrow a fresh random fill
-      if (_v7Counter === 0) _v7CounterRand = _randomBytes(2)[0]! & 0xff;
-    } else {
+    if (ms > _v7LastMs) {
       _v7LastMs = ms;
       _v7Counter = 0;
       _v7CounterRand = b[7]! & 0xff;
+    } else {
+      ms = _v7LastMs;
+      _v7Counter++;
+      if (_v7Counter > 0xfff) {
+        _v7LastMs++;
+        ms = _v7LastMs;
+        _v7Counter = 0;
+        _v7CounterRand = _randomBytes(2)[0]! & 0xff;
+      }
     }
 
     // Bytes 0-5: 48-bit millisecond timestamp (big-endian)

@@ -264,9 +264,7 @@ Status: TODO
 - Document unsupported algorithms and formats.
 
 ## UUID
-Status: TODO
-- Add deterministic UUID v7 same-millisecond counter rollover coverage.
-- Clarify the strict same-process ordering guarantee.
+Status: DONE
 
 ## Security Random, Password, Tokens
 Status: DONE

@@ -70,6 +70,20 @@ describe('fino:uuid — v7', () => {
       t.ok(ids[i-1]! <= ids[i]!, `ids[${i-1}] <= ids[${i}]`);
     }
   });
+
+  it('v7 remains monotonic when same-millisecond counter rolls over', (t) => {
+    const originalNow = Date.now;
+    Date.now = () => 2_000_000_000_000;
+    try {
+      const ids: string[] = [];
+      for (let i = 0; i < 4_098; i++) ids.push(v7().toString());
+      for (let i = 1; i < ids.length; i++) {
+        t.ok(ids[i-1]! < ids[i]!, `ids[${i-1}] < ids[${i}]`);
+      }
+    } finally {
+      Date.now = originalNow;
+    }
+  });
 });
 
 describe('fino:uuid — parse and validate', () => {
