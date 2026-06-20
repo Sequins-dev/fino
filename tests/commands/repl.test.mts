@@ -125,11 +125,13 @@ describe('REPL realm', () => {
   });
 
   it('rejects repl with thread option', async (t) => {
-    t.throws(
-      () => new Realm({ repl: true, thread: true }),
-      /repl: true is only supported for embedded realms/,
-      'throws for thread + repl',
-    );
+    for (const option of ['thread', 'process', 'remote', 'watch'] as const) {
+      t.throws(
+        () => new Realm({ repl: true, [option]: true }),
+        /repl: true is only supported for embedded realms/,
+        `throws for ${option} + repl`,
+      );
+    }
   });
 });
 

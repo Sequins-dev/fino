@@ -229,3 +229,14 @@ fino repl
 
 Use the REPL for small experiments with runtime APIs. Put repeatable examples in
 scripts or tests once they become part of a workflow.
+
+The current REPL is intentionally small. It evaluates input in an embedded
+child realm, supports top-level `await`, continues simple multiline snippets
+until brackets or strings balance, prints JSON-compatible values, and exits on
+`.exit`, Ctrl-C, Ctrl-D, or stdin EOF. Thrown errors are printed without ending
+the session.
+
+It is not Node's `repl` module. There is no persistent history file, completion
+API, raw terminal editing contract, pluggable writer, or PTY-specific behavior
+guarantee yet. Embedded realm REPL mode is also limited to same-process realms;
+`repl: true` is rejected with `thread`, `process`, `remote`, or `watch`.

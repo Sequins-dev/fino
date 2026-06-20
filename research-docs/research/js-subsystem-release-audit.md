@@ -81,9 +81,16 @@ Status: TODO
 - Add regression coverage for public/private filtering and module-level JSDoc completeness.
 
 ## REPL
-Status: TODO
-- Add Node-like history, completion, raw terminal editing, and richer value inspection, or document the smaller contract.
-- Add PTY-backed tests for interactive behavior.
+Status: DONE
+- Release baseline documents the smaller Fino REPL contract: embedded child
+  realm evaluation, top-level await, heuristic multiline input, JSON-compatible
+  value printing, error continuation, and `.exit` / Ctrl-C / Ctrl-D / EOF
+  shutdown.
+- Node-like history, completion, raw terminal editing, pluggable writers,
+  PTY-specific behavior guarantees, and Node `repl` module parity are outside
+  this baseline.
+- Coverage locks CLI stdin behavior and embedded realm REPL mode, including
+  rejection with `thread`, `process`, `remote`, and `watch`.
 
 ## Process And Process Class
 Status: DONE

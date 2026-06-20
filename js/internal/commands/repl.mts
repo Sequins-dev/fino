@@ -84,7 +84,11 @@ function isComplete(buf: string): boolean {
  * suggests an incomplete expression, sends complete snippets to a child realm,
  * and prints JSON-formatted results. `.exit`, Ctrl-C, Ctrl-D on an empty line,
  * or stdin EOF terminate the loop. Evaluation errors are printed and do not
- * terminate the session. The returned promise resolves after the child realm is
+ * terminate the session.
+ *
+ * This is a small Fino REPL, not Node's `repl` module. It does not provide a
+ * persistent history file, completion API, raw terminal editing contract, or
+ * pluggable writer. The returned promise resolves after the child realm is
  * asked to terminate.
  *
  * ```js
