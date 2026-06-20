@@ -20,6 +20,16 @@
  *
  * Backed by internal:openssl (libcrypto via FFI). If OpenSSL is not installed,
  * every method throws an informative error rather than crashing the process.
+ * Release CI should include at least one OpenSSL-enabled lane so the WebCrypto
+ * algorithm matrix and named error behavior are exercised rather than skipped.
+ *
+ * Supported digest names are SHA-1, SHA-256, SHA-384, and SHA-512. Symmetric
+ * key import supports raw and JWK AES-GCM, AES-CBC, HMAC, PBKDF2, and HKDF
+ * keys; asymmetric import/export supports the RSA, ECDSA, ECDH, and Ed25519
+ * formats covered by the focused crypto tests. Unsupported algorithms and key
+ * formats reject with `NotSupportedError`, malformed key material rejects with
+ * `DataError`, and backend operation failures such as AES-GCM authentication
+ * failure reject with `OperationError`.
  *
  * Registers `globalThis.crypto` at import time.
  *
@@ -78,6 +88,12 @@ interface CryptoKeyAlgorithm {
   namedCurve?: string;   // EC key curves: 'P-256' | 'P-384' | 'P-521'
   modulusLength?: number;         // RSA: key size in bits
   publicExponent?: Uint8Array;    // RSA: typically [0x01,0x00,0x01] = 65537
+}
+
+function _webCryptoError(name: 'DataError' | 'NotSupportedError' | 'OperationError', message: string): Error {
+  const err = new Error(message);
+  err.name = name;
+  return err;
 }
 
 // ---------------------------------------------------------------------------
@@ -242,7 +258,7 @@ function _digestAlgorithm(name: string): string {
     case 'SHA-256': return 'sha-256';
     case 'SHA-384': return 'sha-384';
     case 'SHA-512': return 'sha-512';
-    default: throw new Error('Unsupported hash algorithm: ' + name);
+    default: throw _webCryptoError('NotSupportedError', 'Unsupported hash algorithm: ' + name);
   }
 }
 
@@ -251,7 +267,7 @@ function _cipherAlgorithm(name: string, keyLength: number): string {
   switch (name.toUpperCase()) {
     case 'AES-GCM': return bits === 128 ? 'aes-128-gcm' : 'aes-256-gcm';
     case 'AES-CBC': return bits === 128 ? 'aes-128-cbc' : 'aes-256-cbc';
-    default: throw new Error('Unsupported cipher algorithm: ' + name);
+    default: throw _webCryptoError('NotSupportedError', 'Unsupported cipher algorithm: ' + name);
   }
 }
 
@@ -754,7 +770,15 @@ const subtle = {
       tag        = null;
     }
 
-    const plaintext = openssl.cipherDecrypt(cipherAlg, keyBytes, iv, ciphertext, tag, aad);
+    let plaintext: Uint8Array;
+    try {
+      plaintext = openssl.cipherDecrypt(cipherAlg, keyBytes, iv, ciphertext, tag, aad);
+    } catch (err) {
+      throw _webCryptoError(
+        'OperationError',
+        err instanceof Error ? err.message : 'decrypt operation failed',
+      );
+    }
     return _toArrayBuffer(plaintext);
   },
 
@@ -786,7 +810,7 @@ const subtle = {
         key_ops?: unknown;
       };
       if ((alg.name === 'AES-GCM' || alg.name === 'AES-CBC' || alg.name === 'HMAC') && jwk.kty !== 'oct') {
-        throw new Error(`importKey: ${alg.name} JWK requires kty "oct"`);
+        throw _webCryptoError('DataError', `importKey: ${alg.name} JWK requires kty "oct"`);
       }
       if ((alg.name === 'ECDSA' || alg.name === 'ECDH') && jwk.kty !== 'EC') {
         throw new Error(`importKey: ${alg.name} JWK requires kty "EC"`);
@@ -852,8 +876,8 @@ const subtle = {
         return new CryptoKey(keyType, extractable, { name: alg.name, hash: { name: hashName } }, [...keyUsages], null, pkey);
       }
       // JWK symmetric key import — kty must be 'oct'.
-      if (jwk.kty !== 'oct') throw new Error(`importKey: unsupported JWK kty "${jwk.kty}" (supported: "oct", "EC", "RSA", "OKP")`);
-      if (typeof jwk.k !== 'string') throw new Error('importKey: JWK missing "k" field');
+      if (jwk.kty !== 'oct') throw _webCryptoError('DataError', `importKey: unsupported JWK kty "${jwk.kty}" (supported: "oct", "EC", "RSA", "OKP")`);
+      if (typeof jwk.k !== 'string') throw _webCryptoError('DataError', 'importKey: JWK missing "k" field');
       const bytes = _base64urlDecode(jwk.k);
       const expectedAlg = _symmetricJwkAlg(alg.name, bytes.byteLength, alg.hash);
       if (jwk.alg !== undefined && jwk.alg !== expectedAlg) {
@@ -909,7 +933,7 @@ const subtle = {
       );
     }
 
-    if (format !== 'raw') throw new Error(`importKey: unsupported format "${format}"; supported: "raw", "spki", "jwk"`);
+    if (format !== 'raw') throw _webCryptoError('NotSupportedError', `importKey: unsupported format "${format}"; supported: "raw", "spki", "jwk"`);
 
     const bytes = _toUint8Array(keyData);
 
@@ -939,7 +963,7 @@ const subtle = {
 
     if (alg.name === 'AES-GCM' || alg.name === 'AES-CBC') {
       if (bytes.byteLength !== 16 && bytes.byteLength !== 32) {
-        throw new Error(`${alg.name}: key must be 128 or 256 bits`);
+        throw _webCryptoError('DataError', `${alg.name}: key must be 128 or 256 bits`);
       }
       return new CryptoKey(
         'secret',
@@ -970,7 +994,7 @@ const subtle = {
       );
     }
 
-    throw new Error('importKey: unsupported algorithm: ' + alg.name);
+    throw _webCryptoError('NotSupportedError', 'importKey: unsupported algorithm: ' + alg.name);
   },
 
   /**

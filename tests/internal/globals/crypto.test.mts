@@ -20,6 +20,10 @@ function toHex(data: ArrayBuffer | ArrayBufferView) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function rejectsWithName(name: string): (err: unknown) => boolean {
+  return (err: unknown) => err instanceof Error && err.name === name;
+}
+
 describe('getRandomValues', { skip }, () => {
   it('fills array with bytes', (t) => {
     const arr = new Uint8Array(32);
@@ -901,6 +905,52 @@ describe('crypto.subtle — 192-bit AES key rejection', () => {
       async () => crypto.subtle.importKey('raw', key192, 'AES-GCM', true, ['encrypt', 'decrypt']),
       /128|256|bits|length/i,
       '192-bit AES key importKey throws with key size error',
+    );
+  });
+});
+
+describe('WebCrypto release error names', { skip }, () => {
+  it('uses NotSupportedError for unsupported algorithms and formats', async (t) => {
+    await t.rejects(
+      () => crypto.subtle.digest('MD5' as any, new Uint8Array(1)),
+      rejectsWithName('NotSupportedError'),
+      'unsupported digest algorithm uses NotSupportedError',
+    );
+    await t.rejects(
+      () => crypto.subtle.importKey('raw', new Uint8Array(16), 'RSA-OAEP', false, ['encrypt']),
+      rejectsWithName('NotSupportedError'),
+      'unsupported raw import algorithm uses NotSupportedError',
+    );
+    await t.rejects(
+      () => crypto.subtle.importKey('der' as any, new Uint8Array(16), 'AES-GCM', false, ['encrypt']),
+      rejectsWithName('NotSupportedError'),
+      'unsupported key format uses NotSupportedError',
+    );
+  });
+
+  it('uses DataError for malformed key data', async (t) => {
+    await t.rejects(
+      () => crypto.subtle.importKey('raw', new Uint8Array(24), 'AES-GCM', true, ['encrypt']),
+      rejectsWithName('DataError'),
+      'invalid AES key length uses DataError',
+    );
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { kty: 'oct' } as JsonWebKey, 'AES-GCM', true, ['encrypt']),
+      rejectsWithName('DataError'),
+      'malformed symmetric JWK uses DataError',
+    );
+  });
+
+  it('uses OperationError for failed decrypt operations', async (t) => {
+    const key = await crypto.subtle.importKey('raw', new Uint8Array(16).fill(1), 'AES-GCM', false, ['encrypt', 'decrypt']);
+    const iv = new Uint8Array(12);
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode('payload')));
+    ciphertext[ciphertext.length - 1] ^= 0xff;
+
+    await t.rejects(
+      () => crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext),
+      rejectsWithName('OperationError'),
+      'AES-GCM authentication failure uses OperationError',
     );
   });
 });

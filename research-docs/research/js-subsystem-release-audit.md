@@ -199,12 +199,7 @@ Status: DONE
 Status: DONE
 
 ## WebCrypto Global
-Status: TODO
-- Ensure OpenSSL-enabled CI runs the suite instead of skipping backend-gated
-  coverage.
-- Add error-name fidelity tests for `OperationError`, `DataError`,
-  `NotSupportedError`, and related spec names.
-- Document unsupported algorithms and formats.
+Status: DONE
 
 ## UUID
 Status: DONE
