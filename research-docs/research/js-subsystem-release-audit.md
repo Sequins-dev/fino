@@ -12,11 +12,7 @@ remain. Keep entries brief and actionable.
 Status: DONE
 
 ## Loader, Import Meta, Module
-Status: TODO
-- Add package-map `import.meta.resolve()` tests, file URL edge cases, and docs
-  for unsupported package `imports` / `#specifier` behavior.
-- Resolve the `SyntheticModule.install()` doc/test mismatch about reinstalling
-  versus throwing on double install.
+Status: DONE
 
 ## Runtime Loop And Backends
 Status: TODO

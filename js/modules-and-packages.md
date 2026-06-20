@@ -69,6 +69,16 @@ console.log(semver.satisfies('1.4.2', '^1.0.0'));
 
 Run `fino install` again after changing dependencies in `package.json`.
 
+The package map is the current reproducibility artifact for installed packages.
+Fino does not write a separate lockfile yet, so dependency changes are applied
+by rerunning `fino install` and committing the resulting package map when your
+project expects reproducible bare-import resolution.
+
+Package `exports` entries are expanded into concrete package-map entrypoints
+when packages are installed. Package `imports` entries and `#specifier`
+imports are not supported yet; use relative imports inside application code or
+published package export subpaths instead.
+
 ## Public API Boundaries
 
 Application code should depend on:
@@ -107,3 +117,11 @@ const realm = new Realm({
 
 Use this when untrusted or reloadable code should only see a narrow set of
 modules.
+
+## Synthetic Modules
+
+`SyntheticModule` installs a same-realm virtual module under a bare specifier.
+Installing the same `SyntheticModule` twice throws, and installing a different
+synthetic module at an already-installed specifier also throws. After a module
+is uninstalled, that specifier can be installed again and subsequent imports
+see the new exports.
