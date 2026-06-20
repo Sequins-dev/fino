@@ -86,9 +86,15 @@ Status: TODO
 - Add PTY-backed tests for interactive behavior.
 
 ## Process And Process Class
-Status: TODO
-- `fino:process` is POSIX-oriented, not Node `process` parity; document this prominently.
-- Add common child-process options or document gaps for stdio modes, shell, detached, IPC, uid/gid, and Windows support.
+Status: DONE
+- Release baseline documents `fino:process` as POSIX-oriented metadata and
+  child process spawning, not Node `process` or `child_process` parity.
+- Child process coverage locks piped stdin/stdout/stderr, replaced `env`,
+  `cwd`, single-use `wait()`, `kill()`, spawn failure cleanup, and high-volume
+  stdout/stderr draining.
+- Node-style stdio mode matrices, shell execution, detached children, IPC,
+  uid/gid switching, Windows behavior, and Node process event APIs are outside
+  this baseline.
 
 ## Process Argv Parser
 Status: DONE

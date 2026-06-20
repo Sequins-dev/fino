@@ -197,6 +197,24 @@ describe('Process class', () => {
     t.notOk(output.includes('PATH='), 'ambient PATH is not inherited when env is replaced');
   });
 
+  it('does not implement Node-style shell or stdio option semantics', async (t) => {
+    t.throws(
+      () => new Process('echo fino-process-shell-option', [], { shell: true } as any),
+      /posix_spawnp/,
+      'shell option is not interpreted by Process',
+    );
+
+    const proc = new Process('/bin/echo', ['stdio-remains-piped'], { stdio: 'ignore' } as any);
+    proc.stdin.close();
+    const chunks = [];
+    for await (const chunk of proc.stdout) chunks.push(chunk);
+    for await (const _ of proc.stderr) { /* drain */ }
+    const { code } = await proc.wait();
+
+    t.equal(code, 0, 'child exits successfully');
+    t.equal(joinChunks(chunks).trim(), 'stdio-remains-piped', 'stdout remains piped despite unsupported stdio option');
+  });
+
   it('failed spawn closes setup resources and does not break later spawns', async (t) => {
     t.throws(
       () => new Process('/definitely/not/a/fino-command', []),

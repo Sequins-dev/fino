@@ -11,6 +11,10 @@
  * The child-process APIs are POSIX-oriented. They use `posix_spawnp(3)`,
  * `pipe(2)`, `kill(2)`, and `waitpid(2)` semantics, with macOS and Linux
  * event-loop integrations for process-exit notification.
+ * This is not Node's global `process` object or `child_process` API: stdio is
+ * always three parent-managed pipes, `env` replaces rather than merges, and
+ * there is no shell option, detached child mode, IPC channel, uid/gid switching,
+ * Node event-emitter process lifecycle, or Windows behavior contract.
  *
  * **Why posix_spawn?**
  * `execve(2)` replaces the current process image, so spawning a different
@@ -96,6 +100,9 @@ import { topic, Topic } from './context/topic.mts';
 
 /**
  * Options for spawning a child process.
+ *
+ * Only `cwd` and `env` are supported. Node-style options such as `stdio`,
+ * `shell`, `detached`, `ipc`, `uid`, and `gid` are not part of this API.
  *
  * ```ts no_run
  * import { Process, type ProcessOptions } from 'fino:process';
@@ -806,6 +813,10 @@ export class Process {
    * Arguments exclude `argv[0]`; the constructor prepends `command`. `opts.env`
    * replaces the inherited environment snapshot, and `opts.cwd` is applied by
    * libc spawn file actions when supported by the platform.
+   *
+   * Standard input, output, and error are always exposed as pipes on the
+   * returned object. This constructor does not interpret Node-style `shell`,
+   * `stdio`, `detached`, `ipc`, `uid`, or `gid` options.
    *
    * ```ts no_run
    * import { Process } from 'fino:process';
