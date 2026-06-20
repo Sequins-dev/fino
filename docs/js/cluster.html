@@ -21,6 +21,7 @@
 <p><code>joinCluster({ seed })</code> - Connect to an existing seed node. The calling node becomes a worker: it accepts realm spawns and hosts them locally. It can also spawn remote realms onto other workers.</p>
 <p>After either call, <code>new Realm({ ..., remote: true })</code> routes through the active cluster client to spawn onto a remote worker.</p>
 <p>Only one cluster connection per process is supported. Calling either function when already connected throws.</p>
+<p>Current release scope uses the WebSocket transport with one trusted seed node. Seed election and cluster authentication are not implemented in this release. Direct peer-to-peer <code>PORT_MSG</code> delivery and QUIC transport remain deferred; control-plane and data-plane messages continue to route through the seed-backed WebSocket cluster.</p>
 <pre><code class="language-ts"><span class="tok-keyword">import</span> { startCluster, leaveCluster } from <span class="tok-string">&#39;fino:cluster&#39;</span>;
 <span class="tok-keyword">import</span> { Realm } from <span class="tok-string">&#39;fino:realm&#39;</span>;
 

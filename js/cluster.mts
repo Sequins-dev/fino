@@ -17,6 +17,12 @@
  * Only one cluster connection per process is supported. Calling either
  * function when already connected throws.
  *
+ * Current release scope uses the WebSocket transport with one trusted seed
+ * node. Seed election and cluster authentication are not implemented in this
+ * release. Direct peer-to-peer `PORT_MSG` delivery and QUIC transport remain
+ * deferred; control-plane and data-plane messages continue to route through
+ * the seed-backed WebSocket cluster.
+ *
  * @example
  * ```ts no_run
  * import { startCluster, leaveCluster } from 'fino:cluster';

@@ -233,11 +233,7 @@ Status: DONE
 Status: DONE
 
 ## Cluster
-Status: TODO
-- Decide whether seed election and cluster authentication are release blockers
-  or explicitly document the trusted single-seed release stance.
-- Keep direct peer-to-peer `PORT_MSG` and QUIC transport deferrals visible in
-  release notes or the cluster guide.
+Status: DONE
 
 ## Test Framework
 Status: DONE
