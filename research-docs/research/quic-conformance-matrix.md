@@ -5,6 +5,42 @@ means a local test observes public behavior or an explicit `@internal` test hook
 "Delegated" means the behavior is owned by ngtcp2/ngtcp2_crypto and is not
 claimed as locally proven beyond integration outcomes.
 
+## Release Lanes
+
+Required release lanes:
+
+- Local QUIC loopback transport tests:
+  `tests/net/quic.test.mts`, `tests/net/quic-streams.test.mts`, and
+  related raw-packet coverage.
+- Deterministic simulator and recovery tests:
+  `tests/net/quic-sim.test.mts` and
+  `tests/net/quic-sim-recovery.test.mts`.
+- HTTP/3-on-QUIC local tests when `libnghttp3` is enabled:
+  `tests/net/quic-h3.test.mts`.
+
+Gated release lanes:
+
+- ngtcp2 HQ interop in `tests/net/quic-hq.test.mts`; skipped unless
+  `wsslhqclient` and `wsslhqserver` are installed.
+- Node QUIC interop in `tests/net/quic-node-interop.test.mts`; skipped unless
+  `NODE_QUIC_BIN` points at a Node build that exposes `node:quic`.
+- Loopback throughput benchmark in
+  `benchmarks/net/quic-loopback-transfer.bench.mts`; comparison mode uses
+  `QUIC_BENCH_BASELINE_BIN` and `QUIC_BENCH_CANDIDATE_BIN`.
+
+Deferred or explicitly gated advanced scope:
+
+- Node DATAGRAM parity gaps remain because the configured Node QUIC build may
+  not expose bidirectional DATAGRAM send/status APIs.
+- Resumed-session external interop remains deferred; local 0-RTT/session-ticket
+  behavior is direct, but the `NODE_QUIC_BIN` lane does not yet prove a resumed
+  external connection.
+- Active migration and Version Negotiation external interop remain deferred
+  until peer tooling exposes the required controls.
+- Backend-specific TLS constraints remain explicit: OpenSSL covers SNI context
+  selection and TLS group constraints; GnuTLS parity for those controls is
+  deferred.
+
 ## RFC 9000 Transport
 
 | Area | Status | Evidence |

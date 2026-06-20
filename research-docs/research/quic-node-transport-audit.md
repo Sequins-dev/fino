@@ -4,6 +4,27 @@ This note records the verified deltas from the current comparison with
 `~/Code/cpp/node`. Each item includes the source proof used for implementation
 so future audits can distinguish fixed behavior from open work.
 
+## Release Lanes And Deferred Node Scope
+
+Required QUIC release evidence comes from local loopback, simulator, recovery,
+raw-packet, stream, and HTTP/3 tests. External lanes are intentionally gated:
+`tests/net/quic-hq.test.mts` runs when ngtcp2 HQ tools are installed,
+`tests/net/quic-node-interop.test.mts` runs when `NODE_QUIC_BIN` points at a
+Node build exposing `node:quic`, and the loopback throughput benchmark runs
+when benchmark binaries are configured.
+
+Node comparison gaps that remain release-acceptable:
+
+- DATAGRAM interop parity depends on Node's experimental QUIC DATAGRAM API
+  exposing real send/status controls; the current fixture records this as a
+  gap rather than claiming proof from stream sentinels.
+- Resumed-session external interop is not proven by the Node lane yet, even
+  though local session-ticket and 0-RTT behavior is covered.
+- Active migration and external Version Negotiation interop are deferred until
+  Node or another peer exposes deterministic controls for those scenarios.
+- Backend-specific TLS limits remain explicit: OpenSSL-only SNI context and TLS
+  group controls are tested; GnuTLS parity for those controls is deferred.
+
 ## Endpoint Packet Accounting
 
 - Node proof: `src/quic/endpoint.cc:1358-1369` filters block-listed packets

@@ -129,10 +129,7 @@ Status: DONE
 Status: DONE
 
 ## QUIC
-Status: TODO
-- Require or document external interop lanes for ngtcp2 HQ tools and
-  `NODE_QUIC_BIN`.
-- Keep optional advanced features and backend requirements explicit.
+Status: DONE
 
 ## WebSocket
 Status: DONE

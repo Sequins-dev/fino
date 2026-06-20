@@ -20,6 +20,18 @@
  * work. Replay-sensitive features such as 0-RTT stay disabled unless callers
  * explicitly provide the required policy and storage.
  *
+ * Release verification has required and gated lanes. Local QUIC loopback and
+ * simulator tests are required for release builds. External ngtcp2 HQ interop,
+ * Node QUIC interop via `NODE_QUIC_BIN`, and the loopback throughput benchmark
+ * are gated lanes: they run when the corresponding tools or baseline binaries
+ * are configured and otherwise skip explicitly.
+ *
+ * Deferred advanced scope remains visible: Node DATAGRAM interop parity still
+ * depends on Node's experimental API shape, resumed-session external interop is
+ * not proven by `NODE_QUIC_BIN`, active migration/version-negotiation external
+ * interop depends on peer tooling, and some TLS constraints are backend
+ * specific, such as OpenSSL-only per-SNI/group controls versus GnuTLS gaps.
+ *
  * ```ts no_run
  * import { QuicEndpoint } from 'fino:net/quic';
  *
