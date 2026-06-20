@@ -2,6 +2,18 @@ import { describe, it } from 'fino:test/test';
 import { parse, stringify, TomlLocalDate, TomlLocalTime, TomlLocalDateTime } from 'fino:format/toml';
 import { loadCorpus, runCorpus, type CorpusCase } from './_corpus.mts';
 
+function stable(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stable);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = stable((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
 describe('fino:format/toml — scalars', () => {
   it('parses strings', (t) => {
     t.deepEqual(parse('x = "hello"'), { x: 'hello' });
@@ -111,11 +123,49 @@ describe('fino:format/toml — datetimes', () => {
     t.ok(doc.dt instanceof TomlLocalDateTime);
     t.equal(doc.dt.date.year, 2024);
   });
+
+  it('rejects invalid local and offset datetime ranges', (t) => {
+    for (const input of [
+      'd = 2024-00-15',
+      'd = 2024-02-30',
+      't = 24:00:00',
+      't = 07:60:00',
+      'dt = 2024-01-15T07:32:60',
+      'dt = 2024-01-15T07:32:00+25:00',
+    ]) {
+      t.throws(() => parse(input), /invalid/i);
+    }
+  });
 });
 
 describe('fino:format/toml — comments', () => {
   it('ignores comments', (t) => {
     t.deepEqual(parse('# top comment\nx = 1 # inline'), { x: 1 });
+  });
+});
+
+describe('fino:format/toml — invalid values', () => {
+  it('rejects malformed numeric tokens', (t) => {
+    for (const input of [
+      'x = 1__0',
+      'x = 1_',
+      'x = 01',
+      'x = 0b102',
+      'x = 0o78',
+      'x = 0xfg',
+      'x = 1.2.3',
+    ]) {
+      t.throws(() => parse(input), /invalid|expected newline/i);
+    }
+  });
+
+  it('throws on integer overflow unless bigint is enabled', (t) => {
+    t.throws(() => parse('x = 9223372036854775807'), /integer overflow/i);
+    t.deepEqual(parse('x = 9223372036854775807', { bigint: true }), { x: 9223372036854775807n });
+  });
+
+  it('rejects unknown basic string escapes', (t) => {
+    t.throws(() => parse('x = "bad\\q"'), /unknown escape/i);
   });
 });
 
@@ -145,6 +195,12 @@ describe('fino:format/toml — stringify', () => {
     const toml = stringify(doc);
     t.ok(toml.includes('[[products]]'));
   });
+
+  it('does not preserve comments or source quoting style', (t) => {
+    const toml = stringify(parse('# comment\nname = "fino"\n'));
+    t.notOk(toml.includes('# comment'), 'comments are not preserved');
+    t.ok(toml.includes("name = 'fino'"), 'stringifier chooses its own quote style');
+  });
 });
 
 const TOML_FIXTURES_DIR = new URL('../fixtures/toml', import.meta.url).pathname;
@@ -170,6 +226,6 @@ describe('fino:format/toml — round-trip (corpus)', () => {
     if (c.expected === 'parse-err') return;
     const first = parse(c.input);
     const second = parse(stringify(first));
-    t.deepEqual(second, first, c.id);
+    t.deepEqual(stable(second), stable(first), c.id);
   });
 });

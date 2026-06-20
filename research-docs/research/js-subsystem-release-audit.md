@@ -337,10 +337,15 @@ Status: TODO
 Status: DONE
 
 ## TOML Format
-Status: TODO
-- Add official TOML conformance coverage beyond the small fixture corpus.
-- Harden date/time and numeric edge-case validation for TOML 1.0.
-- Clarify string escaping, array homogeneity, and preservation limitations.
+Status: DONE
+- Release baseline covers TOML 1.0 scalar, array, table, inline table,
+  array-of-table, datetime, corpus, and structural round-trip behavior.
+- Parser hardening rejects invalid date/time ranges, malformed numeric tokens,
+  unknown string escapes, duplicate keys/tables, and integer overflow unless
+  `{ bigint: true }` is enabled.
+- Stringification is normalized and does not preserve comments, original
+  quoting style, or source ordering between scalar values and tables.
+  Heterogeneous arrays are accepted as Fino values.
 
 ## YAML Format
 Status: TODO

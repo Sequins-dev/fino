@@ -10,7 +10,8 @@
  * The parser covers TOML scalar types, basic and literal strings, integers,
  * floats, booleans, offset datetimes, local datetimes, local dates, local
  * times, arrays, inline tables, tables, and arrays of tables. Key uniqueness
- * and structural rules from the spec are enforced.
+ * and structural rules from the spec are enforced. Numeric tokens and
+ * date/time ranges are validated rather than partially accepted.
  *
  * Datetime types:
  *   - Offset datetime   -> native Date
@@ -20,6 +21,10 @@
  *
  * Integer overflow throws by default; pass `{ bigint: true }` to receive
  * `BigInt` values for integers outside JavaScript's safe integer range.
+ * Stringification emits a normalized TOML document and does not preserve
+ * comments, source ordering between scalars and tables, or original quoting
+ * style. Heterogeneous arrays are accepted as Fino values even though many
+ * TOML tools prefer homogeneous arrays.
  *
  * ```ts no_run
  * import { parse, stringify } from 'fino:format/toml';
@@ -487,10 +492,23 @@ const _IMPLICIT = Symbol('implicit');
 type TableMeta = { [_DEFINED]?: boolean; [_ARRAY]?: boolean; [_IMPLICIT]?: boolean };
 type TomlTable = Record<string, TomlValue> & TableMeta;
 
+function createTable(): TomlTable {
+  return {};
+}
+
+function setMeta<T extends object>(target: T, key: symbol, value: boolean): void {
+  Object.defineProperty(target, key, {
+    value,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+}
+
 class TomlParser {
   #sc: Scanner;
   #opts: TomlParseOptions;
-  #root: TomlTable = Object.create(null);
+  #root: TomlTable = createTable();
 
   constructor(src: string | Uint8Array, opts: TomlParseOptions) {
     this.#opts = opts;
@@ -539,7 +557,7 @@ class TomlParser {
       this.#setKey(current, keys, val);
     }
 
-    return this.#root;
+    return stripMeta(this.#root) as Record<string, TomlValue>;
   }
 
   #skipWs() {
@@ -734,7 +752,7 @@ class TomlParser {
   #parseInlineTable(): TomlTable {
     const sc = this.#sc;
     sc.expect('{');
-    const obj: TomlTable = Object.create(null);
+    const obj: TomlTable = createTable();
     sc.skipSpaceTab();
     if (sc.eatChar('}')) return obj;
     while (true) {
@@ -762,18 +780,34 @@ class TomlParser {
     if (/^\d{2}:\d{2}:\d{2}/.test(raw)) return this.#parseTime(raw);
 
     // --- Integer: hex/oct/bin/dec ---
-    if (raw.startsWith('0x')) return this.#parseInt(parseInt(raw.slice(2), 16), raw);
-    if (raw.startsWith('0o')) return this.#parseInt(parseInt(raw.slice(2), 8), raw);
-    if (raw.startsWith('0b')) return this.#parseInt(parseInt(raw.slice(2), 2), raw);
+    if (/^[+-]0[xob]/.test(raw)) throw sc.error(`invalid value: ${raw}`);
+    if (raw.slice(0, 2) === '0x') {
+      if (!/^0x[0-9a-fA-F]+(?:_[0-9a-fA-F]+)*$/.test(raw)) throw sc.error(`invalid value: ${raw}`);
+      return this.#parseInt(parseInt(raw.slice(2).replace(/_/g, ''), 16), raw);
+    }
+    if (raw.slice(0, 2) === '0o') {
+      if (!/^0o[0-7]+(?:_[0-7]+)*$/.test(raw)) throw sc.error(`invalid value: ${raw}`);
+      return this.#parseInt(parseInt(raw.slice(2).replace(/_/g, ''), 8), raw);
+    }
+    if (raw.slice(0, 2) === '0b') {
+      if (!/^0b[01]+(?:_[01]+)*$/.test(raw)) throw sc.error(`invalid value: ${raw}`);
+      return this.#parseInt(parseInt(raw.slice(2).replace(/_/g, ''), 2), raw);
+    }
 
     // Strip underscores for numeric parse
     const clean = raw.replace(/_/g, '');
 
+    if (raw.includes('_') && !/^[+-]?(?:0|[1-9][0-9]*)(?:_[0-9]+)*(?:\.[0-9]+(?:_[0-9]+)*)?(?:[eE][+-]?[0-9]+(?:_[0-9]+)*)?$/.test(raw)) {
+      throw sc.error(`invalid value: ${raw}`);
+    }
+
     if (/^[+-]?(?:0|[1-9][0-9]*)$/.test(clean)) return this.#parseInt(parseInt(clean, 10), raw);
 
     // Float
-    const f = parseFloat(clean.replace(/^[+]/, ''));
-    if (!isNaN(f) || clean === 'nan') return f;
+    if (/^[+-]?(?:(?:[0-9]+\.[0-9]+)|(?:[0-9]+(?:\.[0-9]+)?[eE][+-]?[0-9]+))$/.test(clean)) {
+      return parseFloat(clean.replace(/^[+]/, ''));
+    }
+    if (clean === 'nan' || clean === '+nan' || clean === '-nan') return NaN;
     if (clean === 'inf' || clean === '+inf') return Infinity;
     if (clean === '-inf') return -Infinity;
 
@@ -789,8 +823,12 @@ class TomlParser {
   }
 
   #parseDate(raw: string): Date | TomlLocalDateTime | TomlLocalDate {
+    if (!/^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(raw)) {
+      throw this.#sc.error(`invalid datetime: ${raw}`);
+    }
     const datePart = raw.slice(0, 10);
     const [y, mo, d] = datePart.split('-').map(Number) as [number, number, number];
+    this.#validateDate(y, mo, d, raw);
     const rest = raw.slice(10);
     if (!rest) return new TomlLocalDate(y, mo, d);
     // Separator: T or space
@@ -799,17 +837,35 @@ class TomlParser {
     const timePart = tzMatch ? timeRaw.slice(0, timeRaw.length - tzMatch[0].length) : timeRaw;
     const t = this.#parseTime(timePart);
     if (tzMatch) {
+      if (tzMatch[0] !== 'Z') {
+        const [oh, om] = tzMatch[0].slice(1).split(':').map(Number) as [number, number];
+        if (oh > 23 || om > 59) throw this.#sc.error(`invalid datetime offset: ${raw}`);
+      }
       // Offset datetime -> Date
-      return new Date(`${datePart}T${timePart}${tzMatch[0]}`);
+      const date = new Date(`${datePart}T${timePart}${tzMatch[0]}`);
+      if (isNaN(date.getTime())) throw this.#sc.error(`invalid datetime: ${raw}`);
+      return date;
     }
     return new TomlLocalDateTime(new TomlLocalDate(y, mo, d), t);
   }
 
   #parseTime(raw: string): TomlLocalTime {
+    if (!/^\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(raw)) throw this.#sc.error(`invalid time: ${raw}`);
     const [hms, fracStr] = raw.split('.') as [string, string | undefined];
     const [h, m, s] = hms.split(':').map(Number) as [number, number, number];
+    if (h > 23 || m > 59 || s > 59) throw this.#sc.error(`invalid time: ${raw}`);
     const ms = fracStr ? Math.round(Number(`0.${fracStr}`) * 1000) : 0;
     return new TomlLocalTime(h, m, s, ms);
+  }
+
+  #validateDate(y: number, mo: number, d: number, raw: string): void {
+    if (mo < 1 || mo > 12 || d < 1) throw this.#sc.error(`invalid date: ${raw}`);
+    const days = [31, this.#isLeapYear(y) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if (d > days[mo - 1]!) throw this.#sc.error(`invalid date: ${raw}`);
+  }
+
+  #isLeapYear(y: number): boolean {
+    return (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
   }
 
   #resolveTable(root: TomlTable, keys: string[], isArray: boolean): TomlTable {
@@ -817,8 +873,8 @@ class TomlParser {
     for (let i = 0; i < keys.length - 1; i++) {
       const k = keys[i]!;
       if (!(k in t)) {
-        const sub: TomlTable = Object.create(null);
-        sub[_IMPLICIT] = true;
+        const sub: TomlTable = createTable();
+        setMeta(sub, _IMPLICIT, true);
         t[k] = sub;
       }
       const next = t[k];
@@ -834,20 +890,20 @@ class TomlParser {
     if (isArray) {
       if (!(last in t)) {
         const arr: TomlTable[] & { [_ARRAY]?: boolean } = [];
-        arr[_ARRAY] = true;
+        setMeta(arr, _ARRAY, true);
         t[last] = arr as unknown as TomlValue;
       } else if (!Array.isArray(t[last]) || !(t[last] as unknown as TomlTable)[_ARRAY]) {
         throw this.#sc.error(`key '${last}' is not an array of tables`);
       }
       const arr = t[last] as TomlTable[];
-      const entry: TomlTable = Object.create(null);
+      const entry: TomlTable = createTable();
       arr.push(entry);
       return entry;
     }
     // Standard table
     if (!(last in t)) {
-      const sub: TomlTable = Object.create(null);
-      sub[_DEFINED] = true;
+      const sub: TomlTable = createTable();
+      setMeta(sub, _DEFINED, true);
       t[last] = sub;
       return sub;
     }
@@ -855,8 +911,8 @@ class TomlParser {
     if (existing[_DEFINED] && !existing[_IMPLICIT]) {
       throw this.#sc.error(`duplicate table '${last}'`);
     }
-    existing[_IMPLICIT] = false;
-    existing[_DEFINED] = true;
+    setMeta(existing, _IMPLICIT, false);
+    setMeta(existing, _DEFINED, true);
     return existing;
   }
 
@@ -865,8 +921,8 @@ class TomlParser {
     for (let i = 0; i < keys.length - 1; i++) {
       const k = keys[i]!;
       if (!(k in cur)) {
-        const sub: TomlTable = Object.create(null);
-        sub[_IMPLICIT] = true;
+        const sub: TomlTable = createTable();
+        setMeta(sub, _IMPLICIT, true);
         cur[k] = sub;
       }
       const next = cur[k];
@@ -918,7 +974,7 @@ class TomlStringifier {
     const arrayTables: [string, Record<string, TomlValue>[]][] = [];
 
     for (const [k, v] of Object.entries(obj)) {
-      if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && !_isDateLike(v[0])) {
+      if (Array.isArray(v) && v.length > 0 && isTableValue(v[0])) {
         arrayTables.push([k, v as Record<string, TomlValue>[]]);
       } else if (typeof v === 'object' && v !== null && !Array.isArray(v) && !_isDateLike(v)) {
         tables.push([k, v as Record<string, TomlValue>]);
@@ -979,8 +1035,29 @@ class TomlStringifier {
   }
 }
 
+function stripMeta(value: TomlValue): TomlValue {
+  if (Array.isArray(value)) {
+    delete (value as unknown as TableMeta)[_ARRAY];
+    for (let i = 0; i < value.length; i++) value[i] = stripMeta(value[i]!);
+    return value;
+  }
+  if (value && typeof value === 'object' && !_isDateLike(value)) {
+    delete (value as TableMeta)[_DEFINED];
+    delete (value as TableMeta)[_ARRAY];
+    delete (value as TableMeta)[_IMPLICIT];
+    for (const key of Object.keys(value as Record<string, TomlValue>)) {
+      (value as Record<string, TomlValue>)[key] = stripMeta((value as Record<string, TomlValue>)[key]!);
+    }
+  }
+  return value;
+}
+
 function _isDateLike(v: unknown): boolean {
   return v instanceof Date || v instanceof TomlLocalDate || v instanceof TomlLocalTime || v instanceof TomlLocalDateTime;
+}
+
+function isTableValue(v: unknown): v is Record<string, TomlValue> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && !_isDateLike(v);
 }
 
 function _tomlKey(k: string): string {
