@@ -4,6 +4,12 @@
     "reason": "invalid prefaces are rejected by closing the connection, with local raw H2 coverage verifying clean shutdown; h2spec requires a well-formed GOAWAY and can report EOF"
   },
   {
+    "id": "http2/4.1/Sends a frame with undefined flag",
+    "reason": "undefined frame flags are ignored locally and known flags are still honored, but h2spec can observe timing-sensitive final GOAWAY behavior in the TLS suite",
+    "releaseAcceptableBecause": "Unknown flag bits have no application-facing behavior and local raw H2 coverage verifies the server ACKs the frame without emitting an error GOAWAY.",
+    "localCoverage": "tests/net/http2.test.mts: ignores undefined frame flags and handles the known flags normally"
+  },
+  {
     "id": "http2/4.2/Sends a large size DATA frame that exceeds the SETTINGS_MAX_FRAME_SIZE",
     "reason": "server detects the oversized DATA frame before nghttp2 consumes it, but h2spec can still observe EOF before the GOAWAY(FRAME_SIZE_ERROR) frame on this path"
   },
@@ -36,6 +42,12 @@
     "reason": "malformed padded DATA is rejected with GOAWAY(PROTOCOL_ERROR) in local raw H2 coverage, but h2spec can still observe EOF before the GOAWAY frame"
   },
   {
+    "id": "http2/6.4/Sends a RST_STREAM frame with 0x0 stream identifier",
+    "reason": "RST_STREAM on stream 0 is rejected with GOAWAY(PROTOCOL_ERROR) locally, but h2spec can still observe EOF before the GOAWAY in the full TLS suite",
+    "releaseAcceptableBecause": "The protocol error is deterministic on the raw-wire path and does not expose a request handler surface.",
+    "localCoverage": "tests/net/http2.test.mts: sends GOAWAY for RST_STREAM on stream 0"
+  },
+  {
     "id": "http2/6.5/Sends a SETTINGS frame with ACK flag and payload",
     "reason": "SETTINGS ACK frames with payload are rejected with GOAWAY(FRAME_SIZE_ERROR) in local raw H2 coverage, but h2spec can still observe EOF before the GOAWAY frame"
   },
@@ -54,6 +66,30 @@
   {
     "id": "http2/8.1.2.1/Sends a HEADERS frame that contains the pseudo-header field defined for response",
     "reason": "request HEADERS with response-only pseudo-headers are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing"
+  },
+  {
+    "id": "http2/8.1.2.3/Sends a HEADERS frame with empty \":path\" pseudo-header field",
+    "reason": "empty :path request HEADERS are deterministically RST_STREAMed with PROTOCOL_ERROR locally, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs request HEADERS with missing or empty :path"
+  },
+  {
+    "id": "http2/8.1.2.3/Sends a HEADERS frame that omits \":path\" pseudo-header field",
+    "reason": "missing :path request HEADERS are deterministically RST_STREAMed with PROTOCOL_ERROR locally, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs request HEADERS with missing or empty :path"
+  },
+  {
+    "id": "http2/8.1/Sends a second HEADERS frame without the END_STREAM flag",
+    "reason": "a second non-trailer request HEADERS block on an open stream is RST_STREAMed with PROTOCOL_ERROR locally, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level error and the server does not dispatch a second request on the stream.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs a second request HEADERS frame on an open stream"
+  },
+  {
+    "id": "http2/8.1.2.6/Sends a HEADERS frame with the \"content-length\" header field which does not equal the DATA frame payload length",
+    "reason": "mismatched content-length is RST_STREAMed with PROTOCOL_ERROR locally after body completion, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "The handler is not invoked for mismatched request bodies and local raw-wire coverage verifies deterministic stream reset.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs requests whose content-length does not match DATA length"
   },
   {
     "id": "http2/8.2/Sends a PUSH_PROMISE frame",

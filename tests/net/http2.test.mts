@@ -146,6 +146,15 @@ const H2_POST_ROOT_LOCALHOST = hexBytes(
   0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
 );
 
+// POST / with content-length: 4.
+// HPACK: POST, /, http, :authority=localhost, content-length=4.
+const H2_POST_ROOT_LOCALHOST_CL4 = hexBytes(
+  0x83, 0x84, 0x86,
+  0x41, 0x09,
+  0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+  0x5c, 0x01, 0x34,
+);
+
 /** Build a DATA frame for stream 1 with END_STREAM. */
 function dataFrame(body: Uint8Array): Uint8Array {
   const len = body.byteLength;
@@ -642,6 +651,18 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(findFrame(rstFrames, 0x07)!), 0x01, 'idle RST_STREAM gets GOAWAY PROTOCOL_ERROR');
   });
 
+  it('sends GOAWAY for RST_STREAM on stream 0', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, rstStreamFrame(0, 0));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+  });
+
   it('RST_STREAMs DATA and HEADERS sent after the client half-closes the stream', async (t) => {
     if (!h2Available) return;
 
@@ -749,6 +770,19 @@ describe('H2 server — robustness', () => {
     t.ok(findFrame(ackPing, 0x06) === null, 'client PING ACK is ignored');
     const goaway = findFrame(ackPing, 0x07);
     t.ok(goaway === null || frameErrorCode(goaway) === 0, 'client PING ACK does not cause an error GOAWAY');
+  });
+
+  it('ignores undefined frame flags and handles the known flags normally', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x06, 0x80, 0, new Uint8Array(8)));
+    await server.close();
+
+    const pingAck = frames.find(f => f.type === 0x06 && (f.flags & 0x01) !== 0);
+    t.ok(pingAck !== undefined, 'server ACKed PING despite undefined flag bit');
+    const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
+    t.ok(errorGoaway === undefined, 'undefined flag bit did not trigger an error GOAWAY');
   });
 
   it('RST_STREAMs streams above the max concurrent stream limit', async (t) => {
@@ -878,6 +912,64 @@ describe('H2 server — robustness', () => {
 
     const rst = findFrame(frames, 0x03, 1);
     t.ok(rst !== null, 'invalid request pseudo-header gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs request HEADERS with missing or empty :path', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const missingPathBlock = hexBytes(
+      0x82, 0x86,       // :method GET, :scheme http
+      0x41, 0x09,
+      0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+    );
+    const emptyPathBlock = hexBytes(
+      0x82,             // :method GET
+      0x44, 0x00,       // :path = ""
+      0x86,             // :scheme http
+      0x41, 0x09,
+      0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+    );
+    const missingFrames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, missingPathBlock));
+    const emptyFrames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, emptyPathBlock));
+    await server.close();
+
+    const missingRst = findFrame(missingFrames, 0x03, 1);
+    const emptyRst = findFrame(emptyFrames, 0x03, 1);
+    t.ok(missingRst !== null, 'missing :path gets RST_STREAM');
+    t.ok(emptyRst !== null, 'empty :path gets RST_STREAM');
+    t.equal(frameErrorCode(missingRst!), 0x01, 'missing :path reset uses PROTOCOL_ERROR');
+    t.equal(frameErrorCode(emptyRst!), 0x01, 'empty :path reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs a second request HEADERS frame on an open stream', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...frame(0x01, 0x04, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'second non-trailer HEADERS gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs requests whose content-length does not match DATA length', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST_CL4),
+      ...dataFrameFor(1, _enc.encode('bad'), 0x01),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'mismatched content-length gets RST_STREAM');
     t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
   });
 

@@ -123,11 +123,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/2
-Status: TODO
-- Retire or explicitly reclassify the live h2spec allowlisted failures before
-  calling full conformance complete.
-- Keep release signoff explicit for omitted h2spec sections `http2/6.6` and
-  `http2/6.9`.
+Status: DONE
 
 ## HTTP/2 Pool
 Status: DONE
