@@ -38,6 +38,8 @@
  * Wire-format domain names encode each label (dot-separated part) as a length
  * byte followed by the label's bytes. "example.com" becomes:
  *   [7] 'e','x','a','m','p','l','e'  [3] 'c','o','m'  [0]
+ * Non-ASCII query labels are normalized to IDNA-style A-labels before wire
+ * encoding, so "café.example" is sent as "xn--caf-dma.example".
  *
  * DNS responses use **compression pointers** to avoid repeating domain names:
  * a two-byte sequence starting with bits 11xxxxxx is a pointer to an earlier
@@ -89,6 +91,9 @@
  * `nameserver <ip>` lines. If the file is unreadable or has no nameserver
  * lines, it falls back to Google's public DNS servers (8.8.8.8, 8.8.4.4).
  * Callers can override nameservers with `resolver.setServers(['1.1.1.1'])`.
+ * Search domains, `ndots`, rotate, sortlist, TTL-return APIs, and the broader
+ * Node `dns.Resolver` option matrix are intentionally outside this release
+ * baseline; this resolver sends explicit absolute names supplied by callers.
  *
  * Release validation keeps live resolver behavior behind an explicit
  * `FINO_DNS_LIVE=1` test lane so the normal suite stays deterministic. That
@@ -859,6 +864,67 @@ export function _randomQueryId(): number {
   return bytes[0]!;
 }
 
+function _adaptPunycodeBias(delta: number, numPoints: number, firstTime: boolean): number {
+  delta = firstTime ? Math.floor(delta / 700) : delta >> 1;
+  delta += Math.floor(delta / numPoints);
+  let k = 0;
+  while (delta > 455) {
+    delta = Math.floor(delta / 35);
+    k += 36;
+  }
+  return k + Math.floor((36 * delta) / (delta + 38));
+}
+
+function _encodePunycodeDigit(digit: number): string {
+  return String.fromCharCode(digit + 22 + 75 * (digit < 26 ? 1 : 0));
+}
+
+function _normalizeDnsLabel(label: string): string {
+  const points = Array.from(label, ch => ch.codePointAt(0)!);
+  if (points.every(cp => cp < 0x80)) return label;
+
+  let output = '';
+  let handled = 0;
+  for (const cp of points) {
+    if (cp < 0x80) {
+      output += String.fromCharCode(cp).toLowerCase();
+      handled++;
+    }
+  }
+  const basic = handled;
+  if (basic > 0) output += '-';
+
+  let n = 128;
+  let delta = 0;
+  let bias = 72;
+
+  while (handled < points.length) {
+    let m = Infinity;
+    for (const cp of points) if (cp >= n && cp < m) m = cp;
+    delta += (m - n) * (handled + 1);
+    n = m;
+    for (const cp of points) {
+      if (cp < n) delta++;
+      if (cp !== n) continue;
+      let q = delta;
+      for (let k = 36; ; k += 36) {
+        const t = k <= bias ? 1 : k >= bias + 26 ? 26 : k - bias;
+        if (q < t) break;
+        output += _encodePunycodeDigit(t + ((q - t) % (36 - t)));
+        q = Math.floor((q - t) / (36 - t));
+      }
+      output += _encodePunycodeDigit(q);
+      bias = _adaptPunycodeBias(delta, handled + 1, handled === basic);
+      delta = 0;
+      handled++;
+    }
+    delta++;
+    n++;
+  }
+
+  return 'xn--' + output;
+}
+
 // ---------------------------------------------------------------------------
 // DNS wire protocol — encoder
 // ---------------------------------------------------------------------------
@@ -887,8 +953,9 @@ export function _encodeName(name: string): Uint8Array {
   const parts = [];
   for (const label of labels) {
     if (label.length === 0) continue;
-    if (label.length > 63) throw new Error(`DNS label too long: '${label}'`);
-    const bytes = encodeUtf8(label);
+    const normalizedLabel = _normalizeDnsLabel(label);
+    const bytes = encodeUtf8(normalizedLabel);
+    if (bytes.length > 63) throw new Error(`DNS label too long: '${label}'`);
     totalLen += 1 + bytes.length;
     parts.push(bytes);
   }

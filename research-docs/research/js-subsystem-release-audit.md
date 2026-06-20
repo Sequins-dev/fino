@@ -97,10 +97,7 @@ Status: DONE
 Status: DONE
 
 ## DNS Resolver
-Status: TODO
-- Missing Node resolver parity for broader RR helpers/options, TTL-return APIs, search domains, `ndots`, and resolv.conf options.
-- Add IDNA handling and an explicit DNS cache policy beyond DNSSEC internals.
-- DNS-over-TLS/HTTPS are not implemented.
+Status: DONE
 
 ## DNSSEC
 Status: TODO

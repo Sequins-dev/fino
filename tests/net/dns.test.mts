@@ -150,6 +150,7 @@ class LocalDnsServer {
   #records = new Map<string, LocalDnsRecord[]>();
   #truncateOnceFor = new Set<string>();
   #malformedTcpFor = new Set<string>();
+  #queryCounts = new Map<string, number>();
   readonly family: 'ipv4' | 'ipv6';
   readonly ip: string;
   readonly port: number;
@@ -259,10 +260,15 @@ class LocalDnsServer {
   #responseFor(query: Uint8Array, udp: boolean): Uint8Array {
     const question = parseQuestion(query);
     const key = `${question.name}:${question.type}`;
+    this.#queryCounts.set(key, (this.#queryCounts.get(key) ?? 0) + 1);
     const records = this.#records.get(key);
     if (!records) return buildDnsResponse(query, [], { rcode: 3 });
     if (udp && this.#truncateOnceFor.delete(key)) return buildDnsResponse(query, [], { truncated: true });
     return buildDnsResponse(query, records);
+  }
+
+  queryCount(name: string, type: number): number {
+    return this.#queryCounts.get(`${name}:${type}`) ?? 0;
   }
 }
 
@@ -289,6 +295,12 @@ describe('Wire protocol', () => {
     for (let i = 0; i < a.length; i++) {
       t.equal(a[i], b[i], `byte ${i} matches`);
     }
+  });
+
+  it('_encodeName — IDNA labels are encoded as ASCII A-labels', (t) => {
+    const out = _encodeName('café.example');
+    const expected = _encodeName('xn--caf-dma.example');
+    t.deepEqual(Array.from(out), Array.from(expected), 'unicode label is punycoded before wire encoding');
   });
 
   it('_buildQuery — header fields', (t) => {
@@ -552,6 +564,8 @@ describe('Integration', () => {
   before(() => {
     dns = new LocalDnsServer({
       [`example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.A, data: '127.0.0.42' }],
+      [`xn--caf-dma.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.A, data: '127.0.0.43' }],
+      [`cache.example.test:${RECORD_TYPES.A}`]: [{ type: RECORD_TYPES.A, ttl: 1, data: '127.0.0.44' }],
       [`ipv6.example.test:${RECORD_TYPES.AAAA}`]: [{ type: RECORD_TYPES.AAAA, data: '2001:db8::42' }],
       [`example.test:${RECORD_TYPES.MX}`]: [{ type: RECORD_TYPES.MX, data: { exchange: 'mail.example.test', priority: 10 } }],
       [`example.test:${RECORD_TYPES.NS}`]: [{ type: RECORD_TYPES.NS, data: 'ns1.example.test' }],
@@ -589,6 +603,18 @@ describe('Integration', () => {
     t.ok(Array.isArray(addrs) && addrs.length > 0, 'got at least one A record');
     t.ok(addrs.every(a => typeof a === 'string' && /^\d+\.\d+\.\d+\.\d+$/.test(a)), 'all are IPv4 strings');
     t.equal(addrs[0], '127.0.0.42', 'resolved fixture address');
+  });
+
+  it('resolver.resolve4 — IDNA hostname queries use A-label wire names', async (t) => {
+    const addrs = await localResolver().resolve4('café.example.test');
+    t.deepEqual(addrs, ['127.0.0.43'], 'unicode query resolves through punycoded fixture name');
+  });
+
+  it('resolver.resolve4 — sends a fresh query instead of caching by answer TTL', async (t) => {
+    const resolver = localResolver();
+    t.deepEqual(await resolver.resolve4('cache.example.test'), ['127.0.0.44'], 'first query resolves');
+    t.deepEqual(await resolver.resolve4('cache.example.test'), ['127.0.0.44'], 'second query resolves');
+    t.equal(dns.queryCount('cache.example.test', RECORD_TYPES.A), 2, 'each resolve sends a network query');
   });
 
   it('resolver.resolve4 — dnssec rejects unsigned local fixture', async (t) => {
