@@ -8,7 +8,15 @@
  *
  * HTTP/3 requires QUIC support, TLS certificate material for servers, and a
  * local libnghttp3 installation. When libnghttp3 is unavailable, `requireH3()`,
- * `serve()`, and `fetch()` fail before opening sockets.
+ * `serve()`, and `fetch()` fail before opening sockets. That fail-fast path is
+ * release-supported: builds without libnghttp3 may skip HTTP/3 behavior, while
+ * builds that enable libnghttp3 must pass the local simulated and loopback H3
+ * tests in `tests/net/quic-h3.test.mts`.
+ *
+ * Current release scope is request/response HTTP/3 over QUIC. Connection reuse,
+ * WebTransport/Capsule, H3 DATAGRAM, CONNECT tunnels, and external H3 interop
+ * lanes are intentionally deferred and documented in the QUIC/H3 research
+ * notes.
  *
  * ```ts no_run
  * import { h3Available, serve } from 'fino:net/http/h3';
@@ -40,7 +48,8 @@ import type { QuicConnectOptions, QuicListenOptions } from '../quic.mts';
  *
  * This flag only reports the HTTP/3 library binding state. Callers that need a
  * full server or client path should also account for QUIC availability,
- * certificate configuration, and network errors.
+ * certificate configuration, and network errors. `false` is a supported
+ * release configuration when HTTP/3 is optional.
  */
 export const h3Available = _h3Available;
 
@@ -48,7 +57,9 @@ export const h3Available = _h3Available;
  * Return the loaded libnghttp3 binding or throw an installation hint.
  *
  * Use this during startup when HTTP/3 is mandatory. Optional HTTP/3 features
- * should usually check `h3Available` and choose a fallback instead.
+ * should usually check `h3Available` and choose a fallback instead. The throw
+ * path is intentionally early so missing libnghttp3 does not open sockets or
+ * partially initialize QUIC state.
  *
  * @returns The loaded libnghttp3 dynamic-library handle.
  * @throws When libnghttp3 cannot be loaded on this system.
@@ -165,7 +176,7 @@ export async function serve(options: H3ServeOptions, handler: H3Handler): Promis
  * The helper opens a temporary QUIC endpoint, connects to the URL host using
  * ALPN `h3`, sends the request, materializes the response body and trailers,
  * then closes the endpoint. Use lower-level QUIC/H3 session APIs for
- * connection reuse.
+ * connection reuse. Automatic H3 origin pooling is deferred for this release.
  *
  * @param url Absolute HTTP/3 URL as a string or `URL`.
  * @param init Standard Fetch request options.

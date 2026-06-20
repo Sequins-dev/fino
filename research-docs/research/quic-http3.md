@@ -4,6 +4,26 @@ Current transport conformance evidence is tracked in
 `research-docs/research/quic-conformance-matrix.md`. This older note preserves
 the original research plan and may describe deferred work that has since landed.
 
+## HTTP/3 Release Stance
+
+`libnghttp3` is optional for this release. Builds that cannot load it expose
+`h3Available === false`; `requireH3()`, public H3 `serve()`, and public H3
+`fetch()` fail before opening sockets. That unavailable-binding path is a
+supported skip/fail-fast configuration.
+
+Builds that do enable `libnghttp3` must pass the local HTTP/3 verification lane:
+simulated QUIC/H3 request-response tests and loopback UDP H3 tests in
+`tests/net/quic-h3.test.mts`.
+
+The HTTP/3 release scope is one-shot request/response helpers and lower-level
+sessions over QUIC. Deferred H3 scope remains explicit:
+
+- Connection reuse and H3 origin pooling.
+- WebTransport and Capsule protocol support.
+- H3 DATAGRAM.
+- CONNECT tunnels.
+- External H3 interop/conformance lanes beyond local loopback.
+
 > Status: research and project tracker. This document records the current
 > design intent for QUIC and HTTP/3 in fino. It is not an implementation
 > commitment for every item at once; Phase 1 is deliberately scoped to QUIC.

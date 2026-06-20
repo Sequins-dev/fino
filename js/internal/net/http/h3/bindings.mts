@@ -1,3 +1,20 @@
+/**
+ * internal:net/http/h3/bindings - optional libnghttp3 dynamic bindings.
+ *
+ * The HTTP/3 binding is intentionally optional. `h3Available === false` is a
+ * supported release state for builds that do not ship libnghttp3; public H3
+ * helpers call `requireH3()` and fail before opening sockets when the library
+ * is absent. Enabled builds are expected to pass the local simulated and
+ * loopback H3 suites.
+ *
+ * This binding covers the request/response HTTP/3 surface used by
+ * `fino:net/http/h3`. Connection reuse, WebTransport/Capsule, H3 DATAGRAM,
+ * CONNECT tunnels, and external H3 interop remain deferred above this FFI
+ * layer.
+ *
+ * @internal
+ */
+
 import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import { TextEncoder as _TextEncoder, TextDecoder as _TextDecoder } from '../../../globals/encoding.mts';

@@ -126,10 +126,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/3
-Status: TODO
-- Define release stance for optional `libnghttp3` skip path.
-- Track gaps for external H3 interop/conformance, connection reuse,
-  WebTransport/Capsule, and CONNECT tunnel support.
+Status: DONE
 
 ## QUIC
 Status: TODO
