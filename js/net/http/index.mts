@@ -1110,6 +1110,9 @@ function _bodyFraming(headers: Headers, isRequest: boolean, statusCode: number):
       headers.delete('content-length');
       return { type: 'chunked' };
     }
+    if (isRequest) {
+      throw new Error(`Invalid Transfer-Encoding for request: "${te}"`);
+    }
   }
 
   const cl = headers.get('content-length');

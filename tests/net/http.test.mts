@@ -369,6 +369,92 @@ describe('Response parsing — edge cases', () => {
   });
 });
 
+describe('HTTP/1 release hardening corpus', () => {
+  it('parses valid requests fragmented at every byte', async (t) => {
+    const raw =
+      'POST /fragmented HTTP/1.1\r\n' +
+      'Host: example.test\r\n' +
+      'Content-Length: 11\r\n' +
+      '\r\n' +
+      'hello world';
+    const req = await parseRequest(chunkedSource(raw, 1));
+
+    t.equal(req.method, 'POST');
+    t.equal(req.url, 'http://example.test/fragmented');
+    t.equal(await req.text(), 'hello world');
+  });
+
+  it('accepts chunk extensions and exposes trailers after body consumption', async (t) => {
+    const raw =
+      'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      '5;name=value;flag\r\nhello\r\n' +
+      '6;ignored=true\r\n world\r\n' +
+      '0\r\nDigest: sha-256=test\r\nX-Trailer: ok\r\n\r\n';
+    const res = await parseResponse(chunkedSource(raw, 2));
+
+    t.equal(await res.text(), 'hello world');
+    const trailers = await res.trailers;
+    t.equal(trailers.get('digest'), 'sha-256=test');
+    t.equal(trailers.get('x-trailer'), 'ok');
+  });
+
+  it('accepts duplicate identical Content-Length values for requests', async (t) => {
+    const req = await parseRequest(source(
+      'POST /dupe HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 5\r\n\r\nhello'
+    ));
+
+    t.equal(req.headers.get('content-length'), '5, 5');
+    t.equal(await req.text(), 'hello');
+  });
+
+  it('uses chunked Transfer-Encoding precedence over Content-Length', async (t) => {
+    const req = await parseRequest(source(
+      'POST /te-cl HTTP/1.1\r\n' +
+      'Content-Length: 999\r\n' +
+      'Transfer-Encoding: gzip, chunked\r\n' +
+      '\r\n' +
+      '5\r\nhello\r\n0\r\n\r\nGET /smuggled HTTP/1.1\r\n\r\n'
+    ));
+
+    t.equal(req.headers.get('content-length'), null, 'Content-Length removed after TE precedence');
+    t.equal(await req.text(), 'hello');
+  });
+
+  it('treats HEAD, 204, and 304 responses as bodyless despite framing', async (t) => {
+    const head = await parseResponse(source(
+      'HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello'
+    ), 'HEAD');
+    const noContent = await parseResponse(source(
+      'HTTP/1.1 204 No Content\r\nContent-Length: 5\r\n\r\nhello'
+    ));
+    const notModified = await parseResponse(source(
+      'HTTP/1.1 304 Not Modified\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n'
+    ));
+
+    t.equal((await collectBody(head.body)).byteLength, 0, 'HEAD response has no body');
+    t.equal((await collectBody(noContent.body)).byteLength, 0, '204 response has no body');
+    t.equal((await collectBody(notModified.body)).byteLength, 0, '304 response has no body');
+  });
+
+  it('rejects malformed smuggling-style framing inputs', async (t) => {
+    await t.rejects(
+      () => parseRequest(source('POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\nhello!')),
+      /Conflicting Content-Length/i,
+    );
+
+    await t.rejects(
+      () => parseRequest(source('POST / HTTP/1.1\r\nTransfer-Encoding: chunked, gzip\r\n\r\n0\r\n\r\n')),
+      /Invalid Transfer-Encoding/i,
+    );
+
+    const req = await parseRequest(source(
+      'POST / HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n' +
+      '5\r\nhello\n0\r\n\r\n'
+    ));
+    await t.rejects(() => req.text(), /Expected CRLF after chunk data/);
+  });
+});
+
 describe('Response multi-chunk', () => {
   it('response headers split across chunks', async (t) => {
     const raw = 'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nhi';

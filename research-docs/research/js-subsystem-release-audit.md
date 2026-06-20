@@ -111,8 +111,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/1
-Status: TODO
-- Optional release hardening: add external HTTP/1 compliance or fuzz baseline.
+Status: DONE
 
 ## HTTP Server
 Status: DONE
