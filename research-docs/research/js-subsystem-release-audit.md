@@ -172,10 +172,7 @@ Status: DONE
 Status: DONE
 
 ## Fetch Global
-Status: TODO
-- Browser policy behavior is incomplete: CORS, credentials, cache, cookies, keepalive, and default referrer handling.
-- Add full Fetch/WPT-style coverage beyond local HTTP, redirects, abort, decompression, and integrity tests.
-- Cover HTTPS/H2 fetch behavior in release CI.
+Status: DONE
 
 ## Web Streams
 Status: DONE

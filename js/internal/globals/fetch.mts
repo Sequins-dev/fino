@@ -1,11 +1,15 @@
 /**
  * internal:globals/fetch — spec-compliant Fetch API global implementation.
  *
- * Implements the WHATWG Fetch spec's core flow:
- *   - HTTP and HTTPS support (plain TCP and TLS)
+ * Implements Fino's release-supported server-side Fetch baseline:
+ *   - HTTP and HTTPS support over plain TCP and TLS
+ *   - HTTP/2 reuse for HTTPS origins that negotiate `h2` through ALPN
  *   - Redirect following with configurable `redirect` mode
- *   - AbortSignal cancellation (including during body streaming)
- *   - Request/Response/Headers from fino:http
+ *   - AbortSignal cancellation, including during response body streaming
+ *   - Subresource integrity checks for buffered response bodies
+ *   - Explicit `referrer` and `referrerPolicy` handling
+ *   - Response decompression for gzip, deflate, and brotli when available
+ *   - Request/Response/Headers from `fino:net/http`
  *
  *
  * ## Connection lifecycle
@@ -38,14 +42,16 @@
  * a long streaming response can be cancelled mid-stream.
  *
  *
- * ## Cross-origin redirect
+ * ## Browser policy non-parity
  *
  * `Authorization`, `Cookie`, and `Cookie2` are stripped when following a
- * redirect to a different origin. This server-side runtime does not enforce
- * browser CORS, credentials mode, cache mode, cookie jar, keepalive upload
- * lifetime, or default referrer behavior. Those RequestInit fields are
- * accepted for compatibility; only the explicit referrer/referrerPolicy header
- * behavior implemented below is applied.
+ * redirect to a different origin. Otherwise this is a server-side transport
+ * API, not a browser policy engine. `mode`, `credentials`, `cache`, and
+ * `keepalive` are accepted as compatibility fields, but they do not enforce
+ * CORS, create opaque `no-cors` responses, maintain a browser cookie jar, reuse
+ * cached responses, extend upload lifetime after shutdown, or synthesize a
+ * default browser referrer. Caller-provided `Cookie` and authorization headers
+ * remain explicit request headers until a cross-origin redirect strips them.
  *
  *
  * ## Usage
@@ -683,8 +689,11 @@ async function _buildFinalResponseWithIntegrity(
  *
  * Browser policy knobs are intentionally limited in this release: CORS,
  * credentials, cache, cookies, keepalive lifetime, and default referrer
- * behavior are not enforced by the runtime. Explicit `referrer` and
- * `referrerPolicy` values are converted to a `Referer` header when supported.
+ * behavior are not enforced by the runtime. `mode: "no-cors"` still returns a
+ * normal response, `credentials` never creates an implicit cookie jar, `cache`
+ * never reuses a prior response, and `keepalive` does not extend work beyond
+ * normal runtime lifetime. Explicit `referrer` and `referrerPolicy` values are
+ * converted to a `Referer` header when supported.
  *
  * ```typescript no_run
  * const response = await fetch('https://example.com/data.json', {

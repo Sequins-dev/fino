@@ -522,6 +522,71 @@ describe('Misc', () => {
     );
   });
 
+  it('does not synthesize browser CORS or opaque responses from mode options', async (t) => {
+    const seenModes: string[] = [];
+    await withServer(19833,
+      (req) => {
+        seenModes.push(req.headers.get('origin') ?? 'no-origin');
+        return new Response('visible body', {
+          headers: { 'x-visible': 'yes' },
+        });
+      },
+      async (url) => {
+        const cors = await fetch(url, { mode: 'cors' });
+        t.equal(cors.status, 200, 'cors mode returns normal response status');
+        t.equal(cors.headers.get('x-visible'), 'yes', 'cors mode does not hide response headers');
+        t.equal(await cors.text(), 'visible body', 'cors mode does not require CORS response headers');
+
+        const noCors = await fetch(url, { mode: 'no-cors' });
+        t.equal(noCors.status, 200, 'no-cors mode returns normal response status');
+        t.equal(noCors.headers.get('x-visible'), 'yes', 'no-cors mode does not produce opaque headers');
+        t.equal(await noCors.text(), 'visible body', 'no-cors mode does not produce an opaque body');
+
+        t.deepEqual(seenModes, ['no-origin', 'no-origin'], 'mode options do not synthesize browser Origin headers');
+      },
+    );
+  });
+
+  it('does not retain Set-Cookie or cache responses between fetch calls', async (t) => {
+    let requestCount = 0;
+    const cookies: Array<string | null> = [];
+    await withServer(19834,
+      (req) => {
+        requestCount++;
+        cookies.push(req.headers.get('cookie'));
+        return new Response(`response-${requestCount}`, {
+          headers: {
+            'cache-control': 'max-age=3600',
+            'set-cookie': `sid=${requestCount}`,
+          },
+        });
+      },
+      async (url) => {
+        const first = await fetch(url, {
+          cache: 'force-cache',
+          credentials: 'include',
+          keepalive: true,
+        });
+        t.equal(await first.text(), 'response-1', 'first response is delivered normally');
+
+        const second = await fetch(url, {
+          cache: 'force-cache',
+          credentials: 'include',
+          keepalive: true,
+        });
+        t.equal(await second.text(), 'response-2', 'cache option does not reuse a prior response');
+        t.deepEqual(cookies, [null, null], 'Set-Cookie is not retained as an implicit cookie jar');
+
+        const explicit = await fetch(url, {
+          headers: { cookie: 'sid=caller-provided' },
+          credentials: 'omit',
+        });
+        t.equal(await explicit.text(), 'response-3', 'explicit caller-provided cookie request succeeds');
+        t.equal(cookies[2], 'sid=caller-provided', 'explicit Cookie header remains caller controlled');
+      },
+    );
+  });
+
   it('sends a streaming request body when duplex is half', async (t) => {
     let receivedBody = '';
     await withServer(19832,
