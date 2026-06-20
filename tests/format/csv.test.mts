@@ -31,6 +31,10 @@ describe('fino:format/csv — parse basics', () => {
     t.equal(result[0]![1], 'b');
   });
 
+  it('rejects trailing text after a closing quote', (t) => {
+    t.throws(() => parse('"a"x,b\n'), /closing quote|quoted field/i);
+  });
+
   it('handles empty fields', (t) => {
     t.deepEqual(parse('a,,c'), [['a','','c']]);
   });
@@ -192,6 +196,13 @@ describe('fino:format/csv — parseStream', () => {
       t.ok((e as Error).message.includes('fields'), 'expected fields error');
     }
     t.ok(threw, 'expected error to be thrown');
+  });
+
+  it('rejects trailing text after a closing quote across chunks', async (t) => {
+    const src = await chunks('"a"x,b\n', [2, 1, 4]);
+    await t.rejects(async () => {
+      for await (const _ of parseStream(src)) { /* consume */ }
+    }, /closing quote|quoted field/i);
   });
 });
 

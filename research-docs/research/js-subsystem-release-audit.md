@@ -202,12 +202,7 @@ Status: DONE
 Status: DONE
 
 ## CSV Format
-Status: TODO
-- Reject non-delimiter/non-EOL text after a closing quoted field in parse and
-  parseStream.
-- Add invalid fixture/regression coverage for closed-quote trailing junk,
-  including streaming input.
-- Align docs if permissive post-quote text is intentional.
+Status: DONE
 
 ## TOML Format
 Status: DONE

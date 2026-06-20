@@ -43,6 +43,10 @@
 
 import { Scanner, ParseError } from 'fino:parsing/scanner';
 
+function _isPostQuoteBoundary(code: number, delimCode: number): boolean {
+  return code === -1 || code === delimCode || code === 0x0A || code === 0x0D;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -398,6 +402,9 @@ export function parse(input: string | Uint8Array, options: CsvParseOptions = {})
             if (sc.peekCode() === quoteCode) {
               buf += sc.eat(); // doubled quote -> literal quote
             } else {
+              if (!_isPostQuoteBoundary(sc.peekCode(), delimCode)) {
+                throw sc.error('unexpected text after closing quoted field');
+              }
               break; // closing quote
             }
           } else {
@@ -583,7 +590,12 @@ export async function* parseStream(
           if (c === quoteCode) {
             sc.eat();
             if (sc.peekCode() === quoteCode) { fieldBuf += sc.eat(); }
-            else break;
+            else {
+              if (!_isPostQuoteBoundary(sc.peekCode(), delimCode)) {
+                throw sc.error('unexpected text after closing quoted field');
+              }
+              break;
+            }
           } else {
             fieldBuf += sc.eat();
           }
