@@ -82,9 +82,11 @@ project expects reproducible bare-import resolution.
 `fino install` resolves packages from `FINO_NPM_REGISTRY` when it is set, or
 from the public npm registry by default. It keeps an in-memory packument cache
 for the current install run only; there is no persistent package cache, offline
-mode, proxy configuration, or registry authentication support yet. Optional
-dependencies that fail to resolve or install are skipped with a warning. Peer
-dependencies are reported as warnings and are not installed automatically.
+mode, proxy configuration, or registry authentication support yet. It does not
+run package lifecycle scripts such as `preinstall`, `install`, or `postinstall`.
+Optional dependencies that fail to resolve or install are skipped with a
+warning. Peer dependencies are reported as warnings and are not installed
+automatically.
 
 Downloaded tarballs are verified before extraction when registry metadata
 provides integrity data and the runtime has OpenSSL support. `dist.integrity`
@@ -102,7 +104,12 @@ published package export subpaths instead.
 The package map is the supported package-resolution surface. Fino does not walk
 `node_modules`, evaluate package `package.json` files at import time, implement
 package `imports`, or perform direct Node-style package `exports` resolution
-outside the generated `.fino/package-map.json` baseline.
+outside the generated `.fino/package-map.json` baseline. The installer expands
+a bounded subset of npm metadata into that map: package `exports` strings,
+arrays, `import`/`default` condition objects, simple `*` patterns, `module` /
+`main` fallback entrypoints, dependencies, optional dependency warnings, and
+peer dependency warnings. Full npm resolver parity remains outside this
+baseline.
 
 JSON files are imported as modules with a default export. Fino currently accepts
 JSON imports with or without Node-style import attributes; strict JSON

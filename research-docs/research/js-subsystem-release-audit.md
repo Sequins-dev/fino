@@ -88,9 +88,18 @@ Status: DONE
 Status: DONE
 
 ## Install And Package Manager
-Status: TODO
-- Package install is simplified npm support; add or document gaps for lockfiles, auth, lifecycle scripts, offline cache, and full npm resolver parity.
-- Add tests for package `exports`, package `imports`, dependency graph edge cases, and integrity failures.
+Status: DONE
+- Release baseline covers package-map generation from npm packuments, package
+  `exports` strings, condition objects, and simple patterns, `module` / `main`
+  fallback, dependency graph selection, optional and peer dependency warnings,
+  corrupt archive cleanup, and no lifecycle script execution.
+- Integrity coverage locks SRI parsing, unsupported or malformed SRI handling,
+  legacy shasum fallback, multi-token first-token behavior, and mismatch
+  failures when OpenSSL is available.
+- Package `imports` / `#` specifiers remain unsupported even when present in
+  installed package metadata. Separate lockfiles, registry auth, lifecycle
+  scripts, persistent offline cache, and full npm resolver parity are outside
+  this baseline.
 
 ## Doc Command
 Status: DONE

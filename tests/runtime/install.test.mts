@@ -204,6 +204,22 @@ describe('fino install', () => {
       'package/lib/tool.js': 'export default "deep-tool";\n',
     });
 
+    await createPackageTarball(fs, registryDir + '/imports-pkg-1.0.0.tgz', {
+      'package/package.json': JSON.stringify({
+        name: 'imports-pkg',
+        version: '1.0.0',
+        type: 'module',
+        exports: {
+          '.': './index.js',
+        },
+        imports: {
+          '#internal': './internal.js',
+        },
+      }, null, 2),
+      'package/index.js': 'import value from "#internal"; export default value;\n',
+      'package/internal.js': 'export default "internal-import";\n',
+    });
+
     for (let offset = 0; offset < 200; offset++) {
       port = BASE_PORT + offset;
       const packuments: Record<string, unknown> = {
@@ -275,6 +291,17 @@ describe('fino install', () => {
               name: 'deep-pkg',
               version: '1.0.0',
               dist: { tarball: `http://127.0.0.1:${port}/tarballs/deep-pkg-1.0.0.tgz` },
+            },
+          },
+        },
+        '/imports-pkg': {
+          name: 'imports-pkg',
+          'dist-tags': { latest: '1.0.0' },
+          versions: {
+            '1.0.0': {
+              name: 'imports-pkg',
+              version: '1.0.0',
+              dist: { tarball: `http://127.0.0.1:${port}/tarballs/imports-pkg-1.0.0.tgz` },
             },
           },
         },
@@ -359,6 +386,16 @@ describe('fino install', () => {
           }
           if (url.pathname === '/tarballs/deep-pkg-1.0.0.tgz') {
             const file = await fs.open(registryDir + '/deep-pkg-1.0.0.tgz', 'r');
+            try {
+              return new Response(await file.bytes(), {
+                headers: { 'content-type': 'application/octet-stream' },
+              });
+            } finally {
+              await file.close();
+            }
+          }
+          if (url.pathname === '/tarballs/imports-pkg-1.0.0.tgz') {
+            const file = await fs.open(registryDir + '/imports-pkg-1.0.0.tgz', 'r');
             try {
               return new Response(await file.bytes(), {
                 headers: { 'content-type': 'application/octet-stream' },
@@ -576,6 +613,34 @@ describe('fino install', () => {
     t.equal(run.result.code, 0, 'script using generated entrypoints exits successfully');
     t.equal(run.stderr, '', 'entrypoint script has no stderr');
     t.ok(run.stdout.includes('exports-root|pattern-alpha|import-condition|module-entry|deep-tool'), 'all generated entrypoints resolve at runtime');
+  });
+
+  it('does not implement package imports or # specifiers from installed package metadata', async (t) => {
+    await fs.writeFile(appDir + '/package.json', JSON.stringify({
+      name: 'fixture-app',
+      type: 'module',
+      dependencies: {
+        'imports-pkg': '1.0.0',
+      },
+    }, null, 2));
+    await fs.writeFile(appDir + '/imports-entry.mts', [
+      'import value from "imports-pkg";',
+      'console.log(value);',
+      '',
+    ].join('\n'));
+
+    const install = await runCli(['install'], appDir, {
+      FINO_NPM_REGISTRY: `http://127.0.0.1:${port}`,
+    });
+    t.equal(install.result.code, 0, 'install succeeds even when package metadata has imports');
+
+    const packageMap = JSON.parse(await fs.readFile(appDir + '/.fino/package-map.json')) as PackageMapShape;
+    t.equal(packageMap.packages['imports-pkg@1.0.0']!.entrypoints!['.'], 'index.js', 'root export is mapped');
+    t.equal(packageMap.packages['imports-pkg@1.0.0']!.entrypoints!['#internal'], undefined, 'package imports are not added to package map');
+
+    const run = await runCli(['imports-entry.mts'], appDir);
+    t.equal(run.result.code, 1, 'package # import fails at runtime');
+    t.ok(run.stderr.includes("Cannot resolve package '#internal'") || run.stderr.includes("Cannot resolve module '#internal'"), 'unsupported # specifier is reported');
   });
 
   it('cleans up temporary archive and package directories after corrupt tarball extraction failure', async (t) => {
