@@ -463,8 +463,8 @@ fn resolve_builtin_relative(referrer_spec: &str, specifier: &str) -> Option<&'st
 }
 
 fn source_specifier_path(specifier: &str) -> Option<PathBuf> {
-    if let Some(path) = specifier.strip_prefix("file://") {
-        return Some(PathBuf::from(path));
+    if specifier.starts_with("file://") {
+        return file_url_to_path(specifier).ok();
     }
     if specifier.starts_with('/') {
         return Some(PathBuf::from(specifier));
@@ -872,6 +872,18 @@ fn meta_resolve(
 
     let raw = if spec.starts_with("./") || spec.starts_with("../") {
         base_dir.join(&spec)
+    } else if spec.starts_with("file://") {
+        match file_url_to_path(&spec) {
+            Ok(path) => path,
+            Err(e) => {
+                let msg = format!("Cannot resolve '{spec}': {e}");
+                if let Some(msg_str) = v8::String::new(scope, &msg) {
+                    let exc = v8::Exception::error(scope, msg_str);
+                    scope.throw_exception(exc);
+                }
+                return;
+            }
+        }
     } else if spec.starts_with('/') {
         PathBuf::from(&spec)
     } else {
@@ -879,10 +891,17 @@ fn meta_resolve(
     };
 
     match raw.canonicalize() {
-        Ok(canonical) => {
+        Ok(canonical) if canonical.is_file() => {
             let url = format!("file://{}", canonical.to_string_lossy());
             if let Some(s) = v8::String::new(scope, &url) {
                 rv.set(s.into());
+            }
+        }
+        Ok(_) => {
+            let msg = format!("Cannot resolve '{spec}': not a loadable file");
+            if let Some(msg_str) = v8::String::new(scope, &msg) {
+                let exc = v8::Exception::error(scope, msg_str);
+                scope.throw_exception(exc);
             }
         }
         Err(e) => {
@@ -1524,27 +1543,77 @@ fn resolve_path(
     let base = referrer_dir.unwrap_or(root);
     let raw = if specifier.starts_with("./") || specifier.starts_with("../") {
         base.join(specifier)
-    } else if let Some(path) = specifier.strip_prefix("file://") {
-        PathBuf::from(path)
+    } else if specifier.starts_with("file://") {
+        file_url_to_path(specifier).map_err(|e| format!("Cannot resolve '{specifier}': {e}"))?
     } else if specifier.starts_with('/') {
         PathBuf::from(specifier)
     } else {
         root.join(specifier)
     };
-    if let Ok(p) = raw.canonicalize() {
+    if let Ok(p) = raw.canonicalize()
+        && p.is_file()
+    {
         return Ok(p);
     }
     // Extension probing: try TypeScript/JS extensions in order.
     for ext in [".ts", ".mts", ".mjs", ".js", ".json"] {
         let mut probed = raw.as_os_str().to_owned();
         probed.push(ext);
-        if let Ok(p) = PathBuf::from(probed).canonicalize() {
+        if let Ok(p) = PathBuf::from(probed).canonicalize()
+            && p.is_file()
+        {
             return Ok(p);
         }
     }
     Err(format!(
         "Cannot resolve '{specifier}': No such file or directory"
     ))
+}
+
+fn file_url_to_path(specifier: &str) -> Result<PathBuf, String> {
+    let rest = specifier
+        .strip_prefix("file://")
+        .ok_or_else(|| "Invalid file URL: missing file:// scheme".to_string())?;
+    let path = if rest.starts_with('/') {
+        rest
+    } else if rest.starts_with("localhost/") {
+        &rest["localhost".len()..]
+    } else {
+        return Err("Invalid file URL: non-local hosts are not supported".to_string());
+    };
+    Ok(PathBuf::from(percent_decode_file_url_path(path)?))
+}
+
+fn percent_decode_file_url_path(path: &str) -> Result<String, String> {
+    let bytes = path.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                return Err("Invalid file URL: malformed percent escape".to_string());
+            }
+            let hi = hex_value(bytes[i + 1])
+                .ok_or_else(|| "Invalid file URL: malformed percent escape".to_string())?;
+            let lo = hex_value(bytes[i + 2])
+                .ok_or_else(|| "Invalid file URL: malformed percent escape".to_string())?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| "Invalid file URL: decoded path is not UTF-8".to_string())
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn is_typescript(path: &Path) -> bool {

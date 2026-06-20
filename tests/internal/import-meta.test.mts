@@ -130,6 +130,41 @@ describe('resolve()', () => {
     t.equal(resolved, thisUrl, 'file URL resolves to canonical file URL');
   });
 
+  it('import.meta.resolve decodes local file URL paths', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = `/tmp/fino-file-url-resolve-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+    await ensureDir(fs, root + '/space dir');
+    await fs.writeFile(root + '/space dir/mod.mts', 'export default "decoded-url";\n');
+
+    const encoded = `file://${root}/space%20dir/mod.mts`;
+    const resolved = meta.resolve(encoded);
+    t.ok(resolved.startsWith('file://'), 'percent-encoded file path resolves to a file URL');
+    t.ok(resolved.endsWith('/space dir/mod.mts'), 'percent-encoded file path resolves to decoded local path');
+
+    const imported = await import(encoded);
+    t.equal(imported.default, 'decoded-url', 'dynamic import accepts percent-encoded local file URL');
+  });
+
+  it('import.meta.resolve rejects malformed and non-local file URLs', async (t) => {
+    t.throws(
+      () => meta.resolve('file:///tmp/fino-bad-%zz-url.mts'),
+      /Invalid file URL|malformed/i,
+      'malformed percent escape is rejected clearly',
+    );
+
+    t.throws(
+      () => meta.resolve('file://example.com/tmp/not-local.mts'),
+      /Invalid file URL|non-local/i,
+      'non-local file URL host is rejected',
+    );
+
+    await t.rejects(
+      () => import('file://example.com/tmp/not-local.mts'),
+      /Invalid file URL|non-local/i,
+      'dynamic import rejects non-local file URL hosts',
+    );
+  });
+
   it('import.meta.resolve throws on non-existent path', async (t) => {
     await t.rejects(
       async () => meta.resolve('./definitely-does-not-exist-xyz.mjs'),
@@ -186,5 +221,45 @@ describe('resolve()', () => {
     const missing = await runCli(['resolve-missing-record.mts'], root);
     t.equal(missing.code, 1, 'missing package-map record exits nonzero');
     t.ok(missing.stderr.includes("missing package-map record for 'missing@1.0.0'"), 'missing package-map record is reported');
+  });
+
+  it('documents explicit Node ESM non-goals for package imports and directory indexes', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = `/tmp/fino-loader-non-goals-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+    await ensureDir(fs, root + '/dir');
+    await ensureDir(fs, root + '/node_modules/pkg');
+    await fs.writeFile(root + '/package.json', JSON.stringify({
+      type: 'module',
+      imports: {
+        '#alias': './alias.mts',
+      },
+      dependencies: {
+        pkg: '1.0.0',
+      },
+    }, null, 2));
+    await fs.writeFile(root + '/alias.mts', 'export default "alias";\n');
+    await fs.writeFile(root + '/dir/index.mts', 'export default "index";\n');
+    await fs.writeFile(root + '/node_modules/pkg/package.json', JSON.stringify({
+      type: 'module',
+      exports: {
+        '.': './index.mts',
+      },
+    }, null, 2));
+    await fs.writeFile(root + '/node_modules/pkg/index.mts', 'export default "pkg";\n');
+    await fs.writeFile(root + '/package-imports.mts', 'import "#alias";\n');
+    await fs.writeFile(root + '/directory-index.mts', 'import "./dir";\n');
+    await fs.writeFile(root + '/bare-package.mts', 'import "pkg";\n');
+
+    const packageImports = await runCli(['package-imports.mts'], root);
+    t.equal(packageImports.code, 1, 'package imports fail without package imports support');
+    t.ok(packageImports.stderr.includes("Cannot resolve package '#alias'") || packageImports.stderr.includes("Cannot resolve module '#alias'"), 'package imports failure is explicit');
+
+    const directoryIndex = await runCli(['directory-index.mts'], root);
+    t.equal(directoryIndex.code, 1, 'directory index probing is not expanded');
+    t.ok(directoryIndex.stderr.includes("Cannot resolve module './dir'") || directoryIndex.stderr.includes('Is a directory'), 'directory import failure is explicit');
+
+    const barePackage = await runCli(['bare-package.mts'], root);
+    t.equal(barePackage.code, 1, 'bare package fails without .fino/package-map.json');
+    t.ok(barePackage.stderr.includes("Cannot resolve package 'pkg'") || barePackage.stderr.includes("Cannot resolve module 'pkg'"), 'bare package requires package-map support');
   });
 });

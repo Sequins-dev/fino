@@ -21,10 +21,15 @@ Status: DONE
   `unhandledrejection` / `rejectionhandled` event parity in this baseline.
 
 ## Loader, Import Meta, Module
-Status: TODO
-- Add Node ESM parity for package `imports` / `#` specifiers, directory index resolution, and direct package `exports` resolution.
-- Enforce or document JSON import attribute behavior against current Node ESM expectations.
-- Add file URL edge tests for percent-encoding and malformed URLs.
+Status: DONE
+- Release baseline covers local and `file://` module resolution, percent-decoded
+  file URL paths, malformed and non-local file URL rejection, JSON default
+  exports, package-map bare imports, and package-map exported subpaths.
+- Package `imports` / `#` specifiers, direct `node_modules` or package.json
+  traversal, direct Node-style package `exports` resolution, and directory
+  index probing are outside this baseline.
+- JSON imports do not require Node-style import attributes in this baseline;
+  strict JSON import-attribute enforcement is outside scope.
 
 ## Runtime Loop And Backends
 Status: DONE

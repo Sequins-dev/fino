@@ -20,6 +20,11 @@ import { createServer } from './server.mts';
 Prefer explicit extensions in application code. Fino's own runtime modules use
 `.mts` files and the docs link directly to those source modules.
 
+Local `file://` URLs are accepted for local filesystem paths, including
+percent-encoded path characters such as spaces. Malformed percent escapes and
+non-local `file://host/...` URLs are rejected. Directory imports are not
+expanded to `index` files in this baseline; import the file you want directly.
+
 ## Built-In Modules
 
 Use `fino:*` specifiers for runtime APIs:
@@ -93,6 +98,15 @@ Package `exports` entries are expanded into concrete package-map entrypoints
 when packages are installed. Package `imports` entries and `#specifier`
 imports are not supported yet; use relative imports inside application code or
 published package export subpaths instead.
+
+The package map is the supported package-resolution surface. Fino does not walk
+`node_modules`, evaluate package `package.json` files at import time, implement
+package `imports`, or perform direct Node-style package `exports` resolution
+outside the generated `.fino/package-map.json` baseline.
+
+JSON files are imported as modules with a default export. Fino currently accepts
+JSON imports with or without Node-style import attributes; strict JSON
+import-attribute enforcement is not part of this release baseline.
 
 ## Public API Boundaries
 

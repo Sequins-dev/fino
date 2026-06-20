@@ -30,6 +30,8 @@ const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
 const lib = dlopen(LIBC, {
   realpath: { parameters: ['buffer', 'buffer'], result: 'pointer' },
+  opendir: { parameters: ['buffer'], result: 'pointer' },
+  closedir: { parameters: ['pointer'], result: 'i32' },
 });
 
 interface PackageMapPackage {
@@ -75,6 +77,31 @@ function realpath(path: string): string | null {
   let len = 0;
   while (len < bytes.length && bytes[len] !== 0) len++;
   return decodeUtf8(bytes.subarray(0, len));
+}
+
+function isDirectory(path: string): boolean {
+  const ptr = lib.symbols.opendir(cstr(path));
+  if (ptr === null) return false;
+  lib.symbols.closedir(ptr);
+  return true;
+}
+
+function normalizeFileUrl(specifier: string): string {
+  const rest = specifier.slice('file://'.length);
+  let path: string;
+  if (rest.startsWith('/')) {
+    path = rest;
+  } else if (rest.startsWith('localhost/')) {
+    path = rest.slice('localhost'.length);
+  } else {
+    throw new Error(`Invalid file URL '${specifier}': non-local hosts are not supported`);
+  }
+
+  try {
+    return decodeURIComponent(path);
+  } catch (_) {
+    throw new Error(`Invalid file URL '${specifier}': malformed percent escape`);
+  }
 }
 
 function normalizeBareSpecifier(specifier: string): { packageName: string; subpath: string } {
@@ -148,7 +175,7 @@ function resolve(specifier: string, referrerDir: string | null, root: string): s
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
     raw = base + '/' + specifier;
   } else if (specifier.startsWith('file://')) {
-    raw = specifier.slice('file://'.length);
+    raw = normalizeFileUrl(specifier);
   } else if (specifier.startsWith('/')) {
     raw = specifier;
   } else {
@@ -158,7 +185,7 @@ function resolve(specifier: string, referrerDir: string | null, root: string): s
   }
 
   const canonical = realpath(raw);
-  if (canonical !== null) return canonical;
+  if (canonical !== null && !isDirectory(canonical)) return canonical;
 
   // Extension probing: try TypeScript, JS, and JSON extensions in order.
   for (const ext of ['.ts', '.mts', '.mjs', '.js', '.json']) {
@@ -199,7 +226,7 @@ function initImportMeta(
     if (spec.startsWith('./') || spec.startsWith('../')) {
       raw = dirname + '/' + spec;
     } else if (spec.startsWith('file://')) {
-      raw = spec.slice('file://'.length);
+      raw = normalizeFileUrl(spec);
     } else if (spec.startsWith('/')) {
       raw = spec;
     } else {
@@ -209,7 +236,7 @@ function initImportMeta(
     }
 
     const canonical = realpath(raw);
-    if (canonical !== null) return 'file://' + canonical;
+    if (canonical !== null && !isDirectory(canonical)) return 'file://' + canonical;
 
     for (const ext of ['.ts', '.mts', '.mjs', '.js', '.json']) {
       const probed = realpath(raw + ext);
