@@ -8,8 +8,13 @@
  * keys from token headers.
  *
  * The helpers validate common registered claims such as issuer, audience,
- * expiration, and not-before when options request them. They do not fetch remote
- * JWKS documents or implement application authorization policy.
+ * subject, expiration, not-before, token type, JWT ID, required claims, and
+ * maximum token age when options request them. They do not fetch remote JWKS
+ * documents or implement application authorization policy. JWE support is the
+ * compact serialization with AES-GCM content encryption and `dir`,
+ * `RSA-OAEP`, or `RSA-OAEP-256` key management; JSON serialization,
+ * ECDH-ES, PBES2, CBC-HS, compression, and additional OAEP variants are
+ * intentionally outside this release baseline.
  *
  * @example
  * ```ts no_run
@@ -226,6 +231,59 @@ export interface JwtVerifyOptions {
    * ```
    */
   subject?: string;
+  /**
+   * Allowed protected-header algorithms.
+   *
+   * When supplied, the token `alg` must be one of these values before key
+   * selection and signature verification.
+   *
+   * ```ts no_run
+   * const options: JwtVerifyOptions = { algorithms: ['RS256'] };
+   * ```
+   */
+  algorithms?: JwtAlgorithm[];
+  /**
+   * Required payload claim names.
+   *
+   * Each listed claim must be present in the verified payload. Values may be
+   * any JSON value except `undefined`.
+   *
+   * ```ts no_run
+   * const options: JwtVerifyOptions = { requiredClaims: ['sub', 'iat'] };
+   * ```
+   */
+  requiredClaims?: string[];
+  /**
+   * Maximum age in seconds since the `iat` claim.
+   *
+   * Tokens without numeric `iat` fail when this option is supplied.
+   *
+   * ```ts no_run
+   * const options: JwtVerifyOptions = { maxTokenAge: 300 };
+   * ```
+   */
+  maxTokenAge?: number;
+  /**
+   * Expected JOSE `typ` protected-header value.
+   *
+   * A string or any value in the provided list may match.
+   *
+   * ```ts no_run
+   * const options: JwtVerifyOptions = { typ: 'JWT' };
+   * ```
+   */
+  typ?: string | string[];
+  /**
+   * Expected `jti` claim.
+   *
+   * A string or any value in the provided list may match. Replay prevention is
+   * application policy; this only compares the claim value.
+   *
+   * ```ts no_run
+   * const options: JwtVerifyOptions = { jwtId: 'token-123' };
+   * ```
+   */
+  jwtId?: string | string[];
   /**
    * Clock tolerance in seconds for `exp` and `nbf`.
    *
@@ -461,6 +519,21 @@ function joseToDer(signature: Uint8Array, alg: string): Uint8Array {
   return out;
 }
 
+function optionList(value: string | string[] | undefined): string[] | null {
+  if (value === undefined) return null;
+  return Array.isArray(value) ? value : [value];
+}
+
+function validateJwtHeader(header: Record<string, unknown>, alg: string, options: JwtVerifyOptions): void {
+  if (options.algorithms !== undefined && !options.algorithms.includes(alg as JwtAlgorithm)) {
+    throw new Error('JWT algorithm not allowed');
+  }
+  const typ = optionList(options.typ);
+  if (typ !== null && !typ.includes(String(header.typ ?? ''))) {
+    throw new Error('JWT typ mismatch');
+  }
+}
+
 function validateClaims(payload: Record<string, unknown>, options: JwtVerifyOptions): void {
   const now = options.now ?? Math.floor(Date.now() / 1000);
   const tolerance = options.clockTolerance ?? 0;
@@ -468,6 +541,15 @@ function validateClaims(payload: Record<string, unknown>, options: JwtVerifyOpti
   if (typeof payload.nbf === 'number' && now + tolerance < payload.nbf) throw new Error('JWT not active');
   if (options.issuer !== undefined && payload.iss !== options.issuer) throw new Error('JWT issuer mismatch');
   if (options.subject !== undefined && payload.sub !== options.subject) throw new Error('JWT subject mismatch');
+  for (const claim of options.requiredClaims ?? []) {
+    if (payload[claim] === undefined) throw new Error(`JWT required claim missing: ${claim}`);
+  }
+  const jwtIds = optionList(options.jwtId);
+  if (jwtIds !== null && !jwtIds.includes(String(payload.jti ?? ''))) throw new Error('JWT jti mismatch');
+  if (options.maxTokenAge !== undefined) {
+    if (typeof payload.iat !== 'number') throw new Error('JWT iat required for maxTokenAge');
+    if (now > payload.iat + options.maxTokenAge + tolerance) throw new Error('JWT too old');
+  }
   if (options.audience !== undefined) {
     const expected = Array.isArray(options.audience) ? options.audience : [options.audience];
     const actual = Array.isArray(payload.aud) ? payload.aud.map(String) : typeof payload.aud === 'string' ? [payload.aud] : [];
@@ -532,6 +614,7 @@ export async function jwtVerify(token: string, keys: JwtKeyInput, options: JwtVe
   rejectUnsupportedCrit(header);
   const alg = String(header.alg ?? '');
   if (!alg || alg === 'none') throw new Error('Unsupported JWT algorithm');
+  validateJwtHeader(header, alg, options);
   const selectedKey = keyFor(keys, header, alg, { use: 'sig', key_ops: ['verify'] });
   const key = selectedKey.kty === 'oct' ? selectedKey : await exportPublicJwk(selectedKey);
   const cryptoKey = await importJwk({ ...key, alg }, importUsages(alg, 'verify'));

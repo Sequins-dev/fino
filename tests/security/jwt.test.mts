@@ -24,12 +24,48 @@ describe('fino:security JWK helpers', () => {
     const key = await generateJwk({ kty: 'oct', alg: 'HS256', kid: 'sig-1', length: 256 });
     const imported = await importJwk(key, ['sign', 'verify']);
     const publicJwk = await exportPublicJwk(key);
-    const thumbprint = await jwkThumbprint(publicJwk);
+    const thumbprint = await jwkThumbprint(key);
 
     t.equal(imported.type, 'secret', 'symmetric JWK imports as secret key');
     t.equal(publicJwk.k, undefined, 'public export strips symmetric key material');
     t.equal(typeof thumbprint, 'string', 'thumbprint is a string');
     t.equal(selectJwk({ keys: [key] }, { kid: 'sig-1', alg: 'HS256' })?.kid, 'sig-1', 'JWKS lookup selects matching key');
+  });
+
+  it('computes RFC 7638 thumbprints from required public members only', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWK thumbprint vector test');
+      return;
+    }
+
+    const rsaPublic = {
+      kty: 'RSA',
+      n: '0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_FDW2QvzqY368QQMicAtaSqzs8KJZgnYb9c7d0zgdAZHzu6qMQvRL5hajrn1n91CbOpbISD08qNLyrdkt-bFTWhAI4vMQFh6WeZu0fM4lFd2NcRwr3XPksINHaQ-G_xBniIqbw0Ls1jF44-csFCur-kEgU8awapJzKnqDKgw',
+      e: 'AQAB',
+      alg: 'RS256',
+      kid: 'ignored',
+      use: 'sig',
+    };
+    t.equal(
+      await jwkThumbprint(rsaPublic),
+      'NzbLsXh8uDCcd-6MNwXF4W_7noWXFZAfHkxZsRGC9Xs',
+      'RFC 7638 RSA example thumbprint matches',
+    );
+
+    const withPrivateFields = {
+      ...rsaPublic,
+      d: 'private',
+      p: 'private',
+      q: 'private',
+      key_ops: ['verify'],
+    };
+    t.equal(
+      await jwkThumbprint(withPrivateFields),
+      await jwkThumbprint(rsaPublic),
+      'private fields and metadata do not affect thumbprint',
+    );
+
+    await t.rejects(() => jwkThumbprint({ kty: 'RSA', n: rsaPublic.n }), /missing/i);
   });
 });
 
@@ -154,6 +190,36 @@ describe('fino:security JWT/JWE helpers', () => {
     await t.rejects(() => jwtVerify(token, key, { now: 1_700_000_004 }), /not active/);
     await jwtVerify(token, key, { now: 1_700_000_004, clockTolerance: 1 });
     await t.rejects(() => jwtVerify(token, key, { now: 1_700_000_011 }), /expired/);
+  });
+
+  it('validates JWT algorithm allowlists, required claims, typ, jti, and max age', async (t) => {
+    if (!cryptoAvailable) {
+      t.ok(true, 'OpenSSL not available; skipping JWT verification controls test');
+      return;
+    }
+
+    const key = await generateJwk({ kty: 'oct', alg: 'HS256', kid: 'controls-1', length: 256 });
+    const token = await jwtSign({ sub: 'user-1', iss: 'issuer', jti: 'token-1' }, key, {
+      algorithm: 'HS256',
+      issuedAt: 1_700_000_000,
+      header: { kid: 'controls-1', typ: 'JWT' },
+    });
+
+    const verified = await jwtVerify(token, key, {
+      algorithms: ['HS256'],
+      requiredClaims: ['sub', 'iss', 'jti'],
+      typ: 'JWT',
+      jwtId: 'token-1',
+      maxTokenAge: 60,
+      now: 1_700_000_030,
+    });
+    t.equal(verified.payload.sub, 'user-1', 'token verifies with all release controls');
+
+    await t.rejects(() => jwtVerify(token, key, { algorithms: ['HS384'] }), /algorithm/i);
+    await t.rejects(() => jwtVerify(token, key, { requiredClaims: ['aud'] }), /required claim/i);
+    await t.rejects(() => jwtVerify(token, key, { typ: 'at+jwt' }), /typ/i);
+    await t.rejects(() => jwtVerify(token, key, { jwtId: 'other' }), /jti/i);
+    await t.rejects(() => jwtVerify(token, key, { maxTokenAge: 10, now: 1_700_000_011 }), /too old/i);
   });
 
   it('selects JWT keys by kid and alg and rejects unsupported crit headers', async (t) => {

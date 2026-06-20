@@ -389,12 +389,13 @@ export async function exportPublicJwk(key: JsonWebKeyLike | CryptoKey): Promise<
 }
 
 /**
- * Compute a stable SHA-256 thumbprint for a JWK-like object.
+ * Compute an RFC 7638 SHA-256 thumbprint for a JWK-like object.
  *
- * The helper canonicalizes all defined JWK fields except `kid`, `use`,
- * `key_ops`, and `alg`, then returns an unpadded base64url SHA-256 digest. This
- * is useful for stable identifiers but does not validate that the JWK is
- * complete or safe for a given algorithm.
+ * The helper canonicalizes only the required public members for supported key
+ * types: RSA uses `e`, `kty`, and `n`; EC uses `crv`, `kty`, `x`, and `y`; and
+ * `oct` uses `k` and `kty`. Private fields and metadata such as `kid`, `use`,
+ * `key_ops`, and `alg` are intentionally ignored. Missing required members or
+ * unsupported `kty` values throw.
  *
  * ```ts no_run
  * import { generateJwk, jwkThumbprint } from 'fino:security/jwk';
@@ -404,11 +405,18 @@ export async function exportPublicJwk(key: JsonWebKeyLike | CryptoKey): Promise<
  * ```
  */
 export async function jwkThumbprint(jwk: JsonWebKeyLike): Promise<string> {
-  const fields = Object.keys(jwk)
-    .filter((key) => jwk[key] !== undefined && key !== 'kid' && key !== 'use' && key !== 'key_ops' && key !== 'alg')
-    .sort();
+  const kty = String(jwk.kty ?? '');
+  const fields =
+    kty === 'RSA' ? ['e', 'kty', 'n'] :
+    kty === 'EC' ? ['crv', 'kty', 'x', 'y'] :
+    kty === 'oct' ? ['k', 'kty'] :
+    null;
+  if (fields === null) throw new Error(`Unsupported JWK kty for thumbprint: ${kty || '<missing>'}`);
   const canonical: Record<string, unknown> = {};
-  for (const field of fields) canonical[field] = jwk[field];
+  for (const field of fields) {
+    if (jwk[field] === undefined) throw new Error(`JWK thumbprint missing required member: ${field}`);
+    canonical[field] = jwk[field];
+  }
   return sha256Base64url(JSON.stringify(canonical));
 }
 

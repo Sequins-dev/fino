@@ -202,11 +202,7 @@ Status: DONE
 Status: DONE
 
 ## Security JWK, JWT, JWE
-Status: TODO
-- JWE is compact-only and narrow: missing JSON serialization, ECDH-ES, A192GCM, CBC-HS, PBES2, RSA-OAEP-384/512, and compression.
-- JWT validation lacks algorithm allowlists and common registered-claim controls such as max age, required claims, `typ`, `jti`, and replay guidance.
-- Harden JWK thumbprint/canonicalization for RFC 7638 parity, especially for private/symmetric key inputs.
-- Add external JOSE vectors and cross-library interoperability tests.
+Status: DONE
 
 ## CSV Format
 Status: DONE
