@@ -7,6 +7,12 @@
  *
  *   { type: 'create' | 'modify' | 'delete' | 'rename', path: string }
  *
+ * This is a Fino runtime watcher, not Node `fs.watch` parity. The public
+ * release contract accepts string paths, yields events through async
+ * iteration, and stops through explicit `close()`. The only supported option
+ * is `recursive`; Node-style `persistent`, `encoding`, and `AbortSignal`
+ * options are not interpreted.
+ *
  *
  * ## Platform details
  *
@@ -468,7 +474,8 @@ export class Watcher {
    */
   watch(path: string): void {
     if (this.#closed) throw new Error('Watcher is closed');
-    const p = String(path);
+    if (typeof path !== 'string') throw new TypeError('Watcher.watch path must be a string');
+    const p = path;
     if (this.#paths.has(p)) return;
     if (isDarwin) {
       this.#watchDarwin(p);

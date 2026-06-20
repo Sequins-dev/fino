@@ -93,9 +93,7 @@ Status: TODO
 - Paths are POSIX-first; Windows/path namespace parity is incomplete.
 
 ## File Watch
-Status: TODO
-- Watch API is runtime-specific and lacks Node/Web parity around AbortSignal, persistence, encoding, and recursive guarantees.
-- Add platform-specific watch behavior tests for release CI.
+Status: DONE
 
 ## Archive
 Status: TODO

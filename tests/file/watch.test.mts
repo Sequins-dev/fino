@@ -325,4 +325,31 @@ describe('Watcher', () => {
     t.ok(events.every(e => e.path === path), 'burst notifications identify the watched file');
     t.ok(events.some(e => e.type === 'modify' || e.type === 'delete'), 'burst event has a coherent normalized type');
   });
+
+  it('uses explicit close and string paths instead of Node fs.watch options', async (t) => {
+    const path = TEST_DIR + '/release-contract.txt';
+    await fs.writeFile(path, 'x');
+
+    const watcher = new Watcher({
+      recursive: false,
+      persistent: false,
+      encoding: 'buffer',
+      signal: AbortSignal.abort(),
+    } as any);
+    watcher.watch(path);
+    const pending = watcher[Symbol.asyncIterator]().next();
+    watcher.close();
+    const result = await pending;
+
+    t.equal(result.done, true, 'unsupported Node-style options do not replace explicit close');
+
+    const pathWatcher = new Watcher();
+    t.throws(
+      () => pathWatcher.watch(new URL(`file://${path}`) as any),
+      /path must be a string/i,
+      'watch() only accepts string paths',
+    );
+    pathWatcher.close();
+    await fs.unlink(path);
+  });
 });
