@@ -313,10 +313,16 @@ Status: TODO
 - Require gated interop lanes beyond local simulator and loopback tests.
 
 ## WebSocket
-Status: TODO
-- Add extension negotiation, including permessage-deflate, or document the omission.
-- Add RFC 8441 WebSocket over HTTP/2 or HTTP/3 support, or explicitly defer.
-- Add broader Web Platform style conformance tests.
+Status: DONE
+- Release baseline covers RFC 6455 client/server handshakes, subprotocol
+  negotiation, masking rules, fragmentation, close validation, ping/pong,
+  payload limits, UTF-8 validation, raw protocol violations, and the WHATWG
+  `WebSocket` facade.
+- Extension negotiation is intentionally absent: the server does not advertise
+  `Sec-WebSocket-Extensions`, the client rejects extension offers, and RSV bits
+  close with `1002`.
+- RFC 8441 WebSocket over HTTP/2 and WebSocket over HTTP/3 are deferred; this
+  baseline is HTTP/1.1 Upgrade only.
 
 ## EventSource
 Status: TODO

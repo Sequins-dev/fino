@@ -336,6 +336,38 @@ describe('WebSocketConnection.accept() validation', () => {
     }
     ok(threw);
   });
+
+  it('does not negotiate extensions even when the client offers permessage-deflate', async () => {
+    const server = serve({ port: 0 }, (req) => {
+      if (req.headers.get('upgrade') === 'websocket') return WebSocketConnection.accept(req);
+      return new Response('', { status: 400 });
+    });
+
+    try {
+      const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: server.port });
+      const [reader, writer] = sock.split();
+      const key = 'dGhlIHNhbXBsZSBub25jZQ==';
+      await writer.write(enc([
+        'GET /ws HTTP/1.1',
+        `Host: 127.0.0.1:${server.port}`,
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Key: ${key}`,
+        'Sec-WebSocket-Version: 13',
+        'Sec-WebSocket-Extensions: permessage-deflate',
+        '\r\n',
+      ].join('\r\n')));
+      await writer.flush();
+
+      const raw = new RawByteReader(reader);
+      const response = await raw.readUntilHeaders();
+      ok(response.includes('101 Switching Protocols'), 'server accepted the WebSocket upgrade');
+      ok(!/sec-websocket-extensions:/i.test(response), 'server omitted Sec-WebSocket-Extensions');
+      sock.close();
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -61,9 +61,15 @@
  * Extension negotiation is intentionally unsupported in this release. The
  * client rejects any `Sec-WebSocket-Extensions` response, the server does not
  * advertise extensions, and all RSV bits are rejected because no extension has
- * negotiated ownership of them.
+ * negotiated ownership of them. This means `permessage-deflate` and other
+ * extensions are outside the release baseline.
  *
- * - RSV bits must be 0 (no extensions negotiated) → 1002
+ * RFC 8441 WebSocket over HTTP/2 and WebSocket over HTTP/3 are also deferred.
+ * `WebSocketConnection` is an HTTP/1.1 Upgrade takeover today; HTTP/2 and
+ * HTTP/3 requests that try to hand over a non-H2/H3-compatible takeover are
+ * rejected by those protocol drivers.
+ *
+ * - RSV bits must be 0 because no extensions are negotiated → 1002
  * - Unknown/reserved opcodes → 1002
  * - Control frames must not be fragmented, payload ≤ 125 → 1002
  * - Client→server frames must be masked; server→client must not → 1002
