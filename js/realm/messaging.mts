@@ -6,6 +6,13 @@
  * values use structured clone semantics for same-isolate realms and transport
  * serialization for thread, process, and remote realm ports.
  *
+ * Transfer lists support `ArrayBuffer` values and `MessagePort` endpoints for
+ * realm/thread ports. A transferred `MessagePort` is neutered on the sender
+ * side and re-entangled for the receiver. Other structured-clone transferables
+ * such as streams are not supported yet. Same-isolate messages use the runtime
+ * structured-clone subset, so functions, symbols, weak collections, and objects
+ * with unsupported prototypes fail synchronously during `postMessage()`.
+ *
  * ```ts no_run
  * import { MessageChannel } from 'fino:realm/messaging';
  * import { Realm } from 'fino:realm';
@@ -25,7 +32,9 @@
  *
  * `MessageChannel` creates two entangled ports, `MessagePort` represents one
  * endpoint, and `MessageEvent` wraps delivered data. Import from this module
- * when documenting or typing realm communication code.
+ * when documenting or typing realm communication code. `MessageEvent.ports` is
+ * a frozen array copy containing transferred ports, or an empty frozen array
+ * when no ports were transferred.
  *
  * ```ts no_run
  * import { MessageChannel, MessageEvent, MessagePort } from 'fino:realm/messaging';

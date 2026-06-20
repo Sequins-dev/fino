@@ -6,6 +6,12 @@ import { describe, it } from 'fino:test/test';
 import { MessageChannel, MessagePort, MessageEvent } from 'fino:realm/messaging';
 
 describe('MessageChannel', () => {
+  it('is available on globalThis with MessagePort and MessageEvent', (t) => {
+    t.equal(globalThis.MessageChannel, MessageChannel, 'global MessageChannel matches module export');
+    t.equal(globalThis.MessagePort, MessagePort, 'global MessagePort matches module export');
+    t.equal(globalThis.MessageEvent, MessageEvent, 'global MessageEvent matches module export');
+  });
+
   it('creates two entangled ports', (t) => {
     const { port1, port2 } = new MessageChannel();
     t.ok(port1 instanceof MessagePort, 'port1 is a MessagePort');
@@ -102,6 +108,35 @@ describe('MessageChannel', () => {
     t.equal(received, false, 'no message delivered after close()');
   });
 
+  it('transferred ports are neutered on the sender side', async (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+    const receivedPorts: MessagePort[] = [];
+
+    carrier.port2.onmessage = (ev) => {
+      receivedPorts.push(...ev.ports);
+    };
+    carrier.port1.postMessage('take-port', [carried.port1]);
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    const delivered: unknown[] = [];
+    carried.port2.onmessage = (ev) => { delivered.push(ev.data); };
+    carried.port1.postMessage('from old endpoint');
+    receivedPorts[0]!.postMessage('from transferred endpoint');
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    t.equal(receivedPorts.length, 1, 'one transferred port is exposed on MessageEvent.ports');
+    t.equal(delivered.length, 1, 'only the transferred endpoint remains connected');
+    t.equal(delivered[0], 'from transferred endpoint', 'transferred endpoint communicates with original partner');
+
+    carried.port2.close();
+    carrier.port1.close();
+    carrier.port2.close();
+    receivedPorts[0]?.close();
+  });
+
   it('postMessage after close() on sender is silently dropped', async (t) => {
     const { port1, port2 } = new MessageChannel();
     let received = false;
@@ -129,6 +164,38 @@ describe('MessageChannel', () => {
     t.equal(ev!.origin, '', 'origin defaults to empty string');
     t.equal(ev!.lastEventId, '', 'lastEventId defaults to empty string');
     t.equal(ev!.source, null, 'source defaults to null');
+  });
+
+  it('MessageEvent.ports is a frozen array copy', (t) => {
+    const { port1 } = new MessageChannel();
+    const ports = [port1];
+    const ev = new MessageEvent('message', { ports });
+
+    ports.length = 0;
+
+    t.ok(Array.isArray(ev.ports), 'ports is an array');
+    t.equal(ev.ports.length, 1, 'ports is copied from init');
+    t.ok(Object.isFrozen(ev.ports), 'ports array is frozen');
+    t.ok(ev.ports[0] instanceof MessagePort, 'ports entries are MessagePorts');
+    t.throws(() => (ev.ports as MessagePort[]).push(port1), null, 'frozen ports array rejects mutation');
+
+    port1.close();
+  });
+
+  it('dispatches messageerror events to listeners and handler properties', (t) => {
+    const { port1 } = new MessageChannel();
+    const seen: string[] = [];
+
+    port1.addEventListener('messageerror', (ev) => {
+      seen.push((ev as MessageEvent).type);
+    });
+    port1.onmessageerror = (ev) => {
+      seen.push(ev.type);
+    };
+    port1.dispatchEvent(new MessageEvent('messageerror', { data: new Error('bad message') }));
+
+    t.deepEqual(seen, ['messageerror', 'messageerror'], 'messageerror dispatch reaches both listeners');
+    port1.close();
   });
 
   it('bidirectional echo works', async (t) => {

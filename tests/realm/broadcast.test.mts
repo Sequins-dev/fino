@@ -3,6 +3,22 @@
  */
 
 import { describe, it } from 'fino:test/test';
+import { Realm } from 'fino:realm';
+import { publish } from 'internal:broadcast';
+
+function uniqueName(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+}
+
+function nextPortMessage(port: MessagePort, timeout = 2000): Promise<MessageEvent> {
+  return new Promise((resolve, reject) => {
+    const tid = setTimeout(() => reject(new Error('timeout waiting for realm port message')), timeout);
+    port.onmessage = (ev) => {
+      clearTimeout(tid);
+      resolve(ev);
+    };
+  });
+}
 
 describe('BroadcastChannel', () => {
   it('is available as a global', (t) => {
@@ -128,5 +144,68 @@ describe('BroadcastChannel', () => {
     r1.close();
     r2.close();
     r3.close();
+  });
+
+  it('delivers messages between parent and thread Realm subscribers', async (t) => {
+    const name = uniqueName('thread-broadcast');
+    const realm = new Realm({
+      thread: true,
+      entry: new URL('./fixtures/broadcast-channel-peer.mts', import.meta.url).pathname,
+    });
+    const run = realm.run().catch(() => undefined);
+    const parent = new BroadcastChannel(name);
+    try {
+      realm.port.postMessage({ type: 'listen', name });
+      const ready = await nextPortMessage(realm.port);
+      t.deepEqual(ready.data, { type: 'ready' }, 'thread realm subscribed');
+
+      parent.postMessage({ from: 'parent' });
+      const fromParent = await nextPortMessage(realm.port);
+      t.deepEqual(fromParent.data, { type: 'broadcast', data: { from: 'parent' } }, 'thread realm received parent broadcast');
+
+      const fromThread = await new Promise<unknown>((resolve, reject) => {
+        const tid = setTimeout(() => reject(new Error('timeout waiting for parent broadcast')), 2000);
+        parent.onmessage = (ev) => {
+          clearTimeout(tid);
+          resolve(ev.data);
+        };
+        realm.port.postMessage({ type: 'broadcast', data: { from: 'thread' } });
+      });
+      t.deepEqual(fromThread, { from: 'thread' }, 'parent received thread realm broadcast');
+    } finally {
+      parent.close();
+      realm.port.postMessage({ type: 'close' });
+      realm.terminate();
+      await run;
+    }
+  });
+
+  it('throws when posting an unserializable value', (t) => {
+    const bc = new BroadcastChannel(uniqueName('broadcast-serialize-fail'));
+    try {
+      t.throws(() => bc.postMessage(() => undefined), null, 'function payload fails serialization');
+    } finally {
+      bc.close();
+    }
+  });
+
+  it('dispatches messageerror for invalid serialized bytes', async (t) => {
+    const name = uniqueName('broadcast-messageerror');
+    const bc = new BroadcastChannel(name);
+    try {
+      const error = new Promise<MessageEvent>((resolve, reject) => {
+        const tid = setTimeout(() => reject(new Error('timeout waiting for messageerror')), 2000);
+        bc.onmessageerror = (ev) => {
+          clearTimeout(tid);
+          resolve(ev);
+        };
+      });
+      publish(name, new Uint8Array([255, 0, 255]), -1);
+      const ev = await error;
+      t.equal(ev.type, 'messageerror', 'invalid payload dispatches messageerror');
+      t.equal(ev.data, null, 'messageerror data is null');
+    } finally {
+      bc.close();
+    }
   });
 });

@@ -215,11 +215,7 @@ Status: DONE
 - Optional hardening: add abort/cancel propagation and backpressure tests.
 
 ## Messaging And BroadcastChannel
-Status: TODO
-- Add standalone MessageChannel tests outside Realm for start semantics,
-  close/neutered behavior, `messageerror`, and port array shape.
-- Add BroadcastChannel cross-Realm/thread and serialization-failure coverage.
-- Document transfer-list and structured-clone caveats.
+Status: DONE
 
 ## WebCrypto Global
 Status: TODO

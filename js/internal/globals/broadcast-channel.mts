@@ -8,6 +8,12 @@
  * Delivery is always asynchronous: a wake pipe registered with `loop.readable`
  * is used to defer delivery to the next event-loop turn.
  *
+ * BroadcastChannel does not accept a transfer list. Messages are serialized
+ * through the runtime serializer, so functions, symbols, weak collections, and
+ * other unsupported structured-clone values fail synchronously in
+ * `postMessage()`. Deserialization failures from a peer are reported as
+ * `messageerror` events with `data === null`.
+ *
  * ## Example
  *
  * ```typescript no_run
