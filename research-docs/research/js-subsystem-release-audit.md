@@ -240,7 +240,4 @@ Status: DONE
 Status: DONE
 
 ## Docs And Benchmarks
-Status: TODO
-- Benchmark coverage exists for every public builtin, but many files are smoke
-  benchmarks; add targeted stress/failure benchmarks for cluster, OTel,
-  logging sinks, and realm remote/pool throughput.
+Status: DONE

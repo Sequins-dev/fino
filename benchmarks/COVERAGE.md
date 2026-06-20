@@ -72,3 +72,16 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:tty/prompt` | `benchmarks/tty/prompt.bench.mts` |
 | `fino:context/topic` | `benchmarks/context/topic.bench.mts` |
 | `fino:profiler` | `benchmarks/profiler.bench.mts` |
+
+## Release Stress And Failure Coverage
+
+The table above tracks existence for every public builtin. The release audit
+also requires deeper stress/failure lanes for subsystems that were previously
+smoke-only:
+
+| Area | Stress/failure benchmark coverage |
+| --- | --- |
+| Cluster | `benchmarks/cluster.bench.mts` covers loopback lifecycle, remote spawn/call throughput, and worker-loss cleanup. |
+| Realm remote/pool | `benchmarks/realm/pool.bench.mts` covers warm call batches, concurrent dispatch, timeout cleanup, and close drain timeout cleanup. |
+| OpenTelemetry | `benchmarks/opentelemetry.bench.mts` and `benchmarks/opentelemetry/sdk.bench.mts` cover runtime instrumentation traffic, processor queue pressure, exporter failure paths, and shutdown drains. |
+| Logging sinks | `benchmarks/log.bench.mts` covers JSON, console, OpenTelemetry sink forwarding, and sink level filtering. |
