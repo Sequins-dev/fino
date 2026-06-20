@@ -39,6 +39,13 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
 }
 
 describe('TlsSocket', () => {
+  it('release baseline does not expose session reuse or mTLS socket helpers', (t) => {
+    const surface = TlsSocket.prototype as unknown as Record<string, unknown>;
+    for (const name of ['getSession', 'setSession', 'renegotiate', 'getPeerCertificate', 'setKeyCert']) {
+      t.equal(surface[name], undefined, `${name} is not a public TlsSocket helper`);
+    }
+  });
+
   it('connects to a local TLS server and exposes an open socket', { skip }, async (t) => {
     const server = serve(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },

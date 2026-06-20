@@ -217,9 +217,17 @@ Status: DONE
 Status: DONE
 
 ## TLS
-Status: TODO
-- Add Node-like TLS policy knobs: min/max protocol, cipher suites, session reuse, and mTLS/client-cert API.
-- Require an OpenSSL-enabled release CI lane for TLS tests.
+Status: DONE
+- Release baseline requires an OpenSSL-enabled CI lane with `FINO_REQUIRE_TLS=1`
+  so TLS tests cannot silently skip in release coverage.
+- Baseline covers TCP connect/upgrade, default certificate verification,
+  `rejectUnauthorized`, custom CA trust, hostname mismatch rejection, ALPN
+  negotiation, split reader/writer I/O, close behavior, and failed-upgrade socket
+  ownership.
+- Minimum/maximum protocol version knobs, cipher-suite policy knobs, public
+  session reuse/cache APIs, and `TlsSocket` mTLS/client-certificate APIs are
+  outside this baseline. Higher-level server or QUIC integrations document any
+  mTLS support they expose separately.
 
 ## DNS Resolver
 Status: TODO
