@@ -502,16 +502,16 @@ function _dataCloneError(message: string): DOMException {
  * Supported types:
  *   primitives, plain objects, Arrays, Date, RegExp, Map, Set, URL,
  *   URLSearchParams, DOMException, CryptoKey, ArrayBuffer, TypedArrays,
- *   DataView, Error (message + name), Blob, File.
+ *   DataView, Error (message + name + cause), AggregateError (including
+ *   errors), Blob, File.
  *
  * Unsupported (throws DataCloneError):
  *   Functions, Symbols, WeakMap, WeakSet, streams, and MessagePort values
  *   passed directly to global structuredClone().
  *
  * Release limitations:
- *   AggregateError clones through the generic Error path, so `.errors` is not
- *   preserved. Transfer lists are limited to ArrayBuffer; stream and direct
- *   MessagePort transfer remain unsupported in global structuredClone().
+ *   Transfer lists are limited to ArrayBuffer; stream and direct MessagePort
+ *   transfer remain unsupported in global structuredClone().
  *
  * Cycles are detected and reproduced correctly.
  *
@@ -657,6 +657,17 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
       : new h.BlobCtor([bytes], { type: (value as any).type });
     seen.set(value, blobClone);
     return blobClone;
+  }
+
+  // AggregateError needs constructor arguments that differ from ordinary Error.
+  if (value instanceof Error && (value as any).constructor?.name === 'AggregateError' && Array.isArray((value as any).errors)) {
+    const clone = new AggregateError([], value.message);
+    clone.stack = value.stack;
+    if (value.name !== clone.name) clone.name = value.name;
+    seen.set(value, clone);
+    (clone as any).errors = _clone((value as any).errors, seen, transferSet);
+    if ('cause' in value) (clone as any).cause = _clone((value as any).cause, seen, transferSet);
+    return clone;
   }
 
   // Error

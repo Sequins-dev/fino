@@ -472,6 +472,26 @@ describe('structuredClone', () => {
     t.equal(clone.message, 'custom error', 'message preserved');
   });
 
+  it('clones AggregateError errors, message, name, and cause', (t) => {
+    const nested = new TypeError('nested failure');
+    const cause = new Error('root cause');
+    const err = new AggregateError([nested, { detail: 'bad input' }], 'many failures', { cause });
+    err.name = 'CustomAggregateError';
+
+    const clone = structuredClone(err);
+    t.ok(clone instanceof AggregateError, 'is AggregateError');
+    t.equal(clone.message, 'many failures', 'message preserved');
+    t.equal(clone.name, 'CustomAggregateError', 'custom name preserved');
+    t.ok((clone as any).cause instanceof Error, 'cause is cloned');
+    t.equal((clone as any).cause.message, 'root cause', 'cause message preserved');
+    t.ok((clone as any).cause !== cause, 'cause is a new object');
+    t.equal(clone.errors.length, 2, 'errors length preserved');
+    t.ok(clone.errors[0] instanceof TypeError, 'nested error cloned as TypeError');
+    t.equal(clone.errors[0].message, 'nested failure', 'nested error message preserved');
+    t.ok(clone.errors[0] !== nested, 'nested error is a new object');
+    t.deepEqual(clone.errors[1], { detail: 'bad input' }, 'nested object cloned');
+  });
+
   it('clones URL and URLSearchParams', (t) => {
     const url = new URL('https://example.test/path?q=1#frag');
     const clonedUrl = structuredClone(url);

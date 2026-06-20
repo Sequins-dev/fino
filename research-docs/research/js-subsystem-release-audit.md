@@ -224,10 +224,7 @@ Status: DONE
 Status: DONE
 
 ## Encoding, TextEncoder, Structured Clone
-Status: TODO
-- TextDecoder is UTF-8 only; legacy WHATWG encodings are unsupported.
-- structuredClone transfer is limited to ArrayBuffer; MessagePort and streams are unsupported.
-- AggregateError cloning does not preserve `.errors`.
+Status: DONE
 
 ## URL, URLSearchParams, URLPattern
 Status: TODO
