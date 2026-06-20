@@ -84,9 +84,7 @@ Status: TODO
 - Strengthen `exec()` trusted-SQL and extension-loading trust-boundary docs.
 
 ## Compression
-Status: TODO
-- Document or enforce decompressed-size policy for untrusted one-shot and
-  streaming zlib/gzip/deflate input.
+Status: DONE
 
 ## Template
 Status: DONE

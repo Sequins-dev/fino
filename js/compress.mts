@@ -21,6 +21,11 @@
  * for each input chunk. Always call `finish()` before using the final output,
  * and call `close()` when abandoning a stream early.
  *
+ * Decompression does not impose a built-in output-size limit. Use one-shot
+ * `decompress()` only for trusted or externally bounded input. For untrusted
+ * compressed data, prefer `Decompressor.transform()` and enforce an application
+ * byte budget while consuming yielded chunks.
+ *
  * ## Examples
  *
  * ```ts no_run
@@ -200,7 +205,9 @@ export function compress(data: ByteInput, options: CompressOptions): Uint8Array 
  *
  * The input format must match `options.format`. The helper keeps the full
  * decompressed output in memory and throws when the stream is invalid,
- * truncated, or uses a format that is unavailable.
+ * truncated, or uses a format that is unavailable. It does not cap the
+ * decompressed output size; callers should use streaming decompression when
+ * handling untrusted or potentially large compressed input.
  *
  * @param {ByteInput} data Compressed bytes.
  * @param {DecompressOptions} options Decompression format.
@@ -384,7 +391,8 @@ export class Compressor implements CompressionTransform {
  *
  * A decompressor may buffer partial frames internally. Always call `finish()`
  * after the last compressed chunk so truncated streams are detected and final
- * output is flushed.
+ * output is flushed. The decompressor does not enforce an output-size limit;
+ * count returned chunk sizes in the caller when processing untrusted input.
  *
  * ```ts no_run
  * import { Decompressor, compress } from 'fino:compress';

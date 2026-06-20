@@ -8,6 +8,11 @@
  * Supported formats: 'gzip', 'deflate', 'deflate-raw'
  * (Brotli is not part of the WHATWG spec.)
  *
+ * DecompressionStream mirrors the web API and does not expose a maximum output
+ * size option. Consumers that handle untrusted compressed input should read the
+ * decompressed stream with an application byte budget and cancel it when the
+ * budget is exceeded.
+ *
  *
  * ## Bridging the two streaming APIs
  *
