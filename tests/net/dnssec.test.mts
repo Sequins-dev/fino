@@ -277,6 +277,18 @@ describe('DNSSEC helpers', () => {
     t.equal(hex(digest), hex(expected), 'SHA-256 digest matches canonical DNSKEY digest input');
   });
 
+  it('digestDnskey rejects unsupported DS digest types', async (t) => {
+    const dnskey = concatBytes([
+      writeU16(257),
+      new Uint8Array([3, 8, 1, 0, 1, 3, 1, 0, 1]),
+    ]);
+    await t.rejects(
+      () => digestDnskey('example.com', dnskey, 3),
+      (err) => err instanceof Error && /unsupported DS digest type 3/.test(err.message),
+      'unsupported DS digest type rejects',
+    );
+  });
+
   it('canonicalRrsetData sorts records by canonical RDATA', (t) => {
     const rrset = [
       { name: 'Example.COM', type: RECORD_TYPES.A, ttl: 300, rawData: new Uint8Array([192, 0, 2, 20]) },

@@ -101,10 +101,7 @@ Status: TODO
 Status: DONE
 
 ## DNSSEC
-Status: TODO
-- Run or document `FINO_DNS_LIVE=1` signed/bogus domain checks as a release
-  lane.
-- Document intentionally unsupported algorithms and digests.
+Status: DONE
 
 ## DNS Provider Interface
 Status: DONE

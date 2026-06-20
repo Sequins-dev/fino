@@ -4,6 +4,20 @@
  * This module keeps canonical DNS wire encoding and DNSSEC math away from the
  * resolver transport code. It intentionally has no socket dependencies so the
  * primitives can be tested with static fixtures.
+ *
+ * Release verification keeps external DNSSEC checks in
+ * `tests/net/dns-live.test.mts`, gated by `FINO_DNS_LIVE=1`. That lane should
+ * validate a signed domain and reject a bogus signed domain against an
+ * explicitly selected recursive resolver (`FINO_DNS_SERVER`) so normal CI and
+ * local tests remain deterministic.
+ *
+ * Supported DS digest types are SHA-1 (`1`), SHA-256 (`2`), and SHA-384 (`4`).
+ * Supported DNSKEY/RRSIG algorithms are RSASHA256 (`8`), RSASHA512 (`10`),
+ * ECDSAP256SHA256 (`13`), ECDSAP384SHA384 (`14`), and Ed25519 (`15`).
+ * Unsupported-only signatures and unsupported DS digest types are treated as
+ * indeterminate and reject validation unless another supported signature or
+ * digest completes the chain. NSEC3 validation supports SHA-1 hashes only and
+ * rejects records above the module iteration cap.
  */
 
 import { atob, btoa, TextEncoder } from '../globals/encoding.mts';
