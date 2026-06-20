@@ -143,11 +143,7 @@ Status: TODO
 - Keep optional advanced features and backend requirements explicit.
 
 ## WebSocket
-Status: TODO
-- Add direct low-level frame violation tests for documented RFC cases:
-  fragmented control, RSV, reserved opcodes, invalid UTF-8, oversized frame,
-  and bad mask direction.
-- Document no extension negotiation if that remains intentional.
+Status: DONE
 
 ## EventSource
 Status: TODO

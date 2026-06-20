@@ -20,6 +20,8 @@ import { Headers, Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
+import { digest } from '../../js/internal/openssl.mts';
+import { btoa } from '../../js/internal/globals/encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,6 +29,7 @@ import type { Event, EventTarget } from 'internal:globals/eventtarget';
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const dec = (b: Uint8Array | ArrayBuffer) => new TextDecoder().decode(b);
+const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 /** Wait for a named event on an EventTarget, resolving with the event. */
 function waitForEvent<T extends Event>(target: EventTarget, name: string, timeoutMs = 5000): Promise<T> {
@@ -51,6 +54,170 @@ async function collectMessages(ws: WebSocketConnection, n: number): Promise<Arra
     if (msgs.length >= n) break;
   }
   return msgs;
+}
+
+function acceptHash(key: string): string {
+  const hash = digest('sha-1', enc(key + WS_GUID));
+  let binary = '';
+  for (const byte of hash) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function rawFrame(opcode: number, payload: Uint8Array, opts: { fin?: boolean; mask?: boolean; rsv?: number } = {}): Uint8Array {
+  const fin = opts.fin !== false;
+  const mask = opts.mask === true;
+  const rsv = opts.rsv ?? 0;
+  const len = payload.byteLength;
+  let headerLen = 2;
+  if (len > 65535) headerLen += 8;
+  else if (len > 125) headerLen += 2;
+  if (mask) headerLen += 4;
+
+  const frame = new Uint8Array(headerLen + len);
+  frame[0] = (fin ? 0x80 : 0x00) | (rsv & 0x70) | (opcode & 0x0f);
+  let pos = 2;
+  if (len <= 125) {
+    frame[1] = (mask ? 0x80 : 0x00) | len;
+  } else if (len <= 65535) {
+    frame[1] = (mask ? 0x80 : 0x00) | 126;
+    frame[2] = (len >>> 8) & 0xff;
+    frame[3] = len & 0xff;
+    pos = 4;
+  } else {
+    frame[1] = (mask ? 0x80 : 0x00) | 127;
+    const hi = Math.floor(len / 0x100000000);
+    const lo = len >>> 0;
+    frame[2] = (hi >>> 24) & 0xff;
+    frame[3] = (hi >>> 16) & 0xff;
+    frame[4] = (hi >>> 8) & 0xff;
+    frame[5] = hi & 0xff;
+    frame[6] = (lo >>> 24) & 0xff;
+    frame[7] = (lo >>> 16) & 0xff;
+    frame[8] = (lo >>> 8) & 0xff;
+    frame[9] = lo & 0xff;
+    pos = 10;
+  }
+
+  if (mask) {
+    const key = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
+    frame.set(key, pos);
+    pos += 4;
+    for (let i = 0; i < len; i++) frame[pos + i] = payload[i]! ^ key[i & 3]!;
+  } else {
+    frame.set(payload, pos);
+  }
+  return frame;
+}
+
+class RawByteReader {
+  #iter: AsyncIterator<Uint8Array | ArrayBuffer>;
+  #buf = new Uint8Array(0);
+
+  constructor(source: AsyncIterable<Uint8Array | ArrayBuffer>) {
+    this.#iter = source[Symbol.asyncIterator]();
+  }
+
+  async readExactly(n: number): Promise<Uint8Array> {
+    while (this.#buf.byteLength < n) {
+      const { done, value } = await this.#iter.next();
+      if (done || value === undefined) throw new Error('unexpected EOF');
+      const chunk = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+      const next = new Uint8Array(this.#buf.byteLength + chunk.byteLength);
+      next.set(this.#buf, 0);
+      next.set(chunk, this.#buf.byteLength);
+      this.#buf = next;
+    }
+    const out = this.#buf.subarray(0, n);
+    this.#buf = this.#buf.subarray(n);
+    return out;
+  }
+
+  async readUntilHeaders(): Promise<string> {
+    while (true) {
+      const text = dec(this.#buf);
+      const idx = text.indexOf('\r\n\r\n');
+      if (idx !== -1) {
+        const end = idx + 4;
+        const out = this.#buf.subarray(0, end);
+        this.#buf = this.#buf.subarray(end);
+        return dec(out);
+      }
+      const { done, value } = await this.#iter.next();
+      if (done || value === undefined) throw new Error('unexpected EOF before headers');
+      const chunk = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+      const next = new Uint8Array(this.#buf.byteLength + chunk.byteLength);
+      next.set(this.#buf, 0);
+      next.set(chunk, this.#buf.byteLength);
+      this.#buf = next;
+    }
+  }
+
+  async readFrame(): Promise<{ opcode: number; masked: boolean; payload: Uint8Array }> {
+    const header = await this.readExactly(2);
+    const opcode = header[0]! & 0x0f;
+    const masked = (header[1]! & 0x80) !== 0;
+    let len = header[1]! & 0x7f;
+    if (len === 126) {
+      const ext = await this.readExactly(2);
+      len = (ext[0]! << 8) | ext[1]!;
+    } else if (len === 127) {
+      const ext = await this.readExactly(8);
+      len =
+        ext[0]! * 0x100000000000000 + ext[1]! * 0x1000000000000 +
+        ext[2]! * 0x10000000000 + ext[3]! * 0x100000000 +
+        ext[4]! * 0x1000000 + ext[5]! * 0x10000 +
+        ext[6]! * 0x100 + ext[7]!;
+    }
+    const key = masked ? await this.readExactly(4) : null;
+    const payload = len > 0 ? await this.readExactly(len) : new Uint8Array(0);
+    if (key !== null) {
+      for (let i = 0; i < payload.byteLength; i++) payload[i] = payload[i]! ^ key[i & 3]!;
+    }
+    return { opcode, masked, payload };
+  }
+}
+
+async function openRawWebSocket(port: number, path = '/ws'): Promise<{ sock: Socket; raw: RawByteReader; writer: any }> {
+  const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+  const [reader, writer] = sock.split();
+  const key = 'dGhlIHNhbXBsZSBub25jZQ==';
+  await writer.write(enc([
+    `GET ${path} HTTP/1.1`,
+    `Host: 127.0.0.1:${port}`,
+    'Upgrade: websocket',
+    'Connection: Upgrade',
+    `Sec-WebSocket-Key: ${key}`,
+    'Sec-WebSocket-Version: 13',
+    '\r\n',
+  ].join('\r\n')));
+  await writer.flush();
+  const raw = new RawByteReader(reader);
+  const response = await raw.readUntilHeaders();
+  ok(response.includes('101'), 'server returned 101 Switching Protocols');
+  return { sock, raw, writer };
+}
+
+async function expectServerCloseForRawClientFrame(
+  frame: Uint8Array,
+  expectedCode: number,
+  acceptOptions: Parameters<typeof WebSocketConnection.accept>[1] = {},
+): Promise<void> {
+  const server = serve({ port: 0 }, (req) => {
+    if (req.headers.get('upgrade') === 'websocket') return WebSocketConnection.accept(req, acceptOptions);
+    return new Response('', { status: 400 });
+  });
+
+  try {
+    const { sock, raw, writer } = await openRawWebSocket(server.port);
+    await writer.write(frame);
+    await writer.flush();
+    const close = await raw.readFrame();
+    equal(close.opcode, 0x8, 'server sent a close frame');
+    equal((close.payload[0]! << 8) | close.payload[1]!, expectedCode, 'server close code matches violation');
+    sock.close();
+  } finally {
+    await server.close();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -525,6 +692,76 @@ describe('WebSocket end-to-end via serve()', () => {
       await client.close();
     } finally {
       await server.close();
+    }
+  });
+});
+
+describe('WebSocket raw frame protocol violations', () => {
+  it('closes fragmented control frames with 1002', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x9, enc('x'), { mask: true, fin: false }), 1002);
+  });
+
+  it('closes RSV-bit frames with 1002 when no extensions are negotiated', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x1, enc('x'), { mask: true, rsv: 0x40 }), 1002);
+  });
+
+  it('closes reserved opcodes with 1002', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x3, enc('x'), { mask: true }), 1002);
+  });
+
+  it('closes invalid UTF-8 text messages with 1007', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x1, new Uint8Array([0xff]), { mask: true }), 1007);
+  });
+
+  it('closes payloads above maxPayloadSize with 1009', async () => {
+    await expectServerCloseForRawClientFrame(
+      rawFrame(0x1, enc('12345'), { mask: true }),
+      1009,
+      { maxPayloadSize: 4 },
+    );
+  });
+
+  it('closes unmasked client frames with 1002', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x1, enc('x'), { mask: false }), 1002);
+  });
+
+  it('client rejects masked server frames with a masked 1002 close response', async () => {
+    const listener = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
+    const acceptDone = (async () => {
+      const serverSock = await listener.accept();
+      if (serverSock === null) throw new Error('expected client connection');
+      const [reader, writer] = serverSock.split();
+      const raw = new RawByteReader(reader);
+      const request = await raw.readUntilHeaders();
+      const keyLine = request.split('\r\n').find((line) => line.toLowerCase().startsWith('sec-websocket-key:'));
+      if (keyLine === undefined) throw new Error('missing Sec-WebSocket-Key');
+      const key = keyLine.slice(keyLine.indexOf(':') + 1).trim();
+      await writer.write(enc([
+        'HTTP/1.1 101 Switching Protocols',
+        'Upgrade: websocket',
+        'Connection: Upgrade',
+        `Sec-WebSocket-Accept: ${acceptHash(key)}`,
+        '\r\n',
+      ].join('\r\n')));
+      await writer.flush();
+      await writer.write(rawFrame(0x1, enc('bad-mask'), { mask: true }));
+      await writer.flush();
+      writer.close();
+      const close = await raw.readFrame();
+      equal(close.opcode, 0x8, 'client sent a close frame');
+      equal(close.masked, true, 'client close frame is masked');
+      equal((close.payload[0]! << 8) | close.payload[1]!, 1002, 'client close code rejects masked server frame');
+      serverSock.close();
+    })();
+
+    try {
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${listener.address.port}/ws`);
+      await waitForEvent(client, 'open');
+      await waitForEvent<CloseEvent>(client, 'close');
+      await acceptDone;
+    } finally {
+      listener.close();
+      await acceptDone.catch(() => {});
     }
   });
 });

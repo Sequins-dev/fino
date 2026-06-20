@@ -58,6 +58,11 @@
  *
  * ## Spec compliance (RFC 6455)
  *
+ * Extension negotiation is intentionally unsupported in this release. The
+ * client rejects any `Sec-WebSocket-Extensions` response, the server does not
+ * advertise extensions, and all RSV bits are rejected because no extension has
+ * negotiated ownership of them.
+ *
  * - RSV bits must be 0 (no extensions negotiated) → 1002
  * - Unknown/reserved opcodes → 1002
  * - Control frames must not be fragmented, payload ≤ 125 → 1002
