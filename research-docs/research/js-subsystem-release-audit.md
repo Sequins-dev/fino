@@ -99,9 +99,7 @@ Status: DONE
 Status: DONE
 
 ## Logging
-Status: TODO
-- Add tests for per-level/per-logger topics, invalid levels, empty logger
-  names, `fatal`, stderr routing, and active-span fields on `LogRecord`.
+Status: DONE
 
 ## Socket
 Status: TODO

@@ -10,6 +10,38 @@ import {
 } from 'fino:log';
 import { topic } from 'fino:context/topic';
 import { LoggerProvider, runWithLoggerProvider } from 'fino:opentelemetry/logs';
+import { Process, execPath } from 'fino:process';
+import { TracerProvider, runWithActiveSpan } from 'fino:opentelemetry/traces';
+
+const decoder = new TextDecoder();
+
+function concatBytes(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((n, chunk) => n + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+async function readAll(source: AsyncIterable<Uint8Array>): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of source) chunks.push(chunk);
+  return decoder.decode(concatBytes(chunks));
+}
+
+async function runFixture(mode: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
+  const proc = new Process(execPath, ['./tests/fixtures/log-sink-routing.mts', mode]);
+  proc.stdin.close();
+  const [stdout, stderr, result] = await Promise.all([
+    readAll(proc.stdout),
+    readAll(proc.stderr),
+    proc.wait(),
+  ]);
+  return { stdout, stderr, code: result.code };
+}
 
 describe('fino:log', () => {
   it('publishes records to subscribers without installing a default sink', (t) => {
@@ -119,5 +151,87 @@ describe('fino:log', () => {
     t.equal(records[0].severityText, 'ERROR', 'otel severity text maps from log level');
     t.equal((records[0].attributes as Record<string, unknown>).code, 'E_TEST', 'otel attributes include fields');
     t.equal((records[0].attributes as Record<string, unknown>)['exception.message'], 'boom', 'otel attributes include error details');
+  });
+
+  it('publishes records on broad, per-level, and per-logger topics', (t) => {
+    const broad: unknown[] = [];
+    const level: unknown[] = [];
+    const loggerTopic: unknown[] = [];
+    const broadHandle = topic('fino:log').subscribe((record) => broad.push(record));
+    const levelHandle = topic('fino:log:warn').subscribe((record) => level.push(record));
+    const loggerHandle = topic('fino:log:topic.logger').subscribe((record) => loggerTopic.push(record));
+
+    createLogger({ name: 'topic.logger' }).warn('topic message');
+
+    broadHandle.dispose();
+    levelHandle.dispose();
+    loggerHandle.dispose();
+
+    t.equal(broad.length, 1, 'broad topic receives record');
+    t.equal(level.length, 1, 'per-level topic receives record');
+    t.equal(loggerTopic.length, 1, 'per-logger topic receives record');
+    t.equal(broad[0], level[0], 'per-level topic receives same record object');
+    t.equal(broad[0], loggerTopic[0], 'per-logger topic receives same record object');
+  });
+
+  it('validates logger names and levels', (t) => {
+    t.throws(() => createLogger({ name: '' }), /non-empty string/, 'empty name is rejected');
+    t.throws(() => createLogger({ name: '   ' }), /non-empty string/, 'blank name is rejected');
+    t.throws(() => createLogger({ name: 'bad.level', level: 'verbose' as any }), /Unknown log level/, 'invalid constructor level is rejected');
+    t.throws(() => createLogger({ name: 'bad.log' }).log('verbose' as any, 'nope'), /Unknown log level/, 'invalid log() level is rejected');
+  });
+
+  it('emits fatal records and filters fatal through level thresholds', (t) => {
+    const records: Array<Record<string, unknown>> = [];
+    const handle = subscribeLogs((record) => records.push(record as unknown as Record<string, unknown>), { level: 'fatal' });
+    const logger = createLogger({ name: 'fatal.logger' });
+
+    logger.error('hidden');
+    logger.fatal('fatal message', { exitCode: 1 });
+    handle.dispose();
+
+    t.equal(records.length, 1, 'only fatal passes fatal sink threshold');
+    t.equal(records[0].level, 'fatal', 'record level is fatal');
+    t.equal(records[0].message, 'fatal message', 'fatal message is preserved');
+    t.deepEqual(records[0].fields, { exitCode: 1 }, 'fatal fields are preserved');
+  });
+
+  it('copies active span fields onto LogRecord', (t) => {
+    const records: Array<Record<string, unknown>> = [];
+    const handle = subscribeLogs((record) => records.push(record as unknown as Record<string, unknown>));
+    const provider = new TracerProvider();
+    const span = provider.getTracer('log.active').startSpan('active-work');
+
+    runWithActiveSpan(span, () => {
+      createLogger({ name: 'span.logger' }).info('with span');
+    });
+    handle.dispose();
+
+    t.equal(records.length, 1, 'subscriber receives one record');
+    t.equal(records[0].traceId, span.traceId, 'traceId copied from active span');
+    t.equal(records[0].spanId, span.spanId, 'spanId copied from active span');
+    t.equal(records[0].traceFlags, 1, 'traceFlags copied from active span context');
+  });
+
+  it('routes default JSON sink warning and error levels to stderr', async (t) => {
+    const result = await runFixture('json');
+
+    t.equal(result.code, 0, 'fixture exits successfully');
+    t.ok(result.stdout.includes('"level":"info"'), 'info JSON record is on stdout');
+    t.ok(!result.stdout.includes('"level":"error"'), 'error JSON record is not on stdout');
+    t.ok(!result.stdout.includes('"level":"fatal"'), 'fatal JSON record is not on stdout');
+    t.ok(result.stderr.includes('"level":"error"'), 'error JSON record is on stderr');
+    t.ok(result.stderr.includes('"level":"fatal"'), 'fatal JSON record is on stderr');
+  });
+
+  it('routes default console sink warning and error levels to stderr', async (t) => {
+    const result = await runFixture('console');
+
+    t.equal(result.code, 0, 'fixture exits successfully');
+    t.ok(result.stdout.includes('INFO routing.console info message'), 'info console record is on stdout');
+    t.ok(!result.stdout.includes('ERROR routing.console error message'), 'error console record is not on stdout');
+    t.ok(!result.stdout.includes('FATAL routing.console fatal message'), 'fatal console record is not on stdout');
+    t.ok(result.stderr.includes('ERROR routing.console error message'), 'error console record is on stderr');
+    t.ok(result.stderr.includes('FATAL routing.console fatal message'), 'fatal console record is on stderr');
   });
 });
