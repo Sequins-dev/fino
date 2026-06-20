@@ -363,9 +363,9 @@ Status: TODO
 - `after()` errors are swallowed, which is documented but release-risky for cleanup failures.
 
 ## Assertions
-Status: TODO
-- Deep equality is limited to plain objects/arrays; add Map, Set, Date, RegExp, symbols, typed arrays, and cycle handling.
-- Add common assertion APIs such as `match`, `doesNotThrow`, `doesNotReject`, strict aliases, and constructor-based error matching.
+Status: DONE
+- Deep equality covers Map, Set, Date, RegExp, enumerable symbol keys, typed arrays, and cyclic object graphs.
+- Common assertion APIs include `match`, `doesNotThrow`, `doesNotReject`, strict aliases, and constructor-based error matching.
 
 ## Fetch Mocking
 Status: TODO

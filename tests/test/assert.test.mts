@@ -4,7 +4,23 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { Assert, AssertionError, ok, notOk, equal, notEqual, deepEqual, fail, throws, rejects } from 'fino:test/assert';
+import {
+  Assert,
+  AssertionError,
+  ok,
+  notOk,
+  equal,
+  notEqual,
+  deepEqual,
+  fail,
+  throws,
+  rejects,
+  match,
+  doesNotThrow,
+  doesNotReject,
+  strictEqual,
+  notStrictEqual,
+} from 'fino:test/assert';
 import assertDefault from 'fino:test/assert';
 
 describe('AssertionError', () => {
@@ -153,6 +169,39 @@ describe('equal / notEqual / deepEqual / fail', () => {
     t.equal(errors.length, 2, '2 failures');
   });
 
+  it('deepEqual — compares Map, Set, Date, RegExp, symbols, typed arrays, and cycles', (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    const sym = Symbol('key');
+    const cycleA: any = { name: 'cycle' };
+    const cycleB: any = { name: 'cycle' };
+    cycleA.self = cycleA;
+    cycleB.self = cycleB;
+
+    a.deepEqual(new Map([[{ id: 1 }, new Set(['a', 'b'])]]), new Map([[{ id: 1 }, new Set(['b', 'a'])]]));
+    a.deepEqual(new Date('2024-01-01T00:00:00Z'), new Date('2024-01-01T00:00:00Z'));
+    a.deepEqual(/abc/gi, /abc/gi);
+    a.deepEqual({ [sym]: 42 }, { [sym]: 42 });
+    a.deepEqual(new Uint8Array([1, 2, 3]), new Uint8Array([1, 2, 3]));
+    a.deepEqual(cycleA, cycleB);
+
+    a.deepEqual(new Map([['x', 1]]), new Map([['x', 2]]));
+    a.deepEqual(new Uint8Array([1, 2]), new Uint8Array([1, 3]));
+    t.equal(errors.length, 2, '2 rich deepEqual mismatches fail');
+  });
+
+  it('strictEqual and notStrictEqual alias strict equality helpers', (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    a.strictEqual(1, 1);
+    a.notStrictEqual(1, 2);
+    a.strictEqual(1, '1');
+    a.notStrictEqual(1, 1);
+    t.equal(errors.length, 2, 'aliases preserve pass/fail callback behavior');
+    t.equal(errors[0]!.operator, 'strictEqual', 'strictEqual operator is reported');
+    t.equal(errors[1]!.operator, 'notStrictEqual', 'notStrictEqual operator is reported');
+  });
+
   it('fail — always invokes onFail', (t) => {
     const errors: AssertionError[] = [];
     const a = new Assert({ onFail(e) { errors.push(e); } });
@@ -201,6 +250,32 @@ describe('throws', () => {
     a.throws(() => { throw new Error('bad value'); }, /good/, 'no match');
     t.equal(errors.length, 1, '1 failure');
   });
+
+  it('constructor check matches thrown error type', (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    a.throws(() => { throw new TypeError('bad type'); }, TypeError, 'matches constructor');
+    a.throws(() => { throw new Error('plain'); }, TypeError, 'wrong constructor');
+    t.equal(errors.length, 1, '1 failure');
+  });
+
+  it('doesNotThrow passes when callback does not throw and fails when it throws', (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    a.doesNotThrow(() => {}, undefined, 'no throw');
+    a.doesNotThrow(() => { throw new Error('boom'); }, Error, 'throws');
+    t.equal(errors.length, 1, '1 failure');
+    t.equal(errors[0]!.operator, 'doesNotThrow', 'operator is doesNotThrow');
+  });
+
+  it('match passes strings matching a RegExp and fails mismatches', (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    a.match('hello world', /world/);
+    a.match('hello world', /mars/);
+    t.equal(errors.length, 1, '1 failure');
+    t.equal(errors[0]!.operator, 'match', 'operator is match');
+  });
 });
 
 describe('rejects', () => {
@@ -232,5 +307,33 @@ describe('rejects', () => {
     const a = new Assert({ onFail(e) { errors.push(e); } });
     await a.rejects(() => Promise.reject(new RangeError('out')), null);
     t.equal(errors.length, 0, 'no failures');
+  });
+
+  it('constructor check matches rejected error type', async (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    await a.rejects(async () => { throw new RangeError('out'); }, RangeError);
+    await a.rejects(async () => { throw new Error('plain'); }, RangeError);
+    t.equal(errors.length, 1, '1 failure');
+  });
+
+  it('doesNotReject passes when callback resolves and fails when it rejects', async (t) => {
+    const errors: AssertionError[] = [];
+    const a = new Assert({ onFail(e) { errors.push(e); } });
+    await a.doesNotReject(async () => {}, undefined, 'resolves');
+    await a.doesNotReject(async () => { throw new Error('boom'); }, Error, 'rejects');
+    t.equal(errors.length, 1, '1 failure');
+    t.equal(errors[0]!.operator, 'doesNotReject', 'operator is doesNotReject');
+  });
+
+  it('named assertion exports include Node-compatible aliases', async (t) => {
+    strictEqual(1, 1);
+    notStrictEqual(1, 2);
+    match('abc', /b/);
+    doesNotThrow(() => {});
+    await doesNotReject(async () => {});
+    await rejects(async () => { throw new TypeError('type'); }, TypeError);
+    throws(() => { throw new RangeError('range'); }, RangeError);
+    t.ok(true, 'named aliases are callable');
   });
 });

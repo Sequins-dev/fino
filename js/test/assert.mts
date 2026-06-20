@@ -35,20 +35,16 @@
  * ## Deep equality
  *
  * `deepEqual(actual, expected)` uses `_deepEqual()`, which recursively
- * compares own enumerable keys of plain objects and arrays. It uses strict
- * equality (`===`) at the leaves and short-circuits on reference identity.
- * It does NOT handle:
- * - `Map`, `Set`, `Date`, `RegExp` — only plain `{}` and `[]`
- * - Symbol keys
- * - Non-enumerable properties
- *
- * This covers the vast majority of test assertions. Add special cases if
- * concrete tests require them.
+ * compares own enumerable string and symbol keys. It supports arrays, plain
+ * objects, `Map`, `Set`, `Date`, `RegExp`, typed arrays, and cyclic object
+ * graphs. Non-enumerable properties and prototype identity are outside this
+ * lightweight assertion layer's comparison contract.
  *
  *
  * ## throws / rejects
  *
  * Both accept an optional `check` argument:
+ * - If `check` is an Error constructor, the value must be an instance of it.
  * - If `check` is a function `(err) => boolean`, it must return true.
  * - If `check` is a RegExp, it is tested against `err.message`.
  * - If `check` is omitted, any throw/rejection passes.
@@ -117,7 +113,8 @@ export interface AssertCallbacks {
  * expression is tested against the error message. `null` and `undefined`
  * accept any thrown or rejected value.
  */
-export type ErrorCheck = ((e: unknown) => boolean) | RegExp | null;
+export type ErrorConstructor = new (...args: any[]) => Error;
+export type ErrorCheck = ((e: unknown) => boolean) | ErrorConstructor | RegExp | null;
 type IndexableRecord = Record<string, unknown>;
 
 function _isRecord(value: unknown): value is IndexableRecord {
@@ -288,26 +285,117 @@ function _fmt(v: unknown): string {
   return String(v);
 }
 
-function _deepEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
+function _isTypedArray(value: unknown): value is ArrayBufferView {
+  return ArrayBuffer.isView(value) && !(value instanceof DataView);
+}
+
+function _sameBytes(a: ArrayBufferView, b: ArrayBufferView): boolean {
+  if (a.constructor !== b.constructor || a.byteLength !== b.byteLength) return false;
+  const aBytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
+  const bBytes = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+  for (let i = 0; i < aBytes.length; i++) {
+    if (aBytes[i] !== bBytes[i]) return false;
+  }
+  return true;
+}
+
+function _hasComparedPair(seen: WeakMap<object, WeakSet<object>>, a: object, b: object): boolean {
+  const matches = seen.get(a);
+  if (matches?.has(b)) return true;
+  if (matches) {
+    matches.add(b);
+  } else {
+    const set = new WeakSet<object>();
+    set.add(b);
+    seen.set(a, set);
+  }
+  return false;
+}
+
+function _ownEnumerableKeys(value: object): Array<string | symbol> {
+  const keys: Array<string | symbol> = Object.keys(value);
+  for (const sym of Object.getOwnPropertySymbols(value)) {
+    if (Object.prototype.propertyIsEnumerable.call(value, sym)) keys.push(sym);
+  }
+  return keys;
+}
+
+function _mapEqual(a: Map<unknown, unknown>, b: Map<unknown, unknown>, seen: WeakMap<object, WeakSet<object>>): boolean {
+  if (a.size !== b.size) return false;
+  const matched = new Set<unknown>();
+  for (const [aKey, aValue] of a) {
+    let found = false;
+    for (const [bKey, bValue] of b) {
+      if (matched.has(bKey)) continue;
+      if (_deepEqual(aKey, bKey, seen) && _deepEqual(aValue, bValue, seen)) {
+        matched.add(bKey);
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function _setEqual(a: Set<unknown>, b: Set<unknown>, seen: WeakMap<object, WeakSet<object>>): boolean {
+  if (a.size !== b.size) return false;
+  const matched = new Set<unknown>();
+  for (const aValue of a) {
+    let found = false;
+    for (const bValue of b) {
+      if (matched.has(bValue)) continue;
+      if (_deepEqual(aValue, bValue, seen)) {
+        matched.add(bValue);
+        found = true;
+        break;
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+function _deepEqual(a: unknown, b: unknown, seen: WeakMap<object, WeakSet<object>> = new WeakMap()): boolean {
+  if (Object.is(a, b)) return true;
   if (a === null || b === null) return false;
   if (typeof a !== typeof b) return false;
   if (!_isRecord(a) || !_isRecord(b)) return false;
+  if (_hasComparedPair(seen, a, b)) return true;
 
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
+  if (a instanceof Date || b instanceof Date) {
+    return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
+  }
+  if (a instanceof RegExp || b instanceof RegExp) {
+    return a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags;
+  }
+  if (a instanceof Map || b instanceof Map) {
+    return a instanceof Map && b instanceof Map && _mapEqual(a, b, seen);
+  }
+  if (a instanceof Set || b instanceof Set) {
+    return a instanceof Set && b instanceof Set && _setEqual(a, b, seen);
+  }
+  if (_isTypedArray(a) || _isTypedArray(b)) {
+    return _isTypedArray(a) && _isTypedArray(b) && _sameBytes(a, b);
+  }
+
+  const aKeys = _ownEnumerableKeys(a);
+  const bKeys = _ownEnumerableKeys(b);
   if (aKeys.length !== bKeys.length) return false;
 
   for (const k of aKeys) {
     if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
-    if (!_deepEqual(a[k], b[k])) return false;
+    if (!_deepEqual(a[k], b[k], seen)) return false;
   }
   return true;
 }
 
 /** Validate a thrown/rejected value against a check function or RegExp. */
 function _checkErr(err: unknown, check: Exclude<ErrorCheck, null>): boolean {
-  if (typeof check === 'function') return check(err);
+  if (typeof check === 'function') {
+    if (check === Error || check.prototype instanceof Error) return err instanceof check;
+    return check(err);
+  }
   if (check instanceof RegExp)     return check.test(_messageOf(err));
   return true;
 }
@@ -551,6 +639,40 @@ export class Assert {
   }
 
   /**
+   * Assert strict equality using `===`.
+   *
+   * Node-compatible alias for `equal()` with an operator name of
+   * `strictEqual`.
+   */
+  strictEqual(actual: unknown, expected: unknown, msg?: string): void {
+    if (actual === expected) {
+      this.#pass();
+    } else {
+      this.#fail(
+        (msg || 'strictEqual') + ': expected ' + _fmt(expected) + ', got ' + _fmt(actual),
+        actual, expected, 'strictEqual',
+      );
+    }
+  }
+
+  /**
+   * Assert strict inequality using `!==`.
+   *
+   * Node-compatible alias for `notEqual()` with an operator name of
+   * `notStrictEqual`.
+   */
+  notStrictEqual(actual: unknown, expected: unknown, msg?: string): void {
+    if (actual !== expected) {
+      this.#pass();
+    } else {
+      this.#fail(
+        (msg || 'notStrictEqual') + ': expected !== ' + _fmt(expected) + ', but got the same value',
+        actual, expected, 'notStrictEqual',
+      );
+    }
+  }
+
+  /**
    * Assert deep equality of plain objects and arrays.
    *
    * The comparison walks own enumerable string keys and uses strict equality at
@@ -590,6 +712,23 @@ export class Assert {
    */
   fail(msg?: string): void {
     this.#fail(msg || 'fail called', undefined, undefined, 'fail');
+  }
+
+  /**
+   * Assert that a string matches a regular expression.
+   *
+   * The comparison uses `RegExp.prototype.test()` against `String(actual)`.
+   */
+  match(actual: string, expected: RegExp, msg?: string): void {
+    const value = String(actual);
+    if (expected.test(value)) {
+      this.#pass();
+    } else {
+      this.#fail(
+        (msg || 'match') + ': expected ' + _fmt(value) + ' to match ' + String(expected),
+        actual, expected, 'match',
+      );
+    }
   }
 
   /**
@@ -634,6 +773,25 @@ export class Assert {
   }
 
   /**
+   * Assert that `fn` does not throw synchronously.
+   *
+   * The optional check is accepted for API compatibility and is recorded as
+   * the expected value when a failure is reported.
+   */
+  doesNotThrow(fn: () => void, check?: ErrorCheck, msg?: string): void {
+    try {
+      fn();
+    } catch (err) {
+      this.#fail(
+        (msg || 'doesNotThrow') + ': expected no exception, got ' + _fmt(err),
+        err, check, 'doesNotThrow',
+      );
+      return;
+    }
+    this.#pass();
+  }
+
+  /**
    * Assert that `fn` returns a promise that rejects. Optionally validate the
    * rejection value with a `check` function or RegExp.
    *
@@ -668,6 +826,25 @@ export class Assert {
       this.#fail(
         (msg || 'rejects') + ': rejection did not satisfy check: ' + _fmt(rejectedWith),
         rejectedWith, check, 'rejects',
+      );
+      return;
+    }
+    this.#pass();
+  }
+
+  /**
+   * Assert that `fn` returns a promise that resolves.
+   *
+   * The optional check is accepted for API compatibility and is recorded as
+   * the expected value when a failure is reported.
+   */
+  async doesNotReject(fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> {
+    try {
+      await fn();
+    } catch (err) {
+      this.#fail(
+        (msg || 'doesNotReject') + ': expected no rejection, got ' + _fmt(err),
+        err, check, 'doesNotReject',
       );
       return;
     }
@@ -725,6 +902,26 @@ export const equal = (actual: unknown, expected: unknown, msg?: string): void =>
  */
 export const notEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.notEqual(actual, expected, msg);
 /**
+ * Assert strict equality using the default `Assert` instance.
+ *
+ * ```ts no_run
+ * import { strictEqual } from 'fino:test/assert';
+ *
+ * strictEqual(1 + 1, 2);
+ * ```
+ */
+export const strictEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.strictEqual(actual, expected, msg);
+/**
+ * Assert strict inequality using the default `Assert` instance.
+ *
+ * ```ts no_run
+ * import { notStrictEqual } from 'fino:test/assert';
+ *
+ * notStrictEqual('1', 1);
+ * ```
+ */
+export const notStrictEqual = (actual: unknown, expected: unknown, msg?: string): void => _default.notStrictEqual(actual, expected, msg);
+/**
  * Assert structural equality for plain object and array values.
  *
  * ```ts no_run
@@ -745,6 +942,16 @@ export const deepEqual = (actual: unknown, expected: unknown, msg?: string): voi
  */
 export const fail = (msg?: string): void => _default.fail(msg);
 /**
+ * Assert that a string matches a regular expression.
+ *
+ * ```ts no_run
+ * import { match } from 'fino:test/assert';
+ *
+ * match('hello', /ell/);
+ * ```
+ */
+export const match = (actual: string, expected: RegExp, msg?: string): void => _default.match(actual, expected, msg);
+/**
  * Assert that a synchronous function throws, optionally matching the error.
  *
  * ```ts no_run
@@ -755,6 +962,16 @@ export const fail = (msg?: string): void => _default.fail(msg);
  */
 export const throws = (fn: () => void, check?: ErrorCheck, msg?: string): void => _default.throws(fn, check, msg);
 /**
+ * Assert that a synchronous function does not throw.
+ *
+ * ```ts no_run
+ * import { doesNotThrow } from 'fino:test/assert';
+ *
+ * doesNotThrow(() => JSON.parse('{}'));
+ * ```
+ */
+export const doesNotThrow = (fn: () => void, check?: ErrorCheck, msg?: string): void => _default.doesNotThrow(fn, check, msg);
+/**
  * Assert that an async function rejects, optionally matching the error.
  *
  * ```ts no_run
@@ -764,3 +981,13 @@ export const throws = (fn: () => void, check?: ErrorCheck, msg?: string): void =
  * ```
  */
 export const rejects = (fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> => _default.rejects(fn, check, msg);
+/**
+ * Assert that an async function resolves.
+ *
+ * ```ts no_run
+ * import { doesNotReject } from 'fino:test/assert';
+ *
+ * await doesNotReject(async () => {});
+ * ```
+ */
+export const doesNotReject = (fn: () => Promise<unknown>, check?: ErrorCheck, msg?: string): Promise<void> => _default.doesNotReject(fn, check, msg);
