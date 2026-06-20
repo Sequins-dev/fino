@@ -83,6 +83,18 @@ async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 describe('Realm remote mode', () => {
+  it('remote: true requires an active cluster', async (t) => {
+    await t.rejects(
+      async () => {
+        new Realm({
+          entry: fixture('hello.mts'),
+          remote: true,
+        });
+      },
+      /remote: true requires an active cluster/,
+    );
+  });
+
   it('call() returns values through the cluster transport', async (t) => {
     await withRemoteWorker(async () => {
       const realm = new Realm<typeof echoFn>({

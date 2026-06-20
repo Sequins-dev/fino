@@ -5,6 +5,14 @@
  * microtask queue, and event loop. The parent's import rule list governs every
  * module resolution in the child; the child can layer overrides on top.
  *
+ * The release baseline covers embedded realms plus isolated `thread`,
+ * `process`, and `remote` modes. Thread and process realms provide lifecycle,
+ * messaging, `run()`, `call()`, facade, and import-rule behavior with transport
+ * parity where the underlying serializers allow it. Remote realms run over the
+ * current trusted `fino:cluster` WebSocket transport and require an active
+ * cluster before construction. Cluster authentication, hostile-peer handling,
+ * and remote `watch` / `repl` modes are outside this baseline.
+ *
  * The import rule list uses last-match-wins semantics. Declare a wildcard
  * first as the baseline and more specific patterns afterwards as overrides.
  *
@@ -1609,8 +1617,9 @@ export interface RealmProviders {
  * Options for constructing and running a child realm.
  *
  * Exactly one of `thread`, `process`, or `remote` may be used for isolated
- * execution modes. Without those flags, the realm is embedded in the current
- * isolate with its own context and module graph.
+ * execution modes; enabling more than one throws during construction. Without
+ * those flags, the realm is embedded in the current isolate with its own
+ * context and module graph.
  *
  * ```ts no_run
  * import { Realm, type RealmOptions } from 'fino:realm';
@@ -2471,6 +2480,10 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @param opts Realm construction and loader options.
    */
   constructor(opts: RealmOptions) {
+    const isolatedModes = [opts.thread, opts.process, opts.remote].filter(Boolean).length;
+    if (isolatedModes > 1) {
+      throw new Error('fino:realm — exactly one isolated mode may be enabled: thread, process, or remote');
+    }
     if (opts.watch && opts.remote) {
       throw new Error('fino:realm — watch: true is not supported with remote: true');
     }

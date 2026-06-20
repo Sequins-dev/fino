@@ -499,9 +499,19 @@ Status: DONE
   transferables are explicit exclusions in this baseline.
 
 ## Realm Process, Thread, Remote Modes
-Status: TODO
-- Remote realms depend on the current unauthenticated WebSocket cluster.
-- Add hostile-peer/auth-failure coverage once cluster authentication exists.
+Status: DONE
+- Release baseline covers thread and process realm lifecycle, messaging,
+  `run()` / `call()` behavior, termination, top-level errors, serialization
+  round-trips, import-rule/facade parity, and watch-mode coverage for local
+  thread/process children.
+- Remote realms are a trusted-cluster feature over the current WebSocket
+  `fino:cluster` transport. Coverage locks active-cluster requirement,
+  remote call/run/terminate behavior, import-rule/provider serialization, and
+  facade scalar/read-stream/write-stream propagation.
+- `thread`, `process`, and `remote` are mutually exclusive constructor modes;
+  multiple isolated mode flags reject instead of silently applying precedence.
+- Remote `watch` and `repl` modes are excluded. Hostile-peer and auth-failure
+  coverage is deferred until cluster authentication exists.
 
 ## Realm Import And Provider Policies
 Status: DONE

@@ -15,6 +15,18 @@ import type sumFn from './fixtures/multi-arg-fn.mts';
 import type errorFn from './fixtures/error-fn.mts';
 
 describe('Thread Realm basics', () => {
+  it('rejects multiple isolated mode flags at construction', (t) => {
+    t.throws(
+      () => new Realm({
+        thread: true,
+        process: true,
+        entry: new URL('./fixtures/hello.mts', import.meta.url).pathname,
+      }),
+      /thread.*process.*remote|isolated mode/i,
+      'thread and process cannot both be enabled',
+    );
+  });
+
   it('spawns a thread realm that runs to completion', async (t) => {
     const realm = new Realm({
       thread: true,
