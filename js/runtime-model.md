@@ -21,6 +21,27 @@ import { parse } from 'fino:format/toml';
 Application code should depend on public `fino:*` modules, local project
 modules, and installed packages.
 
+## Global Surface
+
+Fino installs Web-style globals such as timers, `console`, `fetch`, URL
+classes, `Blob`, `File`, `FormData`, Web Streams, `crypto`, `structuredClone`,
+`MessageChannel`, and `BroadcastChannel`. `self` aliases `globalThis`.
+
+The runtime also exposes a deliberately small `navigator` object with a Fino
+user agent. It is not a browser navigator implementation, and it does not
+promise fields such as hardware concurrency, language, platform, permissions,
+or service-worker state.
+
+Node globals are not installed by default. Use `fino:process` for process
+metadata, child processes, stdio, environment variables, and `exit()`; do not
+expect `globalThis.process`, `Buffer`, CommonJS globals, or Node's process event
+APIs to exist.
+
+`reportError(error)` writes an unhandled-error diagnostic to stderr and returns.
+Fino does not currently implement browser `unhandledrejection` /
+`rejectionhandled` events. Top-level entry errors and top-level await
+rejections still propagate through the root CLI and produce a nonzero exit.
+
 ## Event Loop
 
 The event loop keeps asynchronous work moving. Network sockets, file

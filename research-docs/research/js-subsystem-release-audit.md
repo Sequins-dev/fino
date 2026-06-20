@@ -9,10 +9,16 @@ release.
 remain. Entries are intentionally brief and actionable.
 
 ## Runtime Core, Bootstrap, Main
-Status: TODO
-- Define and test unhandled rejection and `reportError` behavior against Web expectations.
-- Document runtime-global non-goals such as minimal `navigator` and no Node global `process`.
-- Add root CLI coverage for bootstrap error propagation, not only realm paths.
+Status: DONE
+- Release baseline covers bootstrap-installed globals, `self`, minimal
+  writable/configurable `navigator`, absence of a Node global `process`, and
+  absence of browser rejection-event globals.
+- `reportError()` writes an unhandled-error diagnostic without failing the
+  process by itself; root script top-level throws and top-level await
+  rejections propagate to the CLI as nonzero exits.
+- Runtime docs state the current global-surface non-goals: no Node global
+  `process`, no broad browser `navigator`, and no browser
+  `unhandledrejection` / `rejectionhandled` event parity in this baseline.
 
 ## Loader, Import Meta, Module
 Status: TODO

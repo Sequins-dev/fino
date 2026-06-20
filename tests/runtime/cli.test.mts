@@ -137,6 +137,47 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('waitAsync:ok:1'), 'waitAsync settled after async notification');
   });
 
+  it('reportError writes a diagnostic without failing the process', async (t) => {
+    await withTempProject({
+      'report-error.mts': [
+        "reportError(new Error('reported failure'));",
+        "console.log('after-report-error');",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['report-error.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'reportError alone does not set a failing exit code');
+      t.ok(stdout.includes('after-report-error'), 'script continues after reportError');
+      t.ok(stderr.includes('Unhandled error:'), 'stderr includes reportError prefix');
+      t.ok(stderr.includes('reported failure'), 'stderr includes the reported error');
+    });
+  });
+
+  it('reports root script top-level throw failures', async (t) => {
+    await withTempProject({
+      'throws.mts': "throw new Error('root top-level throw');\n",
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['throws.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'top-level throw exits nonzero');
+      t.equal(stdout, '', 'top-level throw does not write stdout');
+      t.ok(stderr.includes('root top-level throw'), 'stderr reports top-level throw');
+    });
+  });
+
+  it('reports root script top-level await rejections', async (t) => {
+    await withTempProject({
+      'rejects.mts': "await Promise.reject(new Error('root top-level await rejection'));\n",
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['rejects.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'top-level await rejection exits nonzero');
+      t.equal(stdout, '', 'top-level await rejection does not write stdout');
+      t.ok(stderr.includes('root top-level await rejection'), 'stderr reports top-level await rejection');
+    });
+  });
+
   it('reports shutdown hook failure when the script succeeds', async (t) => {
     const { stdout, stderr, result } = await runCli(['./tests/fixtures/shutdown-hook-fails.mts']);
 
