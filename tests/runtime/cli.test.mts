@@ -162,6 +162,38 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('cli fixture ran'), 'run command imported and executed the script');
   });
 
+  it('exposes root script arguments through process argv after --', async (t) => {
+    await withTempProject({
+      'argv.mts': [
+        "import { argv } from 'fino:process';",
+        "console.log(JSON.stringify(argv.slice(1)));",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['argv.mts', '--', '--user-flag', 'value'], { cwd: dir });
+
+      t.equal(result.code, 0, 'root script with -- args exits successfully');
+      t.equal(stderr, '', 'root script with -- args does not write stderr');
+      t.ok(stdout.includes('["argv.mts","--","--user-flag","value"]'), 'argv preserves script and user arguments');
+    });
+  });
+
+  it('exposes run command script arguments through process argv after --', async (t) => {
+    await withTempProject({
+      'argv.mts': [
+        "import { argv } from 'fino:process';",
+        "console.log(JSON.stringify(argv.slice(1)));",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['run', 'argv.mts', '--', '--user-flag', 'value'], { cwd: dir });
+
+      t.equal(result.code, 0, 'run script with -- args exits successfully');
+      t.equal(stderr, '', 'run script with -- args does not write stderr');
+      t.ok(stdout.includes('["run","argv.mts","--","--user-flag","value"]'), 'argv preserves run command, script, and user arguments');
+    });
+  });
+
   it('prints focused help for each subcommand', async (t) => {
     const commands = ['run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'repl'];
 
@@ -196,6 +228,24 @@ describe('CLI commands', () => {
         t.equal(result.code, 1, `${label} exits nonzero`);
         t.equal(stdout, '', `${label} does not write stdout`);
         t.ok(stderr.includes('Cannot resolve module'), `${label} reports module resolution failure`);
+      }
+    });
+  });
+
+  it('does not expand run command directory or glob inputs', async (t) => {
+    await withTempProject({
+      'scripts/entry.mts': "console.log('should-not-run');\n",
+    }, async (dir) => {
+      for (const [label, args] of [
+        ['directory input', ['run', 'scripts']],
+        ['glob input', ['run', 'scripts/*.mts']],
+      ] as [string, string[]][]) {
+        const { stdout, stderr, result } = await runCli(args, { cwd: dir });
+
+        t.equal(result.code, 1, `${label} exits nonzero`);
+        t.equal(stdout, '', `${label} does not import discovered scripts`);
+        t.ok(stderr.length > 0, `${label} reports the unresolved module specifier`);
+        t.ok(!stderr.includes('should-not-run'), `${label} does not execute nested files`);
       }
     });
   });

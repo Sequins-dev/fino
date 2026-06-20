@@ -19,7 +19,14 @@ Accepts TypeScript or ESM files.
 Arguments after the script path are passed to the script:
 
 ```sh
-fino app.mts --config ./config.toml
+fino app.mts -- --config ./config.toml
+```
+
+Use `--` before option-like script arguments. Options before `--` belong to
+the Fino command parser. The `run` command follows the same rule:
+
+```sh
+fino run app.mts -- --config ./config.toml
 ```
 
 Use watch mode while editing. Fino watches the modules imported by the entry
@@ -34,6 +41,9 @@ Enable OpenTelemetry export with an OTLP/HTTP collector endpoint:
 ```sh
 fino --otlp-endpoint http://127.0.0.1:4318 app.mts
 ```
+
+Script inputs are single module specifiers. The root shortcut and `run` command
+do not expand directories or glob patterns.
 
 ## Test
 

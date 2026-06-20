@@ -30,9 +30,13 @@ Status: TODO
 Status: DONE
 
 ## CLI Root And Run Commands
-Status: TODO
-- Add broader command tests for script argument passthrough and failing glob/directory edge cases.
-- Document root/run behavior where it intentionally differs from Node or shell runners.
+Status: DONE
+- Release baseline covers root script fallback, explicit `run`, script argument
+  visibility through `fino:process.argv`, `--watch`, and `--otlp-endpoint`.
+- Option-like script arguments are passed after `--`; options before the stop
+  marker belong to the Fino command parser.
+- Root/run inputs are single module specifiers and do not expand directories or
+  glob patterns.
 
 ## Test Command
 Status: TODO
