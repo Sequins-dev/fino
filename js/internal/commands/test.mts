@@ -81,6 +81,10 @@ export function createTestCommand(): Command {
     run: async function runTestCommand(ctx: CommandContext) {
       const testFiles = Array.isArray(ctx.args.files) ? ctx.args.files : [];
       const filter = typeof ctx.options.filter === 'string' ? ctx.options.filter : undefined;
+      const showOutput = typeof ctx.options['show-output'] === 'string' ? ctx.options['show-output'] : 'failures';
+      if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
+        throw new Error(`Invalid --show-output value "${showOutput}" (expected failures, always, or never)`);
+      }
       if (testFiles.length === 0) {
         throw new Error('fino test: no test files specified');
       }
@@ -98,10 +102,11 @@ export function createTestCommand(): Command {
       }
 
       const { run } = await import('fino:test/test');
-      return filter === undefined ? run({}) : run({ filter });
+      return run(filter === undefined ? { showOutput } : { filter, showOutput });
     },
     options: [
       { flags: '--filter', type: 'string', description: 'Run only describe groups whose full path contains the filter text' },
+      { flags: '--show-output', type: 'string', description: 'Show captured console output: failures, always, or never' },
     ],
     positionals: [
       { name: 'files', type: 'string', multiple: true, required: true, description: 'Test files to import and run' },

@@ -178,6 +178,64 @@ describe('runner behavior', () => {
     });
   });
 
+  it('suppresses console output from passing tests by default', async (t) => {
+    await withTempProject({
+      'quiet-pass.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('quiet pass', () => {",
+        "  console.log('stdout:passing');",
+        "  console.error('stderr:passing');",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'quiet-pass.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'passing fixture exits successfully');
+      t.equal(stderr, '', 'captured stderr is not written for passing tests');
+      t.ok(stdout.includes('ok 1 - quiet pass'), 'passing test is reported');
+      t.ok(!stdout.includes('stdout:passing'), 'passing stdout is suppressed');
+      t.ok(!stdout.includes('stderr:passing'), 'passing stderr is suppressed');
+      t.ok(!stdout.includes('# Failure details'), 'success output has no failure details section');
+    });
+  });
+
+  it('prints captured stdout and stderr with failing test details', async (t) => {
+    await withTempProject({
+      'quiet-fail.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('noisy failure', () => {",
+        "  console.log('stdout:first');",
+        "  console.warn('stderr:warn');",
+        "  console.error('stderr:error');",
+        "  throw new Error('body failed');",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'quiet-fail.test.mts'], { cwd: dir });
+      const failureLine = stdout.indexOf('not ok 1 - noisy failure');
+      const details = stdout.indexOf('# Failure details');
+      const capturedStdout = stdout.indexOf('# Captured stdout:');
+      const capturedStderr = stdout.indexOf('# Captured stderr:');
+
+      t.equal(result.code, 1, 'failing fixture exits nonzero');
+      t.ok(stderr.includes('[error] Error: 1 test(s) failed'), 'command failure summary is still written to stderr');
+      t.ok(!stderr.includes('stderr:warn'), 'captured warning is not written live to stderr');
+      t.ok(!stderr.includes('stderr:error'), 'captured error is not written live to stderr');
+      t.ok(failureLine >= 0, 'failing test is reported inline');
+      t.ok(details > failureLine, 'failure details are printed at the end');
+      t.ok(stdout.includes('# 1) noisy failure'), 'failure details include test name');
+      t.ok(stdout.includes('# Error:'), 'failure details include error heading');
+      t.ok(stdout.includes('#   Error: body failed'), 'failure details include thrown error');
+      t.ok(capturedStdout > details, 'captured stdout section follows failure heading');
+      t.ok(capturedStderr > capturedStdout, 'captured stderr section follows stdout');
+      t.ok(stdout.includes('#   stdout:first'), 'captured stdout line is printed');
+      t.ok(stdout.includes('#   [warn] stderr:warn'), 'captured warning line is printed');
+      t.ok(stdout.includes('#   [error] stderr:error'), 'captured error line is printed');
+    });
+  });
+
   it('runs hooks in lifecycle order and tears down after body failures', async (t) => {
     await withTempProject({
       'hooks.test.mts': [
@@ -197,9 +255,12 @@ describe('runner behavior', () => {
       const beforeEach = stdout.indexOf('order:beforeEach');
       const body = stdout.indexOf('order:body');
       const afterEach = stdout.indexOf('order:afterEach');
-      const after = stdout.indexOf('\norder:after\n');
+      const after = stdout.indexOf('#   order:after\n');
+      const details = stdout.indexOf('# Failure details');
 
       t.equal(result.code, 1, 'body failure exits nonzero');
+      t.ok(details >= 0, 'failure details are printed');
+      t.ok(before > details, 'before hook output is shown in final details');
       t.ok(before < beforeEach && beforeEach < body && body < afterEach && afterEach < after, 'hooks run in lifecycle order');
       t.ok(stdout.includes('not ok 1 - fails body'), 'body failure is reported');
     });
@@ -286,10 +347,46 @@ describe('runner behavior', () => {
       const { stdout, result } = await runCli(['test', 'hook-failure.test.mts'], { cwd: dir });
 
       t.equal(result.code, 1, 'hook failure exits nonzero');
+      t.ok(stdout.includes('# Failure details'), 'failure details are printed');
       t.ok(stdout.includes('hook:beforeEach'), 'beforeEach hook ran');
       t.ok(!stdout.includes('hook:body'), 'body is skipped after beforeEach failure');
       t.ok(!stdout.includes('hook:afterEach'), 'afterEach does not run after beforeEach failure');
       t.ok(stdout.includes('hook:after'), 'after hook still runs after beforeEach failure');
+    });
+  });
+
+  it('supports live console output for debugging', async (t) => {
+    await withTempProject({
+      'show-output.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('debug output', () => console.log('stdout:live'));",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', '--show-output=always', 'show-output.test.mts'], { cwd: dir });
+      const live = stdout.indexOf('stdout:live');
+      const ok = stdout.indexOf('ok 1 - debug output');
+
+      t.equal(result.code, 0, 'passing fixture exits successfully');
+      t.equal(stderr, '', 'debug fixture does not write stderr');
+      t.ok(live >= 0, 'console output is written live');
+      t.ok(live < ok, 'live output appears before the test result');
+    });
+  });
+
+  it('rejects invalid output reporting modes', async (t) => {
+    await withTempProject({
+      'tap.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('top leaf', (t) => t.ok(true));",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', '--show-output=bad', 'tap.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'invalid mode exits nonzero');
+      t.equal(stdout, '', 'invalid mode does not start TAP output');
+      t.ok(stderr.includes('Invalid --show-output value "bad"'), 'invalid mode is reported');
     });
   });
 });

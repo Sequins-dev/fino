@@ -81,6 +81,15 @@ interface ConsoleShape {
   group(...args: unknown[]): void;
 }
 
+/** Captured console output record used by internal test tooling. */
+export interface ConsoleCaptureRecord {
+  fd: 1 | 2;
+  text: string;
+}
+
+/** Callback that receives formatted console lines while capture is active. */
+export type ConsoleCaptureSink = (record: ConsoleCaptureRecord) => void;
+
 /**
  * Convert a single value to a human-readable string, similar to Node's
  * util.inspect (simplified).
@@ -230,9 +239,42 @@ function prefix(): string {
 // Core output helpers
 // ---------------------------------------------------------------------------
 
-function out(fd: number, label: string, args: unknown[]): void {
-  const text = prefix() + (label ? `${label} ` : '') + format(args);
+const _captureStack: ConsoleCaptureSink[] = [];
+
+/**
+ * Capture formatted console output until the returned release function runs.
+ *
+ * This is intentionally internal: normal console calls still write directly to
+ * stdout/stderr unless a runtime tool such as the test runner installs a sink.
+ *
+ * @internal
+ */
+export function _pushConsoleCapture(sink: ConsoleCaptureSink): () => void {
+  _captureStack.push(sink);
+  let active = true;
+  return function releaseConsoleCapture(): void {
+    if (!active) return;
+    active = false;
+    const last = _captureStack.pop();
+    if (last !== sink) {
+      const index = _captureStack.lastIndexOf(sink);
+      if (index >= 0) _captureStack.splice(index, 1);
+    }
+  };
+}
+
+function writeConsoleLine(fd: 1 | 2, text: string): void {
+  const sink = _captureStack[_captureStack.length - 1];
+  if (sink !== undefined) {
+    sink({ fd, text });
+    return;
+  }
   writeLine(fd, text);
+}
+
+function out(fd: 1 | 2, label: string, args: unknown[]): void {
+  const text = prefix() + (label ? `${label} ` : '') + format(args);
+  writeConsoleLine(fd, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -543,7 +585,7 @@ const console: ConsoleShape & {
     const err = new Error();
     const stack = err.stack?.split('\n').slice(1).join('\n') ?? '';
     const msg = (args.length ? format(args) + '\n' : '') + 'Trace' + (stack ? ':\n' + stack : '');
-    writeLine(1, prefix() + msg);
+    writeConsoleLine(1, prefix() + msg);
   },
 
   /**

@@ -65,7 +65,7 @@
  * applying hooks from `parentNode` to each leaf inside a `describe` group.
  */
 
-import console from '../internal/globals/console.mts';
+import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../internal/globals/console.mts';
 import { Assert, AssertionError } from './assert.mts';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
 
@@ -92,8 +92,30 @@ interface GroupNode {
 }
 
 type TestNode = LeafNode | GroupNode;
+type RunStatus = 'pass' | 'fail' | 'skip';
+type ShowOutputMode = 'failures' | 'always' | 'never';
 
-interface RunResult { passed: number; failed: number; skipped: number; }
+interface FailureDiagnostic {
+  title: string;
+  errors: unknown[];
+  output: ConsoleCaptureRecord[];
+}
+
+interface RunResult {
+  passed: number;
+  failed: number;
+  skipped: number;
+  diagnostics: FailureDiagnostic[];
+}
+
+interface LeafRunResult {
+  status: RunStatus;
+  diagnostic: FailureDiagnostic | null;
+}
+
+interface RunContext {
+  showOutput: ShowOutputMode;
+}
 
 /**
  * Options passed to `run()` when executing registered tests manually.
@@ -101,7 +123,10 @@ interface RunResult { passed: number; failed: number; skipped: number; }
  * `filter` keeps only matching `describe()` paths and their ancestors. The CLI
  * passes this from `fino test --filter`.
  */
-export interface RunOptions { filter?: string; }
+export interface RunOptions {
+  filter?: string;
+  showOutput?: ShowOutputMode;
+}
 
 /**
  * Value accepted by the `skip` registration option.
@@ -399,23 +424,72 @@ function _log(depth: number, msg: string): void {
   console.log(_indent(depth) + msg);
 }
 
-function _printError(err: unknown, depth: number): void {
+function _formatErrorLines(err: unknown): string[] {
+  const lines: string[] = [];
   if (err instanceof AggregateError) {
     for (const e of err.errors) {
-      _log(depth, '  ---');
-      _log(depth, '  message: ' + e.message);
-      _log(depth, '  ...');
-    }
-  } else {
-    _log(depth, '  ---');
-    _log(depth, '  message: threw ' + err);
-    const stack = err instanceof Error ? err.stack : undefined;
-    if (typeof stack === 'string') {
-      for (const line of stack.split('\n')) {
-        _log(depth, '  ' + line);
+      if (e instanceof Error && typeof e.stack === 'string') {
+        lines.push(...e.stack.split('\n'));
+      } else if (e instanceof Error) {
+        lines.push(e.message);
+      } else {
+        lines.push('threw ' + e);
       }
     }
-    _log(depth, '  ...');
+  } else {
+    const stack = err instanceof Error ? err.stack : undefined;
+    if (typeof stack === 'string') {
+      lines.push(...stack.split('\n'));
+    } else if (err instanceof Error) {
+      lines.push(err.message);
+    } else {
+      lines.push('threw ' + err);
+    }
+  }
+  return lines;
+}
+
+function _commentLine(msg: string = ''): void {
+  console.log('#' + (msg.length > 0 ? ' ' + msg : ''));
+}
+
+function _printFailureDetails(diagnostics: FailureDiagnostic[], showOutput: ShowOutputMode): void {
+  _commentLine('Failure details');
+  for (let i = 0; i < diagnostics.length; i++) {
+    const diagnostic = diagnostics[i];
+    if (diagnostic === undefined) continue;
+    _commentLine(`${i + 1}) ${diagnostic.title}`);
+    if (diagnostic.errors.length > 0) {
+      _commentLine('Error:');
+      for (const error of diagnostic.errors) {
+        for (const line of _formatErrorLines(error)) _commentLine('  ' + line);
+      }
+    }
+    if (showOutput === 'failures') {
+      const stdout = diagnostic.output.filter((entry) => entry.fd === 1);
+      const stderr = diagnostic.output.filter((entry) => entry.fd === 2);
+      if (stdout.length > 0) {
+        _commentLine('Captured stdout:');
+        for (const entry of stdout) _commentLine('  ' + entry.text);
+      }
+      if (stderr.length > 0) {
+        _commentLine('Captured stderr:');
+        for (const entry of stderr) _commentLine('  ' + entry.text);
+      }
+    }
+    if (i < diagnostics.length - 1) _commentLine();
+  }
+}
+
+async function _captureConsole<T>(ctx: RunContext, output: ConsoleCaptureRecord[], fn: () => T | Promise<T>): Promise<T> {
+  if (ctx.showOutput === 'always') {
+    return await fn();
+  }
+  const release = _pushConsoleCapture((record) => output.push(record));
+  try {
+    return await fn();
+  } finally {
+    release();
   }
 }
 
@@ -429,53 +503,62 @@ function _printError(err: unknown, depth: number): void {
  * @param {string|null} inheritedSkip  Skip reason inherited from a parent group, or null.
  * @returns {'pass'|'fail'|'skip'}
  */
-async function _runLeaf(entry: LeafNode, num: number, depth: number, hooks: GroupNode | null, inheritedSkip: string | null = null): Promise<'pass' | 'fail' | 'skip'> {
+async function _runLeaf(ctx: RunContext, path: string[], entry: LeafNode, num: number, depth: number, hooks: GroupNode | null, inheritedSkip: string | null = null): Promise<LeafRunResult> {
   const skipReason = inheritedSkip ?? entry.skip;
   if (skipReason !== null) {
     const suffix = skipReason !== '' ? ' # SKIP ' + skipReason : ' # SKIP';
     _log(depth, 'ok ' + num + ' - ' + entry.name + suffix);
-    return 'skip';
+    return { status: 'skip', diagnostic: null };
   }
   const failures: unknown[] = [];
   const t = new Assert({ onFail(err) { failures.push(err); } });
+  let output: ConsoleCaptureRecord[] = [];
 
   try {
-    // Run beforeEach (hook failure skips the body but still runs afterEach).
-    let beforeError = null;
-    if (hooks?.beforeEach) {
-      try { await hooks.beforeEach(); }
-      catch (e) { beforeError = e; }
-    }
-
-    // Run the test body (skipped if beforeEach threw).
-    let bodyError = null;
-    if (beforeError === null) {
-      try {
-        // Call via scheduleSync so the function executes outside the microtask
-        // checkpoint — this allows spin() to drain microtasks correctly.
-        const result = await _scheduleSync(() => entry.fn(t));
-      } catch (e) {
-        bodyError = e;
+    await _captureConsole(ctx, output, async () => {
+      // Run beforeEach (hook failure skips the body but still runs afterEach).
+      let beforeError = null;
+      if (hooks?.beforeEach) {
+        try { await hooks.beforeEach(); }
+        catch (e) { beforeError = e; }
       }
-    }
 
-    // Run afterEach — always, as long as beforeEach didn't throw.
-    if (hooks?.afterEach && beforeError === null) {
-      try { await hooks.afterEach(); }
-      catch (e) { failures.push(e); }
-    }
+      // Run the test body (skipped if beforeEach threw).
+      let bodyError = null;
+      if (beforeError === null) {
+        try {
+          // Call via scheduleSync so the function executes outside the microtask
+          // checkpoint — this allows spin() to drain microtasks correctly.
+          const result = await _scheduleSync(() => entry.fn(t));
+        } catch (e) {
+          bodyError = e;
+        }
+      }
 
-    // Determine pass/fail.
-    const firstError = beforeError ?? bodyError;
-    if (firstError) throw firstError;
-    if (failures.length > 0) throw new AggregateError(failures, failures.length + ' assertion(s) failed');
+      // Run afterEach — always, as long as beforeEach didn't throw.
+      if (hooks?.afterEach && beforeError === null) {
+        try { await hooks.afterEach(); }
+        catch (e) { failures.push(e); }
+      }
+
+      // Determine pass/fail.
+      const firstError = beforeError ?? bodyError;
+      if (firstError) throw firstError;
+      if (failures.length > 0) throw new AggregateError(failures, failures.length + ' assertion(s) failed');
+    });
 
     _log(depth, 'ok ' + num + ' - ' + entry.name);
-    return 'pass';
+    return { status: 'pass', diagnostic: null };
   } catch (err) {
     _log(depth, 'not ok ' + num + ' - ' + entry.name);
-    _printError(err, depth);
-    return 'fail';
+    return {
+      status: 'fail',
+      diagnostic: {
+        title: [...path, entry.name].join(' > '),
+        errors: [err],
+        output,
+      },
+    };
   }
 }
 
@@ -492,7 +575,7 @@ async function _runLeaf(entry: LeafNode, num: number, depth: number, hooks: Grou
  * @param {string|null} inheritedSkip  Skip reason inherited from a parent group, or null.
  * @returns {{ passed: number, failed: number, skipped: number }}
  */
-async function _runEntries(entries: TestNode[], depth: number, parentNode: GroupNode | null, inheritedSkip: string | null = null): Promise<RunResult> {
+async function _runEntries(ctx: RunContext, entries: TestNode[], depth: number, parentNode: GroupNode | null, inheritedSkip: string | null = null, path: string[] = []): Promise<RunResult> {
   _log(depth, '1..' + entries.length);
 
   // A skip on the parent group propagates to all children.
@@ -504,20 +587,37 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
   let passed = 0;
   let failed = 0;
   let skipped = 0;
+  const diagnostics: FailureDiagnostic[] = [];
+  let beforeDiagnostic: FailureDiagnostic | null = null;
+  let afterDiagnostic: FailureDiagnostic | null = null;
 
   // Run 'before' once before the first leaf/group (skip if group is skipped).
   let beforeFailed = false;
   if (!groupSkip && hooks?.before) {
-    try { await hooks.before(); }
+    const output: ConsoleCaptureRecord[] = [];
+    try {
+      await _captureConsole(ctx, output, () => hooks.before!());
+      if (output.length > 0) {
+        beforeDiagnostic = {
+          title: 'before hook: ' + path.join(' > '),
+          errors: [],
+          output,
+        };
+      }
+    }
     catch (err) {
       // before() failure — mark all entries as failed immediately.
       for (let i = 0; i < entries.length; i++) {
         const failedEntry = entries[i];
         if (failedEntry === undefined) continue;
         _log(depth, 'not ok ' + (i + 1) + ' - ' + failedEntry.name);
-        _printError(err, depth);
         failed++;
       }
+      diagnostics.push({
+        title: 'before hook: ' + path.join(' > '),
+        errors: [err],
+        output,
+      });
       beforeFailed = true;
     }
   }
@@ -531,15 +631,19 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
 
         if (entry.children === null) {
           // Leaf node.
-          const result = await _runLeaf(entry, num, depth, hooks, groupSkip);
-          if (result === 'pass') passed++;
-          else if (result === 'fail') failed++;
+          const result = await _runLeaf(ctx, path, entry, num, depth, hooks, groupSkip);
+          if (result.status === 'pass') passed++;
+          else if (result.status === 'fail') {
+            failed++;
+            if (result.diagnostic !== null) diagnostics.push(result.diagnostic);
+          }
           else skipped++;
         } else {
           // Group node — recurse.
           _log(depth, '# Subtest: ' + entry.name);
           const childSkip = groupSkip ?? entry.skip ?? null;
-          const { passed: gp, failed: gf, skipped: gs } = await _runEntries(entry.children, depth + 1, entry, childSkip !== entry.skip ? childSkip : null);
+          const childPath = entry.kind === 'describe' ? [...path, entry.name] : path;
+          const { passed: gp, failed: gf, skipped: gs, diagnostics: gd } = await _runEntries(ctx, entry.children, depth + 1, entry, childSkip !== entry.skip ? childSkip : null, childPath);
           _log(depth, '');
           if (gf === 0 && gp === 0 && gs > 0) {
             // All children skipped — mark the group as skipped too.
@@ -552,19 +656,35 @@ async function _runEntries(entries: TestNode[], depth: number, parentNode: Group
           } else {
             _log(depth, 'not ok ' + num + ' - ' + entry.name);
             failed++;
+            diagnostics.push(...gd);
           }
         }
       }
     } finally {
       // Run 'after' once after all entries, even if some failed (skip if group is skipped).
       if (!groupSkip && hooks?.after) {
-        try { await hooks.after(); }
+        const output: ConsoleCaptureRecord[] = [];
+        try {
+          await _captureConsole(ctx, output, () => hooks.after!());
+          if (output.length > 0) {
+            afterDiagnostic = {
+              title: 'after hook: ' + path.join(' > '),
+              errors: [],
+              output,
+            };
+          }
+        }
         catch (_) { /* after() errors are silently swallowed to not mask test failures */ }
       }
     }
   }
 
-  return { passed, failed, skipped };
+  if (failed > 0) {
+    if (beforeDiagnostic !== null) diagnostics.unshift(beforeDiagnostic);
+    if (afterDiagnostic !== null) diagnostics.push(afterDiagnostic);
+  }
+
+  return { passed, failed, skipped, diagnostics };
 }
 
 function _filterEntries(entries: TestNode[], filter: string, path: string[] = []): TestNode[] {
@@ -619,10 +739,11 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
  * ```
  */
 export async function run(options: RunOptions = {}): Promise<void> {
+  const showOutput = options.showOutput ?? 'failures';
   console.log('TAP version 13');
 
   const entries = options.filter ? _filterEntries(_tests, options.filter) : _tests;
-  const { passed, failed, skipped } = await _runEntries(entries, 0, null);
+  const { passed, failed, skipped, diagnostics } = await _runEntries({ showOutput }, entries, 0, null);
   const total = passed + failed + skipped;
 
   console.log('');
@@ -631,6 +752,7 @@ export async function run(options: RunOptions = {}): Promise<void> {
   if (skipped > 0) console.log('# skip  ' + skipped);
   if (failed > 0) {
     console.log('# fail  ' + failed);
+    if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
     throw new Error(failed + ' test(s) failed');
   }
 }
