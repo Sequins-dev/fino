@@ -237,9 +237,7 @@ Status: DONE
 Status: DONE
 
 ## OpenTelemetry Instrumentations And Bootstrap
-Status: TODO
-- Add stress/failure benchmarks for exporter batching, backpressure, and
-  instrumented runtime traffic.
+Status: DONE
 
 ## Docs And Benchmarks
 Status: TODO
