@@ -121,6 +121,18 @@ export interface SecurityHeadersOptions {
   extra?: HeaderMap;
 }
 
+function assertHeaderName(name: string): void {
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) {
+    throw new Error(`Invalid HTTP header name: ${name}`);
+  }
+}
+
+function assertHeaderValue(value: string): void {
+  if (/[\r\n]/.test(value)) {
+    throw new Error('Invalid HTTP header value');
+  }
+}
+
 /**
  * Build conservative security headers for backend HTTP responses.
  *
@@ -183,7 +195,12 @@ export function mergeHeaders(...sets: Array<HeaderMap | undefined>): HeaderMap {
   const out: HeaderMap = {};
   for (const set of sets) {
     if (!set) continue;
-    for (const key of Object.keys(set)) out[key.toLowerCase()] = String(set[key]);
+    for (const key of Object.keys(set)) {
+      const value = String(set[key]);
+      assertHeaderName(key);
+      assertHeaderValue(value);
+      out[key.toLowerCase()] = value;
+    }
   }
   return out;
 }

@@ -93,6 +93,16 @@ describe('fino:security core helpers', () => {
       /Invalid CORS header name/,
       'invalid CORS header name is rejected',
     );
+    t.throws(
+      () => buildCorsHeaders({ origin: 'https://app.example\r\nX: yes', allowOrigins: '*' }),
+      /Invalid CORS origin/,
+      'invalid CORS origin is rejected',
+    );
+    t.throws(
+      () => buildCorsHeaders({ origin: 'https://app.example', allowOrigins: '*', exposeHeaders: ['x-ok\r\nx-bad'] }),
+      /Invalid CORS header name/,
+      'invalid CORS exposed header is rejected',
+    );
   });
 
   it('supports disabling and overriding security headers', (t) => {
@@ -117,6 +127,24 @@ describe('fino:security core helpers', () => {
     t.equal(headers['permissions-policy'], 'geolocation=()', 'permissions policy can be supplied');
     t.equal(headers['x-content-type-options'], 'custom-nosniff', 'extra headers override defaults');
     t.equal(headers['x-app-policy'], 'enabled', 'extra header names are normalized');
+  });
+
+  it('rejects security header names and values that can inject headers', (t) => {
+    t.throws(
+      () => createSecurityHeaders({ extra: { 'X-Ok\r\nX-Bad': 'enabled' } }),
+      /Invalid HTTP header name/,
+      'invalid extra header name is rejected',
+    );
+    t.throws(
+      () => createSecurityHeaders({ frameOptions: 'DENY\r\nX-Bad: yes' as any }),
+      /Invalid HTTP header value/,
+      'invalid default header override value is rejected',
+    );
+    t.throws(
+      () => createSecurityHeaders({ extra: { 'x-ok': 'enabled\nX-Bad: yes' } }),
+      /Invalid HTTP header value/,
+      'invalid extra header value is rejected',
+    );
   });
 
   it('serializes, parses, signs, and verifies cookies', (t) => {
@@ -146,6 +174,11 @@ describe('fino:security core helpers', () => {
       () => serializeCookie('sid', 'abc', { path: '/\nX-Injected: yes' }),
       /Invalid cookie Path attribute/,
       'path CRLF injection is rejected',
+    );
+    t.throws(
+      () => serializeCookie('sid', 'abc', { sameSite: 'Lax\r\nX-Injected: yes' as any }),
+      /Invalid cookie SameSite attribute/,
+      'sameSite CRLF injection is rejected',
     );
   });
 

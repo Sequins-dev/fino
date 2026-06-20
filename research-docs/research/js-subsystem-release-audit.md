@@ -274,9 +274,7 @@ Status: TODO
 Status: DONE
 
 ## Security Cookies, Headers, CORS
-Status: TODO
-- Standardize header-injection policy across security headers and extras.
-- Fix stale cookie/CORS docs now that CRLF and header-list validation exist.
+Status: DONE
 
 ## Security JWK, JWT, JWE
 Status: DONE

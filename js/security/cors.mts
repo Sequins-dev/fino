@@ -150,6 +150,12 @@ function assertTokenList(values: string[] | undefined, label: string): void {
   }
 }
 
+function assertOrigin(origin: string): void {
+  if (/[\r\n]/.test(origin)) {
+    throw new Error(`Invalid CORS origin: ${origin}`);
+  }
+}
+
 /**
  * Build CORS response headers for an explicit request origin.
  *
@@ -173,6 +179,7 @@ export function buildCorsHeaders(options: CorsOptions): HeaderMap {
   assertTokenList(options.allowHeaders, 'header name');
   assertTokenList(options.exposeHeaders, 'header name');
   const origin = options.origin ?? '';
+  if (origin.length > 0) assertOrigin(origin);
   const headers: HeaderMap = {
     vary: 'Origin',
   };

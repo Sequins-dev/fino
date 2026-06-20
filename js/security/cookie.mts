@@ -163,6 +163,14 @@ export function serializeCookie(name: string, value: string, options: CookieOpti
   if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) throw new Error('Invalid cookie name');
   if (options.domain !== undefined && /[\r\n]/.test(options.domain)) throw new Error('Invalid cookie Domain attribute');
   if (options.path !== undefined && /[\r\n]/.test(options.path)) throw new Error('Invalid cookie Path attribute');
+  if (
+    options.sameSite !== undefined &&
+    options.sameSite !== 'Strict' &&
+    options.sameSite !== 'Lax' &&
+    options.sameSite !== 'None'
+  ) {
+    throw new Error('Invalid cookie SameSite attribute');
+  }
   const parts = [`${name}=${encodeURIComponent(value)}`];
   if (options.domain) parts.push(`Domain=${options.domain}`);
   if (options.path) parts.push(`Path=${options.path}`);
