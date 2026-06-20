@@ -71,7 +71,18 @@ Filter registered tests by name:
 fino test --filter websocket tests/net
 ```
 
-Tests emit TAP so the output can be read directly or consumed by TAP tooling.
+Console output is captured by default and printed for failures. Use
+`--show-output=always` for live debugging output or `--show-output=never` to
+suppress captured output in failure details:
+
+```sh
+fino test --show-output=always tests/app.test.mts
+```
+
+Tests emit TAP-13 so the output can be read directly or consumed by TAP
+tooling. The command imports `.test.mts` files from direct file, directory, or
+glob inputs and delegates to Fino's test framework; it is not a Node
+`node:test` compatibility command.
 
 ## Bench
 

@@ -455,6 +455,55 @@ describe('CLI commands', () => {
     t.ok(!stdout.includes('match leaf'), 'unmatched nested group omitted');
   });
 
+  it('passes --show-output modes to the test command', async (t) => {
+    await withTempProject({
+      'output.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('noisy pass', () => console.log('stdout:pass'));",
+        "test('noisy fail', () => { console.log('stdout:fail'); throw new Error('fixture failed'); });",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const failures = await runCli(['test', '--show-output=failures', 'output.test.mts'], { cwd: dir });
+      t.equal(failures.result.code, 1, 'failures mode exits nonzero for failing test');
+      t.ok(!failures.stdout.includes('stdout:pass'), 'failures mode suppresses passing output');
+      t.ok(failures.stdout.includes('#   stdout:fail'), 'failures mode prints failing captured output');
+
+      const never = await runCli(['test', '--show-output=never', 'output.test.mts'], { cwd: dir });
+      t.equal(never.result.code, 1, 'never mode exits nonzero for failing test');
+      t.ok(!never.stdout.includes('stdout:pass'), 'never mode suppresses passing output');
+      t.ok(!never.stdout.includes('stdout:fail'), 'never mode suppresses failing captured output');
+
+      const always = await runCli(['test', '--show-output=always', 'output.test.mts'], { cwd: dir });
+      t.equal(always.result.code, 1, 'always mode exits nonzero for failing test');
+      t.ok(always.stdout.includes('stdout:pass'), 'always mode streams passing output');
+      t.ok(always.stdout.includes('stdout:fail'), 'always mode streams failing output');
+    });
+  });
+
+  it('reports after hook failures from the test command', async (t) => {
+    await withTempProject({
+      'after-failure.test.mts': [
+        "import { after, describe, it } from 'fino:test/test';",
+        "describe('cli after failure', () => {",
+        "  after(() => { console.log('after:output'); throw new Error('after failed'); });",
+        "  it('passes body', (t) => t.ok(true));",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'after-failure.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'after hook failure exits nonzero');
+      t.ok(stderr.includes('[error] Error: 1 test(s) failed'), 'test command writes failure summary to stderr');
+      t.ok(stdout.includes('ok 1 - passes body'), 'passing body is still reported');
+      t.ok(stdout.includes('not ok 1 - cli after failure'), 'parent group is marked failed');
+      t.ok(stdout.includes('# 1) after hook: cli after failure'), 'after hook diagnostic title is printed');
+      t.ok(stdout.includes('#   Error: after failed'), 'after hook error is printed');
+      t.ok(stdout.includes('#   after:output'), 'after hook output is captured');
+    });
+  });
+
   it('expands test directories in the test command', async (t) => {
     await withTempProject({
       'tests/alpha.test.mts': [

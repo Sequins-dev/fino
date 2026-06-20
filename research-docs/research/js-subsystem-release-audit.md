@@ -39,9 +39,12 @@ Status: DONE
   glob patterns.
 
 ## Test Command
-Status: TODO
-- Add coverage for reporter output, filtered runs, hook failure behavior, and CLI exit codes.
-- Decide whether Node test parity features belong here or remain out of scope.
+Status: DONE
+- Release baseline covers direct file, directory, and glob `.test.mts` inputs,
+  TAP-13 output, substring filters, hook failure exit codes, and captured
+  output modes.
+- The command delegates to Fino's test framework and is not a Node `node:test`
+  compatibility surface.
 
 ## Bench Command
 Status: TODO
