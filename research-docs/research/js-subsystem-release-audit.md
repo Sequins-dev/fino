@@ -102,9 +102,7 @@ Status: DONE
 Status: DONE
 
 ## Network Provider Interface
-Status: TODO
-- Add OS-backed provider conformance coverage; current direct contract tests
-  focus on the simulated provider.
+Status: DONE
 
 ## Simulated Network Provider
 Status: DONE
