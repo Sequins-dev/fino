@@ -124,7 +124,8 @@ export interface CorsOptions {
   /**
    * Preflight cache duration in seconds.
    *
-   * `undefined` omits `access-control-max-age`; zero emits `0`.
+   * `undefined` omits `access-control-max-age`; zero emits `0`. Values must
+   * be finite and non-negative and are floored before serialization.
    *
    * ```ts no_run
    * import type { CorsOptions } from 'fino:security/cors';
@@ -178,6 +179,9 @@ export function buildCorsHeaders(options: CorsOptions): HeaderMap {
   assertTokenList(options.methods, 'method');
   assertTokenList(options.allowHeaders, 'header name');
   assertTokenList(options.exposeHeaders, 'header name');
+  if (options.maxAge !== undefined && (!Number.isFinite(options.maxAge) || options.maxAge < 0)) {
+    throw new Error('Invalid CORS maxAge');
+  }
   const origin = options.origin ?? '';
   if (origin.length > 0) assertOrigin(origin);
   const headers: HeaderMap = {
@@ -198,7 +202,7 @@ export function buildCorsHeaders(options: CorsOptions): HeaderMap {
     headers['access-control-expose-headers'] = options.exposeHeaders.join(', ');
   }
   if (options.credentials) headers['access-control-allow-credentials'] = 'true';
-  if (options.maxAge !== undefined) headers['access-control-max-age'] = String(options.maxAge);
+  if (options.maxAge !== undefined) headers['access-control-max-age'] = String(Math.floor(options.maxAge));
 
   return headers;
 }

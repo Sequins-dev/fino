@@ -38,8 +38,9 @@ import { randomBytes } from './random.mts';
  * Options used when serializing a single `Set-Cookie` header value.
  *
  * Attributes are emitted only when provided or set to `true`. Values are not
- * validated beyond the cookie name check in `serializeCookie()`, so callers
- * should pass trusted domain, path, and policy strings.
+ * validated for header injection, browser prefix rules, finite expiration
+ * values, and `SameSite=None` / `Secure` coupling. Callers should still pass
+ * trusted domain, path, and policy strings.
  *
  * ```ts no_run
  * import type { CookieOptions } from 'fino:security/cookie';
@@ -146,8 +147,9 @@ export interface CookieOptions {
  * Serialize one `Set-Cookie` header value, URI-encoding the cookie value.
  *
  * The cookie name must use valid token characters or the function throws
- * `Error`. The value is encoded with `encodeURIComponent()`. Attribute values
- * are appended as provided and are not sanitized.
+ * `Error`. The value is encoded with `encodeURIComponent()`. Expiration
+ * attributes must be finite, `SameSite=None` requires `secure: true`, and the
+ * `__Secure-` / `__Host-` prefixes enforce browser-compatible constraints.
  *
  * ```ts no_run
  * import { serializeCookie } from 'fino:security/cookie';
@@ -163,6 +165,8 @@ export function serializeCookie(name: string, value: string, options: CookieOpti
   if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)) throw new Error('Invalid cookie name');
   if (options.domain !== undefined && /[\r\n]/.test(options.domain)) throw new Error('Invalid cookie Domain attribute');
   if (options.path !== undefined && /[\r\n]/.test(options.path)) throw new Error('Invalid cookie Path attribute');
+  if (options.expires !== undefined && !Number.isFinite(options.expires.getTime())) throw new Error('Invalid cookie Expires attribute');
+  if (options.maxAge !== undefined && !Number.isFinite(options.maxAge)) throw new Error('Invalid cookie Max-Age attribute');
   if (
     options.sameSite !== undefined &&
     options.sameSite !== 'Strict' &&
@@ -170,6 +174,13 @@ export function serializeCookie(name: string, value: string, options: CookieOpti
     options.sameSite !== 'None'
   ) {
     throw new Error('Invalid cookie SameSite attribute');
+  }
+  if (options.sameSite === 'None' && options.secure !== true) throw new Error('SameSite=None requires Secure');
+  if (name.startsWith('__Secure-') && options.secure !== true) throw new Error('__Secure- cookies require Secure');
+  if (name.startsWith('__Host-')) {
+    if (options.secure !== true) throw new Error('__Host- cookies require Secure');
+    if (options.domain !== undefined) throw new Error('__Host- cookies must not include Domain');
+    if (options.path !== '/') throw new Error('__Host- cookies require Path=/');
   }
   const parts = [`${name}=${encodeURIComponent(value)}`];
   if (options.domain) parts.push(`Domain=${options.domain}`);

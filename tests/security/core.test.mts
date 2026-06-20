@@ -182,6 +182,62 @@ describe('fino:security core helpers', () => {
     );
   });
 
+  it('rejects invalid cookie expiration and browser policy attributes', (t) => {
+    t.throws(
+      () => serializeCookie('sid', 'abc', { maxAge: Number.NaN }),
+      /Invalid cookie Max-Age attribute/,
+      'NaN maxAge is rejected',
+    );
+    t.throws(
+      () => serializeCookie('sid', 'abc', { maxAge: Infinity }),
+      /Invalid cookie Max-Age attribute/,
+      'infinite maxAge is rejected',
+    );
+    t.throws(
+      () => serializeCookie('sid', 'abc', { expires: new Date(Number.NaN) }),
+      /Invalid cookie Expires attribute/,
+      'invalid expires date is rejected',
+    );
+    t.throws(
+      () => serializeCookie('sid', 'abc', { sameSite: 'None' }),
+      /SameSite=None requires Secure/,
+      'SameSite=None without Secure is rejected',
+    );
+    t.throws(
+      () => serializeCookie('__Secure-sid', 'abc'),
+      /__Secure- cookies require Secure/,
+      '__Secure- prefix requires Secure',
+    );
+    t.throws(
+      () => serializeCookie('__Host-sid', 'abc', { secure: true, path: '/app' }),
+      /__Host- cookies require Path=\//,
+      '__Host- prefix requires root path',
+    );
+    t.throws(
+      () => serializeCookie('__Host-sid', 'abc', { secure: true, path: '/', domain: 'example.com' }),
+      /__Host- cookies must not include Domain/,
+      '__Host- prefix rejects Domain',
+    );
+
+    const host = serializeCookie('__Host-sid', 'abc', { secure: true, path: '/' });
+    t.equal(host, '__Host-sid=abc; Path=/; Secure', 'valid __Host- cookie serializes');
+  });
+
+  it('rejects invalid CORS maxAge values', (t) => {
+    t.throws(
+      () => buildCorsHeaders({ origin: 'https://app.example', allowOrigins: '*', maxAge: Number.NaN }),
+      /Invalid CORS maxAge/,
+      'NaN maxAge is rejected',
+    );
+    t.throws(
+      () => buildCorsHeaders({ origin: 'https://app.example', allowOrigins: '*', maxAge: -1 }),
+      /Invalid CORS maxAge/,
+      'negative maxAge is rejected',
+    );
+    const cors = buildCorsHeaders({ origin: 'https://app.example', allowOrigins: '*', maxAge: 10.9 });
+    t.equal(cors['access-control-max-age'], '10', 'finite maxAge is floored before serialization');
+  });
+
   it('seals cookies and rejects tampering', (t) => {
     const sealed = sealCookie('sensitive', '0123456789abcdef0123456789abcdef');
 

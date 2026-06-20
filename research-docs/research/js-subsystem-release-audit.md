@@ -292,10 +292,7 @@ Status: DONE
 Status: DONE
 
 ## Security Cookies, Headers, CORS
-Status: TODO
-- Enforce stricter cookie RFC/browser parity for finite `Max-Age`, valid `Expires`, prefix rules, and `SameSite=None` plus `Secure`.
-- Validate CORS `maxAge` as finite/non-negative and harden preflight method/header handling.
-- Clarify single-value header helper limitations for `Set-Cookie` and other multi-header cases.
+Status: DONE
 
 ## Security JWK, JWT, JWE
 Status: TODO
