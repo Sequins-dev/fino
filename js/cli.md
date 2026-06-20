@@ -117,6 +117,35 @@ to compare. `FINO_BENCH_MIN_NS` is an internal test knob for shortening fixture
 runs; the command does not emit JSON, return machine-readable results, or
 provide a CI regression gate.
 
+## Format And Lint
+
+Format JavaScript and TypeScript source:
+
+```sh
+fino fmt src
+fino fmt --check src/**/*.ts
+```
+
+Run lint diagnostics, or apply supported safe fixes:
+
+```sh
+fino lint src
+fino lint --fix src/**/*.ts
+```
+
+When no file inputs are given, both commands recursively scan the current
+working directory. Explicit inputs can be files, directories, or glob patterns.
+Discovery is hardcoded in `internal/tooling/files`: only `.js`, `.mjs`, `.cjs`,
+`.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files are selected; paths are sorted
+and de-duplicated; hidden directories and built-in dependency, cache, generated,
+and build-output directories such as `node_modules`, `dist`, `build`, `target`,
+and `coverage` are skipped.
+
+There is no project config file, per-project ignore file, formatter option
+matrix, or linter rule configuration in this release baseline. Missing explicit
+directories and explicit glob patterns that match no supported source files are
+reported as command errors.
+
 ## Init
 
 Create a `package.json`:

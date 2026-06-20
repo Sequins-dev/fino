@@ -45,7 +45,12 @@ export interface RunFormatOptions {
  * @internal
  */
 export async function runFormat(options: RunFormatOptions): Promise<string> {
-  const files = await discoverSourceFiles(options.files);
+  let files: string[];
+  try {
+    files = await discoverSourceFiles(options.files);
+  } catch (err) {
+    throw new Error(`fino fmt: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const changed: string[] = [];
   const diagnostics: ToolDiagnostic[] = [];
 

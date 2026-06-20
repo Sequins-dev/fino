@@ -342,6 +342,27 @@ describe('CLI commands', () => {
     });
   });
 
+  it('fmt fails missing explicit directory and glob inputs without writing', async (t) => {
+    await withTempProject({
+      'src/app.ts': 'const value = "hello";\n',
+    }, async (dir, fs) => {
+      const before = await fs.readFile(dir + '/src/app.ts');
+
+      for (const [label, args] of [
+        ['missing directory', ['fmt', 'missing-dir']],
+        ['missing glob', ['fmt', 'src/missing-*.ts']],
+      ] as [string, string[]][]) {
+        const { stdout, stderr, result } = await runCli(args, { cwd: dir });
+        const after = await fs.readFile(dir + '/src/app.ts');
+
+        t.equal(result.code, 1, `fmt ${label} exits nonzero`);
+        t.equal(stdout, '', `fmt ${label} does not write stdout`);
+        t.ok(stderr.includes('fino fmt:'), `fmt ${label} reports command failure`);
+        t.equal(after, before, `fmt ${label} does not write unrelated source`);
+      }
+    });
+  });
+
   it('fmt reports parse diagnostics with file locations', async (t) => {
     await withTempProject({
       'src/broken.ts': 'export function broken( {\n',
@@ -386,6 +407,35 @@ describe('CLI commands', () => {
     });
   });
 
+  it('fmt discovery uses supported extensions, recursion, ignores, sorting, and dedupe', async (t) => {
+    await withTempProject({
+      'src/b.ts': 'const b = "b";\n',
+      'src/a.mts': 'const a = "a";\n',
+      'src/nested/c.jsx': 'const c = "c";\n',
+      'src/unsupported.json': '{"quote":"double"}\n',
+      '.hidden/d.ts': 'const d = "d";\n',
+      'node_modules/pkg/e.ts': 'const e = "e";\n',
+    }, async (dir, fs) => {
+      const { stdout, stderr, result } = await runCli(['fmt', 'src/b.ts', 'src', 'src/*.mts'], { cwd: dir });
+      const a = await fs.readFile(dir + '/src/a.mts');
+      const b = await fs.readFile(dir + '/src/b.ts');
+      const c = await fs.readFile(dir + '/src/nested/c.jsx');
+      const unsupported = await fs.readFile(dir + '/src/unsupported.json');
+      const hidden = await fs.readFile(dir + '/.hidden/d.ts');
+      const ignored = await fs.readFile(dir + '/node_modules/pkg/e.ts');
+
+      t.equal(result.code, 0, 'fmt exits successfully for mixed explicit inputs');
+      t.equal(stderr, '', 'fmt mixed discovery does not write stderr');
+      t.ok(stdout.includes('formatted 3 files'), 'fmt de-dupes overlapping file, directory, and glob inputs');
+      t.equal(a, "const a = 'a';\n", 'fmt includes supported .mts files');
+      t.equal(b, "const b = 'b';\n", 'fmt includes supported .ts files once');
+      t.equal(c, "const c = 'c';\n", 'fmt recursively includes supported nested files');
+      t.equal(unsupported, '{"quote":"double"}\n', 'fmt ignores unsupported extensions');
+      t.equal(hidden, 'const d = "d";\n', 'fmt ignores hidden directories');
+      t.equal(ignored, 'const e = "e";\n', 'fmt ignores built-in ignored directories');
+    });
+  });
+
   it('lint reports diagnostics and lint --fix does not format', async (t) => {
     await withTempProject({
       'src/app.ts': 'debugger;\nconst value = "hello";\n',
@@ -399,6 +449,52 @@ describe('CLI commands', () => {
       t.equal(fixed.result.code, 1, 'lint --fix exits nonzero when diagnostics remain');
       t.ok(fixed.stderr.includes('fino lint: fixed 0 files, 1 remaining'), 'lint --fix reports the current no-op fixer behavior');
       t.equal(after, 'debugger;\nconst value = "hello";\n', 'lint --fix does not format or change unsupported fixes');
+    });
+  });
+
+  it('lint fails missing explicit directory and glob inputs without writing', async (t) => {
+    await withTempProject({
+      'src/app.ts': 'const value = "hello";\n',
+    }, async (dir, fs) => {
+      const before = await fs.readFile(dir + '/src/app.ts');
+
+      for (const [label, args] of [
+        ['missing directory', ['lint', 'missing-dir']],
+        ['missing glob', ['lint', 'src/missing-*.ts']],
+      ] as [string, string[]][]) {
+        const { stdout, stderr, result } = await runCli(args, { cwd: dir });
+        const after = await fs.readFile(dir + '/src/app.ts');
+
+        t.equal(result.code, 1, `lint ${label} exits nonzero`);
+        t.equal(stdout, '', `lint ${label} does not write stdout`);
+        t.ok(stderr.includes('fino lint:'), `lint ${label} reports command failure`);
+        t.equal(after, before, `lint ${label} does not write unrelated source`);
+      }
+    });
+  });
+
+  it('lint reports files in sorted de-duplicated discovery order', async (t) => {
+    await withTempProject({
+      'src/b.ts': 'debugger;\n',
+      'src/a.ts': 'debugger;\n',
+      'src/nested/c.ts': 'debugger;\n',
+      'src/ignored.json': '{"debugger":true}\n',
+      '.hidden/d.ts': 'debugger;\n',
+      'dist/e.ts': 'debugger;\n',
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['lint', 'src/b.ts', 'src', 'src/*.ts'], { cwd: dir });
+      const first = stderr.indexOf('src/a.ts');
+      const second = stderr.indexOf('src/b.ts');
+      const third = stderr.indexOf('src/nested/c.ts');
+
+      t.equal(result.code, 1, 'lint exits nonzero for discovered diagnostics');
+      t.equal(stdout, '', 'lint diagnostics do not write stdout');
+      t.ok(first !== -1 && second !== -1 && third !== -1, 'lint reports all supported discovered files');
+      t.ok(first < second && second < third, 'lint reports discovered files in sorted order');
+      t.equal(stderr.indexOf('src/b.ts'), stderr.lastIndexOf('src/b.ts'), 'lint de-dupes overlapping inputs');
+      t.notOk(stderr.includes('src/ignored.json'), 'lint ignores unsupported extensions');
+      t.notOk(stderr.includes('.hidden/d.ts'), 'lint ignores hidden directories');
+      t.notOk(stderr.includes('dist/e.ts'), 'lint ignores built-in ignored directories');
     });
   });
 

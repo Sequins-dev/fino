@@ -57,9 +57,15 @@ Status: DONE
   release comparison workflows remain outside the command contract.
 
 ## Fmt, Lint, And Tooling
-Status: TODO
-- Add project config and ignore-file support, or document the hardcoded discovery contract.
-- Add failing glob/directory edge tests for formatter and linter commands.
+Status: DONE
+- Release baseline documents the hardcoded discovery contract: supported
+  JavaScript/TypeScript extensions only, recursive directory scanning,
+  sorted/de-duplicated inputs, and built-in ignored hidden/dependency/build
+  directories.
+- Project config, per-project ignore files, formatter options, and linter rule
+  configuration are outside this baseline.
+- CLI coverage includes explicit missing directory/glob failures and no-write
+  behavior, plus discovery filtering, recursion, ordering, and de-duplication.
 
 ## Init Command
 Status: DONE

@@ -103,10 +103,15 @@ export async function discoverSourceFiles(inputs: string[]): Promise<string[]> {
 
   for (const input of inputs) {
     if (hasGlobSyntax(input)) {
+      let matched = 0;
       for await (const entry of fs.glob(input, { cwd: base, onlyFiles: true })) {
         const path = entry.path.toString();
-        if (isSupportedSource(path)) files.add(path);
+        if (isSupportedSource(path)) {
+          files.add(path);
+          matched++;
+        }
       }
+      if (matched === 0) throw new Error(`no source files matched ${input}`);
       continue;
     }
 

@@ -44,7 +44,12 @@ export interface RunLintOptions {
  * @internal
  */
 export async function runLint(options: RunLintOptions): Promise<string> {
-  const files = await discoverSourceFiles(options.files);
+  let files: string[];
+  try {
+    files = await discoverSourceFiles(options.files);
+  } catch (err) {
+    throw new Error(`fino lint: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const diagnostics: ToolDiagnostic[] = [];
   let fixed = 0;
 
