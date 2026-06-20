@@ -145,6 +145,22 @@ describe('fino:database/sqlite — basic', () => {
     }
   });
 
+  it('release baseline keeps convenience backup and busy-timeout APIs absent', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      const surface = db as unknown as Record<string, unknown>;
+      for (const name of ['backup', 'serialize', 'deserialize', 'busyTimeout', 'setBusyTimeout']) {
+        t.equal(surface[name], undefined, `${name} is not a public Database helper`);
+      }
+
+      await db.exec('PRAGMA busy_timeout = 25');
+      const row = await db.prepare('PRAGMA busy_timeout').get();
+      t.equal(row!['timeout'], 25n, 'SQLite-native busy_timeout remains available via PRAGMA');
+    } finally {
+      await db.close();
+    }
+  });
+
   it('vectorsAvailable is a cached boolean probe', async (t) => {
     const db = await Database.open(':memory:');
     try {

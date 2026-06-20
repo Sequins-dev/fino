@@ -183,10 +183,17 @@ Status: DONE
   restored.
 
 ## Database SQLite
-Status: TODO
-- Require SQLite-enabled release CI so tests cannot silently skip.
-- Add parity for backup, serialize/deserialize, busy timeout, and broader concurrency/WAL behavior, or document omissions.
-- Strengthen custom VFS documentation and provider compatibility tests.
+Status: DONE
+- Release baseline requires SQLite-enabled CI with `FINO_REQUIRE_SQLITE=1` so
+  `libsqlite3` absence fails the lane instead of silently skipping coverage.
+- Baseline covers core connection, statement, type mapping, transaction,
+  extension-loading failure, vector-helper, and custom VFS-backed file I/O
+  behavior, including persistence through the same provider and deterministic
+  VFS file-control behavior.
+- Backup, serialize/deserialize, busy-timeout convenience helpers, and broader
+  WAL/concurrency parity are outside this baseline. SQLite-native behavior
+  available through SQL or PRAGMA, such as `PRAGMA busy_timeout`, remains the
+  supported path.
 
 ## Compression
 Status: DONE

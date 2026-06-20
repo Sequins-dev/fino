@@ -1,10 +1,19 @@
 /**
  * fino:database/sqlite — SQLite database access via system libsqlite3.
  *
- * Uses dlopen to load the system-installed libsqlite3. All file I/O is
- * routed through the realm's FileSystem provider via a JS-implemented
- * sqlite3_vfs, so virtual providers (MemoryFileSystem, S3FileSystem, etc.)
- * work transparently.
+ * Uses dlopen to load the system-installed `libsqlite3`. Release coverage
+ * requires that library to be present; CI should set `FINO_REQUIRE_SQLITE=1`
+ * when running SQLite tests so missing bindings fail the lane instead of
+ * skipping it. All file I/O is routed through the realm's FileSystem provider
+ * via a JS-implemented sqlite3_vfs, so virtual providers (MemoryFileSystem,
+ * S3FileSystem, etc.) work transparently.
+ *
+ * The release baseline focuses on core connection, statement, transaction,
+ * vector-helper, extension-loading, and VFS-backed file behavior. SQLite-native
+ * behavior that is already available through SQL or PRAGMA, such as
+ * `PRAGMA busy_timeout`, should be used directly. Node-style convenience APIs
+ * for backup, serialize/deserialize, busy-timeout helpers, and broader
+ * WAL/concurrency parity are outside this baseline.
  *
  * Usage:
  * ```ts no_run
