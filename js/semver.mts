@@ -6,6 +6,15 @@
  * tilde ranges, caret ranges, and `||` disjunctions. Build metadata is parsed
  * and preserved but ignored for precedence comparisons.
  *
+ * The release API surface is intentionally smaller than npm's `semver`
+ * package. This module supports strict parsing, strict comparison, range
+ * matching, `valid()`, `validRange()`, and `maxSatisfying()`. It does not
+ * provide loose parsing, coercion, `includePrerelease`, mutation helpers such
+ * as `inc()`/`diff()`, range set helpers such as `minVersion()`,
+ * `intersects()`, or `subset()`, or sort helpers. Use the package loader to
+ * install npm `semver` when an application needs that larger compatibility
+ * surface.
+ *
  * @example
  * ```ts no_run
  * import { parse, satisfies, maxSatisfying } from 'fino:semver';

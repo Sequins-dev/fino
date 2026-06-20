@@ -119,9 +119,7 @@ Status: TODO
 Status: DONE
 
 ## Semver
-Status: TODO
-- Covers core SemVer and common ranges, but not full npm `semver` parity.
-- Add or document helpers/options such as loose, coerce, inc, diff, minVersion, intersects, subset, sort, and `includePrerelease`.
+Status: DONE
 
 ## Parsing Scanner
 Status: DONE

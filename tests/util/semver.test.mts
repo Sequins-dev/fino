@@ -1,4 +1,5 @@
 import { describe, it } from 'fino:test/test';
+import * as semver from 'fino:semver';
 import { compare, maxSatisfying, parse, satisfies, valid, validRange } from 'fino:semver';
 
 describe('fino:semver parse', () => {
@@ -153,5 +154,31 @@ describe('fino:semver maxSatisfying', () => {
     t.equal(maxSatisfying(versions, '^1.2.3'), '1.4.0', 'highest stable match selected');
     t.equal(maxSatisfying(versions, '>=1.2.3-alpha.1 <1.2.3'), '1.2.3-alpha.1', 'prerelease match selected when range admits it');
     t.equal(maxSatisfying(versions, '^3.0.0'), null, 'null returned when nothing matches');
+  });
+});
+
+describe('fino:semver release contract', () => {
+  it('uses strict SemVer parsing without loose mode or coercion', (t) => {
+    t.equal(valid('1.2.3'), '1.2.3', 'strict SemVer is accepted');
+    t.equal(valid('v1.2.3'), null, 'v-prefix loose parsing is not accepted');
+    t.equal(valid('=1.2.3'), null, 'comparator-looking versions are not accepted');
+    t.equal(valid('1.2'), null, 'partial versions are not coerced');
+    t.equal(valid('version 1.2.3'), null, 'embedded versions are not coerced');
+    t.throws(() => parse('1.2'), /Invalid semver version/, 'parse rejects partial versions');
+  });
+
+  it('does not expose npm semver helper APIs outside the release surface', (t) => {
+    for (const name of ['inc', 'diff', 'minVersion', 'intersects', 'subset', 'sort', 'rsort']) {
+      t.equal(Object.prototype.hasOwnProperty.call(semver, name), false, `${name} is not exported`);
+    }
+  });
+
+  it('does not support the npm includePrerelease option', (t) => {
+    t.equal(satisfies('1.2.3-alpha.1', '^1.2.3'), false, 'stable ranges exclude prereleases');
+    t.equal(
+      (satisfies as any)('1.2.3-alpha.1', '^1.2.3', { includePrerelease: true }),
+      false,
+      'third-argument includePrerelease option is not part of this API',
+    );
   });
 });
