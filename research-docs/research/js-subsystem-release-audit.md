@@ -21,9 +21,7 @@ Status: DONE
 Status: DONE
 
 ## CLI Root And Run Commands
-Status: TODO
-- Add command help/negative coverage across `fmt`, `lint`, `install`, `doc`,
-  `bench`, `test`, and `run --watch` lifecycle behavior.
+Status: DONE
 
 ## Test And Bench Commands
 Status: DONE

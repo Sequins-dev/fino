@@ -6,6 +6,7 @@ import { describe, it } from 'fino:test/test';
 import type { Assert } from 'fino:test/assert';
 import { Process, env, execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
+import * as loop from 'internal:runtime/loop';
 
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 
@@ -72,6 +73,15 @@ async function withTempProject<T>(tree: Record<string, string>, fn: (dir: string
     return await fn(dir, fs);
   } finally {
     await rmrf(fs, dir);
+  }
+}
+
+async function poll(check: () => boolean | Promise<boolean>, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (await check()) return;
+    if (Date.now() >= deadline) throw new Error(`poll timed out after ${timeoutMs}ms`);
+    await loop.timeout(50);
   }
 }
 
@@ -150,6 +160,87 @@ describe('CLI commands', () => {
     t.equal(result.code, 0, 'run command script exits successfully');
     t.equal(stderr, '', 'run command script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'run command imported and executed the script');
+  });
+
+  it('prints focused help for each subcommand', async (t) => {
+    const commands = ['run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'repl'];
+
+    for (const command of commands) {
+      const { stdout, stderr, result } = await runCli([command, '--help']);
+      t.equal(result.code, 0, `${command} --help exits successfully`);
+      t.equal(stderr, '', `${command} --help does not write stderr`);
+      t.ok(stdout.includes(`Usage: fino ${command}`), `${command} --help includes command usage`);
+    }
+  });
+
+  it('reports a missing script for run without arguments', async (t) => {
+    const { stdout, stderr, result } = await runCli(['run']);
+
+    t.equal(result.code, 1, 'run without a script exits nonzero');
+    t.equal(stdout, '', 'run without a script does not write stdout');
+    t.ok(stderr.includes('script'), 'run without a script reports the missing script positional');
+  });
+
+  it('reports module resolution failures for missing root, test, and bench inputs', async (t) => {
+    await withTempProject({}, async (dir) => {
+      for (const [label, args] of [
+        ['root script fallback', ['missing-entry.mts']],
+        ['test input', ['test', 'missing.test.mts']],
+        ['bench input', ['bench', 'missing.bench.mts']],
+      ] as [string, string[]][]) {
+        const { stdout, stderr, result } = await runCli(args, {
+          cwd: dir,
+          env: { FINO_BENCH_MIN_NS: '1000' },
+        });
+
+        t.equal(result.code, 1, `${label} exits nonzero`);
+        t.equal(stdout, '', `${label} does not write stdout`);
+        t.ok(stderr.includes('Cannot resolve module'), `${label} reports module resolution failure`);
+      }
+    });
+  });
+
+  it('reruns run --watch when an imported module changes', async (t) => {
+    await withTempProject({
+      'state.mts': 'export const value = 1;\n',
+      'entry.mts': [
+        "import { value } from './state.mts';",
+        "console.log('watch value:' + value);",
+        '',
+      ].join('\n'),
+    }, async (dir, fs) => {
+      const childEnv: Record<string, string> = {};
+      for (const [key, value] of Object.entries(env)) {
+        if (value !== undefined) childEnv[key] = value;
+      }
+
+      const proc = new Process(execPath, ['run', '--watch', 'entry.mts'], { cwd: dir, env: childEnv });
+      proc.stdin.close();
+
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+      const stdoutDone = (async () => {
+        for await (const chunk of proc.stdout) stdoutChunks.push(decodeUtf8(chunk));
+      })();
+      const stderrDone = (async () => {
+        for await (const chunk of proc.stderr) stderrChunks.push(decodeUtf8(chunk));
+      })();
+
+      try {
+        await poll(() => stdoutChunks.join('').includes('watch value:1'), 3000);
+        await loop.timeout(300);
+        await fs.writeFile(dir + '/state.mts', 'export const value = 2;\n');
+        await poll(() => stdoutChunks.join('').includes('watch value:2'), 5000);
+      } finally {
+        proc.kill();
+      }
+
+      const result = await proc.wait();
+      await Promise.all([stdoutDone, stderrDone]);
+
+      t.ok(result.signal !== null || result.code === 0, 'watch child terminates after SIGTERM');
+      t.equal(stderrChunks.join(''), '', 'run --watch does not write stderr');
+    });
   });
 
   it('fmt --check reports changed files without writing', async (t) => {
