@@ -136,6 +136,10 @@ describe('fino:format/xml — security', () => {
       /limit/i,
     );
   });
+
+  it('explicit maxDepth rejects deeply nested input', (t) => {
+    t.throws(() => parse('<root><child/></root>', { maxDepth: 1 }), /too deep/i);
+  });
 });
 
 describe('fino:format/xml — stringify', () => {
@@ -166,6 +170,20 @@ describe('fino:format/xml — stringify', () => {
     const out = stringify(doc, { xmlDeclaration: false });
     t.ok(out.includes('&lt;hello&gt;'));
   });
+
+  it('normalizes entity spelling instead of preserving source text', (t) => {
+    const doc = parse('<root>&#60;&lt;&amp;</root>');
+    const out = stringify(doc, { xmlDeclaration: false });
+    t.equal(out, '<root>&lt;&lt;&amp;</root>');
+  });
+
+  it('preserves prefix spelling but does not reconstruct xmlns attributes', (t) => {
+    const doc = parse('<ns:root xmlns:ns="urn:test"><ns:child/></ns:root>');
+    const out = stringify(doc, { xmlDeclaration: false });
+    t.ok(out.includes('<ns:root'));
+    t.ok(out.includes('<ns:child/>'));
+    t.ok(!out.includes('xmlns:ns='));
+  });
 });
 
 describe('fino:format/xml — prolog', () => {
@@ -178,6 +196,24 @@ describe('fino:format/xml — prolog', () => {
     const doc = parse('<?xml-stylesheet type="text/css" href="style.css"?><root/>');
     t.equal(doc.root.name, 'root');
     t.ok(doc.prolog.some(n => n.type === 'pi'));
+  });
+
+  it('retains supported prolog nodes for parse output only', (t) => {
+    const doc = parse('<?xml-stylesheet href="style.css"?><!--note--><!DOCTYPE root><root/>');
+    t.equal(doc.prolog.length, 3);
+    t.equal(doc.prolog[0]!.type, 'pi');
+    t.equal(doc.prolog[1]!.type, 'comment');
+    t.equal(doc.prolog[2]!.type, 'doctype');
+
+    const out = stringify(doc, { xmlDeclaration: false });
+    t.equal(out, '<root/>');
+  });
+
+  it('accepts trailing comments and processing instructions without retaining them', (t) => {
+    const doc = parse('<root/><!--tail--><?after ok?>');
+    t.equal(doc.root.name, 'root');
+    t.equal(doc.prolog.length, 0);
+    t.equal(stringify(doc, { xmlDeclaration: false }), '<root/>');
   });
 });
 
@@ -257,6 +293,12 @@ describe('fino:format/xml — parseStream', () => {
       threw = true;
     }
     t.ok(threw, 'malformed XML should throw');
+  });
+
+  it('does not emit partial events until a complete document can be reparsed', async (t) => {
+    const src = await xmlChunks('<root><child/></root>', [6, 8, 7]);
+    const events = await collect(src);
+    t.equal(events.map(e => e.type).join(','), 'startElement,startElement,endElement,endElement');
   });
 });
 

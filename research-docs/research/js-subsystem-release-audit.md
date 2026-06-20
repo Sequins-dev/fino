@@ -360,10 +360,17 @@ Status: DONE
   Broader yaml-test-suite parity remains outside this release baseline.
 
 ## XML Format
-Status: TODO
-- Streaming parser reparses accumulated input rather than providing true bounded streaming behavior.
-- Add XML conformance coverage for DTD/XML 1.0 edge cases.
-- Deepen round-trip tests for namespace, prolog, comment, entity, and serializer preservation.
+Status: DONE
+- Release baseline covers XML tree parsing, namespace resolution and
+  `namespaces: false`, internal entity expansion, external entity rejection by
+  default, resolver opt-in behavior, expansion/depth limits, parseStream chunk
+  behavior, corpus fixtures, and security fixtures.
+- Serializer behavior is normalized and structural: prolog nodes, trailing
+  comments/processing instructions, original entity spelling, and namespace
+  declaration attributes consumed during namespace resolution are not preserved.
+- `parseStream()` remains an accumulated-buffer SAX-style convenience API, not
+  a true bounded-memory streaming parser. Broader validating DTD behavior and
+  full XML 1.0 conformance-suite parity remain outside this release baseline.
 
 ## TypeScript Format
 Status: DONE

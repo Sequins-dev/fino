@@ -7,11 +7,22 @@
  * serializes document trees back to XML text.
  *
  * The parser enforces XML well-formedness and XML Namespaces rules. It parses
- * internal DTD entity definitions but disables external entities by default to
- * avoid XXE vulnerabilities. Entity expansion and nesting depth are bounded to
- * reduce billion-laughs style attacks. Callers that supply
- * `resolveExternalEntities` are responsible for their own network, filesystem,
- * and trust boundaries.
+ * internal DTD entity definitions for expansion, but it is not a validating
+ * DTD processor. External entities are disabled by default to avoid XXE
+ * vulnerabilities. Entity expansion and nesting depth are bounded to reduce
+ * billion-laughs style attacks. Callers that supply `resolveExternalEntities`
+ * are responsible for their own network, filesystem, and trust boundaries.
+ *
+ * Serialization is structural, not text-exact. The serializer emits the
+ * document root, escapes text and attributes, and can add an XML declaration,
+ * but it does not preserve prolog nodes, trailing comments or processing
+ * instructions, original entity spelling, or namespace declaration attributes
+ * consumed during namespace resolution. Use `namespaces: false` when a caller
+ * needs namespace declaration attributes to remain ordinary attributes.
+ *
+ * `parseStream()` is a convenience SAX-style surface over async byte sources.
+ * It reparses accumulated input until a complete document is available and is
+ * therefore not a true bounded-memory streaming parser for very large XML.
  *
  * Two output surfaces:
  *   - Tree (DOM-lite):  parse(input)  -> XmlDocument
@@ -824,7 +835,9 @@ export function parse(input: string | Uint8Array, options: XmlParseOptions = {})
  * The stream parser reparses accumulated bytes until a complete document is
  * available and yields only newly observed events. Errors thrown after the
  * source is exhausted are real parse errors, while earlier chunk-boundary
- * stalls are retried with more input.
+ * stalls are retried with more input. Because accumulated bytes are retained
+ * and reparsed, this is not a bounded-memory streaming parser for very large
+ * documents.
  *
  * ```ts no_run
  * import { parseStream } from 'fino:format/xml';
@@ -1288,6 +1301,9 @@ function _splitName(name: string): [string | null, string] {
  * The serializer emits the document root and ignores `prolog` nodes. Text and
  * attribute values are escaped, CDATA and comments are emitted as stored, and
  * an XML declaration is included unless `xmlDeclaration: false` is set.
+ * Serializer output is normalized: it does not preserve source entity spelling,
+ * trailing document comments or processing instructions, or namespace
+ * declaration attributes removed during namespace resolution.
  *
  * ```ts no_run
  * import { parse, stringify } from 'fino:format/xml';
