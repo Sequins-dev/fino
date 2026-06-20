@@ -11,12 +11,13 @@
  *    import them directly without going through the WHATWG class wrappers.
  *
  * 2. **WHATWG API** (`TextEncoder`, `TextDecoder`): the web-standard classes
- *    that userland code expects. `TextEncoder.encoding` is always `"utf-8"`.
- *    `TextDecoder` accepts any of the WHATWG-defined UTF-8 label aliases
- *    ("utf8", "unicode-1-1-utf-8", etc.) but rejects other encodings with a
- *    RangeError. `stream: true` is supported for UTF-8 by buffering incomplete
- *    trailing multi-byte sequences and prepending them to the next `decode()`
- *    call. Non-UTF-8 labels remain outside the release contract.
+ *    that userland code expects. The release scope is UTF-8 only:
+ *    `TextEncoder.encoding` is always `"utf-8"`, and `TextDecoder` accepts
+ *    any of the WHATWG-defined UTF-8 label aliases ("utf8",
+ *    "unicode-1-1-utf-8", etc.) but rejects other encodings with a RangeError.
+ *    `stream: true` is supported for UTF-8 by buffering incomplete trailing
+ *    multi-byte sequences and prepending them to the next `decode()` call.
+ *    Non-UTF-8 labels remain outside the release contract.
  *
  *
  * ## Why UTF-8 only?
@@ -435,6 +436,12 @@ export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
  *
  * Unsupported (throws DataCloneError):
  *   Functions, Symbols, WeakMap, WeakSet.
+ *
+ * Release limitations:
+ *   URL, URLSearchParams, CryptoKey, DOMException, streams, and message ports
+ *   do not have dedicated structured-clone handling. AggregateError clones
+ *   through the generic Error path, so `.errors` is not preserved. Transfer
+ *   lists are limited to ArrayBuffer; stream and port transfer is unsupported.
  *
  * Cycles are detected and reproduced correctly.
  *

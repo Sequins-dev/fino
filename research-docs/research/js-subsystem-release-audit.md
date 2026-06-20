@@ -202,11 +202,7 @@ Status: TODO
   timers, and `table()`; document simplified/no-op methods.
 
 ## Encoding, TextEncoder, Structured Clone
-Status: TODO
-- Encoding is done for the UTF-8-only subset; document legacy encoding limits.
-- Document structured clone transfer limitations and unsupported built-ins such
-  as URL, URLSearchParams, CryptoKey, DOMException, AggregateError, streams,
-  and ports.
+Status: DONE
 
 ## URL, URLSearchParams, URLPattern
 Status: TODO
