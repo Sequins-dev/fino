@@ -7,6 +7,10 @@ import { describe, it } from 'fino:test/test';
 
 const { TextEncoder, TextDecoder, atob, btoa, structuredClone } = globalThis;
 
+function isDataCloneError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'DataCloneError';
+}
+
 // ---------------------------------------------------------------------------
 // TextEncoder
 // ---------------------------------------------------------------------------
@@ -468,6 +472,30 @@ describe('structuredClone', () => {
     t.equal(clone.message, 'custom error', 'message preserved');
   });
 
+  it('clones URL and URLSearchParams', (t) => {
+    const url = new URL('https://example.test/path?q=1#frag');
+    const clonedUrl = structuredClone(url);
+    t.ok(clonedUrl instanceof URL, 'URL clone is a URL');
+    t.equal(clonedUrl.href, url.href, 'URL href preserved');
+    t.ok(clonedUrl !== url, 'URL clone is a new object');
+
+    const params = new URLSearchParams('a=1&a=2&b=space+value');
+    const clonedParams = structuredClone(params);
+    t.ok(clonedParams instanceof URLSearchParams, 'URLSearchParams clone is URLSearchParams');
+    t.equal(clonedParams.toString(), params.toString(), 'params preserved');
+    t.ok(clonedParams !== params, 'URLSearchParams clone is a new object');
+  });
+
+  it('clones DOMException name, message, and code', (t) => {
+    const err = new DOMException('clone failed', 'DataCloneError');
+    const clone = structuredClone(err);
+    t.ok(clone instanceof DOMException, 'clone is DOMException');
+    t.equal(clone.name, 'DataCloneError', 'name preserved');
+    t.equal(clone.message, 'clone failed', 'message preserved');
+    t.equal(clone.code, err.code, 'legacy code preserved');
+    t.ok(clone !== err, 'different reference');
+  });
+
   it('clones Blob', (t) => {
     const b = new Blob(['hello'], { type: 'text/plain' });
     const clone = structuredClone(b);
@@ -547,13 +575,13 @@ describe('structuredClone', () => {
     t.equal(clone.getUint32(0, true), 0x12345678, 'offset data preserved');
   });
 
-  it('transfer option copies ArrayBuffer and zeros source', (t) => {
+  it('transfer option copies ArrayBuffer and detaches fixed source', (t) => {
     const buf = new ArrayBuffer(4);
     new Uint8Array(buf).set([1, 2, 3, 4]);
     const clone = structuredClone({ buf }, { transfer: [buf] });
     t.deepEqual(Array.from(new Uint8Array(clone.buf)), [1, 2, 3, 4], 'clone has original data');
-    // Source should be zeroed (best-effort detachment)
-    t.deepEqual(Array.from(new Uint8Array(buf)), [0, 0, 0, 0], 'source buffer is zeroed');
+    t.equal(buf.byteLength, 0, 'source buffer is detached');
+    t.throws(() => new Uint8Array(buf), undefined, 'detached source cannot be viewed');
   });
 
   it('transfer option rejects duplicate ArrayBuffer entries', (t) => {
@@ -568,7 +596,7 @@ describe('structuredClone', () => {
   it('transfer option throws for non-ArrayBuffer', (t) => {
     t.throws(
       () => structuredClone({}, { transfer: ['not a buffer' as any] }),
-      undefined,
+      isDataCloneError,
       'non-ArrayBuffer in transfer list throws',
     );
   });
@@ -620,5 +648,13 @@ describe('structuredClone', () => {
 
   it('ReadableStream is not cloneable', (t) => {
     t.throws(() => structuredClone(new ReadableStream()), /DataCloneError|cannot be cloned/, 'ReadableStream throws');
+  });
+
+  it('ReadableStream transfer is explicitly unsupported', (t) => {
+    t.throws(
+      () => structuredClone({}, { transfer: [new ReadableStream() as any] }),
+      isDataCloneError,
+      'stream transfer throws DataCloneError',
+    );
   });
 });

@@ -287,6 +287,23 @@ describe('Key management', { skip }, () => {
     const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
     t.ok(sig instanceof ArrayBuffer, 'sign works');
   });
+
+  it('structuredClone copies symmetric CryptoKey material and metadata', async (t) => {
+    const keyBytes = new Uint8Array(32).fill(0x33);
+    const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+    const clone = structuredClone(key);
+
+    t.ok(clone instanceof CryptoKey, 'clone is CryptoKey');
+    t.ok(clone !== key, 'clone is a new object');
+    t.equal(clone.extractable, false, 'extractability preserved');
+    t.equal(clone.type, 'secret', 'type preserved');
+    t.equal(clone.algorithm.name, 'HMAC', 'algorithm preserved');
+    t.deepEqual([...clone.usages], ['sign', 'verify'], 'usages preserved');
+
+    const data = new TextEncoder().encode('clone me');
+    const sig = await crypto.subtle.sign('HMAC', clone, data);
+    t.ok(await crypto.subtle.verify('HMAC', key, sig, data), 'clone signs with same key material');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -745,6 +762,27 @@ describe('Key management — additional', { skip }, () => {
     const u1 = key.usages;
     const u2 = key.usages;
     t.ok(u1 !== u2, 'each call returns a different array reference');
+  });
+
+  it('structuredClone duplicates asymmetric CryptoKey native handles', async (t) => {
+    const pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify'],
+    ) as CryptoKeyPair;
+    const clonedPrivate = structuredClone(pair.privateKey);
+
+    t.ok(clonedPrivate instanceof CryptoKey, 'clone is CryptoKey');
+    t.ok(clonedPrivate !== pair.privateKey, 'clone is a new object');
+    t.equal(clonedPrivate.type, 'private', 'type preserved');
+    t.equal(clonedPrivate.extractable, false, 'extractability preserved');
+    t.equal(clonedPrivate.algorithm.name, 'ECDSA', 'algorithm preserved');
+    t.equal((clonedPrivate.algorithm as EcKeyAlgorithm).namedCurve, 'P-256', 'curve preserved');
+
+    const data = new TextEncoder().encode('asymmetric clone');
+    const sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, clonedPrivate, data);
+    const ok = await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pair.publicKey, sig, data);
+    t.ok(ok, 'signature from cloned private key verifies with original public key');
   });
 });
 

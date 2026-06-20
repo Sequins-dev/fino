@@ -87,6 +87,8 @@
  * @internal
  */
 
+import { detachArrayBuffer as _detachArrayBuffer } from 'internal:serializer';
+
 // ---------------------------------------------------------------------------
 // Internal UTF-8 primitives
 // ---------------------------------------------------------------------------
@@ -423,6 +425,73 @@ export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
   _blobCloneHelper = helper;
 }
 
+type CryptoKeyCloneHelper = {
+  isCryptoKey: (v: object) => boolean;
+  cloneCryptoKey: (v: object) => object;
+};
+let _cryptoKeyCloneHelper: CryptoKeyCloneHelper | null = null;
+
+/**
+ * Register CryptoKey clone helpers without importing crypto.mts from this
+ * module. CryptoKey material stays encapsulated in the crypto module.
+ *
+ * @internal
+ */
+export function _registerCryptoKeyCloneHelper(helper: CryptoKeyCloneHelper): void {
+  _cryptoKeyCloneHelper = helper;
+}
+
+const _DOM_EXCEPTION_CODES: Record<string, number> = {
+  IndexSizeError: 1,
+  DOMStringSizeError: 2,
+  HierarchyRequestError: 3,
+  WrongDocumentError: 4,
+  InvalidCharacterError: 5,
+  NoDataAllowedError: 6,
+  NoModificationAllowedError: 7,
+  NotFoundError: 8,
+  NotSupportedError: 9,
+  InUseAttributeError: 10,
+  InvalidStateError: 11,
+  SyntaxError: 12,
+  InvalidModificationError: 13,
+  NamespaceError: 14,
+  InvalidAccessError: 15,
+  ValidationError: 16,
+  TypeMismatchError: 17,
+  SecurityError: 18,
+  NetworkError: 19,
+  AbortError: 20,
+  URLMismatchError: 21,
+  QuotaExceededError: 22,
+  TimeoutError: 23,
+  InvalidNodeTypeError: 24,
+  DataCloneError: 25,
+};
+
+/**
+ * Web DOMException class used by platform APIs and structuredClone errors.
+ *
+ * The `name`, `message`, and legacy numeric `code` properties follow the DOM
+ * standard names used by browsers. Unknown names receive code 0.
+ */
+export class DOMException extends Error {
+  #name: string;
+
+  constructor(message = '', name = 'Error') {
+    super(String(message));
+    this.#name = String(name);
+  }
+
+  get [Symbol.toStringTag]() { return 'DOMException'; }
+  get name() { return this.#name; }
+  get code() { return _DOM_EXCEPTION_CODES[this.#name] ?? 0; }
+}
+
+function _dataCloneError(message: string): DOMException {
+  return new DOMException(message, 'DataCloneError');
+}
+
 // ---------------------------------------------------------------------------
 // structuredClone
 // ---------------------------------------------------------------------------
@@ -431,24 +500,25 @@ export function _registerBlobCloneHelper(helper: BlobCloneHelper): void {
  * Deep-clone a value using the structured clone algorithm (subset).
  *
  * Supported types:
- *   primitives, plain objects, Arrays, Date, RegExp, Map, Set,
- *   ArrayBuffer, TypedArrays, DataView, Error (message + name), Blob, File.
+ *   primitives, plain objects, Arrays, Date, RegExp, Map, Set, URL,
+ *   URLSearchParams, DOMException, CryptoKey, ArrayBuffer, TypedArrays,
+ *   DataView, Error (message + name), Blob, File.
  *
  * Unsupported (throws DataCloneError):
- *   Functions, Symbols, WeakMap, WeakSet.
+ *   Functions, Symbols, WeakMap, WeakSet, streams, and MessagePort values
+ *   passed directly to global structuredClone().
  *
  * Release limitations:
- *   URL, URLSearchParams, CryptoKey, DOMException, streams, and message ports
- *   do not have dedicated structured-clone handling. AggregateError clones
- *   through the generic Error path, so `.errors` is not preserved. Transfer
- *   lists are limited to ArrayBuffer; stream and port transfer is unsupported.
+ *   AggregateError clones through the generic Error path, so `.errors` is not
+ *   preserved. Transfer lists are limited to ArrayBuffer; stream and direct
+ *   MessagePort transfer remain unsupported in global structuredClone().
  *
  * Cycles are detected and reproduced correctly.
  *
- * The transfer option accepts ArrayBuffers. Without native detach support,
- * transferred resizable buffers are resized to zero and fixed buffers are
- * zero-filled after cloning. Supplying the same buffer more than once in the
- * transfer list throws.
+ * The transfer option accepts ArrayBuffers. Transferred ArrayBuffers are copied
+ * into the clone and then detached with V8's native detach operation, so the
+ * source buffer's byteLength becomes zero. Supplying the same buffer more than
+ * once in the transfer list throws DataCloneError.
  *
  * ```typescript no_run
  * const original: any = { nested: new Map([['x', 1]]) };
@@ -467,28 +537,19 @@ export function structuredClone<T>(value: T, options?: { transfer?: ArrayBuffer[
     const seenTransfers = new Set<ArrayBuffer>();
     for (const buf of transferList) {
       if (!(buf instanceof ArrayBuffer)) {
-        throw new TypeError('structuredClone: transfer list must contain only ArrayBuffers');
+        throw _dataCloneError('structuredClone: transfer list only supports ArrayBuffer values');
       }
       if (seenTransfers.has(buf)) {
-        const err = new Error('structuredClone: duplicate ArrayBuffer in transfer list.');
-        err.name = 'DataCloneError';
-        throw err;
+        throw _dataCloneError('structuredClone: duplicate ArrayBuffer in transfer list.');
       }
       seenTransfers.add(buf);
     }
   }
   const seen = new WeakMap<object, unknown>();
   const clone = _clone(value, seen, transferSet) as T;
-  // Detach transferred ArrayBuffers. True detachment requires engine support.
-  // If the buffer is resizable, resize to 0 (byteLength → 0, views become empty).
-  // Otherwise zero the contents — full detachment is not possible without transfer().
   if (transferSet) {
     for (const buf of transferSet) {
-      if ((buf as any).resizable) {
-        (buf as any).resize(0);
-      } else {
-        new Uint8Array(buf).fill(0);
-      }
+      _detachArrayBuffer(buf);
     }
   }
   return clone;
@@ -498,14 +559,14 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
   // Primitives
   if (value === null || typeof value !== 'object' && typeof value !== 'function') {
     if (typeof value === 'symbol') {
-      throw new TypeError('structuredClone: Symbol values cannot be cloned.');
+      throw _dataCloneError('structuredClone: Symbol values cannot be cloned.');
     }
     return value;
   }
 
   // Functions
   if (typeof value === 'function') {
-    throw new TypeError('structuredClone: function values cannot be cloned.');
+    throw _dataCloneError('structuredClone: function values cannot be cloned.');
   }
 
   // Cycle check
@@ -538,6 +599,31 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
   }
   if (value instanceof String) {
     const clone = new String((value as String).valueOf());
+    seen.set(value, clone);
+    return clone;
+  }
+
+  if (value instanceof URL) {
+    const clone = new URL(value.href);
+    seen.set(value, clone);
+    return clone;
+  }
+
+  if (value instanceof URLSearchParams) {
+    const clone = new URLSearchParams(value.toString());
+    seen.set(value, clone);
+    return clone;
+  }
+
+  if (value instanceof DOMException) {
+    const clone = new DOMException(value.message, value.name);
+    if (value.stack) clone.stack = value.stack;
+    seen.set(value, clone);
+    return clone;
+  }
+
+  if (_cryptoKeyCloneHelper && _cryptoKeyCloneHelper.isCryptoKey(value)) {
+    const clone = _cryptoKeyCloneHelper.cloneCryptoKey(value);
     seen.set(value, clone);
     return clone;
   }
@@ -605,7 +691,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
 
   // WeakMap / WeakSet — not cloneable
   if (value instanceof WeakMap || value instanceof WeakSet) {
-    throw new TypeError('structuredClone: WeakMap/WeakSet values cannot be cloned.');
+    throw _dataCloneError('structuredClone: WeakMap/WeakSet values cannot be cloned.');
   }
 
   // Array
@@ -625,9 +711,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
   // is a different context's Object.prototype, not === the current one).
   const proto = Object.getPrototypeOf(value);
   if (proto !== null && proto !== Object.prototype && Object.getPrototypeOf(proto) !== null) {
-    const err = new Error('structuredClone: object with non-plain prototype cannot be cloned.');
-    err.name = 'DataCloneError';
-    throw err;
+    throw _dataCloneError('structuredClone: object with non-plain prototype cannot be cloned.');
   }
   // When cloning cross-realm objects, map their proto to the local Object.prototype
   // so the clone is a proper plain object in the current realm.

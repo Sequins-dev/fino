@@ -115,7 +115,7 @@ impl v8::ValueDeserializerImpl for FinoDeserializer {
 // ---------------------------------------------------------------------------
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["serialize", "deserialize"]
+    let export_names: Vec<v8::Local<v8::String>> = ["serialize", "deserialize", "detachArrayBuffer"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
         .collect();
@@ -141,8 +141,23 @@ fn eval_steps<'a>(
 
     set_fn!("serialize", native_serialize);
     set_fn!("deserialize", native_deserialize);
+    set_fn!("detachArrayBuffer", native_detach_array_buffer);
 
     Some(v8::undefined(scope).into())
+}
+
+fn native_detach_array_buffer(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(args.get(0)) else {
+        let msg = v8::String::new(scope, "detachArrayBuffer: argument must be an ArrayBuffer").unwrap();
+        let exc = v8::Exception::type_error(scope, msg);
+        scope.throw_exception(exc);
+        return;
+    };
+    rv.set(v8::Boolean::new(scope, ab.detach(None).unwrap_or(false)).into());
 }
 
 // ---------------------------------------------------------------------------

@@ -301,6 +301,7 @@ const _cryptoSymbols = {
   },
   EVP_PKEY_new:           { parameters: [], result: 'pointer' },
   EVP_PKEY_free:          { parameters: ['pointer'], result: 'void' },
+  EVP_PKEY_up_ref:        { parameters: ['pointer'], result: 'i32' },
   EVP_PKEY_new_raw_private_key: { parameters: ['i32', 'pointer', 'buffer', 'usize'], result: 'pointer' },
   EVP_PKEY_new_raw_public_key:  { parameters: ['i32', 'pointer', 'buffer', 'usize'], result: 'pointer' },
   EVP_PKEY_get_raw_private_key: { parameters: ['pointer', 'buffer', 'buffer'], result: 'i32' },
@@ -1245,6 +1246,21 @@ export function evpPkeyGenerateEcP256(): object { return evpPkeyGenerateEc('P-25
  */
 export function evpPkeyFree(pkey: object): void {
   _requireCrypto().symbols.EVP_PKEY_free(pkey);
+}
+
+/**
+ * Increment an EVP_PKEY reference count and return the same native handle.
+ *
+ * The returned handle is an owning reference and must eventually be released
+ * with `evpPkeyFree()`. This is used when cloning CryptoKey wrappers without
+ * exporting non-extractable key material.
+ *
+ * @internal
+ */
+export function evpPkeyUpRef(pkey: object): object {
+  const ok = _requireCrypto().symbols.EVP_PKEY_up_ref(pkey);
+  if (ok !== 1) throw new Error('EVP_PKEY_up_ref failed: ' + getErrorString());
+  return pkey;
 }
 
 // ---------------------------------------------------------------------------

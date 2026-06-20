@@ -12,7 +12,25 @@
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 
+function isDataCloneError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'DataCloneError';
+}
+
 describe('MessagePort transfer', () => {
+  it('structuredClone rejects direct MessagePort transfer with DataCloneError', (t) => {
+    const { port1, port2 } = new MessageChannel();
+    try {
+      t.throws(
+        () => structuredClone({ port: port1 }, { transfer: [port1 as any] }),
+        isDataCloneError,
+        'direct structuredClone MessagePort transfer throws',
+      );
+    } finally {
+      port1.close();
+      port2.close();
+    }
+  });
+
   it('same-Isolate: transferred port is neutered on sender', async (t) => {
     const { port1: a, port2: b } = new MessageChannel();
     const { port1: c, port2: d } = new MessageChannel();

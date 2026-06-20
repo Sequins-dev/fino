@@ -150,11 +150,7 @@ Status: DONE
 Status: DONE
 
 ## Encoding, TextEncoder, Structured Clone
-Status: TODO
-- Decide release scope for structured clone gaps: URL, URLSearchParams,
-  CryptoKey, DOMException, streams, and port transfer.
-- Implement true ArrayBuffer detachment for transfer or document the current
-  zero-fill non-conformance publicly.
+Status: DONE
 
 ## URL, URLSearchParams, URLPattern
 Status: DONE

@@ -49,6 +49,7 @@
  */
 
 import * as openssl from '../openssl.mts';
+import { _registerCryptoKeyCloneHelper } from './encoding.mts';
 import { v4 as _uuidV4 } from 'fino:uuid';
 
 // ---------------------------------------------------------------------------
@@ -230,6 +231,40 @@ function _pkeyPtr(key: CryptoKey): object {
   const p = _pkeyStore.get(key);
   if (!p) throw new Error('CryptoKey has no asymmetric key material');
   return p;
+}
+
+function _cloneAlgorithmDescriptor(algorithm: CryptoKeyAlgorithm): CryptoKeyAlgorithm {
+  const clone: CryptoKeyAlgorithm = { ...algorithm };
+  if (algorithm.hash) clone.hash = { ...algorithm.hash };
+  if (algorithm.publicExponent) clone.publicExponent = new Uint8Array(algorithm.publicExponent);
+  return clone;
+}
+
+function _cloneCryptoKey(key: CryptoKey): CryptoKey {
+  if (!(key instanceof CryptoKey)) throw new Error('Invalid CryptoKey');
+  const keyData = _keyStore.get(key);
+  if (keyData) {
+    return new CryptoKey(
+      key.type,
+      key.extractable,
+      _cloneAlgorithmDescriptor(key.algorithm),
+      [...key.usages],
+      new Uint8Array(keyData),
+      null,
+    );
+  }
+  const pkey = _pkeyStore.get(key);
+  if (pkey) {
+    return new CryptoKey(
+      key.type,
+      key.extractable,
+      _cloneAlgorithmDescriptor(key.algorithm),
+      [...key.usages],
+      null,
+      openssl.evpPkeyUpRef(pkey),
+    );
+  }
+  throw new Error('CryptoKey has no key material');
 }
 
 // ---------------------------------------------------------------------------
@@ -1589,6 +1624,10 @@ export const crypto = {
 };
 
 // Register on globalThis
+_registerCryptoKeyCloneHelper({
+  isCryptoKey: (value: object) => value instanceof CryptoKey,
+  cloneCryptoKey: (value: object) => _cloneCryptoKey(value as CryptoKey),
+});
 globalThis.crypto = crypto as unknown as typeof globalThis.crypto;
 (globalThis as Record<string, unknown>).CryptoKey = CryptoKey;
 
