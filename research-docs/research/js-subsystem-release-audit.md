@@ -89,9 +89,7 @@ Status: TODO
   streaming zlib/gzip/deflate input.
 
 ## Template
-Status: TODO
-- Add a small Mustache spec subset/corpus or document exclusions for lambdas,
-  delimiter changes, standalone trimming, and partial loading.
+Status: DONE
 
 ## Semver
 Status: DONE

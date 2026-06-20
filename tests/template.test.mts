@@ -41,6 +41,22 @@ describe('fino:template — mustache core', () => {
     t.throws(() => compile('{{user..name}}'), /malformed name/, 'empty dotted segment rejected');
     t.throws(() => compile('{{../}}'), /malformed name/, 'bare parent path rejected');
     t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partials rejected');
+    t.throws(() => compile('{{=<% %>=}}<% name %>'), /delimiter changes are not supported/, 'delimiter changes rejected');
     t.throws(() => compile('{{#a}}{{/b}}'), /unmatched section close/, 'mismatched close rejected');
+  });
+
+  it('documents unsupported full Mustache features through explicit behavior', (t) => {
+    const lambdaCalls: string[] = [];
+    const out = render('{{#lambda}}value{{/lambda}}', {
+      lambda() {
+        lambdaCalls.push('called');
+        return true;
+      },
+    });
+
+    t.equal(out, 'value', 'function values are called as truthy section values');
+    t.deepEqual(lambdaCalls, ['called'], 'function section value is invoked once');
+    t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partial loading remains out of scope');
+    t.throws(() => compile('{{=<% %>=}}<% name %>'), /delimiter changes are not supported/, 'custom delimiters remain out of scope');
   });
 });

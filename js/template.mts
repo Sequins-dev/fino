@@ -2,9 +2,11 @@
  * fino:template — small Mustache-style template rendering.
  *
  * Supports escaped variables, triple-mustache/unescaped variables, truthy and
- * inverted sections, list iteration, and dotted-name lookup. Mustache partials
- * are intentionally out of scope for this release and are rejected during
- * compilation.
+ * inverted sections, list iteration, and dotted-name lookup. Full Mustache
+ * lambdas are not implemented: function values are called as normal lookup
+ * values, not with raw section text and a render callback. Partials, delimiter
+ * changes, and standalone-line trimming are intentionally out of scope for this
+ * release; unsupported syntax is rejected during compilation where possible.
  *
  * @example
  * ```ts no_run
@@ -141,6 +143,10 @@ function parseTemplate(template: string): Token[] {
     scanner.expect('{{');
     let tag = readUntilSequence(scanner, '}}', 'template: unclosed tag').trim();
     if (tag.length === 0) continue;
+
+    if (tag.startsWith('=') && tag.endsWith('=')) {
+      throw new Error('template: delimiter changes are not supported');
+    }
 
     const sigil = tag[0]!;
     if ('#^/!>&'.includes(sigil)) tag = tag.slice(1).trim();
