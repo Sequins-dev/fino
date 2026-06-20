@@ -18,6 +18,10 @@
  *   - Complex mapping keys (? key) - mappings with non-string keys return Map<unknown, YamlValue>
  *   - Comments, document markers --- / ..., parseAll for multi-document streams
  *
+ * YAML directives (`%YAML`, `%TAG`) are outside the release baseline and are
+ * rejected. This parser targets Fino's core-schema configuration use cases, not
+ * complete YAML processor parity.
+ *
  * **Permanently excluded** (security baseline - never executes code):
  *   - Arbitrary type construction (!!ruby/object, etc.)
  *   - Custom user-defined tags
@@ -26,7 +30,8 @@
  * **Note on merge keys**: merge pairs (<<) are absorbed at parse time into the
  * enclosing mapping. stringify does not re-emit them. The round-trip invariant
  * `deepEqual(parse(stringify(parse(x))), parse(x))` holds; text-exact
- * round-trip does not for documents with merge keys.
+ * round-trip does not for documents with merge keys, comments, document
+ * markers, or source anchor names.
  *
  * ```ts no_run
  * import { parse, stringify, parseAll } from 'fino:format/yaml';
@@ -406,6 +411,9 @@ class YamlParser {
   #skipDocumentMarkers(): void {
     this.#skipWsAndComments();
     while (this.#pos < this.#src.length) {
+      if (this.#src[this.#pos] === '%') {
+        this.#err('YAML directives are not supported');
+      }
       if (this.#src.startsWith('---', this.#pos) &&
           (this.#src[this.#pos + 3] === '\n' || this.#src[this.#pos + 3] === ' ' || !this.#src[this.#pos + 3])) {
         this.#pos += 3; this.#skipLine(); this.#skipWsAndComments(); continue;

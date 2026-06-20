@@ -152,6 +152,10 @@ describe('fino:format/yaml — comments and markers', () => {
     t.deepEqual(docs[0], { a: 1 }, 'first document parsed');
     t.deepEqual(docs[1], ['b', 'c'], 'final sequence document parsed');
   });
+
+  it('rejects YAML directives outside the core-schema baseline', (t) => {
+    t.throws(() => parse('%YAML 1.2\n---\na: 1'), /directive|unexpected|expected/i);
+  });
 });
 
 describe('fino:format/yaml — anchors & aliases', () => {
@@ -198,6 +202,11 @@ describe('fino:format/yaml — anchors & aliases', () => {
 
   it('anchors are document-scoped across parseAll', (t) => {
     t.throws(() => parseAll('x: &a 1\n---\ny: *a'), /undefined alias/i);
+  });
+
+  it('rejects duplicate anchor and tag properties on one node', (t) => {
+    t.throws(() => parse('x: &a &b 1'), /duplicate anchor/i);
+    t.throws(() => parse('x: !!str !!int 1'), /duplicate tag/i);
   });
 });
 
@@ -251,6 +260,11 @@ describe('fino:format/yaml — explicit tags', () => {
 
   it('unknown core tag throws', (t) => {
     t.throws(() => parse('x: !!nope bar'), /unknown core tag/i);
+  });
+
+  it('never constructs arbitrary application objects from tags', (t) => {
+    t.throws(() => parse('x: !!ruby/object:User {name: Ada}'), /unknown core tag|local tag/i);
+    t.throws(() => parse('x: !<tag:example.com,2026:User> {name: Ada}'), /local tag|expected/i);
   });
 });
 
@@ -355,6 +369,25 @@ describe('fino:format/yaml — stringify Phase 2 types', () => {
     t.deepEqual(reparsed, parsed, 'merged mapping survives stringify/parse');
     t.notOk(out.includes('<<'), 'merge key syntax is not re-emitted');
     t.notOk(out.includes('&base'), 'source anchor name is not preserved');
+  });
+
+  it('does not preserve comments, document markers, or source anchor names', (t) => {
+    const parsed = parse([
+      '---',
+      '# source comment',
+      'shared: &source',
+      '  x: 1',
+      'again: *source',
+      '...',
+    ].join('\n'));
+    const out = stringify(parsed as any);
+
+    t.notOk(out.includes('# source comment'), 'comments are not emitted');
+    t.notOk(out.includes('---'), 'document start marker is not emitted');
+    t.notOk(out.includes('...'), 'document end marker is not emitted');
+    t.notOk(out.includes('&source'), 'source anchor names are not preserved');
+    t.ok(out.includes('&a'), 'shared references use generated anchor names');
+    t.deepEqual(parse(out), parsed, 'normalized YAML preserves value graph');
   });
 
   it('stringifies Map with complex keys', (t) => {

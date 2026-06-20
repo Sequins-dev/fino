@@ -348,10 +348,16 @@ Status: DONE
   Heterogeneous arrays are accepted as Fino values.
 
 ## YAML Format
-Status: TODO
-- Fixture set explicitly defers cases; add broader YAML test-suite parity.
-- Cover custom tags, directives, schema edge cases, indentation/chomping, and complex alias behavior.
-- Keep security coverage while improving YAML 1.2 conformance.
+Status: DONE
+- Release baseline covers Fino's YAML 1.2 core-schema subset: scalars,
+  mappings, sequences, flow styles, block scalars, document markers, anchors,
+  aliases, merge keys, explicit core tags, complex keys, and corpus fixtures.
+- Security contract rejects directives, local/custom tags, arbitrary object
+  construction tags, undefined aliases, duplicate tag/anchor properties, and
+  alias expansion beyond configured limits.
+- Stringification emits normalized YAML and does not preserve comments,
+  document markers, merge syntax, source anchor names, or text-exact shape.
+  Broader yaml-test-suite parity remains outside this release baseline.
 
 ## XML Format
 Status: TODO
