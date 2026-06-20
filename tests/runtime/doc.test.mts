@@ -196,6 +196,13 @@ export interface ApiResponse<T> {
    * Parsed payload when available.
    */
   data?: T;
+
+  /**
+   * Internal response trace ID.
+   *
+   * @internal
+   */
+  traceId?: string;
 }
 
 /**
@@ -222,6 +229,15 @@ export class SecretBox {
    */
   value(): string {
     return this.id;
+  }
+
+  /**
+   * Internal debug helper should stay out of default docs.
+   *
+   * @internal
+   */
+  debugToken(): string {
+    return this.#token;
   }
 
   /**
@@ -331,6 +347,15 @@ export class ResourceBox {
    * Shut down the box.
    */
   close(): void {}
+
+  /**
+   * Internal debug trace should stay out of default docs.
+   *
+   * @internal
+   */
+  trace(): string {
+    return this.id;
+  }
 
   /**
    * Hidden implementation detail.
@@ -612,9 +637,11 @@ export function afterEnum(): string {
     t.ok(markdown.includes('## ApiResponse'), 'markdown includes interface section');
     t.ok(markdown.includes('### ok'), 'markdown includes interface member section');
     t.ok(markdown.includes('```ts\nok: boolean\n```'), 'markdown includes member signature');
+    t.ok(!markdown.includes('traceId'), 'markdown excludes @internal interface member by default');
     t.ok(markdown.includes('## SecretBox'), 'markdown includes class section');
     t.ok(markdown.includes('### id'), 'markdown includes public class property');
     t.ok(markdown.includes('### value'), 'markdown includes public class method');
+    t.ok(!markdown.includes('debugToken'), 'markdown excludes @internal class member by default');
     t.ok(!markdown.includes('### #token'), 'markdown excludes private class property');
     t.ok(!markdown.includes('### #peek'), 'markdown excludes private class method');
     t.ok(markdown.includes('## VERSION'), 'markdown includes const section');
@@ -641,8 +668,37 @@ export function afterEnum(): string {
     t.equal(configSource!.signature.includes('internal marker'), false, 'json strips comments from formatted signatures');
     const secretBox = firstModule.exports.find((item: DocJsonExport) => item.name === 'SecretBox');
     t.ok(secretBox, 'json includes class export');
+    const response = firstModule.exports.find((item: DocJsonExport) => item.name === 'ApiResponse');
+    t.ok(response, 'json includes interface export');
+    t.equal(response!.members.some((item: DocJsonMember) => item.name === 'traceId'), false, 'json excludes @internal interface member');
+    t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === 'debugToken'), false, 'json excludes @internal class member');
     t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === '#token'), false, 'json excludes private class property');
     t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === '#peek'), false, 'json excludes private class method');
+  });
+
+  it('includes private and internal members only with --include-private', async (t) => {
+    const docsDir = appDir + '/docs';
+    const jsonPath = docsDir + '/api.json';
+    await removeTree(fs, docsDir);
+    const run = await runCli(['doc', 'build', './api.mts', '--format', 'both', '--include-private', '--title', 'Private API'], appDir);
+
+    t.equal(run.result.code, 0, 'private doc build exits successfully');
+    t.equal(run.stderr, '', 'private doc build writes no stderr');
+
+    const html = await fs.readFile(docsDir + '/api.html');
+    t.ok(html.includes('traceId'), 'include-private html includes @internal interface member');
+    t.ok(html.includes('debugToken'), 'include-private html includes @internal class member');
+    t.ok(html.includes('#token'), 'include-private html includes private class field');
+    t.ok(html.includes('#peek'), 'include-private html includes private class method');
+
+    const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
+    const api = json.modules.find((moduleDoc) => moduleDoc.name === 'api')!;
+    const response = api.exports.find((item) => item.name === 'ApiResponse')!;
+    const secretBox = api.exports.find((item) => item.name === 'SecretBox')!;
+    t.equal(response.members.some((member) => member.name === 'traceId'), true, 'include-private json includes @internal interface member');
+    t.equal(secretBox.members.some((member) => member.name === 'debugToken'), true, 'include-private json includes @internal class member');
+    t.equal(secretBox.members.some((member) => member.name === '#token'), true, 'include-private json includes private class property');
+    t.equal(secretBox.members.some((member) => member.name === '#peek'), true, 'include-private json includes private class method');
   });
 
   it('builds v2 json, html, and sqlite search artifacts', async (t) => {
@@ -703,6 +759,9 @@ export function afterEnum(): string {
     t.ok(html.includes('<a href="advanced.html#advanced.ResourceBox.name">the name getter</a>'), 'html resolves same-module symbol links');
     t.ok(html.includes('<a href="https://example.test/docs">https://example.test/docs</a>.'), 'html linkifies bare URLs');
     t.ok(html.includes(') {\n  <span class="tok-keyword">throw</span> <span class="tok-keyword">new</span> Error(value);'), 'html preserves fenced code indentation');
+    t.equal(html.includes('trace()'), false, 'html excludes @internal class members by default');
+    t.equal(html.includes('internalOnly'), false, 'html excludes TypeScript private class members by default');
+    t.equal(html.includes('Hidden implementation detail.'), false, 'html excludes private member docs by default');
 
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const moduleDoc = json.modules[0]!;
@@ -720,11 +779,16 @@ export function afterEnum(): string {
     t.equal(box.members.some((member) => member.kind === 'getter' && member.name === 'name'), true, 'getter is classified');
     t.equal(box.members.some((member) => member.kind === 'setter' && member.name === 'name'), true, 'setter is classified');
     t.equal(box.members.some((member) => member.kind === 'static-method' && member.name === 'from'), true, 'static method is classified');
+    t.equal(box.members.some((member) => member.name === 'trace'), false, 'internal members are excluded from json by default');
     t.equal(box.members.some((member) => member.name === 'internalOnly'), false, 'internal members are excluded by default');
 
     const found = await runCli(['doc', 'search', 'display', 'name'], appDir);
     t.equal(found.result.code, 0, 'doc search uses the generated sqlite index');
     t.ok(found.stdout.includes('advanced.ResourceBox.name'), 'sqlite search finds member docs');
+
+    const hidden = await runCli(['doc', 'search', 'internalOnly'], appDir);
+    t.equal(hidden.result.code, 0, 'doc search exits successfully for private member query');
+    t.equal(hidden.stdout.includes('advanced.ResourceBox.internalOnly'), false, 'sqlite search excludes private members by default');
   });
 
   it('shows and searches fixed project docs artifacts', async (t) => {

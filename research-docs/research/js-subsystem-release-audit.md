@@ -88,9 +88,14 @@ Status: TODO
 - Add tests for package `exports`, package `imports`, dependency graph edge cases, and integrity failures.
 
 ## Doc Command
-Status: TODO
-- Generated docs still expose noisy private-member stubs that should not ship as polished release docs.
-- Add regression coverage for public/private filtering and module-level JSDoc completeness.
+Status: DONE
+- Release baseline covers Markdown, HTML, JSON, sqlite search, guide rendering,
+  source-path mirroring, re-export behavior, examples, and stale-output cleanup.
+- Public docs exclude private class fields/methods, TypeScript private members,
+  `@internal` members, and file-level internal modules by default; these are
+  available only through the maintainer-oriented `--include-private` flag.
+- Full release-site polish, generated release notes, and broader documentation
+  publishing workflows remain outside the command contract.
 
 ## REPL
 Status: DONE

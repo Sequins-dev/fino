@@ -586,7 +586,7 @@ function collectDeclarationExport(declaration: AstNode | undefined, owner: AstNo
     return exportDoc(name, 'class', classSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start), classMembers(declaration, comments, source, includePrivate));
   }
   if (declaration.type === 'TSInterfaceDeclaration') {
-    return exportDoc(name, 'interface', interfaceSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start), interfaceMembers(declaration, comments, source));
+    return exportDoc(name, 'interface', interfaceSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start), interfaceMembers(declaration, comments, source, includePrivate));
   }
   if (declaration.type === 'TSTypeAliasDeclaration') {
     return exportDoc(name, 'type', statementSignature(owner, declaration, source), doc, locationFor(source, owner.start ?? declaration.start));
@@ -716,9 +716,11 @@ function interfaceSignature(owner: AstNode, declaration: AstNode, source: string
   return headerSignature(owner.start ?? declaration.start, declaration.end ?? owner.end, source);
 }
 
-function interfaceMembers(declaration: AstNode, comments: ParseComment[], source: string): DocMember[] {
+function interfaceMembers(declaration: AstNode, comments: ParseComment[], source: string, includePrivate: boolean): DocMember[] {
   const members: DocMember[] = [];
   for (const item of declaration.body?.body ?? []) {
+    const doc = docForNode(comments, item, item, source);
+    if (!includePrivate && hasDocTag(doc, 'internal')) continue;
     const name = propertyName(item.key);
     if (!name) continue;
     members.push({
@@ -728,7 +730,7 @@ function interfaceMembers(declaration: AstNode, comments: ParseComment[], source
       signature: interfaceMemberSignature(item, source),
       signatures: [],
       aliases: [],
-      doc: docForNode(comments, item, item, source),
+      doc,
       location: locationFor(source, item.start),
     });
   }
