@@ -34,7 +34,7 @@ import { Scanner } from 'fino:parsing/scanner';
  * parsed.build;      // ['build', '5']
  * ```
  */
-interface SemVer {
+export interface SemVer {
   major: number;
   minor: number;
   patch: number;

@@ -28,6 +28,23 @@ describe('fino:semver compare', () => {
     t.ok(compare('1.2.3-alpha.1', '1.2.3-alpha.2') < 0, 'numeric prerelease identifiers compare numerically');
     t.ok(compare('1.2.3-beta', '1.2.3-alpha.9') > 0, 'later prerelease identifiers compare lexically');
   });
+
+  it('matches the SemVer 2.0.0 prerelease precedence example', (t) => {
+    const ordered = [
+      '1.0.0-alpha',
+      '1.0.0-alpha.1',
+      '1.0.0-alpha.beta',
+      '1.0.0-beta',
+      '1.0.0-beta.2',
+      '1.0.0-beta.11',
+      '1.0.0-rc.1',
+      '1.0.0',
+    ];
+
+    for (let i = 1; i < ordered.length; i++) {
+      t.ok(compare(ordered[i - 1]!, ordered[i]!) < 0, `${ordered[i - 1]} < ${ordered[i]}`);
+    }
+  });
 });
 
 describe('fino:semver satisfies', () => {

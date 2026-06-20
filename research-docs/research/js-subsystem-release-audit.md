@@ -94,10 +94,7 @@ Status: TODO
   delimiter changes, standalone trimming, and partial loading.
 
 ## Semver
-Status: TODO
-- Export/document the parsed `SemVer` return type or avoid exposing a hidden
-  named return type.
-- Consider adding an external semver corpus.
+Status: DONE
 
 ## Parsing Scanner
 Status: DONE
