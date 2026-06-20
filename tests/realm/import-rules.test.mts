@@ -8,7 +8,79 @@
 import { describe, it } from 'fino:test/test';
 import { Realm, ImportMap } from 'fino:realm';
 
+describe('Realm import policy precedence', () => {
+  it('overrides take precedence over legacy blocked specifiers', async (t) => {
+    const realm = Realm.fromSource(
+      [
+        "import { Pointer } from 'fino:ffi';",
+        'export default () => Pointer !== undefined;',
+        '',
+      ].join('\n'),
+      {
+        overrides: ImportMap.inherit([{ pattern: 'fino:ffi', directive: 'inherit' }]),
+        blocked: ['fino:ffi'],
+      },
+    );
+
+    t.equal(await realm.call(), true, 'blocked is ignored when overrides are present');
+  });
+
+  it('legacy blocked specifiers apply when overrides are absent', async (t) => {
+    const realm = new Realm({
+      blocked: ['fino:ffi'],
+      entry: new URL('./fixtures/import-ffi.mts', import.meta.url).pathname,
+    });
+
+    await realm.run();
+    t.ok(true, 'blocked applies in legacy policy mode');
+  });
+
+  it('overrides take precedence over legacy provider conversion', (t) => {
+    const throwingProviders = {
+      fs: {
+        toRules(): never {
+          throw new Error('legacy provider conversion should not run');
+        },
+      },
+    };
+
+    const realm = Realm.fromSource('export default () => true;\n', {
+      overrides: ImportMap.inherit([]),
+      providers: throwingProviders as any,
+    });
+
+    t.ok(realm instanceof Realm, 'realm constructs without converting legacy providers');
+  });
+
+  it('legacy provider conversion is used when overrides are absent', (t) => {
+    const throwingProviders = {
+      fs: {
+        toRules(): never {
+          throw new Error('legacy provider conversion ran');
+        },
+      },
+    };
+
+    t.throws(
+      () => Realm.fromSource('export default () => true;\n', { providers: throwingProviders as any }),
+      /legacy provider conversion ran/,
+      'providers are converted in legacy policy mode',
+    );
+  });
+});
+
 describe('ImportMap.deny', () => {
+  it('prepends a block-all default before caller rules', (t) => {
+    t.deepEqual(
+      ImportMap.deny([{ pattern: 'fino:ffi', directive: 'inherit' }]).toRules(),
+      [
+        { pattern: '*', directive: 'block' },
+        { pattern: 'fino:ffi', directive: 'inherit' },
+      ],
+      'deny starts from a safe block-all baseline',
+    );
+  });
+
   it('blocks all specifiers by default (deny baseline)', async (t) => {
     const realm = new Realm({
       // Deny everything — fino:ffi is blocked; fixture throws if it unexpectedly succeeds
@@ -39,6 +111,17 @@ describe('ImportMap.deny', () => {
 });
 
 describe('ImportMap.inherit', () => {
+  it('prepends an inherit-all default before caller rules', (t) => {
+    t.deepEqual(
+      ImportMap.inherit([{ pattern: 'fino:ffi', directive: 'block' }]).toRules(),
+      [
+        { pattern: '*', directive: 'inherit' },
+        { pattern: 'fino:ffi', directive: 'block' },
+      ],
+      'inherit starts from an explicit inherit baseline',
+    );
+  });
+
   it('inherit baseline passes through parent rules (fino:ffi accessible)', async (t) => {
     const realm = new Realm({
       overrides: ImportMap.inherit([]),
@@ -65,6 +148,20 @@ describe('ImportMap.inherit', () => {
 });
 
 describe('Exact pattern beats Prefix (last-match-wins)', () => {
+  it('stores duplicate rules in caller order for last-match-wins evaluation', (t) => {
+    t.deepEqual(
+      new ImportMap([
+        { pattern: 'fino:ffi', directive: 'block' },
+        { pattern: 'fino:ffi', directive: 'inherit' },
+      ]).toRules(),
+      [
+        { pattern: 'fino:ffi', directive: 'block' },
+        { pattern: 'fino:ffi', directive: 'inherit' },
+      ],
+      'ImportMap preserves rule order',
+    );
+  });
+
   it('prefix block then exact allow: exact wins', async (t) => {
     const realm = new Realm({
       // Block all fino: then re-allow ffi specifically; import-allowed throws if import fails

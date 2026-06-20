@@ -72,6 +72,21 @@ Use `ImportMap.deny` for sandboxed children that should only see an explicit
 allowlist. Use `ImportMap.inherit` for trusted children where only a few imports
 need special handling.
 
+Prefer explicit `overrides` for new code. The legacy `providers` and `blocked`
+options are compatibility shims that are converted into import rules only when
+`overrides` is absent. When `overrides` is present, legacy provider and blocked
+settings are ignored so the explicit rule list is the complete child policy.
+
+Import rules are evaluated in order with last-match-wins semantics, including
+duplicate and wildcard rules. Put broad defaults first and the exceptions after
+them. `ImportMap.deny([...])` prepends a `*` block rule, while
+`ImportMap.inherit([...])` prepends a `*` inherit rule.
+
+Realms are isolation and capability-shaping tools, but they are not a complete
+security boundary by themselves. Treat import rules, facades, execution mode,
+process privileges, filesystem/network placement, and cluster authentication as
+parts of a larger trust model for untrusted workloads.
+
 ## Expose a Facade
 
 Facades create virtual modules in the child backed by parent-side handlers:

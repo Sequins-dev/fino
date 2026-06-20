@@ -354,8 +354,16 @@ Status: TODO
 - Add hostile-peer/auth-failure coverage once cluster authentication exists.
 
 ## Realm Import And Provider Policies
-Status: TODO
-- Provider config is legacy alongside import rules; clarify policy precedence and safe defaults in release docs.
+Status: DONE
+- Release baseline documents explicit `overrides` as the preferred policy API.
+  Legacy `providers` and `blocked` are compatibility-only and are converted
+  into import rules only when `overrides` is absent.
+- Import-rule coverage locks `overrides` precedence, legacy provider/blocked
+  fallback, `ImportMap.deny`, `ImportMap.inherit`, last-match-wins ordering,
+  and provider config serialization/import-rule conversion.
+- Realm docs state that realms are not a complete security boundary by
+  themselves; import rules, facades, execution mode, privileges, placement, and
+  authentication must be considered together for untrusted workloads.
 
 ## Cluster
 Status: TODO
