@@ -2236,7 +2236,7 @@ export class FdWriter extends BufferedBytesWriter {
     cursors.fill(0, 0, count);
     const view = this.#iovView;
 
-    outer: while (true) {
+    while (true) {
       let iovcnt = 0;
       for (let i = 0; i < count; i++) {
         const vec    = vecs[i]!;
@@ -2255,6 +2255,10 @@ export class FdWriter extends BufferedBytesWriter {
         if (getErrno() === EAGAIN) { await loop.writable(this.#fd); continue; }
         throw new Error('writev failed');
       }
+      if (n === 0) {
+        await loop.writable(this.#fd);
+        continue;
+      }
 
       let rem = n;
       for (let i = 0; i < count && rem > 0; i++) {
@@ -2265,7 +2269,6 @@ export class FdWriter extends BufferedBytesWriter {
         if (rem >= avail) { cursors[i] = cursor + avail; rem -= avail; }
         else              { cursors[i] = cursor + rem;   rem  = 0;     }
       }
-      if (rem === 0) break outer;
     }
   }
 }

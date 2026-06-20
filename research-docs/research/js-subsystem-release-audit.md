@@ -208,8 +208,7 @@ Status: TODO
 - Document stream transfer and structured-clone limitations.
 
 ## Internal Reader And Writer Streams
-Status: TODO
-- Add low-level partial IO and large-transfer stress coverage.
+Status: DONE
 
 ## Compression Streams
 Status: DONE

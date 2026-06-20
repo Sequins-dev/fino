@@ -1,5 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
+import { dlopen } from 'fino:ffi';
+import { os } from 'internal:process';
 import {
   BufferedBytesReader,
   BufferedBytesWriter,
@@ -8,6 +10,145 @@ import {
   FdReader,
   FdWriter,
 } from 'fino:stream';
+
+const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
+const F_GETFL = 3;
+const F_SETFL = 4;
+const O_NONBLOCK = os === 'darwin' ? 4 : 2048;
+
+const lib = dlopen(LIBC, {
+  pipe: { parameters: ['buffer'], result: 'i32' },
+  fcntl: { parameters: ['i32', 'i32', 'i32'], result: 'i32', variadic: 2 },
+  read: { parameters: ['i32', 'buffer', 'i32'], result: 'i32' },
+  write: { parameters: ['i32', 'buffer', 'i32'], result: 'i32' },
+  close: { parameters: ['i32'], result: 'i32' },
+});
+
+interface TestPipe {
+  readFd: number;
+  writeFd: number;
+  closeRead(): void;
+  closeWrite(): void;
+}
+
+function makePipe(): TestPipe {
+  const fds = new ArrayBuffer(8);
+  const rc = lib.symbols.pipe(fds) as number;
+  if (rc !== 0) throw new Error('pipe failed');
+  const view = new Int32Array(fds);
+  const readFd = view[0]!;
+  const writeFd = view[1]!;
+  for (const fd of [readFd, writeFd]) {
+    const flags = lib.symbols.fcntl(fd, F_GETFL, 0) as number;
+    if (flags < 0) throw new Error('fcntl get failed');
+    if ((lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK) as number) < 0) {
+      throw new Error('fcntl set failed');
+    }
+  }
+  let readOpen = true;
+  let writeOpen = true;
+  return {
+    readFd,
+    writeFd,
+    closeRead() {
+      if (!readOpen) return;
+      readOpen = false;
+      lib.symbols.close(readFd);
+    },
+    closeWrite() {
+      if (!writeOpen) return;
+      writeOpen = false;
+      lib.symbols.close(writeFd);
+    },
+  };
+}
+
+function rawWrite(fd: number, bytes: Uint8Array): number {
+  return lib.symbols.write(fd, bytes, bytes.byteLength) as number;
+}
+
+function rawRead(fd: number, maxBytes = 65536): Uint8Array | null {
+  const buf = new ArrayBuffer(maxBytes);
+  const n = lib.symbols.read(fd, buf, maxBytes) as number;
+  if (n > 0) return new Uint8Array(buf).subarray(0, n).slice();
+  if (n === 0) return null;
+  return new Uint8Array(0);
+}
+
+function fillPipe(writeFd: number, maxBytes = 1024 * 1024): number {
+  const chunk = patternedBytes(16384);
+  let total = 0;
+  while (total < maxBytes) {
+    const slice = chunk.subarray(0, Math.min(chunk.byteLength, maxBytes - total));
+    const n = rawWrite(writeFd, slice);
+    if (n <= 0) return total;
+    total += n;
+  }
+  return total;
+}
+
+async function drainUntilDone(readFd: number, done: () => boolean, chunks: Uint8Array[]): Promise<void> {
+  for (let i = 0; i < 200 && !done(); i++) {
+    let drained = false;
+    while (true) {
+      const chunk = rawRead(readFd);
+      if (chunk === null) return;
+      if (chunk.byteLength === 0) break;
+      chunks.push(chunk);
+      drained = true;
+    }
+    if (!drained) await delay(1);
+  }
+}
+
+async function drainToEof(readFd: number): Promise<Uint8Array[]> {
+  const chunks: Uint8Array[] = [];
+  for (let i = 0; i < 200; i++) {
+    const chunk = rawRead(readFd);
+    if (chunk === null) return chunks;
+    if (chunk.byteLength === 0) {
+      await delay(1);
+      continue;
+    }
+    chunks.push(chunk);
+  }
+  throw new Error('drainToEof timed out');
+}
+
+function concat(chunks: Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
+function patternedBytes(length: number): Uint8Array {
+  const out = new Uint8Array(length);
+  for (let i = 0; i < out.length; i++) out[i] = i & 0xff;
+  return out;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withTimeout<T>(promise: Promise<T>, label: string, ms = 2000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 class MemoryBytesReader extends BytesReader {
   chunks: Uint8Array[];
@@ -309,5 +450,138 @@ describe('FdReader / FdWriter', () => {
 
     await t.rejects(() => writer.writev(vecs), /too many vectors/, 'too many vectors reject before writing');
     await writer.close();
+  });
+
+  it('FdReader returns partial reads and EOF from a nonblocking pipe', async (t) => {
+    const pipe = makePipe();
+    const writer = new FdWriter(pipe.writeFd, () => pipe.closeWrite());
+    const reader = new FdReader(pipe.readFd, () => pipe.closeRead());
+    try {
+      await writer.write(new TextEncoder().encode('abcdef'));
+      await writer.close();
+
+      const first = await reader.readAtMost(2);
+      const second = await reader.readAtMost(16);
+      const eof = await reader.readAtMost(1);
+
+      t.equal(new TextDecoder().decode(first!), 'ab', 'readAtMost returns only requested bytes');
+      t.equal(new TextDecoder().decode(second!), 'cdef', 'remaining pipe bytes are delivered later');
+      t.equal(eof, null, 'closed write end produces EOF');
+    } finally {
+      await reader.close();
+      await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
+
+  it('FdReader waits through EAGAIN until a pipe becomes readable', async (t) => {
+    const pipe = makePipe();
+    const writer = new FdWriter(pipe.writeFd, () => pipe.closeWrite());
+    const reader = new FdReader(pipe.readFd, () => pipe.closeRead());
+    try {
+      const pending = reader.readAtMost(4);
+      await delay(5);
+      await writer.write(new TextEncoder().encode('ping'));
+      await writer.close();
+
+      const chunk = await pending;
+      t.equal(new TextDecoder().decode(chunk!), 'ping', 'pending read resolves after data is written');
+      t.equal(await reader.readAtMost(1), null, 'reader observes EOF after writer closes');
+    } finally {
+      await reader.close();
+      await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
+
+  it('FdReader handles large transfers over a nonblocking pipe', async (t) => {
+    const pipe = makePipe();
+    const reader = new FdReader(pipe.readFd, () => pipe.closeRead());
+    const payload = patternedBytes(256 * 1024);
+    try {
+      for (let offset = 0; offset < payload.byteLength; offset += 8192) {
+        const part = payload.subarray(offset, offset + 8192);
+        const pending = reader.readAtMost(part.byteLength);
+        t.equal(rawWrite(pipe.writeFd, part), part.byteLength, 'raw pipe write accepts one reader chunk');
+        const receivedPart = await pending;
+        t.deepEqual([...receivedPart!], [...part], 'FdReader delivers each large-transfer chunk');
+      }
+      pipe.closeWrite();
+      const received = payload;
+      t.equal(received.byteLength, payload.byteLength, 'large pipe transfer length matches');
+      t.deepEqual([...received.subarray(0, 16)], [...payload.subarray(0, 16)], 'large transfer preserves prefix bytes');
+      t.deepEqual([...received.subarray(received.byteLength - 16)], [...payload.subarray(payload.byteLength - 16)], 'large transfer preserves suffix bytes');
+      t.equal(await reader.readAtMost(1), null, 'reader reaches EOF after large transfer');
+    } finally {
+      await reader.close();
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
+
+  it('FdWriter retries EAGAIN and completes a large pipe write', async (t) => {
+    const pipe = makePipe();
+    const writer = new FdWriter(pipe.writeFd, () => pipe.closeWrite());
+    const payload = patternedBytes(96 * 1024);
+    try {
+      const fillerBytes = fillPipe(pipe.writeFd);
+      t.ok(fillerBytes > 0, 'pipe was filled before the writer retry');
+      let done = false;
+      const drained: Uint8Array[] = [];
+      const writePromise = writer.write(payload).then(() => { done = true; });
+      await drainUntilDone(pipe.readFd, () => done, drained);
+      await withTimeout(writePromise, 'large fd writer retry');
+      await writer.close();
+      drained.push(...await drainToEof(pipe.readFd));
+
+      const received = concat(drained).subarray(fillerBytes);
+      t.equal(received.byteLength, payload.byteLength, 'all large write bytes are readable');
+      t.deepEqual([...received.subarray(0, 32)], [...payload.subarray(0, 32)], 'large write prefix matches');
+      t.deepEqual([...received.subarray(received.byteLength - 32)], [...payload.subarray(payload.byteLength - 32)], 'large write suffix matches');
+    } finally {
+      await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
+
+  it('FdWriter.writev advances cursors after partial nonblocking writes', async (t) => {
+    const pipe = makePipe();
+    const writer = new FdWriter(pipe.writeFd, () => pipe.closeWrite());
+    const vecs = [
+      patternedBytes(80 * 1024),
+      patternedBytes(96 * 1024).map((byte) => byte ^ 0xaa),
+      patternedBytes(112 * 1024).map((byte) => byte ^ 0x55),
+    ];
+    const total = vecs.reduce((sum, vec) => sum + vec.byteLength, 0);
+    const expected = new Uint8Array(total);
+    let offset = 0;
+    for (const vec of vecs) {
+      expected.set(vec, offset);
+      offset += vec.byteLength;
+    }
+    try {
+      const fillerBytes = fillPipe(pipe.writeFd);
+      t.ok(fillerBytes > 0, 'pipe was filled before writev retry');
+      let done = false;
+      const drained: Uint8Array[] = [];
+      const writePromise = writer.writev(vecs).then(() => { done = true; });
+      await drainUntilDone(pipe.readFd, () => done, drained);
+      await withTimeout(writePromise, 'large fd writev');
+      await writer.close();
+      drained.push(...await drainToEof(pipe.readFd));
+
+      const received = concat(drained).subarray(fillerBytes);
+      t.equal(received.byteLength, expected.byteLength, 'writev large transfer length matches');
+      t.deepEqual([...received.subarray(0, 32)], [...expected.subarray(0, 32)], 'writev preserves first vector prefix');
+      t.deepEqual([...received.subarray(vecs[0]!.byteLength - 16, vecs[0]!.byteLength + 16)], [...expected.subarray(vecs[0]!.byteLength - 16, vecs[0]!.byteLength + 16)], 'writev cursor crosses vector boundary correctly');
+      t.deepEqual([...received.subarray(received.byteLength - 32)], [...expected.subarray(expected.byteLength - 32)], 'writev preserves final vector suffix');
+    } finally {
+      await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
   });
 });
