@@ -4,7 +4,10 @@
  *
  * PromptSession wraps the low-level `fino:tty` helpers and centralizes the
  * policy for CI or redirected input: prompts either return explicit defaults
- * or throw instead of blocking forever.
+ * or throw instead of blocking forever. The prompt surface intentionally covers
+ * simple text, yes/no, and select questions only. Hidden input, multiline
+ * editing, cancellation, fuzzy search, and full-screen terminal UI behavior are
+ * outside this module's current contract.
  *
  * @example
  * ```ts no_run

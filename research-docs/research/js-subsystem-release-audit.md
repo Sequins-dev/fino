@@ -107,10 +107,16 @@ Status: DONE
 Status: DONE
 
 ## TTY And Prompt
-Status: TODO
-- Add raw mode, terminal size, color capability, cursor controls, and signal-aware input, or document omissions.
-- Prompt lacks hidden input, multiline editing, cancellation, choice search, and real TTY integration tests.
-- Add PTY-backed release tests; current coverage uses pipes and injected sessions.
+Status: DONE
+- Release baseline documents the POSIX-oriented, line-based terminal contract:
+  stdio TTY snapshots, direct `isatty(3)` checks, one-line stdin reads, and
+  UTF-8 stdout/stderr writes.
+- Prompt coverage locks text, confirm, and select behavior with validation
+  retries, defaults, exact label/value and numeric selection, and
+  non-interactive failure when no default exists.
+- Raw mode, terminal sizing, color capability detection, cursor controls,
+  signal-aware input, hidden input, multiline editing, cancellation, fuzzy
+  choice search, and PTY-specific guarantees are outside this baseline.
 
 ## Config
 Status: DONE

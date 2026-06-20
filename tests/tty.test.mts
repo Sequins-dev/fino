@@ -48,6 +48,22 @@ describe('fino:tty', () => {
     t.equal(joinChunks(stdoutChunks), 'prompt>stdout:hello tty\n', 'readLine strips newline and ignores carriage return');
     t.equal(joinChunks(stderrChunks), 'stderr:ok\n', 'writeStderr writes text');
   });
+
+  it('returns a partial line when stdin closes before newline', async (t) => {
+    const proc = new Process(execPath, ['tests/fixtures/tty-helpers.mts']);
+    await proc.stdin.write(enc.encode('partial tty'));
+    proc.stdin.close();
+
+    const stdoutChunks: Uint8Array[] = [];
+    const stderrChunks: Uint8Array[] = [];
+    for await (const chunk of proc.stdout) stdoutChunks.push(chunk);
+    for await (const chunk of proc.stderr) stderrChunks.push(chunk);
+    const result = await proc.wait();
+
+    t.equal(result.code, 0, 'child exits successfully');
+    t.equal(joinChunks(stdoutChunks), 'prompt>stdout:partial tty\n', 'readLine returns partial input on EOF');
+    t.equal(joinChunks(stderrChunks), 'stderr:ok\n', 'writeStderr still writes text');
+  });
 });
 
 describe('fino:tty/prompt', () => {
@@ -115,6 +131,19 @@ describe('fino:tty/prompt', () => {
     t.deepEqual(errors, ['Please choose one of the listed options.\n'], 'invalid select choice is reported');
   });
 
+  it('answers select prompts by number and exact value', async (t) => {
+    const byNumber = createPromptSession(['2']);
+    const byValue = createPromptSession(['server']);
+    const options: SelectPromptOptions = {
+      label: 'Template',
+      options: [{ label: 'HTTP server', value: 'server' }, 'empty'],
+      defaultValue: 'empty',
+    };
+
+    t.equal(await byNumber.prompt.select(options), 'empty', 'select accepts one-based numeric choices');
+    t.equal(await byValue.prompt.select(options), 'server', 'select accepts exact values');
+  });
+
   it('uses non-interactive defaults or throws without defaults', async (t) => {
     const prompt = new PromptSession({ isInteractive: false });
 
@@ -125,6 +154,16 @@ describe('fino:tty/prompt', () => {
       () => prompt.text({ label: 'Missing' }),
       /Prompt unavailable for "Missing" in non-interactive mode/,
       'missing non-interactive default rejects',
+    );
+    await t.rejects(
+      () => prompt.confirm({ label: 'Continue' }),
+      /Prompt unavailable for "Continue" in non-interactive mode/,
+      'missing non-interactive confirm default rejects',
+    );
+    await t.rejects(
+      () => prompt.select({ label: 'Template', options: ['empty'] }),
+      /Prompt unavailable for "Template" in non-interactive mode/,
+      'missing non-interactive select default rejects',
     );
   });
 });

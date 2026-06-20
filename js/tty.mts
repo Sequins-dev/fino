@@ -3,7 +3,9 @@
  *
  * This module is intentionally low-level. It exposes the process standard
  * streams as text helpers while leaving richer prompt behavior to
- * `fino:tty/prompt`.
+ * `fino:tty/prompt`. The release contract is POSIX-oriented and line based:
+ * there is no raw mode API, terminal size query, color capability detection,
+ * cursor control, or signal-aware input abstraction yet.
  *
  * @example
  * ```ts no_run
