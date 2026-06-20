@@ -2,9 +2,18 @@
  * internal/opentelemetry/bootstrap — internal runtime module.
  *
  * Creates the OpenTelemetry runtime used by CLI script execution when
- * `--otlp-endpoint` is supplied. It configures OTLP/HTTP JSON export,
- * resource attributes, runtime instrumentations, processors, readers, and a
- * shutdown hook that flushes providers before the CLI exits.
+ * `--otlp-endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` is supplied. It configures
+ * OTLP/HTTP JSON export, resource attributes, runtime instrumentations,
+ * processors, readers, and a shutdown hook that flushes providers before the
+ * CLI exits.
+ *
+ * The release baseline covers built-in HTTP server, fetch, DNS, socket, TLS,
+ * and trace-topic instrumentations plus OTLP/HTTP JSON export. `OTEL_EXPORTER_OTLP_ENDPOINT`,
+ * per-signal endpoint env vars, comma-separated `OTEL_EXPORTER_OTLP_HEADERS`,
+ * `OTEL_EXPORTER_OTLP_COMPRESSION=none|gzip`, `OTEL_RESOURCE_ATTRIBUTES`, and
+ * `OTEL_SERVICE_NAME` are supported for CLI bootstrap. OTLP protobuf/gRPC,
+ * auto-discovery of third-party instrumentation packages, and upstream Node SDK
+ * bootstrap parity are intentionally outside this module.
  *
  * ```js
  * import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
@@ -14,7 +23,7 @@
  * @internal
  */
 
-import { cwd } from '../../process.mts';
+import { cwd, env } from '../../process.mts';
 import { DiskFileSystem } from '../../file/fs.mts';
 import {
   BatchLogRecordProcessor,
@@ -52,6 +61,53 @@ function inferServiceName(script: string): string {
 
 const fs = new DiskFileSystem();
 
+function envString(key: string): string {
+  const value = env[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function parseCommaKeyValues(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of text.split(',')) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf('=');
+    if (separator <= 0) continue;
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim();
+    if (key) out[key] = value;
+  }
+  return out;
+}
+
+function envSignalEndpoints(): { traces?: string; logs?: string; metrics?: string } {
+  const endpoints: { traces?: string; logs?: string; metrics?: string } = {};
+  const traces = envString('OTEL_EXPORTER_OTLP_TRACES_ENDPOINT');
+  const logs = envString('OTEL_EXPORTER_OTLP_LOGS_ENDPOINT');
+  const metrics = envString('OTEL_EXPORTER_OTLP_METRICS_ENDPOINT');
+  if (traces) endpoints.traces = traces;
+  if (logs) endpoints.logs = logs;
+  if (metrics) endpoints.metrics = metrics;
+  return endpoints;
+}
+
+function envHeaders(): Record<string, string> {
+  const text = envString('OTEL_EXPORTER_OTLP_HEADERS');
+  return text ? parseCommaKeyValues(text) : {};
+}
+
+function envCompression(): 'gzip' | null {
+  const value = envString('OTEL_EXPORTER_OTLP_COMPRESSION').toLowerCase();
+  if (!value || value === 'none') return null;
+  if (value === 'gzip') return 'gzip';
+  throw new TypeError('OTEL_EXPORTER_OTLP_COMPRESSION must be "none" or "gzip"');
+}
+
+function envResourceAttributes(): Record<string, unknown> {
+  const text = envString('OTEL_RESOURCE_ATTRIBUTES');
+  return text ? parseCommaKeyValues(text) : {};
+}
+
 async function loadCliResource(script: string): Promise<Resource> {
   const attributes: Record<string, unknown> = {};
   try {
@@ -60,6 +116,9 @@ async function loadCliResource(script: string): Promise<Resource> {
     if (typeof pkg?.name === 'string' && pkg.name.trim()) attributes['service.name'] = pkg.name.trim();
     if (typeof pkg?.version === 'string' && pkg.version.trim()) attributes['service.version'] = pkg.version.trim();
   } catch {}
+  Object.assign(attributes, envResourceAttributes());
+  const serviceName = envString('OTEL_SERVICE_NAME');
+  if (serviceName) attributes['service.name'] = serviceName;
   if (!attributes['service.name']) attributes['service.name'] = inferServiceName(script);
   return new Resource(attributes);
 }
@@ -67,11 +126,12 @@ async function loadCliResource(script: string): Promise<Resource> {
 /**
  * Build tracer, logger, and meter providers for an instrumented CLI script.
  *
- * The resource is loaded from `package.json` when available and otherwise
- * falls back to a service name inferred from `script`. `debug` enables verbose
- * exporter request and response logging. The returned providers are started
- * through an `OtelSDK` instance and a shutdown hook is registered to flush and
- * stop it. Exporter partial-success and request failures are logged to stderr.
+ * The resource is loaded from `package.json`, `OTEL_RESOURCE_ATTRIBUTES`, and
+ * `OTEL_SERVICE_NAME`, then falls back to a service name inferred from `script`.
+ * `debug` enables verbose exporter request and response logging. The returned
+ * providers are started through an `OtelSDK` instance and a shutdown hook is
+ * registered to flush and stop it. Exporter partial-success and request
+ * failures are logged to stderr.
  *
  * ```js
  * import { createCliOtelRuntime } from 'internal:opentelemetry/bootstrap';
@@ -88,6 +148,9 @@ async function loadCliResource(script: string): Promise<Resource> {
 export async function createCliOtelRuntime(endpoint: string, script: string, debug = false) {
   const exporter = new OTLPHttpJsonExporter({
     endpoint,
+    endpoints: envSignalEndpoints(),
+    headers: envHeaders(),
+    compression: envCompression(),
     onError(error) {
       console.error(`[otel] export to ${endpoint} failed: ${error.message}`);
     },

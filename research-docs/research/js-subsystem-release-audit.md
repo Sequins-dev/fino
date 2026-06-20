@@ -256,10 +256,7 @@ Status: DONE
 Status: DONE
 
 ## OpenTelemetry Instrumentations And Bootstrap
-Status: TODO
-- Built-ins cover HTTP server, fetch, DNS, socket, TLS, and trace topics only.
-- CLI bootstrap is tied to `--otlp-endpoint`; standard `OTEL_*` env handling is incomplete.
-- Add release-hardening tests for instrumentation config, suppression, filtering, and broader runtime domains.
+Status: DONE
 
 ## Docs And Benchmarks
 Status: TODO

@@ -3,8 +3,9 @@
  *
  * Implements script execution for both `fino run <script>` and the root
  * shortcut `fino <script>`. The module handles path normalization, watch-mode
- * realm creation, and optional OpenTelemetry provider installation before
- * importing the target script.
+ * realm creation, and optional OpenTelemetry provider installation from either
+ * `--otlp-endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` before importing the
+ * target script.
  *
  * ```js
  * import { createRunCommand } from 'internal:commands/run';
@@ -56,9 +57,11 @@ function optionValue(ctx: CommandContext, key: string): unknown {
  *
  * When no script positional is present, this returns the command help output.
  * With `--watch`, the script runs inside a watched `Realm` and the realm is
- * terminated on `beforeunload`. With an `--otlp-endpoint` option, the script
- * import runs with CLI OpenTelemetry providers installed; otherwise it is
- * imported directly. Import failures and provider bootstrap errors propagate to
+ * terminated on `beforeunload`. With an `--otlp-endpoint` option or
+ * `OTEL_EXPORTER_OTLP_ENDPOINT`, the script import runs with CLI OpenTelemetry
+ * providers installed; otherwise it is imported directly. The CLI flag wins
+ * over the environment endpoint, and `OTEL_SDK_DISABLED=true` disables env and
+ * flag bootstrap. Import failures and provider bootstrap errors propagate to
  * the caller.
  *
  * ```js
@@ -85,8 +88,11 @@ export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
   }
 
   const load = () => import(normalizeScriptSpecifier(String(script)));
+  if (String(env.OTEL_SDK_DISABLED || '').trim().toLowerCase() === 'true') return load();
   const endpointOption = optionValue(ctx, 'otlp-endpoint');
-  const endpoint = typeof endpointOption === 'string' ? endpointOption.trim() : '';
+  const flagEndpoint = typeof endpointOption === 'string' ? endpointOption.trim() : '';
+  const envEndpoint = typeof env.OTEL_EXPORTER_OTLP_ENDPOINT === 'string' ? env.OTEL_EXPORTER_OTLP_ENDPOINT.trim() : '';
+  const endpoint = flagEndpoint || envEndpoint;
   if (!endpoint) return load();
   return runWithProviders(
     await createCliOtelRuntime(endpoint, String(script), env.FINO_OTEL_DEBUG === '1'),

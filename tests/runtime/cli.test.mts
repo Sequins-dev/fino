@@ -941,6 +941,75 @@ describe('CLI commands', () => {
     t.ok(!enabled.stdout.includes('"scope":{"name":"socket"}'), 'exporter requests do not emit socket scope spans');
   });
 
+  it('uses OTEL env vars for CLI bootstrap and lets the flag override the base endpoint', async (t) => {
+    const envEnabled = await runCli(['./tests/fixtures/cli-otel-entrypoint.mts'], {
+      env: {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://env-collector.example:4318/env',
+      },
+    });
+    t.equal(envEnabled.result.code, 0, 'env-enabled entrypoint exits successfully');
+    t.equal(envEnabled.stderr, '', 'env-enabled bootstrap does not write stderr');
+    t.ok(envEnabled.stdout.includes('export:http://env-collector.example:4318/env/v1/traces'), 'env endpoint enables trace export');
+    t.ok(envEnabled.stdout.includes('export:http://env-collector.example:4318/env/v1/logs'), 'env endpoint enables log export');
+    t.ok(envEnabled.stdout.includes('export:http://env-collector.example:4318/env/v1/metrics'), 'env endpoint enables metric export');
+
+    const flagWins = await runCli([
+      '--otlp-endpoint',
+      'http://flag-collector.example:4318/flag',
+      './tests/fixtures/cli-otel-entrypoint.mts',
+    ], {
+      env: {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://env-collector.example:4318/env',
+      },
+    });
+    t.equal(flagWins.result.code, 0, 'flag-over-env entrypoint exits successfully');
+    t.ok(flagWins.stdout.includes('export:http://flag-collector.example:4318/flag/v1/traces'), 'flag endpoint wins for trace export');
+    t.ok(!flagWins.stdout.includes('env-collector.example'), 'env base endpoint is not used when flag is present');
+  });
+
+  it('applies OTEL per-signal endpoints, headers, compression, and resource env vars', async (t) => {
+    const { stdout, stderr, result } = await runCli(['./tests/fixtures/cli-otel-entrypoint.mts'], {
+      env: {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://env-collector.example:4318/base',
+        OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: 'http://env-collector.example:4318/custom-traces',
+        OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: 'http://env-collector.example:4318/custom-logs',
+        OTEL_EXPORTER_OTLP_METRICS_ENDPOINT: 'http://env-collector.example:4318/custom-metrics',
+        OTEL_EXPORTER_OTLP_HEADERS: 'x-env=one,x-other=two',
+        OTEL_EXPORTER_OTLP_COMPRESSION: 'gzip',
+        OTEL_RESOURCE_ATTRIBUTES: 'service.name=resource-service,deployment.environment=test,team=runtime',
+        OTEL_SERVICE_NAME: 'env-service',
+      },
+    });
+
+    t.equal(result.code, 0, 'env-rich entrypoint exits successfully');
+    t.equal(stderr, '', 'env-rich bootstrap does not write stderr');
+    t.ok(stdout.includes('export:http://env-collector.example:4318/custom-traces'), 'trace endpoint override used');
+    t.ok(stdout.includes('export:http://env-collector.example:4318/custom-logs'), 'log endpoint override used');
+    t.ok(stdout.includes('export:http://env-collector.example:4318/custom-metrics'), 'metric endpoint override used');
+    t.ok(stdout.includes('"service.name"'), 'resource includes service.name');
+    t.ok(stdout.includes('"env-service"'), 'OTEL_SERVICE_NAME overrides resource service.name');
+    t.ok(stdout.includes('"deployment.environment"'), 'resource attributes include deployment environment');
+    t.ok(stdout.includes('"team"'), 'resource attributes include custom team');
+    t.ok(stdout.includes('x-env'), 'OTEL exporter headers are applied');
+    t.ok(stdout.includes('content-encoding'), 'OTEL compression header is applied');
+    t.ok(stdout.includes('gzip'), 'gzip compression is selected');
+  });
+
+  it('respects OTEL_SDK_DISABLED for env-only bootstrap', async (t) => {
+    const { stdout, stderr, result } = await runCli(['./tests/fixtures/cli-otel-entrypoint.mts'], {
+      env: {
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://env-collector.example:4318/env',
+        OTEL_SDK_DISABLED: 'true',
+      },
+    });
+
+    t.equal(result.code, 0, 'disabled SDK entrypoint exits successfully');
+    t.equal(stderr, '', 'disabled SDK bootstrap does not write stderr');
+    t.ok(!stdout.includes('export:http://env-collector.example:4318/env/v1/traces'), 'disabled SDK suppresses trace export');
+    t.ok(!stdout.includes('export:http://env-collector.example:4318/env/v1/logs'), 'disabled SDK suppresses log export');
+    t.ok(!stdout.includes('export:http://env-collector.example:4318/env/v1/metrics'), 'disabled SDK suppresses metric export');
+  });
+
   it('keeps OTEL providers active for async work after entrypoint import', async (t) => {
     const { stdout, stderr, result } = await runCli([
       '--otlp-endpoint',

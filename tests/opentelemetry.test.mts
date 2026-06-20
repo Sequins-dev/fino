@@ -53,7 +53,7 @@ import {
   setMeterProvider,
   setTracerProvider,
 } from 'fino:opentelemetry';
-import type { CarrierApi, LogRecord, LogRecordProcessor, MetricRecord, SpanRecord } from 'fino:opentelemetry';
+import type { CarrierApi, Instrumentation, LogRecord, LogRecordProcessor, MetricRecord, SpanRecord } from 'fino:opentelemetry';
 import { getTracerProvider as getTraceProviderFromTraces, Span as SplitSpan } from 'fino:opentelemetry/traces';
 import { getMeterProvider as getMeterProviderFromMetrics, Counter as SplitCounter } from 'fino:opentelemetry/metrics';
 import { getLoggerProvider as getLoggerProviderFromLogs, SeverityNumber as SplitSeverityNumber } from 'fino:opentelemetry/logs';
@@ -299,6 +299,30 @@ describe('fino:opentelemetry', () => {
     t.equal('phase' in exportedSpan, false, 'trace payload does not duplicate phase category');
 
     await sdk.shutdown();
+  });
+
+  it('enables configured instrumentations once and disposes them on shutdown', async (t) => {
+    const events: string[] = [];
+    const instrumentation: Instrumentation = {
+      enable() {
+        events.push('enable');
+        return {
+          dispose() {
+            events.push('dispose');
+          },
+        };
+      },
+    };
+    const sdk = new OtelSDK({
+      spanProcessors: [],
+      instrumentations: [instrumentation],
+    });
+
+    sdk.start();
+    sdk.start();
+    await sdk.shutdown();
+
+    t.deepEqual(events, ['enable', 'dispose'], 'instrumentation lifecycle is one enable and one dispose');
   });
 
   it('applies SDK resource identity independently from provider resources', async (t) => {
