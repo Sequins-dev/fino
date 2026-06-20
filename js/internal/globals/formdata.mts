@@ -5,6 +5,9 @@
  * holds an ordered list of name/value entries where values are either strings
  * or `File` objects (Blobs with a filename). It is used as a request body in
  * the Fetch API and as the basis for multipart/form-data serialization.
+ * This release supports outgoing `multipart/form-data` serialization only;
+ * parsing incoming multipart request bodies into FormData is intentionally
+ * outside the release scope.
  *
  *
  * ## Entry normalization (_normalizeEntry)
@@ -104,6 +107,10 @@ function _escapeParameter(s: string): string {
  * application/octet-stream when their Blob type is empty. Callers should not
  * reuse untrusted boundary strings without validating that they cannot collide
  * with body content.
+ *
+ * Serialization builds a complete `Uint8Array` before returning. This keeps
+ * fetch integration simple, but callers should avoid unbounded or very large
+ * bodies until streaming multipart serialization is added.
  *
  * ```typescript no_run
  * const fd = new FormData();

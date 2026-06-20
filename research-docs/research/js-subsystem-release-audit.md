@@ -217,9 +217,7 @@ Status: DONE
   behavior.
 
 ## FormData
-Status: TODO
-- Document serialization-only multipart scope and body/transfer limits.
-- Add incoming multipart parsing only if it is intended for release.
+Status: DONE
 
 ## Fetch Global
 Status: TODO
