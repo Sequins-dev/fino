@@ -11,6 +11,10 @@ import { Socket } from 'fino:net/socket';
 import { Response } from 'fino:net/http';
 import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.mts';
 
+if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
+  throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

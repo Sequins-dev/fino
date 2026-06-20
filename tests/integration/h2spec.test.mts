@@ -48,6 +48,10 @@ import { DiskFileSystem } from 'fino:file';
 import { Process } from 'fino:process';
 import { h2Available } from 'fino:net/http/h2';
 
+if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
+  throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
+}
+
 const decodeUtf8 = (b: Uint8Array) => new TextDecoder().decode(b);
 
 // ---------------------------------------------------------------------------

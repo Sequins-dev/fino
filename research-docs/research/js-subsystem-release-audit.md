@@ -280,10 +280,15 @@ Status: DONE
 Status: DONE
 
 ## HTTP/2
-Status: TODO
-- Resolve the checked-in h2spec allowed-failure list before strict parity.
-- Add coverage or explicit release rationale for omitted h2spec sections `6.6` and `6.9`.
-- Replace buffered request/response body paths with streaming behavior, or document the limit.
+Status: DONE
+- Release baseline requires a libnghttp2-enabled CI lane with
+  `FINO_REQUIRE_H2=1` so HTTP/2 tests cannot silently skip release coverage.
+- h2spec coverage runs against the runnable RFC 7540/7541 sections with a live
+  allowlist baseline, duplicate overlapping cases are aggregated by final pass
+  state, and omitted sections `6.6` and `6.9` have explicit release rationale
+  plus deterministic local coverage.
+- Server push/PUSH_PROMISE is outside this baseline, and request/response
+  bodies remain buffered at the public `Request`/`Response` boundary.
 
 ## HTTP/2 Pool
 Status: TODO

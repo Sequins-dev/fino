@@ -1,13 +1,29 @@
 /**
  * fino:net/http/h2 — public HTTP/2 module.
  *
- * Currently exposes:
+ * This module exposes the runtime's nghttp2-backed HTTP/2 availability and
+ * low-level driver hooks. HTTP/2 is selected automatically by the server for
+ * prior-knowledge h2c, h2c upgrades, and TLS ALPN `h2`, and by `fetch()` when a
+ * pooled HTTPS connection negotiates `h2`.
+ *
+ * Release baseline:
  *   - `h2Available`: whether libnghttp2 was found on this system
- *   - `h2Version`:   library version string, or null if unavailable
+ *   - `h2Version`: library version string, or null if unavailable
+ *   - client and server session drivers for the runtime's own HTTP stack
+ *   - h2spec coverage for runnable RFC 7540/7541 sections, with the checked-in
+ *     allowlist acting as the current conformance baseline
+ *
+ * Current limits:
+ *   - HTTP/2 server push is not exposed and PUSH_PROMISE h2spec cases are
+ *     outside this release baseline
+ *   - h2spec section 6.9 is covered by deterministic local flow-control tests
+ *     because h2spec v2.6 does not emit reliable JUnit for that section
+ *   - request and response bodies are buffered at the public Request/Response
+ *     boundary before application code consumes them
  *
  * The H2 server and client drivers are wired into `fino:net/http/server` and
- * the global `fetch` implementation automatically; applications do not import this module unless
- * they need to check library availability.
+ * the global `fetch` implementation automatically; applications usually import
+ * this module only to check library availability.
  *
  * @example
  * ```ts no_run
