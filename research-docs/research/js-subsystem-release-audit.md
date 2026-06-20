@@ -33,10 +33,7 @@ Status: TODO
   `bench`, `test`, and `run --watch` lifecycle behavior.
 
 ## Test And Bench Commands
-Status: TODO
-- Document `fino test --show-output` modes and final failure-output behavior.
-- Decide whether swallowed `after()` hook errors remain intentional and make
-  the guide warning explicit.
+Status: DONE
 
 ## Fmt, Lint, And Tooling
 Status: DONE
@@ -335,9 +332,7 @@ Status: TODO
   worker/seed failure cases.
 
 ## Test Framework
-Status: TODO
-- Document CLI output capture modes and final failure diagnostics.
-- Make the `after()` cleanup-error policy explicit.
+Status: DONE
 
 ## Assertions
 Status: DONE

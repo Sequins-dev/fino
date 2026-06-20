@@ -35,7 +35,7 @@
  * `it()` and hook functions throw if used at the top level.
  *
  *
- * ## TAP-13 output
+ * ## TAP-13 output and captured diagnostics
  *
  * Nested groups produce standard TAP subtests (indented 4 spaces per level):
  *
@@ -50,6 +50,12 @@
  *   # tests 2
  *   # pass  2
  *
+ * Console output from tests is captured by default so passing tests keep TAP
+ * output clean. Failing tests print a final `# Failure details` section with
+ * their captured stdout, stderr, and thrown errors. The CLI exposes this as
+ * `fino test --show-output=failures|always|never`: `failures` is the default,
+ * `always` streams output live for debugging, and `never` suppresses captured
+ * output even when tests fail.
  *
  * ## Internal representation
  *
@@ -122,6 +128,11 @@ interface RunContext {
  *
  * `filter` keeps only matching `describe()` paths and their ancestors. The CLI
  * passes this from `fino test --filter`.
+ *
+ * `showOutput` controls test console output. `failures` captures output and
+ * prints it only in final failure diagnostics, `always` writes output as tests
+ * run, and `never` keeps captured output hidden. The CLI passes this from
+ * `fino test --show-output`.
  */
 export interface RunOptions {
   filter?: string;
