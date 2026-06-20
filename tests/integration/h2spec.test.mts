@@ -91,6 +91,11 @@ interface H2specResults {
   failing: string[];
 }
 
+interface H2specAggregate {
+  passing: Set<string>;
+  failing: Set<string>;
+}
+
 function _decodeXml(s: string): string {
   return s
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
@@ -128,6 +133,18 @@ function _parseJunit(xml: string): H2specResults {
   }
 
   return { passing, failing };
+}
+
+function _mergeH2specResults(aggregate: H2specAggregate, results: H2specResults): void {
+  for (const id of results.passing) {
+    aggregate.passing.add(id);
+    aggregate.failing.delete(id);
+  }
+  for (const id of results.failing) {
+    if (!aggregate.passing.has(id)) {
+      aggregate.failing.add(id);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -318,9 +335,31 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     }
   });
 
+  it('treats a later duplicate pass as clearing an earlier failure', (t) => {
+    const caseId = 'http2/5.1.2/5 Sends a RST_STREAM frame to idle stream after reaching the concurrent stream limit';
+    const first = _parseJunit(`
+      <testsuite>
+        <testcase package="http2/5.1.2" classname="5 Sends a RST_STREAM frame to idle stream after reaching the concurrent stream limit">
+          <failure message="expected pass"/>
+        </testcase>
+      </testsuite>
+    `);
+    const second = _parseJunit(`
+      <testsuite>
+        <testcase package="http2/5.1.2" classname="5 Sends a RST_STREAM frame to idle stream after reaching the concurrent stream limit"/>
+      </testsuite>
+    `);
+    const aggregate: H2specAggregate = { passing: new Set(), failing: new Set() };
+
+    _mergeH2specResults(aggregate, first);
+    _mergeH2specResults(aggregate, second);
+
+    t.deepEqual([...aggregate.passing], [caseId], 'the duplicate case is counted as passing');
+    t.deepEqual([...aggregate.failing], [], 'the duplicate case is not counted as failing');
+  });
+
   it('matches the allowlisted compliance baseline', { skip }, async (t) => {
-    const allPassing: string[] = [];
-    const allFailing: string[] = [];
+    const aggregate: H2specAggregate = { passing: new Set(), failing: new Set() };
     const missingSections: string[] = [];
 
     for (let si = 0; si < _SECTIONS.length; si++) {
@@ -334,13 +373,7 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
         missingSections.push(`${section} (stderr: ${stderr.trim() || '<empty>'})`);
         continue;
       }
-      const { passing, failing } = _parseJunit(xml);
-      for (const id of passing) {
-        if (!allPassing.includes(id)) allPassing.push(id);
-      }
-      for (const id of failing) {
-        if (!allFailing.includes(id) && !allPassing.includes(id)) allFailing.push(id);
-      }
+      _mergeH2specResults(aggregate, _parseJunit(xml));
     }
 
     if (missingSections.length > 0) {
@@ -350,16 +383,16 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
       return;
     }
 
-    if (allPassing.length === 0 && allFailing.length === 0) {
+    if (aggregate.passing.size === 0 && aggregate.failing.size === 0) {
       t.fail('JUnit XML parsed no test cases — check h2spec version / XML format.');
       return;
     }
 
     const allowlist = await _loadAllowlist();
 
-    const regressions  = allFailing.filter(id => !allowlist.has(id));
+    const regressions  = [...aggregate.failing].filter(id => !allowlist.has(id));
     const staleEntries = [...allowlist.keys()].filter(
-      id => !allFailing.includes(id) && allPassing.includes(id),
+      id => !aggregate.failing.has(id) && aggregate.passing.has(id),
     );
 
     if (regressions.length > 0) {
@@ -382,7 +415,7 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     }
     t.ok(
       true,
-      `${allPassing.length} pass, ${totalAllowed} allowlisted (${allFailing.length} failing as expected)` +
+      `${aggregate.passing.size} pass, ${totalAllowed} allowlisted (${aggregate.failing.size} failing as expected)` +
       (staleEntries.length > 0 ? `, ${staleEntries.length} stale (see warning)` : ''),
     );
   });
