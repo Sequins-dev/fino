@@ -2,14 +2,17 @@
  * internal:globals/urlpattern — URLPattern global (WHATWG URL Pattern API)
  *
  * URLPattern lets you declare a pattern for URL matching and then test or
- * match URLs against it. It is used primarily in HTTP routing (matching
- * `/users/:id` against an incoming request path) and in Service Worker
- * fetch event routing in browsers.
+ * match URLs against it. The release baseline is routing-oriented: matching
+ * request URLs by protocol, hostname, path, search, and hash, and extracting
+ * named groups from path and host patterns such as `/users/:id`.
  *
- * The implementation follows the WHATWG URL Pattern Standard
- * (https://urlpattern.spec.whatwg.org/). It processes patterns per URL
- * component (protocol, username, password, hostname, port, pathname, search,
- * hash) so you can match any combination of URL parts.
+ * The implementation follows the broad WHATWG URL Pattern Standard shape
+ * (https://urlpattern.spec.whatwg.org/) but is not strict tokenizer parity. It
+ * processes patterns per URL component (protocol, username, password, hostname,
+ * port, pathname, search, hash) so you can match any combination of URL parts.
+ * Coverage locks object and string constructors, baseURL resolution, named
+ * parameters, wildcard and regexp groups, repeat modifiers, escaped literals,
+ * `hasRegExpGroups`, and percent-encoding boundaries used by routing code.
  *
  *
  * ## Architecture: tokenize → compile → match
@@ -75,9 +78,10 @@
  * ## What is NOT implemented
  *
  * - The WHATWG spec's "encoding callback" for percent-encoding patterns —
- *   patterns and inputs are matched as-is without percent-decoding.
- * - Strict WHATWG tokenizer state machine — this uses a hand-rolled scanner
- *   that covers the full syntax but may differ in edge cases.
+ *   patterns and inputs are matched as-is without percent-decoding or
+ *   component-specific pre-encoding.
+ * - Strict WHATWG tokenizer state machine parity. This uses a hand-rolled
+ *   scanner that covers the routing syntax but may differ in edge cases.
  *
  *
  * ```ts no_run

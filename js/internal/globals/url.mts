@@ -1,10 +1,18 @@
 /**
  * internal:globals/url — WHATWG URL and URLSearchParams globals.
  *
- * This is a pure-JS implementation of the WHATWG URL Standard
- * (https://url.spec.whatwg.org/). It handles absolute URL parsing, relative
- * URL resolution against a base, and the full URLSearchParams mutation API.
- * No native binding or C library is used — all parsing is done in JS.
+ * This is a pure-JS implementation of the common WHATWG URL Standard
+ * (https://url.spec.whatwg.org/) surface used by the runtime. It handles
+ * absolute URL parsing, relative URL resolution against a base, URL property
+ * mutation/serialization, and URLSearchParams construction, mutation, and
+ * iteration semantics. No native binding or C library is used; all parsing is
+ * done in JS.
+ *
+ * The release baseline is intentionally practical rather than WPT-complete.
+ * Coverage locks common HTTP(S), file, special and non-special scheme behavior,
+ * IDNA/Punycode host serialization, bracketed IPv6 normalization, numeric IPv4
+ * forms, percent-encoding through setters, relative-path/query/hash
+ * resolution, and live URLSearchParams mutation during iteration.
  *
  *
  * ## Architecture
@@ -29,8 +37,9 @@
  *
  * ## URL parsing
  *
- * `_parseURL(input, base)` is a hand-rolled parser, not a state-machine as
- * specified by the WHATWG standard. It handles the most common cases:
+ * `_parseURL(input, base)` is a hand-rolled parser, not the complete
+ * state-machine/tokenizer specified by the WHATWG standard. It handles the
+ * release baseline:
  *
  * - Absolute URLs with authority (`scheme://user:pass@host:port/path?q#f`)
  * - Opaque URLs without authority (`data:`, `javascript:`)
@@ -57,11 +66,14 @@
  * ## URLSearchParams encoding
  *
  * URLSearchParams uses `application/x-www-form-urlencoded` encoding, which
- * differs from percent-encoding in two ways: spaces become `+` (not `%20`),
- * and the safe character set is narrower. The `_formEncode` / `_formDecode`
- * helpers implement this. For multi-byte characters they delegate to the
- * built-in `encodeURIComponent` / `decodeURIComponent` rather than
- * re-implementing the UTF-8 encoder.
+ * differs from URL component percent-encoding in two ways: spaces become `+`
+ * (not `%20`), and the safe character set is narrower. The `_formEncode` /
+ * `_formDecode` helpers implement this. For multi-byte characters they
+ * delegate to the built-in `encodeURIComponent` / `decodeURIComponent` rather
+ * than re-implementing the UTF-8 encoder. Mutation methods preserve the
+ * observable WHATWG ordering contract for common cases: `append()` adds to the
+ * end, `set()` keeps the first matching position and removes later duplicates,
+ * `sort()` is stable for duplicate names, and iterators observe live changes.
  *
  *
  * ## Host normalization
@@ -74,12 +86,14 @@
  *
  * ## What is NOT implemented
  *
- * - Full WHATWG URL state machine with all 20+ parser states.
+ * - Full WHATWG URL state machine/tokenizer parity with all parser states.
  * - The full host parser validation matrix for every invalid IPv4/domain edge.
+ * - WPT-level coverage for every control-character, Windows path, and
+ *   non-special scheme edge.
  *
- * These omissions are intentional. The implemented subset covers all practical
- * HTTP/HTTPS usage. Add missing features only when a concrete use-case
- * requires them.
+ * These omissions are intentional. The implemented subset covers practical
+ * runtime URL handling and documented release corpus behavior. Add missing
+ * features only when a concrete use case requires them.
  *
  *
  * ```ts no_run

@@ -350,10 +350,21 @@ Status: DONE
 Status: DONE
 
 ## URL, URLSearchParams, URLPattern
-Status: TODO
-- URL parser is hand-rolled and still has gaps versus the full WHATWG state machine.
-- URLPattern omits the spec encoding callback and strict tokenizer edge behavior.
-- Add WPT-derived URL and URLPattern edge fixtures.
+Status: DONE
+- Release baseline covers common WHATWG URL behavior, URL property mutation,
+  relative path/query/hash resolution, default port stripping, percent-encoding
+  through setters, IDNA/Punycode hostnames, normalized IPv6, numeric IPv4 forms,
+  file URL host/path serialization, and special versus non-special path shapes.
+- URLSearchParams coverage locks construction forms, duplicate handling,
+  two-argument `delete()` / `has()`, stable sorting, live iterator mutation,
+  and URL/searchParams synchronization.
+- URLPattern baseline is routing-oriented: object and string constructors,
+  baseURL resolution, component matching, named parameters, wildcards, regexp
+  groups, repeat modifiers, escaped literals, `hasRegExpGroups`, and
+  percent-encoding boundaries are covered.
+- Full WHATWG URL state-machine/tokenizer parity, the complete invalid-host
+  matrix, and the URLPattern encoding callback / strict tokenizer edge behavior
+  are explicit exclusions.
 
 ## Blob And File
 Status: DONE
