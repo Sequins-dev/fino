@@ -159,5 +159,12 @@ Run benchmarks in the same environment when comparing performance:
 fino bench benchmarks
 ```
 
-Use short benchmark runs for fast iteration and stable machines for numbers you
-intend to keep or compare.
+The benchmark harness prints human, benc.h-style text output. It uses an
+adaptive minimum-duration measurement loop and supports sync or async measured
+functions plus setup/teardown outside the timed body. `FINO_BENCH_MIN_NS` exists
+only as an internal test knob for shortening fixture runs. JSON output,
+machine-readable result objects, public warmup or fixed-iteration controls,
+fixed sample counts, variance thresholds, pluggable reporters, and CI
+regression gates are outside this baseline.
+
+Use stable machines for numbers you intend to keep or compare.

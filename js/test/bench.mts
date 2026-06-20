@@ -84,6 +84,12 @@
  * For async benchmarks, each iteration awaits the returned thenable before
  * recording the elapsed time.
  *
+ * The release contract is a benc.h-style adaptive harness with human,
+ * TAP-adjacent text output. `FINO_BENCH_MIN_NS` is an internal test knob for
+ * shortening the minimum sample duration in CLI fixtures. There is no public
+ * warmup option, fixed-iteration mode, fixed-sample mode, variance-threshold
+ * gate, JSON output, pluggable reporter, or CI regression gate in this module.
+ *
  *
  * ## Comparison output
  *

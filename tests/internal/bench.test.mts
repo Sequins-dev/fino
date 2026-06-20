@@ -2,6 +2,7 @@ import { describe, it } from 'fino:test/test';
 import benchConsole from 'internal:globals/console';
 import { env } from 'internal:process';
 import { Group, bench, run, _resetBenchmarksForTest } from 'fino:bench';
+import * as benchModule from 'fino:bench';
 
 async function withBenchMinNs<T>(value: string, fn: () => Promise<T>): Promise<T> {
   const previous = env.FINO_BENCH_MIN_NS;
@@ -134,5 +135,43 @@ describe('bench run()', () => {
     const logs = await withBenchMinNs('1000', () => captureBenchLogs(() => run()));
 
     t.deepEqual(logs, ['benc.h v1.0.0'], 'reset helper leaves no registered suites to run');
+  });
+
+  it('keeps the release output human-readable and non-machine-readable', async (t) => {
+    _resetBenchmarksForTest();
+    bench('release suite', (b) => {
+      b.measure('first measure', () => {});
+      b.measure('second measure', () => {});
+    });
+
+    let result: unknown;
+    const logs = await withBenchMinNs('1000', () => captureBenchLogs(async () => {
+      result = await run();
+    }));
+    _resetBenchmarksForTest();
+
+    t.equal(result, undefined, 'run() does not return structured benchmark data');
+    t.equal(logs[0], 'benc.h v1.0.0', 'output starts with benc.h-compatible header');
+    t.ok(logs.includes('# release suite'), 'suite heading is printed as human text');
+    t.ok(logs.some((line) => /^first measure - .+ i\/s /.test(line)), 'measurement line is human-formatted');
+    t.ok(logs.some((line) => line === 'Comparing...'), 'multi-measure groups print comparison text');
+    t.ok(!logs.some((line) => line.trim().startsWith('{') || line.trim().startsWith('[')), 'runner does not emit JSON lines');
+  });
+
+  it('does not expose public benchmark tuning or reporter APIs', (t) => {
+    const exported = benchModule as Record<string, unknown>;
+
+    for (const name of [
+      'warmup',
+      'setWarmup',
+      'fixedIterations',
+      'samples',
+      'varianceThreshold',
+      'json',
+      'reporter',
+      'setReporter',
+    ]) {
+      t.equal(exported[name], undefined, `${name} is not a public bench API`);
+    }
   });
 });

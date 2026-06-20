@@ -360,9 +360,15 @@ Status: DONE
 - Nested mock scopes and concurrent async scope isolation are covered.
 
 ## Bench Harness
-Status: TODO
-- Add warmup control, fixed iteration/sample modes, async setup/teardown, machine-readable output, and variance thresholds.
-- Complete release comparison workflows and CI regression gates.
+Status: DONE
+- Release baseline covers the current benc.h-style adaptive harness: sync and
+  async measurements, setup/teardown outside the measured body, filtering,
+  teardown on measurement failure, and human comparison output.
+- Output is TAP-adjacent human text and `run()` does not return
+  machine-readable benchmark data.
+- Public warmup, fixed-iteration, fixed-sample, variance-threshold, JSON,
+  pluggable reporter, CI regression gate, and release comparison workflows are
+  outside this harness contract.
 
 ## OpenTelemetry API, SDK, Signals
 Status: TODO
