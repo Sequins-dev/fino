@@ -111,6 +111,12 @@ results. Run them in the same environment when comparing performance:
 fino bench benchmarks
 ```
 
+Benchmark output is human, benc.h-style text with comparison lines for groups
+that contain multiple measurements. Use stable machines for numbers you intend
+to compare. `FINO_BENCH_MIN_NS` is an internal test knob for shortening fixture
+runs; the command does not emit JSON, return machine-readable results, or
+provide a CI regression gate.
+
 ## Init
 
 Create a `package.json`:

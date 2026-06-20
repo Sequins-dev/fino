@@ -47,9 +47,14 @@ Status: DONE
   compatibility surface.
 
 ## Bench Command
-Status: TODO
-- Add release tests for filtering, failure output, and machine-readable benchmark results.
-- Document timing stability expectations and comparison workflow.
+Status: DONE
+- Release baseline covers direct file, directory, and glob `.bench.mts` inputs,
+  filtering, async setup/teardown behavior, teardown on measurement failure,
+  failure output, and human comparison text.
+- Benchmark output is benc.h-style human text; the command does not emit JSON
+  or machine-readable result objects.
+- Stable-machine comparison guidance is documented. CI regression gates and
+  release comparison workflows remain outside the command contract.
 
 ## Fmt, Lint, And Tooling
 Status: TODO

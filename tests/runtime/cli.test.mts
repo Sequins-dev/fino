@@ -585,6 +585,32 @@ describe('CLI commands', () => {
     t.ok(!stdout.includes('other group'), 'unmatched nested benchmark group omitted');
   });
 
+  it('prints human benchmark output without JSON results', async (t) => {
+    await withTempProject({
+      'benchmarks/human.bench.mts': [
+        "import { bench } from 'fino:bench';",
+        "bench('human output bench', (b) => {",
+        "  b.measure('first measure', () => 1);",
+        "  b.measure('second measure', () => 2);",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['bench', 'benchmarks/human.bench.mts'], {
+        cwd: dir,
+        env: { FINO_BENCH_MIN_NS: '1000' },
+      });
+
+      t.equal(result.code, 0, 'human benchmark exits successfully');
+      t.equal(stderr, '', 'human benchmark does not write stderr');
+      t.ok(stdout.startsWith('benc.h v1.0.0\n'), 'bench command prints benc.h header');
+      t.ok(stdout.includes('# human output bench'), 'bench command prints suite heading');
+      t.ok(/first measure - .+ i\/s /.test(stdout), 'bench command prints human measurement line');
+      t.ok(stdout.includes('Comparing...'), 'bench command prints human comparison text');
+      t.ok(!stdout.split('\n').some((line) => line.trim().startsWith('{') || line.trim().startsWith('[')), 'bench command does not emit JSON lines');
+    });
+  });
+
   it('expands benchmark directories in the bench command', async (t) => {
     await withTempProject({
       'benchmarks/alpha.bench.mts': [
