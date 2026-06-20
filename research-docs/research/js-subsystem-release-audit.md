@@ -234,9 +234,7 @@ Status: DONE
 Status: DONE
 
 ## OpenTelemetry API, SDK, Signals
-Status: TODO
-- Define stable public API versus internal helper/runtime event types.
-- Add task-oriented setup recipes beyond generated API listings.
+Status: DONE
 
 ## OpenTelemetry Instrumentations And Bootstrap
 Status: TODO

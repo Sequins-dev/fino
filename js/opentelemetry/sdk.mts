@@ -1,10 +1,17 @@
 /**
  * fino:opentelemetry/sdk - SDK wiring, exporters, resources, and propagation.
  *
- * This module contains the cross-signal OpenTelemetry SDK surface. Use it to
- * start telemetry collection, configure processors and metric readers, export
- * records to memory or OTLP/HTTP JSON, install runtime instrumentations, manage
- * resources, and propagate trace context through carriers.
+ * This module contains the cross-signal OpenTelemetry SDK surface. Stable
+ * application-facing exports are SDK classes, processors, readers, exporters,
+ * resources, propagation helpers, and runtime instrumentation classes. The
+ * lower-level runtime topic helpers re-exported here are compatibility support
+ * for advanced integrations; prefer the task APIs documented in
+ * `opentelemetry/guide.md` for application code.
+ *
+ * Use this module to start telemetry collection, configure processors and
+ * metric readers, export records to memory or OTLP/HTTP JSON, install runtime
+ * instrumentations, manage resources, and propagate trace context through
+ * carriers.
  *
  * `OtelSDK.start()` is idempotent. `flush()` drains queued span and log
  * processors, collects observable metrics, and exports reader batches.
