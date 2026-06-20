@@ -139,6 +139,13 @@ interface AllowlistEntry {
   reason: string;
 }
 
+interface OmittedSection {
+  section: string;
+  reason: string;
+  releaseAcceptableBecause: string;
+  localCoverage: string;
+}
+
 async function _loadAllowlist(): Promise<Map<string, string>> {
   const fs = new DiskFileSystem('/');
   let raw = '[]';
@@ -180,10 +187,8 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 //
 // Section 6 is further split into subsections: h2spec v2.6 also panics when
 // running `http2/6` as a unit (same inter-section bug across its subsections).
-// Section 6.6 (PUSH_PROMISE) is omitted — not applicable for server testing.
-// Section 6.9 is also omitted: it has sub-subsections (6.9.1, 6.9.2) and
-// h2spec v2.6 non-deterministically panics in the 6.9→6.9.1 transition. The
-// sub-subsections cannot be run individually (they don't write JUnit output).
+// Omitted subsections are kept in _OMITTED_SECTIONS below so the release
+// baseline is explicit and test-covered instead of hidden in comments.
 //
 // Section 8 is split into 8.1 and 8.2 for the same inter-section panic reason:
 // running `http2/8` as a unit panics at the 8.1→8.2 transition, producing no
@@ -195,6 +200,23 @@ const _SECTIONS = [
   'http2/6.7', 'http2/6.8', 'http2/6.10',
   'http2/7', 'http2/8.1', 'http2/8.2',
 ];
+
+const _OMITTED_SECTIONS: OmittedSection[] = [
+  {
+    section: 'http2/6.6',
+    reason: 'PUSH_PROMISE is client-push behavior; the Fino HTTP/2 server does not advertise or originate server push.',
+    releaseAcceptableBecause: 'A server that never enables push has no application-facing PUSH_PROMISE surface to validate for this release.',
+    localCoverage: 'tests/net/http2.test.mts covers server rejection/closure behavior for unsupported or invalid frame classes.',
+  },
+  {
+    section: 'http2/6.9',
+    reason: 'h2spec v2.6 does not produce reliable JUnit for 6.9 as a section and does not emit JUnit for 6.9.1/6.9.2 when invoked directly.',
+    releaseAcceptableBecause: 'Local loopback tests cover the release-critical flow-control invariants deterministically while the h2spec harness remains live for runnable sections.',
+    localCoverage: 'tests/net/http2.test.mts covers max DATA frame size, request body flow, WINDOW_UPDATE-driven response progress, and malformed frame shutdown.',
+  },
+];
+
+const _OMITTED_SECTION_SET = new Set(_OMITTED_SECTIONS.map(s => s.section));
 
 async function _runSection(
   h2specPath: string,
@@ -277,6 +299,23 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
 
   after(async () => {
     if (server) await server.close();
+  });
+
+  it('documents release-acceptable omitted h2spec sections', (t) => {
+    t.deepEqual(
+      _OMITTED_SECTIONS.map(s => s.section),
+      ['http2/6.6', 'http2/6.9'],
+      'only PUSH_PROMISE and h2spec 6.9 flow-control sections are omitted',
+    );
+    for (const entry of _OMITTED_SECTIONS) {
+      t.ok(!_SECTIONS.includes(entry.section), `${entry.section} is not also scheduled`);
+      t.ok(entry.reason.length > 0, `${entry.section} has an omission reason`);
+      t.ok(entry.releaseAcceptableBecause.length > 0, `${entry.section} has release rationale`);
+      t.ok(entry.localCoverage.length > 0, `${entry.section} names local coverage`);
+    }
+    for (const section of _SECTIONS) {
+      t.ok(!_OMITTED_SECTION_SET.has(section), `${section} is not marked omitted`);
+    }
   });
 
   it('matches the allowlisted compliance baseline', { skip }, async (t) => {

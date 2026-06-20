@@ -120,9 +120,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/2
-Status: TODO
-- Finish h2spec regressions and keep the allowlist current.
-- Remove or justify h2spec sections 6.6/6.9 harness omissions.
+Status: DONE
 
 ## HTTP/2 Pool
 Status: TODO

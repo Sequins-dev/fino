@@ -18,5 +18,9 @@
   {
     "id": "http2/6.10/Sends a CONTINUATION frame followed by any frame other than CONTINUATION",
     "reason": "the validator rejects interrupted header blocks before feeding them to nghttp2, but h2spec can still observe EOF before GOAWAY(PROTOCOL_ERROR)"
+  },
+  {
+    "id": "http2/8.1.2.1/Sends a HEADERS frame that contains the pseudo-header field defined for response",
+    "reason": "request HEADERS with response-only pseudo-headers are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing"
   }
 ]

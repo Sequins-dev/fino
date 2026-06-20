@@ -792,6 +792,22 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(findFrame(onHalfClosed, 0x07)!), 0x01, 'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR');
   });
 
+  it('RST_STREAMs request HEADERS with response-only pseudo-headers', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const invalidRequestBlock = hexBytes(
+      0x82, 0x84, 0x86, // :method GET, :path /, :scheme http
+      0x88,             // :status 200 is response-only and invalid in requests
+    );
+    const frames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, invalidRequestBlock));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'invalid request pseudo-header gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
   it('server does not hang after client RST_STREAMs a pending request', async (t) => {
     if (!h2Available) return;
 
