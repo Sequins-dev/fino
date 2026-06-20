@@ -119,9 +119,7 @@ Status: TODO
 - Add advanced options or document gaps for dictionaries, flush strategy, window tuning, and level parity.
 
 ## Template
-Status: TODO
-- Not full Mustache parity: no partials, delimiter changes, standalone trimming, or lambda behavior.
-- Make the non-parity contract explicit in release docs.
+Status: DONE
 
 ## Semver
 Status: TODO

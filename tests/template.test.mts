@@ -40,9 +40,37 @@ describe('fino:template — mustache core', () => {
     t.throws(() => compile('{{#}}{{/}}'), /empty section name/, 'empty section name rejected');
     t.throws(() => compile('{{user..name}}'), /malformed name/, 'empty dotted segment rejected');
     t.throws(() => compile('{{../}}'), /malformed name/, 'bare parent path rejected');
-    t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partials rejected');
-    t.throws(() => compile('{{=<% %>=}}<% name %>'), /delimiter changes are not supported/, 'delimiter changes rejected');
     t.throws(() => compile('{{#a}}{{/b}}'), /unmatched section close/, 'mismatched close rejected');
+  });
+
+  it('rejects partial tags as unsupported release behavior', (t) => {
+    t.throws(() => compile('{{> partial}}'), /partials are not supported/, 'partials rejected');
+  });
+
+  it('rejects delimiter changes as unsupported release behavior', (t) => {
+    t.throws(() => compile('{{=<% %>=}}<% name %>'), /delimiter changes are not supported/, 'delimiter changes rejected');
+  });
+
+  it('preserves standalone whitespace instead of Mustache standalone trimming', (t) => {
+    const out = render('A\n  {{#ok}}\nB\n  {{/ok}}\nC', { ok: true });
+    t.equal(out, 'A\n  \nB\n  \nC', 'standalone section lines keep their whitespace');
+  });
+
+  it('treats function values as zero-argument lookup values, not full Mustache lambdas', (t) => {
+    const calls: unknown[][] = [];
+    const out = render('{{name}} {{#enabled}}yes{{/enabled}}', {
+      name(...args: unknown[]) {
+        calls.push(args);
+        return '<Ada>';
+      },
+      enabled(...args: unknown[]) {
+        calls.push(args);
+        return true;
+      },
+    });
+
+    t.equal(out, '&lt;Ada&gt; yes', 'function return values are rendered through normal lookup paths');
+    t.deepEqual(calls, [[], []], 'functions are called without section text or render callback');
   });
 
   it('documents unsupported full Mustache features through explicit behavior', (t) => {
