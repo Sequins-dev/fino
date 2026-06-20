@@ -628,6 +628,55 @@ describe('EventSource integration', () => {
     await server.close();
   });
 
+  it('does not retain Set-Cookie across reconnects unless Cookie is explicit', async (t) => {
+    const cookies: Array<string | null> = [];
+    let connectionCount = 0;
+    let resolveReconnect!: () => void;
+    const reconnected = new Promise<void>((resolve) => { resolveReconnect = resolve; });
+
+    const server = serve({ port: 19976 }, async (req) => {
+      connectionCount++;
+      cookies.push(req.headers.get('cookie'));
+      if (connectionCount === 1) {
+        return new Response(sseBody('retry: 50\n', { data: 'first' }), {
+          status: 200,
+          headers: {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-store',
+            'set-cookie': 'session=from-server',
+          },
+        });
+      }
+      resolveReconnect();
+      return new Response(null, { status: 204 });
+    });
+
+    new EventSource('http://127.0.0.1:19976/events');
+    await reconnected;
+
+    t.equal(cookies[0], null, 'initial request has no implicit Cookie header');
+    t.equal(cookies[1], null, 'Set-Cookie from the first response is not retained');
+
+    await server.close();
+
+    const explicitCookies: Array<string | null> = [];
+    const explicitServer = serve({ port: 19977 }, async (req) => {
+      explicitCookies.push(req.headers.get('cookie'));
+      return sseResponse(sseBody({ data: 'explicit-cookie' }));
+    });
+
+    await new Promise<void>((resolve) => {
+      const es = new EventSource('http://127.0.0.1:19977/events', {
+        headers: { cookie: 'session=caller-provided' },
+      });
+      es.onmessage = () => { es.close(); resolve(); };
+    });
+
+    t.equal(explicitCookies[0], 'session=caller-provided', 'caller-provided Cookie header is sent');
+
+    await explicitServer.close();
+  });
+
   it('connects to HTTPS SSE with a fixture CA', { skip: skipTls }, async (t) => {
     const server = serve(
       { port: 19975, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },

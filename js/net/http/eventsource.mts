@@ -39,11 +39,15 @@
  * ```
  *
  *
- * ## EventSource (spec-compliant SSE client)
+ * ## EventSource (server-side SSE client)
  *
- * Full W3C EventSource with connection management, automatic reconnection with
+ * Runtime EventSource with connection management, automatic reconnection with
  * Last-Event-ID resumption, and EventTarget-based event dispatch. Extends
  * EventTarget so `addEventListener` / `removeEventListener` work as expected.
+ *
+ * The client opens direct HTTP/1 socket or TLS connections and parses the SSE
+ * wire stream itself. It intentionally does not share the `fetch()` connection
+ * pool or provide HTTP/2 or HTTP/3 transport behavior in this release baseline.
  *
  * ```ts no_run
  *   import { EventSource } from './eventsource.mts';
@@ -101,11 +105,12 @@
  *
  * This is a server-side EventSource implementation. It supports explicit
  * caller-provided headers for credentials such as bearer tokens, but it does
- * not implement browser cookie credential modes or browser CORS enforcement.
- * TLS verification is enabled by default for `https:` URLs. Tests and private
- * deployments may pass a pinned CA path through `tls.ca`; disabling certificate
- * verification with `tls.rejectUnauthorized: false` should be limited to local
- * development.
+ * not implement browser cookie credential modes, an implicit cookie jar, or
+ * browser CORS enforcement. `Set-Cookie` response headers are ignored; callers
+ * that need cookies must provide a `Cookie` header explicitly. TLS verification
+ * is enabled by default for `https:` URLs. Tests and private deployments may
+ * pass a pinned CA path through `tls.ca`; disabling certificate verification
+ * with `tls.rejectUnauthorized: false` should be limited to local development.
  *
  *
  * ## Contributing

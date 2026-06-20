@@ -325,10 +325,17 @@ Status: DONE
   baseline is HTTP/1.1 Upgrade only.
 
 ## EventSource
-Status: TODO
-- Browser credential modes, cookie integration, and CORS enforcement are absent.
-- Client uses direct socket/TLS HTTP/1 flow rather than shared fetch/H2/H3 transport behavior.
-- Add WPT-style EventSource conformance coverage.
+Status: DONE
+- Release baseline covers EventSourceReader and EventSourceWriter SSE
+  wire-format parsing/formatting, direct HTTP/1 socket/TLS EventSource
+  connections, redirects, retry handling, Last-Event-ID resumption, and
+  EventTarget dispatch.
+- This is a runtime/server-side SSE client, not browser EventSource parity:
+  browser credential modes, implicit cookie jars, and browser CORS enforcement
+  are absent. `Set-Cookie` response headers are not retained; explicit
+  caller-provided `Cookie` and authorization headers are supported.
+- The client uses direct socket/TLS HTTP/1 flow rather than shared `fetch()`
+  pooling or HTTP/2/HTTP/3 transport behavior.
 
 ## HTTP App
 Status: DONE
