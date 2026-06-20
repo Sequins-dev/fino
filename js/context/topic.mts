@@ -353,6 +353,7 @@ export class Topic<T = unknown> {
       },
       return(): Promise<IteratorResult<T>> {
         done = true;
+        queue.length = 0;
         handle.dispose();
         if (pending !== null) {
           const resolve = pending;

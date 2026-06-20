@@ -5,6 +5,7 @@
 import { describe, it } from 'fino:test/test';
 import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
 import { os } from 'fino:process';
+import { Context } from 'fino:context';
 
 const libcPath = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
@@ -51,6 +52,31 @@ describe('FfiCallback same-thread (qsort)', () => {
 
     t.ok(callCount > 0, `comparator called ${callCount} times`);
     t.deepEqual(Array.from(arr), [1, 2, 3, 4, 5], 'array is sorted ascending');
+
+    cmp.close();
+  });
+
+  it('same-thread callbacks re-enter with the active context', (t) => {
+    const ctx = new Context('ffi-sync-callback-prop');
+    const seen: unknown[] = [];
+    const cmp = new FfiCallback(
+      { parameters: ['pointer', 'pointer'], result: 'i32' },
+      (aPtr: ArrayBuffer, bPtr: ArrayBuffer) => {
+        seen.push(ctx.get());
+        const a = Pointer.readI32(aPtr, 0);
+        const b = Pointer.readI32(bPtr, 0);
+        return a - b;
+      },
+    );
+
+    const arr = new Int32Array([2, 1]);
+    ctx.runWithValue('via-qsort', () => {
+      libc.symbols.qsort(Pointer.of(arr.buffer), 2n, 4n, cmp.pointer);
+    });
+
+    t.ok(seen.length > 0, 'comparator was called');
+    t.deepEqual([...new Set(seen)], ['via-qsort'], 'callbacks see the active sync FFI context');
+    t.deepEqual(Array.from(arr), [1, 2], 'array is sorted ascending');
 
     cmp.close();
   });

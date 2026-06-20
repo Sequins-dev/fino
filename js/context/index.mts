@@ -2,9 +2,17 @@
  * fino:context - Async context propagation.
  *
  * A `Context` is a named slot whose value follows the causal chain of async
- * execution through `await` and `.then()`. It works by hooking into V8's ContinuationPreservedEmbedderData (CPED):
+ * execution through promise continuations, including `await`, `.then()`,
+ * `queueMicrotask()`, timers implemented on the runtime loop, and promise-based
+ * runtime APIs such as file I/O. It works by hooking into V8's ContinuationPreservedEmbedderData (CPED):
  * when a promise continuation is enqueued, the current frame is captured;
  * when the continuation runs, the frame is restored.
+ *
+ * Synchronous dispatch and callback re-entry observe whatever context is active
+ * during the dispatch/callback call. External or native schedulers that do not
+ * enqueue through these runtime paths are not promised to preserve context
+ * unless they are explicitly covered by tests or the callback is manually
+ * wrapped with a `Snapshot`.
  *
  * API mirrors the execution-flow library (closure-based):
  *

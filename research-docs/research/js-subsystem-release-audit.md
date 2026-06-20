@@ -85,10 +85,7 @@ Status: TODO
 Status: DONE
 
 ## Context And Topic
-Status: TODO
-- Add explicit context propagation tests for timers, I/O callbacks, event listeners, and native callback boundaries.
-- Clarify docs where behavior differs from Node `AsyncLocalStorage`.
-- Add tests for `execution-flow:error` subscribers and async iterator disposal under queued messages.
+Status: DONE
 
 ## File System And Paths
 Status: TODO

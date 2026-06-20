@@ -5,6 +5,7 @@
 import { describe, it } from 'fino:test/test';
 import { Context, Snapshot, snapshotAll } from 'fino:context';
 import { topic, Topic, SubscriptionHandle, BindingHandle } from 'fino:context/topic';
+import { DiskFileSystem } from 'fino:file';
 
 describe('Context basics', () => {
   it('Context — get() returns undefined when no value set', (t) => {
@@ -144,6 +145,87 @@ describe('async propagation', () => {
 
     t.equal(results.find(r => r.who === 'A')!.val, 'A', 'A scope correct');
     t.equal(results.find(r => r.who === 'B')!.val, 'B', 'B scope correct');
+  });
+
+  it('Context — value propagates through queueMicrotask', async (t) => {
+    const ctx = new Context('microtask-prop');
+    let seen: unknown;
+
+    await new Promise<void>((resolve) => {
+      ctx.runWithValue('via-microtask', () => {
+        queueMicrotask(() => {
+          seen = ctx.get();
+          resolve();
+        });
+      });
+    });
+
+    t.equal(seen, 'via-microtask', 'microtask callback sees scheduling context');
+  });
+
+  it('Context — value propagates through setTimeout', async (t) => {
+    const ctx = new Context('timeout-prop');
+    let seen: unknown;
+
+    await new Promise<void>((resolve) => {
+      ctx.runWithValue('via-timeout', () => {
+        setTimeout(() => {
+          seen = ctx.get();
+          resolve();
+        }, 0);
+      });
+    });
+
+    t.equal(seen, 'via-timeout', 'timer callback sees scheduling context');
+  });
+
+  it('Context — value propagates through setInterval', async (t) => {
+    const ctx = new Context('interval-prop');
+    let seen: unknown;
+
+    await new Promise<void>((resolve) => {
+      ctx.runWithValue('via-interval', () => {
+        const id = setInterval(() => {
+          seen = ctx.get();
+          clearInterval(id);
+          resolve();
+        }, 0);
+      });
+    });
+
+    t.equal(seen, 'via-interval', 'interval callback sees scheduling context');
+  });
+
+  it('Context — dispatchEvent listeners see the current dispatch context', (t) => {
+    const ctx = new Context('eventtarget-dispatch-prop');
+    const target = new EventTarget();
+    let seen: unknown;
+
+    target.addEventListener('release-contract', () => {
+      seen = ctx.get();
+    });
+
+    ctx.runWithValue('via-dispatch', () => {
+      target.dispatchEvent(new Event('release-contract'));
+    });
+
+    t.equal(seen, 'via-dispatch', 'listener sees context active during dispatch');
+  });
+
+  it('Context — value propagates through Promise-based file I/O continuations', async (t) => {
+    const ctx = new Context('file-io-prop');
+    const fs = new DiskFileSystem();
+    const path = `/tmp/fino-context-prop-${Date.now()}-${Math.random()}.txt`;
+    let seen: unknown;
+
+    await fs.writeFile(path, 'context');
+    await ctx.runWithValue('via-file-io', async () => {
+      const contents = await fs.readFile(path);
+      seen = ctx.get();
+      t.equal(contents, 'context', 'file read completed');
+    });
+
+    t.equal(seen, 'via-file-io', 'file I/O continuation sees context');
   });
 });
 

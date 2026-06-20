@@ -63,6 +63,19 @@ describe('Topic async iterator', () => {
     t.ok(!ch.hasSubscribers, 'subscription disposed after return()');
   });
 
+  it('return() disposes subscription and drops queued messages', async (t) => {
+    const ch = topic('test:iter-return-queued-' + Math.random());
+    const iter = ch[Symbol.asyncIterator]();
+
+    ch.publish('queued');
+    const returned = await iter.return!();
+    const next = await iter.next();
+
+    t.ok(returned.done, 'return() completes the iterator');
+    t.ok(next.done, 'queued messages are not delivered after return()');
+    t.ok(!ch.hasSubscribers, 'subscription disposed after queued return');
+  });
+
   it('multiple independent iterators each receive all messages', async (t) => {
     const ch = topic('test:iter-multi-' + Math.random());
     const iter1 = ch[Symbol.asyncIterator]();
@@ -138,5 +151,25 @@ describe('Topic async iterator', () => {
     t.equal(seen.length, 2, 'matching subscriber sees existing and future topics');
     t.ok(seen[0]!.includes('alpha'), 'existing topic delivered');
     t.ok(seen[1]!.includes('beta'), 'future topic delivered');
+  });
+
+  it('delivers subscriber errors to execution-flow:error', (t) => {
+    const errors = topic<{ error: Error; topicName: string }>('execution-flow:error');
+    const source = topic('test:error-delivery-' + Math.random());
+    const seen: Array<{ message: string; topicName: string }> = [];
+    const handle = errors.subscribe((event) => {
+      seen.push({ message: event.error.message, topicName: event.topicName });
+    });
+
+    try {
+      source.subscribe(() => { throw new Error('subscriber failed'); });
+      source.publish('message');
+    } finally {
+      handle.dispose();
+    }
+
+    t.deepEqual(seen, [
+      { message: 'subscriber failed', topicName: source.name },
+    ], 'subscriber failures are published to execution-flow:error');
   });
 });
