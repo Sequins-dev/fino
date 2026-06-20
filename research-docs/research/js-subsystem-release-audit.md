@@ -98,9 +98,7 @@ Status: TODO
 - Require or document an OpenSSL-enabled release CI lane.
 
 ## DNS Resolver
-Status: TODO
-- Add or document live resolver matrix expectations, TTL resolver cache policy,
-  and lack of DoT/DoH.
+Status: DONE
 
 ## DNSSEC
 Status: TODO

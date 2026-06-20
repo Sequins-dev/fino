@@ -90,6 +90,24 @@
  * lines, it falls back to Google's public DNS servers (8.8.8.8, 8.8.4.4).
  * Callers can override nameservers with `resolver.setServers(['1.1.1.1'])`.
  *
+ * Release validation keeps live resolver behavior behind an explicit
+ * `FINO_DNS_LIVE=1` test lane so the normal suite stays deterministic. That
+ * lane should exercise at least one public recursive resolver and one
+ * user-configured resolver from `setServers()`. The transport implementation
+ * intentionally speaks classic DNS over UDP with TCP fallback for truncated
+ * responses; DNS-over-TLS and DNS-over-HTTPS are not implemented by this
+ * module.
+ *
+ *
+ * ## TTL and cache policy
+ *
+ * Parsed resource records preserve the authoritative TTL from the packet, but
+ * ordinary `Resolver` lookups do not cache answers by TTL. Every `resolve()`
+ * call sends a fresh query unless it follows an in-response CNAME chain. The
+ * only cache maintained by this module is the DNSSEC delegation cache used
+ * while validating signed chains, and that cache stores DNSKEY/DS chain state
+ * separately from user-visible answer records.
+ *
  *
  * ## IPv6 formatting via sock.decodeAddr
  *
