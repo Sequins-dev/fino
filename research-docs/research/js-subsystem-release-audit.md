@@ -210,10 +210,7 @@ Status: DONE
 Status: DONE
 
 ## Realm Core
-Status: TODO
-- Add remote realm tests for `terminate()`, bootstrap/call errors,
-  facade/stream/sink behavior, and import-rule/provider parity.
-- Document remote/cluster isolation tradeoffs and limits.
+Status: DONE
 
 ## Realm Pool
 Status: TODO

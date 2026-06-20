@@ -126,6 +126,40 @@ const isolated = new Realm({
 Use threads for CPU-bound work that should not block the parent. Use processes
 when crash isolation matters more than startup cost and messaging overhead.
 
+## Remote Realms
+
+Remote realms run on a worker node in an active `fino:cluster`:
+
+```ts
+import { startCluster, leaveCluster } from 'fino:cluster';
+import { Realm } from 'fino:realm';
+
+await startCluster({ port: 9999 });
+
+const realm = new Realm({
+  entry: './worker.mts',
+  remote: true,
+});
+
+await realm.call('healthcheck');
+realm.terminate();
+leaveCluster();
+```
+
+`remote: true` requires a prior `startCluster()` or `joinCluster()` call. The
+seed routes the spawn to an eligible worker, owns the parent/child port mapping,
+and forwards cluster `PORT_MSG` frames between the parent and child. Import
+rules, facades, read streams, write streams, `run()`, `call()`, bootstrap
+errors, call errors, and `terminate()` follow the same parent-facing contracts
+as thread and process realms.
+
+Remote realms isolate execution in another process and usually another host,
+but they use the current WebSocket cluster transport and single-seed control
+plane. They are not a security boundary by themselves: use import rules,
+facades, network placement, and future cluster authentication together for
+untrusted workloads. `watch: true` and `repl: true` are intentionally unsupported
+for remote realms.
+
 ## Watch Mode
 
 Watch mode restarts the child when an imported file changes:
@@ -168,5 +202,6 @@ keeping workers warm is worthwhile.
 - Use an embedded realm for import isolation and reloadable module graphs.
 - Use a thread realm for CPU work or parent responsiveness.
 - Use a process realm for stronger crash isolation.
+- Use a remote realm when work should run on another cluster worker.
 - Use import rules and facades to make child capabilities explicit.
 - Use a pool when many similar calls should be distributed across warm workers.

@@ -1,0 +1,218 @@
+/**
+ * Tests for fino:realm remote mode over fino:cluster.
+ */
+
+import { describe, it } from 'fino:test/test';
+import { Process, cwd, execPath } from 'fino:process';
+import {
+  Facade,
+  ImportMap,
+  Realm,
+  SystemDnsConfig,
+  SystemNetConfig,
+} from 'fino:realm';
+import { startCluster, leaveCluster } from 'fino:cluster';
+import * as loop from 'internal:runtime/loop';
+
+import type echoFn from './fixtures/echo-fn.mts';
+import type errorFn from './fixtures/error-fn.mts';
+import type facadeCallFn from './fixtures/facade-call.mts';
+import type facadeSinkFn from './fixtures/facade-sink-fn.mts';
+import type facadeStreamFn from './fixtures/facade-stream-fn.mts';
+
+const root = `${cwd()}/tests/realm/fixtures`;
+
+function fixture(name: string): string {
+  return `file://${root}/${name}`;
+}
+
+function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
+  return new TextDecoder().decode(b);
+}
+
+function randomPort(): number {
+  return 34_000 + Math.floor(Math.random() * 5_000);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    loop.timeout(ms).then(() => {
+      throw new Error(`${label} timed out after ${ms}ms`);
+    }),
+  ]);
+}
+
+async function readLine(proc: Process): Promise<string> {
+  const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
+  if (bytes === null) throw new Error('worker exited before readiness line');
+  return decodeUtf8(bytes).trim();
+}
+
+async function waitForWorker(port: number): Promise<Process> {
+  const proc = new Process(execPath, ['tests/cluster/fixtures/worker-process.mts', String(port)]);
+  try {
+    const line = await withTimeout(readLine(proc), 2_000, 'worker readiness');
+    if (line !== 'worker ready') throw new Error(`unexpected worker readiness line: ${line}`);
+    return proc;
+  } catch (err) {
+    proc.kill();
+    throw err;
+  }
+}
+
+async function stopWorker(proc: Process): Promise<void> {
+  proc.stdin.close();
+  const result = await proc.wait();
+  if (result.code !== 0) {
+    throw new Error(`worker exited with code ${String(result.code)} signal ${String(result.signal)}`);
+  }
+}
+
+async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T> {
+  const port = randomPort();
+  await withTimeout(startCluster({ port, nodeId: `realm-remote-seed-${port}` }), 2_000, 'startCluster');
+  let worker: Process | null = null;
+  try {
+    worker = await waitForWorker(port);
+    return await fn();
+  } finally {
+    if (worker !== null) await stopWorker(worker);
+    leaveCluster();
+  }
+}
+
+describe('Realm remote mode', () => {
+  it('call() returns values through the cluster transport', async (t) => {
+    await withRemoteWorker(async () => {
+      const realm = new Realm<typeof echoFn>({
+        entry: fixture('echo-fn.mts'),
+        remote: true,
+      });
+      const result = await withTimeout(realm.call('remote-ok'), 3_000, 'remote call');
+      t.equal(result, 'remote-ok', 'remote call result propagated');
+    });
+  });
+
+  it('call() propagates child function errors', async (t) => {
+    await withRemoteWorker(async () => {
+      const realm = new Realm<typeof errorFn>({
+        entry: fixture('error-fn.mts'),
+        remote: true,
+      });
+      await t.rejects(
+        () => withTimeout(realm.call('boom'), 3_000, 'remote call error'),
+        /deliberate error/,
+      );
+    });
+  });
+
+  it('run() rejects bootstrap errors from the remote worker', async (t) => {
+    await withRemoteWorker(async () => {
+      const realm = new Realm({
+        entry: fixture('throw-at-toplevel.mts'),
+        remote: true,
+      });
+      await t.rejects(
+        () => withTimeout(realm.run(), 3_000, 'remote bootstrap error'),
+        /deliberate top-level error/,
+      );
+    });
+  });
+
+  it('terminate() settles a running remote realm', async (t) => {
+    await withRemoteWorker(async () => {
+      const realm = new Realm({
+        entry: fixture('long-running.mts'),
+        remote: true,
+      });
+      const running = withTimeout(realm.run(), 3_000, 'remote terminate');
+      await loop.timeout(20);
+      realm.terminate();
+      await running;
+      t.ok(true, 'remote run settled after terminate');
+    });
+  });
+
+  it('remote facades support scalar calls', async (t) => {
+    await withRemoteWorker(async () => {
+      const facade = new Facade('fino:test-facade', ['greet'])
+        .handle('greet', async (name) => `hello ${name}`);
+      const realm = new Realm<typeof facadeCallFn>({
+        entry: fixture('facade-call.mts'),
+        remote: true,
+        overrides: ImportMap.deny([
+          { pattern: 'fino:test-facade', directive: facade },
+        ]),
+      });
+      const result = await withTimeout(realm.call(), 3_000, 'remote facade call');
+      t.equal(result, 'hello world', 'remote facade scalar result propagated');
+    });
+  });
+
+  it('remote facades support read streams', async (t) => {
+    await withRemoteWorker(async () => {
+      const facade = new Facade('fino:test-facade', [])
+        .stream('chunks', async function* () {
+          yield 'remote-alpha';
+          yield 'remote-beta';
+        });
+      const realm = new Realm<typeof facadeStreamFn>({
+        entry: fixture('facade-stream-fn.mts'),
+        remote: true,
+        overrides: ImportMap.deny([
+          { pattern: 'fino:test-facade', directive: facade },
+        ]),
+      });
+      const result = await withTimeout(realm.call(), 3_000, 'remote facade stream') as unknown[];
+      t.deepEqual(result, ['remote-alpha', 'remote-beta'], 'remote facade stream chunks propagated');
+    });
+  });
+
+  it('remote facades support write streams', async (t) => {
+    await withRemoteWorker(async () => {
+      const received: string[] = [];
+      const facade = new Facade('fino:test-facade', [])
+        .sendStream('writeChunks', async (_args, source) => {
+          for await (const chunk of source) received.push(chunk as string);
+          return { chunks: received.length, joined: received.join('') };
+        });
+      const realm = new Realm<typeof facadeSinkFn>({
+        entry: fixture('facade-sink-fn.mts'),
+        remote: true,
+        overrides: ImportMap.deny([
+          { pattern: 'fino:test-facade', directive: facade },
+        ]),
+      });
+      const result = await withTimeout(realm.call(), 3_000, 'remote facade sink') as {
+        chunks: number;
+        joined: string;
+      };
+      t.equal(result.chunks, 3, 'remote sink delivered every chunk');
+      t.equal(result.joined, 'hello world!', 'remote sink preserved chunk order');
+    });
+  });
+
+  it('remote import overrides and legacy provider options serialize to the worker', async (t) => {
+    await withRemoteWorker(async () => {
+      const blocked = new Realm({
+        entry: fixture('import-ffi.mts'),
+        remote: true,
+        blocked: ['fino:ffi'],
+      });
+      await withTimeout(blocked.run(), 3_000, 'remote blocked import');
+
+      const allowed = new Realm({
+        entry: fixture('import-allowed.mts'),
+        remote: true,
+        overrides: ImportMap.inherit([{ pattern: 'fino:ffi', directive: 'inherit' }]),
+        providers: {
+          net: new SystemNetConfig(),
+          dns: new SystemDnsConfig(),
+        },
+      });
+      await withTimeout(allowed.run(), 3_000, 'remote import/provider parity');
+      t.ok(true, 'remote realm accepted import rules and legacy providers');
+    });
+  });
+});
