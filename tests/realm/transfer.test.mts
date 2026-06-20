@@ -79,6 +79,25 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
 
     realm.terminate();
   });
+
+  it('rejects ReadableStream transfer entries explicitly', async (t) => {
+    const realm = new Realm({
+      thread: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    realm.run().catch(() => {/* terminated after test */});
+    realm.port.start();
+
+    try {
+      t.throws(
+        () => realm.port.postMessage('stream transfer', [new ReadableStream() as any]),
+        /transfer|ArrayBuffer|MessagePort|ReadableStream/i,
+        'thread realm stream transfer rejects synchronously',
+      );
+    } finally {
+      realm.terminate();
+    }
+  });
 });
 
 describe('Process realm transfer behavior', () => {
@@ -140,5 +159,24 @@ describe('Process realm transfer behavior', () => {
 
     realm.terminate();
     port2.close();
+  });
+
+  it('rejects ReadableStream transfer entries explicitly', async (t) => {
+    const realm = new Realm({
+      process: true,
+      entry: new URL('./fixtures/port-echo.mts', import.meta.url).pathname,
+    });
+    realm.run().catch(() => {/* terminated after test */});
+    realm.port.start();
+
+    try {
+      t.throws(
+        () => realm.port.postMessage('stream transfer', [new ReadableStream() as any]),
+        /transfer|ArrayBuffer|ReadableStream/i,
+        'process realm stream transfer rejects synchronously',
+      );
+    } finally {
+      realm.terminate();
+    }
   });
 });

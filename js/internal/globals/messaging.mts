@@ -1373,6 +1373,8 @@ export class ThreadPort extends BaseTransportPort {
             (createTransitChannel as () => { p2Handle: number; p2WakeReadFd: number; qHandle: number; qWakeReadFd: number })();
           item._transferCrossThread(p2Handle, p2WakeReadFd);
           portInfos.push([qHandle, qWakeReadFd]);
+        } else {
+          throw new TypeError('ThreadPort transfer list only supports ArrayBuffer and MessagePort values');
         }
       }
     }

@@ -342,9 +342,15 @@ Status: DONE
 Status: DONE
 
 ## Realm Core
-Status: TODO
-- Coverage is broad, but messaging transfer still lacks streams and some structured-clone transferables.
-- Clarify that realms are not a security boundary.
+Status: DONE
+- Release baseline covers embedded lifecycle, `terminate()`,
+  `[Symbol.dispose]`, `Realm.fromSource()`, caller import-rule preservation,
+  and top-level error propagation across embedded, thread, and process realms.
+- Core transfer coverage locks ArrayBuffer copy/transfer behavior, MessagePort
+  transfer where supported, and explicit rejection of stream transfer entries
+  on thread/process transport ports.
+- Realm docs clarify that realms shape isolation and capabilities but are not a
+  complete security boundary by themselves.
 
 ## Realm Pool
 Status: DONE

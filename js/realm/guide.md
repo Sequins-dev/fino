@@ -25,6 +25,10 @@ The child module runs independently from the parent. The parent remains
 responsible for creating the realm, deciding what it can import, and terminating
 it when needed.
 
+`Realm.run()` resolves when the child exits normally or after `terminate()`.
+Top-level child errors reject `run()`. `Realm.fromSource()` can install an
+in-memory module as the entrypoint while preserving caller import rules.
+
 ## Send Messages
 
 Each realm has a message port:
@@ -47,6 +51,12 @@ await realm.run();
 In the child, use the child-side messaging APIs provided by the runtime to
 listen for parent messages and post responses. Use messages for simple commands,
 notifications, and structured data.
+
+Core realm transfers intentionally cover a small set. `ArrayBuffer` values can
+be transferred where the active transport supports transfer stores, and
+`MessagePort` transfer is supported for same-isolate and thread realms. Stream
+transfer and other structured-clone transferables are outside the current realm
+core contract and reject explicitly on thread/process transport ports.
 
 ## Restrict Imports
 
