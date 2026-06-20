@@ -368,10 +368,10 @@ Status: DONE
 - Common assertion APIs include `match`, `doesNotThrow`, `doesNotReject`, strict aliases, and constructor-based error matching.
 
 ## Fetch Mocking
-Status: TODO
-- Scoped fetch mocking is solid but fetch-only; add or document missing timers, modules, filesystem, and generic spy/stub APIs.
-- Add passthrough, network-error, and abort-signal helpers.
-- Add nested mock scope and concurrent scope isolation tests.
+Status: DONE
+- Scoped fetch mocking is explicitly fetch-only; timers, modules, filesystem, and generic spy/stub APIs are outside this release baseline.
+- Passthrough, network-error, and abort behavior are covered by expectation helpers.
+- Nested mock scopes and concurrent async scope isolation are covered.
 
 ## Bench Harness
 Status: TODO

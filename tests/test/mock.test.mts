@@ -117,4 +117,99 @@ describe('fino:test/mock', () => {
       t.deepEqual(Array.from(await echo.bytes()), Array.from(binary), 'factory response body returned');
     });
   });
+
+  it('routes nested mockFetch scopes to the innermost active scope', async (t) => {
+    await mockFetch(async (outer) => {
+      outer.get('http://api.example/outer-before').reply(200, 'outer-before');
+      outer.get('http://api.example/outer-after').reply(200, 'outer-after');
+
+      const before = await fetch('http://api.example/outer-before');
+      t.equal(await before.text(), 'outer-before', 'outer scope handles first call');
+
+      await mockFetch(async (inner) => {
+        inner.get('http://api.example/inner').reply(201, 'inner');
+        const response = await fetch('http://api.example/inner');
+        t.equal(response.status, 201, 'inner scope handles nested call');
+        t.equal(await response.text(), 'inner', 'inner response returned');
+      });
+
+      const after = await fetch('http://api.example/outer-after');
+      t.equal(await after.text(), 'outer-after', 'outer scope restored after nested scope');
+    });
+  });
+
+  it('isolates concurrent mockFetch scopes across awaits', async (t) => {
+    const first = mockFetch(async (mock) => {
+      mock.get('http://api.example/first').reply(200, 'first');
+      await Promise.resolve();
+      const response = await fetch('http://api.example/first');
+      return await response.text();
+    });
+
+    const second = mockFetch(async (mock) => {
+      mock.get('http://api.example/second').reply(200, 'second');
+      await Promise.resolve();
+      const response = await fetch('http://api.example/second');
+      return await response.text();
+    });
+
+    t.deepEqual(await Promise.all([first, second]), ['first', 'second'], 'overlapping scopes stay isolated');
+  });
+
+  it('supports passthrough responses to the original fetch', async (t) => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      return new Response('passthrough:' + String(input), { status: 203 });
+    }) as typeof fetch;
+
+    try {
+      await mockFetch(async (mock) => {
+        mock.get('http://api.example/live').passthrough();
+        const response = await fetch('http://api.example/live');
+        t.equal(response.status, 203, 'original fetch response status returned');
+        t.equal(await response.text(), 'passthrough:http://api.example/live', 'original fetch body returned');
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('supports forced network errors', async (t) => {
+    await mockFetch(async (mock) => {
+      mock.get('http://api.example/down').networkError('socket hang up');
+      await t.rejects(
+        () => fetch('http://api.example/down'),
+        /socket hang up/,
+        'network error rejects fetch',
+      );
+    });
+  });
+
+  it('supports forced abort responses', async (t) => {
+    await mockFetch(async (mock) => {
+      mock.get('http://api.example/slow').abort();
+      await t.rejects(
+        () => fetch('http://api.example/slow'),
+        /abort/i,
+        'abort helper rejects fetch',
+      );
+    });
+  });
+
+  it('rejects pre-aborted fetch calls without consuming expectations', async (t) => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await mockFetch(async (mock) => {
+      mock.get('http://api.example/after-abort').reply(200, 'ok');
+      await t.rejects(
+        () => fetch('http://api.example/after-abort', { signal: controller.signal }),
+        /abort/i,
+        'aborted signal rejects before dispatch',
+      );
+
+      const response = await fetch('http://api.example/after-abort');
+      t.equal(await response.text(), 'ok', 'expectation remains available after aborted call');
+    });
+  });
 });

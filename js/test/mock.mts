@@ -1,9 +1,9 @@
 /**
- * fino:test/mock — scoped test doubles for runtime globals and builtins.
+ * fino:test/mock — scoped fetch test doubles.
  *
- * This module starts with fetch mocking, but the structure is intentionally
- * generic so more scoped mocks can live here later without inventing another
- * ad-hoc test surface.
+ * This module is intentionally fetch-only for this release baseline. It does
+ * not provide timers, module mocks, filesystem mocks, or a generic spy/stub
+ * API.
  *
  * The API is closure-scoped on purpose:
  *
@@ -22,6 +22,7 @@
  * throws or an expectation fails.
  */
 
+import { Context } from '../context/index.mts';
 import { Headers, Request, Response } from '../net/http/index.mts';
 
 /**
@@ -169,8 +170,15 @@ export interface FetchExpectation {
   headers: HeaderExpectation[];
   body?: BodyMatcher;
   response?: MockResponseFactory;
+  passthrough?: boolean;
+  error?: unknown;
+  abort?: boolean;
   remaining: number;
 }
+
+const _activeMockFetchScope = new Context<MockFetchScope>('fino:test/mock:fetch');
+let _mockFetchInstallDepth = 0;
+let _originalFetch: typeof fetch | null = null;
 
 async function _readRequestBody(request: Request): Promise<Uint8Array> {
   if (request.body == null) return new Uint8Array(0);
@@ -208,16 +216,51 @@ function _resolveMockUrl(baseUrl: string | null, input: string | URL): string {
   return new URL(String(input), baseUrl).href;
 }
 
+function _createAbortError(): Error {
+  if (typeof DOMException !== 'undefined') return new DOMException('The operation was aborted', 'AbortError') as Error;
+  const err = new Error('The operation was aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
+function _isAbortSignal(value: unknown): value is { aborted: boolean } {
+  return typeof value === 'object' && value !== null && 'aborted' in value;
+}
+
+function _throwIfAborted(init?: FetchInit): void {
+  const signal = init?.signal;
+  if (_isAbortSignal(signal) && signal.aborted) throw _createAbortError();
+}
+
+async function _passthroughFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
+  const original = _originalFetch ?? globalThis.fetch;
+  return await original(input as never, init as never);
+}
+
+async function _mockedFetch(input: FetchInput, init?: FetchInit): Promise<Response> {
+  _throwIfAborted(init);
+  const scope = _activeMockFetchScope.get();
+  if (scope) return await scope._dispatch(input, init);
+  return await _passthroughFetch(input, init);
+}
+
 async function _withScopedFetch<T>(
-  replacement: (input: FetchInput, init?: FetchInit) => Promise<Response>,
+  scope: MockFetchScope,
   fn: () => T | Promise<T>,
 ): Promise<T> {
-  const original = globalThis.fetch;
-  globalThis.fetch = replacement as unknown as typeof fetch;
+  if (_mockFetchInstallDepth === 0) {
+    _originalFetch = globalThis.fetch;
+    globalThis.fetch = _mockedFetch as unknown as typeof fetch;
+  }
+  _mockFetchInstallDepth++;
   try {
-    return await fn();
+    return await _activeMockFetchScope.runWithValue(scope, fn);
   } finally {
-    globalThis.fetch = original;
+    _mockFetchInstallDepth--;
+    if (_mockFetchInstallDepth === 0) {
+      globalThis.fetch = _originalFetch as typeof fetch;
+      _originalFetch = null;
+    }
   }
 }
 
@@ -392,6 +435,48 @@ export class MockFetchExpectation {
    */
   replyWith(response: MockResponseFactory): this {
     this.#expectation.response = response;
+    return this;
+  }
+
+  /**
+   * Forward the matched call to the original fetch implementation.
+   *
+   * This is useful when one call in a scoped mock should use a real or
+   * test-installed fetch while the rest of the scope remains mocked.
+   *
+   * ```ts no_run
+   * mock.get('https://api.example/live').passthrough();
+   * ```
+   */
+  passthrough(): this {
+    this.#expectation.passthrough = true;
+    return this;
+  }
+
+  /**
+   * Reject the matched call with a forced network error.
+   *
+   * The rejection is a `TypeError`, matching the shape commonly used by fetch
+   * implementations for network failures.
+   *
+   * ```ts no_run
+   * mock.get('https://api.example/down').networkError('socket hang up');
+   * ```
+   */
+  networkError(message = 'mock fetch network error'): this {
+    this.#expectation.error = new TypeError(message);
+    return this;
+  }
+
+  /**
+   * Reject the matched call with an AbortError.
+   *
+   * ```ts no_run
+   * mock.get('https://api.example/slow').abort();
+   * ```
+   */
+  abort(): this {
+    this.#expectation.abort = true;
     return this;
   }
 }
@@ -609,7 +694,7 @@ export class MockFetchScope {
   options(input: string | URL): MockFetchExpectation { return this.#expect('OPTIONS', input); }
 
   /**
-   * Private method `#dispatch` used by `MockFetchScope`.
+   * Internal dispatch hook used by the shared context-routed fetch wrapper.
    *
    * This implementation detail is included when documentation is built with
    * `--include-private`. It describes state or helper behavior used by the
@@ -619,19 +704,19 @@ export class MockFetchScope {
    * @example
    * ```ts no_run
    * class IncludePrivateExample {
-   *   #dispatch() {
+   *   _dispatch() {
    *     return 'dispatch';
    *   }
    *
    *   useInternalMethod() {
-   *     return this.#dispatch();
+   *     return this._dispatch();
    *   }
    * }
    * ```
    *
    * @internal
    */
-  async #dispatch(input: FetchInput, init?: FetchInit): Promise<Response> {
+  async _dispatch(input: FetchInput, init?: FetchInit): Promise<Response> {
     const request = input instanceof Request
       ? (init === undefined ? input.clone() : new Request(input, init))
       : new Request(typeof input === 'string' ? input : input.href, init);
@@ -677,6 +762,10 @@ export class MockFetchScope {
       this.#expectations.shift();
     }
 
+    if (expectation.abort) throw _createAbortError();
+    if (expectation.error !== undefined) throw expectation.error;
+    if (expectation.passthrough) return await _passthroughFetch(input, init);
+
     if (typeof expectation.response === 'function') {
       return await expectation.response(call);
     }
@@ -717,7 +806,7 @@ export class MockFetchScope {
    * ```
    */
   async run<T>(fn: (mock: MockFetchScope) => T | Promise<T>): Promise<T> {
-    return await _withScopedFetch(this.#dispatch.bind(this), async () => {
+    return await _withScopedFetch(this, async () => {
       const result = await fn(this);
       this.verify();
       return result;
