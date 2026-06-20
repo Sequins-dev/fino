@@ -13,6 +13,8 @@ import { Nghttp3Session } from '../../js/internal/net/http/h3/session.mts';
 import { QuicPipe } from './fixtures/quic/sim-harness.mts';
 
 const available = quicAvailable && h3Available;
+const TEST_CERT = 'tests/net/fixtures/test.crt';
+const TEST_KEY = 'tests/net/fixtures/test.key';
 
 function h3Pipe(): QuicPipe {
   return new QuicPipe({
@@ -44,7 +46,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
     await t.rejects(() => h3Fetch('https://127.0.0.1/'), /libnghttp3 not found/, 'fetch rejects before opening a connection');
     await t.rejects(() => h3Serve({
       port: 0,
-      tls: { cert: '', key: '' },
+      certificateFile: TEST_CERT,
+      privateKeyFile: TEST_KEY,
     }, () => new Response('unused')), /libnghttp3 not found/, 'serve rejects before opening a listener');
   });
 
@@ -53,6 +56,63 @@ describe('HTTP/3 (h3 ALPN)', () => {
     t.ok(h3Available !== undefined, 'h3Available is exported');
     if (!h3Available) {
       t.ok(true, 'libnghttp3 not installed, skipping remaining H3 tests');
+    }
+  });
+
+  it('public serve() and fetch() complete a real UDP GET round-trip', async (t) => {
+    if (!available) return;
+
+    const server = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: TEST_CERT,
+      privateKeyFile: TEST_KEY,
+    }, (request) => {
+      return new Response(`h3:${new URL(request.url).pathname}`, {
+        headers: { 'x-h3-smoke': 'get' },
+      });
+    });
+
+    try {
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/smoke`, {
+        quic: { verifyPeer: false },
+      });
+      t.equal(response.status, 200, 'GET response status');
+      t.equal(response.headers.get('x-h3-smoke'), 'get', 'response header received');
+      t.equal(new TextDecoder().decode(await response.arrayBuffer()), 'h3:/smoke', 'response body received');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('public serve() and fetch() complete a real UDP POST round-trip', async (t) => {
+    if (!available) return;
+
+    let method = '';
+    let body = '';
+    const server = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: TEST_CERT,
+      privateKeyFile: TEST_KEY,
+    }, async (request) => {
+      method = request.method;
+      body = await request.text();
+      return new Response(`echo:${body}`);
+    });
+
+    try {
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/upload`, {
+        method: 'POST',
+        body: new TextEncoder().encode('real-h3-body'),
+        quic: { verifyPeer: false },
+      });
+      t.equal(response.status, 200, 'POST response status');
+      t.equal(method, 'POST', 'server received POST method');
+      t.equal(body, 'real-h3-body', 'server received POST body');
+      t.equal(new TextDecoder().decode(await response.arrayBuffer()), 'echo:real-h3-body', 'client received echo response');
+    } finally {
+      await server.close();
     }
   });
 

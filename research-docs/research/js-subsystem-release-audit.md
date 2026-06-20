@@ -131,11 +131,7 @@ Status: TODO
 Status: DONE
 
 ## HTTP/3
-Status: TODO
-
-- Add h3spec/quic interop or real UDP HTTP/3 client/server smoke coverage.
-- Expand beyond simulated-pipe tests and availability/function benchmarks.
-- Decide whether one-shot client `fetch()` remains experimental release scope.
+Status: DONE
 
 ## QUIC
 Status: DONE
