@@ -49,14 +49,20 @@ await realm.run();
 ```
 
 In the child, use the child-side messaging APIs provided by the runtime to
-listen for parent messages and post responses. Use messages for simple commands,
-notifications, and structured data.
+listen for parent messages and post responses. Embedded child realms can import
+`port` from `fino:realm/self`. Thread and process child realms expose their
+transport-backed port as `globalThis.realmPort`; `fino:realm/self.port` is
+`undefined` in those modes. Use messages for simple commands, notifications,
+and structured data.
 
-Core realm transfers intentionally cover a small set. `ArrayBuffer` values can
-be transferred where the active transport supports transfer stores, and
-`MessagePort` transfer is supported for same-isolate and thread realms. Stream
-transfer and other structured-clone transferables are outside the current realm
-core contract and reject explicitly on thread/process transport ports.
+Core realm transfers intentionally cover a small set. `ArrayBuffer` values are
+copied when no transfer list is supplied and can be transferred where the active
+transport supports transfer stores. `MessagePort` transfer is supported for
+same-isolate and thread realms; process realms reject live port transfer.
+Stream transfer and remaining structured-clone transferables are outside the
+current realm core contract and reject explicitly on thread/process transport
+ports. Unsupported payloads such as functions, symbols, and weak collections
+fail during `postMessage()`.
 
 ## Restrict Imports
 

@@ -404,9 +404,15 @@ Status: DONE
 Status: DONE
 
 ## Realm Messaging And Self
-Status: TODO
-- Add support or explicit release exclusions for streams and remaining structured-clone transferables.
-- Add more cross-mode transfer and failure-path coverage.
+Status: DONE
+- Release baseline covers parent/child `realm.port` messaging plus child-side
+  port visibility across embedded, thread, and process realms.
+- Transfer coverage locks ArrayBuffer copy/transfer behavior, same-isolate and
+  thread MessagePort transfer, process MessagePort rejection or explicit
+  fallback behavior, ReadableStream transfer rejection, and unsupported
+  structured-clone payload failures.
+- Realm docs state that stream transfer and remaining structured-clone
+  transferables are explicit exclusions in this baseline.
 
 ## Realm Process, Thread, Remote Modes
 Status: TODO

@@ -14,6 +14,14 @@ import { RealmPool } from 'fino:realm/pool';
 
 import type echoFn from './fixtures/echo-fn.mts';
 
+function unsupportedValues(): unknown[] {
+  return [
+    () => undefined,
+    Symbol('unsupported'),
+    new WeakMap(),
+  ];
+}
+
 describe('ArrayBuffer transfer via ThreadPort', () => {
   it('detaches the sender ArrayBuffer after postMessage with transfer list', async (t) => {
     const realm = new Realm({
@@ -98,6 +106,27 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
       realm.terminate();
     }
   });
+
+  it('rejects unsupported structured-clone payloads synchronously', async (t) => {
+    const realm = new Realm({
+      thread: true,
+      entry: new URL('./fixtures/echo-fn.mts', import.meta.url).pathname,
+    });
+    realm.run().catch(() => {/* terminated after test */});
+    realm.port.start();
+
+    try {
+      for (const value of unsupportedValues()) {
+        t.throws(
+          () => realm.port.postMessage({ value }),
+          null,
+          'thread realm rejects unsupported structured-clone payload',
+        );
+      }
+    } finally {
+      realm.terminate();
+    }
+  });
 });
 
 describe('Process realm transfer behavior', () => {
@@ -175,6 +204,27 @@ describe('Process realm transfer behavior', () => {
         /transfer|ArrayBuffer|ReadableStream/i,
         'process realm stream transfer rejects synchronously',
       );
+    } finally {
+      realm.terminate();
+    }
+  });
+
+  it('rejects unsupported structured-clone payloads synchronously', async (t) => {
+    const realm = new Realm({
+      process: true,
+      entry: new URL('./fixtures/port-echo.mts', import.meta.url).pathname,
+    });
+    realm.run().catch(() => {/* terminated after test */});
+    realm.port.start();
+
+    try {
+      for (const value of unsupportedValues()) {
+        t.throws(
+          () => realm.port.postMessage({ value }),
+          null,
+          'process realm rejects unsupported structured-clone payload',
+        );
+      }
     } finally {
       realm.terminate();
     }
