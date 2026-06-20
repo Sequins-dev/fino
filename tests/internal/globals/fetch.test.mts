@@ -434,6 +434,20 @@ describe('AbortSignal', () => {
 });
 
 describe('Misc', () => {
+  it('rejects direct non-HTTP/S URL schemes', async (t) => {
+    for (const url of [
+      'file:///tmp/fino-fetch.txt',
+      'data:text/plain,hello',
+      'javascript:alert(1)',
+    ]) {
+      await t.rejects(
+        () => fetch(url),
+        /non-HTTP\/S/i,
+        `rejects ${url}`,
+      );
+    }
+  });
+
   it('accepts a Request object as input', async (t) => {
     await withServer(19816,
       async (req) => new Response(req.method + ':' + new URL(req.url).pathname),

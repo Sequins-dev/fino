@@ -10,11 +10,12 @@
  *
  * ## Connection lifecycle
  *
- * Each `fetch()` call opens a fresh TCP or TLS connection per hop. There is
- * no connection pooling. The connection is kept alive until the response body
- * is fully consumed (or the iterator is closed early), at which point the
- * socket is closed. 204/304 and other bodyless responses close the socket
- * immediately after parsing headers.
+ * HTTP/1 requests open a fresh TCP or TLS connection per hop and request
+ * `Connection: close`. The connection is kept alive until the response body is
+ * fully consumed (or the iterator is closed early), at which point the socket
+ * is closed. 204/304 and other bodyless responses close the socket immediately
+ * after parsing headers. HTTPS requests that negotiate HTTP/2 through ALPN can
+ * reuse the resulting H2 session through the origin-keyed pool.
  *
  *
  * ## Redirect handling
@@ -40,9 +41,11 @@
  * ## Cross-origin redirect
  *
  * `Authorization`, `Cookie`, and `Cookie2` are stripped when following a
- * redirect to a different origin. CORS mode, credentials mode, cache mode, and
- * keepalive are accepted for RequestInit compatibility but are not otherwise
- * enforced by this server-side runtime.
+ * redirect to a different origin. This server-side runtime does not enforce
+ * browser CORS, credentials mode, cache mode, cookie jar, keepalive upload
+ * lifetime, or default referrer behavior. Those RequestInit fields are
+ * accepted for compatibility; only the explicit referrer/referrerPolicy header
+ * behavior implemented below is applied.
  *
  *
  * ## Usage
@@ -133,6 +136,14 @@ interface ClosableSocket {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+function _parseHttpUrl(url: string, context = 'fetch'): URL {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new TypeError(`${context}: non-HTTP/S URL is not allowed: '${parsed.href}'`);
+  }
+  return parsed;
+}
 
 /** Close a socket if it is open. Idempotent. */
 function _closeSocket(sock: { closed: boolean; close(): void } | null | undefined): void {
@@ -230,7 +241,7 @@ async function _singleFetch(
   runtime: TraceRuntime = {},
   trailers?: Headers | (() => Headers | Promise<Headers>),
 ): Promise<{ response: Response; sock: Socket | TlsSocket | null }> {
-  const parsed   = new URL(url);
+  const parsed   = _parseHttpUrl(url);
   const isHttps  = parsed.protocol === 'https:';
   const hostname = parsed.hostname;
   const portStr  = parsed.port;
@@ -655,8 +666,15 @@ async function _buildFinalResponseWithIntegrity(
  * response body.
  *
  * The returned Response may have a streamed body. If the body is not consumed
- * or closed, the underlying socket can remain open until the runtime tears it
- * down. Integrity checks buffer the full body before returning a Response.
+ * or closed, the underlying HTTP/1 socket can remain open until the runtime
+ * tears it down. HTTPS requests may reuse an HTTP/2 session when ALPN
+ * negotiates h2. Integrity checks buffer the full body before returning a
+ * Response.
+ *
+ * Browser policy knobs are intentionally limited in this release: CORS,
+ * credentials, cache, cookies, keepalive lifetime, and default referrer
+ * behavior are not enforced by the runtime. Explicit `referrer` and
+ * `referrerPolicy` values are converted to a `Referer` header when supported.
  *
  * ```typescript no_run
  * const response = await fetch('https://example.com/data.json', {

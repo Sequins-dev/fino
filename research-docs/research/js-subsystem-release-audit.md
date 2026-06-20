@@ -220,13 +220,7 @@ Status: DONE
 Status: DONE
 
 ## Fetch Global
-Status: TODO
-- Fix stale docs that claim no connection pooling while HTTPS H2 pooling
-  exists.
-- Add direct invalid initial scheme tests for `file:`, `data:`, and
-  `javascript:`.
-- Document non-browser-enforced knobs: CORS, credentials, cache, cookie jar,
-  keepalive, and referrer defaults.
+Status: DONE
 
 ## Web Streams
 Status: TODO
