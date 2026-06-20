@@ -200,6 +200,24 @@ describe('TlsSocket', () => {
     }
   });
 
+  it('prefers h2 when the client offers h2 before http/1.1', { skip: skipAlpn }, async (t) => {
+    const server = serve(
+      { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
+      () => new Response('alpn'),
+    );
+
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: 'localhost', rejectUnauthorized: false, alpn: ['h2', 'http/1.1'] },
+      );
+      t.equal(tls.negotiatedProtocol, 'h2', 'server selects h2 from the offered ALPN preference list');
+      tls.close();
+    } finally {
+      await server.close();
+    }
+  });
+
   it('failed upgrade leaves the original socket caller-owned', { skip }, async (t) => {
     const listener = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
     const acceptDone = (async () => {

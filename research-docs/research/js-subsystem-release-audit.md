@@ -90,10 +90,7 @@ Status: DONE
 Status: DONE
 
 ## TLS
-Status: TODO
-- Add broader TLS policy docs/tests for cipher/protocol selection, session
-  reuse, and server-side client certificates outside QUIC.
-- Require or document an OpenSSL-enabled release CI lane.
+Status: DONE
 
 ## DNS Resolver
 Status: DONE

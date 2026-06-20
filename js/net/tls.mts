@@ -18,7 +18,29 @@
  *     hostname: 'example.com',    // SNI + hostname verification
  *     ca: '/path/to/ca.pem',      // custom CA file (optional)
  *     rejectUnauthorized: true,   // verify peer cert (default: true)
+ *     alpn: ['h2', 'http/1.1'],   // client protocol preference (optional)
  *   }
+ *
+ * ## Release policy
+ *
+ * This module is release-supported in an OpenSSL-enabled build. Release CI
+ * must include a lane where `tlsAvailable` is true; builds without libssl may
+ * still run, but TLS tests and TLS-dependent HTTP features are expected to be
+ * skipped or gated explicitly.
+ *
+ * Protocol selection is exposed through ALPN only. Callers may offer client
+ * protocol preferences with `alpn`, and servers that use this socket layer
+ * publish their supported protocols through their own listener configuration.
+ * Cipher-suite, minimum/maximum protocol version, and session-reuse controls
+ * intentionally use OpenSSL defaults in this API. If a deployment needs a
+ * stricter TLS policy, configure the OpenSSL installation or use a higher-level
+ * server API that exposes a narrower audited knob.
+ *
+ * There is no public TLS session cache or session-ticket reuse API here, and
+ * server-side client-certificate authentication is not exposed by this socket
+ * layer today. mTLS support that exists elsewhere, such as QUIC/HTTP server
+ * integrations, is documented and tested at those higher-level APIs rather
+ * than through `TlsSocket`.
  *
  *
  * ## Close coordination
