@@ -187,9 +187,7 @@ Status: TODO
 Status: DONE
 
 ## Global Registry
-Status: TODO
-- Add a global surface contract test for `globalThis` installation and
-  facade-only APIs.
+Status: DONE
 
 ## EventTarget, Abort, Timers, Console
 Status: TODO
