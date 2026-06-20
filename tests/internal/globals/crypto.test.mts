@@ -964,6 +964,16 @@ describe('WebCrypto release error names', { skip }, () => {
       rejectsWithName('NotSupportedError'),
       'unsupported key format uses NotSupportedError',
     );
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'AES-CTR', length: 128 } as any, false, ['encrypt']),
+      rejectsWithName('NotSupportedError'),
+      'AES-CTR remains outside the release baseline',
+    );
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'AES-KW', length: 128 } as any, false, ['wrapKey']),
+      rejectsWithName('NotSupportedError'),
+      'AES-KW remains outside the release baseline',
+    );
   });
 
   it('uses DataError for malformed key data', async (t) => {

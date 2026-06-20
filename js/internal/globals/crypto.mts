@@ -18,18 +18,21 @@
  * - `crypto.subtle.wrapKey(format, key, wrappingKey, wrapAlgorithm)`
  * - `crypto.subtle.unwrapKey(format, wrappedKey, unwrappingKey, unwrapAlgorithm, unwrappedKeyAlgorithm, extractable, keyUsages)`
  *
- * Backed by internal:openssl (libcrypto via FFI). If OpenSSL is not installed,
- * every method throws an informative error rather than crashing the process.
- * Release CI should include at least one OpenSSL-enabled lane so the WebCrypto
- * algorithm matrix and named error behavior are exercised rather than skipped.
+ * Backed by internal:openssl (libcrypto via FFI). `cryptoAvailable` reports
+ * whether that backend loaded successfully; if OpenSSL is not installed, every
+ * method throws an informative error rather than crashing the process. Release
+ * CI should include at least one OpenSSL-enabled lane so the WebCrypto algorithm
+ * matrix and named error behavior are exercised rather than skipped.
  *
  * Supported digest names are SHA-1, SHA-256, SHA-384, and SHA-512. Symmetric
  * key import supports raw and JWK AES-GCM, AES-CBC, HMAC, PBKDF2, and HKDF
  * keys; asymmetric import/export supports the RSA, ECDSA, ECDH, and Ed25519
- * formats covered by the focused crypto tests. Unsupported algorithms and key
- * formats reject with `NotSupportedError`, malformed key material rejects with
- * `DataError`, and backend operation failures such as AES-GCM authentication
- * failure reject with `OperationError`.
+ * formats covered by the focused crypto tests. AES-CTR, AES-KW, full WPT
+ * coverage, and full WebCrypto algorithm parity are outside this release
+ * baseline. Unsupported algorithms and key formats reject with
+ * `NotSupportedError`, malformed key material rejects with `DataError`, and
+ * backend operation failures such as AES-GCM authentication failure reject with
+ * `OperationError`.
  *
  * Registers `globalThis.crypto` at import time.
  *
@@ -1304,7 +1307,7 @@ const subtle = {
       );
     }
 
-    throw new Error('generateKey: unsupported algorithm: ' + alg.name);
+    throw _webCryptoError('NotSupportedError', 'generateKey: unsupported algorithm: ' + alg.name);
   },
 
   // -------------------------------------------------------------------------

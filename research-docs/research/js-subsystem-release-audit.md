@@ -359,10 +359,15 @@ Status: DONE
 Status: DONE
 
 ## WebCrypto Global
-Status: TODO
-- WebCrypto is a useful subset, not full API parity.
-- Track or document missing algorithms such as AES-CTR and AES-KW.
-- Require an OpenSSL-enabled release CI lane for crypto tests.
+Status: DONE
+- Release baseline is an OpenSSL-backed WebCrypto subset gated by
+  `cryptoAvailable`; release CI requires an OpenSSL-enabled lane so crypto tests
+  exercise real backend behavior instead of skipping.
+- Baseline covers digest, HMAC, AES-GCM, AES-CBC, RSA, ECDSA, ECDH, Ed25519,
+  PBKDF2, HKDF, wrapping through supported AES-GCM paths, named WebCrypto error
+  classes, and key-usage/JWK rejection edges.
+- AES-CTR, AES-KW, full WPT coverage, and full WebCrypto algorithm parity are
+  outside this baseline and reject with `NotSupportedError`.
 
 ## UUID
 Status: DONE
