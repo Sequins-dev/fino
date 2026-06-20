@@ -378,9 +378,16 @@ Status: DONE
   authentication must be considered together for untrusted workloads.
 
 ## Cluster
-Status: TODO
-- Docs explicitly defer seed election, cluster authentication, P2P `PORT_MSG`, and QUIC transport.
-- Add hostile-peer and auth-failure tests.
+Status: DONE
+- Release baseline documents the trusted single-seed WebSocket cluster: one
+  active connection per process, seed-backed spawn routing, seed-forwarded
+  `PORT_MSG`, worker-loss propagation, remote call/run/terminate behavior, and
+  idempotent `leaveCluster()`.
+- Protocol and routing coverage locks JSON message validation, realm registry
+  ownership cascades, spawn acknowledgement success/failure, node-down cleanup,
+  pending spawn rejection, and ArrayBuffer-only cluster port transfer stores.
+- Seed election, cluster authentication, hostile-peer handling, direct
+  peer-to-peer `PORT_MSG`, and QUIC transport are outside this baseline.
 
 ## Test Framework
 Status: DONE

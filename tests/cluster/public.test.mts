@@ -88,6 +88,20 @@ describe('fino:cluster public WebSocket integration', () => {
     t.ok(true, 'cluster state can be reused after leaveCluster');
   });
 
+  it('allows only one active cluster connection per process', async (t) => {
+    const port = randomPort();
+    await withTimeout(startCluster({ port, nodeId: 'cluster-single-active' }), 2_000, 'startCluster');
+    try {
+      await t.rejects(
+        () => startCluster({ port: port + 1, nodeId: 'cluster-second-active' }),
+        /already connected/i,
+        'second startCluster rejects while connected',
+      );
+    } finally {
+      leaveCluster();
+    }
+  });
+
   it('remote Realm.run settles after terminate()', async (t) => {
     const port = randomPort();
     await withTimeout(startCluster({ port, nodeId: 'cluster-terminate' }), 2_000, 'startCluster');

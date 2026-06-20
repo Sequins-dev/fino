@@ -135,9 +135,9 @@ export interface JoinClusterOptions {
 /**
  * Start the cluster seed server and participate as a worker on this node.
  *
- * The seed is the control-plane hub: it routes SPAWN requests, tracks realm
- * ownership, and propagates deaths. It does NOT relay data-plane messages in
- * steady state.
+ * The seed is the current routing hub: it routes SPAWN requests, tracks realm
+ * ownership, propagates deaths, and forwards PORT_MSG frames to the node that
+ * owns the destination port. Direct peer-to-peer delivery is deferred.
  *
  * This call returns immediately after the seed starts listening. The event
  * loop keeps the server alive as long as there are connected peers.

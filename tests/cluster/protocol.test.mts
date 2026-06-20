@@ -91,6 +91,15 @@ describe('ClusterMessage encode/decode', () => {
     t.throws(() => decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/2","payload":5}'), /payload/, 'non-string payload rejected');
     t.throws(() => decode('{"t":"WELCOME","nodeId":"seed","peers":[{"nodeId":"bad/node","load":{"cpu":0,"memory":1}}]}'), /peer/, 'malformed peer rejected');
   });
+
+  it('does not preserve authentication or transport negotiation fields', (t) => {
+    const hello = decode('{"t":"HELLO","nodeId":"node1","load":{"cpu":0,"memory":1},"token":"secret"}');
+    const portMsg = decode('{"t":"PORT_MSG","fromPort":"nodeA/p-1","toPort":"nodeB/p-2","payload":"","direct":true,"transport":"quic"}');
+
+    t.equal((hello as any).token, undefined, 'auth token is not part of HELLO');
+    t.equal((portMsg as any).direct, undefined, 'direct peer routing flag is not part of PORT_MSG');
+    t.equal((portMsg as any).transport, undefined, 'transport negotiation is not part of PORT_MSG');
+  });
 });
 
 describe('nodeIdFromId helper', () => {
