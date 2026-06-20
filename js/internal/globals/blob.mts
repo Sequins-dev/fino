@@ -10,10 +10,12 @@
  * ## Internal byte storage
  *
  * All Blob content is eagerly concatenated into a single `Uint8Array` on
- * construction. The WHATWG spec allows lazy concatenation (Blob objects can
- * reference other Blobs by ref), but eager flattening is simpler and correct
- * for our use case where Blobs are typically small-to-medium in-memory
- * values rather than multi-GB file handles.
+ * construction. String parts honor `endings: 'native'` by normalizing CRLF,
+ * CR, and LF sequences to the runtime's native newline before UTF-8 encoding;
+ * non-string parts remain byte-preserving. The WHATWG spec allows lazy
+ * concatenation (Blob objects can reference other Blobs by ref), but eager
+ * flattening is simpler and correct for our use case where Blobs are typically
+ * small-to-medium in-memory values rather than multi-GB file handles.
  *
  *
  * ## The BYTES_INIT sentinel
@@ -108,10 +110,26 @@ export function _getBlobBytes(blob: Blob): Uint8Array {
 }
 
 type BlobPart = string | ArrayBuffer | ArrayBufferView | Blob;
+type EndingType = 'transparent' | 'native';
 
-function _normalizePart(part: BlobPart): Uint8Array {
+interface BlobOptions {
+  type?: string;
+  endings?: EndingType;
+  bytes?: Uint8Array;
+}
+
+interface FileOptions extends BlobOptions {
+  lastModified?: number;
+}
+
+function _normalizeLineEndings(value: string, endings: EndingType): string {
+  if (endings !== 'native') return value;
+  return value.replace(/\r\n|\r|\n/g, '\n');
+}
+
+function _normalizePart(part: BlobPart, endings: EndingType): Uint8Array {
   if (typeof part === 'string') {
-    return encodeUtf8(part);
+    return encodeUtf8(_normalizeLineEndings(part, endings));
   }
   if (part instanceof Blob && _blobBytes.has(part)) {
     // Blob or File — grab its internal bytes
@@ -214,8 +232,10 @@ export class Blob {
    * Create a Blob from strings, buffers, views, or other Blobs.
    *
    * Null or omitted parts create an empty Blob. Non-iterable parts throw a
-   * TypeError. The internal BYTES_INIT path is private to this module and is
-   * used by slice() to avoid re-normalizing already-owned bytes.
+   * TypeError. `endings: 'native'` normalizes string-part line endings before
+   * encoding; the default `transparent` preserves them. The internal BYTES_INIT
+   * path is private to this module and is used by slice() to avoid
+   * re-normalizing already-owned bytes.
    *
    * ```typescript no_run
    * const bytes = new Uint8Array([104, 105]);
@@ -223,7 +243,7 @@ export class Blob {
    * blob.size; // 9
    * ```
    */
-  constructor(parts?: Iterable<BlobPart> | typeof BYTES_INIT | null, options?: { type?: string; bytes?: Uint8Array } | null) {
+  constructor(parts?: Iterable<BlobPart> | typeof BYTES_INIT | null, options?: BlobOptions | null) {
     if (parts === BYTES_INIT) {
       // Internal path: options is { bytes: Uint8Array, type: string }
       this.#bytes = options!.bytes!;
@@ -236,6 +256,7 @@ export class Blob {
     const lowered = rawType.toLowerCase();
     // Per WHATWG: if any char is outside U+0020–U+007E, set type to empty string
     this.#type = /[^\x20-\x7e]/.test(lowered) ? '' : lowered;
+    const endings = options != null && options.endings === 'native' ? 'native' : 'transparent';
 
     if (parts == null) {
       this.#bytes = new Uint8Array(0);
@@ -248,7 +269,7 @@ export class Blob {
 
     const chunks: Uint8Array[] = [];
     for (const part of parts) {
-      chunks.push(_normalizePart(part));
+      chunks.push(_normalizePart(part, endings));
     }
     this.#bytes = _concat(chunks);
     _blobBytes.set(this, this.#bytes);
@@ -448,16 +469,16 @@ export class File extends Blob {
   /**
    * Create a File from Blob parts and metadata.
    *
-   * The options type is passed through Blob normalization. lastModified is
-   * truncated to an integer millisecond timestamp; when absent, Date.now() is
-   * captured at construction time.
+   * The options type and endings are passed through Blob normalization.
+   * lastModified is truncated to an integer millisecond timestamp; when absent,
+   * Date.now() is captured at construction time.
    *
    * ```typescript no_run
    * const file = new File(['data'], 'data.bin', { lastModified: 0 });
    * file.lastModified; // 0
    * ```
    */
-  constructor(parts: Iterable<BlobPart> | null, name: string, options?: { type?: string; lastModified?: number } | null) {
+  constructor(parts: Iterable<BlobPart> | null, name: string, options?: FileOptions | null) {
     super(parts, options);
     this.#name = String(name);
     this.#lastModified = options != null && options.lastModified != null

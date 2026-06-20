@@ -55,6 +55,24 @@ describe('Blob construction', () => {
     const b = new Blob([a, new Uint8Array([32]), 'there']);
     t.equal(b.size, 2 + 1 + 5); // 'hi' + space byte + 'there'
   });
+
+  it('normalizes string part line endings when endings is native', async (t) => {
+    const b = new Blob(['a\nb', 'c\r\nd', 'e\rf'], { endings: 'native' } as BlobPropertyBag);
+    const expected = ['a', 'bc', 'de', 'f'].join('\n');
+    t.equal(await b.text(), expected, 'native endings normalize string parts to platform newlines');
+  });
+
+  it('preserves string part line endings by default and with transparent endings', async (t) => {
+    const input = 'a\nb\r\nc\rd';
+    t.equal(await new Blob([input]).text(), input, 'default endings preserve original line endings');
+    t.equal(await new Blob([input], { endings: 'transparent' } as BlobPropertyBag).text(), input, 'transparent endings preserve original line endings');
+  });
+
+  it('does not normalize non-string parts when endings is native', async (t) => {
+    const bytes = new Uint8Array([97, 13, 98, 10, 99]);
+    const b = new Blob([bytes], { endings: 'native' } as BlobPropertyBag);
+    t.deepEqual(Array.from(await b.bytes()), Array.from(bytes), 'binary parts are byte-preserving');
+  });
 });
 
 describe('text() / arrayBuffer() / bytes()', () => {
@@ -178,6 +196,11 @@ describe('File', () => {
     const f = new File(['x'], 'x');
     t.ok(f instanceof Blob, 'File instanceof Blob');
     t.ok(f instanceof File, 'File instanceof File');
+  });
+
+  it('normalizes string part line endings when endings is native', async (t) => {
+    const f = new File(['a\rb\nc'], 'lines.txt', { endings: 'native' } as FilePropertyBag);
+    t.equal(await f.text(), ['a', 'b', 'c'].join('\n'), 'File passes endings through Blob construction');
   });
 });
 

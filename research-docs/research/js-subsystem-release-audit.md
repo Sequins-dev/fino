@@ -250,8 +250,7 @@ Status: TODO
 - Add WPT-derived URL and URLPattern edge fixtures.
 
 ## Blob And File
-Status: TODO
-- Implement and test `endings` normalization from BlobPropertyBag/FilePropertyBag.
+Status: DONE
 
 ## FormData
 Status: TODO
