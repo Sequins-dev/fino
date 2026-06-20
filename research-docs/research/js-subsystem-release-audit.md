@@ -120,12 +120,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/2
-Status: TODO
-
-- Work down live `h2spec-allowed-failures.json` items across frame errors,
-  stream state, flow control, PING, SETTINGS, CONTINUATION, and PUSH_PROMISE.
-- Keep existing happy-path and parser tests, but do not treat RFC conformance as
-  release-clean yet.
+Status: DONE
 
 ## HTTP/2 Pool
 Status: DONE

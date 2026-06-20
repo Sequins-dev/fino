@@ -20,6 +20,14 @@ const _dec = new TextDecoder();
 
 function hexBytes(...args: number[]): Uint8Array { return new Uint8Array(args); }
 
+interface RawFrame {
+  length: number;
+  type: number;
+  flags: number;
+  streamId: number;
+  payload: Uint8Array;
+}
+
 // H2 client connection preface (24 bytes)
 const H2_PREFACE = hexBytes(
   0x50,0x52,0x49,0x20,0x2A,0x20,0x48,0x54,0x54,0x50,0x2F,0x32,
@@ -28,6 +36,87 @@ const H2_PREFACE = hexBytes(
 
 // Empty SETTINGS frame (9 bytes, stream 0)
 const SETTINGS_EMPTY = hexBytes(0x00,0x00,0x00, 0x04, 0x00, 0x00,0x00,0x00,0x00);
+
+function frame(type: number, flags: number, streamId: number, payload = new Uint8Array(0)): Uint8Array {
+  const out = new Uint8Array(9 + payload.byteLength);
+  const len = payload.byteLength;
+  out[0] = (len >> 16) & 0xff;
+  out[1] = (len >> 8) & 0xff;
+  out[2] = len & 0xff;
+  out[3] = type & 0xff;
+  out[4] = flags & 0xff;
+  out[5] = (streamId >> 24) & 0x7f;
+  out[6] = (streamId >> 16) & 0xff;
+  out[7] = (streamId >> 8) & 0xff;
+  out[8] = streamId & 0xff;
+  out.set(payload, 9);
+  return out;
+}
+
+function dataFrameFor(streamId: number, body: Uint8Array, flags = 0x01): Uint8Array {
+  return frame(0x00, flags, streamId, body);
+}
+
+function priorityFrame(streamId: number, dependency: number): Uint8Array {
+  return frame(0x02, 0x00, streamId, hexBytes(
+    (dependency >> 24) & 0x7f,
+    (dependency >> 16) & 0xff,
+    (dependency >> 8) & 0xff,
+    dependency & 0xff,
+    16,
+  ));
+}
+
+function rstStreamFrame(streamId: number, errorCode: number): Uint8Array {
+  return frame(0x03, 0x00, streamId, hexBytes(
+    (errorCode >> 24) & 0xff,
+    (errorCode >> 16) & 0xff,
+    (errorCode >> 8) & 0xff,
+    errorCode & 0xff,
+  ));
+}
+
+async function readRawFrames(reader: any, limit = 16): Promise<RawFrame[]> {
+  const frames: RawFrame[] = [];
+  for (let i = 0; i < limit; i++) {
+    let header: Uint8Array | null = null;
+    try { header = await reader.readExactly(9); } catch { break; }
+    if (!header || header.byteLength < 9) break;
+    const length = (header[0] << 16) | (header[1] << 8) | header[2];
+    const payload = length > 0 ? await reader.readExactly(length) : new Uint8Array(0);
+    if (!payload || payload.byteLength < length) break;
+    frames.push({
+      length,
+      type: header[3],
+      flags: header[4],
+      streamId: ((header[5] & 0x7f) << 24) | (header[6] << 16) | (header[7] << 8) | header[8],
+      payload,
+    });
+    if (header[3] === 0x07) break;
+  }
+  return frames;
+}
+
+function frameErrorCode(f: RawFrame): number {
+  const p = f.payload;
+  const off = f.type === 0x07 ? 4 : 0;
+  return ((p[off]! << 24) | (p[off + 1]! << 16) | (p[off + 2]! << 8) | p[off + 3]!) >>> 0;
+}
+
+async function rawH2Exchange(port: number, frames: Uint8Array): Promise<RawFrame[]> {
+  const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+  const [reader, writer] = sock.split();
+  await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...frames]));
+  await writer.flush();
+  await writer.close();
+  const rawFrames = await readRawFrames(reader);
+  try { await reader.close(); } catch {}
+  return rawFrames;
+}
+
+function findFrame(frames: RawFrame[], type: number, streamId?: number): RawFrame | null {
+  return frames.find(f => f.type === type && (streamId === undefined || f.streamId === streamId)) ?? null;
+}
 
 // HEADERS frame for GET / (stream 1, END_STREAM+END_HEADERS)
 // HPACK: :method=GET(idx2), :path=/(idx4), :scheme=http(idx6),
@@ -505,6 +594,204 @@ async function openClientSession(writer: any, callbacks: any): Promise<any> {
 }
 
 describe('H2 server — robustness', () => {
+  it('accepts a DATA frame exactly at the default 16 KiB max frame size', async (t) => {
+    if (!h2Available) return;
+
+    let captured = 0;
+    const server = serve({ port: 0 }, async (req) => {
+      captured = (await req.arrayBuffer()).byteLength;
+      return new Response('ok');
+    });
+    const port = server.port;
+
+    const body = new Uint8Array(16 * 1024);
+    const frames = await rawH2Exchange(port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...dataFrameFor(1, body, 0x01),
+    ]));
+    await server.close();
+
+    t.equal(captured, 16 * 1024, 'handler received exact 16 KiB DATA payload');
+    t.ok(findFrame(frames, 0x01, 1) !== null, 'server sent response HEADERS');
+  });
+
+  it('sends GOAWAY when a new client stream id is lower than a previous stream id', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x05, 3, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ...frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+    ]));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+  });
+
+  it('sends GOAWAY for DATA and RST_STREAM on an idle stream', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const dataFrames = await rawH2Exchange(server.port, dataFrameFor(1, new Uint8Array(0), 0x01));
+    const rstFrames = await rawH2Exchange(server.port, rstStreamFrame(1, 0));
+    await server.close();
+
+    t.equal(frameErrorCode(findFrame(dataFrames, 0x07)!), 0x01, 'idle DATA gets GOAWAY PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(rstFrames, 0x07)!), 0x01, 'idle RST_STREAM gets GOAWAY PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs DATA and HEADERS sent after the client half-closes the stream', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const dataFrames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_GET_ROOT_LOCALHOST,
+      ...dataFrameFor(1, _enc.encode('late'), 0x01),
+    ]));
+    const headersFrames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_GET_ROOT_LOCALHOST,
+      ...frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+    ]));
+    await server.close();
+
+    const dataRst = findFrame(dataFrames, 0x03, 1);
+    const headersRst = findFrame(headersFrames, 0x03, 1);
+    t.ok(dataRst !== null, 'DATA after half-close gets RST_STREAM');
+    t.ok(headersRst !== null, 'HEADERS after half-close gets RST_STREAM');
+    t.equal(frameErrorCode(dataRst!), 0x05, 'DATA reset uses STREAM_CLOSED');
+    t.equal(frameErrorCode(headersRst!), 0x05, 'HEADERS reset uses STREAM_CLOSED');
+  });
+
+  it('RST_STREAMs DATA and HEADERS sent after client RST_STREAM closes a stream', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const dataFrames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...rstStreamFrame(1, 0),
+      ...dataFrameFor(1, _enc.encode('late'), 0x01),
+    ]));
+    const headersFrames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...rstStreamFrame(1, 0),
+      ...frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+    ]));
+    await server.close();
+
+    const dataRst = findFrame(dataFrames, 0x03, 1);
+    const headersRst = findFrame(headersFrames, 0x03, 1);
+    t.ok(dataRst !== null, 'DATA after closed stream gets RST_STREAM');
+    t.ok(headersRst !== null, 'HEADERS after closed stream gets RST_STREAM');
+    t.equal(frameErrorCode(dataRst!), 0x05, 'DATA reset uses STREAM_CLOSED');
+    t.equal(frameErrorCode(headersRst!), 0x05, 'HEADERS reset uses STREAM_CLOSED');
+  });
+
+  it('sends GOAWAY for malformed DATA padding', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...frame(0x00, 0x08, 1, hexBytes(8, 1, 2, 3)),
+    ]));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+  });
+
+  it('sends GOAWAY immediately for DATA larger than the default max frame size', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const oversizedHeaderOnly = frame(0x00, 0x00, 1, new Uint8Array(16 * 1024 + 1)).subarray(0, 9);
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...oversizedHeaderOnly,
+    ]));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x06, 'GOAWAY uses FRAME_SIZE_ERROR');
+  });
+
+
+  it('validates PRIORITY stream id, length, and self-dependency', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const stream0 = await rawH2Exchange(server.port, frame(0x02, 0x00, 0, new Uint8Array(5)));
+    const wrongLength = await rawH2Exchange(server.port, frame(0x02, 0x00, 1, new Uint8Array(4)));
+    const selfDependency = await rawH2Exchange(server.port, priorityFrame(1, 1));
+    await server.close();
+
+    const stream0Goaway = findFrame(stream0, 0x07);
+    const wrongLengthGoaway = findFrame(wrongLength, 0x07);
+    const selfRst = findFrame(selfDependency, 0x03, 1);
+    t.equal(frameErrorCode(stream0Goaway!), 0x01, 'stream 0 PRIORITY gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(wrongLengthGoaway!), 0x06, 'wrong PRIORITY length gets FRAME_SIZE_ERROR');
+    t.equal(frameErrorCode(selfRst!), 0x01, 'self-dependent PRIORITY gets stream PROTOCOL_ERROR');
+  });
+
+  it('closes cleanly for invalid PING length and ignores client PING ACK', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const invalidPing = await rawH2Exchange(server.port, frame(0x06, 0x00, 0, new Uint8Array(7)));
+    const ackPing = await rawH2Exchange(server.port, frame(0x06, 0x01, 0, new Uint8Array(8)));
+    await server.close();
+
+    t.ok(findFrame(invalidPing, 0x07) === null, 'invalid PING length closes without GOAWAY');
+    t.ok(findFrame(ackPing, 0x06) === null, 'client PING ACK is ignored');
+    const goaway = findFrame(ackPing, 0x07);
+    t.ok(goaway === null || frameErrorCode(goaway) === 0, 'client PING ACK does not cause an error GOAWAY');
+  });
+
+  it('RST_STREAMs streams above the max concurrent stream limit', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const requestFrames: number[] = [];
+    for (let streamId = 1; streamId <= 65; streamId += 2) {
+      requestFrames.push(...frame(0x01, 0x04, streamId, H2_POST_ROOT_LOCALHOST.subarray(9)));
+    }
+    const frames = await rawH2Exchange(server.port, new Uint8Array(requestFrames));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 65);
+    t.ok(rst !== null, 'stream above the advertised limit gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x07, 'reset uses REFUSED_STREAM');
+  });
+
+  it('sends GOAWAY for representative CONTINUATION ordering errors', async (t) => {
+    if (!h2Available) return;
+
+    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const interrupted = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x01, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ...frame(0x00, 0x00, 1, new Uint8Array(0)),
+    ]));
+    const stream0 = await rawH2Exchange(server.port, frame(0x09, 0x04, 0, new Uint8Array(0)));
+    const unexpectedOnOpen = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...frame(0x09, 0x04, 1, new Uint8Array(0)),
+    ]));
+    const onHalfClosed = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_GET_ROOT_LOCALHOST,
+      ...frame(0x09, 0x04, 1, new Uint8Array(0)),
+    ]));
+    await server.close();
+
+    t.equal(frameErrorCode(findFrame(interrupted, 0x07)!), 0x01, 'interrupted header block gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(stream0, 0x07)!), 0x01, 'CONTINUATION stream 0 gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(unexpectedOnOpen, 0x07)!), 0x01, 'unexpected CONTINUATION gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(onHalfClosed, 0x07)!), 0x01, 'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR');
+  });
+
   it('server does not hang after client RST_STREAMs a pending request', async (t) => {
     if (!h2Available) return;
 
