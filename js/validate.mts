@@ -18,6 +18,12 @@
  * preserved on schemas for tooling compatibility but ignored by validation.
  * Supported string formats are `email`, `url`, and `uri`.
  *
+ * This is not a full JSON Schema implementation. `$ref`, `$defs`,
+ * `definitions`, `oneOf`, `allOf`, `not`, pattern-property/dependency
+ * keywords, unevaluated keywords, and unknown string formats are not resolved
+ * or enforced in this release. Validate schemas with a full JSON Schema engine
+ * first when unsupported keywords should be treated as application errors.
+ *
  * Validators are compiled into closure graphs. The implementation avoids
  * generated source and `eval`, but still avoids re-walking the schema metadata
  * for every input value.

@@ -125,10 +125,7 @@ Status: DONE
 Status: DONE
 
 ## Validation
-Status: TODO
-- JSON Schema support is partial: no `$ref`, `$defs`, `oneOf`, `allOf`, `not`, pattern properties, dependencies, or unevaluated keywords.
-- Unknown keywords are ignored, which can hide unsupported schema intent.
-- Format validation is limited and should not be presented as full JSON Schema parity.
+Status: DONE
 
 ## Logging
 Status: DONE

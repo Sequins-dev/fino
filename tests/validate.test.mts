@@ -174,4 +174,14 @@ describe('fino:validate', () => {
     t.equal(parse(schema, undefined), 'generated', 'refinement sees defaulted value');
     t.equal(safeParse(schema, 'manual').success, false, 'refinement rejects explicit invalid value');
   });
+
+  it('documents ignored keywords outside the supported JSON Schema subset', (t) => {
+    t.equal(safeParse({ type: 'string', minLength: 2, unknownKeyword: true }, 'a').success, false, 'supported keywords still apply');
+    t.equal(safeParse({ type: 'string', unknownKeyword: true }, 'a').success, true, 'unknown keywords are ignored');
+    t.equal(safeParse({ $ref: '#/$defs/name', $defs: { name: { type: 'string' } } }, 42).success, true, '$ref and $defs are not resolved');
+    t.equal(safeParse({ oneOf: [{ type: 'string' }] }, 42).success, true, 'oneOf is not implemented');
+    t.equal(safeParse({ allOf: [{ type: 'string' }] }, 42).success, true, 'allOf is not implemented');
+    t.equal(safeParse({ not: { type: 'number' } }, 42).success, true, 'not is not implemented');
+    t.equal(safeParse({ type: 'string', format: 'uuid' }, 'not-a-uuid').success, true, 'unsupported formats are ignored');
+  });
 });
