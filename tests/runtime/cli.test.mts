@@ -550,6 +550,24 @@ describe('CLI commands', () => {
     });
   });
 
+  it('fails when expanded benchmark inputs match no files', async (t) => {
+    await withTempProject({}, async (dir) => {
+      for (const [label, args] of [
+        ['empty benchmark directory', ['bench', 'benchmarks']],
+        ['empty benchmark glob', ['bench', 'benchmarks/**/*.bench.mts']],
+      ] as [string, string[]][]) {
+        const { stdout, stderr, result } = await runCli(args, {
+          cwd: dir,
+          env: { FINO_BENCH_MIN_NS: '1000' },
+        });
+
+        t.equal(result.code, 1, `${label} exits with an error`);
+        t.equal(stdout, '', `${label} does not run the benchmark runner`);
+        t.ok(stderr.includes('fino bench: no benchmark files matched'), `${label} reports no matched files`);
+      }
+    });
+  });
+
   it('runs async benchmarks and setup/teardown in order', async (t) => {
     await withTempProject({
       'benchmarks/async.bench.mts': [

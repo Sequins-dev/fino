@@ -27,10 +27,7 @@ Status: DONE
 Status: DONE
 
 ## Bench Command
-Status: TODO
-- Reject directory/glob inputs that expand to zero benchmark files, matching
-  `fino test` behavior.
-- Add a CLI regression test for empty benchmark expansion.
+Status: DONE
 
 ## Fmt, Lint, And Tooling
 Status: DONE

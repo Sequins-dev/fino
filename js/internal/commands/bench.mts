@@ -64,8 +64,8 @@ async function expandArg(arg: string): Promise<string[]> {
  * imports each file for registration side effects and then calls
  * `fino:bench.run()`. `--filter` is optional; when provided, only benchmark
  * groups whose full path contains the filter text are run. The command throws
- * when no files are supplied and otherwise returns the result of the benchmark
- * runner.
+ * when no files are supplied or expansion finds no benchmark files and
+ * otherwise returns the result of the benchmark runner.
  *
  * ```js
  * import { createBenchCommand } from 'internal:commands/bench';
@@ -87,9 +87,16 @@ export function createBenchCommand(): Command {
         throw new Error('fino bench: no benchmark files specified');
       }
 
+      let imported = 0;
       for (const raw of benchFiles) {
         const expanded = await expandArg(String(raw));
-        for (const file of expanded) await import(normalizeModuleSpecifier(file));
+        for (const file of expanded) {
+          await import(normalizeModuleSpecifier(file));
+          imported++;
+        }
+      }
+      if (imported === 0) {
+        throw new Error(`fino bench: no benchmark files matched ${benchFiles.map(String).join(', ')}`);
       }
 
       const { run } = await import('fino:bench');
