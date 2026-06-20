@@ -112,9 +112,15 @@ Status: DONE
 Status: DONE
 
 ## File System And Paths
-Status: TODO
-- Not Node `fs` / `fs.promises` parity: missing key option shapes, `rm`, recursive mkdir behavior, Buffer/encoding variants, and broader fd APIs.
-- Paths are POSIX-first; Windows/path namespace parity is incomplete.
+Status: DONE
+- Release baseline documents explicit `DiskFileSystem` usage and POSIX-first
+  path semantics. Windows drive and namespace path parity is outside scope.
+- Coverage locks whole-file string/byte reads and writes, errno-backed
+  failures, handle lifecycle, directory entries, glob traversal, symlinks,
+  hardlinks, metadata operations, and non-recursive `mkdir`.
+- Node `fs` / `fs.promises` parity, global `fs`/`Buffer`, `rm()`, recursive
+  remove helpers, recursive mkdir option shapes, and read/write encoding
+  option matrices are outside this baseline.
 
 ## File Watch
 Status: DONE

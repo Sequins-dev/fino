@@ -4,6 +4,7 @@
 
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem, F_OK, R_OK } from 'fino:file';
+import * as fileModule from 'fino:file';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
 
@@ -221,6 +222,19 @@ describe('DiskFileSystem', () => {
       t.equal(text, 'second', 'second write truncates first');
       await fs.unlink(path);
     });
+
+    it('writeFile accepts Uint8Array and ArrayBuffer data without encoding options', async (t) => {
+      const typedPath = TEST_DIR + '/typed-array.bin';
+      const bufferPath = TEST_DIR + '/array-buffer.bin';
+      await fs.writeFile(typedPath, new Uint8Array([0x66, 0x69, 0x6e, 0x6f]));
+      await fs.writeFile(bufferPath, new Uint8Array([0x6a, 0x73]).buffer);
+
+      t.equal(await fs.readFile(typedPath), 'fino', 'Uint8Array data is written as bytes');
+      t.equal(await fs.readFile(bufferPath), 'js', 'ArrayBuffer data is written as bytes');
+
+      await fs.unlink(typedPath);
+      await fs.unlink(bufferPath);
+    });
   });
 
   describe('mkdir / rmdir', () => {
@@ -233,6 +247,16 @@ describe('DiskFileSystem', () => {
       let threw = false;
       try { await fs.stat(path); } catch { threw = true; }
       t.ok(threw, 'stat throws after rmdir');
+    });
+
+    it('mkdir is a single-directory POSIX operation, not recursive Node mkdir', async (t) => {
+      const path = TEST_DIR + '/missing-parent/child';
+
+      await t.rejects(
+        () => fs.mkdir(path, { recursive: true } as any),
+        (err) => (err as any)?.code === 'ENOENT',
+        'recursive option object does not create missing parents',
+      );
     });
   });
 
@@ -556,5 +580,14 @@ describe('DiskFileSystem error codes', () => {
       t.ok(err instanceof Error, 'throws Error');
       t.equal((err as any).code, 'EEXIST', 'error.code is EEXIST string');
     }
+  });
+});
+
+describe('fino:file release contract', () => {
+  it('does not expose Node fs convenience globals or rm APIs', (t) => {
+    t.equal((globalThis as Record<string, unknown>).fs, undefined, 'fs is not installed on globalThis');
+    t.equal((globalThis as Record<string, unknown>).Buffer, undefined, 'Buffer is not installed on globalThis');
+    t.equal((fileModule as Record<string, unknown>).rm, undefined, 'fino:file does not expose rm()');
+    t.equal((fileModule as Record<string, unknown>).promises, undefined, 'fino:file does not expose fs.promises');
   });
 });

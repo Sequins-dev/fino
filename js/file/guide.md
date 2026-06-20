@@ -90,7 +90,9 @@ const configPath = join(process.cwd(), 'config', 'app.toml');
 ```
 
 Path helpers keep platform behavior localized and make call sites easier to
-read.
+read. Fino's current release contract is POSIX-first: `/` is the path
+separator, drive-letter paths are not absolute, and backslashes are ordinary
+filename characters rather than Windows separators.
 
 ## Watch Files
 
@@ -119,3 +121,14 @@ Linux uses inotify watches.
 - Use `Watcher` when a long-running process should react to changes.
 - Pass filesystem objects into code that needs testability or realm-specific
   file access.
+- Use explicit `mkdir`, `rmdir`, and `unlink` operations for directory and file
+  removal. `mkdir` creates one directory level and does not implement Node's
+  recursive option shape.
+
+## Release Scope
+
+`fino:file` is not Node `fs` or `fs/promises` parity. There is no global `fs`,
+no `Buffer` global, no `fs.promises` namespace, no `rm()` convenience API, no
+recursive remove helper, and no read/write encoding option matrix. Whole-file
+helpers accept UTF-8 strings or byte data (`Uint8Array` / `ArrayBuffer`) and
+return UTF-8 strings. Use file handles for lower-level byte reads and writes.

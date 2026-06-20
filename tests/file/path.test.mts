@@ -54,6 +54,14 @@ describe('sep', () => {
   it('is / on POSIX', (t) => {
     t.equal(sep, '/');
   });
+
+  it('does not implement Windows drive or namespace path semantics on POSIX', (t) => {
+    const drivePath = String.raw`C:\temp\file.txt`;
+    const dottedDrivePath = String.raw`C:\temp\..\file.txt`;
+    t.equal(isAbsolute(drivePath), false, 'drive-letter paths are not absolute on POSIX');
+    t.equal(normalize(dottedDrivePath).toString(), dottedDrivePath, 'backslashes are ordinary characters on POSIX');
+    t.equal(basename(drivePath), drivePath, 'backslashes are not path separators on POSIX');
+  });
 });
 
 describe('basename', () => {
