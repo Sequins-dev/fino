@@ -54,7 +54,7 @@ import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
 import type { ConnectionTakeover } from './driver.mts';
 import type { Request } from './index.mts';
-import type { IPv4Address } from '../socket.mts';
+import type { Address, ListenOptions } from '../socket.mts';
 
 // H2 client preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
 const _H2_PREFACE = new Uint8Array([
@@ -73,6 +73,14 @@ function _isH2Preface(bytes: Uint8Array): boolean {
 interface ServeOptions {
   port:      number;
   hostname?: string;
+  /** Explicit IP family for the listening socket. Defaults from hostname. */
+  family?: 'ipv4' | 'ipv6';
+  /** Listen backlog passed through to Socket.listen(). */
+  backlog?: number;
+  /** Set SO_REUSEADDR before bind. Defaults to Socket.listen() behavior. */
+  reuseAddr?: boolean;
+  /** Set SO_REUSEPORT before bind where supported. */
+  reusePort?: boolean;
   tls?: {
     cert: string;  // path to PEM certificate file
     key:  string;  // path to PEM private key file
@@ -95,17 +103,33 @@ interface ServeServer {
 const _h1Driver = new H1ServerDriver();
 const _h2Driver = new H2ServerDriver();
 
+function _listenAddress(options: ServeOptions): Address {
+  const family = options.family ?? ((options.hostname ?? '').includes(':') ? 'ipv6' : 'ipv4');
+  const hostname = options.hostname ?? (family === 'ipv6' ? '::' : '0.0.0.0');
+  return { family, ip: hostname, port: options.port ?? 0 };
+}
+
+function _listenOptions(options: ServeOptions): ListenOptions {
+  return {
+    backlog: options.backlog,
+    reuseAddr: options.reuseAddr,
+    reusePort: options.reusePort,
+  };
+}
+
 /**
  * Start an HTTP server.
  *
  * Each incoming connection is handled concurrently. The event loop is
  * implicitly kept alive as long as the server is open.
  *
- * `hostname` defaults to `0.0.0.0`, and `port` may be `0` to request an
- * ephemeral port. When `tls` is present, the server loads the certificate and
- * key paths and advertises HTTP/2 through ALPN when libnghttp2 is available.
+ * `hostname` defaults to `0.0.0.0` for IPv4 and `::` for explicit IPv6, and
+ * `port` may be `0` to request an ephemeral port. When `tls` is present, the
+ * server loads the certificate and key paths and advertises HTTP/2 through ALPN
+ * when libnghttp2 is available.
  * `close()` stops accepting, closes the listening socket, releases TLS state,
- * and resolves after in-flight connections finish.
+ * and resolves after in-flight connections finish. `backlog`, `reuseAddr`, and
+ * `reusePort` are passed to the underlying socket listener.
  *
  * ```ts no_run
  * import { serve } from 'fino:net/http/server';
@@ -119,11 +143,7 @@ export function serve(
   options: ServeOptions,
   handler: (req: Request) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>,
 ): ServeServer {
-  const hostname = options.hostname ?? '0.0.0.0';
-  const port     = options.port ?? 0;
-
-  const addr: IPv4Address = { family: 'ipv4', ip: hostname, port };
-  const tcpServer = Socket.listen(addr);
+  const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
 
   let sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
   // Register ALPN select callback so TLS clients can negotiate h2.

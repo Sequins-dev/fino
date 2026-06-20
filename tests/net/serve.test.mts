@@ -87,6 +87,52 @@ describe('Request / Response basics', () => {
     }
   });
 
+  it('binds IPv6 wildcard when family is explicitly ipv6', async (t) => {
+    let server: ReturnType<typeof serve> | null = null;
+    try {
+      server = serve({ family: 'ipv6', port: 0 }, async () => new Response('ipv6-family-ok'));
+    } catch (err: unknown) {
+      t.ok(
+        String(err).includes('EADDRNOTAVAIL') || String(err).includes('unsupported') || String(err).includes('address'),
+        'IPv6 wildcard unavailable on this host: ' + String(err),
+      );
+      return;
+    }
+
+    try {
+      t.equal(server.address.family, 'ipv6', 'server reports an IPv6 bind');
+      const sock = await Socket.connect({ family: 'ipv6', ip: '::1', port: server.port });
+      const [reader, writer] = sock.split();
+      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: [::1]:${server.port}\r\nConnection: close\r\n\r\n`));
+      await writer.close();
+
+      const { text } = await readUntil(reader, 'ipv6-family-ok');
+      t.ok(text.startsWith('HTTP/1.1 200'), 'IPv6 wildcard request receives 200');
+      t.ok(text.includes('ipv6-family-ok'), 'IPv6 wildcard body is delivered');
+      await reader.close();
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('accepts listen backlog and reuse options', async (t) => {
+    const server = serve(
+      { hostname: '127.0.0.1', port: 0, backlog: 1, reuseAddr: true },
+      async () => new Response('listen-options-ok'),
+    );
+    try {
+      t.equal(server.address.family, 'ipv4', 'server reports IPv4 bind');
+      const response = await roundtrip(
+        server.port,
+        `GET / HTTP/1.1\r\nHost: localhost:${server.port}\r\nConnection: close\r\n\r\n`,
+      );
+      t.ok(response.startsWith('HTTP/1.1 200'), 'server responds with listen options');
+      t.ok(response.endsWith('listen-options-ok'), 'response body is delivered');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('server supports await using disposal', async (t) => {
     let serverRef: ReturnType<typeof serve> | null = null;
 

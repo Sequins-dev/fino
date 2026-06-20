@@ -266,10 +266,15 @@ Status: DONE
   body wrapping belong to `fetch()` or the caller.
 
 ## HTTP Server
-Status: TODO
-- Verify and fix IPv6 serving parity; `serve()` appears to build an IPv4 socket address even for IPv6 hostnames.
-- Add backlog/reuse controls and request/header/idle timeout policy.
-- Expose or document graceful close drain deadlines.
+Status: DONE
+- Release baseline covers IPv4 default binds, IPv6 literal inference,
+  explicit IPv6 wildcard binds, backlog/reuse listener options, TLS ALPN
+  dispatch, h2c upgrade dispatch, keep-alive, pipelining, and graceful close.
+- `hostname` is a numeric bind address, not DNS resolution. `close()` stops
+  accepting and waits for in-flight accepted connections without imposing a
+  drain deadline.
+- HTTP/1 header and keep-alive idle timeout controls are exposed through
+  `serve()`; broader per-request cancellation policy remains application-owned.
 
 ## HTTP Driver Interfaces
 Status: DONE

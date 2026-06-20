@@ -27,6 +27,11 @@ The handler receives a `Request` and returns a `Response` or a promise for one.
 Each accepted connection is handled concurrently. HTTP/1.1 keep-alive is enabled
 by default until the client or response asks to close the connection.
 
+`hostname` is a numeric bind address. It defaults to `0.0.0.0`; pass
+`family: 'ipv6'` to bind the IPv6 wildcard `::`, or pass an IPv6 literal such
+as `hostname: '::1'` to infer IPv6. `backlog`, `reuseAddr`, and `reusePort`
+are forwarded to the underlying socket listener.
+
 ## Route Requests
 
 Use `URL` to inspect the path and query string:
@@ -151,7 +156,9 @@ const server = serve({ port: 3000 }, async (request) => {
 ```
 
 `close()` stops accepting new connections and resolves after in-flight
-connections finish.
+connections finish. It does not enforce a drain deadline; applications that
+need bounded shutdown should arrange their own request cancellation or process
+deadline around `close()`.
 
 ## TLS and HTTP/2
 
