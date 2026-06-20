@@ -87,9 +87,7 @@ Status: DONE
 Status: DONE
 
 ## Socket
-Status: TODO
-- Add direct tests for `sendmmsgBatch`, `recvmmsgBatch`, ECN ancillary paths,
-  and low-level socket option error paths.
+Status: DONE
 
 ## TLS
 Status: TODO
