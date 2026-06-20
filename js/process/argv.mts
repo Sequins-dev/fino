@@ -12,13 +12,14 @@
  * shell quoting and environment expansion are expected to have happened before
  * the parser receives the values.
  *
- * Supported option forms are `--long`, `--long=value`, `-s`, grouped boolean
- * short flags such as `-abc`, and short options with inline or following values
- * such as `-p8080` or `-p 8080`. Boolean options default to `false`,
- * non-boolean options default to `undefined`, and `multiple` options collect
- * values in arrays. A literal `--` stops option parsing. `--help` returns the
- * generated help text for the command being parsed instead of running its
- * handler.
+ * Supported option forms are `--long`, `--long=value`, `--no-long` for boolean
+ * long options, `-s`, grouped boolean short flags such as `-abc`, and short
+ * options with inline or following values such as `-p8080` or `-p 8080`.
+ * Multiple long or short aliases may be declared in `flags`; the first long
+ * name becomes the option key. Boolean options default to `false`, non-boolean
+ * options default to `undefined`, and `multiple` options collect values in
+ * arrays. A literal `--` stops option parsing. `--help` returns the generated
+ * help text for the command being parsed instead of running its handler.
  *
  * Subcommands can have their own options and positionals. The command handler
  * receives a `CommandContext` containing the selected command, root and parent
@@ -228,7 +229,8 @@ export interface OptionConfig {
    * Comma-separated long and/or short flags.
    *
    * Long flags start with `--`; short flags start with `-` and must be one
-   * character. At least one valid flag is required.
+   * character. Multiple aliases are accepted. At least one valid flag is
+   * required, and the first long flag becomes the option key when present.
    *
    * ```ts no_run
    * import type { OptionConfig } from 'fino:process/argv';
@@ -249,6 +251,19 @@ export interface OptionConfig {
    * ```
    */
   type?: 'boolean' | 'string' | 'number';
+  /**
+   * Allowed values after scalar type coercion.
+   *
+   * String choices compare with string values and number choices compare with
+   * numeric values. Invalid values throw during parsing.
+   *
+   * ```ts no_run
+   * import type { OptionConfig } from 'fino:process/argv';
+   *
+   * const option: OptionConfig = { flags: '--env', type: 'string', choices: ['dev', 'prod'] };
+   * ```
+   */
+  choices?: Array<string | number>;
   /**
    * Whether the option may be provided multiple times.
    *
@@ -336,6 +351,16 @@ export interface PositionalConfig {
    * ```
    */
   type?: 'string' | 'number';
+  /**
+   * Allowed values after positional type coercion.
+   *
+   * ```ts no_run
+   * import type { PositionalConfig } from 'fino:process/argv';
+   *
+   * const positional: PositionalConfig = { name: 'target', choices: ['api', 'worker'] };
+   * ```
+   */
+  choices?: Array<string | number>;
   /**
    * Whether a value is required.
    *
@@ -561,16 +586,20 @@ interface OptionDefinition {
   key: string;
   longName: string | null;
   shortName: string | null;
+  longNames: string[];
+  shortNames: string[];
   type: 'boolean' | 'string' | 'number';
   multiple: boolean;
   required: boolean;
   description: string | undefined;
   default: OptionDefault | undefined;
+  choices: Array<string | number> | undefined;
 }
 
 interface PositionalDefinition {
   name: string;
   type: 'string' | 'number';
+  choices: Array<string | number> | undefined;
   required: boolean;
   multiple: boolean;
   description: string | undefined;
@@ -1215,13 +1244,13 @@ export class Command {
     if (this.#options.length > 0) {
       lines.push('');
       lines.push('Options:');
-      for (const def of this.#options) lines.push(`  ${formatFlags(def)}${formatDescription(def.description)}`);
+      for (const def of this.#options) lines.push(`  ${formatFlags(def)}${formatChoices(def.choices)}${formatDescription(def.description)}`);
     }
     if (this.#positionals.length > 0) {
       lines.push('');
       lines.push('Arguments:');
       for (const def of this.#positionals) {
-        lines.push(`  ${def.name} (${def.type}${def.multiple ? '[]' : ''})${formatDescription(def.description)}`);
+        lines.push(`  ${def.name} (${def.type}${def.multiple ? '[]' : ''})${formatChoices(def.choices)}${formatDescription(def.description)}`);
       }
     }
     if (this.#children.length > 0) {
@@ -1258,18 +1287,27 @@ export class Command {
   #registerOption(config: OptionConfig): void {
     const parsed = parseFlags(config.flags);
     const def: OptionDefinition = {
-      key: parsed.longName ?? parsed.shortName!,
-      longName: parsed.longName,
-      shortName: parsed.shortName,
+      key: parsed.longNames[0] ?? parsed.shortNames[0]!,
+      longName: parsed.longNames[0] ?? null,
+      shortName: parsed.shortNames[0] ?? null,
+      longNames: parsed.longNames,
+      shortNames: parsed.shortNames,
       type: config.type ?? 'boolean',
       multiple: config.multiple ?? false,
       required: config.required ?? false,
       description: config.description,
       default: config.default,
+      choices: config.choices,
     };
     this.#options.push(def);
-    if (def.longName !== null) this.#longOptions.set(def.longName, def);
-    if (def.shortName !== null) this.#shortOptions.set(def.shortName, def);
+    for (const longName of def.longNames) {
+      if (this.#longOptions.has(longName)) throw new Error(`Duplicate option "--${longName}"`);
+      this.#longOptions.set(longName, def);
+    }
+    for (const shortName of def.shortNames) {
+      if (this.#shortOptions.has(shortName)) throw new Error(`Duplicate option "-${shortName}"`);
+      this.#shortOptions.set(shortName, def);
+    }
   }
 
   /**
@@ -1300,6 +1338,7 @@ export class Command {
     const def: PositionalDefinition = {
       name: config.name,
       type: config.type ?? 'string',
+      choices: config.choices,
       required: config.required ?? false,
       multiple: config.multiple ?? false,
       description: config.description,
@@ -1460,18 +1499,30 @@ export class Command {
     const eq = token.indexOf('=');
     const flag = eq === -1 ? token.slice(2) : token.slice(2, eq);
     const value = eq === -1 ? null : token.slice(eq + 1);
-    const def = this.#longOptions.get(flag);
+    let def = this.#longOptions.get(flag);
+    let negated = false;
+    if (def === undefined && flag.startsWith('no-')) {
+      def = this.#longOptions.get(flag.slice(3));
+      negated = def !== undefined;
+    }
     if (def === undefined) return false;
 
     state.index++;
 
+    if (negated) {
+      if (def.type !== 'boolean') throw new Error(`Option "--no-${flag.slice(3)}" can only be used with boolean options`);
+      if (value !== null) throw new Error(`Option "--no-${flag.slice(3)}" does not take a value`);
+      assignOptionValue(parsed.options, parsed.providedOptions, def, false);
+      return true;
+    }
+
     if (def.type === 'boolean') {
-      assignOptionValue(parsed.options, parsed.providedOptions, def, value === null ? true : coerceScalarValue(def.type, value, formatPath(path), formatOption(def)));
+      assignOptionValue(parsed.options, parsed.providedOptions, def, value === null ? true : coerceOptionValue(def, value, formatPath(path), formatOption(def)));
       return true;
     }
 
     const raw = value === null ? takeNextValue(state, def, this.#formatPath(path)) : value;
-    assignOptionValue(parsed.options, parsed.providedOptions, def, coerceScalarValue(def.type, raw, formatPath(path), formatOption(def)));
+    assignOptionValue(parsed.options, parsed.providedOptions, def, coerceOptionValue(def, raw, formatPath(path), formatOption(def)));
     return true;
   }
 
@@ -1522,7 +1573,7 @@ export class Command {
       const inline = group.slice(i + 1);
       state.index++;
       const raw = inline.length > 0 ? inline : takeNextValue(state, def, this.#formatPath(path));
-      assignOptionValue(parsed.options, parsed.providedOptions, def, coerceScalarValue(def.type, raw, formatPath(path), formatOption(def)));
+      assignOptionValue(parsed.options, parsed.providedOptions, def, coerceOptionValue(def, raw, formatPath(path), formatOption(def)));
       return true;
     }
 
@@ -1626,7 +1677,7 @@ export class Command {
         if (def.required && rawValues.length === 0 && !config.allowMissingPositionals) {
           throw new Error(`Missing required positional "${def.name}" on ${formattedPath}`);
         }
-        const coerced = rawValues.map((raw) => coerceScalarValue(def.type, raw, formattedPath, `positional "${def.name}"`));
+        const coerced = rawValues.map((raw) => coercePositionalValue(def, raw, formattedPath));
         args[def.name] = coerced;
         values.push(...coerced);
         index = parsed.rawPositionals.length;
@@ -1641,7 +1692,7 @@ export class Command {
         args[def.name] = undefined;
         continue;
       }
-      const coerced = coerceScalarValue(def.type, raw, formattedPath, `positional "${def.name}"`);
+      const coerced = coercePositionalValue(def, raw, formattedPath);
       args[def.name] = coerced;
       values.push(coerced);
       index++;
@@ -1712,26 +1763,26 @@ export class Command {
   }
 }
 
-function parseFlags(flags: string): { longName: string | null; shortName: string | null } {
-  let longName: string | null = null;
-  let shortName: string | null = null;
+function parseFlags(flags: string): { longNames: string[]; shortNames: string[] } {
+  const longNames: string[] = [];
+  const shortNames: string[] = [];
   for (const part of flags.split(',')) {
     const flag = part.trim();
     if (flag.startsWith('--')) {
       const name = flag.slice(2).trim();
       if (name.length === 0) throw new Error(`Invalid long option "${flags}"`);
-      longName = name;
+      longNames.push(name);
     } else if (flag.startsWith('-')) {
       const name = flag.slice(1).trim();
       if (name.length !== 1) throw new Error(`Invalid short option "${flags}"`);
-      shortName = name;
+      shortNames.push(name);
     } else {
       throw new Error(`Invalid option flags "${flags}"`);
     }
   }
 
-  if (longName === null && shortName === null) throw new Error(`Invalid option flags "${flags}"`);
-  return { longName, shortName };
+  if (longNames.length === 0 && shortNames.length === 0) throw new Error(`Invalid option flags "${flags}"`);
+  return { longNames, shortNames };
 }
 
 function makeInitialOptions(defs: OptionDefinition[]): Record<string, unknown> {
@@ -1774,6 +1825,27 @@ function coerceScalarValue(type: 'boolean' | 'string' | 'number', raw: string, p
     return value;
   }
   return raw;
+}
+
+function validateChoice(value: string | number | boolean, raw: string, choices: Array<string | number> | undefined, path: string, label: string): void {
+  if (choices === undefined) return;
+  for (const choice of choices) {
+    if (Object.is(choice, value)) return;
+  }
+  throw new Error(`Invalid choice "${raw}" for ${label} on ${path}`);
+}
+
+function coerceOptionValue(def: OptionDefinition, raw: string, path: string, label: string): boolean | string | number {
+  const value = coerceScalarValue(def.type, raw, path, label);
+  validateChoice(value, raw, def.choices, path, label);
+  return value;
+}
+
+function coercePositionalValue(def: PositionalDefinition, raw: string, path: string): string | number {
+  const label = `positional "${def.name}"`;
+  const value = coerceScalarValue(def.type, raw, path, label) as string | number;
+  validateChoice(value, raw, def.choices, path, label);
+  return value;
 }
 
 function assignOptionValue(options: Record<string, unknown>, providedOptions: Set<string>, def: OptionDefinition, value: unknown): void {
@@ -1836,13 +1908,17 @@ function formatOption(def: OptionDefinition): string {
 
 function formatFlags(def: OptionDefinition): string {
   const parts = [];
-  if (def.longName !== null) parts.push(`--${def.longName}`);
-  if (def.shortName !== null) parts.push(`-${def.shortName}`);
+  for (const longName of def.longNames) parts.push(`--${longName}`);
+  for (const shortName of def.shortNames) parts.push(`-${shortName}`);
   return parts.join(', ');
 }
 
 function formatDescription(description?: string): string {
   return description === undefined || description.length === 0 ? '' : `  ${description}`;
+}
+
+function formatChoices(choices: Array<string | number> | undefined): string {
+  return choices === undefined || choices.length === 0 ? '' : ` {${choices.join('|')}}`;
 }
 
 function formatPositionalUsage(def: PositionalDefinition): string {

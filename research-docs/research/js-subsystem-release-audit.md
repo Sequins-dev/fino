@@ -73,8 +73,7 @@ Status: TODO
 - Add common child-process options or document gaps for stdio modes, shell, detached, IPC, uid/gid, and Windows support.
 
 ## Process Argv Parser
-Status: TODO
-- Add common CLI conventions such as `--no-flag`, richer aliases, typed enum choices, and stronger passthrough tests.
+Status: DONE
 
 ## TTY And Prompt
 Status: TODO

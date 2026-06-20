@@ -164,6 +164,59 @@ describe('Command execution', () => {
     t.equal(result.options.count, 4, 'last short option consumed next token as value');
   });
 
+  it('supports boolean long negation with --no-flag', (t) => {
+    const root = new RecordingCommand({
+      options: [
+        { flags: '--watch', type: 'boolean', default: true },
+        { flags: '--color', type: 'boolean' },
+      ],
+    });
+
+    const result = root.parse(['--no-watch', '--color=false']) as ParsedExecution;
+
+    t.equal(result.options.watch, false, 'boolean long option can be negated');
+    t.equal(result.options.color, false, 'explicit boolean false still parses');
+    t.equal(requireContext(root).optionProvided('watch'), true, 'negated option is marked provided');
+  });
+
+  it('supports multiple long and short aliases for one option key', (t) => {
+    const root = new RecordingCommand({
+      options: [
+        { flags: '--environment, --env, -e, -E', type: 'string' },
+      ],
+    });
+
+    const longAlias = root.parse(['--env', 'prod']) as ParsedExecution;
+    const shortAlias = root.parse(['-E', 'stage']) as ParsedExecution;
+
+    t.equal(longAlias.options.environment, 'prod', 'secondary long alias maps to primary long key');
+    t.equal(shortAlias.options.environment, 'stage', 'secondary short alias maps to primary long key');
+  });
+
+  it('validates choices for options and positionals', (t) => {
+    const root = new RecordingCommand({
+      options: [
+        { flags: '--mode, -m', type: 'string', choices: ['dev', 'prod'] },
+        { flags: '--count, -c', type: 'number', choices: [1, 2, 3] },
+      ],
+      positionals: [
+        { name: 'target', type: 'string', choices: ['api', 'worker'], required: true },
+      ],
+    });
+
+    const result = root.parse(['--mode', 'prod', '--count=2', 'worker']) as ParsedExecution;
+    const help = root.help();
+
+    t.equal(result.options.mode, 'prod', 'string choice accepted');
+    t.equal(result.options.count, 2, 'number choice accepted');
+    t.equal(result.args.target, 'worker', 'positional choice accepted');
+    t.ok(help.includes('--mode, -m {dev|prod}'), 'option choices are shown in help');
+    t.ok(help.includes('target (string) {api|worker}'), 'positional choices are shown in help');
+    t.throws(() => root.parse(['--mode', 'test', 'api']), /Invalid choice "test"/, 'invalid string choice rejected');
+    t.throws(() => root.parse(['--count', '4', 'api']), /Invalid choice "4"/, 'invalid number choice rejected');
+    t.throws(() => root.parse(['--mode', 'dev', 'web']), /Invalid choice "web"/, 'invalid positional choice rejected');
+  });
+
   it('stops option parsing for the current command after --', (t) => {
     const { root, serve } = makeParser();
 
