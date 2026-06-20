@@ -115,9 +115,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP Core
-Status: TODO
-- HTTP parser/serializer coverage is strong, but Fetch/Web API parity is not WPT-level.
-- Add broad conformance tests for full `Request`/`Response`/Body clone and form/body edge cases.
+Status: DONE
 
 ## HTTP/1
 Status: DONE

@@ -21,7 +21,10 @@
  * Constructors accept byte buffers, strings, `FormData`, async iterables, and
  * `ReadableStream` instances. The body helpers and serializers consume those
  * streams with async iteration while preserving Fetch-style `bodyUsed`
- * semantics.
+ * semantics. `formData()` parses `application/x-www-form-urlencoded` bodies
+ * into `FormData`; constructed `FormData` bodies serialize as outbound
+ * `multipart/form-data`. Parsing incoming multipart bodies is intentionally
+ * outside this release baseline.
  *
  *
  * ## How parsing works: _createReader
@@ -120,6 +123,7 @@ import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';
 import { ReadableStream } from '../../internal/globals/webstreams.mts';
 import { Blob } from '../../internal/globals/blob.mts';
 import { FormData, _createMultipartBoundary, _serializeFormData } from '../../internal/globals/formdata.mts';
+import { URLSearchParams } from '../../internal/globals/url.mts';
 import { Scanner } from '../../parsing/scanner.mts';
 
 // ---------------------------------------------------------------------------
@@ -192,6 +196,17 @@ function _makeTrailersDeferred(): { resolve: (h: Headers) => void; reject: (e: E
   let reject!: (e: Error) => void;
   const promise = new Promise<Headers>(function makeTrailersDeferredExecutor(res, rej) { resolve = res; reject = rej; });
   return { resolve, reject, promise };
+}
+
+function _contentTypeEssence(headers: Headers): string {
+  return (headers.get('content-type') ?? '').split(';', 1)[0]!.trim().toLowerCase();
+}
+
+function _formDataFromUrlEncoded(body: string): FormData {
+  const params = new URLSearchParams(body);
+  const form = new FormData();
+  for (const [name, value] of params) form.append(name, value);
+  return form;
 }
 
 // ---------------------------------------------------------------------------
@@ -736,7 +751,7 @@ export class Headers {
     this.#list = []; // [[name, value], ...]
     if (init == null) return;
     if (init instanceof Headers) {
-      this.#list = init.#list.slice();
+      this.#list = init.#list.map(function copyHeaderPair(entry) { return [entry[0], entry[1]]; });
     } else if (Array.isArray(init)) {
       for (const pair of init) {
         if (pair.length < 2 || pair[0] === undefined || pair[1] === undefined) {
@@ -1664,6 +1679,24 @@ export class Request {
     return new Blob([buf], { type });
   }
 
+  /** Consume an `application/x-www-form-urlencoded` body as FormData.
+   *
+   * Incoming multipart/form-data parsing is not implemented by this HTTP core;
+   * constructed FormData bodies are still serialized as multipart for outbound
+   * requests.
+   *
+   * ```ts no_run
+   * const form = await req.formData();
+   * ```
+   */
+  async formData() {
+    const type = _contentTypeEssence(this.#headers);
+    if (type === 'application/x-www-form-urlencoded') {
+      return _formDataFromUrlEncoded(await this.text());
+    }
+    throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
+  }
+
   /** Create an independent copy of this request.
    *
    * Throws if the body has already been consumed or locked. Streaming bodies are
@@ -2338,6 +2371,23 @@ export class Response {
     const buf = await this.arrayBuffer();
     const type = this.#headers.get('content-type') || '';
     return new Blob([buf], { type });
+  }
+
+  /** Consume an `application/x-www-form-urlencoded` body as FormData.
+   *
+   * Incoming multipart/form-data parsing is intentionally unsupported here.
+   * Outbound `FormData` construction still serializes multipart bodies.
+   *
+   * ```ts no_run
+   * const form = await res.formData();
+   * ```
+   */
+  async formData() {
+    const type = _contentTypeEssence(this.#headers);
+    if (type === 'application/x-www-form-urlencoded') {
+      return _formDataFromUrlEncoded(await this.text());
+    }
+    throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }
 
   /** Create an independent copy of this response.

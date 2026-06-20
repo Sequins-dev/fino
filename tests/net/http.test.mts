@@ -564,6 +564,91 @@ describe('Body consumption', () => {
     ));
     t.equal(await res.text(), 'Hello, World!');
   });
+
+  it('Request.clone() tees streaming bodies and copies headers independently', async (t) => {
+    async function* streamBody() {
+      yield encodeUtf8('hello ');
+      yield encodeUtf8('world');
+    }
+    const req = new Request('https://example.test/upload', {
+      method: 'POST',
+      headers: { 'x-source': 'original' },
+      body: streamBody() as any,
+    });
+    const clone = req.clone();
+
+    clone.headers.set('x-source', 'clone');
+
+    t.equal(req.headers.get('x-source'), 'original', 'original headers are independent');
+    t.equal(clone.headers.get('x-source'), 'clone', 'clone headers are mutable');
+    t.equal(await req.text(), 'hello world', 'original body remains readable');
+    t.equal(await clone.text(), 'hello world', 'clone body is independently readable');
+  });
+
+  it('Response.clone() preserves buffered bodies and copies headers independently', async (t) => {
+    const res = new Response('payload', {
+      status: 202,
+      statusText: 'Accepted',
+      headers: { 'x-source': 'original' },
+    });
+    const clone = res.clone();
+
+    clone.headers.set('x-source', 'clone');
+
+    t.equal(res.status, 202, 'status preserved on original');
+    t.equal(clone.status, 202, 'status preserved on clone');
+    t.equal(res.statusText, 'Accepted', 'statusText preserved on original');
+    t.equal(clone.statusText, 'Accepted', 'statusText preserved on clone');
+    t.equal(res.headers.get('x-source'), 'original', 'original headers are independent');
+    t.equal(clone.headers.get('x-source'), 'clone', 'clone headers are mutable');
+    t.equal(await res.text(), 'payload', 'original body remains readable');
+    t.equal(await clone.text(), 'payload', 'clone body is independently readable');
+  });
+
+  it('clone() rejects after request or response body consumption', async (t) => {
+    const req = new Request('/submit', { method: 'POST', body: 'done' });
+    await req.text();
+    t.throws(() => req.clone(), /disturbed Request/i);
+
+    const res = new Response('done');
+    await res.text();
+    t.throws(() => res.clone(), /disturbed Response/i);
+  });
+
+  it('formData() parses application/x-www-form-urlencoded bodies with duplicates', async (t) => {
+    const req = new Request('/submit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+      body: 'name=Alice+Smith&tag=one&tag=two&encoded=%E2%9C%93',
+    });
+
+    const form = await req.formData();
+
+    t.equal(form.get('name'), 'Alice Smith', 'plus signs decode to spaces');
+    t.deepEqual(form.getAll('tag'), ['one', 'two'], 'duplicate fields are preserved');
+    t.equal(form.get('encoded'), '✓', 'percent-encoded UTF-8 decodes');
+  });
+
+  it('formData() rejects unsupported incoming content types', async (t) => {
+    const res = new Response('raw', { headers: { 'content-type': 'multipart/form-data; boundary=test' } });
+    await t.rejects(() => res.formData(), /unsupported content-type/i);
+  });
+
+  it('constructed FormData bodies serialize as multipart/form-data', async (t) => {
+    const form = new FormData();
+    form.append('name', 'Alice');
+    form.append('tag', 'one');
+    form.append('tag', 'two');
+
+    const req = new Request('http://example.test/form', { method: 'POST', body: form });
+    const contentType = req.headers.get('content-type') ?? '';
+    const serialized = decodeUtf8(await collectBody(req.body));
+
+    t.ok(contentType.startsWith('multipart/form-data; boundary='), 'content-type includes generated boundary');
+    t.ok(serialized.includes('name="name"\r\n\r\nAlice'), 'string field is serialized');
+    t.ok(serialized.includes('name="tag"\r\n\r\none'), 'first duplicate field is serialized');
+    t.ok(serialized.includes('name="tag"\r\n\r\ntwo'), 'second duplicate field is serialized');
+  });
 });
 
 describe('Request constructor', () => {
