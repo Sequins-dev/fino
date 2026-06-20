@@ -226,10 +226,7 @@ Status: DONE
 Status: DONE
 
 ## EventTarget, Abort, Timers, Console
-Status: TODO
-- Use DOMException-compatible AbortError and TimeoutError reasons.
-- Performance is limited to `now`, `timeOrigin`, and `toJSON`; timeline APIs are absent.
-- Console table and formatting remain intentionally small and not browser/Node parity.
+Status: DONE
 
 ## Encoding, TextEncoder, Structured Clone
 Status: TODO

@@ -168,6 +168,17 @@ describe('performance.toJSON', () => {
   });
 });
 
+describe('performance release subset', () => {
+  it('exposes now, timeOrigin, and toJSON only for timing APIs', (t) => {
+    t.equal(typeof performance.now, 'function', 'now is available');
+    t.equal(typeof performance.timeOrigin, 'number', 'timeOrigin is available');
+    t.equal(typeof performance.toJSON, 'function', 'toJSON is available');
+    t.equal(typeof (performance as any).mark, 'undefined', 'mark is out of scope');
+    t.equal(typeof (performance as any).measure, 'undefined', 'measure is out of scope');
+    t.equal(typeof (performance as any).getEntries, 'undefined', 'timeline is out of scope');
+  });
+});
+
 describe('atob / btoa', () => {
   it('btoa encodes ASCII string', (t) => {
     t.equal(btoa('hello'), 'aGVsbG8=', 'btoa("hello")');

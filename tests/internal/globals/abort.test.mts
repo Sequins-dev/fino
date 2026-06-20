@@ -21,6 +21,17 @@ describe('AbortController', () => {
     t.equal(ctrl.signal.reason.name, 'AbortError', 'reason.name is AbortError');
   });
 
+  it('abort() default reason is a DOMException AbortError', (t) => {
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const reason = ctrl.signal.reason as DOMException;
+
+    t.ok(reason instanceof DOMException, 'reason is DOMException');
+    t.equal(reason.name, 'AbortError', 'reason.name is AbortError');
+    t.equal(reason.code, 20, 'reason.code is ABORT_ERR');
+    t.equal(reason.message, 'The operation was aborted.', 'reason.message is stable');
+  });
+
   it('abort() with custom reason', (t) => {
     const ctrl = new AbortController();
     const reason = new Error('custom');
@@ -115,6 +126,16 @@ describe('AbortSignal.abort()', () => {
     t.equal(signal.reason.name, 'AbortError', 'name is AbortError');
   });
 
+  it('default reason is a DOMException AbortError', (t) => {
+    const signal = AbortSignal.abort();
+    const reason = signal.reason as DOMException;
+
+    t.ok(reason instanceof DOMException, 'reason is DOMException');
+    t.equal(reason.name, 'AbortError', 'reason.name is AbortError');
+    t.equal(reason.code, 20, 'reason.code is ABORT_ERR');
+    t.equal(reason.message, 'The operation was aborted.', 'reason.message is stable');
+  });
+
   it('custom reason', (t) => {
     const reason = new TypeError('forbidden');
     const signal = AbortSignal.abort(reason);
@@ -157,6 +178,20 @@ describe('AbortSignal.timeout()', () => {
 
     t.equal(signal.aborted, true, 'aborted after timeout');
     t.equal(signal.reason.name, 'TimeoutError', 'reason.name is TimeoutError');
+  });
+
+  it('uses a DOMException TimeoutError reason', async (t) => {
+    const signal = AbortSignal.timeout(1);
+
+    await new Promise((resolve) => {
+      signal.addEventListener('abort', resolve);
+    });
+
+    const reason = signal.reason as DOMException;
+    t.ok(reason instanceof DOMException, 'reason is DOMException');
+    t.equal(reason.name, 'TimeoutError', 'reason.name is TimeoutError');
+    t.equal(reason.code, 23, 'reason.code is TIMEOUT_ERR');
+    t.equal(reason.message, 'The operation timed out.', 'reason.message is stable');
   });
 
   it('coerces finite non-negative delay values with Number()', async (t) => {
@@ -246,7 +281,7 @@ describe('AbortSignal — throwIfAborted with default reason', () => {
     ctrl.abort(); // no reason argument
     t.throws(
       () => ctrl.signal.throwIfAborted(),
-      (e) => e instanceof Error && e.name === 'AbortError',
+      (e) => e instanceof DOMException && e.name === 'AbortError' && e.code === 20,
       'throws with AbortError name',
     );
   });

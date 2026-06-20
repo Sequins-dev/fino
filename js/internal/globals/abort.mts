@@ -64,6 +64,7 @@
  */
 
 import { EventTarget, Event } from './eventtarget.mts';
+import { DOMException } from './encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Internal
@@ -73,10 +74,8 @@ import { EventTarget, Event } from './eventtarget.mts';
 // Created inside the constructor so the closure has private-field access.
 const _signalAbort = new WeakMap<AbortSignal, (reason: unknown) => void>();
 
-function defaultAbortError(message: string, name: string): Error {
-  const error = new Error(message);
-  error.name = name;
-  return error;
+function defaultAbortError(message: string, name: string): DOMException {
+  return new DOMException(message, name);
 }
 
 // Guards against direct `new AbortSignal()` — must only be created via _createSignal().
@@ -227,7 +226,7 @@ export class AbortSignal extends EventTarget {
    * The reason supplied to abort(), or undefined before aborting.
    *
    * When no reason is supplied, AbortController.abort() and AbortSignal.abort()
-   * use an Error named "AbortError"; timeout() uses "TimeoutError".
+   * use a DOMException named "AbortError"; timeout() uses "TimeoutError".
    *
    * ```typescript no_run
    * const signal = AbortSignal.abort(new Error('stop'));
@@ -306,7 +305,7 @@ export class AbortSignal extends EventTarget {
   /**
    * Create a signal that is already aborted.
    *
-   * If no reason is supplied, the reason is an Error named "AbortError".
+   * If no reason is supplied, the reason is a DOMException named "AbortError".
    * The returned signal dispatches no future abort events because it is already
    * settled.
    *
@@ -330,7 +329,7 @@ export class AbortSignal extends EventTarget {
    *
    * The delay is coerced with Number() and must be finite and non-negative.
    * NaN, negative values, and infinities throw RangeError. The timer is
-   * scheduled with the runtime loop, and the reason is an Error named
+   * scheduled with the runtime loop, and the reason is a DOMException named
    * "TimeoutError".
    *
    * ```typescript no_run
@@ -479,7 +478,7 @@ export class AbortController {
    *
    * The first call wins. Later calls are ignored because AbortSignal state is
    * immutable after aborting. If reason is omitted, an "AbortError" Error is
-   * stored.
+   * stored as a DOMException.
    *
    * ```typescript no_run
    * const controller = new AbortController();

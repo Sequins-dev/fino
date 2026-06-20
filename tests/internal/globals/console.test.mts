@@ -431,4 +431,16 @@ describe('console capture output', () => {
     t.equal(records[0]!.fd, 1, 'table uses stdout');
     t.equal(records[0]!.text, '[\n  {\n    "name": "a",\n    "n": 1\n  }\n]', 'table uses JSON output');
   });
+
+  it('captures table fallback output when JSON serialization fails', (t) => {
+    const row: any = { name: 'loop' };
+    row.self = row;
+    const records = captureConsole(() => {
+      console.table(row);
+    });
+
+    t.deepEqual(records, [
+      { fd: 1, text: '{ name: "loop", self: [Circular *] }' },
+    ], 'table falls back to inspect output for circular data');
+  });
 });
