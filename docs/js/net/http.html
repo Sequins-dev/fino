@@ -27,8 +27,8 @@
 <li><code>serializeRequest(req)</code>  — async iterable of wire bytes for a request</li>
 <li><code>serializeResponse(res)</code> — async iterable of wire bytes for a response</li>
 </ul>
-<h3>Intentional deviation from the Fetch spec</h3>
-<p>The WHATWG Fetch spec uses <code>ReadableStream</code> for response/request bodies. Fino does not implement ReadableStream (it&#39;s a large, complex API). Instead, <code>body</code> is an async iterable of <code>Uint8Array</code> chunks, which is simpler and composable with <code>for await</code> loops and <code>writer.pipe()</code>.</p>
+<h3>Body streams</h3>
+<p>Request and Response bodies are exposed as <code>ReadableStream | null</code>. Constructors accept byte buffers, strings, <code>FormData</code>, async iterables, and <code>ReadableStream</code> instances. The body helpers and serializers consume those streams with async iteration while preserving Fetch-style <code>bodyUsed</code> semantics.</p>
 <h3>How parsing works: _createReader</h3>
 <p>The parser is built on a shared <code>_createReader(source)</code> helper that wraps any async iterable of byte chunks into a stateful buffered reader. This reader provides two higher-level operations:</p>
 <ol>

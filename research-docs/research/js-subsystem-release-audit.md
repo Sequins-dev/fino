@@ -170,9 +170,7 @@ Status: DONE
 Status: DONE
 
 ## Fetch Global
-Status: TODO
-- Remove stale HTTP docs that say ReadableStream is not implemented; current
-  Request/Response stream behavior conflicts with that note.
+Status: DONE
 
 ## Web Streams
 Status: DONE
