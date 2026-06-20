@@ -81,6 +81,24 @@ export interface ServerDriverOptions {
    * ```
    */
   allowH2cUpgrade?: boolean;
+  /** Milliseconds allowed for a complete HTTP/1 request header block.
+   *
+   * `0` or `undefined` disables the timeout.
+   *
+   * ```ts no_run
+   * const opts = { maxConcurrent: 32, headersTimeoutMs: 30_000 };
+   * ```
+   */
+  headersTimeoutMs?: number;
+  /** Milliseconds an HTTP/1 keep-alive connection may sit idle.
+   *
+   * `0` or `undefined` disables the timeout.
+   *
+   * ```ts no_run
+   * const opts = { maxConcurrent: 32, idleTimeoutMs: 60_000 };
+   * ```
+   */
+  idleTimeoutMs?: number;
 }
 
 /**

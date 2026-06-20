@@ -49,6 +49,7 @@ import { isConnectionTakeover } from './driver.mts';
 import type { ConnectionTakeover } from './driver.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
+import * as loop from '../../internal/runtime/loop.mts';
 import { topic } from '../../context/topic.mts';
 import { Scanner } from '../../parsing/scanner.mts';
 import {
@@ -104,6 +105,8 @@ function _isH2cUpgrade(req: Request): boolean {
 const _101 = new _TextEncoder().encode(
   'HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n',
 );
+
+const _100 = new _TextEncoder().encode('HTTP/1.1 100 Continue\r\n\r\n');
 
 class _H2cUpgradeTakeover implements ConnectionTakeover {
   readonly compatibleProtocols: ReadonlySet<string> = new Set(['http/1.1']);
@@ -180,6 +183,11 @@ interface PreparedResponse {
 type PendingEntry =
   | { kind: 'response'; prepared: PreparedResponse; closeAfter: boolean }
   | { kind: 'upgrade';  conn: ConnectionTakeover };
+
+type ParseResult =
+  | { kind: 'request'; req: Request | null }
+  | { kind: 'headers-timeout' }
+  | { kind: 'idle-timeout' };
 
 async function _prepareResponse(res: Response, keepAlive: boolean, reqVersion: string): Promise<PreparedResponse> {
   const version    = reqVersion || 'HTTP/1.1';
@@ -396,19 +404,66 @@ export class H1ServerDriver implements ServerDriver {
       return !parserDone && !connectionFailed && nextSeq < stopAfterSeq && queuedCount() < maxConcurrent;
     }
 
+    async function makeCloseResponse(status: number, body: string, reqVersion = 'HTTP/1.1'): Promise<PreparedResponse> {
+      return _prepareResponse(new Response(body, { status }), false, reqVersion);
+    }
+
+    async function parseNextWithTimeout(bufferedOnly: boolean): Promise<ParseResult> {
+      if (bufferedOnly) {
+        return { kind: 'request', req: parser.parseBufferedNext() };
+      }
+
+      const idleMs = opts.idleTimeoutMs ?? 0;
+      const headersMs = opts.headersTimeoutMs ?? 0;
+      const timeoutMs = nextSeq > 0 && idleMs > 0 ? idleMs : headersMs;
+      if (timeoutMs <= 0) {
+        return { kind: 'request', req: await parser.parseNext() };
+      }
+
+      const timeoutKind = nextSeq > 0 && idleMs > 0 ? 'idle-timeout' : 'headers-timeout';
+      const timer = loop.timeout(timeoutMs);
+      const timeoutMarker = {};
+      const parsePromise = parser.parseNext();
+      parsePromise.catch(() => {});
+      const result = await Promise.race([
+        parsePromise,
+        timer.then(() => timeoutMarker),
+      ]);
+      timer.cancel();
+      if (result === timeoutMarker) return { kind: timeoutKind };
+      return { kind: 'request', req: result as Request };
+    }
+
     async function pumpReads() {
       if (readPumpActive || !shouldReadMore()) return;
       readPumpActive = true;
       try {
         let bufferedOnly = false;
         while (shouldReadMore()) {
-          let req: Request | null;
+          let parsed: ParseResult;
           try {
-            req = bufferedOnly ? parser.parseBufferedNext() : await parser.parseNext();
+            parsed = await parseNextWithTimeout(bufferedOnly);
           } catch (e) {
             parserDone = true;
             break;
           }
+          if (parsed.kind === 'idle-timeout') {
+            parserDone = true;
+            break;
+          }
+          if (parsed.kind === 'headers-timeout') {
+            const seq = nextSeq++;
+            stopAfterSeq = seq;
+            parserDone = true;
+            pending.set(seq, {
+              kind: 'response',
+              prepared: await makeCloseResponse(408, 'Request Timeout'),
+              closeAfter: true,
+            });
+            notify();
+            break;
+          }
+          const req = parsed.req;
           if (req === null) break;
 
           // h2c Upgrade: intercept at the protocol layer before calling the handler.
@@ -426,6 +481,25 @@ export class H1ServerDriver implements ServerDriver {
           }
 
           const seq = nextSeq++;
+
+          const expect = req.headers.get('expect');
+          if (expect !== null) {
+            if (expect.toLowerCase().trim() === '100-continue') {
+              await writer.write(_100);
+              await writer.flush();
+            } else {
+              stopAfterSeq = seq;
+              parserDone = true;
+              pending.set(seq, {
+                kind: 'response',
+                prepared: await makeCloseResponse(417, 'Expectation Failed', req.version),
+                closeAfter: true,
+              });
+              notify();
+              break;
+            }
+          }
+
           const otelActive = _topicRequestStart.hasSubscribers || _topicRequestEnd.hasSubscribers || _topicRequestError.hasSubscribers;
           const requestId = otelActive ? 'http-server-' + (++_serverRequestSeq) : '';
           let keepAlive = _shouldKeepAlive(req.headers, req.version);

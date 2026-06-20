@@ -79,6 +79,10 @@ interface ServeOptions {
   };
   /** Enable the HTTP/1.1 → h2c Upgrade dance (RFC 7540 §3.2) on plain TCP. */
   allowH2cUpgrade?: boolean;
+  /** HTTP/1 header timeout in milliseconds. `0` or undefined disables it. */
+  headersTimeoutMs?: number;
+  /** HTTP/1 keep-alive idle timeout in milliseconds. `0` or undefined disables it. */
+  idleTimeoutMs?: number;
 }
 
 interface ServeServer {
@@ -147,6 +151,15 @@ export function serve(
     if (acceptLoopDone && inFlight.size === 0 && finishResolve) finishResolve();
   }
 
+  function _driverOptions() {
+    return {
+      maxConcurrent: 32,
+      allowH2cUpgrade: options.allowH2cUpgrade,
+      headersTimeoutMs: options.headersTimeoutMs,
+      idleTimeoutMs: options.idleTimeoutMs,
+    };
+  }
+
   (async function acceptLoop() {
     try {
       while (true) {
@@ -163,7 +176,7 @@ export function serve(
                 if (h2Available && proto === 'h2') {
                   await _h2Driver.run(reader, writer, handler, { maxConcurrent: 32 });
                 } else {
-                  await _h1Driver.run(reader, writer, handler, { maxConcurrent: 32, allowH2cUpgrade: options.allowH2cUpgrade });
+                  await _h1Driver.run(reader, writer, handler, _driverOptions());
                 }
               } catch {
                 try { await reader.close(); } catch {}
@@ -184,7 +197,7 @@ export function serve(
                 return;
               }
             }
-            await _h1Driver.run(reader, writer, handler, { maxConcurrent: 32, allowH2cUpgrade: options.allowH2cUpgrade });
+            await _h1Driver.run(reader, writer, handler, _driverOptions());
           })();
         }
 

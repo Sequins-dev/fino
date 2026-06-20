@@ -111,6 +111,26 @@ If a response does not include `Content-Length` or `Transfer-Encoding`, the
 server buffers the body and injects `Content-Length`. For true streaming, set an
 appropriate streaming header yourself, such as `Transfer-Encoding: chunked`.
 
+## HTTP/1.1 Controls
+
+HTTP/1.1 requests with `Expect: 100-continue` receive an interim
+`100 Continue` response before the handler reads the body. Unsupported
+expectations are rejected with `417 Expectation Failed`.
+
+Use timeout options on public servers that accept untrusted clients:
+
+```ts
+serve({
+  port: 3000,
+  headersTimeoutMs: 30_000,
+  idleTimeoutMs: 60_000,
+}, async () => new Response('ok\n'));
+```
+
+`headersTimeoutMs` bounds the time allowed for a complete request header block.
+`idleTimeoutMs` bounds keep-alive gaps after a completed response. Omit either
+option, or set it to `0`, to disable that timeout.
+
 ## Shut Down Gracefully
 
 Keep the returned server object when the process needs to stop cleanly:
@@ -219,3 +239,7 @@ building protocol tools or custom transports:
   writers.
 - [EventSource](./eventsource.mts) frames server-sent events.
 - [WebSocket](./websocket.mts) handles WebSocket framing and connection state.
+
+The low-level HTTP/1 client driver sends exactly one request over an
+already-connected reader/writer pair. DNS, TCP/TLS setup, redirects, retries,
+pooling, and body wrapping belong to `fetch()` or the caller.

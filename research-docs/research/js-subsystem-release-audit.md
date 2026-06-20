@@ -256,9 +256,14 @@ Status: TODO
 - Add broad conformance tests for full `Request`/`Response`/Body clone and form/body edge cases.
 
 ## HTTP/1
-Status: TODO
-- Add `Expect: 100-continue` handling and server-side request/header timeout controls.
-- Clarify one-shot H1 client behavior versus pooled/retry/redirect expectations.
+Status: DONE
+- Release baseline covers HTTP/1 parser/serializer framing, keep-alive,
+  pipelining order, request body draining after handler failures,
+  `Expect: 100-continue`, unsupported expectation rejection, and
+  server-side header and keep-alive idle timeout controls.
+- The low-level H1 client driver is one-shot over an already-connected
+  reader/writer pair; DNS, TCP/TLS setup, redirects, retries, pooling, and
+  body wrapping belong to `fetch()` or the caller.
 
 ## HTTP Server
 Status: TODO

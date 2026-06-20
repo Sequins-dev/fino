@@ -30,6 +30,28 @@ async function roundtrip(port: number, rawRequest: string): Promise<string> {
   return decodeUtf8(all);
 }
 
+async function readUntil(
+  reader: AsyncIterable<Uint8Array>,
+  marker: string,
+  timeoutMs = 500,
+): Promise<{ text: string; iter: AsyncIterator<Uint8Array> }> {
+  const iter = reader[Symbol.asyncIterator]();
+  let text = '';
+  while (!text.includes(marker)) {
+    const timer = loop.timeout(timeoutMs);
+    const result = await Promise.race([
+      iter.next(),
+      timer.then(() => ({ done: false, value: encodeUtf8('__timeout__') })),
+    ]);
+    timer.cancel();
+    const { done, value } = result;
+    if (!done && decodeUtf8(value) === '__timeout__') throw new Error(`timed out waiting for ${marker}`);
+    if (done) break;
+    text += decodeUtf8(value);
+  }
+  return { text, iter };
+}
+
 describe('Request / Response basics', () => {
   it('binds and serves on IPv6 loopback when available', async (t) => {
     let server: ReturnType<typeof serve> | null = null;
@@ -291,6 +313,129 @@ describe('Request / Response basics', () => {
 });
 
 describe('HTTP protocol conformance', () => {
+  it('sends 100 Continue before reading an expected request body', async (t) => {
+    let receivedBody = '';
+    const server = serve({ port: 0 }, async (req) => {
+      receivedBody = await req.text();
+      return new Response('accepted');
+    });
+    const port = server.port;
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+    const [reader, writer] = sock.split();
+
+    try {
+      await writer.write(encodeUtf8(
+        `POST /upload HTTP/1.1\r\n` +
+        `Host: localhost:${port}\r\n` +
+        `Expect: 100-continue\r\n` +
+        `Content-Length: 7\r\n` +
+        `Connection: close\r\n\r\n`,
+      ));
+      await writer.flush();
+
+      let interim = '';
+      let iter = reader[Symbol.asyncIterator]();
+      let interimError: unknown = null;
+      try {
+        const result = await readUntil(reader, '\r\n\r\n');
+        interim = result.text;
+        iter = result.iter;
+      } catch (err) {
+        interimError = err;
+      }
+
+      await writer.write(encodeUtf8('payload'));
+      await writer.flush();
+      await writer.close();
+
+      let final = '';
+      while (!final.includes('accepted')) {
+        const { done, value } = await iter.next();
+        if (done) break;
+        final += decodeUtf8(value);
+      }
+      t.equal(interimError, null, 'server sends interim response before the body is written');
+      t.ok(interim.startsWith('HTTP/1.1 100 Continue'), 'server sends interim 100 response');
+      t.equal(receivedBody, 'payload', 'handler receives body after continue');
+      t.ok(final.startsWith('HTTP/1.1 200'), 'final response is 200');
+      t.ok(final.includes('accepted'), 'final body is delivered');
+    } finally {
+      await reader.close();
+      await server.close();
+    }
+  });
+
+  it('rejects unsupported Expect values before calling the handler', async (t) => {
+    let handlerCalled = false;
+    const server = serve({ port: 0 }, async () => {
+      handlerCalled = true;
+      return new Response('unexpected');
+    });
+    const port = server.port;
+
+    try {
+      const raw =
+        `POST /upload HTTP/1.1\r\n` +
+        `Host: localhost:${port}\r\n` +
+        `Expect: custom-expectation\r\n` +
+        `Content-Length: 7\r\n` +
+        `Connection: close\r\n\r\npayload`;
+      const response = await roundtrip(port, raw);
+      t.ok(response.startsWith('HTTP/1.1 417'), 'unsupported Expect returns 417');
+      t.equal(handlerCalled, false, 'handler is not called');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('returns 408 when request headers exceed headersTimeoutMs', async (t) => {
+    let handlerCalled = false;
+    const server = serve({ port: 0, headersTimeoutMs: 10 }, async () => {
+      handlerCalled = true;
+      return new Response('unexpected');
+    });
+    const port = server.port;
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+    const [reader, writer] = sock.split();
+
+    try {
+      await writer.write(encodeUtf8(`GET /slow HTTP/1.1\r\nHost: localhost:${port}\r\n`));
+      await writer.flush();
+
+      const { text } = await readUntil(reader, '\r\n\r\n');
+      t.ok(text.startsWith('HTTP/1.1 408'), 'incomplete headers time out with 408');
+      t.equal(handlerCalled, false, 'handler is not called');
+    } finally {
+      await writer.close();
+      await reader.close();
+      await server.close();
+    }
+  });
+
+  it('closes idle keep-alive connections after idleTimeoutMs', async (t) => {
+    const server = serve({ port: 0, idleTimeoutMs: 10 }, async () => new Response('first'));
+    const port = server.port;
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+    const [reader, writer] = sock.split();
+
+    try {
+      await writer.write(encodeUtf8(`GET / HTTP/1.1\r\nHost: localhost:${port}\r\n\r\n`));
+      await writer.flush();
+      const { text, iter } = await readUntil(reader, 'first');
+      t.ok(text.startsWith('HTTP/1.1 200'), 'first response succeeds');
+
+      const eof = await Promise.race([
+        iter.next(),
+        loop.timeout(200).then(() => ({ done: false, value: encodeUtf8('timeout') })),
+      ]);
+      t.equal(eof.done, true, 'idle connection closes without another request');
+    } finally {
+      await writer.close();
+      await reader.close();
+      await server.close();
+    }
+  });
+
   it('duplicate conflicting Content-Length headers → 400 or connection close', async (t) => {
     // RFC 7230 §3.3.2: conflicting CL values are a framing error — the server
     // MUST reject the request rather than silently using the first value.
