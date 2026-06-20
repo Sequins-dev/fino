@@ -291,10 +291,14 @@ Status: DONE
   bodies remain buffered at the public `Request`/`Response` boundary.
 
 ## HTTP/2 Pool
-Status: TODO
-- Pool buffers request/response bodies; expose streaming responses or document the limit.
-- Add retry behavior for eligible refused streams after GOAWAY.
-- Require a libnghttp2-enabled release CI lane.
+Status: DONE
+- Release baseline shares the `FINO_REQUIRE_H2=1` libnghttp2 CI lane used by
+  HTTP/2 core tests.
+- Baseline covers one reusable H2 entry per origin, multiplexed streams, TLS
+  ALPN `fetch()` integration, origin-keyed reuse, idle eviction, trailers, and
+  GOAWAY handling.
+- Request and response bodies are buffered in memory, and GOAWAY/refused
+  streams are surfaced to callers instead of retried automatically.
 
 ## HTTP/3
 Status: TODO

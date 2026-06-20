@@ -6,6 +6,12 @@
  * recv loop drives the session; `send()` submits new streams and awaits their
  * individual response deferreds.
  *
+ * The release baseline is eager at the Request/Response boundary: `send()`
+ * reads the whole request body before submitting DATA frames and accumulates
+ * the whole response body before resolving with a `Response`. This keeps pooled
+ * HTTP/2 behavior aligned with the current fetch body model, but it is not a
+ * streaming large-body API.
+ *
  * ## drainWrite serialization
  *
  * As in the per-request driver, concurrent `nghttp2_session_mem_send2` calls
@@ -17,7 +23,10 @@
  * When the peer sends GOAWAY (or we get a transport error), the pool entry is
  * marked `goingAway = true`. New streams are refused; in-flight streams for
  * IDs <= lastStreamId run to completion; remaining pending streams are rejected.
- * The entry is evicted from the pool on the next `acquire()` check.
+ * The entry is evicted from the pool on the next `acquire()` check. Refused or
+ * GOAWAY-affected streams are not automatically retried by this pool entry;
+ * callers that own replay safety must issue a new request through a fresh pool
+ * acquisition.
  *
  * ## Idle timeout
  *
@@ -80,7 +89,9 @@ interface StreamDeferred {
  *
  * The entry owns an nghttp2 client session, a background receive loop, and all
  * in-flight stream deferreds. New requests are refused once the connection is
- * going away or closed.
+ * going away or closed. Request and response bodies are buffered in memory for
+ * this release baseline; use caller-level size limits for untrusted large
+ * bodies.
  *
  * ```ts no_run
  * import { createPoolEntry } from 'internal:net/http/pool';

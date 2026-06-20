@@ -21,6 +21,10 @@ const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
 const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
 const skipHttps = (!h2Available || !tlsAvailable) && 'requires libnghttp2 + OpenSSL';
 
+if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
+  throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
+}
+
 const skip = !h2Available && 'requires libnghttp2';
 
 // ---------------------------------------------------------------------------
