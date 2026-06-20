@@ -13,7 +13,9 @@
  * builds that enable libnghttp3 must pass the local simulated and loopback H3
  * tests in `tests/net/quic-h3.test.mts`.
  *
- * Current release scope is request/response HTTP/3 over QUIC. Connection reuse,
+ * Current release scope is request/response HTTP/3 over QUIC. Public
+ * `fetch()` resolves URL hostnames through `fino:net/dns` before connecting
+ * while keeping the URL host as the default TLS SNI name. Connection reuse,
  * WebTransport/Capsule, H3 DATAGRAM, CONNECT tunnels, and external H3 interop
  * lanes are intentionally deferred and documented in the QUIC/H3 research
  * notes.
@@ -37,11 +39,13 @@
  */
 
 import { QuicEndpoint, QuicConnectionEvent } from '../quic.mts';
+import { lookup } from '../dns.mts';
 import { H3ServerDriver } from '../../internal/net/http/h3/server.mts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.mts';
 import type { H3RequestInit } from '../../internal/net/http/h3/client.mts';
 import { h3Available as _h3Available, requireH3 as _requireH3 } from '../../internal/net/http/h3/bindings.mts';
 import type { QuicConnectOptions, QuicListenOptions } from '../quic.mts';
+import type { LookupOptions, LookupResult } from '../dns.mts';
 
 /**
  * Whether libnghttp3 was loaded successfully.
@@ -118,6 +122,47 @@ export interface H3FetchInit extends H3RequestInit {
 }
 
 /**
+ * Resolved connect target for public HTTP/3 `fetch()`.
+ *
+ * @internal
+ */
+export interface H3ConnectTarget {
+  /** QUIC socket address to connect to. */
+  address: QuicConnectOptions['address'];
+  /** TLS SNI host derived from the original URL hostname. */
+  serverName: string;
+}
+
+type H3Lookup = (hostname: string, opts: LookupOptions) => Promise<LookupResult>;
+
+function urlHostname(url: URL): string {
+  const hostname = url.hostname;
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+}
+
+/**
+ * Resolve an HTTP/3 URL host into the QUIC connect address.
+ *
+ * Hostname URLs are resolved before connecting because QUIC addresses require
+ * concrete IP literals. The original hostname remains the SNI default.
+ *
+ * @internal
+ */
+export async function _resolveH3ConnectAddress(url: URL, resolve: H3Lookup = lookup): Promise<H3ConnectTarget> {
+  const hostname = urlHostname(url);
+  const port = url.port ? Number(url.port) : 443;
+  const result = await resolve(hostname, { family: hostname.includes(':') ? 6 : 4 });
+  return {
+    address: {
+      family: result.family === 6 ? 'ipv6' : 'ipv4',
+      ip: result.address,
+      port,
+    },
+    serverName: hostname,
+  };
+}
+
+/**
  * Start an HTTP/3 server.
  *
  * The server listens with ALPN `h3`, accepts QUIC connections, and dispatches
@@ -173,10 +218,11 @@ export async function serve(options: H3ServeOptions, handler: H3Handler): Promis
 /**
  * Perform a one-shot HTTP/3 request.
  *
- * The helper opens a temporary QUIC endpoint, connects to the URL host using
- * ALPN `h3`, sends the request, materializes the response body and trailers,
- * then closes the endpoint. Use lower-level QUIC/H3 session APIs for
- * connection reuse. Automatic H3 origin pooling is deferred for this release.
+ * The helper opens a temporary QUIC endpoint, resolves the URL host to a QUIC
+ * socket address, connects with ALPN `h3`, sends the request, materializes the
+ * response body and trailers, then closes the endpoint. Use lower-level
+ * QUIC/H3 session APIs for connection reuse. Automatic H3 origin pooling is
+ * deferred for this release.
  *
  * @param url Absolute HTTP/3 URL as a string or `URL`.
  * @param init Standard Fetch request options.
@@ -188,17 +234,16 @@ export async function fetch(url: string | URL, init: H3FetchInit = {}): Promise<
   requireH3();
 
   const parsed = typeof url === 'string' ? new URL(url) : url;
-  const port   = parsed.port ? Number(parsed.port) : 443;
 
   const { quic, ...requestInit } = init;
-  const family = parsed.hostname.includes(':') ? 'ipv6' : 'ipv4';
+  const target = await _resolveH3ConnectAddress(parsed);
   const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
   try {
     const conn = await endpoint.connect({
       ...quic,
-      address: { family, ip: parsed.hostname, port },
+      address: target.address,
       alpnProtocols: ['h3'],
-      serverName: quic?.serverName ?? parsed.hostname,
+      serverName: quic?.serverName ?? target.serverName,
     });
 
     using session = await H3ClientSession.create(conn);

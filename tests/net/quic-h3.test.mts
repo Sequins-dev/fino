@@ -6,6 +6,7 @@ import {
   h3Available,
   requireH3,
   serve as h3Serve,
+  _resolveH3ConnectAddress,
 } from 'fino:net/http/h3';
 import { H3ServerDriver } from '../../js/internal/net/http/h3/server.mts';
 import { H3ClientSession } from '../../js/internal/net/http/h3/client.mts';
@@ -29,6 +30,21 @@ async function h3Handshake(pipe: QuicPipe) {
 }
 
 describe('HTTP/3 (h3 ALPN)', () => {
+  it('public fetch resolves URL hostnames before QUIC connect and preserves SNI host', async (t) => {
+    const seen: Array<{ hostname: string; family?: 4 | 6 }> = [];
+    const resolved = await _resolveH3ConnectAddress(
+      new URL('https://example.test:9443/smoke'),
+      async (hostname, opts) => {
+        seen.push({ hostname, family: opts.family });
+        return { address: '192.0.2.55', family: 4 };
+      },
+    );
+
+    t.deepEqual(seen, [{ hostname: 'example.test', family: 4 }], 'hostname is resolved as IPv4');
+    t.deepEqual(resolved.address, { family: 'ipv4', ip: '192.0.2.55', port: 9443 }, 'QUIC connect uses resolved IP');
+    t.equal(resolved.serverName, 'example.test', 'SNI stays on the URL hostname');
+  });
+
   it('public module exports availability, guard, client, and server helpers', (t) => {
     t.equal(typeof h3Available, 'boolean', 'h3Available is a boolean');
     t.equal(typeof requireH3, 'function', 'requireH3 is exported');

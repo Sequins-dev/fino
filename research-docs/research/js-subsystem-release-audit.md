@@ -130,10 +130,7 @@ Status: DONE
 Status: DONE
 
 ## HTTP/3
-Status: TODO
-- Add origin pooling/reuse for public `fetch()` or document one-shot behavior.
-- Verify hostname DNS resolution in public H3 fetch; URL hosts appear to be passed as IP-shaped QUIC addresses.
-- Track deferred WebTransport, Capsule, H3 DATAGRAM, CONNECT tunnels, and external H3 interop.
+Status: DONE
 
 ## QUIC
 Status: TODO
