@@ -100,10 +100,7 @@ Status: DONE
 Status: DONE
 
 ## DNSSEC
-Status: TODO
-- Require live validation coverage instead of relying only on `FINO_DNS_LIVE=1` optional tests.
-- Define root trust anchor rollover/update policy.
-- Unsupported algorithms and digests reject safely, but this is not full DNSSEC ecosystem parity.
+Status: DONE
 
 ## DNS Provider Interface
 Status: DONE

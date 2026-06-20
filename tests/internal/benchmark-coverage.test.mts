@@ -128,4 +128,19 @@ describe('benchmark coverage map', () => {
 
     t.deepEqual(missing, [], 'release notes cover benchmark workflow and intentional non-parity areas');
   });
+
+  it('keeps DNSSEC release lane and root anchor policy documented', async (t) => {
+    const notes = await fs.readFile('research-docs/research/js-release-notes.md', 'utf8');
+    const required = [
+      'FINO_DNS_LIVE=1',
+      'FINO_DNS_SERVER',
+      'tests/net/dns-live.test.mts',
+      'https://data.iana.org/root-anchors/root-anchors.xml',
+      'root trust anchor rollover',
+      'unsupported DNSSEC algorithms and digests fail closed',
+    ];
+    const missing = required.filter((marker) => !notes.includes(marker));
+
+    t.deepEqual(missing, [], 'DNSSEC release verification policy is explicit');
+  });
 });

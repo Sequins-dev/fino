@@ -25,8 +25,17 @@ docs are ignored and are not committed as release source.
 - Cluster and remote realms are trusted-cluster features. Hostile-peer and
   authentication-failure behavior waits for cluster authentication support.
 - DNSSEC validates signed responses from embedded root trust anchors with
-  deterministic and gated live coverage. Root-anchor rollover policy and full
-  ecosystem parity remain deferred.
+  deterministic coverage and a release-required live lane:
+  `FINO_DNS_LIVE=1 FINO_DNS_SERVER=1.1.1.1 ./target/debug/fino test tests/net/dns-live.test.mts`.
+  Override the signed and bogus domains with `FINO_DNS_SIGNED_DOMAIN` and
+  `FINO_DNS_BOGUS_DOMAIN` when release infrastructure needs local policy
+  targets. Root trust anchors are embedded from
+  https://data.iana.org/root-anchors/root-anchors.xml; root trust anchor rollover
+  requires refreshing the source/date comment with the IANA XML,
+  retaining active valid anchors during overlap, applying add/remove/revoke
+  changes in the same commit as deterministic and live validation evidence, and
+  treating unsupported DNSSEC algorithms and digests fail closed as intentional
+  non-parity rather than ecosystem-complete DNSSEC support.
 - HTTP/3 is release-scoped to request/response behavior over QUIC when optional
   libnghttp3 bindings are available. Connection pooling, WebTransport, Capsule,
   H3 DATAGRAM, CONNECT tunnels, and external interop remain deferred.
