@@ -15,10 +15,7 @@ Status: DONE
 Status: DONE
 
 ## Runtime Loop And Backends
-Status: TODO
-- Add `FdReader` / `FdWriter` partial read/write, `EAGAIN`, and large-transfer
-  stress coverage.
-- Keep platform-specific loop hook behavior documented in release notes.
+Status: DONE
 
 ## Runtime Parent RPC
 Status: DONE

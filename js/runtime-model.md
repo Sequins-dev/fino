@@ -31,6 +31,15 @@ Most application code should not manually drive the loop. Write async functions,
 consume async iterables, and let the runtime keep the loop alive while resources
 such as servers, sockets, watchers, or child realms are open.
 
+Runtime modules use a small set of stable loop helpers rather than depending on
+one operating-system backend directly. Timers, file-descriptor readiness and
+writability, wake sources, vnode/file-watch hooks, and completion submission are
+implemented by the active backend for the current platform. The exact hook
+mechanism may differ between backends, but JavaScript code should see the same
+observable contract: pending async work wakes the loop, readiness callbacks are
+rescheduled after backpressure or `EAGAIN`, and completed operations resume
+their waiting promises through the runtime loop.
+
 ## Byte Flow
 
 Fino's lower-level I/O APIs often represent streams as
