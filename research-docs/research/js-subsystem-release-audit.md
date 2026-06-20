@@ -1,6 +1,6 @@
 # JS Subsystem Release Audit
 
-Static release-readiness tracker for `js/`, related tests, docs, and
+Fresh release-readiness tracker for `js/`, related tests, docs, and
 benchmarks. This audit is intended to guide follow-up hardening work before
 release.
 
@@ -23,8 +23,14 @@ Status: DONE
 ## CLI Root And Run Commands
 Status: DONE
 
-## Test And Bench Commands
+## Test Command
 Status: DONE
+
+## Bench Command
+Status: TODO
+- Reject directory/glob inputs that expand to zero benchmark files, matching
+  `fino test` behavior.
+- Add a CLI regression test for empty benchmark expansion.
 
 ## Fmt, Lint, And Tooling
 Status: DONE
@@ -120,7 +126,11 @@ Status: DONE
 Status: DONE
 
 ## HTTP/2
-Status: DONE
+Status: TODO
+- Retire or explicitly reclassify the live h2spec allowlisted failures before
+  calling full conformance complete.
+- Keep release signoff explicit for omitted h2spec sections `http2/6.6` and
+  `http2/6.9`.
 
 ## HTTP/2 Pool
 Status: DONE
@@ -147,21 +157,25 @@ Status: DONE
 Status: DONE
 
 ## Encoding, TextEncoder, Structured Clone
-Status: DONE
+Status: TODO
+- Decide release scope for structured clone gaps: URL, URLSearchParams,
+  CryptoKey, DOMException, streams, and port transfer.
+- Implement true ArrayBuffer detachment for transfer or document the current
+  zero-fill non-conformance publicly.
 
 ## URL, URLSearchParams, URLPattern
 Status: DONE
 
 ## Blob And File
 Status: DONE
-- In-memory subset is complete; document no lazy/file-backed large-blob
-  behavior.
 
 ## FormData
 Status: DONE
 
 ## Fetch Global
-Status: DONE
+Status: TODO
+- Remove stale HTTP docs that say ReadableStream is not implemented; current
+  Request/Response stream behavior conflicts with that note.
 
 ## Web Streams
 Status: DONE
@@ -171,7 +185,6 @@ Status: DONE
 
 ## Compression Streams
 Status: DONE
-- Optional hardening: add abort/cancel propagation and backpressure tests.
 
 ## Messaging And BroadcastChannel
 Status: DONE
@@ -192,7 +205,12 @@ Status: DONE
 Status: DONE
 
 ## CSV Format
-Status: DONE
+Status: TODO
+- Reject non-delimiter/non-EOL text after a closing quoted field in parse and
+  parseStream.
+- Add invalid fixture/regression coverage for closed-quote trailing junk,
+  including streaming input.
+- Align docs if permissive post-quote text is intentional.
 
 ## TOML Format
 Status: DONE
@@ -218,8 +236,18 @@ Status: DONE
 ## Realm Messaging And Self
 Status: DONE
 
-## Cluster
+## Realm Process, Thread, Remote Modes
 Status: DONE
+
+## Realm Import And Provider Policies
+Status: DONE
+
+## Cluster
+Status: TODO
+- Decide whether seed election and cluster authentication are release blockers
+  or explicitly document the trusted single-seed release stance.
+- Keep direct peer-to-peer `PORT_MSG` and QUIC transport deferrals visible in
+  release notes or the cluster guide.
 
 ## Test Framework
 Status: DONE
