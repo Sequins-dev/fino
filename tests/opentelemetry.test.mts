@@ -1002,7 +1002,8 @@ describe('fino:opentelemetry', () => {
     const extracted = Propagation.extract(carrier);
     assertPresent(extracted, 'propagation context extracted');
     t.equal(extracted.traceId, '0123456789abcdef0123456789abcdef', 'propagation facade inject/extract works');
-    t.equal(extracted.baggage, undefined, 'W3C propagator does not propagate baggage');
+    assertPresent(extracted.baggage, 'propagation facade extracts baggage');
+    t.equal(extracted.baggage.get('tenant'), 'beta', 'propagation facade injects and extracts baggage');
 
     await sdk.shutdown();
   });
@@ -1083,9 +1084,10 @@ describe('fino:opentelemetry', () => {
 
     t.equal(headers.get('traceparent'), '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01', 'traceparent injected through adapter');
     t.equal(headers.get('tracestate'), 'vendor=value', 'tracestate injected through adapter');
-    t.equal(headers.get('baggage'), null, 'W3C propagator does not inject baggage through adapter');
+    t.equal(headers.get('baggage'), 'tenant=gamma', 'baggage injected through adapter');
     t.equal(extracted.traceState, 'vendor=value', 'tracestate extracted through adapter');
-    t.equal(extracted.baggage, undefined, 'W3C propagator does not extract baggage through adapter');
+    assertPresent(extracted.baggage, 'baggage extracted through adapter');
+    t.equal(extracted.baggage.get('tenant'), 'gamma', 'adapter baggage value round trips');
 
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
@@ -1258,7 +1260,7 @@ describe('fino:opentelemetry', () => {
     assertPresent(fetchSpan, 'remote fetch span present');
     t.equal(fetchSpan.parentSpanId, remoteContext.spanId, 'fetch instrumentation uses active remote context');
     t.equal(propagationHeaders.get('traceparent'), `00-${remoteContext.traceId}-${remoteContext.spanId}-01`, 'propagation inject uses active context automatically');
-    t.equal(propagationHeaders.get('baggage'), null, 'W3C propagator does not inject baggage header');
+    t.equal(propagationHeaders.get('baggage'), 'tenant=nested,region=us', 'propagation inject uses active baggage automatically');
 
     await sdk.shutdown();
   });
@@ -1555,7 +1557,7 @@ describe('fino:opentelemetry', () => {
 
       t.equal(carrier.traceparent, '00-0123456789abcdef0123456789abcdef-0123456789abcdef-01', 'traceparent injected');
       t.equal(carrier.tracestate, 'rojo=00f067aa0ba902b7', 'tracestate injected');
-      t.equal(carrier.baggage, undefined, 'W3C propagator does not inject baggage header');
+      t.equal(carrier.baggage, 'tenant=alpha', 'baggage injected');
 
       const extracted = propagator.extract(carrier);
       t.ok(extracted, 'trace context extracted');
@@ -1564,7 +1566,8 @@ describe('fino:opentelemetry', () => {
       t.equal(extracted.spanId, '0123456789abcdef', 'span id extracted');
       t.equal(extracted.traceFlags, 1, 'trace flags extracted');
       t.equal(extracted.traceState, 'rojo=00f067aa0ba902b7', 'tracestate extracted');
-      t.equal(extracted.baggage, undefined, 'W3C propagator does not extract baggage');
+      assertPresent(extracted.baggage, 'baggage extracted');
+      t.equal(extracted.baggage.get('tenant'), 'alpha', 'baggage value extracted');
     });
 
     it('supports exporter retries, timeout options, per-signal endpoints, compression, and hooks', async (t) => {

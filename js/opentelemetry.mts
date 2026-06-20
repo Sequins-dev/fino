@@ -9,8 +9,14 @@
  * Use this facade when configuring telemetry for an application or when
  * creating manual spans, logs, or metrics. Defaults are intentionally local:
  * the SDK exporter targets OTLP/HTTP on `http://127.0.0.1:4318`, trace context
- * uses W3C `traceparent`, and resources default to `unknown_service` until a
- * service name is provided.
+ * uses W3C `traceparent`, `tracestate`, and `baggage`, and resources default
+ * to `unknown_service` until a service name is provided.
+ *
+ * The release baseline is Fino-native rather than strict package parity with
+ * `@opentelemetry/api` or upstream SDK packages. It covers stable tracing,
+ * metrics, logs, resources, propagation, in-memory export, and OTLP/HTTP JSON
+ * export. OTLP protobuf, OTLP/gRPC, and full upstream semantic-convention
+ * package compatibility are intentionally outside this module's baseline.
  *
  * ```typescript no_run
  * import { OtelSDK, InMemoryExporter, getTracerProvider } from 'fino:opentelemetry';

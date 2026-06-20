@@ -253,11 +253,7 @@ Status: DONE
 Status: DONE
 
 ## OpenTelemetry API, SDK, Signals
-Status: TODO
-- Public API is Fino-native, not strict `@opentelemetry/api` / SDK parity.
-- W3C baggage propagation is absent.
-- OTLP support is HTTP JSON only; protobuf/gRPC and full standard env configuration are missing.
-- Add semantic convention and upstream compatibility coverage.
+Status: DONE
 
 ## OpenTelemetry Instrumentations And Bootstrap
 Status: TODO

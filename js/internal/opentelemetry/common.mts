@@ -8,10 +8,10 @@
  * instrumented runtime events and handler execution.
  *
  * Defaults favor safe local telemetry: resources include `service.name` and
- * Fino SDK attributes, propagation uses W3C `traceparent`, and optional record
- * fields are omitted rather than filled with sentinel values. Helpers in this
- * module are internal plumbing and may expose low-level payload details when
- * docs are built with `--include-private`.
+ * Fino SDK attributes, propagation uses W3C `traceparent`, `tracestate`, and
+ * `baggage`, and optional record fields are omitted rather than filled with
+ * sentinel values. Helpers in this module are internal plumbing and may expose
+ * low-level payload details when docs are built with `--include-private`.
  *
  * ```typescript no_run
  * const resource = normalizeResource({ 'service.name': 'api' });
@@ -3040,6 +3040,17 @@ export class Baggage {
   }
 
   /**
+   * True when the baggage contains no entries.
+   *
+   * ```typescript no_run
+   * new Baggage().isEmpty(); // true
+   * ```
+   */
+  isEmpty(): boolean {
+    return this.#entries.size === 0;
+  }
+
+  /**
    * Parses a W3C baggage header into an immutable `Baggage` value.
    *
    * Empty, `null`, or `undefined` input returns an empty baggage object. Invalid
@@ -3410,6 +3421,9 @@ export class W3CTraceContextPropagator extends TextMapPropagator {
     const api = carrierApiFor(carrier, carrierApi);
     api.set(carrier, 'traceparent', `00-${context.traceId}-${context.spanId}-${flags.toString(16).padStart(2, '0')}`);
     if (context.traceState) api.set(carrier, 'tracestate', String(context.traceState));
+    if (context.baggage instanceof Baggage && !context.baggage.isEmpty()) {
+      api.set(carrier, 'baggage', context.baggage.toString());
+    }
   }
 
   /**
@@ -3442,11 +3456,13 @@ export class W3CTraceContextPropagator extends TextMapPropagator {
     // For v00, disallow trailing content.
     if (version === '00' && trimmed.length !== 55) return null;
     const traceState = api.get(carrier, 'tracestate');
+    const baggage = api.get(carrier, 'baggage');
     return {
       traceId: traceId.toLowerCase(),
       spanId: spanId.toLowerCase(),
       traceFlags: parseInt(flags, 16) & 0xff,
       ...(typeof traceState === 'string' && traceState ? { traceState } : {}),
+      ...(typeof baggage === 'string' && baggage ? { baggage: Baggage.fromString(baggage) } : {}),
     };
   }
 }
