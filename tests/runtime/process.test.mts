@@ -6,6 +6,7 @@ import { describe, it } from 'fino:test/test';
 import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'fino:process';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
+const childEnv = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string>;
 
 function joinChunks(chunks: Uint8Array[]): string {
   return decodeUtf8(chunks.reduce((acc: Uint8Array, c: Uint8Array) => {
@@ -140,6 +141,39 @@ describe('Process class', () => {
     await proc.wait();
   });
 
+  it('drains high-volume stdout and stderr concurrently', async (t) => {
+    const proc = new Process(execPath, [
+      new URL('../fixtures/process-high-volume-output.mts', import.meta.url).pathname,
+    ], { env: childEnv });
+    proc.stdin.close();
+
+    const [stdoutChunks, stderrChunks, result] = await Promise.all([
+      (async () => {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of proc.stdout) chunks.push(chunk);
+        return chunks;
+      })(),
+      (async () => {
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of proc.stderr) chunks.push(chunk);
+        return chunks;
+      })(),
+      proc.wait(),
+    ]);
+
+    const stdoutText = joinChunks(stdoutChunks);
+    const stderrText = joinChunks(stderrChunks);
+
+    t.equal(result.code, 0, 'child exits successfully');
+    t.equal(result.signal, null, 'child exits without signal');
+    t.ok(stdoutText.length > 160 * 1024, 'stdout payload exceeds a typical pipe buffer');
+    t.ok(stderrText.length > 160 * 1024, 'stderr payload exceeds a typical pipe buffer');
+    t.ok(stdoutText.includes('stdout:0:'), 'stdout starts with first marker');
+    t.ok(stdoutText.includes('stdout:159:'), 'stdout includes final marker');
+    t.ok(stderrText.includes('stderr:0:'), 'stderr starts with first marker');
+    t.ok(stderrText.includes('stderr:159:'), 'stderr includes final marker');
+  });
+
   it('cwd option changes child working directory', async (t) => {
     const proc = new Process('/bin/pwd', [], { cwd: '/tmp' });
     proc.stdin.close();
@@ -223,7 +257,7 @@ describe('exit() propagates non-zero code to parent', () => {
   it('exit(42) results in wait().code === 42', async (t) => {
     const proc = new Process(execPath, [
       new URL('../fixtures/exit-with-code.mts', import.meta.url).pathname,
-    ], { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string> });
+    ], { env: childEnv });
     proc.stdin.close();
     for await (const _ of proc.stdout) { /* drain */ }
     const { code, signal } = await proc.wait();
@@ -239,7 +273,7 @@ describe('B1 regression: exit() flushes stdout before terminating', () => {
     // the test fails.
     const proc = new Process(execPath, [
       new URL('../fixtures/exit-with-output.mts', import.meta.url).pathname,
-    ], { env: Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string> });
+    ], { env: childEnv });
     proc.stdin.close();
     const chunks: Uint8Array[] = [];
     for await (const chunk of proc.stdout) chunks.push(chunk);

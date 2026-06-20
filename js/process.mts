@@ -8,6 +8,10 @@
  * to retrieve from JS (e.g. `execPath` needs the Rust binary's own path, and
  * `env` needs to snapshot the environ at startup).
  *
+ * The child-process APIs are POSIX-oriented. They use `posix_spawnp(3)`,
+ * `pipe(2)`, `kill(2)`, and `waitpid(2)` semantics, with macOS and Linux
+ * event-loop integrations for process-exit notification.
+ *
  * **Why posix_spawn?**
  * `execve(2)` replaces the current process image, so spawning a different
  * program while keeping Fino alive requires a primitive that creates a child
@@ -1031,7 +1035,8 @@ export class Process {
    * Send a signal to the child process.
    *
    * Defaults to `SIGTERM`. This method does not wait for the child to exit and
-   * does not currently throw when the underlying `kill(2)` call fails.
+   * throws when the underlying `kill(2)` call fails, for example after the
+   * child has already been reaped.
    *
    * ```ts no_run
    * import { Process, SIGTERM } from 'fino:process';
@@ -1041,6 +1046,7 @@ export class Process {
    * ```
    *
    * @param {number} [signal=15] SIGTERM by default
+   * @throws {Error} If `kill(2)` fails.
    */
   kill(signal: number = _SIGTERM): void {
     const ret = Number(lib.symbols.kill(this.#pid, signal));

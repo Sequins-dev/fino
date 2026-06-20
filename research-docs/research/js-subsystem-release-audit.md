@@ -54,10 +54,7 @@ Status: DONE
 Status: DONE
 
 ## Process And Process Class
-Status: TODO
-- Add high-volume concurrent stdout/stderr drain coverage.
-- Fix stale `Process.kill()` docs to match current throw-on-failure behavior.
-- Document POSIX-only platform assumptions.
+Status: DONE
 
 ## Process Argv Parser
 Status: DONE
