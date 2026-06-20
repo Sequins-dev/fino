@@ -133,4 +133,12 @@ const value = "<safe>";
     t.equal(renderMarkdownInline('[relative](../guide)'), '<a href="../guide">relative</a>', 'relative links are allowed');
     t.equal(renderMarkdownInline('[mail](mailto:team@example.test)'), 'mail', 'other protocols are omitted by default');
   });
+
+  it('renders unsupported CommonMark and GFM blocks as safe plain content', (t) => {
+    t.equal(renderMarkdown('> quoted'), '<p>&gt; quoted</p>', 'blockquotes are plain escaped paragraphs');
+    t.equal(renderMarkdown('| a | b |\n| - | - |'), '<p>| a | b | | - | - |</p>', 'tables are plain paragraphs');
+    t.equal(renderMarkdown('Title\n====='), '<p>Title =====</p>', 'Setext headings are plain paragraphs');
+    t.equal(renderMarkdown('---'), '<p>---</p>', 'thematic breaks are plain paragraphs');
+    t.equal(renderMarkdown('<div>\nraw\n</div>'), '<p>&lt;div&gt; raw &lt;/div&gt;</p>', 'HTML blocks are escaped paragraphs');
+  });
 });

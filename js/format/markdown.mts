@@ -13,10 +13,13 @@
  * links and code spans used by the documentation generator. Link URLs are
  * limited to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
  *
- * The renderer is not a CommonMark compliance target and does not execute or
- * sanitize arbitrary embedded HTML. Treat Markdown as content input and use
- * `resolveLink` or `renderCode` to adapt it to an application's routing and
- * syntax-highlighting needs.
+ * The renderer is not a CommonMark or GFM compliance target and does not
+ * execute or sanitize arbitrary embedded HTML. Nested list structure,
+ * blockquotes, tables, Setext headings, thematic breaks, HTML blocks, and full
+ * emphasis/link grammar are outside this release contract; unsupported block
+ * forms are rendered as escaped paragraph text. Treat Markdown as content input
+ * and use `resolveLink` or `renderCode` to adapt it to an application's
+ * routing and syntax-highlighting needs.
  *
  * ```ts no_run
  * import { parseMarkdown, renderMarkdown } from 'fino:format/markdown';

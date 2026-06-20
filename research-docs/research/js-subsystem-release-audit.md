@@ -306,10 +306,7 @@ Status: TODO
 Status: DONE
 
 ## Markdown Format
-Status: TODO
-- Not CommonMark or GFM parity by design.
-- Add or document missing nested lists, blockquotes, tables, Setext headings, thematic breaks, HTML blocks, and full emphasis/link grammar.
-- Add a CommonMark/GFM fixture corpus or clearly declare the smaller safe-Markdown contract.
+Status: DONE
 
 ## Realm Core
 Status: TODO
