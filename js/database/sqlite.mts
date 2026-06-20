@@ -186,7 +186,10 @@ function _bindParam(stmtPtr: ArrayBuffer, idx: number, val: SqlValue): void {
  * Statements are created by `Database.prepare()` and compile on first use.
  * Positional parameters are bound from rest arguments; pass one plain object to
  * bind named parameters without the leading `:`, `$`, or `@`. Call
- * `finalize()` when a reusable statement is no longer needed.
+ * `finalize()` when a reusable statement is no longer needed. Parameter
+ * binding is strict: positional calls must provide exactly one value per bind
+ * slot, and named-parameter objects must exactly cover the statement's named
+ * parameters without extra keys.
  *
  * ```ts no_run
  * import { Database } from 'fino:database/sqlite';
@@ -531,6 +534,10 @@ export class Statement {
    */
   #bindArgs(ptr: ArrayBuffer, params: SqlValue[]): void {
     const s = requireSqlite().symbols;
+    const count = s.sqlite3_bind_parameter_count(ptr) as number;
+    if (params.length !== count) {
+      throw new Error(`sqlite parameter binding: expected ${count} positional parameters, got ${params.length}`);
+    }
     s.sqlite3_reset(ptr);
     s.sqlite3_clear_bindings(ptr);
     for (let i = 0; i < params.length; i++) {
@@ -564,13 +571,37 @@ export class Statement {
   #bindNamed(ptr: ArrayBuffer, params: Record<string, SqlValue>): void {
     const s     = requireSqlite().symbols;
     const count = s.sqlite3_bind_parameter_count(ptr) as number;
+    const expected = new Set<string>();
+    let anonymousCount = 0;
+    for (let i = 1; i <= count; i++) {
+      const namPtr = s.sqlite3_bind_parameter_name(ptr, i) as ArrayBuffer | null;
+      if (!namPtr) {
+        anonymousCount++;
+        continue;
+      }
+      expected.add(readCStr(namPtr).replace(/^[:$@]/, ''));
+    }
+    if (anonymousCount > 0) {
+      throw new Error('sqlite parameter binding: named parameter object cannot bind anonymous positional parameters');
+    }
+    const actual = Object.keys(params);
+    for (const name of expected) {
+      if (!Object.prototype.hasOwnProperty.call(params, name)) {
+        throw new Error(`sqlite parameter binding: missing named parameter '${name}'`);
+      }
+    }
+    for (const name of actual) {
+      if (!expected.has(name)) {
+        throw new Error(`sqlite parameter binding: extra named parameter '${name}'`);
+      }
+    }
     s.sqlite3_reset(ptr);
     s.sqlite3_clear_bindings(ptr);
     for (let i = 1; i <= count; i++) {
       const namPtr = s.sqlite3_bind_parameter_name(ptr, i) as ArrayBuffer | null;
       if (!namPtr) continue;
       const name = readCStr(namPtr).replace(/^[:$@]/, '');
-      if (name in params) _bindParam(ptr, i, params[name]!);
+      _bindParam(ptr, i, params[name]!);
     }
   }
 
@@ -615,8 +646,9 @@ export class Statement {
    * Execute the statement and return write metadata.
    *
    * Parameters may be positional values or one named-parameter object. The
-   * statement is reset after execution. SQL errors reject with the database
-   * error message. Result rows, if any, are not returned by this method.
+   * statement is reset after execution. Parameter counts are validated before
+   * binding. SQL errors reject with the database error message. Result rows,
+   * if any, are not returned by this method.
    *
    * @param {...SqlValue} params Positional values, or one named parameter object.
    * @returns {Promise<{ changes: number; lastInsertRowid: bigint }>} Change count and last insert rowid.
@@ -650,7 +682,8 @@ export class Statement {
    * Execute and return the first row.
    *
    * Returns `undefined` when the query produces no rows. Column names are used
-   * as object keys. The statement is reset before returning or throwing.
+   * as object keys. Parameter counts are validated before binding. The
+   * statement is reset before returning or throwing.
    *
    * @param {...SqlValue} params Positional values, or one named parameter object.
    * @returns {Promise<Record<string, SqlValue> | undefined>} First row, or `undefined`.
@@ -685,7 +718,8 @@ export class Statement {
    * Execute and return all rows.
    *
    * This buffers every result row in memory. Use `iterate()` for large result
-   * sets. The statement is reset before returning or throwing.
+   * sets. Parameter counts are validated before binding. The statement is
+   * reset before returning or throwing.
    *
    * @param {...SqlValue} params Positional values, or one named parameter object.
    * @returns {Promise<Record<string, SqlValue>[]>} All rows in result order.
@@ -720,6 +754,7 @@ export class Statement {
    *
    * The statement remains active for the duration of iteration and is reset in
    * a `finally` block when iteration finishes, throws, or is abandoned early.
+   * Parameter counts are validated before binding.
    *
    * @param {...SqlValue} params Positional values, or one named parameter object.
    * @returns {AsyncGenerator<Record<string, SqlValue>>} Rows in result order.
@@ -1017,7 +1052,9 @@ export class Database {
    *
    * This uses `sqlite3_exec()` and is best for schema setup, pragmas, and
    * simple SQL batches. Use `prepare()` for parameter binding or reading result
-   * rows. Throws on SQL errors or when the database is closed.
+   * rows. Treat this as a trusted-SQL-only API: never concatenate untrusted
+   * user input into `exec()` strings. Throws on SQL errors or when the database
+   * is closed.
    *
    * @param {string} sql SQL text to execute.
    * @returns {Promise<void>}
@@ -1205,6 +1242,9 @@ export class Database {
   /**
    * Load a SQLite extension from `path`. Requires a SQLite build with
    * extension loading enabled (e.g. Homebrew sqlite on macOS).
+   *
+   * Loading an extension executes native code inside the current process. Only
+   * load trusted extension libraries from trusted paths.
    *
    * The optional `entryPoint` is passed through to `sqlite3_load_extension`.
    * Throws with SQLite's extension error message when loading fails, and throws

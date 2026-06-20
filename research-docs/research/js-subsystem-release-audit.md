@@ -78,10 +78,7 @@ Status: DONE
 Status: DONE
 
 ## Database SQLite
-Status: TODO
-- Add docs/tests for named parameter edge cases: missing keys, extra keys, and
-  positional count mismatches.
-- Strengthen `exec()` trusted-SQL and extension-loading trust-boundary docs.
+Status: DONE
 
 ## Compression
 Status: DONE

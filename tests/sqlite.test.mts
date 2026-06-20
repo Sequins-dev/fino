@@ -197,6 +197,70 @@ describe('fino:database/sqlite — basic', () => {
     await db.close();
   });
 
+  it('rejects missing named parameters before binding', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
+      const stmt = db.prepare('INSERT INTO t VALUES (:id, :val)');
+      await t.rejects(
+        () => stmt.run({ id: 1n }),
+        /missing named parameter.*val/i,
+        'missing named parameter is rejected',
+      );
+      stmt.finalize();
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('rejects extra named parameters before binding', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
+      const stmt = db.prepare('INSERT INTO t VALUES (:id, :val)');
+      await t.rejects(
+        () => stmt.run({ id: 1n, val: 'ok', extra: 'unused' }),
+        /extra named parameter.*extra/i,
+        'extra named parameter is rejected',
+      );
+      stmt.finalize();
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('rejects too few positional parameters before binding', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
+      const stmt = db.prepare('INSERT INTO t VALUES (?, ?)');
+      await t.rejects(
+        () => stmt.run(1n),
+        /expected 2 positional parameters, got 1/i,
+        'too few positional parameters are rejected',
+      );
+      stmt.finalize();
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('rejects too many positional parameters before binding', async (t) => {
+    const db = await Database.open(':memory:');
+    try {
+      await db.exec('CREATE TABLE t (id INTEGER, val TEXT)');
+      const stmt = db.prepare('INSERT INTO t VALUES (?, ?)');
+      await t.rejects(
+        () => stmt.run(1n, 'ok', 'extra'),
+        /expected 2 positional parameters, got 3/i,
+        'too many positional parameters are rejected',
+      );
+      stmt.finalize();
+    } finally {
+      await db.close();
+    }
+  });
+
   it('lastInsertRowid', async (t) => {
     const db = await Database.open(':memory:');
     await db.exec('CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)');
