@@ -74,6 +74,21 @@ Fino does not write a separate lockfile yet, so dependency changes are applied
 by rerunning `fino install` and committing the resulting package map when your
 project expects reproducible bare-import resolution.
 
+`fino install` resolves packages from `FINO_NPM_REGISTRY` when it is set, or
+from the public npm registry by default. It keeps an in-memory packument cache
+for the current install run only; there is no persistent package cache, offline
+mode, proxy configuration, or registry authentication support yet. Optional
+dependencies that fail to resolve or install are skipped with a warning. Peer
+dependencies are reported as warnings and are not installed automatically.
+
+Downloaded tarballs are verified before extraction when registry metadata
+provides integrity data and the runtime has OpenSSL support. `dist.integrity`
+SRI metadata is preferred. If the SRI value is malformed or uses an unsupported
+algorithm and `dist.shasum` is present, Fino falls back to the legacy SHA-1
+shasum; otherwise the install fails with an integrity error. When OpenSSL is
+not available, integrity verification is skipped because the digest backend is
+unavailable.
+
 Package `exports` entries are expanded into concrete package-map entrypoints
 when packages are installed. Package `imports` entries and `#specifier`
 imports are not supported yet; use relative imports inside application code or

@@ -38,10 +38,7 @@ Status: DONE
 Status: DONE
 
 ## Install And Package Manager
-Status: TODO
-- Define lockfile/reproducibility, auth/proxy/offline/cache, and peer
-  dependency policy.
-- Decide and document tarball integrity behavior when OpenSSL is unavailable.
+Status: DONE
 
 ## Doc Command
 Status: DONE
