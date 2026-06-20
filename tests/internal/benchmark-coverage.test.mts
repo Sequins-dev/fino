@@ -108,4 +108,24 @@ describe('benchmark coverage map', () => {
 
     t.deepEqual(missing, [], 'release-audit benchmark stress/failure markers are present');
   });
+
+  it('links release notes to benchmark inventory and intentional non-parity areas', async (t) => {
+    const notes = await fs.readFile('research-docs/research/js-release-notes.md', 'utf8');
+    const required = [
+      'benchmarks/COVERAGE.md',
+      'JOSE',
+      'CORS',
+      'cookie',
+      'Fetch',
+      'OpenTelemetry',
+      'cluster',
+      'remote realms',
+      'DNSSEC',
+      'HTTP/3',
+      'QUIC',
+    ];
+    const missing = required.filter((marker) => !notes.includes(marker));
+
+    t.deepEqual(missing, [], 'release notes cover benchmark workflow and intentional non-parity areas');
+  });
 });

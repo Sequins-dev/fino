@@ -363,6 +363,32 @@ export class ResourceBox {
   private internalOnly(): void {}
 }
 `);
+    await fs.writeFile(appDir + '/private-stubs.mts', `/**
+ * Public module that includes implementation-detail comments.
+ */
+export class PublicBox {
+  /**
+   * Public value.
+   */
+  value = 'public';
+
+  /**
+   * #secret private field on PublicBox.
+   *
+   * Stores internal runtime state only. Callers should not depend on this private slot.
+   */
+  #secret = 'hidden';
+
+  /**
+   * #peek private method on PublicBox.
+   *
+   * Stores internal runtime state only. Callers should not depend on this private slot.
+   */
+  #peek(): string {
+    return this.#secret;
+  }
+}
+`);
     await fs.writeFile(appDir + '/examples.mts', `/**
  * Example helper.
  *
@@ -699,6 +725,40 @@ export function afterEnum(): string {
     t.equal(secretBox.members.some((member) => member.name === 'debugToken'), true, 'include-private json includes @internal class member');
     t.equal(secretBox.members.some((member) => member.name === '#token'), true, 'include-private json includes private class property');
     t.equal(secretBox.members.some((member) => member.name === '#peek'), true, 'include-private json includes private class method');
+  });
+
+  it('keeps generated public module docs free of private-member stubs by default', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+    const run = await runCli([
+      'doc',
+      'build',
+      './private-stubs.mts',
+      '--format',
+      'both',
+      '--title',
+      'SDK Public Docs',
+    ], appDir);
+
+    t.equal(run.result.code, 0, 'public module doc build exits successfully');
+    t.equal(run.stderr, '', 'public module doc build writes no stderr');
+
+    const html = await fs.readFile(docsDir + '/private-stubs.html');
+    const markdown = await fs.readFile(docsDir + '/private-stubs.md');
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const moduleDoc = json.modules.find((item) => item.name === 'private-stubs')!;
+
+    t.equal(html.includes('private field on'), false, 'html excludes generated private-field stub text');
+    t.equal(html.includes('private member'), false, 'html excludes private-member language');
+    t.equal(html.includes('#secret'), false, 'html excludes private field anchors');
+    t.equal(markdown.includes('private field on'), false, 'markdown excludes generated private-field stub text');
+    t.equal(markdown.includes('#secret'), false, 'markdown excludes private field anchors');
+    t.equal(moduleDoc.exports.some((item) => item.name.startsWith('#')), false, 'json excludes private exported names');
+    t.equal(
+      moduleDoc.exports.some((item) => item.members.some((member) => member.name.startsWith('#'))),
+      false,
+      'json excludes private member names',
+    );
   });
 
   it('builds v2 json, html, and sqlite search artifacts', async (t) => {

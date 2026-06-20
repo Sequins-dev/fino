@@ -256,7 +256,4 @@ Status: DONE
 Status: DONE
 
 ## Docs And Benchmarks
-Status: TODO
-- Benchmark inventory exists for requested public builtins, but release comparison workflows and CI gates are incomplete.
-- Clean generated docs that expose private-member stubs.
-- Convert coverage maps into explicit release notes for JOSE, CORS/cookie, OpenTelemetry, cluster, and other intentional non-parity areas.
+Status: DONE
