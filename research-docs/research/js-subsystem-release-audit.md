@@ -21,10 +21,16 @@ Status: TODO
 - Add file URL edge tests for percent-encoding and malformed URLs.
 
 ## Runtime Loop And Backends
-Status: TODO
-- Publish a backend parity matrix for kqueue, io_uring, and poll fallback.
-- Add CI coverage per supported backend; current tests branch around unsupported features.
-- Clarify release risk for platform-only APIs such as `proc`, `vnode`, `submit`, and synchronous poll fallback completions.
+Status: DONE
+- Release baseline documents the backend matrix: macOS kqueue, Linux
+  io_uring, and Linux poll fallback when `io_uring_setup(2)` is unavailable.
+- Coverage locks the common readiness/timer/wait backend surface, explicit
+  platform constants, Linux fallback kind reporting, readable/writable
+  replacement, wake sources, vnode and submit platform behavior, synchronous
+  `spin()` / `run()`, timer cancellation, and abort handling.
+- Platform-specific CI lanes for every backend remain release infrastructure
+  work; `proc`, `vnode`, `submit`, and poll fallback completions are documented
+  as platform/backing-backend-specific rather than broad portability promises.
 
 ## Runtime Parent RPC
 Status: DONE

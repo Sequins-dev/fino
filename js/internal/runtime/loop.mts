@@ -36,11 +36,24 @@
  * ```
  *
  *
- * ## Platform abstraction
+ * ## Backend release contract
  *
- * kqueue (macOS) and io_uring (Linux) share the same backend interface:
- *   `create()`, `addRead()`, `addWrite()`, `removeRead()`, `removeWrite()`,
- *   `addTimer()`, `wait()`, `destroy()`
+ * The common contract across supported backends is readiness watches,
+ * timers, wake sources, signal delivery where available, and synchronous
+ * `spin()` / `run()` driving. The selected backend is intentionally internal:
+ *
+ * - macOS uses kqueue, including `proc()` and `vnode()` support. Generic
+ *   `submit()` completions are not available there.
+ * - Linux first tries io_uring for readiness, timers, signals, and completion
+ *   events. If `io_uring_setup(2)` is denied by the kernel or sandbox, the
+ *   selector falls back to poll(2).
+ * - The Linux poll fallback preserves the loop contract for readiness, timers,
+ *   signals, and completion events, but file completions are queued
+ *   synchronously rather than performed by kernel async I/O.
+ *
+ * Platform-only APIs fail explicitly when their backend cannot provide them:
+ * `proc()` and `vnode()` are macOS-only, while `submit()` requires a completion
+ * backend.
  *
  *
  * ## AbortSignal support
