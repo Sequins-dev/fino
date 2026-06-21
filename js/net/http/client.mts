@@ -13,9 +13,10 @@
  * EventSource, and WebSocket transports. That preserves current redirect,
  * abort, decompression, integrity, referrer, TLS, and HTTP/2 pool behavior
  * while establishing the public client/session surface. HTTP/1.1 sessions are
- * logical policy containers and still use one connection per request. HTTP/2
- * and HTTP/3 sessions expose the protocol choice and reject WebSocket Extended
- * CONNECT attempts until those transports support it.
+ * logical policy containers and still use one connection per request. Explicit
+ * HTTP/3 sessions keep one QUIC/H3 transport active until `reconnect()` or
+ * `close()`. HTTP/2 and HTTP/3 WebSocket attempts reject with a clear Extended
+ * CONNECT error until those transports support it.
  *
  * ```ts no_run
  * import { HttpClient } from 'fino:net/http/client';
@@ -40,14 +41,16 @@
  * - WebSocket: https://www.rfc-editor.org/rfc/rfc6455
  */
 
-import { Headers, Request, Response } from './index.mts';
+import { Headers, Request, Response, buildWireResponse } from './index.mts';
 import { fetch as runtimeFetch } from '../../internal/globals/fetch.mts';
 import { EventSource } from './eventsource.mts';
 import type { EventSourceInit } from './eventsource.mts';
 import { WebSocketConnection } from './websocket.mts';
 import type { WebSocketConnectOptions } from './websocket.mts';
-import { fetch as h3Fetch } from './h3.mts';
+import { _resolveH3ConnectAddress } from './h3.mts';
 import type { H3FetchInit } from './h3.mts';
+import { QuicEndpoint } from '../quic.mts';
+import { H3ClientSession } from '../../internal/net/http/h3/client.mts';
 
 /**
  * Protocols selectable by `HttpClient` and `HttpSession`.
@@ -191,6 +194,12 @@ export interface SseOptions extends EventSourceInit {
  */
 export interface HttpWebSocketOptions extends WebSocketConnectOptions {
   headers?: Record<string, string> | Headers;
+}
+
+interface H3Transport {
+  endpoint: QuicEndpoint;
+  session: H3ClientSession;
+  connection: HttpConnectionInfo;
 }
 
 let sessionSeq = 0;
@@ -447,6 +456,7 @@ export class HttpSession {
   #state: 'connecting' | 'ready' | 'draining' | 'closed' = 'ready';
   #currentConnection: HttpConnectionInfo | null = null;
   #events: HttpSessionEvent[] = [];
+  #h3Transport: H3Transport | null = null;
 
   /** Stable logical session identity. */
   readonly id: string;
@@ -484,6 +494,69 @@ export class HttpSession {
     };
   }
 
+  async #closeH3Transport(): Promise<void> {
+    const transport = this.#h3Transport;
+    if (transport === null) return;
+    this.#h3Transport = null;
+    transport.session.close();
+    await transport.endpoint.close();
+  }
+
+  async #h3Request(url: URL, method: string, headers: Headers, init: HttpRequestInit): Promise<Response> {
+    let transport = this.#h3Transport;
+    if (transport === null) {
+      const target = await _resolveH3ConnectAddress(url);
+      const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+      const tls = init.tls ?? this.#client.tls;
+      const quic = init.quic ?? {
+        ...(tls?.ca !== undefined ? { ca: tls.ca } : {}),
+        ...(tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
+      };
+      try {
+        const conn = await endpoint.connect({
+          ...quic,
+          address: target.address,
+          alpnProtocols: ['h3'],
+          serverName: quic?.serverName ?? target.serverName,
+        });
+        const h3 = await H3ClientSession.create(conn);
+        const connection: HttpConnectionInfo = {
+          id: nextConnectionId(),
+          protocol: 'h3',
+          transport: 'quic',
+          localAddress: conn.localAddress,
+          remoteAddress: conn.remoteAddress,
+          alpnProtocol: 'h3',
+          connectedAt: Date.now(),
+        };
+        transport = { endpoint, session: h3, connection };
+        this.#h3Transport = transport;
+        this.#currentConnection = connection;
+        this.#events.push({ type: 'connected', session: this, connection });
+      } catch (error) {
+        await endpoint.close();
+        throw error;
+      }
+    }
+
+    const response = await transport.session.request(url.href, {
+      method,
+      headers,
+      body: init.body,
+      trailers: init.trailers as any,
+    } as H3FetchInit);
+    return buildWireResponse({
+      version: 'HTTP/3',
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+      body: response.body as any,
+      url: url.href,
+      redirected: false,
+      inTrailers: response.trailers,
+    });
+  }
+
   async _request(input: string | URL, init: HttpRequestInit = {}): Promise<HttpResponse> {
     if (this.#state === 'closed') throw new Error('HTTP session closed');
     const url = resolveHttpUrl(this.#baseUrl, input);
@@ -491,17 +564,7 @@ export class HttpSession {
     const headers = mergeHeaders(this.#headers, init.headers);
     const timing: { startTime: number; responseHeadersEnd?: number; bodyEnd?: number } = { startTime: Date.now() };
     const response = this.protocol === 'h3'
-      ? await h3Fetch(url.href, {
-          method,
-          headers,
-          body: init.body,
-          trailers: init.trailers,
-          quic: init.quic ?? (
-            (init.tls ?? this.#client.tls)?.rejectUnauthorized === false
-              ? { verifyPeer: false }
-              : undefined
-          ),
-        } as H3FetchInit)
+      ? await this.#h3Request(url, method, headers, init)
       : await runtimeFetch(url.href, {
           method,
           headers,
@@ -516,18 +579,22 @@ export class HttpSession {
         });
     timing.responseHeadersEnd = Date.now();
     const protocol = protocolFromResponse(response, this.protocol);
-    const connection: HttpConnectionInfo = {
-      id: nextConnectionId(),
-      protocol,
-      transport: transportFor(url, protocol),
-      localAddress: null,
-      remoteAddress: null,
-      alpnProtocol: protocol === 'http/1.1' ? null : protocol,
-      connectedAt: timing.startTime,
-    };
+    const connection: HttpConnectionInfo = this.protocol === 'h3' && this.#h3Transport !== null
+      ? this.#h3Transport.connection
+      : {
+          id: nextConnectionId(),
+          protocol,
+          transport: transportFor(url, protocol),
+          localAddress: null,
+          remoteAddress: null,
+          alpnProtocol: protocol === 'http/1.1' ? null : protocol,
+          connectedAt: timing.startTime,
+        };
     this.#currentConnection = connection;
-    const event: HttpSessionEvent = { type: 'connected', session: this, connection };
-    this.#events.push(event);
+    if (this.protocol !== 'h3') {
+      const event: HttpSessionEvent = { type: 'connected', session: this, connection };
+      this.#events.push(event);
+    }
     return new HttpResponse({
       response,
       request: {
@@ -578,6 +645,7 @@ export class HttpSession {
   async reconnect(options: ReconnectOptions = {}): Promise<void> {
     if (this.#state === 'closed') throw new Error('HTTP session closed');
     this.#events.push({ type: 'reconnecting', session: this, reason: options.reason });
+    await this.#closeH3Transport();
     this.#currentConnection = null;
   }
 
@@ -585,6 +653,7 @@ export class HttpSession {
   async close(options: CloseOptions = {}): Promise<void> {
     if (this.#state === 'closed') return;
     this.#state = 'closed';
+    await this.#closeH3Transport();
     this.#events.push({ type: 'closed', session: this, reason: options.reason });
   }
 }

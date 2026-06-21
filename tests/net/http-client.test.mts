@@ -192,6 +192,35 @@ describe('HttpClient protocol sessions', () => {
       await server.close();
     }
   });
+
+  it('explicit H3 session reuses one transport until reconnect', { skip: skipH3 }, async (t) => {
+    const server = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: CERT_PATH,
+      privateKeyFile: KEY_PATH,
+    }, (request) => new Response(`h3:${new URL(request.url).pathname}`));
+    const client = new HttpClient({ tls: { rejectUnauthorized: false } });
+
+    try {
+      const session = await client.session(`https://127.0.0.1:${server.port}`, { protocol: 'h3' });
+      const first = await session.request({ path: '/one' });
+      const firstConnectionId = first.connection?.id;
+      t.equal(await first.text(), 'h3:/one');
+
+      const second = await session.request({ path: '/two' });
+      t.equal(await second.text(), 'h3:/two');
+      t.equal(second.connection?.id, firstConnectionId, 'sequential H3 requests reuse the active transport');
+
+      await session.reconnect({ reason: 'test' });
+      const third = await session.request({ path: '/three' });
+      t.equal(await third.text(), 'h3:/three');
+      t.notEqual(third.connection?.id, firstConnectionId, 'reconnect replaces the active transport');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
 });
 
 describe('HttpClient realtime helpers', () => {
