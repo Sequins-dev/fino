@@ -38,8 +38,8 @@ Deferred or explicitly gated advanced scope:
 - Active migration and Version Negotiation external interop remain deferred
   until peer tooling exposes the required controls.
 - Backend-specific TLS constraints remain explicit: OpenSSL covers SNI context
-  selection and TLS group constraints; GnuTLS parity for those controls is
-  deferred.
+  selection and TLS group constraints. OpenSSL-only SNI context and TLS group
+  controls are release scope; GnuTLS parity for those controls is deferred.
 
 ## RFC 9000 Transport
 
@@ -138,12 +138,12 @@ Deferred or explicitly gated advanced scope:
 | --- | --- | --- |
 | Raw QUIC and `h3` ALPN interop | Direct | `tests/net/quic-hq.test.mts` and `tests/net/quic-node-interop.test.mts` pass when configured tools are available. |
 | Large raw QUIC Node interop | Direct | `tests/net/quic-node-interop.test.mts` uses the shared `interop-harness.mts` to run a gated 1MiB bidirectional raw `h3` stream scenario against Node QUIC when `NODE_QUIC_BIN` is configured. |
-| Node interop DATAGRAM scenario | Missing | The gated fixture currently uses a raw stream sentinel for `datagram` when Node's experimental QUIC DATAGRAM API is not exposed, so it does not prove bidirectional QUIC DATAGRAM delivery or Node status callbacks. |
-| Node interop resumption scenario | Missing | The gated fixture currently labels a raw stream exchange as `resume`; it does not persist sessions across two Node/Fino connections or assert resumed/0-RTT behavior. |
+| Node interop DATAGRAM scenario | Out of Scope | Deferred until the configured Node experimental QUIC API exposes bidirectional DATAGRAM send/status controls. Local RFC 9221 DATAGRAM behavior, source copying, status events, 0-RTT, loss, and migration are covered directly; stream sentinels are not claimed as external DATAGRAM proof. |
+| Node interop resumption scenario | Out of Scope | Deferred for external peer interop because the current `NODE_QUIC_BIN` lane does not expose a stable two-connection session persistence contract. Local session-ticket, accepted/rejected 0-RTT, early streams, and early DATAGRAM behavior are covered directly. |
 | Node interop key-update scenario | Direct | `tests/net/quic-node-interop.test.mts` exercises a real key update: the Fino client calls `connection.initiateKeyUpdate()` on the Node-server path, and the Fino server calls `connection.initiateKeyUpdate()` on the Node-client path. Stream exchange completing in both directions proves the respective Node peer processed the key update without connection failure. |
 | Node interop Retry scenario | Direct | The Fino listener's default address-validation policy (`sendRetry: true`) applies to all Node interop connections; the `retry` scenario confirms the Node client completes a full connection through an actual Retry packet before stream exchange. Same Retry path is exercised by the Fino server in all other interop scenarios. |
 | Node interop ALPN mismatch | Direct | `tests/net/quic-node-interop.test.mts` includes a gated `alpn-mismatch` scenario in both directions and expects clean client-side failure without waiting for an accepted server stream. |
-| Node interop migration and Version Negotiation | Missing | No Node interop scenario currently proves active migration or external Version Negotiation behavior; support depends on the configured Node experimental QUIC API exposing those controls. |
+| Node interop migration and Version Negotiation | Out of Scope | Deferred until Node or another configured peer exposes deterministic controls for active migration and external Version Negotiation injection. Local active migration, path validation, CID rotation, preferred-address handling, and raw Version Negotiation behavior are covered directly. |
 | HTTP/3 request/response (GET, POST, headers, binary, concurrent, errors) | Direct | `tests/net/quic-h3.test.mts` (9 tests) exercises nghttp3-backed H3 sessions over the simulated QUIC transport: GET/POST round-trips, custom headers, binary bodies, concurrent streams, 404/500 responses, and empty bodies. |
 | QPACK header compression | Direct | nghttp3 handles QPACK internally; the control and QPACK encoder/decoder streams are bound and exercised in every H3 test. |
 | GOAWAY, ORIGIN, H3 DATAGRAM | Out of Scope | Not yet implemented; H3 DATAGRAM requires QUIC DATAGRAM extension. |

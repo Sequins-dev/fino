@@ -23,7 +23,8 @@ Node comparison gaps that remain release-acceptable:
 - Active migration and external Version Negotiation interop are deferred until
   Node or another peer exposes deterministic controls for those scenarios.
 - Backend-specific TLS limits remain explicit: OpenSSL-only SNI context and TLS
-  group controls are tested; GnuTLS parity for those controls is deferred.
+  group controls are release scope and tested; GnuTLS parity for those controls
+  is deferred.
 
 ## Endpoint Packet Accounting
 
@@ -327,20 +328,21 @@ Node comparison gaps that remain release-acceptable:
 
 ## Remaining Alignment Proof Gaps
 
-- Node interop `datagram` and `resume` scenarios are still claimed `Missing`.
-  The current fixtures prove gated raw QUIC stream exchange with scenario labels
-  but do not yet prove QUIC DATAGRAM frames and status callbacks (Node's
-  experimental QUIC DATAGRAM API is not exposed) or two-connection session
-  resumption/0-RTT.
+- Node interop `datagram` and `resume` scenarios are release `Out of Scope`,
+  not `Missing`. The current fixtures prove gated raw QUIC stream exchange with
+  scenario labels but do not claim QUIC DATAGRAM frames/status callbacks
+  (Node's experimental QUIC DATAGRAM API is not exposed) or two-connection
+  external session resumption/0-RTT. Local DATAGRAM and resumed-session behavior
+  is covered directly.
 - Node interop `keyupdate` and `retry` scenarios are now `Direct`: Fino
   initiates a key update in both interop directions (proving the Node partner
   processed it without failure), and the Fino server's default Retry policy
   means every Node interop handshake completes through an actual Retry packet.
-- Node interop migration and external Version Negotiation remain unproven. The
-  matrix marks them `Missing` until the configured Node experimental QUIC API
-  exposes enough control to force those wire events or the fixtures grow a
-  documented alternative.
-- Local missing proof rows are now explicit in the conformance matrix for
+- Node interop migration and external Version Negotiation remain release
+  `Out of Scope` until the configured Node experimental QUIC API exposes enough
+  control to force those wire events or the fixtures grow a documented
+  alternative. Local migration and Version Negotiation coverage is direct.
+- Previously open local proof rows are now direct in the conformance matrix for
   bad-CID client Version Negotiation rejection, incompatible Version Negotiation
   typed failure without bogus CONNECTION_CLOSE, ACK-frequency threshold effects,
   and active-CID-limit rotation/retirement under migration.

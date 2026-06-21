@@ -42,6 +42,10 @@ docs are ignored and are not committed as release source.
   pooling, WebTransport, Capsule, H3 DATAGRAM, CONNECT tunnels, and external
   interop remain deferred.
 - QUIC exposes transport-level client/server endpoints, streams, DATAGRAM,
-  migration coverage, and diagnostics. Advanced external interop lanes,
-  backend-specific TLS parity, active migration edge coverage, and version
-  negotiation ecosystem parity remain tracked separately.
+  migration coverage, Version Negotiation handling, diagnostics, and local
+  HTTP/3 transport coverage. ngtcp2 HQ, Node QUIC interop, and loopback
+  throughput comparison are gated release lanes. External DATAGRAM/resumption,
+  active migration, and Version Negotiation peer-control interop remain out of
+  scope until peer tooling exposes deterministic controls. OpenSSL-only SNI
+  context and TLS group controls are release scope; GnuTLS parity for those
+  controls is deferred.

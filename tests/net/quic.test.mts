@@ -337,7 +337,7 @@ describe('QUIC bindings', () => {
       simulatorCases: Array<{ matrixRow: string }>;
       evidence?: Array<{ matrixRow: string; testFile: string; testName: string }>;
     };
-    const allowed = new Set(['Direct', 'Delegated', 'Intentional Divergence', 'Out of Scope', 'Missing']);
+    const allowed = new Set(['Direct', 'Delegated', 'Intentional Divergence', 'Out of Scope']);
     const requiredPlanRows = [
       'Stream reset edge cases',
       'Stream-level MAX_STREAM_DATA',
@@ -362,6 +362,7 @@ describe('QUIC bindings', () => {
     ];
     const rows = new Set<string>();
     const directRows = new Set<string>();
+    const missingRows: string[] = [];
 
     for (const line of matrix.split(/\r?\n/)) {
       if (!line.startsWith('| ') || line.startsWith('| Area ') || line.startsWith('| ---')) continue;
@@ -370,6 +371,18 @@ describe('QUIC bindings', () => {
       rows.add(cells[0]);
       t.equal(allowed.has(cells[1]), true, `matrix row "${cells[0]}" uses a canonical status`);
       if (cells[1] === 'Direct') directRows.add(cells[0]);
+      if (cells[1] === 'Missing') missingRows.push(cells[0]);
+    }
+
+    t.deepEqual(missingRows, [], 'release conformance matrix has no Missing rows');
+    for (const marker of [
+      'tests/net/quic-hq.test.mts',
+      'tests/net/quic-node-interop.test.mts',
+      'benchmarks/net/quic-loopback-transfer.bench.mts',
+      'OpenSSL-only',
+      'GnuTLS parity for those controls is deferred',
+    ]) {
+      t.ok(matrix.includes(marker), `release matrix documents ${marker}`);
     }
 
     for (const testCase of [...fixtures.packetCases, ...fixtures.simulatorCases]) {

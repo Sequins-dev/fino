@@ -133,10 +133,7 @@ Status: DONE
 Status: DONE
 
 ## QUIC
-Status: TODO
-- Complete advanced parity for external DATAGRAM interop, resumed-session interop, active migration, and version negotiation.
-- Close backend-specific TLS gaps between OpenSSL and GnuTLS.
-- Require gated interop lanes beyond local simulator and loopback tests.
+Status: DONE
 
 ## WebSocket
 Status: DONE

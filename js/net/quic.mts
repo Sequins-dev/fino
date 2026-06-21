@@ -26,11 +26,13 @@
  * are gated lanes: they run when the corresponding tools or baseline binaries
  * are configured and otherwise skip explicitly.
  *
- * Deferred advanced scope remains visible: Node DATAGRAM interop parity still
- * depends on Node's experimental API shape, resumed-session external interop is
- * not proven by `NODE_QUIC_BIN`, active migration/version-negotiation external
- * interop depends on peer tooling, and some TLS constraints are backend
- * specific, such as OpenSSL-only per-SNI/group controls versus GnuTLS gaps.
+ * Deferred advanced scope remains visible but is not a release blocker: Node
+ * DATAGRAM interop parity still depends on Node's experimental API shape,
+ * resumed-session external interop is not proven by `NODE_QUIC_BIN`, and
+ * active migration/version-negotiation external interop depends on peer
+ * tooling. Backend-specific TLS constraints are explicit release scope:
+ * OpenSSL-only SNI context and TLS group controls are tested, while GnuTLS
+ * parity for those controls is deferred.
  *
  * ```ts no_run
  * import { QuicEndpoint } from 'fino:net/quic';
