@@ -52,7 +52,8 @@ import { sslCtxLoadCertKey, sslCtxFree, sslCtxSetAlpnServerProtos } from '../../
 import { H1ServerDriver } from './h1.mts';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
-import type { ConnectionTakeover } from './driver.mts';
+import { dispatchHttpStream } from './driver.mts';
+import type { ConnectionTakeover, HttpProtocol, ServerHandler, ServerStreamHandler } from './driver.mts';
 import type { Request } from './index.mts';
 import type { Address, ListenOptions } from '../socket.mts';
 
@@ -73,6 +74,8 @@ function _isH2Preface(bytes: Uint8Array): boolean {
 interface ServeOptions {
   port:      number;
   hostname?: string;
+  /** Handler mode. Defaults to Fetch request/response mode. */
+  mode?: 'request' | 'stream';
   /** Explicit IP family for the listening socket. Defaults from hostname. */
   family?: 'ipv4' | 'ipv6';
   /** Listen backlog passed through to Socket.listen(). */
@@ -141,7 +144,7 @@ function _listenOptions(options: ServeOptions): ListenOptions {
  */
 export function serve(
   options: ServeOptions,
-  handler: (req: Request) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>,
+  handler: ServerHandler | ServerStreamHandler,
 ): ServeServer {
   const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
 
@@ -180,6 +183,13 @@ export function serve(
     };
   }
 
+  function _handlerFor(protocol: HttpProtocol): ServerHandler {
+    if (options.mode === 'stream') {
+      return (req) => dispatchHttpStream(req, protocol, handler as ServerStreamHandler);
+    }
+    return handler as ServerHandler;
+  }
+
   (async function acceptLoop() {
     try {
       while (true) {
@@ -194,9 +204,9 @@ export function serve(
               const [reader, writer] = tlsConn.split();
               try {
                 if (h2Available && proto === 'h2') {
-                  await _h2Driver.run(reader, writer, handler, { maxConcurrent: 32 });
+                  await _h2Driver.run(reader, writer, _handlerFor('h2'), { maxConcurrent: 32 });
                 } else {
-                  await _h1Driver.run(reader, writer, handler, _driverOptions());
+                  await _h1Driver.run(reader, writer, _handlerFor('http/1.1'), _driverOptions());
                 }
               } catch {
                 try { await reader.close(); } catch {}
@@ -213,11 +223,11 @@ export function serve(
             if (h2Available) {
               const preface = await reader.peek(24);
               if (_isH2Preface(preface)) {
-                await _h2Driver.run(reader, writer, handler, { maxConcurrent: 32 });
+                await _h2Driver.run(reader, writer, _handlerFor('h2'), { maxConcurrent: 32 });
                 return;
               }
             }
-            await _h1Driver.run(reader, writer, handler, _driverOptions());
+            await _h1Driver.run(reader, writer, _handlerFor('http/1.1'), _driverOptions());
           })();
         }
 

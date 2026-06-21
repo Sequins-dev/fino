@@ -171,6 +171,39 @@ describe('Request / Response basics', () => {
     await server.close();
   });
 
+  it('supports stream-mode handlers with protocol metadata', async (t) => {
+    let seenProtocol = '';
+    let seenPath = '';
+    const server = serve({ port: 0, mode: 'stream' } as any, async (stream: any) => {
+      seenProtocol = stream.protocol;
+      seenPath = new URL(stream.request.url).pathname;
+      await stream.respond(new Response(`${stream.protocol}:${stream.request.method}`));
+    });
+    const port = server.port;
+
+    const raw = `GET /stream-mode HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const response = await roundtrip(port, raw);
+
+    t.equal(seenProtocol, 'http/1.1', 'stream exposes HTTP/1.1 protocol');
+    t.equal(seenPath, '/stream-mode', 'stream exposes request');
+    t.ok(response.startsWith('HTTP/1.1 200'), 'stream handler sends 200');
+    t.ok(response.endsWith('http/1.1:GET'), 'stream response body is sent');
+
+    await server.close();
+  });
+
+  it('returns 500 when a stream-mode handler does not respond', async (t) => {
+    const server = serve({ port: 0, mode: 'stream' } as any, async () => {});
+    const port = server.port;
+
+    const raw = `GET /missing-response HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const response = await roundtrip(port, raw);
+
+    t.ok(response.startsWith('HTTP/1.1 500'), 'missing stream response yields 500');
+
+    await server.close();
+  });
+
   it('POST request with body', async (t) => {
     const server = serve({ port: 0 }, async (req) => {
       t.equal(req.method, 'POST', 'method is POST');
