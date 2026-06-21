@@ -311,7 +311,7 @@ describe('H2ConnectionPool — eviction', () => {
 describe('ALPN server-side negotiation', () => {
   it('TLS server negotiates h2 via ALPN when client offers it', { skip: skipHttps }, async (t) => {
     const server = serveHttp(
-      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH }, idleTimeoutMs: 25, headersTimeoutMs: 25 },
       async (_req) => new Response('ok'),
     );
     const port = server.port;
@@ -330,7 +330,7 @@ describe('ALPN server-side negotiation', () => {
 
   it('TLS server falls back to http/1.1 when client does not offer h2', { skip: skipHttps }, async (t) => {
     const server = serveHttp(
-      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH }, idleTimeoutMs: 25, headersTimeoutMs: 25 },
       async (_req) => new Response('ok'),
     );
     const port = server.port;

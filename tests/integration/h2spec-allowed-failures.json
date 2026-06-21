@@ -66,6 +66,12 @@
     "reason": "server responds to normal PING frames through nghttp2, but h2spec can still time out waiting for PING ACK during full TLS section sequencing"
   },
   {
+    "id": "http2/6.7/Sends a PING frame with ACK",
+    "reason": "client PING ACK frames are ignored locally without an error GOAWAY, but h2spec can still report timeout/EOF during full TLS section sequencing",
+    "releaseAcceptableBecause": "RFC 7540 requires endpoints to ignore PING ACK frames; local raw-wire coverage verifies no PING response and no protocol error.",
+    "localCoverage": "tests/net/http2.test.mts: closes cleanly for invalid PING length and ignores client PING ACK"
+  },
+  {
     "id": "http2/6.7/Sends a PING frame with a stream identifier field value other than 0x0",
     "reason": "nonzero-stream PING is rejected with GOAWAY(PROTOCOL_ERROR) locally, but h2spec can still observe EOF before the GOAWAY frame in the full TLS suite",
     "releaseAcceptableBecause": "Local raw-wire coverage verifies the connection-level protocol error and no request handler surface is reached.",
@@ -84,6 +90,18 @@
   {
     "id": "http2/8.1.2.1/Sends a HEADERS frame that contains the pseudo-header field defined for response",
     "reason": "request HEADERS with response-only pseudo-headers are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing"
+  },
+  {
+    "id": "http2/8.1.2/Sends a HEADERS frame that contains the header field name in uppercase letters",
+    "reason": "uppercase request header field names are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs request HEADERS with uppercase field names"
+  },
+  {
+    "id": "http2/8.1.2.1/Sends a HEADERS frame that contains a pseudo-header field that appears in a header block after a regular header field",
+    "reason": "request HEADERS with pseudo-headers after regular headers are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs request HEADERS with pseudo-header after a regular header"
   },
   {
     "id": "http2/8.1.2.3/Sends a HEADERS frame with empty \":path\" pseudo-header field",

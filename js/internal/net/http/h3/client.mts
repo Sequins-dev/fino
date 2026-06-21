@@ -228,12 +228,13 @@ export class H3ClientSession {
     }
     const parsed = typeof url === 'string' ? new URL(url) : url;
     const method = init?.method ?? 'GET';
+    const authority = getPseudoHeader(init, ':authority') ?? parsed.host;
 
     const reqHeaders: Array<[string, string]> = [
       [':method',    method],
       [':path',      parsed.pathname + parsed.search],
       [':scheme',    parsed.protocol.replace(':', '')],
-      [':authority', parsed.host],
+      [':authority', authority],
     ];
 
     const protocol = getPseudoHeader(init, ':protocol');

@@ -1068,6 +1068,46 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
   });
 
+  it('RST_STREAMs request HEADERS with uppercase field names', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const uppercaseHeaderBlock = hexBytes(
+      0x82, 0x84, 0x86, // :method GET, :path /, :scheme http
+      0x41, 0x09,
+      0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+      0x40, 0x05,       // literal header with uppercase field name
+      0x55,0x70,0x70,0x65,0x72,
+      0x01, 0x78,
+    );
+    const frames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, uppercaseHeaderBlock));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'uppercase header field name gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs request HEADERS with pseudo-header after a regular header', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const pseudoAfterRegularBlock = hexBytes(
+      0x82, 0x84, 0x86, // :method GET, :path /, :scheme http
+      0x40, 0x01,       // literal regular header x: y
+      0x78,
+      0x01, 0x79,
+      0x41, 0x09,       // :authority after a regular header
+      0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+    );
+    const frames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, pseudoAfterRegularBlock));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'pseudo-header after regular header gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
   it('RST_STREAMs request HEADERS with missing or empty :path', async (t) => {
     if (!h2Available) return;
 

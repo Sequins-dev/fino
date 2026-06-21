@@ -4,9 +4,11 @@
 
 import { describe, it } from 'fino:test/test';
 import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'fino:process';
+import { DiskFileSystem } from 'fino:file';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const childEnv = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string>;
+const fs = new DiskFileSystem();
 
 function joinChunks(chunks: Uint8Array[]): string {
   return decodeUtf8(chunks.reduce((acc: Uint8Array, c: Uint8Array) => {
@@ -88,16 +90,21 @@ describe('Process APIs', () => {
   });
 
   it('internal:process cannot be imported from user code', async (t) => {
-    let threw = false;
-    let errMsg = '';
+    const script = `/tmp/fino-internal-process-check-${pid}.mts`;
+    await fs.writeFile(script, "await import('internal:process');\n", 'utf8');
+    const proc = new Process(execPath, [script]);
+    proc.stdin.close();
+    const chunks: Uint8Array[] = [];
     try {
-      await import('internal:process');
-    } catch (e: unknown) {
-      threw = true;
-      errMsg = String(e instanceof Error ? e.message : e);
+      for await (const chunk of proc.stderr) chunks.push(chunk);
+      for await (const _ of proc.stdout) {}
+      const { code } = await proc.wait();
+      const errMsg = joinChunks(chunks);
+      t.notEqual(code, 0, 'importing internal:process from user code exits non-zero');
+      t.ok(errMsg.toLowerCase().includes('internal') && (errMsg.includes('blocked') || errMsg.includes('cannot')), `error mentions internal module: ${errMsg}`);
+    } finally {
+      try { await fs.unlink(script); } catch {}
     }
-    t.ok(threw, 'importing internal:process from user code throws');
-    t.ok(errMsg.toLowerCase().includes('internal') && (errMsg.includes('blocked') || errMsg.includes('cannot')), `error mentions internal module: ${errMsg}`);
   });
 });
 

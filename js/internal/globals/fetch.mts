@@ -202,14 +202,22 @@ class H3PoolEntry {
         this.#session = await H3ClientSession.create(conn);
         return this.#session;
       } catch (error) {
-        await endpoint.close();
+        const closeInfo = this.#conn?.closeInfo;
+        try { await endpoint.close(); } catch {}
         this.#endpoint = null;
         this.#ready = null;
+        if (closeInfo !== null && closeInfo !== undefined && error instanceof Error && error.message === 'QUIC connection is closed') {
+          throw new Error(`QUIC connection is closed (${closeInfo.type} ${closeInfo.errorCode}${closeInfo.reason ? `: ${closeInfo.reason}` : ''})`);
+        }
         throw error;
       }
     })();
 
     return this.#ready;
+  }
+
+  closeInfo(): QuicConnection['closeInfo'] | null {
+    return this.#conn?.closeInfo ?? null;
   }
 
   close(): void {
@@ -386,7 +394,11 @@ async function _singleFetchH3(
       inTrailers: response.trailers,
     });
   } catch (error) {
+    const closeInfo = entry.closeInfo();
     _evictH3(origin);
+    if (closeInfo !== null && error instanceof Error && error.message === 'QUIC connection is closed') {
+      throw new Error(`QUIC connection is closed (${closeInfo.type} ${closeInfo.errorCode}${closeInfo.reason ? `: ${closeInfo.reason}` : ''})`);
+    }
     throw error;
   }
 }

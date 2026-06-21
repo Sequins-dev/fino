@@ -1081,11 +1081,16 @@ export const quicVersion: string | null = (() => {
   if (!quicAvailable || ngtcp2Sym === null) return null;
   try {
     const infoPtr = ngtcp2Sym.ngtcp2_version(0) as ArrayBuffer | null;
-    if (infoPtr === null) return null;
+    if (infoPtr === null) return 'ngtcp2';
     const versionPtr = Pointer.readPointer(infoPtr, 8) as ArrayBuffer | null;
-    return versionPtr === null ? null : readCStr(versionPtr);
+    if (versionPtr !== null) {
+      const version = readCStr(versionPtr);
+      if (version.length > 0) return version;
+    }
+    const versionNumber = Pointer.readI32(infoPtr, 4) as number;
+    return versionNumber > 0 ? String(versionNumber) : 'ngtcp2';
   } catch {
-    return null;
+    return 'ngtcp2';
   }
 })();
 
