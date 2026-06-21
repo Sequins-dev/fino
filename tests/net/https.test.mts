@@ -1,5 +1,5 @@
 /**
- * Tests for HTTPS — serve() with TLS options.
+ * Tests for HTTPS — serveHttp() with TLS options.
  *
  * Requires self-signed test fixtures at tests/net/fixtures/test.crt and
  * tests/net/fixtures/test.key. Generate them with:
@@ -12,7 +12,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
 import * as loop from 'internal:runtime/loop';
@@ -48,7 +48,7 @@ async function tlsRoundtrip(port: number, rawRequest: string): Promise<string> {
 
 describe('HTTPS server — basic TLS request/response', () => {
   it('serves a response over TLS', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('hello https'),
     );
@@ -71,7 +71,7 @@ describe('HTTPS server — basic TLS request/response', () => {
   });
 
   it('falls back to HTTP/1.1 when the TLS client offers only http/1.1', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('alpn h1'),
     );
@@ -103,7 +103,7 @@ describe('HTTPS server — basic TLS request/response', () => {
 
   it('close() waits for an already accepted TLS request to finish', { skip }, async (t) => {
     let handlerStarted = false;
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => {
         handlerStarted = true;
@@ -147,7 +147,7 @@ describe('HTTPS server — error paths', () => {
     let threw = false;
     let message = '';
     try {
-      serve(
+      serveHttp(
         { port: 0, tls: { cert: '/nonexistent/cert.pem', key: '/nonexistent/key.pem' } },
         async () => new Response('unreachable'),
       );
@@ -155,7 +155,7 @@ describe('HTTPS server — error paths', () => {
       threw = true;
       message = err instanceof Error ? err.message : String(err);
     }
-    t.ok(threw, 'serve() throws on missing cert');
+    t.ok(threw, 'serveHttp() throws on missing cert');
     t.ok(
       message.includes('/nonexistent/cert.pem'),
       'error message contains cert path (got: ' + message + ')',
@@ -165,7 +165,7 @@ describe('HTTPS server — error paths', () => {
 
 describe('HTTPS server — close() idempotency', () => {
   it('close() can be called twice without throwing', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('ok'),
     );

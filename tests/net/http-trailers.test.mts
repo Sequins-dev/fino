@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Request, Response, Headers } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import { h2Available } from 'fino:net/http/h2';
@@ -33,7 +33,7 @@ async function rawRoundtrip(port: number, rawRequest: string): Promise<string> {
 describe('Response trailers — h1 server', () => {
   it('server sends response with static Headers trailer', async (t) => {
     const trailerHeaders = new Headers({ 'x-checksum': 'abc123' });
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('hello', { trailers: trailerHeaders });
     });
     const port = server.port;
@@ -49,7 +49,7 @@ describe('Response trailers — h1 server', () => {
   });
 
   it('server sends response with lazy trailer function', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('world', {
         trailers: () => new Headers({ 'x-hash': 'deadbeef' }),
       });
@@ -66,7 +66,7 @@ describe('Response trailers — h1 server', () => {
   });
 
   it('async trailer function is awaited before wire emit', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('data', {
         trailers: async () => {
           // Simulate async computation (e.g. signing the body)
@@ -91,7 +91,7 @@ describe('Response trailers — h1 server', () => {
 
 describe('Response trailers — client fetch()', () => {
   it('fetch() resolves res.trailers after body consumed', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('payload', {
         trailers: new Headers({ 'x-trailer': 'present' }),
       });
@@ -107,7 +107,7 @@ describe('Response trailers — client fetch()', () => {
   });
 
   it('res.trailers resolves to empty Headers when no trailers sent', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('plain');
     });
     const port = server.port;
@@ -130,7 +130,7 @@ describe('Request trailers — h1', () => {
   it('server receives request trailers from raw chunked upload', async (t) => {
     let capturedTrailers: Headers | null = null;
 
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const body = await req.text();
       capturedTrailers = await req.trailers;
       return new Response(`body=${body}`);
@@ -163,7 +163,7 @@ describe('Request trailers — h1', () => {
   it('fetch() sends request with trailers via static Headers', async (t) => {
     let capturedTrailers: Headers | null = null;
 
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const body = await req.text();
       capturedTrailers = await req.trailers;
       return new Response(`body=${body}`);
@@ -190,7 +190,7 @@ describe('Request trailers — h1', () => {
 
 describe('Trailer wire format', () => {
   it('chunked body + trailers terminates with 0\\r\\n<trailers>\\r\\n', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('abc', {
         trailers: new Headers({ 'x-end': 'yes' }),
       });
@@ -209,7 +209,7 @@ describe('Trailer wire format', () => {
   });
 
   it('response without trailers uses standard 0\\r\\n\\r\\n terminal', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response(null, {
         headers: { 'transfer-encoding': 'chunked' },
       });
@@ -290,7 +290,7 @@ describe('HTTP/2 trailers', () => {
   it('server sends response with outgoing trailers without crashing', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('data', {
         trailers: new Headers({ 'x-checksum': 'abc123' }),
       });
@@ -313,7 +313,7 @@ describe('HTTP/2 trailers', () => {
     if (!h2Available) return;
 
     let capturedTrailer: string | null = null;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const body = await req.text();
       const trailers = await req.trailers;
       capturedTrailer = trailers.get('x-trailer');
@@ -332,7 +332,7 @@ describe('HTTP/2 trailers', () => {
     if (!h2Available) return;
 
     let capturedSize = -1;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const trailers = await req.trailers;
       capturedSize = [...trailers.entries()].length;
       return new Response('ok');

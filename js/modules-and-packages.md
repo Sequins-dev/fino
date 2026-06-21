@@ -30,7 +30,7 @@ expanded to `index` files in this baseline; import the file you want directly.
 Use `fino:*` specifiers for runtime APIs:
 
 ```ts
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Database } from 'fino:database/sqlite';
 import { parse as parseCsv } from 'fino:format/csv';
 import { Watcher } from 'fino:file/watch';

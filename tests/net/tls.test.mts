@@ -6,7 +6,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
 import { Socket } from 'fino:net/socket';
@@ -47,7 +47,7 @@ describe('TlsSocket', () => {
   });
 
   it('connects to a local TLS server and exposes an open socket', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('ok'),
     );
@@ -67,7 +67,7 @@ describe('TlsSocket', () => {
   });
 
   it('TlsReader/TlsWriter pipe request and response bytes over loopback TLS', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       (req) => new Response('tls:' + new URL(req.url).pathname),
     );
@@ -93,7 +93,7 @@ describe('TlsSocket', () => {
   });
 
   it('close() works without split and is idempotent', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('unused'),
     );
@@ -114,7 +114,7 @@ describe('TlsSocket', () => {
   });
 
   it('rejects the local self-signed certificate by default', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('unreachable'),
     );
@@ -134,7 +134,7 @@ describe('TlsSocket', () => {
   });
 
   it('rejectUnauthorized:false accepts the local self-signed certificate', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('accepted'),
     );
@@ -152,7 +152,7 @@ describe('TlsSocket', () => {
   });
 
   it('custom CA accepts the local self-signed certificate for localhost', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('trusted'),
     );
@@ -170,7 +170,7 @@ describe('TlsSocket', () => {
   });
 
   it('custom CA still rejects a hostname mismatch', { skip }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('unreachable'),
     );
@@ -190,7 +190,7 @@ describe('TlsSocket', () => {
   });
 
   it('reports negotiated ALPN protocol when the client offers http/1.1', { skip: skipAlpn }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('alpn'),
     );
@@ -208,7 +208,7 @@ describe('TlsSocket', () => {
   });
 
   it('prefers h2 when the client offers h2 before http/1.1', { skip: skipAlpn }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       () => new Response('alpn'),
     );

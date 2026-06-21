@@ -4,7 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { EventSourceReader, EventSourceWriter, EventSource } from 'fino:net/http/eventsource';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import * as loop from 'internal:runtime/loop';
 type EventSourceMessage = { type: string; data: string; lastEventId: string };
@@ -325,7 +325,7 @@ describe('EventSource integration', () => {
   it('receives message events via onmessage', async (t) => {
     const received: string[] = [];
 
-    const server = serve({ port: 19960 }, async (_req) =>
+    const server = serveHttp({ port: 19960 }, async (_req) =>
       sseResponse(sseBody({ data: 'hello' }, { data: 'world' })),
     );
 
@@ -347,7 +347,7 @@ describe('EventSource integration', () => {
   it('onopen fires when connection established', async (t) => {
     let opened = false;
 
-    const server = serve({ port: 19961 }, async (_req) =>
+    const server = serveHttp({ port: 19961 }, async (_req) =>
       sseResponse(sseBody({ data: 'trigger' })),
     );
 
@@ -365,7 +365,7 @@ describe('EventSource integration', () => {
   it('readyState is OPEN while receiving events', async (t) => {
     let stateWhenOpen = -1;
 
-    const server = serve({ port: 19962 }, async (_req) =>
+    const server = serveHttp({ port: 19962 }, async (_req) =>
       sseResponse(sseBody({ data: 'check' })),
     );
 
@@ -384,7 +384,7 @@ describe('EventSource integration', () => {
   });
 
   it('readyState is CLOSED after close()', async (t) => {
-    const server = serve({ port: 19963 }, async (_req) =>
+    const server = serveHttp({ port: 19963 }, async (_req) =>
       sseResponse(sseBody({ data: 'x' })),
     );
 
@@ -404,7 +404,7 @@ describe('EventSource integration', () => {
     const updateEvents: string[] = [];
     let messageCount = 0;
 
-    const server = serve({ port: 19964 }, async (_req) =>
+    const server = serveHttp({ port: 19964 }, async (_req) =>
       sseResponse(sseBody(
         { event: 'update', data: 'payload' },
         { data: 'default-message' },
@@ -427,7 +427,7 @@ describe('EventSource integration', () => {
   it('HTTP 204 closes without reconnecting', async (t) => {
     let errorFired = false;
 
-    const server = serve({ port: 19965 }, async (_req) =>
+    const server = serveHttp({ port: 19965 }, async (_req) =>
       new Response(null, { status: 204 }),
     );
 
@@ -447,7 +447,7 @@ describe('EventSource integration', () => {
   it('wrong content-type causes fatal error (no reconnect)', async (t) => {
     let errorCount = 0;
 
-    const server = serve({ port: 19966 }, async (_req) =>
+    const server = serveHttp({ port: 19966 }, async (_req) =>
       new Response('not sse', { headers: { 'content-type': 'text/html' } }),
     );
 
@@ -471,7 +471,7 @@ describe('EventSource integration', () => {
     let resolveReconnect: (() => void) | undefined;
     const reconnected = new Promise<void>((resolve) => { resolveReconnect = resolve; });
 
-    const server = serve({ port: 19967 }, async (req) => {
+    const server = serveHttp({ port: 19967 }, async (req) => {
       connectionCount++;
       const lastId = req.headers.get('last-event-id');
       seenIds.push(lastId);
@@ -497,7 +497,7 @@ describe('EventSource integration', () => {
   it('retry field from server updates reconnect interval', async (t) => {
     let received = null;
 
-    const server = serve({ port: 19968 }, async (_req) =>
+    const server = serveHttp({ port: 19968 }, async (_req) =>
       sseResponse(sseBody('retry: 100\n', { data: 'after-retry' })),
     );
 
@@ -514,7 +514,7 @@ describe('EventSource integration', () => {
   it('MessageEvent has correct properties', async (t) => {
     let receivedEvent: EventSourceMessage | null = null;
 
-    const server = serve({ port: 19969 }, async (_req) =>
+    const server = serveHttp({ port: 19969 }, async (_req) =>
       sseResponse(sseBody({ event: 'update', data: 'payload', id: '7' })),
     );
 
@@ -541,7 +541,7 @@ describe('EventSource integration', () => {
     let resolveReconnect!: () => void;
     const reconnected = new Promise<void>((r) => { resolveReconnect = r; });
 
-    const server = serve({ port: 19971 }, async (req) => {
+    const server = serveHttp({ port: 19971 }, async (req) => {
       connectionCount++;
       seenIds.push(req.headers.get('last-event-id'));
       if (connectionCount === 1) {
@@ -565,7 +565,7 @@ describe('EventSource integration', () => {
 
   it('follows local redirects with relative Location before opening the stream', async (t) => {
     const seenPaths: string[] = [];
-    const server = serve({ port: 19972 }, async (req) => {
+    const server = serveHttp({ port: 19972 }, async (req) => {
       const path = new URL(req.url).pathname;
       seenPaths.push(path);
       if (path === '/events') {
@@ -588,7 +588,7 @@ describe('EventSource integration', () => {
 
   it('caps redirect loops and fails closed', async (t) => {
     let requests = 0;
-    const server = serve({ port: 19973 }, async () => {
+    const server = serveHttp({ port: 19973 }, async () => {
       requests++;
       return new Response(null, { status: 307, headers: { location: '/events' } });
     });
@@ -609,7 +609,7 @@ describe('EventSource integration', () => {
   it('sends explicit headers on the SSE request', async (t) => {
     let auth: string | null = null;
     let marker: string | null = null;
-    const server = serve({ port: 19974 }, async (req) => {
+    const server = serveHttp({ port: 19974 }, async (req) => {
       auth = req.headers.get('authorization');
       marker = req.headers.get('x-fino-test');
       return sseResponse(sseBody({ data: 'headers' }));
@@ -634,7 +634,7 @@ describe('EventSource integration', () => {
     let resolveReconnect!: () => void;
     const reconnected = new Promise<void>((resolve) => { resolveReconnect = resolve; });
 
-    const server = serve({ port: 19976 }, async (req) => {
+    const server = serveHttp({ port: 19976 }, async (req) => {
       connectionCount++;
       cookies.push(req.headers.get('cookie'));
       if (connectionCount === 1) {
@@ -660,7 +660,7 @@ describe('EventSource integration', () => {
     await server.close();
 
     const explicitCookies: Array<string | null> = [];
-    const explicitServer = serve({ port: 19977 }, async (req) => {
+    const explicitServer = serveHttp({ port: 19977 }, async (req) => {
       explicitCookies.push(req.headers.get('cookie'));
       return sseResponse(sseBody({ data: 'explicit-cookie' }));
     });
@@ -678,7 +678,7 @@ describe('EventSource integration', () => {
   });
 
   it('connects to HTTPS SSE with a fixture CA', { skip: skipTls }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 19975, hostname: '127.0.0.1', tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => sseResponse(sseBody({ data: 'secure' })),
     );

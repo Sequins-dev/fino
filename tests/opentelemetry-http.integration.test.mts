@@ -1,13 +1,13 @@
 /**
  * Real HTTP OpenTelemetry integration coverage.
  *
- * This suite exercises the actual `serve()` and `fetch()` runtime path rather
+ * This suite exercises the actual `serveHttp()` and `fetch()` runtime path rather
  * than publishing runtime topics directly.
  */
 
 import { describe, it } from 'fino:test/test';
 import { Response } from 'fino:net/http';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import {
   BatchSpanProcessor,
   DnsInstrumentation,
@@ -27,7 +27,7 @@ function startServer(handler: Parameters<typeof serve>[1]) {
   let lastError: unknown = null;
   for (const port of ports) {
     try {
-      return serve({ port, hostname: '127.0.0.1' }, handler);
+      return serveHttp({ port, hostname: '127.0.0.1' }, handler);
     } catch (error) {
       lastError = error;
     }
@@ -36,7 +36,7 @@ function startServer(handler: Parameters<typeof serve>[1]) {
 }
 
 describe('OpenTelemetry HTTP Integration', () => {
-  it('exports spans for real serve() and fetch() HTTP traffic', async (t) => {
+  it('exports spans for real serveHttp() and fetch() HTTP traffic', async (t) => {
     mark('starting sdk');
     const exporter = new InMemoryExporter();
     const sdk = new OtelSDK({
@@ -74,7 +74,7 @@ describe('OpenTelemetry HTTP Integration', () => {
       const socketSpan = spans.find((span) => span.name === `CONNECT 127.0.0.1:${server.port}`);
 
       t.ok(clientSpan, 'real fetch() produced a client span');
-      t.ok(serverSpan, 'real serve() produced a server span');
+      t.ok(serverSpan, 'real serveHttp() produced a server span');
       t.ok(dnsSpan, 'real fetch() produced a DNS span');
       t.ok(socketSpan, 'real fetch() produced a socket connect span');
       if (!clientSpan || !serverSpan) throw new Error('expected both client and server spans');

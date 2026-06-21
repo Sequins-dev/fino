@@ -12,9 +12,9 @@ down to lower protocol modules only when building tooling or custom transports.
 Use `serve` with a port and a request handler:
 
 ```ts
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 
-const server = serve({ port: 3000 }, async (request) => {
+const server = serveHttp({ port: 3000 }, async (request) => {
   return new Response('hello\n', {
     headers: { 'content-type': 'text/plain; charset=utf-8' },
   });
@@ -37,9 +37,9 @@ are forwarded to the underlying socket listener.
 Use `URL` to inspect the path and query string:
 
 ```ts
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 
-serve({ port: 3000 }, async (request) => {
+serveHttp({ port: 3000 }, async (request) => {
   const url = new URL(request.url);
 
   if (request.method === 'GET' && url.pathname === '/health') {
@@ -63,7 +63,7 @@ helpers once the handler stops being easy to scan.
 Request bodies are consumed once. For JSON APIs, read text and parse it:
 
 ```ts
-serve({ port: 3000 }, async (request) => {
+serveHttp({ port: 3000 }, async (request) => {
   const url = new URL(request.url);
 
   if (request.method === 'POST' && url.pathname === '/users') {
@@ -141,7 +141,7 @@ option, or set it to `0`, to disable that timeout.
 Keep the returned server object when the process needs to stop cleanly:
 
 ```ts
-const server = serve({ port: 3000 }, async (request) => {
+const server = serveHttp({ port: 3000 }, async (request) => {
   const url = new URL(request.url);
 
   if (url.pathname === '/stop') {
@@ -178,7 +178,7 @@ When HTTP/2 support is available, TLS servers advertise `h2` and `http/1.1` via
 ALPN. Plain TCP servers can also allow the HTTP/1.1 to h2c upgrade flow:
 
 ```ts
-serve({ port: 3000, allowH2cUpgrade: true }, async () => {
+serveHttp({ port: 3000, allowH2cUpgrade: true }, async () => {
   return new Response('ok\n');
 });
 ```

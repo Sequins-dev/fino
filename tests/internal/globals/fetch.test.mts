@@ -6,7 +6,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Request, Response, Headers } from 'fino:net/http';
 import { compress, brotliAvailable } from 'fino:compress';
 
@@ -14,7 +14,7 @@ type Server = ReturnType<typeof serve>;
 type Handler = (req: Request) => Response | Promise<Response>;
 
 async function withServer<T>(port: number, handler: Handler, fn: (url: string, srv: Server) => Promise<T>): Promise<T> {
-  const srv = serve({ port, hostname: '127.0.0.1' }, handler);
+  const srv = serveHttp({ port, hostname: '127.0.0.1' }, handler);
   const url = `http://127.0.0.1:${port}`;
   try {
     return await fn(url, srv);
@@ -247,12 +247,12 @@ describe('Redirects — Authorization header security', () => {
   it('Authorization header is stripped on cross-origin redirect', async (t) => {
     // Simulate a cross-origin redirect: origin1 → origin2 (different port = different origin).
     let secondRequestHeaders: Headers | null = null;
-    const origin2 = serve({ port: 0 }, (req) => {
+    const origin2 = serveHttp({ port: 0 }, (req) => {
       secondRequestHeaders = req.headers;
       return new Response('final');
     });
 
-    const origin1 = serve({ port: 0 }, (_req) =>
+    const origin1 = serveHttp({ port: 0 }, (_req) =>
       new Response(null, {
         status: 302,
         headers: { location: `http://127.0.0.1:${origin2.port}/` },
@@ -273,7 +273,7 @@ describe('Redirects — Authorization header security', () => {
 
   it('Authorization header is preserved on same-origin redirect', async (t) => {
     let secondRequestAuth: string | null = null;
-    const server = serve({ port: 0 }, (req) => {
+    const server = serveHttp({ port: 0 }, (req) => {
       const path = new URL(req.url).pathname;
       if (path === '/first') {
         return new Response(null, {
@@ -298,12 +298,12 @@ describe('Redirects — Authorization header security', () => {
 
   it('Cookie and Cookie2 headers are stripped on cross-origin redirect', async (t) => {
     let secondRequestHeaders: Headers | null = null;
-    const origin2 = serve({ port: 0 }, (req) => {
+    const origin2 = serveHttp({ port: 0 }, (req) => {
       secondRequestHeaders = req.headers;
       return new Response('final');
     });
 
-    const origin1 = serve({ port: 0 }, (_req) =>
+    const origin1 = serveHttp({ port: 0 }, (_req) =>
       new Response(null, {
         status: 302,
         headers: { location: `http://127.0.0.1:${origin2.port}/` },
@@ -328,7 +328,7 @@ describe('Redirects — Authorization header security', () => {
   it('Cookie and Cookie2 headers are preserved on same-origin redirect', async (t) => {
     let secondRequestCookie: string | null = null;
     let secondRequestCookie2: string | null = null;
-    const server = serve({ port: 0 }, (req) => {
+    const server = serveHttp({ port: 0 }, (req) => {
       const path = new URL(req.url).pathname;
       if (path === '/first') {
         return new Response(null, {
@@ -393,7 +393,7 @@ describe('AbortSignal', () => {
     // connection is already open. This tests that body streaming respects
     // cancellation and the connection is properly released.
     let controller!: AbortController;
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       // Slow chunked body: send first chunk, then stall.
       async function* slowBody() {
         yield new TextEncoder().encode('first-chunk');
@@ -401,7 +401,7 @@ describe('AbortSignal', () => {
         await new Promise((resolve) => setTimeout(resolve, 5000));
         yield new TextEncoder().encode('never-arrives');
       }
-      // Transfer-Encoding: chunked enables true streaming (without it, serve()
+      // Transfer-Encoding: chunked enables true streaming (without it, serveHttp()
       // buffers the whole body to inject Content-Length, defeating the test).
       return new Response(slowBody() as any, {
         headers: { 'transfer-encoding': 'chunked' },
@@ -926,7 +926,7 @@ describe('Integrity + referrerPolicy', () => {
       b64 += i + 2 < hashBytes.length ? chars[b2 & 63]! : '=';
     }
 
-    const srv = serve({ port: 0, hostname: '127.0.0.1' }, () => new Response(body));
+    const srv = serveHttp({ port: 0, hostname: '127.0.0.1' }, () => new Response(body));
     const url = `http://127.0.0.1:${srv.port}`;
     try {
       const res = await fetch(url, { integrity: `sha256-${b64}` });
@@ -937,7 +937,7 @@ describe('Integrity + referrerPolicy', () => {
   });
 
   it('integrity check fails for wrong hash', async (t) => {
-    const srv = serve({ port: 0, hostname: '127.0.0.1' }, () => new Response('hello integrity'));
+    const srv = serveHttp({ port: 0, hostname: '127.0.0.1' }, () => new Response('hello integrity'));
     const url = `http://127.0.0.1:${srv.port}`;
     try {
       await t.rejects(
@@ -952,7 +952,7 @@ describe('Integrity + referrerPolicy', () => {
 
   it("referrerPolicy: 'no-referrer' — no Referer header sent", async (t) => {
     let receivedReferer: string | null | undefined;
-    const srv = serve({ port: 0, hostname: '127.0.0.1' }, (req) => {
+    const srv = serveHttp({ port: 0, hostname: '127.0.0.1' }, (req) => {
       receivedReferer = req.headers.get('referer');
       return new Response(receivedReferer ?? '');
     });
@@ -971,7 +971,7 @@ describe('Integrity + referrerPolicy', () => {
 
   it("referrerPolicy: 'origin' — Referer header is origin only", async (t) => {
     let receivedReferer: string | null | undefined;
-    const srv = serve({ port: 0, hostname: '127.0.0.1' }, (req) => {
+    const srv = serveHttp({ port: 0, hostname: '127.0.0.1' }, (req) => {
       receivedReferer = req.headers.get('referer');
       return new Response(receivedReferer ?? '');
     });
@@ -993,7 +993,7 @@ describe('fetch() — redirect safety', () => {
   it('redirect to javascript: URL throws TypeError', async (t) => {
     // A server returning Location: javascript:... must NOT be followed.
     // Regression for the unsafe-redirect-protocol fix.
-    const srv = serve({ port: 0 }, () =>
+    const srv = serveHttp({ port: 0 }, () =>
       new Response(null, {
         status: 302,
         headers: { location: 'javascript:alert(1)' },
@@ -1011,7 +1011,7 @@ describe('fetch() — redirect safety', () => {
   });
 
   it('redirect to file: URL throws TypeError', async (t) => {
-    const srv = serve({ port: 0 }, () =>
+    const srv = serveHttp({ port: 0 }, () =>
       new Response(null, {
         status: 301,
         headers: { location: 'file:///etc/passwd' },
@@ -1031,7 +1031,7 @@ describe('fetch() — redirect safety', () => {
   it('HEAD request body is empty even when Content-Length is present', async (t) => {
     // Regression for the HEAD framing bug: parseResponse must honor the
     // request method and never attempt to read a body for HEAD responses.
-    const srv = serve({ port: 0 }, () => new Response('should-not-be-read'));
+    const srv = serveHttp({ port: 0 }, () => new Response('should-not-be-read'));
     try {
       const res = await fetch(`http://127.0.0.1:${srv.port}/`, { method: 'HEAD' });
       t.equal(res.status, 200, 'HEAD returns 200');

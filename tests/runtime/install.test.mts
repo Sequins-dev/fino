@@ -5,7 +5,7 @@
 import { before, after, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { createArchive } from 'fino:archive';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Response } from 'fino:net/http';
 import { Process, execPath, env } from 'fino:process';
 
@@ -319,7 +319,7 @@ describe('fino install', () => {
       };
 
       try {
-        server = serve({ port, hostname: '127.0.0.1' }, async (req) => {
+        server = serveHttp({ port, hostname: '127.0.0.1' }, async (req) => {
           const url = new URL(req.url);
           if (packuments[url.pathname]) {
             return Response.json(packuments[url.pathname], {});

@@ -13,7 +13,7 @@ tools without learning how the runtime is built.
 Public runtime modules use `fino:*` specifiers:
 
 ```ts
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { DiskFileSystem } from 'fino:file';
 import { parse } from 'fino:format/toml';
 ```

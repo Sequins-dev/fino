@@ -40,11 +40,11 @@ The HTTP server API is intentionally close to Fetch's `Request` and `Response`
 model:
 
 ```ts
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 
 const port = Number(process.env.PORT ?? 3000);
 
-const server = serve({ port }, async (request) => {
+const server = serveHttp({ port }, async (request) => {
   const url = new URL(request.url);
 
   if (url.pathname === '/health') {

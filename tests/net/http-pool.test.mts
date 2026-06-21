@@ -6,7 +6,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import { Headers, Response } from 'fino:net/http';
@@ -28,7 +28,7 @@ if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
 const skip = !h2Available && 'requires libnghttp2';
 
 // ---------------------------------------------------------------------------
-// Helper: connect a pool entry to a local h2c serve() server
+// Helper: connect a pool entry to a local h2c serveHttp() server
 // ---------------------------------------------------------------------------
 
 async function connectPoolEntry(port: number, options?: { idleMs?: number }) {
@@ -50,7 +50,7 @@ function makeReq(url: string, method = 'GET', body?: string): Request {
 
 describe('H2PoolEntry — basic request/response', () => {
   it('sends a GET request and receives a 200 response', { skip }, async (t) => {
-    const server = serve({ port: 0 }, async (_req) => new Response('hello pool'));
+    const server = serveHttp({ port: 0 }, async (_req) => new Response('hello pool'));
     const port = server.port;
 
     const entry = await connectPoolEntry(port);
@@ -67,7 +67,7 @@ describe('H2PoolEntry — basic request/response', () => {
   });
 
   it('sends a POST request with body and server echoes it', { skip }, async (t) => {
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const body = await req.text();
       return new Response(`echo:${body}`, { status: 201 });
     });
@@ -94,7 +94,7 @@ describe('H2PoolEntry — basic request/response', () => {
 describe('H2PoolEntry — concurrent streams', () => {
   it('concurrent requests on one session all complete', { skip }, async (t) => {
     let count = 0;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const n = ++count;
       return new Response(`reply-${n}`);
     });
@@ -117,7 +117,7 @@ describe('H2PoolEntry — concurrent streams', () => {
   });
 
   it('goingAway is false while entry is healthy', { skip }, async (t) => {
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
 
     const entry = await connectPoolEntry(port);
@@ -138,7 +138,7 @@ describe('H2PoolEntry — concurrent streams', () => {
 
 describe('H2PoolEntry — close and GOAWAY', () => {
   it('close() marks entry as goingAway and rejects new sends', { skip }, async (t) => {
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
 
     const entry = await connectPoolEntry(port);
@@ -158,7 +158,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
   });
 
   it('idle timeout marks the entry goingAway and rejects new sends', { skip }, async (t) => {
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
 
     const entry = await connectPoolEntry(port, { idleMs: 10 });
@@ -179,7 +179,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
   it('peer GOAWAY rejects new streams and lets streams at or below lastStreamId finish', { skip }, async (t) => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       await gate;
       return new Response('finished');
     });
@@ -209,7 +209,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
   it('peer GOAWAY rejects active streams above lastStreamId', { skip }, async (t) => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       await gate;
       return new Response('late');
     });
@@ -240,7 +240,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
   it('transport close rejects an active stream and marks the entry goingAway', { skip }, async (t) => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       await gate;
       return new Response('never');
     });
@@ -276,7 +276,7 @@ describe('H2ConnectionPool — eviction', () => {
       return;
     }
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
     const pool = new H2ConnectionPool();
 
@@ -300,7 +300,7 @@ describe('H2ConnectionPool — eviction', () => {
 
 describe('ALPN server-side negotiation', () => {
   it('TLS server negotiates h2 via ALPN when client offers it', { skip: skipHttps }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async (_req) => new Response('ok'),
     );
@@ -319,7 +319,7 @@ describe('ALPN server-side negotiation', () => {
   });
 
   it('TLS server falls back to http/1.1 when client does not offer h2', { skip: skipHttps }, async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async (_req) => new Response('ok'),
     );
@@ -350,7 +350,7 @@ describe('global fetch() — HTTPS H2 pool', () => {
   it('creates and reuses an ALPN-negotiated H2 pool entry', { skip: skipHttps }, async (t) => {
     _resetFetchH2Pool();
     let requests = 0;
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response(`hit-${++requests}`),
     );
@@ -373,11 +373,11 @@ describe('global fetch() — HTTPS H2 pool', () => {
 
   it('keys pooled entries by origin port', { skip: skipHttps }, async (t) => {
     _resetFetchH2Pool();
-    const serverA = serve(
+    const serverA = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('a'),
     );
-    const serverB = serve(
+    const serverB = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('b'),
     );
@@ -401,7 +401,7 @@ describe('global fetch() — HTTPS H2 pool', () => {
 
   it('evicts the pooled entry after server close tears down transport', { skip: skipHttps }, async (t) => {
     _resetFetchH2Pool();
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('ok'),
     );
@@ -422,7 +422,7 @@ describe('global fetch() — HTTPS H2 pool', () => {
   it('carries response and request trailers over pooled H2', { skip: skipHttps }, async (t) => {
     _resetFetchH2Pool();
     let capturedRequestTrailer: string | null = null;
-    const server = serve(
+    const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async (req) => {
         const body = await req.text();
