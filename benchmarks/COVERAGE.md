@@ -22,14 +22,10 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:net/dns` | `benchmarks/net/dns.bench.mts` |
 | `fino:net/http` | `benchmarks/net/http/index.bench.mts` |
 | `fino:net/http/app` | `benchmarks/net/http/app.bench.mts` |
-| `fino:net/http/driver` | `benchmarks/net/http/driver.bench.mts` |
-| `fino:net/http/h1` | `benchmarks/net/http/h1.bench.mts` |
 | `fino:net/http/client` | `benchmarks/net/http/client.bench.mts` |
 | `fino:net/http/server` | `benchmarks/net/http/server.bench.mts` |
-| `fino:net/http/h2` | `benchmarks/net/http/h2.bench.mts` |
 | `fino:net/http/eventsource` | `benchmarks/net/http/eventsource.bench.mts` |
 | `fino:net/http/websocket` | `benchmarks/net/http/websocket.bench.mts` |
-| `fino:net/http/h3` | `benchmarks/net/http/h3.bench.mts` |
 | `fino:net/quic` | `benchmarks/net/quic.bench.mts` |
 | `fino:file` | `benchmarks/file/fs.bench.mts` |
 | `fino:file/path` | `benchmarks/file/path.bench.mts` |
@@ -43,6 +39,11 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:opentelemetry/traces` | `benchmarks/opentelemetry/traces.bench.mts` |
 | `fino:parsing/scanner` | `benchmarks/parsing/scanner.bench.mts` |
 | `fino:semver` | `benchmarks/semver.bench.mts` |
+
+Internal HTTP protocol driver benchmarks live beside the public HTTP
+benchmarks, but they are not public builtin coverage targets:
+`benchmarks/net/http/driver.bench.mts`, `benchmarks/net/http/h1.bench.mts`,
+`benchmarks/net/http/h2.bench.mts`, and `benchmarks/net/http/h3.bench.mts`.
 | `fino:uuid` | `benchmarks/uuid.bench.mts` |
 | `fino:format/markdown` | `benchmarks/format/markdown.bench.mts` |
 | `fino:template` | `benchmarks/template.bench.mts` |

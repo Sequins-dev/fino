@@ -46,7 +46,7 @@ import { describe, it, before, after } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
 import { DiskFileSystem } from 'fino:file';
 import { Process } from 'fino:process';
-import { h2Available } from 'fino:net/http/h2';
+import { h2Available } from '../../js/net/http/h2.mts';
 
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
   throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');

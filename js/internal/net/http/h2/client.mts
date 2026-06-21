@@ -19,7 +19,7 @@
  *
  * ```ts no_run
  * import { H2ClientDriver } from 'internal:net/http/h2/client';
- * import { Request } from 'fino:net/http';
+ * import { Request } from 'internal:net/http/wire';
  *
  * const driver = new H2ClientDriver();
  * const response = await driver.send(
@@ -36,7 +36,7 @@
  */
 
 import type { BufferedBytesReader, BytesWriter } from '../../../stream.mts';
-import type { ClientDriver, ClientDriverOptions } from '../../../../net/http/driver.mts';
+import type { ClientDriver, ClientDriverOptions } from 'internal:net/http/driver';
 import { Request, Response, Headers } from '../../../../net/http/index.mts';
 import { Scanner } from '../../../../parsing/scanner.mts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.mts';
@@ -117,7 +117,7 @@ export class H2ClientDriver implements ClientDriver {
    * always attempts GOAWAY, session close, and writer close when complete.
    *
    * ```ts no_run
-   * import { Request } from 'fino:net/http';
+   * import { Request } from 'internal:net/http/wire';
    * import { H2ClientDriver } from 'internal:net/http/h2/client';
    * const driver = new H2ClientDriver();
    * const res = await driver.send(new Request('https://example.test/'), reader, writer, {});

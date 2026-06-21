@@ -231,10 +231,11 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/socket", "net/socket"),
     source_builtin!("fino:net/tls", "net/tls"),
     source_builtin!("fino:net/dns", "net/dns"),
-    source_builtin!("fino:net/http", "net/http/index"),
+    source_builtin!("fino:net/http", "net/http"),
+    source_builtin!("internal:net/http/wire", "net/http/index"),
     source_builtin!("fino:net/http/app", "net/http/app"),
-    source_builtin!("fino:net/http/driver", "net/http/driver"),
-    source_builtin!("fino:net/http/h1", "net/http/h1"),
+    source_builtin!("internal:net/http/driver", "net/http/driver"),
+    source_builtin!("internal:net/http/h1", "net/http/h1"),
     source_builtin!("fino:net/http/client", "net/http/client"),
     source_builtin!("fino:net/http/server", "net/http/server"),
     source_builtin!("internal:net/http/stream", "internal/net/http/stream"),
@@ -248,7 +249,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:net/http/h2/server", "internal/net/http/h2/server"),
     source_builtin!("internal:net/http/h2/client", "internal/net/http/h2/client"),
-    source_builtin!("fino:net/http/h2", "net/http/h2"),
+    source_builtin!("internal:net/http/h2", "net/http/h2"),
     source_builtin!(
         "internal:net/http/h3/bindings",
         "internal/net/http/h3/bindings"
@@ -261,9 +262,13 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:net/http/h3/body-queue",
         "internal/net/http/h3/body-queue"
     ),
+    source_builtin!(
+        "internal:net/http/h3/resolve",
+        "internal/net/http/h3/resolve"
+    ),
     source_builtin!("internal:net/http/h3/server", "internal/net/http/h3/server"),
     source_builtin!("internal:net/http/h3/client", "internal/net/http/h3/client"),
-    source_builtin!("fino:net/http/h3", "net/http/h3"),
+    source_builtin!("internal:net/http/h3", "net/http/h3"),
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
     source_builtin!("fino:net/http/eventsource", "net/http/eventsource"),
     source_builtin!("fino:net/http/websocket", "net/http/websocket"),

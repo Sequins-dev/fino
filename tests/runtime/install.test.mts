@@ -6,7 +6,6 @@ import { before, after, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { createArchive } from 'fino:archive';
 import { serveHttp } from 'fino:net/http/server';
-import { Response } from 'fino:net/http';
 import { Process, execPath, env } from 'fino:process';
 
 const TEST_DIR = '/tmp/fino-install-test-' + Math.floor(Math.random() * 1_000_000);

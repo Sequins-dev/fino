@@ -4,7 +4,6 @@
 
 import { describe, it } from 'fino:test/test';
 import { App, Router, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
-import { Request, Response } from 'fino:net/http';
 import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
 import { v } from 'fino:validate';
 import * as loop from 'internal:runtime/loop';

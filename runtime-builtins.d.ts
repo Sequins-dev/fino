@@ -159,7 +159,6 @@ declare module 'fino:dns';
 declare module 'fino:encoding';
 declare module 'fino:eventtarget';
 declare module 'fino:formdata';
-declare module 'fino:http';
 declare module 'fino:loop';
 declare module 'fino:path';
 declare module 'fino:process';

@@ -1,5 +1,5 @@
 /**
- * fino:net/http/driver — shared interfaces for HTTP server and client drivers.
+ * internal HTTP driver interfaces.
  *
  * Both H1ServerDriver and H2ServerDriver implement ServerDriver. Both
  * H1ClientDriver and H2ClientDriver implement ClientDriver. serve() and
@@ -13,7 +13,7 @@
  *
  * @example
  * ```ts no_run
- * import { isConnectionTakeover } from 'fino:net/http/driver';
+ * import { isConnectionTakeover } from 'internal:net/http/driver';
  *
  * const takeover = {
  *   compatibleProtocols: new Set(['http/1.1']),
@@ -25,6 +25,8 @@
  *   console.log('takeover is compatible');
  * }
  * ```
+ *
+ * @internal
  */
 
 import type { BytesReader, BytesWriter } from '../../internal/stream.mts';

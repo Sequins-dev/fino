@@ -60,11 +60,11 @@ import { serve } from './server.mts';
 import type {
   AcceptedHttpRequest,
   HttpSession,
+  HttpProtocol,
   IncomingHttp,
   IncomingWebSocketRequest,
 } from './server.mts';
 import { WebSocketConnection } from './websocket.mts';
-import type { ConnectionTakeover, HttpProtocol } from './driver.mts';
 
 /**
  * Standard HTTP methods supported by route builders.
@@ -155,7 +155,9 @@ export interface WebSocketContext extends HttpContext {
  * };
  * ```
  */
-export type Middleware = (ctx: HttpContext, next: () => Promise<Response | ConnectionTakeover>) => Response | ConnectionTakeover | void | Promise<Response | ConnectionTakeover | void>;
+export type HttpHandlerResult = Response | WebSocketConnection;
+
+export type Middleware = (ctx: HttpContext, next: () => Promise<HttpHandlerResult>) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
 
 /**
  * Terminal route handler.
@@ -167,7 +169,7 @@ export type Middleware = (ctx: HttpContext, next: () => Promise<Response | Conne
  * const handler: Handler = (ctx) => Response.json({ id: ctx.params?.id });
  * ```
  */
-export type Handler = (ctx: HttpContext) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>;
+export type Handler = (ctx: HttpContext) => HttpHandlerResult | Promise<HttpHandlerResult>;
 
 export type WebSocketHandler = (socket: WebSocketConnection, ctx: WebSocketContext) => void | Promise<void>;
 
@@ -480,9 +482,9 @@ function makeInitialWebSocketContext(app: App, endpoint: WebSocketEndpoint, inco
   return ctx;
 }
 
-async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<Response | ConnectionTakeover> {
+async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): Promise<HttpHandlerResult> {
   let index = -1;
-  async function dispatch(i: number): Promise<Response | ConnectionTakeover> {
+  async function dispatch(i: number): Promise<HttpHandlerResult> {
     if (i <= index) throw new Error('next() called multiple times');
     index = i;
     if (i === stack.length) return handler(ctx);
@@ -491,7 +493,7 @@ async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): 
       ctx[item.name] = await item.fn(ctx);
       return dispatch(i + 1);
     }
-    let downstream: Response | ConnectionTakeover | undefined;
+    let downstream: HttpHandlerResult | undefined;
     const result = await item.fn(ctx, async () => {
       downstream = await dispatch(i + 1);
       return downstream;
@@ -920,7 +922,7 @@ export class App extends BuilderBase<App> {
    * const response = await app.handle(new Request('http://local/health'));
    * ```
    */
-  async handle(req: Request, info: HandleInfo = {}): Promise<Response | ConnectionTakeover> {
+  async handle(req: Request, info: HandleInfo = {}): Promise<HttpHandlerResult> {
     const path = pathFromRequest(req);
     const method = methodName(req.method);
     for (const endpoint of this.#endpoints) {

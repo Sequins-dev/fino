@@ -1,10 +1,10 @@
 /**
- * Benchmarks for fino:net/http/h1
+ * Benchmarks for internal:net/http/h1
  *
  * Run with: cargo run -- bench benchmarks/net/http/h1.bench.mts
  */
 
-import { H1ClientDriver, H1ServerDriver } from 'fino:net/http/h1';
+import { H1ClientDriver, H1ServerDriver } from '../../../js/net/http/h1.mts';
 import { bench } from 'fino:bench';
 
 bench('net/http h1', (b) => {

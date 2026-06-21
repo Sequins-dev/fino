@@ -1,11 +1,11 @@
 /**
- * fino:http — incremental HTTP/1.1 parser and serializer.
+ * internal:net/http/wire — incremental HTTP/1.1 parser and serializer.
  *
  * This module implements HTTP/1.1 parsing and serialization entirely in JS,
  * building on Fino's async iterator model. There are no native bindings; the
  * parser is a hand-rolled state machine over byte chunks from any async source.
  *
- * It exports:
+ * It exports the internal Fetch-compatible wire implementation:
  *   - `Headers`           — WHATWG-compatible header map
  *   - `Request`           — Fetch API-compatible request (with async body)
  *   - `Response`          — Fetch API-compatible response (with async body)
@@ -106,7 +106,7 @@
  *
  * @example
  * ```ts no_run
- * import { Request, Response, parseRequest, serializeResponse } from 'fino:http';
+ * import { Request, Response, parseRequest, serializeResponse } from 'internal:net/http/wire';
  *
  * const request = new Request('https://example.test/', { method: 'POST', body: 'hello' });
  * const response = new Response(await request.text(), {
@@ -117,6 +117,8 @@
  *   await writer.write(chunk);
  * }
  * ```
+ *
+ * @internal
  */
 
 import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';

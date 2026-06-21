@@ -65,7 +65,7 @@ export { URLPattern } from './urlpattern.mts';
 export { default as console } from './console.mts';
 export { crypto, cryptoAvailable, tlsAvailable } from './crypto.mts';
 export { fetch } from './fetch.mts';
-export { Headers, Request, Response } from 'fino:net/http';
+export { Headers, Request, Response } from 'internal:net/http/wire';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
 export { WebSocket, CloseEvent, ErrorEvent } from 'fino:net/http/websocket';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.mts';

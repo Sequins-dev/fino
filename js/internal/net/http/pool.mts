@@ -51,9 +51,7 @@
  * @internal
  */
 
-import { Headers } from 'fino:net/http';
-import { Response } from 'fino:net/http';
-import { Request } from 'fino:net/http';
+import { Headers, Request, Response } from 'internal:net/http/wire';
 import { Nghttp2Session } from './h2/session.mts';
 import type { H2StreamCallbacks } from './h2/session.mts';
 import type { BufferedBytesReader, BytesWriter } from '../../stream.mts';
@@ -369,7 +367,7 @@ export class H2PoolEntry {
    * is going away, or rejects when the stream closes with an error.
    *
    * ```ts no_run
-   * import { Request } from 'fino:net/http';
+   * import { Request } from 'internal:net/http/wire';
    * import { createPoolEntry } from 'internal:net/http/pool';
    * const entry = createPoolEntry(reader, writer);
    * const res = await entry.send(new Request('https://example.test/'));

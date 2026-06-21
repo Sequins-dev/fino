@@ -6,7 +6,6 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { Response } from 'fino:net/http';
 import { serveHttp } from 'fino:net/http/server';
 import {
   BatchSpanProcessor,

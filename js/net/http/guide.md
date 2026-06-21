@@ -3,9 +3,10 @@ weight: 10
 ---
 # HTTP Guide
 
-The HTTP APIs are built around Fetch-compatible `Request`, `Response`, and
-`Headers` objects. Use `fino:net/http/server` for application servers, and drop
-down to lower protocol modules only when building tooling or custom transports.
+The HTTP APIs are built around the global Fetch-compatible `Request`,
+`Response`, and `Headers` objects. Use `fino:net/http/server` for application
+servers and `fino:net/http/client` when code needs explicit reusable client
+policy.
 
 ## Create a Client
 
@@ -213,7 +214,7 @@ serveHttp({ port: 3000, allowH2cUpgrade: true }, async () => {
 ```
 
 Most applications should keep using the request handler API and let the server
-driver select HTTP/1.1 or HTTP/2 per connection.
+select HTTP/1.1 or HTTP/2 per connection.
 
 ## Server-Sent Events
 
@@ -262,20 +263,21 @@ Use WebSockets for interactive sessions, subscriptions that need client
 messages, and long-lived bidirectional protocols. Use server-sent events when
 the server only needs to push updates.
 
-## Lower-Level Protocol Modules
+## Public HTTP Modules
 
-Most servers should use `serve`. Reach for the lower layers when you are
-building protocol tools or custom transports:
+Most applications should stay on the stable public HTTP modules:
 
-- [HTTP module](./index.mts) owns `Headers`, `Request`, `Response`, and shared
-  body helpers.
-- [HTTP/1.1](./h1.mts) parses and serializes text HTTP wire frames.
-- [HTTP/2](./h2.mts) owns HTTP/2 session and stream behavior.
-- [Driver](./driver.mts) connects protocol handlers to transport readers and
-  writers.
+- [HTTP wire helpers](../http.mts) expose request/response parse and serialize
+  helpers. `Headers`, `Request`, and `Response` are globals.
+- [Server](./server.mts) exposes `serve()` and `serveHttp()` across HTTP/1.1,
+  HTTP/2, and optional HTTP/3.
+- [Client](./client.mts) exposes reusable client policy, logical sessions,
+  response metadata, SSE, and WebSocket helpers.
+- [App](./app.mts) provides routing, middleware, context values, and OpenAPI.
 - [EventSource](./eventsource.mts) frames server-sent events.
 - [WebSocket](./websocket.mts) handles WebSocket framing and connection state.
 
-The low-level HTTP/1 client driver sends exactly one request over an
-already-connected reader/writer pair. DNS, TCP/TLS setup, redirects, retries,
-pooling, and body wrapping belong to `fetch()` or the caller.
+HTTP/1.1, HTTP/2, HTTP/3, protocol drivers, sessions, pools, and connection
+takeover detection are internal implementation details. DNS, TCP/TLS/QUIC
+setup, ALPN, Alt-Svc discovery, redirects, retries, pooling, and body wrapping
+belong to `fetch()`, `serve()`, or `HttpClient`.

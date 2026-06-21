@@ -2,8 +2,8 @@
  * fino:net/http/eventsource — Server-Sent Events (SSE) client and server.
  *
  * Implements the SSE wire protocol (W3C EventSource spec) in two composable
- * layers, following the same thin-primitive philosophy as fino:stream and
- * fino:http.
+ * layers, following the same thin-primitive philosophy as Fino streams and
+ * HTTP wire helpers.
  *
  *
  * ## EventSourceReader (composable parser primitive)
@@ -236,7 +236,7 @@ interface ClosableAsyncByteReader extends AsyncIterable<Uint8Array | ArrayBuffer
  * Parses an SSE byte stream into discrete events.
  *
  * Accepts any async iterable of Uint8Array/ArrayBuffer chunks — e.g. a Reader
- * from fino:stream or an HTTP response body from fino:http.
+ * from Fino streams or an HTTP response body.
  *
  * Implements `[Symbol.asyncIterator]` for `for await` consumption.
  *

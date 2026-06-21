@@ -1,5 +1,5 @@
 /**
- * fino:net/http/h1 — HTTP/1.1 server and client drivers.
+ * internal HTTP/1.1 server and client drivers.
  *
  * H1ServerDriver.run()  drives one accepted connection: pipelined keep-alive
  * pump, OTel instrumentation, protocol-upgrade handoff, batched writev.
@@ -10,8 +10,8 @@
  *
  * @example
  * ```ts no_run
- * import { H1ServerDriver } from 'fino:net/http/h1';
- * import { Response } from 'fino:http';
+ * import { H1ServerDriver } from 'internal:net/http/h1';
+ * import { Response } from 'internal:net/http/wire';
  *
  * const driver = new H1ServerDriver();
  * await driver.run(reader, writer, async () => new Response('ok'), {
@@ -19,6 +19,8 @@
  *   allowH2cUpgrade: true,
  * });
  * ```
+ *
+ * @internal
  */
 
 import {

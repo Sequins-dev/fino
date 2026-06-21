@@ -9,7 +9,7 @@
  *   - Subresource integrity checks for buffered response bodies
  *   - Explicit `referrer` and `referrerPolicy` handling
  *   - Response decompression for gzip, deflate, and brotli when available
- *   - Request/Response/Headers from `fino:net/http`
+ *   - global Request/Response/Headers backed by `internal:net/http/wire`
  *
  *
  * ## Connection lifecycle
@@ -81,8 +81,8 @@ import {
   Response,
   Headers,
   buildWireResponse,
-} from 'fino:net/http';
-import { H1ClientDriver } from 'fino:net/http/h1';
+} from 'internal:net/http/wire';
+import { H1ClientDriver } from 'internal:net/http/h1';
 import { H2ConnectionPool, createPoolEntry } from '../net/http/pool.mts';
 import { h2Available } from '../net/http/h2/bindings.mts';
 import type { Address } from 'fino:net/socket';
@@ -456,7 +456,7 @@ function _wrapBody(rawBody: AsyncIterable<Uint8Array>, sock: ClosableSocket, sig
 
 /**
  * Determine whether the response is expected to have a body.
- * Mirrors _bodyFraming in fino:http but without access to internals.
+ * Mirrors the internal HTTP wire _bodyFraming helper without importing it.
  */
 function _hasBody(status: number, method?: string): boolean {
   if (method && method.toUpperCase() === 'HEAD') return false;

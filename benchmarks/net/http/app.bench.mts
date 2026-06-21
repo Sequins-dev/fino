@@ -5,7 +5,6 @@
  */
 
 import { App, body, schema } from 'fino:net/http/app';
-import { Request, Response } from 'fino:net/http';
 import { v } from 'fino:validate';
 import { bench } from 'fino:bench';
 

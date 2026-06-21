@@ -39,7 +39,7 @@
  *
  * ```ts no_run
  * import { H2ServerDriver } from 'internal:net/http/h2/server';
- * import { Response } from 'fino:net/http';
+ * import { Response } from 'internal:net/http/wire';
  *
  * const driver = new H2ServerDriver();
  * await driver.run(
@@ -55,8 +55,8 @@
 
 import type { BufferedBytesReader } from '../../../stream.mts';
 import type { BytesWriter } from '../../../stream.mts';
-import type { ServerDriver, ServerHandler, ServerDriverOptions } from '../../../../net/http/driver.mts';
-import { isConnectionTakeover } from '../../../../net/http/driver.mts';
+import type { ServerDriver, ServerHandler, ServerDriverOptions } from 'internal:net/http/driver';
+import { isConnectionTakeover } from 'internal:net/http/driver';
 import { Request, Response, Headers } from '../../../../net/http/index.mts';
 import { Scanner } from '../../../../parsing/scanner.mts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.mts';
@@ -1067,7 +1067,7 @@ export class H2ServerDriver implements ServerDriver {
    *
    * ```ts no_run
    * import { H2ServerDriver } from 'internal:net/http/h2/server';
-   * import { Response } from 'fino:net/http';
+   * import { Response } from 'internal:net/http/wire';
    * await new H2ServerDriver().run(reader, writer, () => new Response('ok'), { maxConcurrent: 100 });
    * ```
    */
@@ -1105,7 +1105,7 @@ export class H2ServerDriver implements ServerDriver {
    *
    * ```ts no_run
    * import { H2ServerDriver } from 'internal:net/http/h2/server';
-   * import { Request, Response } from 'fino:net/http';
+   * import { Request, Response } from 'internal:net/http/wire';
    * await new H2ServerDriver().runFromUpgrade(reader, writer, () => new Response('ok'), { maxConcurrent: 100 }, new Request('http://localhost/'), new Uint8Array(), false);
    * ```
    */

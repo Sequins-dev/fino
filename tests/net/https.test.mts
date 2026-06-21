@@ -13,7 +13,6 @@
 
 import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
-import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
 import * as loop from 'internal:runtime/loop';
 

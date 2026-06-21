@@ -9,11 +9,11 @@ import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
-import { Headers, Response } from 'fino:net/http';
-import { h2Available, createPoolEntry } from 'fino:net/http/h2';
-import { h3Available, serve as h3Serve } from 'fino:net/http/h3';
+import { h2Available } from '../../js/net/http/h2.mts';
+import { createPoolEntry } from '../../js/internal/net/http/pool.mts';
+import { h3Available, serve as h3Serve } from '../../js/net/http/h3.mts';
 import { quicAvailable } from 'fino:net/quic';
-import { H2ConnectionPool } from 'internal:net/http/pool';
+import { H2ConnectionPool } from '../../js/internal/net/http/pool.mts';
 import {
   _fetchAltSvcHas,
   _fetchH2PoolHas,

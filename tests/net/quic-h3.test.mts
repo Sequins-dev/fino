@@ -6,8 +6,8 @@ import {
   h3Available,
   requireH3,
   serve as h3Serve,
-  _resolveH3ConnectAddress,
-} from 'fino:net/http/h3';
+} from '../../js/net/http/h3.mts';
+import { resolveH3ConnectAddress } from '../../js/internal/net/http/h3/resolve.mts';
 import { serve as httpServe } from 'fino:net/http/server';
 import { App } from 'fino:net/http/app';
 import { H3ServerDriver } from '../../js/internal/net/http/h3/server.mts';
@@ -34,7 +34,7 @@ async function h3Handshake(pipe: QuicPipe) {
 describe('HTTP/3 (h3 ALPN)', () => {
   it('public fetch resolves URL hostnames before QUIC connect and preserves SNI host', async (t) => {
     const seen: Array<{ hostname: string; family?: 4 | 6 }> = [];
-    const resolved = await _resolveH3ConnectAddress(
+    const resolved = await resolveH3ConnectAddress(
       new URL('https://example.test:9443/smoke'),
       async (hostname, opts) => {
         seen.push({ hostname, family: opts.family });

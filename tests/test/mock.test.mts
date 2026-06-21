@@ -1,6 +1,5 @@
 import { describe, it } from 'fino:test/test';
 import { mockFetch } from 'fino:test/mock';
-import { Request, Response } from 'fino:net/http';
 
 describe('fino:test/mock', () => {
   it('scopes fetch mocks and restores fetch after the callback throws', async (t) => {

@@ -1,5 +1,4 @@
 import { after, describe, it } from 'fino:test/test';
-import { Headers, Request, Response } from 'fino:net/http';
 import { mockFetch } from 'fino:test/mock';
 import type { MockFetchCall } from 'fino:test/mock';
 import { topic } from 'fino:context/topic';

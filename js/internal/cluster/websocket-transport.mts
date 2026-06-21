@@ -33,7 +33,7 @@
 
 import { serve } from 'fino:net/http/server';
 import { WebSocketConnection } from 'fino:net/http/websocket';
-import { Response } from 'fino:net/http';
+import { Response } from 'internal:net/http/wire';
 
 // Minimal typed interface for WebSocket event handling that avoids the DOM/fino
 // EventTarget mismatch. WebSocketConnection extends fino's EventTarget, but

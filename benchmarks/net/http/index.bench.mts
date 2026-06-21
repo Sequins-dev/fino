@@ -6,14 +6,11 @@
  */
 
 import {
-  Headers,
-  Request,
-  Response,
   _buildResponseHead,
   _headerTokenList,
   _parseHeaders,
   _parseResponseLine,
-} from 'fino:net/http';
+} from '../../../js/net/http/index.mts';
 import { bench } from 'fino:bench';
 
 const encodeUtf8 = (input: string): Uint8Array => new TextEncoder().encode(input);

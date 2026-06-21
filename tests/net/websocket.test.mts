@@ -16,7 +16,6 @@ import { describe, it } from 'fino:test/test';
 import { ok, equal, deepEqual } from 'fino:test/assert';
 import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
 import { serve } from 'fino:net/http/server';
-import { Headers, Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';

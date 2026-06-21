@@ -5,10 +5,11 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { h2Available, h2Version, H2ClientDriver, Nghttp2Session } from 'fino:net/http/h2';
+import { h2Available, h2Version } from '../../js/net/http/h2.mts';
+import { H2ClientDriver } from '../../js/internal/net/http/h2/client.mts';
+import { Nghttp2Session } from '../../js/internal/net/http/h2/session.mts';
 import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
-import { Response } from 'fino:net/http';
 import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.mts';
 
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {

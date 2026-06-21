@@ -3,13 +3,12 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { Headers, Response } from 'fino:net/http';
 import { serve, serveHttp } from 'fino:net/http/server';
 import { HttpClient } from 'fino:net/http/client';
 import { EventSourceWriter } from 'fino:net/http/eventsource';
 import { MessageEvent } from 'fino:net/http/websocket';
-import { h2Available } from 'fino:net/http/h2';
-import { h3Available, serve as h3Serve } from 'fino:net/http/h3';
+import { h2Available } from '../../js/net/http/h2.mts';
+import { h3Available, serve as h3Serve } from '../../js/net/http/h3.mts';
 import { quicAvailable } from 'fino:net/quic';
 import { _fetchH2PoolHas, _resetFetchH2Pool } from 'internal:globals/fetch';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';

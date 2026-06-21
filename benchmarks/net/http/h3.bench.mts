@@ -1,10 +1,10 @@
 /**
- * Benchmarks for fino:net/http/h3
+ * Benchmarks for internal HTTP/3 helper implementation
  *
  * Run with: cargo run -- bench benchmarks/net/http/h3.bench.mts
  */
 
-import { fetch, h3Available, requireH3, serve } from 'fino:net/http/h3';
+import { fetch, h3Available, requireH3, serve } from '../../../js/net/http/h3.mts';
 import { bench } from 'fino:bench';
 
 bench('net/http h3', (b) => {

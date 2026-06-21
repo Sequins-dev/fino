@@ -1,11 +1,10 @@
 /**
- * Benchmarks for fino:net/http/driver
+ * Benchmarks for internal:net/http/driver
  *
  * Run with: cargo run -- bench benchmarks/net/http/driver.bench.mts
  */
 
-import { isConnectionTakeover } from 'fino:net/http/driver';
-import { Response } from 'fino:net/http';
+import { isConnectionTakeover } from '../../../js/net/http/driver.mts';
 import { bench } from 'fino:bench';
 
 bench('net/http driver', (b) => {

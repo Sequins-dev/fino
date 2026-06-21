@@ -1,9 +1,9 @@
 /**
- * Tests for fino:http — Headers, Request, Response, and the HTTP/1.1 parser.
+ * Tests for HTTP wire helpers, globals, and the HTTP/1.1 parser.
  */
 
 import { describe, it } from 'fino:test/test';
-import { parseRequest, parseResponse, serializeRequest, serializeResponse, Headers, Request, Response } from 'fino:net/http';
+import { parseRequest, parseResponse, serializeRequest, serializeResponse } from 'fino:net/http';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 

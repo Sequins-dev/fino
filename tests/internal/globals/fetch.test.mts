@@ -7,7 +7,6 @@
 
 import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
-import { Request, Response, Headers } from 'fino:net/http';
 import { compress, brotliAvailable } from 'fino:compress';
 
 type Server = ReturnType<typeof serve>;

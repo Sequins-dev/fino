@@ -94,7 +94,7 @@ import { Blob }               from '../../internal/globals/blob.mts';
 import { crypto }             from '../../internal/globals/crypto.mts';
 import type { BytesReader, BytesWriter } from '../../internal/stream.mts';
 import type { IPv4Address, IPv6Address } from '../socket.mts';
-import { ConnectionTakeover } from './driver.mts';
+import type { ConnectionTakeover } from 'internal:net/http/driver';
 
 // ---------------------------------------------------------------------------
 // Constants

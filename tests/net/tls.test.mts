@@ -7,10 +7,9 @@
 
 import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';
-import { Response } from 'fino:net/http';
 import { TlsSocket } from 'fino:net/tls';
 import { Socket } from 'fino:net/socket';
-import { h2Available } from 'fino:net/http/h2';
+import { h2Available } from '../../js/net/http/h2.mts';
 
 const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
 if (!tlsAvailable && (globalThis as any).process?.env?.FINO_REQUIRE_TLS === '1') {

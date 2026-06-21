@@ -1,6 +1,6 @@
 /**
  * Tests for Socket, Reader, and Writer classes in fino:socket,
- * and serializeRequest / serializeResponse in fino:http.
+ * and serializeRequest / serializeResponse in fino:net/http.
  */
 
 import { describe, it } from 'fino:test/test';
@@ -10,8 +10,6 @@ const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decod
 import {
   parseRequest,
   parseResponse,
-  Request,
-  Response,
   serializeRequest,
   serializeResponse,
 } from 'fino:net/http';

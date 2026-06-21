@@ -47,10 +47,10 @@ import { EventSource } from './eventsource.mts';
 import type { EventSourceInit } from './eventsource.mts';
 import { WebSocketConnection } from './websocket.mts';
 import type { WebSocketConnectOptions } from './websocket.mts';
-import { _resolveH3ConnectAddress } from './h3.mts';
 import type { H3FetchInit } from './h3.mts';
 import { QuicEndpoint } from '../quic.mts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.mts';
+import { resolveH3ConnectAddress } from '../../internal/net/http/h3/resolve.mts';
 
 /**
  * Protocols selectable by `HttpClient` and `HttpSession`.
@@ -505,7 +505,7 @@ export class HttpSession {
   async #h3Request(url: URL, method: string, headers: Headers, init: HttpRequestInit): Promise<Response> {
     let transport = this.#h3Transport;
     if (transport === null) {
-      const target = await _resolveH3ConnectAddress(url);
+      const target = await resolveH3ConnectAddress(url);
       const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
       const tls = init.tls ?? this.#client.tls;
       const quic = init.quic ?? {

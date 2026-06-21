@@ -1,15 +1,15 @@
 /**
- * fino:net/http/h2 — public HTTP/2 module.
+ * net/http/h2 — internal HTTP/2 capability metadata.
  *
- * This module exposes the runtime's nghttp2-backed HTTP/2 availability and
- * low-level driver hooks. HTTP/2 is selected automatically by the server for
- * prior-knowledge h2c, h2c upgrades, and TLS ALPN `h2`, and by `fetch()` when a
- * pooled HTTPS connection negotiates `h2`.
+ * This module exposes the runtime's nghttp2-backed HTTP/2 availability for
+ * internal wiring and tests.
+ * HTTP/2 is selected automatically by the server for prior-knowledge h2c, h2c
+ * upgrades, and TLS ALPN `h2`, and by `fetch()` when a pooled HTTPS connection
+ * negotiates `h2`.
  *
  * Release baseline:
  *   - `h2Available`: whether libnghttp2 was found on this system
  *   - `h2Version`: library version string, or null if unavailable
- *   - client and server session drivers for the runtime's own HTTP stack
  *   - h2spec coverage for runnable RFC 7540/7541 sections, with the checked-in
  *     allowlist acting as the current conformance baseline
  *
@@ -21,51 +21,31 @@
  *   - one-shot H2 server/client paths stream bodies through the shared internal
  *     HTTP stream queue; the H2 pool still buffers responses for compatibility
  *
- * The H2 server and client drivers are wired into `fino:net/http/server` and
- * the global `fetch` implementation automatically; applications usually import
- * this module only to check library availability.
+ * The H2 server and client drivers are internal and are wired into
+ * `fino:net/http/server`, `fino:net/http/client`, and global `fetch`
+ * automatically. Applications should select HTTP/2 through those public
+ * abstractions rather than importing this helper.
  *
  * @example
  * ```ts no_run
- * import { h2Available, h2Version } from 'fino:net/http/h2';
+ * import { h2Available, h2Version } from '../../js/net/http/h2.mts';
  *
  * if (h2Available) {
  *   console.log(`HTTP/2 available through nghttp2 ${h2Version ?? 'unknown'}`);
  * }
  * ```
+ *
+ * @internal
  */
 
 import { h2Available as _h2Available, sym, readCStr, Pointer } from '../../internal/net/http/h2/bindings.mts';
-/** HTTP/2 client driver implementation used by the HTTP client pool.
- *
- * ```ts no_run
- * import { H2ClientDriver } from 'fino:net/http/h2';
- * ```
- */
-export { H2ClientDriver } from '../../internal/net/http/h2/client.mts';
-/** Low-level nghttp2 session wrapper used by HTTP/2 drivers.
- *
- * ```ts no_run
- * import { Nghttp2Session } from 'fino:net/http/h2';
- * ```
- */
-export { Nghttp2Session } from '../../internal/net/http/h2/session.mts';
-/** Create a pooled HTTP/2 client connection entry.
- *
- * ```ts no_run
- * import { createPoolEntry } from 'fino:net/http/h2';
- * ```
- */
-export { createPoolEntry } from '../../internal/net/http/pool.mts';
 
 /** `true` when libnghttp2 was loaded successfully.
  *
  * HTTP/2 server and client paths are only selected automatically when this is
  * true. If false, applications should fall back to HTTP/1.1 behavior.
  *
- * ```ts no_run
- * if (h2Available) console.log('HTTP/2 enabled');
- * ```
+ * @internal
  */
 export const h2Available: boolean = _h2Available;
 
@@ -74,9 +54,7 @@ export const h2Available: boolean = _h2Available;
  * The string comes from `nghttp2_version()` and may be `null` when bindings are
  * unavailable or version lookup fails.
  *
- * ```ts no_run
- * console.log(h2Version ?? 'HTTP/2 unavailable');
- * ```
+ * @internal
  */
 export const h2Version: string | null = (() => {
   if (!_h2Available || sym === null) return null;

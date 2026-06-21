@@ -49,7 +49,7 @@
 import { Socket } from '../socket.mts';
 import { TlsSocket } from '../tls.mts';
 import { sslCtxLoadCertKey, sslCtxFree, sslCtxSetAlpnServerProtos } from '../../internal/openssl.mts';
-import { H1ServerDriver } from './h1.mts';
+import { H1ServerDriver } from 'internal:net/http/h1';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
 import { serve as serveH3, requireH3 } from './h3.mts';
@@ -57,7 +57,7 @@ import type { H3Server, H3ServeOptions } from './h3.mts';
 import { _headerTokenList } from './index.mts';
 import { WebSocketConnection } from './websocket.mts';
 import type { WebSocketAcceptOptions } from './websocket.mts';
-import type { ConnectionTakeover, HttpProtocol, ServerHandler, ServerResult } from './driver.mts';
+import type { ConnectionTakeover, ServerHandler, ServerResult } from 'internal:net/http/driver';
 import type { Request, Response } from './index.mts';
 import { Response as HttpResponse } from './index.mts';
 import type { Address, ListenOptions } from '../socket.mts';
@@ -76,7 +76,9 @@ function _isH2Preface(bytes: Uint8Array): boolean {
   return true;
 }
 
-interface ServeOptions {
+export type HttpProtocol = 'http/1.1' | 'h2' | 'h3';
+
+export interface ServeOptions {
   port:      number;
   hostname?: string;
   /** Explicit IP family for the listening socket. Defaults from hostname. */
@@ -101,7 +103,7 @@ interface ServeOptions {
   h3?: boolean | { quic?: Partial<Omit<H3ServeOptions, 'port' | 'hostname' | 'certificateFile' | 'privateKeyFile'>> };
 }
 
-interface ServeServer {
+export interface ServeServer {
   address: { family: string; ip: string; port: number };
   readonly port: number;
   /** Resolves when all requested listeners, including optional H3, are ready. */
@@ -111,6 +113,10 @@ interface ServeServer {
 }
 
 export type HttpTransport = 'tcp' | 'tls' | 'quic';
+
+export type HttpHandlerResult = Response | WebSocketConnection;
+
+export type HttpRequestHandler = (request: Request) => HttpHandlerResult | Promise<HttpHandlerResult>;
 
 export interface HttpSession {
   readonly id: string;
@@ -139,7 +145,7 @@ export interface AcceptedHttpRequest {
   readonly request: Request;
   readonly protocol: HttpProtocol;
   readonly session: HttpSession;
-  respond(response: ServerResult): Promise<void>;
+  respond(response: HttpHandlerResult): Promise<void>;
 }
 
 export interface IncomingWebSocketRequest extends IncomingBase<'websocket'> {
@@ -449,7 +455,7 @@ export function serve(
 
 export function serveHttp(
   options: ServeOptions,
-  handler: ServerHandler,
+  handler: HttpRequestHandler,
 ): ServeServer {
   return serve(options, async (incoming) => {
     if (incoming.kind !== 'request') {
