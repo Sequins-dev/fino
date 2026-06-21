@@ -452,42 +452,62 @@ Tests:
 The current HTTP server API is connection-driver oriented. H3 should push the
 core HTTP model toward sessions and logical streams.
 
-Status: done. The logical stream API and H3 server/App integration are
-implemented while preserving the existing request-handler default.
+Status: done. The unified listener now exposes request/response as a
+convenience helper and reserves `serve()` for explicit accept/reject handling.
 
 Target internal shape:
 
 - `HttpSession`
-- `HttpStream`
+- `IncomingHttp`
+- `AcceptedHttpRequest`
+- `IncomingWebSocketRequest`
 - `HttpProtocolDriver`
 - H1 adapter
 - H2 adapter
 - H3 adapter
 
-Default public behavior:
+Request/response helper:
 
 ```ts
-serve({ port: 3000 }, async (request) => {
+serveHttp({ port: 3000 }, async (request) => {
   return new Response('ok');
 });
 ```
 
-Advanced public behavior:
+Accept-based public behavior:
 
 ```ts
-serve({ port: 3000, mode: 'stream' }, async (stream) => {
-  const request = stream.request;
-  await stream.respond(new Response(request.method));
+serve({ port: 3000 }, async (incoming, session) => {
+  switch (incoming.kind) {
+    case 'request': {
+      const accepted = await incoming.accept();
+      await accepted.respond(new Response(`via ${session.protocol}`));
+      return;
+    }
+    case 'websocket': {
+      const socket = await incoming.accept({ protocol: 'chat.v1' });
+      await handleSocket(socket);
+      return;
+    }
+  }
 });
 ```
 
 App router behavior:
 
-- `App.listen()` continues to work unchanged.
+- `App.listen()` uses accept mode internally.
+- Ordinary route handlers remain request/response sugar over accept/respond.
+- `app.websocket(path, handler)` accepts HTTP/1.1 WebSocket upgrades.
 - `ctx.protocol` can expose `'http/1.1'`, `'h2'`, or `'h3'`.
-- `ctx.stream` can be present for advanced handlers, but ordinary middleware
-  should not need it.
+- `ctx.session` exposes the transport session and `ctx.incoming` exposes the
+  accept object when the app is served by `App.listen()`.
 - OpenAPI generation remains unchanged.
+
+WebSocket is the first non-request `IncomingHttp` variant. H2/H3 WebSocket
+Extended CONNECT remains future work; this phase wires the existing HTTP/1.1
+upgrade implementation through `IncomingWebSocketRequest.accept()`. WebTransport
+should follow the same sibling accept-variant pattern later instead of adding a
+second server mode.
 
 ## 9. Phase 4: fetch, Pooling, and Alt-Svc
 
@@ -622,8 +642,8 @@ API concerns:
 
 - H1 WebSocket `ConnectionTakeover` is connection-level.
 - H3 WebSocket is stream-level.
-- The unified HTTP architecture should avoid locking WebSockets to a
-  connection-only model.
+- The accept-variant architecture keeps WebSockets and future WebTransport from
+  being locked to a connection-only model.
 
 Status: deferred.
 
