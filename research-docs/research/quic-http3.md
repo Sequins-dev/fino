@@ -28,7 +28,7 @@ remains explicit:
 
 > Status: research and project tracker. Phase 1 and Phase 2 are complete for
 > the release QUIC and H3 request/response baseline. Phase 3 tracks the
-> remaining unified HTTP server/App work.
+> unified HTTP server/App baseline through Phase 3.
 
 ## 1. Goal
 
@@ -265,7 +265,7 @@ Legend: `not started`, `researching`, `in progress`, `blocked`, `done`.
 | --- | --- | --- | --- |
 | 1 | QUIC only | done | Low-level QUIC API, TLS, streams, datagrams, migration, diagnostics, and local conformance evidence. |
 | 2 | HTTP/3 | done | H3 request/response baseline with streaming request/response bodies. |
-| 3 | Unified HTTP architecture | in progress | Shared session/stream model for H1/H2/H3 and H3 server/App integration. |
+| 3 | Unified HTTP architecture | done | Shared stream mode for H1/H2/H3 plus H3 server/App integration. |
 | 4 | fetch, pooling, Alt-Svc | not started | H3 origin pool and fallback policy. |
 | 5 | Advanced H3 features | not started | WebTransport, H3 DATAGRAM, Capsule, CONNECT tunnels, and H3 WebSockets. |
 
@@ -452,8 +452,8 @@ Tests:
 The current HTTP server API is connection-driver oriented. H3 should push the
 core HTTP model toward sessions and logical streams.
 
-Status: in progress. The logical stream API and H3 server/App integration are
-being added while preserving the existing request-handler default.
+Status: done. The logical stream API and H3 server/App integration are
+implemented while preserving the existing request-handler default.
 
 Target internal shape:
 

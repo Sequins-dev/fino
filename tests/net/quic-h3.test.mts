@@ -8,6 +8,8 @@ import {
   serve as h3Serve,
   _resolveH3ConnectAddress,
 } from 'fino:net/http/h3';
+import { serve as httpServe } from 'fino:net/http/server';
+import { App } from 'fino:net/http/app';
 import { H3ServerDriver } from '../../js/internal/net/http/h3/server.mts';
 import { H3ClientSession } from '../../js/internal/net/http/h3/client.mts';
 import { Nghttp3Session } from '../../js/internal/net/http/h3/session.mts';
@@ -127,6 +129,54 @@ describe('HTTP/3 (h3 ALPN)', () => {
       t.equal(method, 'POST', 'server received POST method');
       t.equal(body, 'real-h3-body', 'server received POST body');
       t.equal(new TextDecoder().decode(await response.arrayBuffer()), 'echo:real-h3-body', 'client received echo response');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('unified HTTP serve() can enable H3 stream mode', async (t) => {
+    if (!available) return;
+
+    const server = httpServe({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: { cert: TEST_CERT, key: TEST_KEY },
+      h3: true,
+      mode: 'stream',
+    } as any, async (stream: any) => {
+      await stream.respond(new Response(`protocol:${stream.protocol}`));
+    });
+
+    try {
+      await (server as any).ready;
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
+        quic: { verifyPeer: false },
+      });
+      t.equal(await response.text(), 'protocol:h3', 'unified stream mode handles H3 requests');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('App.listen() exposes H3 protocol and stream context', async (t) => {
+    if (!available) return;
+
+    const app = new App();
+    app.get('/proto', (ctx) => new Response(`${ctx.protocol}:${ctx.stream?.protocol ?? 'none'}`));
+
+    const server = app.listen({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: { cert: TEST_CERT, key: TEST_KEY },
+      h3: true,
+    } as any);
+
+    try {
+      await (server as any).ready;
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
+        quic: { verifyPeer: false },
+      });
+      t.equal(await response.text(), 'h3:h3', 'app context sees H3 protocol and stream');
     } finally {
       await server.close();
     }

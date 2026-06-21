@@ -255,6 +255,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:net/http/h3/session",
         "internal/net/http/h3/session"
     ),
+    source_builtin!(
+        "internal:net/http/h3/body-queue",
+        "internal/net/http/h3/body-queue"
+    ),
     source_builtin!("internal:net/http/h3/server", "internal/net/http/h3/server"),
     source_builtin!("internal:net/http/h3/client", "internal/net/http/h3/client"),
     source_builtin!("fino:net/http/h3", "net/http/h3"),

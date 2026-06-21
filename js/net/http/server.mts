@@ -52,6 +52,8 @@ import { sslCtxLoadCertKey, sslCtxFree, sslCtxSetAlpnServerProtos } from '../../
 import { H1ServerDriver } from './h1.mts';
 import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
+import { serve as serveH3, requireH3 } from './h3.mts';
+import type { H3Server, H3ServeOptions } from './h3.mts';
 import { dispatchHttpStream } from './driver.mts';
 import type { ConnectionTakeover, HttpProtocol, ServerHandler, ServerStreamHandler } from './driver.mts';
 import type { Request } from './index.mts';
@@ -94,11 +96,15 @@ interface ServeOptions {
   headersTimeoutMs?: number;
   /** HTTP/1 keep-alive idle timeout in milliseconds. `0` or undefined disables it. */
   idleTimeoutMs?: number;
+  /** Enable an HTTP/3 UDP listener on the same host and port. Requires `tls`. */
+  h3?: boolean | { quic?: Partial<Omit<H3ServeOptions, 'port' | 'hostname' | 'certificateFile' | 'privateKeyFile'>> };
 }
 
 interface ServeServer {
   address: { family: string; ip: string; port: number };
   readonly port: number;
+  /** Resolves when all requested listeners, including optional H3, are ready. */
+  readonly ready: Promise<void>;
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
 }
@@ -146,6 +152,11 @@ export function serve(
   options: ServeOptions,
   handler: ServerHandler | ServerStreamHandler,
 ): ServeServer {
+  if (options.h3 !== undefined && options.h3 !== false) {
+    if (options.tls === undefined) throw new Error('serve: h3 requires tls certificate and key');
+    requireH3();
+  }
+
   const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
 
   let sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
@@ -189,6 +200,22 @@ export function serve(
     }
     return handler as ServerHandler;
   }
+
+  const h3Options = options.h3;
+  let h3Server: H3Server | null = null;
+  const h3Ready: Promise<void> = (h3Options !== undefined && h3Options !== false)
+    ? serveH3({
+        ...((typeof h3Options === 'object' ? h3Options.quic : undefined) ?? {}),
+        port: boundAddress.port,
+        hostname: boundAddress.ip,
+        certificateFile: options.tls!.cert,
+        privateKeyFile: options.tls!.key,
+      }, _handlerFor('h3')).then((server) => { h3Server = server; })
+    : Promise.resolve();
+  h3Ready.catch(() => {
+    if (closeSignalResolve) closeSignalResolve();
+    tcpServer.close();
+  });
 
   (async function acceptLoop() {
     try {
@@ -245,12 +272,15 @@ export function serve(
   return {
     address: boundAddress,
     get port() { return boundAddress.port; },
-    close(): Promise<void> {
+    get ready() { return h3Ready; },
+    async close(): Promise<void> {
       if (closeSignalResolve) closeSignalResolve();
       tcpServer.close();
       if (alpnCb !== null) { (alpnCb as any).close(); alpnCb = null; }
       if (sslCtx !== null) { sslCtxFree(sslCtx); sslCtx = null; }
-      return finished;
+      await h3Ready.catch(() => {});
+      await h3Server?.close();
+      await finished;
     },
 
     /** Explicit resource-management hook for `await using` declarations. */

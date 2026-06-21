@@ -57,7 +57,7 @@ import { parseCookieHeader, serializeCookie, type CookieOptions } from '../../se
 import { compile } from '../../validate.mts';
 import { Headers, Request, Response } from './index.mts';
 import { serve } from './server.mts';
-import type { ConnectionTakeover } from './driver.mts';
+import type { ConnectionTakeover, HttpProtocol, HttpStream } from './driver.mts';
 
 /**
  * Standard HTTP methods supported by route builders.
@@ -108,6 +108,10 @@ export interface HttpContext {
    * ```
    */
   method: string;
+  /** Protocol carrying the current request. */
+  protocol: HttpProtocol;
+  /** Logical stream metadata for server-dispatched requests. */
+  stream?: HttpStream;
   /** URLPattern path parameters when a route matched.
    *
    * ```ts no_run
@@ -417,8 +421,20 @@ function appendPath(prefix: string, path: string): string {
   return `${left}${right}` || '/';
 }
 
-function makeInitialContext(app: App, endpoint: Endpoint, req: Request, params: Record<string, string>): HttpContext {
-  const ctx: HttpContext = { request: req, app, route: endpoint.path, method: endpoint.method };
+interface HandleInfo {
+  protocol?: HttpProtocol;
+  stream?: HttpStream;
+}
+
+function makeInitialContext(app: App, endpoint: Endpoint, req: Request, params: Record<string, string>, info: HandleInfo): HttpContext {
+  const ctx: HttpContext = {
+    request: req,
+    app,
+    route: endpoint.path,
+    method: endpoint.method,
+    protocol: info.protocol ?? 'http/1.1',
+  };
+  if (info.stream !== undefined) ctx.stream = info.stream;
   for (const slot of endpoint.slots) ctx[slot] = undefined;
   ctx.params = params;
   return ctx;
@@ -835,14 +851,14 @@ export class App extends BuilderBase<App> {
    * const response = await app.handle(new Request('http://local/health'));
    * ```
    */
-  async handle(req: Request): Promise<Response | ConnectionTakeover> {
+  async handle(req: Request, info: HandleInfo = {}): Promise<Response | ConnectionTakeover> {
     const path = pathFromRequest(req);
     const method = methodName(req.method);
     for (const endpoint of this.#endpoints) {
       if (endpoint.method !== method) continue;
       const match = endpoint.pattern.exec({ pathname: path });
       if (match === null) continue;
-      const ctx = makeInitialContext(this, endpoint, req, { ...match.pathname.groups });
+      const ctx = makeInitialContext(this, endpoint, req, { ...match.pathname.groups }, info);
       return this.#requestContext.runWithValue(ctx, () => compose(ctx, endpoint.stack, endpoint.handler));
     }
     return defaultNotFound();
@@ -857,7 +873,10 @@ export class App extends BuilderBase<App> {
    * ```
    */
   listen(options: Parameters<typeof serve>[0]): ReturnType<typeof serve> {
-    return serve(options, (req) => this.handle(req));
+    return serve({ ...options, mode: 'stream' } as any, async (stream) => {
+      const result = await this.handle(stream.request, { protocol: stream.protocol, stream });
+      await stream.respond(result);
+    });
   }
 
   /** Generate an OpenAPI 3.1 document from registered routes and metadata.

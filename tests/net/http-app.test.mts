@@ -16,6 +16,17 @@ function request(path: string, init: { method?: string; headers?: Record<string,
 }
 
 describe('HTTP app routing and middleware', () => {
+  it('defaults direct handle() contexts to HTTP/1.1 protocol', async (t) => {
+    const app = new App();
+    app.get('/proto', (ctx) => Response.json({
+      protocol: ctx.protocol,
+      hasStream: ctx.stream !== undefined,
+    }));
+
+    const res = await app.handle(request('/proto'));
+    t.deepEqual(await res.json(), { protocol: 'http/1.1', hasStream: false });
+  });
+
   it('runs middleware in Koa order and exposes async request context', async (t) => {
     const app = new App();
     const order: string[] = [];
