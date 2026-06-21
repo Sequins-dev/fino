@@ -7,7 +7,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serve, serveHttp } from 'fino:net/http/server';
 import { WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
 
@@ -37,16 +37,16 @@ function waitForEvent<T extends Event>(target: EventTarget, name: string, timeou
 
 describe('serve() WebSocket upgrade', () => {
   it('handler returns WebSocketConnection.accept(req) — server sends, client receives', async (t) => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req as any);
+    const server = serve({ port: 0 }, async (incoming) => {
+      if (incoming.kind === 'websocket') {
+        const ws = await incoming.accept();
         // Send from the server as soon as the connection is open.
         ws.addEventListener('open', () => {
           void ws.send('hello from server');
         });
-        return ws;
+        return;
       }
-      return new Response('not a ws upgrade', { status: 400 });
+      await incoming.reject(new Response('not a ws upgrade', { status: 400 }));
     });
 
     try {
@@ -69,16 +69,16 @@ describe('serve() WebSocket upgrade', () => {
   });
 
   it('server closes the connection first — client receives close event', async (t) => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req as any);
+    const server = serve({ port: 0 }, async (incoming) => {
+      if (incoming.kind === 'websocket') {
+        const ws = await incoming.accept();
         ws.addEventListener('open', async () => {
           await ws.send('goodbye');
           await ws.close(1000, 'server done');
         });
-        return ws;
+        return;
       }
-      return new Response('not ws', { status: 400 });
+      await incoming.reject(new Response('not ws', { status: 400 }));
     });
 
     try {
@@ -96,11 +96,7 @@ describe('serve() WebSocket upgrade', () => {
   });
 
   it('non-WebSocket request still works on same server', async (t) => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req as any);
-        return ws;
-      }
+    const server = serveHttp({ port: 0 }, (req) => {
       return new Response('ok');
     });
 

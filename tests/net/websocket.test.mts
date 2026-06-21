@@ -20,6 +20,7 @@ import { Headers, Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
+import type { WebSocketAcceptOptions } from 'fino:net/http/websocket';
 import { digest } from '../../js/internal/openssl.mts';
 import { btoa } from '../../js/internal/globals/encoding.mts';
 
@@ -202,10 +203,7 @@ async function expectServerCloseForRawClientFrame(
   expectedCode: number,
   acceptOptions: Parameters<typeof WebSocketConnection.accept>[1] = {},
 ): Promise<void> {
-  const server = serve({ port: 0 }, (req) => {
-    if (req.headers.get('upgrade') === 'websocket') return WebSocketConnection.accept(req, acceptOptions);
-    return new Response('', { status: 400 });
-  });
+  const server = serveWebSocket(() => {}, acceptOptions);
 
   try {
     const { sock, raw, writer } = await openRawWebSocket(server.port);
@@ -218,6 +216,21 @@ async function expectServerCloseForRawClientFrame(
   } finally {
     await server.close();
   }
+}
+
+function serveWebSocket(
+  handler: (ws: WebSocketConnection) => void | Promise<void>,
+  acceptOptions: WebSocketAcceptOptions = {},
+  fallback: Response = new Response('', { status: 400 }),
+): ReturnType<typeof serve> {
+  return serve({ port: 0 }, async (incoming) => {
+    if (incoming.kind !== 'websocket') {
+      await incoming.reject(fallback);
+      return;
+    }
+    const ws = await incoming.accept(acceptOptions);
+    await handler(ws);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -338,10 +351,7 @@ describe('WebSocketConnection.accept() validation', () => {
   });
 
   it('does not negotiate extensions even when the client offers permessage-deflate', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') return WebSocketConnection.accept(req);
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: server.port });
@@ -409,18 +419,13 @@ describe('WebSocketConnection.connect() URL validation', () => {
 
 describe('WebSocket end-to-end via serve()', () => {
   it('echoes text messages', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('message', e => {
           const me = e as MessageEvent;
           void ws.send('echo: ' + me.data);
         });
         ws.addEventListener('close', () => {});
-        return ws;
-      }
-      return new Response('not a ws upgrade', { status: 400 });
-    });
+    }, {}, new Response('not a ws upgrade', { status: 400 }));
 
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
@@ -438,16 +443,11 @@ describe('WebSocket end-to-end via serve()', () => {
   });
 
   it('echoes binary messages', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('message', e => {
           const me = e as MessageEvent;
           void ws.send(me.data as Uint8Array);
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -467,16 +467,11 @@ describe('WebSocket end-to-end via serve()', () => {
   });
 
   it('handles multiple messages on a single connection', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('message', e => {
           const me = e as MessageEvent;
           void ws.send(me.data as string);
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -499,9 +494,7 @@ describe('WebSocket end-to-end via serve()', () => {
   it('server can iterate messages with async for-of', async () => {
     const received: string[] = [];
 
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         queueMicrotask(async () => {
           for await (const msg of ws) {
             received.push(msg.data as string);
@@ -511,9 +504,6 @@ describe('WebSocket end-to-end via serve()', () => {
             }
           }
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -534,16 +524,11 @@ describe('WebSocket end-to-end via serve()', () => {
   });
 
   it('respects subprotocol negotiation', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req, { protocol: 'chat.v1' });
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('message', async e => {
           await ws.close();
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
-    });
+    }, { protocol: 'chat.v1' });
 
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`, {
@@ -562,9 +547,7 @@ describe('WebSocket end-to-end via serve()', () => {
   it('PING triggers automatic PONG', async () => {
     const pongReceived: boolean[] = [];
 
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('open', async () => {
           await ws.ping(enc('keepalive'));
         });
@@ -572,9 +555,6 @@ describe('WebSocket end-to-end via serve()', () => {
           pongReceived.push(true);
           void ws.close();
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -593,15 +573,10 @@ describe('WebSocket end-to-end via serve()', () => {
     const APP_CODE   = 4042;
     const APP_REASON = 'application session expired';
 
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('open', async () => {
           await ws.close(APP_CODE, APP_REASON);
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -616,15 +591,10 @@ describe('WebSocket end-to-end via serve()', () => {
   });
 
   it('close handshake completes cleanly (wasClean=true)', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('open', async () => {
           await ws.close(1000, 'bye');
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -646,13 +616,8 @@ describe('WebSocket end-to-end via serve()', () => {
     let resolveServerClose!: (e: CloseEvent) => void;
     const serverClosedPromise = new Promise<CloseEvent>((res) => { resolveServerClose = res; });
 
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('close', (e) => resolveServerClose(e as CloseEvent));
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -698,17 +663,12 @@ describe('WebSocket end-to-end via serve()', () => {
   });
 
   it('handles mixed HTTP and WebSocket on same serve()', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('message', e => {
           const me = e as MessageEvent;
           void ws.send('ws:' + me.data);
         });
-        return ws;
-      }
-      return new Response('http-ok');
-    });
+    }, {}, new Response('http-ok'));
 
     try {
       // Normal HTTP still works
@@ -824,13 +784,7 @@ describe('WHATWG WebSocket facade', () => {
   it('starts in CONNECTING state', async () => {
     // Use an unresolvable host to keep it in CONNECTING without connecting
     // Actually we need a real server to avoid an immediate error; use our own.
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
-        return ws;
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -848,12 +802,7 @@ describe('WHATWG WebSocket facade', () => {
   });
 
   it('send() throws InvalidStateError when CONNECTING', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        return WebSocketConnection.accept(req);
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -873,15 +822,10 @@ describe('WHATWG WebSocket facade', () => {
   });
 
   it('binaryType arraybuffer delivers ArrayBuffer data', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('open', async () => {
           await ws.send(new Uint8Array([10, 20, 30]));
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -901,15 +845,10 @@ describe('WHATWG WebSocket facade', () => {
   });
 
   it('binaryType blob delivers Blob data', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('open', async () => {
           await ws.send(new Uint8Array([1, 2]));
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {
@@ -930,12 +869,7 @@ describe('WHATWG WebSocket facade', () => {
   });
 
   it('close() throws InvalidAccessError for disallowed close code', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        return WebSocketConnection.accept(req);
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -957,12 +891,7 @@ describe('WHATWG WebSocket facade', () => {
   });
 
   it('close() throws SyntaxError for reason > 123 bytes', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        return WebSocketConnection.accept(req);
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -983,12 +912,7 @@ describe('WHATWG WebSocket facade', () => {
   });
 
   it('readyState transitions through CONNECTING → OPEN → CLOSED', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        return WebSocketConnection.accept(req);
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
@@ -1010,12 +934,7 @@ describe('WHATWG WebSocket facade', () => {
 
 describe('WebSocketConnection.close() validation', () => {
   it('throws InvalidAccessError for code 1001', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        return WebSocketConnection.accept(req);
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
@@ -1037,12 +956,7 @@ describe('WebSocketConnection.close() validation', () => {
   });
 
   it('throws SyntaxError for reason > 123 bytes', async () => {
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        return WebSocketConnection.accept(req);
-      }
-      return new Response('', { status: 400 });
-    });
+    const server = serveWebSocket(() => {});
 
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
@@ -1076,16 +990,11 @@ describe('Large payload', () => {
 
     let received: Uint8Array | null = null;
 
-    const server = serve({ port: 0 }, (req) => {
-      if (req.headers.get('upgrade') === 'websocket') {
-        const ws = WebSocketConnection.accept(req);
+    const server = serveWebSocket((ws) => {
         ws.addEventListener('message', e => {
           received = (e as MessageEvent).data as Uint8Array;
           void ws.close();
         });
-        return ws;
-      }
-      return new Response('', { status: 400 });
     });
 
     try {

@@ -33,7 +33,6 @@
 
 import { serve } from 'fino:net/http/server';
 import { WebSocketConnection } from 'fino:net/http/websocket';
-import type { Request } from 'fino:net/http';
 import { Response } from 'fino:net/http';
 
 // Minimal typed interface for WebSocket event handling that avoids the DOM/fino
@@ -204,14 +203,13 @@ export class WebSocketSeedTransport implements ClusterTransport {
    * ```
    */
   listen(): void {
-    this.#server = serve({ port: this.#port }, (req: Request) => {
-      const upgrade = req.headers.get('upgrade');
-      if (upgrade?.toLowerCase() !== 'websocket') {
-        return new Response('fino cluster seed', { status: 200 });
+    this.#server = serve({ port: this.#port }, async (incoming) => {
+      if (incoming.kind !== 'websocket') {
+        await incoming.reject(new Response('fino cluster seed', { status: 200 }));
+        return;
       }
-      const ws = WebSocketConnection.accept(req as any);
+      const ws = await incoming.accept();
       this.#handleConnection(ws);
-      return ws;
     });
   }
 

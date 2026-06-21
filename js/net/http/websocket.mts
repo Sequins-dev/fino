@@ -23,13 +23,13 @@
  *   import { serve } from 'fino:net/http/server';
  *   import { WebSocketConnection } from 'fino:net/http/websocket';
  *
- *   serve({ port: 3000 }, (req) => {
- *     if (req.headers.get('upgrade') === 'websocket') {
- *       const ws = WebSocketConnection.accept(req, { protocol: 'chat.v1' });
+ *   serve({ port: 3000 }, async (incoming) => {
+ *     if (incoming.kind === 'websocket') {
+ *       const ws = await incoming.accept({ protocol: 'chat.v1' });
  *       ws.addEventListener('message', (e) => ws.send(`echo: ${e.data}`));
- *       return ws;    // serve() writes the 101 and hands over the socket
+ *       return;
  *     }
- *     return new Response('hello');
+ *     await incoming.reject(new Response('hello'));
  *   });
  * ```
  *
@@ -1547,13 +1547,13 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * WebSocket upgrade. The handler can catch this and return a 400 Response.
    *
    * ```ts no_run
-   * serve({ port: 3000 }, (req) => {
-   *   if (req.headers.get('upgrade') === 'websocket') {
-   *     const ws = WebSocketConnection.accept(req, { protocol: 'chat.v1' });
+   * serve({ port: 3000 }, async (incoming) => {
+   *   if (incoming.kind === 'websocket') {
+   *     const ws = await incoming.accept({ protocol: 'chat.v1' });
    *     ws.addEventListener('message', (e) => ws.send(`echo: ${e.data}`));
-   *     return ws;
+   *     return;
    *   }
-   *   return new Response('hello');
+   *   await incoming.reject(new Response('hello'));
    * });
    * ```
    */
@@ -2359,24 +2359,23 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * @internal
    */
   #teardown(): void {
-    if (this.#readyState === CLOSED) return;
+    const alreadyClosed = this.#readyState === CLOSED;
     this.#readyState = CLOSED;
 
     this.#closeIterators();
 
-    const code     = this.#closeReceived?.code ?? 1006;
-    const reason   = this.#closeReceived?.reason ?? '';
-    const wasClean = this.#closeSent && this.#closeReceived !== null;
+    if (!alreadyClosed) {
+      const code     = this.#closeReceived?.code ?? 1006;
+      const reason   = this.#closeReceived?.reason ?? '';
+      const wasClean = this.#closeSent && this.#closeReceived !== null;
 
-    const e = new CloseEvent('close', { code, reason, wasClean });
-    this.dispatchEvent(e);
-    if (this.#onclose) this.#onclose.call(this, e);
-
-    // For client connections that own their socket, close the reader/writer.
-    if (this.#ownsSocket) {
-      try { this.#rawReader?.close(); } catch (_) {}
-      try { this.#rawWriter?.close(); } catch (_) {}
+      const e = new CloseEvent('close', { code, reason, wasClean });
+      this.dispatchEvent(e);
+      if (this.#onclose) this.#onclose.call(this, e);
     }
+
+    try { this.#rawReader?.close(); } catch (_) {}
+    try { this.#rawWriter?.close(); } catch (_) {}
 
     if (this.#closeResolve) {
       this.#closeResolve();
