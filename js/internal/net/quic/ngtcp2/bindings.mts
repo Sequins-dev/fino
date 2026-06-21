@@ -123,10 +123,13 @@ const _SYMBOLS = {
 };
 
 type StatelessResetWriter = (dest: Uint8Array, destlen: number, token: Uint8Array, random: Uint8Array, randomLength: number) => number;
+type ResetStreamAtWriter = (conn: ArrayBuffer, flags: number, streamId: bigint, appErrorCode: bigint, finalSize: bigint) => number;
 
 let _lib: ReturnType<typeof dlopen> | null = null;
 let _statelessResetLib: ReturnType<typeof dlopen> | null = null;
 let _statelessResetWriter: StatelessResetWriter | null = null;
+let _resetStreamAtLib: ReturnType<typeof dlopen> | null = null;
+let _resetStreamAtWriter: ResetStreamAtWriter | null = null;
 const _loadErrors: string[] = [];
 
 function statelessResetTokenPointer(token: Uint8Array): ArrayBuffer {
@@ -134,6 +137,38 @@ function statelessResetTokenPointer(token: Uint8Array): ArrayBuffer {
     ? token
     : token.slice();
   return Pointer.of(view.buffer);
+}
+
+function tryOpenResetStreamAt(path: string): ResetStreamAtWriter | null {
+  const signature = {
+    parameters: ['pointer', 'u32', 'i64', 'u64', 'u64'],
+    result: 'i32',
+    fast: false,
+  } as const;
+  try {
+    const lib = dlopen(path, {
+      ngtcp2_conn_shutdown_stream_at: signature,
+    });
+    _resetStreamAtLib = lib;
+    return (conn, flags, streamId, appErrorCode, finalSize) => Number(
+      lib.symbols.ngtcp2_conn_shutdown_stream_at(conn, flags, streamId, appErrorCode, finalSize),
+    );
+  } catch (error1) {
+    try {
+      const lib = dlopen(path, {
+        ngtcp2_conn_reset_stream_at: signature,
+      });
+      _resetStreamAtLib = lib;
+      return (conn, flags, streamId, appErrorCode, finalSize) => Number(
+        lib.symbols.ngtcp2_conn_reset_stream_at(conn, flags, streamId, appErrorCode, finalSize),
+      );
+    } catch (error2) {
+      const message1 = error1 instanceof Error ? error1.message : String(error1);
+      const message2 = error2 instanceof Error ? error2.message : String(error2);
+      _loadErrors.push(`${path}: reset_stream_at unavailable (${message1}; ${message2})`);
+      return null;
+    }
+  }
 }
 
 function tryOpenStatelessReset(path: string): StatelessResetWriter | null {
@@ -178,6 +213,7 @@ for (const path of _CANDIDATES) {
     if (statelessResetWriter === null) continue;
     _lib = lib;
     _statelessResetWriter = statelessResetWriter;
+    _resetStreamAtWriter = tryOpenResetStreamAt(path);
     break;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -186,12 +222,18 @@ for (const path of _CANDIDATES) {
 }
 
 export const ngtcp2Available = _lib !== null && _statelessResetWriter !== null;
+export const ngtcp2ResetStreamAtAvailable = _resetStreamAtWriter !== null;
 export const sym = _lib?.symbols ?? null;
 export const ptr = _lib?.pointers ?? null;
 
 export function ngtcp2PktWriteStatelessReset(dest: Uint8Array, destlen: number, token: Uint8Array, random: Uint8Array, randomLength: number): number {
   if (_statelessResetWriter === null) throw new Error('ngtcp2 stateless reset writer is unavailable');
   return _statelessResetWriter(dest, destlen, token, random, randomLength);
+}
+
+export function ngtcp2ConnResetStreamAt(conn: ArrayBuffer, flags: number, streamId: bigint, appErrorCode: bigint, finalSize: bigint): number {
+  if (_resetStreamAtWriter === null) throw new Error('ngtcp2 reset_stream_at is not supported by the loaded library');
+  return _resetStreamAtWriter(conn, flags, streamId, appErrorCode, finalSize);
 }
 
 export function requireNgtcp2(): ReturnType<typeof dlopen> {

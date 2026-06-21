@@ -18,6 +18,8 @@
  * indeterminate and reject validation unless another supported signature or
  * digest completes the chain. NSEC3 validation supports SHA-1 hashes only and
  * rejects records above the module iteration cap.
+ *
+ * @internal
  */
 
 import { atob, btoa, TextEncoder } from '../globals/encoding.mts';

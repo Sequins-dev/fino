@@ -370,6 +370,7 @@ const _sslSymbols = {
   SSL_get_verify_result: { parameters: ['pointer'], result: 'i64' },
   SSL_get_servername: { parameters: ['pointer', 'i32'], result: 'pointer' },
   SSL_get1_peer_certificate: { parameters: ['pointer'], result: 'pointer' },
+  SSL_export_keying_material: { parameters: ['pointer', 'buffer', 'usize', 'buffer', 'usize', 'buffer', 'usize', 'i32'], result: 'i32' },
   X509_verify_cert_error_string: { parameters: ['i64'], result: 'pointer' },
   X509_free: { parameters: ['pointer'], result: 'void' },
   i2d_X509: { parameters: ['pointer', 'buffer'], result: 'i32' },
@@ -2886,6 +2887,26 @@ export function sslGetPeerCertificate(ssl: object): Uint8Array | null {
   } finally {
     lib.symbols.X509_free(cert);
   }
+}
+
+/** Export RFC 5705 TLS keying material for an `SSL*`. */
+export function sslExportKeyingMaterial(ssl: object, label: string, context: Uint8Array, length: number): ArrayBuffer {
+  const lib = _requireSsl();
+  if (!Number.isInteger(length) || length < 0) throw new RangeError('TLS exporter length must be a non-negative integer');
+  const out = new Uint8Array(length);
+  const labelBytes = encodeUtf8(label);
+  const rc = lib.symbols.SSL_export_keying_material(
+    ssl,
+    out,
+    out.byteLength,
+    labelBytes,
+    labelBytes.byteLength,
+    context,
+    context.byteLength,
+    1,
+  ) as number;
+  if (rc !== 1) throw new Error('SSL_export_keying_material failed: ' + getErrorString());
+  return out.buffer;
 }
 
 /** Return the SNI server name associated with an `SSL*`, when available. */

@@ -8,7 +8,8 @@ use v8;
 
 use crate::{
     async_context, async_runtime_module, ffi, inspector_module, platform, profiler, realm,
-    state::ImportDirective, state::get_state, typescript_format,
+    state::ImportDirective, state::ImportPattern, state::ImportRule, state::get_state,
+    typescript_format,
 };
 
 // ---------------------------------------------------------------------------
@@ -266,12 +267,17 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:net/http/h3/resolve",
         "internal/net/http/h3/resolve"
     ),
+    source_builtin!(
+        "internal:net/http/h3/webtransport",
+        "internal/net/http/h3/webtransport"
+    ),
     source_builtin!("internal:net/http/h3/server", "internal/net/http/h3/server"),
     source_builtin!("internal:net/http/h3/client", "internal/net/http/h3/client"),
     source_builtin!("internal:net/http/h3", "net/http/h3"),
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
     source_builtin!("fino:net/http/eventsource", "net/http/eventsource"),
     source_builtin!("fino:net/http/websocket", "net/http/websocket"),
+    source_builtin!("fino:net/http/webtransport", "net/http/webtransport"),
     source_builtin!(
         "internal:net/quic/ngtcp2/bindings",
         "internal/net/quic/ngtcp2/bindings"
@@ -556,6 +562,7 @@ pub fn loader_hooks_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s,
         "registerTranspile",
         "getPackageMap",
         "lookupOriginalPosition",
+        "allowInternalForTests",
     ]
     .iter()
     .map(|n| v8::String::new(scope, n).unwrap())
@@ -584,6 +591,7 @@ fn loader_hooks_eval<'a>(
     set_fn!("registerTranspile", register_transpile);
     set_fn!("getPackageMap", get_package_map);
     set_fn!("lookupOriginalPosition", lookup_original_position);
+    set_fn!("allowInternalForTests", allow_internal_for_tests);
 
     Some(v8::undefined(scope).into())
 }
@@ -641,6 +649,18 @@ fn get_package_map(
         }
         None => rv.set(v8::null(scope).into()),
     }
+}
+
+fn allow_internal_for_tests(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    get_state(scope).borrow_mut().import_rules.push(ImportRule {
+        from: Some(ImportPattern::Prefix("file://".to_string())),
+        pattern: ImportPattern::Prefix("internal:".to_string()),
+        directive: ImportDirective::Inherit,
+    });
 }
 
 fn lookup_original_position(

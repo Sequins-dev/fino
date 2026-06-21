@@ -57,6 +57,9 @@ import type { H3Server, H3ServeOptions } from './h3.mts';
 import { _headerTokenList } from './index.mts';
 import { WebSocketConnection } from './websocket.mts';
 import type { WebSocketAcceptOptions } from './websocket.mts';
+import { WebTransport } from './webtransport.mts';
+import type { WebTransportOptions } from './webtransport.mts';
+import type { H3WebTransportHandler } from '../../internal/net/http/h3/server.mts';
 import type { ConnectionTakeover, ServerHandler, ServerResult } from 'internal:net/http/driver';
 import type { Request, Response } from './index.mts';
 import { Response as HttpResponse } from './index.mts';
@@ -153,9 +156,20 @@ export interface IncomingWebSocketRequest extends IncomingBase<'websocket'> {
   accept(options?: WebSocketAcceptOptions): Promise<WebSocketConnection>;
 }
 
+/**
+ * Incoming HTTP/3 extended CONNECT request for WebTransport.
+ */
+export interface IncomingWebTransportRequest extends IncomingBase<'webtransport'> {
+  /** Application protocol tokens requested by the client. */
+  readonly protocols: readonly string[];
+  /** Accept the WebTransport session and take over the request stream. */
+  accept(options?: WebTransportOptions): Promise<WebTransport>;
+}
+
 export type IncomingHttp =
   | IncomingHttpRequest
-  | IncomingWebSocketRequest;
+  | IncomingWebSocketRequest
+  | IncomingWebTransportRequest;
 
 export type ServerAcceptHandler = (
   incoming: IncomingHttp,
@@ -260,6 +274,48 @@ function _makeAcceptAdapter(
   };
 }
 
+function _makeWebTransportAcceptAdapter(
+  handler: ServerAcceptHandler,
+  protocol: HttpProtocol,
+  transport: HttpTransport,
+  addresses?: { localAddress?: unknown; remoteAddress?: unknown },
+): H3WebTransportHandler {
+  return async (request: Request, webtransport: WebTransport): Promise<WebTransport | Response> => {
+    const session = _makeSession(protocol, transport, addresses);
+    let decision: 'pending' | 'accepted' | 'rejected' = 'pending';
+    let result: WebTransport | Response | null = null;
+
+    function assertPending(action: string): void {
+      if (decision !== 'pending') throw new TypeError(`HTTP incoming already ${decision}; cannot ${action}`);
+    }
+
+    const incoming: IncomingWebTransportRequest = {
+      kind: 'webtransport',
+      request,
+      protocol,
+      session,
+      protocols: _headerTokenList(request.headers.get('sec-webtransport-protocol')),
+      reject(response?: Response): Promise<void> {
+        assertPending('reject');
+        decision = 'rejected';
+        result = response ?? _defaultReject('webtransport');
+        return Promise.resolve();
+      },
+      accept(_options?: WebTransportOptions): Promise<WebTransport> {
+        assertPending('accept');
+        decision = 'accepted';
+        result = webtransport;
+        return Promise.resolve(webtransport);
+      },
+    };
+
+    await handler(incoming, session);
+    if (decision === 'pending') throw new Error('HTTP incoming handler did not accept or reject');
+    if (result === null) throw new Error('HTTP incoming handler did not produce a response');
+    return result;
+  };
+}
+
 const _h1Driver = new H1ServerDriver();
 const _h2Driver = new H2ServerDriver();
 
@@ -352,6 +408,10 @@ export function serve(
     return _makeAcceptAdapter(handler, protocol, transport, addresses);
   }
 
+  function _webTransportHandlerFor(protocol: HttpProtocol, transport: HttpTransport, addresses?: { localAddress?: unknown; remoteAddress?: unknown }): H3WebTransportHandler {
+    return _makeWebTransportAcceptAdapter(handler, protocol, transport, addresses);
+  }
+
   const h3Options = options.h3;
   let h3Server: H3Server | null = null;
   const h3Ready: Promise<void> = (h3Options !== undefined && h3Options !== false)
@@ -361,7 +421,9 @@ export function serve(
         hostname: boundAddress.ip,
         certificateFile: options.tls!.cert,
         privateKeyFile: options.tls!.key,
-      }, _handlerFor('h3', 'quic')).then((server) => { h3Server = server; })
+      }, _handlerFor('h3', 'quic') as any, {
+        onWebTransport: _webTransportHandlerFor('h3', 'quic'),
+      }).then((server) => { h3Server = server; })
     : Promise.resolve();
   h3Ready.catch(() => {
     if (closeSignalResolve) closeSignalResolve();

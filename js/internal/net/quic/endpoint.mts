@@ -248,6 +248,8 @@ import {
   FfiCallback,
   Pointer,
   ngtcp2Available,
+  ngtcp2ConnResetStreamAt,
+  ngtcp2ResetStreamAtAvailable,
   ngtcp2PktWriteStatelessReset,
   ptr as ngtcp2Ptr,
   readCStr,
@@ -265,6 +267,7 @@ import {
   getAlpnSelected,
   getHandshakeInfo,
   getPeerCertificate,
+  exportKeyingMaterial as exportTlsKeyingMaterial,
   exportSession,
   importSession,
   initCrypto,
@@ -1070,6 +1073,7 @@ function withNativeCallback<T>(fn: () => T): T {
 }
 
 export const quicAvailable = ngtcp2Available && cryptoAvailable;
+export const quicResetStreamAtAvailable = ngtcp2ResetStreamAtAvailable;
 export const cryptoBackend = quicAvailable ? _cryptoBackend : null;
 export const transportEngine = 'ngtcp2';
 
@@ -4562,6 +4566,11 @@ export class QuicConnection extends EventTarget {
     return this.#peerVerification === null ? null : { ...this.#peerVerification };
   }
 
+  exportKeyingMaterial(label: string, context: Uint8Array, length: number): ArrayBuffer {
+    if (this.#state !== 'connected') throw new Error('QUIC connection is not connected');
+    return exportTlsKeyingMaterial(this.#tls, label, context, length);
+  }
+
   _isClosedForInternalUse(): boolean {
     return this.#closed;
   }
@@ -6795,6 +6804,34 @@ export class QuicStream extends EventTarget {
   reset(errorCode: number): void {
     this.#assertConnectionOpen();
     ngtcp2Sym!.ngtcp2_conn_shutdown_stream(this.#connection.nativeHandle, 0, BigInt(this.id), BigInt(errorCode));
+    this._resetFromConnection(errorCode);
+    this.#connection._scheduleWrites();
+  }
+
+  /**
+   * Reset the stream after reliably delivering bytes up to `finalSize`.
+   *
+   * This requires ngtcp2 support for the QUIC reliable reset extension. Builds
+   * without that native symbol throw a clear unsupported error.
+   */
+  resetAt(errorCode: number, finalSize: number | bigint): void {
+    this.#assertConnectionOpen();
+    if (!ngtcp2ResetStreamAtAvailable) {
+      throw new Error('ngtcp2 reset_stream_at is not supported by the loaded library');
+    }
+    if (!Number.isFinite(errorCode) || errorCode < 0) {
+      throw new RangeError('QUIC stream resetAt errorCode must be a non-negative finite number');
+    }
+    const reliableSize = typeof finalSize === 'bigint' ? finalSize : BigInt(finalSize);
+    if (reliableSize < 0n) throw new RangeError('QUIC stream resetAt finalSize must be non-negative');
+    const rc = ngtcp2ConnResetStreamAt(
+      this.#connection.nativeHandle,
+      0,
+      BigInt(this.id),
+      BigInt(Math.floor(errorCode)),
+      reliableSize,
+    );
+    if (rc !== 0) throw ngtcp2Error(rc, 'ngtcp2 reset_stream_at');
     this._resetFromConnection(errorCode);
     this.#connection._scheduleWrites();
   }

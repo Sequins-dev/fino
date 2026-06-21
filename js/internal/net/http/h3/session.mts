@@ -1,3 +1,13 @@
+/**
+ * internal:net/http/h3/session - nghttp3 session wrapper.
+ *
+ * Provides the low-level request/response submission, callback registration,
+ * native buffer management, and event processing used by the internal HTTP/3
+ * client and server drivers.
+ *
+ * @internal
+ */
+
 import { TextDecoder as _TextDecoder } from '../../../globals/encoding.mts';
 import {
   sym, FfiCallback, Pointer,
@@ -8,7 +18,11 @@ import {
   CB_DEFERRED_CONSUME,
   CB_BEGIN_HEADERS, CB_RECV_HEADER, CB_END_HEADERS,
   CB_BEGIN_TRAILERS, CB_RECV_TRAILER, CB_END_TRAILERS,
-  CB_END_STREAM, CB_RESET_STREAM, CB_SHUTDOWN,
+  CB_END_STREAM, CB_RESET_STREAM, CB_SHUTDOWN, CB_RECV_SETTINGS2,
+  SETTINGS_ENABLE_CONNECT_PROTOCOL as NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  SETTINGS_H3_DATAGRAM as NGHTTP3_SETTINGS_H3_DATAGRAM,
+  PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  PROTO_SETTINGS_H3_DATAGRAM,
   NV_ENTRY_SIZE,
   VEC_ENTRY_SIZE,
   DR_READ_DATA, DR_SIZE,
@@ -18,6 +32,15 @@ import {
   NGHTTP3_H3_MESSAGE_ERROR, NGHTTP3_H3_REQUEST_CANCELLED,
   buildNvArray, readRcbuf, writeCbPtr,
 } from './bindings.mts';
+import {
+  injectWebTransportSettings,
+  readWebTransportSettings,
+  SETTINGS_WT_ENABLED,
+  SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  SETTINGS_H3_DATAGRAM,
+  webTransportSettings,
+  webTransportSettingsEnabled,
+} from './webtransport.mts';
 
 export { buildNvArray };
 
@@ -34,9 +57,14 @@ export interface H3SessionCallbacks {
   onResetStream(streamId: bigint, appErrorCode: bigint): void;
   onAckedStreamData(streamId: bigint, datalen: bigint): void;
   onShutdown?(lastStreamId: bigint): void;
+  onRecvSettings?(settings: ReadonlyMap<number, number>): void;
 }
 
 export type H3BodySource = Uint8Array | AsyncIterable<Uint8Array | ArrayBuffer>;
+
+export interface H3SessionOptions {
+  webTransport?: boolean;
+}
 
 interface BodySlot {
   bytes: Uint8Array | null;
@@ -50,6 +78,20 @@ interface BodySlot {
 const _MAX_VECS = 16;
 const _VEC_BUF_SIZE = _MAX_VECS * VEC_ENTRY_SIZE;
 
+function protoSettingsToMap(settingsPtr: ArrayBuffer | null): Map<number, number> {
+  const settings = new Map<number, number>();
+  if (settingsPtr === null) return settings;
+  settings.set(
+    SETTINGS_ENABLE_CONNECT_PROTOCOL,
+    Pointer.readU8(settingsPtr, PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL) === 0 ? 0 : 1,
+  );
+  settings.set(
+    SETTINGS_H3_DATAGRAM,
+    Pointer.readU8(settingsPtr, PROTO_SETTINGS_H3_DATAGRAM) === 0 ? 0 : 1,
+  );
+  return settings;
+}
+
 export class Nghttp3Session {
   #conn: ArrayBuffer;          // nghttp3_conn* (8-byte pointer)
   #callbacks: Array<{ close(): void }> = [];
@@ -62,6 +104,11 @@ export class Nghttp3Session {
   #closed = false;
   #ready = false;   // true once bindControlStream has been called
   #mu: Promise<void> = Promise.resolve();
+  #localSettings = new Map<number, number>();
+  #peerSettings = new Map<number, number>();
+  #peerSettingsReceived = false;
+  #webTransport = false;
+  #controlStreamId: bigint | null = null;
   readonly #cb: H3SessionCallbacks;
 
   private constructor(conn: ArrayBuffer, cbsBuf: Uint8Array, drBuf: Uint8Array, cb: H3SessionCallbacks) {
@@ -71,18 +118,18 @@ export class Nghttp3Session {
     this.#cb = cb;
   }
 
-  static createServer(cb: H3SessionCallbacks): Nghttp3Session {
+  static createServer(cb: H3SessionCallbacks, options: H3SessionOptions = {}): Nghttp3Session {
     if (!h3Available || sym === null) throw new Error('libnghttp3 is not available');
-    return Nghttp3Session.#create(cb, true);
+    return Nghttp3Session.#create(cb, true, options);
   }
 
-  static createClient(cb: H3SessionCallbacks): Nghttp3Session {
+  static createClient(cb: H3SessionCallbacks, options: H3SessionOptions = {}): Nghttp3Session {
     if (!h3Available || sym === null) throw new Error('libnghttp3 is not available');
-    return Nghttp3Session.#create(cb, false);
+    return Nghttp3Session.#create(cb, false, options);
   }
 
 
-  static #create(cb: H3SessionCallbacks, isServer: boolean): Nghttp3Session {
+  static #create(cb: H3SessionCallbacks, isServer: boolean, options: H3SessionOptions): Nghttp3Session {
     // Allocate the 152-byte callbacks struct (zeroed = null callbacks for unused fields).
     const cbsBuf = new Uint8Array(CB_SIZE);
 
@@ -99,6 +146,12 @@ export class Nghttp3Session {
     // Fill settings struct with library defaults.
     const settingsBuf = new Uint8Array(SETTINGS_SIZE);
     sym!.nghttp3_settings_default_versioned(NGHTTP3_SETTINGS_VERSION, Pointer.of(settingsBuf));
+    const localSettings = new Map<number, number>();
+    if (options.webTransport === true) {
+      settingsBuf[NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL] = 1;
+      settingsBuf[NGHTTP3_SETTINGS_H3_DATAGRAM] = 1;
+      for (const [id, value] of webTransportSettings()) localSettings.set(id, value);
+    }
 
     const rc = isServer
       ? sym!.nghttp3_conn_server_new_versioned(
@@ -115,6 +168,8 @@ export class Nghttp3Session {
       throw new Error(`nghttp3_conn_${isServer ? 'server' : 'client'}_new_versioned failed: ${rc}`);
     }
 
+    session.#localSettings = localSettings;
+    session.#webTransport = options.webTransport === true;
     return session;
   }
 
@@ -260,6 +315,16 @@ export class Nghttp3Session {
       writeCbPtr(cbsBuf, CB_SHUTDOWN, shutdown);
       this.#callbacks.push(shutdown);
     }
+
+    const recvSettings2 = new FfiCallback(
+      { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
+      (_conn: ArrayBuffer, settingsPtr: ArrayBuffer | null) => {
+        this.#recordPeerSettings(protoSettingsToMap(settingsPtr));
+        return 0;
+      },
+    );
+    writeCbPtr(cbsBuf, CB_RECV_SETTINGS2, recvSettings2);
+    this.#callbacks.push(recvSettings2);
   }
 
   // Shared read_data callback for all response body submissions.
@@ -331,6 +396,7 @@ export class Nghttp3Session {
   bindControlStream(controlStreamId: bigint): void {
     const rc = sym!.nghttp3_conn_bind_control_stream(this.#conn, controlStreamId) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_bind_control_stream failed: ${rc}`);
+    this.#controlStreamId = controlStreamId;
     this.#ready = true;
   }
 
@@ -441,6 +507,10 @@ export class Nghttp3Session {
     if (this.#closed) throw new Error('session closed');
     return this.#withMu(async () => {
       if (this.#closed) throw new Error('session closed');
+      if (this.#webTransport && data.byteLength > 0) {
+        const settings = readWebTransportSettings(data);
+        if (settings.size > 0) this.#recordPeerSettings(settings);
+      }
       const ts = BigInt(Math.floor(performance.now() * 1_000_000));
       const consumed = sym!.nghttp3_conn_read_stream2(
         this.#conn, streamId, Pointer.of(data), data.byteLength, fin ? 1 : 0, ts,
@@ -554,7 +624,7 @@ export class Nghttp3Session {
           const combined = new Uint8Array(totalBytes);
           let off = 0;
           for (const p of parts) { combined.set(p, off); off += p.length; }
-          await entry.writer.write(combined);
+          await entry.writer.write(this.#patchOutgoingStreamBytes(sid, combined));
           if (this.#closed) return;
           consumed = totalBytes;
         }
@@ -589,6 +659,41 @@ export class Nghttp3Session {
   // -------------------------------------------------------------------------
 
   get isClosed(): boolean { return this.#closed; }
+
+  get localSettings(): ReadonlyMap<number, number> {
+    return new Map(this.#localSettings);
+  }
+
+  get peerSettings(): ReadonlyMap<number, number> {
+    return new Map(this.#peerSettings);
+  }
+
+  get peerSettingsReceived(): boolean {
+    return this.#peerSettingsReceived;
+  }
+
+  get peerWebTransportReady(): boolean {
+    return webTransportSettingsEnabled(this.#peerSettings);
+  }
+
+  _recordPeerSettingsForTest(settings: ReadonlyMap<number, number>): void {
+    this.#recordPeerSettings(settings);
+  }
+
+  #recordPeerSettings(settings: ReadonlyMap<number, number>): void {
+    const merged = new Map(this.#peerSettings);
+    for (const [id, value] of settings) merged.set(id, value);
+    this.#peerSettings = merged;
+    this.#peerSettingsReceived = true;
+    this.#cb.onRecvSettings?.(this.peerSettings);
+  }
+
+  #patchOutgoingStreamBytes(streamId: bigint, bytes: Uint8Array): Uint8Array {
+    if (!this.#webTransport || streamId !== this.#controlStreamId || !this.#localSettings.has(SETTINGS_WT_ENABLED)) {
+      return bytes;
+    }
+    return injectWebTransportSettings(bytes);
+  }
 
   closeWhenIdle(): Promise<void> {
     const p = this.#mu.then(async () => {

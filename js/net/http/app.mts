@@ -63,8 +63,10 @@ import type {
   HttpProtocol,
   IncomingHttp,
   IncomingWebSocketRequest,
+  IncomingWebTransportRequest,
 } from './server.mts';
 import { WebSocketConnection } from './websocket.mts';
+import { WebTransport } from './webtransport.mts';
 
 /**
  * Standard HTTP methods supported by route builders.
@@ -142,6 +144,14 @@ export interface WebSocketContext extends HttpContext {
 }
 
 /**
+ * Request context passed to WebTransport route handlers.
+ */
+export interface WebTransportContext extends HttpContext {
+  /** Incoming WebTransport request accepted by the route. */
+  incoming: IncomingWebTransportRequest;
+}
+
+/**
  * Koa-style middleware. Return a response to short-circuit or call `next()`.
  *
  * Returning `undefined` after calling `next()` uses the downstream response.
@@ -155,7 +165,7 @@ export interface WebSocketContext extends HttpContext {
  * };
  * ```
  */
-export type HttpHandlerResult = Response | WebSocketConnection;
+export type HttpHandlerResult = Response | WebSocketConnection | WebTransport;
 
 export type Middleware = (ctx: HttpContext, next: () => Promise<HttpHandlerResult>) => HttpHandlerResult | void | Promise<HttpHandlerResult | void>;
 
@@ -172,6 +182,11 @@ export type Middleware = (ctx: HttpContext, next: () => Promise<HttpHandlerResul
 export type Handler = (ctx: HttpContext) => HttpHandlerResult | Promise<HttpHandlerResult>;
 
 export type WebSocketHandler = (socket: WebSocketConnection, ctx: WebSocketContext) => void | Promise<void>;
+
+/**
+ * Terminal handler for a WebTransport route.
+ */
+export type WebTransportHandler = (session: WebTransport, ctx: WebTransportContext) => void | Promise<void>;
 
 /**
  * Context value producer used by `.value(name, producer)`.
@@ -336,6 +351,14 @@ type WebSocketEndpoint = {
   handler: WebSocketHandler;
 };
 
+type WebTransportEndpoint = {
+  path: string;
+  pattern: URLPattern;
+  stack: StackItem[];
+  slots: string[];
+  handler: WebTransportHandler;
+};
+
 type BuildState = {
   stack: StackItem[];
   slots: Set<string>;
@@ -478,6 +501,21 @@ function makeInitialWebSocketContext(app: App, endpoint: WebSocketEndpoint, inco
     incoming,
     params,
   } as WebSocketContext;
+  for (const slot of endpoint.slots) ctx[slot] = undefined;
+  return ctx;
+}
+
+function makeInitialWebTransportContext(app: App, endpoint: WebTransportEndpoint, incoming: IncomingWebTransportRequest, params: Record<string, string>): WebTransportContext {
+  const ctx = {
+    request: incoming.request,
+    app,
+    route: endpoint.path,
+    method: 'WEBTRANSPORT',
+    protocol: incoming.protocol,
+    session: incoming.session,
+    incoming,
+    params,
+  } as WebTransportContext;
   for (const slot of endpoint.slots) ctx[slot] = undefined;
   return ctx;
 }
@@ -709,6 +747,7 @@ export class App extends BuilderBase<App> {
    */
   #endpoints: Endpoint[] = [];
   #webSocketEndpoints: WebSocketEndpoint[] = [];
+  #webTransportEndpoints: WebTransportEndpoint[] = [];
   /**
    * Private property `#requestContext` used by `App`.
    *
@@ -857,6 +896,34 @@ export class App extends BuilderBase<App> {
     return this;
   }
 
+  /** Register a WebTransport route.
+   *
+   * ```ts no_run
+   * app.webtransport('/wt', async (session) => {
+   *   await session.ready;
+   * });
+   * ```
+   */
+  webtransport(path: string, ...stack: Array<Middleware | WebTransportHandler>): this {
+    if (stack.length === 0) throw new Error('WebTransport route requires a handler');
+    const handler = stack[stack.length - 1] as WebTransportHandler;
+    const middleware = stack.slice(0, -1) as Middleware[];
+    const state = forkState(this._state);
+    for (const fn of middleware) state.stack.push({ type: 'middleware', fn, meta: metadataOf(fn) });
+    const endpoint: WebTransportEndpoint = {
+      path,
+      pattern: new URLPattern({ pathname: path }),
+      stack: state.stack,
+      slots: [...state.slots],
+      handler,
+    };
+    if (this.#webTransportEndpoints.some((current) => current.path === path)) {
+      throw new Error(`Duplicate WebTransport route ${path}`);
+    }
+    this.#webTransportEndpoints.push(endpoint);
+    return this;
+  }
+
   /**
    * Private method `#direct` used by `App`.
    *
@@ -959,6 +1026,39 @@ export class App extends BuilderBase<App> {
     await incoming.reject();
   }
 
+  async #handleWebTransport(incoming: IncomingWebTransportRequest): Promise<void> {
+    const path = pathFromRequest(incoming.request);
+    for (const endpoint of this.#webTransportEndpoints) {
+      const match = endpoint.pattern.exec({ pathname: path });
+      if (match === null) continue;
+      const ctx = makeInitialWebTransportContext(this, endpoint, incoming, { ...match.pathname.groups });
+      await this.#requestContext.runWithValue(ctx, async () => {
+        let session: WebTransport;
+        try {
+          session = await incoming.accept();
+        } catch {
+          await incoming.reject(new Response('Bad Request', { status: 400 }));
+          return;
+        }
+        for (const item of endpoint.stack) {
+          if (item.type === 'producer') ctx[item.name] = await item.fn(ctx);
+        }
+        await endpoint.handler(session, ctx);
+      });
+      return;
+    }
+    await incoming.reject();
+  }
+
+  /**
+   * Dispatch a synthetic WebTransport incoming request for focused app tests.
+   *
+   * @internal
+   */
+  _handleWebTransportForTest(incoming: IncomingWebTransportRequest): Promise<void> {
+    return this.#handleWebTransport(incoming);
+  }
+
   /** Start an HTTP server that dispatches requests to this app.
    *
    * The returned server is the same object returned by `serve()`.
@@ -971,6 +1071,10 @@ export class App extends BuilderBase<App> {
     return serve(options, async (incoming, session) => {
       if (incoming.kind === 'websocket') {
         await this.#handleWebSocket(incoming);
+        return;
+      }
+      if (incoming.kind === 'webtransport') {
+        await this.#handleWebTransport(incoming);
         return;
       }
       const accepted: AcceptedHttpRequest = await incoming.accept();

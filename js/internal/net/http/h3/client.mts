@@ -1,12 +1,25 @@
+/**
+ * internal:net/http/h3/client - HTTP/3 client session over QUIC.
+ *
+ * Owns request submission, response header/body/trailer assembly, and stream
+ * close/error propagation for an already-established QUIC connection. Public
+ * client APIs reach this through `fetch()` or `HttpClient`.
+ *
+ * @internal
+ */
+
 import { Nghttp3Session } from './session.mts';
 import type { H3BodySource, H3SessionCallbacks } from './session.mts';
 import { H3BodyQueue } from './body-queue.mts';
 import { h3Available } from './bindings.mts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
+import { WebTransport } from '../../../../net/http/webtransport.mts';
+import type { WebTransportOptions } from '../../../../net/http/webtransport.mts';
 
 export interface H3RequestInit extends RequestInit {
   trailers?: Array<[string, string]>;
+  webTransportOptions?: WebTransportOptions;
 }
 
 interface PendingRequest {
@@ -32,6 +45,20 @@ function bodySourceFromInit(url: string | URL, init?: H3RequestInit): H3BodySour
   }
   const stream = new Request(url, init).body;
   return stream === null ? undefined : stream as any;
+}
+
+function getPseudoHeader(init: H3RequestInit | undefined, name: string): string | null {
+  const headers = init?.headers;
+  if (headers === undefined) return null;
+  if (headers instanceof Headers) return headers.get(name);
+  if (Array.isArray(headers)) {
+    for (const [key, value] of headers) {
+      if (key.toLowerCase() === name) return value;
+    }
+    return null;
+  }
+  const value = (headers as Record<string, string>)[name];
+  return value === undefined ? null : String(value);
 }
 
 export class H3ClientSession {
@@ -135,7 +162,7 @@ export class H3ClientSession {
       },
     };
 
-    session = Nghttp3Session.createClient(callbacks);
+    session = Nghttp3Session.createClient(callbacks, { webTransport: true });
     instance = new H3ClientSession(conn, session);
 
     conn.addEventListener('close', () => {
@@ -209,10 +236,22 @@ export class H3ClientSession {
       [':authority', parsed.host],
     ];
 
-    if (init?.headers) {
-      new Headers(init.headers as HeadersInit).forEach((value, name) => {
-        reqHeaders.push([name.toLowerCase(), value]);
+    const protocol = getPseudoHeader(init, ':protocol');
+    if (protocol !== null) reqHeaders.push([':protocol', protocol]);
+
+    const headers = init?.headers;
+    if (headers instanceof Headers) {
+      headers.forEach((value, name) => {
+        if (!name.startsWith(':')) reqHeaders.push([name.toLowerCase(), value]);
       });
+    } else if (Array.isArray(headers)) {
+      for (const [name, value] of headers) {
+        if (!name.startsWith(':')) reqHeaders.push([name.toLowerCase(), value]);
+      }
+    } else if (headers !== undefined) {
+      for (const [name, value] of Object.entries(headers as Record<string, string>)) {
+        if (!name.startsWith(':')) reqHeaders.push([name.toLowerCase(), String(value)]);
+      }
     }
 
     const quicStream = await this.#conn.openBidirectionalStream();
@@ -279,6 +318,39 @@ export class H3ClientSession {
     return responsePromise;
   }
 
+  async webtransport(url: string | URL, init: H3RequestInit = {}): Promise<WebTransport> {
+    if (this.#closed) throw new Error('H3 session is closed');
+    const headers: Array<[string, string]> = [];
+    const sourceHeaders = init.headers;
+    if (sourceHeaders instanceof Headers) {
+      sourceHeaders.forEach((value, name) => headers.push([name, value]));
+    } else if (Array.isArray(sourceHeaders)) {
+      headers.push(...sourceHeaders);
+    } else if (sourceHeaders !== undefined) {
+      for (const [name, value] of Object.entries(sourceHeaders as Record<string, string>)) {
+        headers.push([name, String(value)]);
+      }
+    }
+    headers.push([':protocol', 'webtransport-h3']);
+    const response = await this.request(url, {
+      ...init,
+      method: 'CONNECT',
+      headers,
+    } as H3RequestInit);
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`WebTransport over HTTP/3 rejected with status ${response.status}`);
+    }
+    const streamId = (response as any).__h3StreamId as bigint | undefined;
+    if (streamId === undefined) throw new Error('WebTransport over HTTP/3 response did not expose a CONNECT stream id');
+    return WebTransport._fromHttp3(String(url), {
+      connection: this.#conn,
+      sessionStreamId: streamId,
+      responseHeaders: response.headers,
+      protocol: response.headers.get('sec-webtransport-protocol') ?? '',
+      options: init.webTransportOptions,
+    });
+  }
+
   #resolveResponse(streamId: bigint): void {
     const pending = this.#pending.get(streamId);
     if (!pending || pending.responseResolved) return;
@@ -290,11 +362,13 @@ export class H3ClientSession {
       return;
     }
     const headers = new Headers(pending.responseHeaders as HeadersInit);
-    pending.resolve?.(new Response(pending.body as any, {
+    const response = new Response(pending.body as any, {
       status: statusNum,
       headers,
       trailers: () => pending.trailers,
-    } as any));
+    } as any);
+    (response as any).__h3StreamId = streamId;
+    pending.resolve?.(response);
   }
 
   #markDone(streamId: bigint): void {

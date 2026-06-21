@@ -6,18 +6,53 @@ import {
   h3Available,
   requireH3,
   serve as h3Serve,
-} from '../../js/net/http/h3.mts';
-import { resolveH3ConnectAddress } from '../../js/internal/net/http/h3/resolve.mts';
+} from 'internal:net/http/h3';
+import { resolveH3ConnectAddress } from 'internal:net/http/h3/resolve';
 import { serve as httpServe } from 'fino:net/http/server';
 import { App } from 'fino:net/http/app';
-import { H3ServerDriver } from '../../js/internal/net/http/h3/server.mts';
-import { H3ClientSession } from '../../js/internal/net/http/h3/client.mts';
-import { Nghttp3Session } from '../../js/internal/net/http/h3/session.mts';
+import { HttpClient } from 'fino:net/http/client';
+import { DiskFileSystem } from 'fino:file';
+import { H3ServerDriver } from 'internal:net/http/h3/server';
+import { H3ClientSession } from 'internal:net/http/h3/client';
+import { Nghttp3Session } from 'internal:net/http/h3/session';
+import { WebTransport } from 'fino:net/http/webtransport';
+import {
+  SETTINGS_ENABLE_CONNECT_PROTOCOL,
+  SETTINGS_H3_DATAGRAM,
+  SETTINGS_WT_ENABLED,
+  WEBTRANSPORT_BIDI_STREAM_TYPE,
+  WEBTRANSPORT_UNI_STREAM_TYPE,
+  decodeHttpDatagram,
+  decodeH3SettingsFrame,
+  decodeQuicVarint,
+  decodeWebTransportStreamPrefix,
+  encodeHttpDatagram,
+  encodeH3SettingsFrame,
+  encodeQuicVarint,
+  encodeWebTransportStreamPrefix,
+  injectWebTransportSettings,
+  readWebTransportSettings,
+  webTransportSettings,
+  webTransportSettingsEnabled,
+} from 'internal:net/http/h3/webtransport';
 import { QuicPipe } from './fixtures/quic/sim-harness.mts';
 
 const available = quicAvailable && h3Available;
 const TEST_CERT = 'tests/net/fixtures/test.crt';
 const TEST_KEY = 'tests/net/fixtures/test.key';
+const fs = new DiskFileSystem('/');
+
+async function readPemCertificateDer(path: string): Promise<Uint8Array> {
+  const pem = await fs.readFile(path);
+  const base64 = pem
+    .replace(/-----BEGIN CERTIFICATE-----/g, '')
+    .replace(/-----END CERTIFICATE-----/g, '')
+    .replace(/\s+/g, '');
+  const binary = atob(base64);
+  const der = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) der[i] = binary.charCodeAt(i);
+  return der;
+}
 
 function h3Pipe(): QuicPipe {
   return new QuicPipe({
@@ -32,6 +67,215 @@ async function h3Handshake(pipe: QuicPipe) {
 }
 
 describe('HTTP/3 (h3 ALPN)', () => {
+  it('WebTransport H3 constants and framing helpers match draft-15', (t) => {
+    t.equal(SETTINGS_WT_ENABLED, 0x2c7cf000, 'WT setting id');
+    t.equal(SETTINGS_ENABLE_CONNECT_PROTOCOL, 0x08, 'extended CONNECT setting id');
+    t.equal(SETTINGS_H3_DATAGRAM, 0x33, 'H3 DATAGRAM setting id');
+    t.equal(WEBTRANSPORT_BIDI_STREAM_TYPE, 0x41, 'bidi stream type');
+    t.equal(WEBTRANSPORT_UNI_STREAM_TYPE, 0x54, 'uni stream type');
+
+    const settings = webTransportSettings();
+    t.equal(settings.get(SETTINGS_WT_ENABLED), 1, 'WT enabled setting');
+    t.equal(settings.get(SETTINGS_ENABLE_CONNECT_PROTOCOL), 1, 'extended CONNECT setting');
+    t.equal(settings.get(SETTINGS_H3_DATAGRAM), 1, 'H3 DATAGRAM setting');
+    t.equal(webTransportSettingsEnabled(settings), true, 'settings advertise all required features');
+    t.equal(webTransportSettingsEnabled(new Map([[SETTINGS_WT_ENABLED, 1]])), false, 'partial settings are not enough');
+
+    const oneByte = encodeQuicVarint(0x3fn);
+    t.deepEqual([...oneByte], [0x3f], 'one-byte QUIC varint');
+    t.deepEqual(decodeQuicVarint(oneByte), { value: 0x3fn, nextOffset: 1 }, 'decode one-byte varint');
+
+    const twoByte = encodeQuicVarint(0x40n);
+    t.deepEqual([...twoByte], [0x40, 0x40], 'two-byte QUIC varint');
+    t.deepEqual(decodeQuicVarint(twoByte), { value: 0x40n, nextOffset: 2 }, 'decode two-byte varint');
+
+    const fourByte = encodeQuicVarint(0x4000n);
+    t.deepEqual([...fourByte], [0x80, 0x00, 0x40, 0x00], 'four-byte QUIC varint');
+    t.deepEqual(decodeQuicVarint(fourByte), { value: 0x4000n, nextOffset: 4 }, 'decode four-byte varint');
+
+    const datagram = encodeHttpDatagram(8n, new Uint8Array([0xaa, 0xbb]));
+    t.deepEqual([...datagram], [0x02, 0xaa, 0xbb], 'HTTP Datagram uses Quarter Stream ID');
+    const decodedDatagram = decodeHttpDatagram(datagram);
+    t.equal(decodedDatagram.streamId, 8n, 'decoded session stream id');
+    t.deepEqual([...decodedDatagram.payload], [0xaa, 0xbb], 'decoded application datagram payload');
+
+    const bidiPrefix = encodeWebTransportStreamPrefix('bidirectional', 12n);
+    t.deepEqual([...bidiPrefix], [0x40, 0x41, 0x03], 'bidi WT stream prefix is type plus session id');
+    t.deepEqual(decodeWebTransportStreamPrefix(bidiPrefix), {
+      kind: 'bidirectional',
+      sessionId: 12n,
+      headerLength: 3,
+    }, 'decode bidi WT stream prefix');
+
+    const uniPrefix = encodeWebTransportStreamPrefix('unidirectional', 16n);
+    t.deepEqual([...uniPrefix], [0x40, 0x54, 0x04], 'uni WT stream prefix is type plus session id');
+    t.deepEqual(decodeWebTransportStreamPrefix(uniPrefix), {
+      kind: 'unidirectional',
+      sessionId: 16n,
+      headerLength: 3,
+    }, 'decode uni WT stream prefix');
+
+    t.throws(() => encodeHttpDatagram(2n, new Uint8Array()), /client-initiated bidirectional/, 'datagram session stream ids are validated');
+  });
+
+  it('Nghttp3Session enables supported WebTransport H3 settings and tracks peers', (t) => {
+    if (!h3Available) return;
+
+    const callbacks = {
+      onBeginHeaders() {},
+      onRecvHeader() {},
+      onEndHeaders() {},
+      onBeginTrailers() {},
+      onRecvTrailer() {},
+      onEndTrailers() {},
+      onRecvData() {},
+      onEndStream() {},
+      onStreamClose() {},
+      onResetStream() {},
+      onAckedStreamData() {},
+    };
+
+    const session = Nghttp3Session.createServer(callbacks, { webTransport: true });
+    try {
+      const local = session.localSettings;
+      t.equal(local.get(SETTINGS_ENABLE_CONNECT_PROTOCOL), 1, 'local nghttp3 settings enable Extended CONNECT');
+      t.equal(local.get(SETTINGS_H3_DATAGRAM), 1, 'local nghttp3 settings enable H3 DATAGRAM');
+      t.equal(local.get(SETTINGS_WT_ENABLED), 1, 'local H3 control stream patch advertises WebTransport');
+      t.equal(session.peerSettingsReceived, false, 'peer SETTINGS start unresolved');
+      t.equal(session.peerWebTransportReady, false, 'peer is not ready until all WT settings are known');
+
+      session._recordPeerSettingsForTest(new Map([
+        [SETTINGS_ENABLE_CONNECT_PROTOCOL, 1],
+        [SETTINGS_H3_DATAGRAM, 1],
+      ]));
+      t.equal(session.peerSettingsReceived, true, 'peer SETTINGS are recorded');
+      t.equal(session.peerWebTransportReady, false, 'recognized nghttp3 settings alone do not imply WT support');
+
+      session._recordPeerSettingsForTest(webTransportSettings());
+      t.equal(session.peerWebTransportReady, true, 'complete peer SETTINGS enable WebTransport');
+    } finally {
+      session.close();
+    }
+  });
+
+  it('patches custom WebTransport SETTINGS into H3 control streams', (t) => {
+    const baseSettings = new Map([
+      [SETTINGS_ENABLE_CONNECT_PROTOCOL, 1],
+      [SETTINGS_H3_DATAGRAM, 1],
+    ]);
+    const settingsFrame = encodeH3SettingsFrame(baseSettings);
+    const controlBytes = new Uint8Array(1 + settingsFrame.byteLength);
+    controlBytes[0] = 0x00;
+    controlBytes.set(settingsFrame, 1);
+
+    const patched = injectWebTransportSettings(controlBytes);
+    const parsed = readWebTransportSettings(patched);
+
+    t.equal(parsed.get(SETTINGS_ENABLE_CONNECT_PROTOCOL), 1, 'preserves CONNECT setting');
+    t.equal(parsed.get(SETTINGS_H3_DATAGRAM), 1, 'preserves H3 DATAGRAM setting');
+    t.equal(parsed.get(SETTINGS_WT_ENABLED), 1, 'injects draft-15 WebTransport setting');
+    t.equal(webTransportSettingsEnabled(parsed), true, 'patched SETTINGS satisfy WT negotiation');
+    t.deepEqual(decodeH3SettingsFrame(encodeH3SettingsFrame(parsed)), parsed, 'SETTINGS frame round trips');
+  });
+
+  it('H3 server recognizes WebTransport extended CONNECT and fails fast', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client, server } = await h3Handshake(pipe);
+      const driver = new H3ServerDriver();
+      const serverRun = driver.run(server, () => new Response('unexpected'));
+      const session = await H3ClientSession.create(client);
+
+      const response = await pipe.pumpUntil(session.request('https://example.test/wt', {
+        method: 'CONNECT',
+        headers: { ':protocol': 'webtransport-h3' },
+      } as any));
+
+      t.equal(response.status, 501, 'WebTransport extended CONNECT is detected but not accepted yet');
+      t.match(await response.text(), /WebTransport over HTTP\/3 is not available/);
+
+      client.destroy();
+      server.destroy();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('H3 client and server complete WebTransport extended CONNECT takeover', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      let accepted: WebTransport | null = null;
+      const { client, server } = await h3Handshake(pipe);
+      const driver = new H3ServerDriver();
+      const serverRun = driver.run(server, () => new Response('unexpected'), {
+        onWebTransport(_request, session) {
+          accepted = session;
+          return session;
+        },
+      });
+      const clientSession = await H3ClientSession.create(client);
+
+      const wt = await pipe.pumpUntil(clientSession.webtransport('https://example.test/wt'));
+      t.ok(wt instanceof WebTransport, 'client receives connected WebTransport');
+      t.equal(await wt.ready, undefined);
+      t.ok(accepted instanceof WebTransport, 'server receives connected WebTransport');
+      t.equal(await accepted!.ready, undefined);
+
+      const clientExport = new Uint8Array(await wt.exportKeyingMaterial('fino-webtransport-test', new Uint8Array([1, 2]), 32));
+      const serverExport = new Uint8Array(await accepted!.exportKeyingMaterial('fino-webtransport-test', new Uint8Array([1, 2]), 32));
+      t.deepEqual([...clientExport], [...serverExport], 'client and server export matching TLS keying material');
+
+      const receivedReader = accepted!.datagrams.readable.getReader();
+      const writer = wt.datagrams.createWritable().getWriter();
+      await writer.write(new Uint8Array([0x45]));
+      writer.releaseLock();
+      const next = await pipe.pumpUntil(receivedReader.read());
+      receivedReader.releaseLock();
+      t.equal(next.done, false);
+      t.deepEqual([...(next.value ?? new Uint8Array())], [0x45], 'server receives WT datagram for accepted session');
+
+      client.destroy();
+      server.destroy();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('HttpClient webtransport uses the reusable H3 session', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client, server } = await h3Handshake(pipe);
+      const driver = new H3ServerDriver();
+      const serverRun = driver.run(server, () => new Response('unexpected'), {
+        onWebTransport(_request, session) {
+          return session;
+        },
+      });
+      const http = new HttpClient({ baseUrl: 'https://example.test', protocols: ['h3'] });
+      const session = await http.session('https://example.test', { protocol: 'h3' });
+      await (session as any)._attachH3TransportForTest(client);
+
+      const wt = await pipe.pumpUntil(session.webtransport('/wt'));
+      t.ok(wt instanceof WebTransport, 'public session returns connected WebTransport');
+      t.equal(await wt.ready, undefined);
+
+      client.destroy();
+      server.destroy();
+      await http.close();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
   it('public fetch resolves URL hostnames before QUIC connect and preserves SNI host', async (t) => {
     const seen: Array<{ hostname: string; family?: 4 | 6 }> = [];
     const resolved = await resolveH3ConnectAddress(
@@ -178,6 +422,87 @@ describe('HTTP/3 (h3 ALPN)', () => {
       });
       t.equal(await response.text(), 'h3:h3', 'app context sees H3 protocol and session');
     } finally {
+      await server.close();
+    }
+  });
+
+  it('App.listen() accepts WebTransport routes over H3', async (t) => {
+    if (!available) return;
+
+    const app = new App()
+      .value('tenant', () => 'acme');
+    let accepted = false;
+
+    app.webtransport('/wt/:room', async (session, ctx) => {
+      accepted = session instanceof WebTransport
+        && ctx.incoming.kind === 'webtransport'
+        && ctx.protocol === 'h3'
+        && ctx.session?.transport === 'quic'
+        && ctx.params?.room === 'lobby'
+        && ctx.tenant === 'acme';
+    });
+
+    const server = app.listen({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: { cert: TEST_CERT, key: TEST_KEY },
+      h3: true,
+    } as any);
+    const client = new HttpClient({
+      baseUrl: `https://127.0.0.1:${server.port}`,
+      protocols: ['h3'],
+      tls: { rejectUnauthorized: false },
+    });
+
+    try {
+      await (server as any).ready;
+      const wt = await client.webtransport('/wt/lobby');
+      t.equal(await wt.ready, undefined, 'client receives a connected WebTransport');
+      t.equal(accepted, true, 'app route accepted the H3 WebTransport session');
+      wt.close();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('HttpClient WebTransport enforces serverCertificateHashes over real H3', async (t) => {
+    if (!available) return;
+
+    const app = new App();
+    app.webtransport('/wt', () => {});
+
+    const server = app.listen({
+      port: 0,
+      hostname: '127.0.0.1',
+      tls: { cert: TEST_CERT, key: TEST_KEY },
+      h3: true,
+    } as any);
+    const client = new HttpClient({
+      baseUrl: `https://127.0.0.1:${server.port}`,
+      protocols: ['h3'],
+      tls: { rejectUnauthorized: false },
+    });
+
+    try {
+      await (server as any).ready;
+      const certDer = await readPemCertificateDer(TEST_CERT);
+      const matchingHash = await crypto.subtle.digest('SHA-256', certDer);
+      const wt = await client.webtransport('/wt', {
+        serverCertificateHashes: [{ algorithm: 'sha-256', value: matchingHash }],
+      });
+      t.equal(await wt.ready, undefined, 'matching certificate hash accepts WebTransport');
+      wt.close();
+
+      await t.rejects(
+        () => client.webtransport('/wt', {
+          serverCertificateHashes: [{ algorithm: 'sha-256', value: new Uint8Array(32) }],
+        }),
+        /serverCertificateHashes/i,
+        'mismatched certificate hash rejects WebTransport setup',
+      );
+    } finally {
+      await client.close();
       await server.close();
     }
   });

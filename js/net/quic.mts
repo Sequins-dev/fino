@@ -74,6 +74,7 @@ export {
   __inspectQuicRuntimeTuning,
   cryptoBackend,
   quicAvailable,
+  quicResetStreamAtAvailable,
   quicVersion,
   requireQuic,
   type QuicAddress,

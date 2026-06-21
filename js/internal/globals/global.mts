@@ -68,5 +68,6 @@ export { fetch } from './fetch.mts';
 export { Headers, Request, Response } from 'internal:net/http/wire';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
 export { WebSocket, CloseEvent, ErrorEvent } from 'fino:net/http/websocket';
+export { WebTransport } from 'fino:net/http/webtransport';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.mts';
 export { BroadcastChannel } from './broadcast-channel.mts';

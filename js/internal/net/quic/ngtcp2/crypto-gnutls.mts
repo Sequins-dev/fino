@@ -100,6 +100,7 @@ const _GNUTLS_SYMBOLS = {
   gnutls_session_get_data2: { parameters: ['pointer', 'pointer'], result: 'i32', fast: false },
   gnutls_session_set_data: { parameters: ['pointer', 'buffer', 'usize'], result: 'i32', fast: false },
   gnutls_session_get_random: { parameters: ['pointer', 'pointer', 'pointer'], result: 'void' },
+  gnutls_prf_rfc5705: { parameters: ['pointer', 'usize', 'buffer', 'usize', 'buffer', 'usize', 'buffer'], result: 'i32', fast: false },
   gnutls_session_set_keylog_function: { parameters: ['pointer', 'pointer'], result: 'void' },
   gnutls_session_ticket_key_generate: { parameters: ['pointer'], result: 'i32' },
   gnutls_session_ticket_enable_server: { parameters: ['pointer', 'pointer'], result: 'i32' },
@@ -615,6 +616,25 @@ export function getGnutlsPeerCertificate(session: GnutlsSession | null): Uint8Ar
   if (count === 0) return null;
   const cert = datumBytes(peers);
   return cert.byteLength > 0 ? cert : null;
+}
+
+export function exportGnutlsKeyingMaterial(session: GnutlsSession, label: string, context: Uint8Array, length: number): ArrayBuffer {
+  if (!Number.isInteger(length) || length < 0) throw new RangeError('TLS exporter length must be a non-negative integer');
+  const labelBytes = new TextEncoder().encode(label);
+  const out = new Uint8Array(length);
+  check(
+    gnutlsSym!.gnutls_prf_rfc5705(
+      session.handle,
+      labelBytes.byteLength,
+      labelBytes,
+      context.byteLength,
+      context,
+      out.byteLength,
+      out,
+    ) as number,
+    'gnutls_prf_rfc5705',
+  );
+  return out.buffer;
 }
 
 export function getGnutlsVerifyResult(session: GnutlsSession | null): { code: number; reason: string | null } {

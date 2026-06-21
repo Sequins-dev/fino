@@ -1,4 +1,4 @@
-import { SimulatedNetworkProvider, type SimulatedLinkOptions } from '../../../../js/internal/net/simulated-provider.mts';
+import { SimulatedNetworkProvider, type SimulatedLinkOptions } from 'internal:net/simulated-provider';
 import {
   QuicEndpoint,
   type QuicAddress,

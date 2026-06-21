@@ -8,7 +8,7 @@ import { HttpClient } from 'fino:net/http/client';
 import { EventSourceWriter } from 'fino:net/http/eventsource';
 import { MessageEvent } from 'fino:net/http/websocket';
 import { h2Available } from '../../js/net/http/h2.mts';
-import { h3Available, serve as h3Serve } from '../../js/net/http/h3.mts';
+import { h3Available, serve as h3Serve } from 'internal:net/http/h3';
 import { quicAvailable } from 'fino:net/quic';
 import { _fetchH2PoolHas, _resetFetchH2Pool } from 'internal:globals/fetch';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
@@ -284,6 +284,28 @@ describe('HttpClient realtime helpers', () => {
     } finally {
       await client.close();
       await server.close();
+    }
+  });
+
+  it('webtransport() validates URLs and is restricted to explicit H3 sessions', async (t) => {
+    const client = new HttpClient({ baseUrl: 'https://example.test' });
+
+    try {
+      await t.rejects(
+        () => client.webtransport('http://example.test/wt'),
+        /WebTransport requires https:/,
+      );
+
+      const h1Session = await client.session('https://example.test', { protocol: 'http/1.1' });
+      await t.rejects(
+        () => h1Session.webtransport('/wt'),
+        /WebTransport over http\/1\.1 is not supported; use an h3 session/,
+      );
+
+      const h3Session = await client.session('https://example.test', { protocol: 'h3' });
+      t.equal(h3Session.protocol, 'h3', 'H3 sessions are the supported WebTransport session type');
+    } finally {
+      await client.close();
     }
   });
 });

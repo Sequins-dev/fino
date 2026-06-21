@@ -47,8 +47,11 @@ import { EventSource } from './eventsource.mts';
 import type { EventSourceInit } from './eventsource.mts';
 import { WebSocketConnection } from './websocket.mts';
 import type { WebSocketConnectOptions } from './websocket.mts';
+import { WebTransport } from './webtransport.mts';
+import type { WebTransportOptions } from './webtransport.mts';
 import type { H3FetchInit } from './h3.mts';
 import { QuicEndpoint } from '../quic.mts';
+import type { QuicConnection } from '../quic.mts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.mts';
 import { resolveH3ConnectAddress } from '../../internal/net/http/h3/resolve.mts';
 
@@ -196,6 +199,15 @@ export interface HttpWebSocketOptions extends WebSocketConnectOptions {
   headers?: Record<string, string> | Headers;
 }
 
+/**
+ * Options for `HttpClient.webtransport()` and `HttpSession.webtransport()`.
+ */
+export interface HttpWebTransportOptions extends WebTransportOptions {
+  headers?: Record<string, string> | Headers;
+  tls?: HttpClientOptions['tls'];
+  quic?: H3FetchInit['quic'];
+}
+
 interface H3Transport {
   endpoint: QuicEndpoint;
   session: H3ClientSession;
@@ -278,6 +290,18 @@ function resolveWebSocketUrl(baseUrl: string | URL | undefined, input: string | 
 
 function unsupportedWebSocket(protocol: HttpClientProtocol): Error {
   return new Error(`WebSocket over ${protocol} requires Extended CONNECT, which is not supported yet`);
+}
+
+function unsupportedWebTransport(protocol: HttpClientProtocol): Error {
+  return new Error(`WebTransport over ${protocol} is not supported; use an h3 session`);
+}
+
+function resolveWebTransportUrl(baseUrl: string | URL | undefined, input: string | URL): URL {
+  const url = resolveHttpUrl(baseUrl, input);
+  if (url.protocol !== 'https:') {
+    throw new TypeError(`WebTransport requires https: URLs, got '${url.href}'`);
+  }
+  return url;
 }
 
 async function waitForWebSocketOpen(socket: WebSocketConnection): Promise<WebSocketConnection> {
@@ -502,42 +526,56 @@ export class HttpSession {
     await transport.endpoint.close();
   }
 
-  async #h3Request(url: URL, method: string, headers: Headers, init: HttpRequestInit): Promise<Response> {
+  async #ensureH3Transport(url: URL, init: Pick<HttpRequestInit, 'tls' | 'quic'> = {}): Promise<H3Transport> {
     let transport = this.#h3Transport;
-    if (transport === null) {
-      const target = await resolveH3ConnectAddress(url);
-      const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
-      const tls = init.tls ?? this.#client.tls;
-      const quic = init.quic ?? {
-        ...(tls?.ca !== undefined ? { ca: tls.ca } : {}),
-        ...(tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
-      };
-      try {
-        const conn = await endpoint.connect({
-          ...quic,
-          address: target.address,
-          alpnProtocols: ['h3'],
-          serverName: quic?.serverName ?? target.serverName,
-        });
-        const h3 = await H3ClientSession.create(conn);
-        const connection: HttpConnectionInfo = {
-          id: nextConnectionId(),
-          protocol: 'h3',
-          transport: 'quic',
-          localAddress: conn.localAddress,
-          remoteAddress: conn.remoteAddress,
-          alpnProtocol: 'h3',
-          connectedAt: Date.now(),
-        };
-        transport = { endpoint, session: h3, connection };
-        this.#h3Transport = transport;
-        this.#currentConnection = connection;
-        this.#events.push({ type: 'connected', session: this, connection });
-      } catch (error) {
-        await endpoint.close();
-        throw error;
-      }
+    if (transport !== null) return transport;
+    const target = await resolveH3ConnectAddress(url);
+    const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+    const tls = init.tls ?? this.#client.tls;
+    const quic = init.quic ?? {
+      ...(tls?.ca !== undefined ? { ca: tls.ca } : {}),
+      ...(tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
+    };
+    try {
+      const conn = await endpoint.connect({
+        ...quic,
+        address: target.address,
+        alpnProtocols: ['h3'],
+        serverName: quic?.serverName ?? target.serverName,
+      });
+      return await this.#attachH3Connection(conn, endpoint);
+    } catch (error) {
+      await endpoint.close();
+      throw error;
     }
+  }
+
+  async #attachH3Connection(conn: QuicConnection, endpoint: QuicEndpoint): Promise<H3Transport> {
+    const h3 = await H3ClientSession.create(conn);
+    const connection: HttpConnectionInfo = {
+      id: nextConnectionId(),
+      protocol: 'h3',
+      transport: 'quic',
+      localAddress: conn.localAddress,
+      remoteAddress: conn.remoteAddress,
+      alpnProtocol: 'h3',
+      connectedAt: Date.now(),
+    };
+    const transport = { endpoint, session: h3, connection };
+    this.#h3Transport = transport;
+    this.#currentConnection = connection;
+    this.#events.push({ type: 'connected', session: this, connection });
+    return transport;
+  }
+
+  async _attachH3TransportForTest(conn: QuicConnection): Promise<void> {
+    await this.#closeH3Transport();
+    const endpoint = { close: async () => {} } as QuicEndpoint;
+    await this.#attachH3Connection(conn, endpoint);
+  }
+
+  async #h3Request(url: URL, method: string, headers: Headers, init: HttpRequestInit): Promise<Response> {
+    const transport = await this.#ensureH3Transport(url, init);
 
     const response = await transport.session.request(url.href, {
       method,
@@ -640,6 +678,23 @@ export class HttpSession {
       headers: headersToRecord(headers),
     });
     return waitForWebSocketOpen(socket);
+  }
+
+  /** Open a WebTransport session pinned to this session. */
+  async webtransport(path: string | URL, options: HttpWebTransportOptions = {}): Promise<WebTransport> {
+    if (this.protocol !== 'h3') throw unsupportedWebTransport(this.protocol);
+    const url = resolveWebTransportUrl(this.#baseUrl, path);
+    const headers = mergeHeaders(this.#headers, options.headers);
+    if (options.protocols !== undefined && options.protocols.length > 0) {
+      headers.set('sec-webtransport-protocol', options.protocols.join(', '));
+    }
+    const transport = await this.#ensureH3Transport(url, options);
+    const webtransport = await transport.session.webtransport(url.href, {
+      headers,
+      webTransportOptions: options,
+    } as H3FetchInit);
+    await webtransport.ready;
+    return webtransport;
   }
 
   /** Reconnect this logical session while preserving identity. */
@@ -748,6 +803,14 @@ export class HttpClient {
       headers: headersToRecord(headers),
     });
     return waitForWebSocketOpen(socket);
+  }
+
+  /** Open a WebTransport session using this client's base URL and default headers. */
+  async webtransport(input: string | URL, options: HttpWebTransportOptions = {}): Promise<WebTransport> {
+    this.#assertOpen();
+    const url = resolveWebTransportUrl(this.#baseUrl, input);
+    const session = await this.#sessionFor(url, 'h3');
+    return session.webtransport(url, options);
   }
 
   /** Close idle sessions. Currently closes all logical sessions. */

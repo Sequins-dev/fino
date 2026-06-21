@@ -135,7 +135,7 @@ export const CB_SHUTDOWN          = 104;
 // offset 120: recv_origin  (optional)
 // offset 128: end_origin   (optional)
 // offset 136: rand         (optional)
-// offset 144: recv_settings2 (optional)
+export const CB_RECV_SETTINGS2    = 144;
 
 // ---------------------------------------------------------------------------
 // nghttp3_nv (name/value) struct — identical layout to nghttp2_nv.
@@ -171,6 +171,15 @@ export const DR_SIZE       = 8;
 // ---------------------------------------------------------------------------
 
 export const SETTINGS_SIZE = 72;
+export const SETTINGS_ENABLE_CONNECT_PROTOCOL = 32;
+export const SETTINGS_H3_DATAGRAM = 33;
+
+// ---------------------------------------------------------------------------
+// nghttp3_proto_settings struct offsets used by recv_settings2.
+// ---------------------------------------------------------------------------
+
+export const PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL = 24;
+export const PROTO_SETTINGS_H3_DATAGRAM = 25;
 
 // ---------------------------------------------------------------------------
 // Data flag written into *pflags in read_data callbacks.

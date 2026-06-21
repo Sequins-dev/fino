@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { quicAvailable } from 'fino:net/quic';
+import { quicAvailable, quicResetStreamAtAvailable } from 'fino:net/quic';
 import {
   QuicPipe,
   decodeUtf8,
@@ -122,6 +122,25 @@ describe('QUIC stream state conformance', () => {
       );
       t.equal(resetEvent.errorCode, 701, 'reset event carries the reset-before-data code');
       t.equal(serverStream.stats.finalSize, null, 'reset-before-data does not report a FIN final size');
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('exposes resetAt and fails clearly when reset_stream_at is unavailable', async (t) => {
+    if (!quicAvailable || quicResetStreamAtAvailable) return;
+
+    const pipe = new QuicPipe();
+    try {
+      const { client } = await pipe.handshake();
+      const stream = await client.openBidirectionalStream();
+
+      t.equal(typeof stream.resetAt, 'function', 'resetAt method is present');
+      t.throws(
+        () => stream.resetAt(704, 0),
+        /reset_stream_at is not supported/i,
+        'missing ngtcp2 reset-at support fails clearly',
+      );
     } finally {
       await pipe.close();
     }

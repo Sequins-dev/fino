@@ -13,6 +13,7 @@ export * from './http/client.mts';
 export * from './http/eventsource.mts';
 export * from './http/server.mts';
 export * from './http/websocket.mts';
+export * from './http/webtransport.mts';
 
 export {
   parseRequest,

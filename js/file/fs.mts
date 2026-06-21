@@ -50,13 +50,13 @@ import {
   DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
   F_OK as _F_OK, R_OK as _R_OK, W_OK as _W_OK, X_OK as _X_OK,
   modeToFlags, encodeUtf8, decodeUtf8,
-} from '../internal/file/bindings.mts';
-import { Stat } from '../internal/file/stat.mts';
-import { File } from '../internal/file/handle.mts';
-import { Entry, FileEntry, DirEntry } from '../internal/file/entry.mts';
-import { Glob, glob as globWalk, type GlobOptions } from '../internal/file/glob.mts';
+} from 'internal:file/bindings';
+import { Stat } from 'internal:file/stat';
+import { File } from 'internal:file/handle';
+import { Entry, FileEntry, DirEntry } from 'internal:file/entry';
+import { Glob, glob as globWalk, type GlobOptions } from 'internal:file/glob';
 import type { Path } from './path.mts';
-import { FileSystem } from '../internal/file/provider.mts';
+import { FileSystem } from 'internal:file/provider';
 
 /**
  * Access flag that checks whether a path exists.

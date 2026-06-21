@@ -26,6 +26,7 @@ import 'fino:net/http/client';
 import 'fino:net/http/app';
 import 'fino:net/http/eventsource';
 import 'fino:net/http/websocket';
+import 'fino:net/http/webtransport';
 import { DiskFileSystem } from 'fino:file';
 
 describe('builtin module layout', () => {
@@ -59,6 +60,8 @@ describe('builtin module layout', () => {
       'Router',
       'WebSocket',
       'WebSocketConnection',
+      'WebTransport',
+      'WebTransportDatagramDuplexStream',
       'body',
       'cookies',
       'defineMiddleware',
@@ -85,6 +88,23 @@ describe('builtin module layout', () => {
       'js/net/http/driver.mts',
       'js/net/http/h2.mts',
       'js/net/http/h3.mts',
+    ]) {
+      const text = await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname);
+      t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);
+    }
+  });
+
+  it('marks internal DNSSEC and HTTP/3 implementation modules as internal', async (t) => {
+    const fs = new DiskFileSystem('/');
+    for (const path of [
+      'js/internal/net/dnssec.mts',
+      'js/internal/net/http/h3/bindings.mts',
+      'js/internal/net/http/h3/body-queue.mts',
+      'js/internal/net/http/h3/client.mts',
+      'js/internal/net/http/h3/resolve.mts',
+      'js/internal/net/http/h3/server.mts',
+      'js/internal/net/http/h3/session.mts',
+      'js/internal/net/http/h3/webtransport.mts',
     ]) {
       const text = await fs.readFile(new URL(`../../${path}`, import.meta.url).pathname);
       t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);

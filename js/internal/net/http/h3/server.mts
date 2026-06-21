@@ -1,11 +1,30 @@
+/**
+ * internal:net/http/h3/server - HTTP/3 server driver over QUIC.
+ *
+ * Converts nghttp3 stream callbacks into Fetch-compatible `Request` objects,
+ * dispatches the configured handler, and serializes `Response` headers, body,
+ * and trailers back over QUIC streams.
+ *
+ * @internal
+ */
+
 import { Nghttp3Session } from './session.mts';
 import type { H3SessionCallbacks } from './session.mts';
 import { H3BodyQueue } from './body-queue.mts';
 import { h3Available } from './bindings.mts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
+import { WebTransport } from '../../../../net/http/webtransport.mts';
 
 export type H3Handler = (request: Request) => Response | Promise<Response>;
+export type H3WebTransportHandler = (
+  request: Request,
+  session: WebTransport,
+) => WebTransport | Response | Promise<WebTransport | Response>;
+
+export interface H3ServerDriverOptions {
+  onWebTransport?: H3WebTransportHandler;
+}
 
 const _FORBIDDEN_RESP = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade']);
 const _FORBIDDEN_REQ  = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade']);
@@ -16,6 +35,7 @@ interface H3ServerStream {
   path: string;
   scheme: string;
   authority: string;
+  protocol: string;
   headers: Array<[string, string]>;
   trailerHeaders: Array<[string, string]>;
   inTrailers: boolean;
@@ -31,7 +51,7 @@ interface H3ServerStream {
 function makeStream(streamId: bigint): H3ServerStream {
   return {
     streamId,
-    method: '', path: '', scheme: '', authority: '',
+    method: '', path: '', scheme: '', authority: '', protocol: '',
     headers: [], trailerHeaders: [],
     inTrailers: false, body: new H3BodyQueue(),
     bodyDone: false, cancelled: false, badRequest: false, dispatched: false,
@@ -40,7 +60,7 @@ function makeStream(streamId: bigint): H3ServerStream {
 }
 
 export class H3ServerDriver {
-  async run(conn: QuicConnection, handler: H3Handler): Promise<void> {
+  async run(conn: QuicConnection, handler: H3Handler, options: H3ServerDriverOptions = {}): Promise<void> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
 
     const streams = new Map<bigint, H3ServerStream>();
@@ -66,6 +86,7 @@ export class H3ServerDriver {
           else if (name === ':path')      st.path      = value;
           else if (name === ':scheme')    st.scheme    = value;
           else if (name === ':authority') st.authority = value;
+          else if (name === ':protocol')  st.protocol  = value;
           else { st.badRequest = true; return; }  // response-only or unknown pseudo-header in request (RFC 9114 §4.3.1)
         } else {
           const lc = name.toLowerCase();
@@ -143,7 +164,7 @@ export class H3ServerDriver {
       onAckedStreamData() {},
     };
 
-    session = Nghttp3Session.createServer(callbacks);
+    session = Nghttp3Session.createServer(callbacks, { webTransport: true });
 
     // Dispatch a request to the handler once headers are complete.
     function startDispatch(st: H3ServerStream): void {
@@ -163,6 +184,42 @@ export class H3ServerDriver {
         return;
       }
       if (st.cancelled) return;
+      if (st.method === 'CONNECT' && st.protocol === 'webtransport-h3') {
+        if (options.onWebTransport !== undefined) {
+          const url = `${st.scheme || 'https'}://${st.authority || 'localhost'}${st.path || '/'}`;
+          const reqHeaders = new Headers(st.headers);
+          if (st.authority) reqHeaders.set('host', st.authority);
+          const request = new Request(url, { method: 'GET', headers: reqHeaders });
+          (request as any).methodOverride = 'CONNECT';
+          (request as any).protocol = 'webtransport-h3';
+          const wt = WebTransport._fromHttp3(url, {
+            connection: conn,
+            sessionStreamId: st.streamId,
+          });
+          let result: WebTransport | Response;
+          try {
+            result = await options.onWebTransport(request, wt);
+          } catch {
+            result = new Response('Internal Server Error', { status: 500 });
+          }
+          if (result instanceof WebTransport) {
+            session.submitResponse(st.streamId, [[':status', '200']], keepConnectOpenBody());
+            await session.drainWrites();
+            return;
+          }
+          session.submitResponse(st.streamId, [[':status', String(result.status)]], (result as any)._extractBytes?.() ?? (result.body as any) ?? undefined);
+          await session.drainWrites();
+          return;
+        }
+        try {
+          session.submitResponse(st.streamId, [
+            [':status', '501'],
+            ['content-type', 'text/plain'],
+          ], new TextEncoder().encode('WebTransport over HTTP/3 is not available yet'));
+          await session.drainWrites();
+        } catch {}
+        return;
+      }
       if (st.method === 'CONNECT') {
         try {
           session.submitResponse(st.streamId, [[':status', '405'], ['allow', 'GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH']]);
@@ -308,4 +365,8 @@ export class H3ServerDriver {
       await session.closeWhenIdle();
     }
   }
+}
+
+async function* keepConnectOpenBody(): AsyncIterable<Uint8Array> {
+  await new Promise<never>(() => {});
 }

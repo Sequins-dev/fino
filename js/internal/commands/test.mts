@@ -16,7 +16,8 @@
 
 import { cwd } from '../../process.mts';
 import { Command, type CommandContext } from '../../process/argv.mts';
-import { DiskFileSystem } from '../../file/fs.mts';
+import { DiskFileSystem } from 'fino:file';
+import { allowInternalForTests } from 'internal:loader-hooks';
 
 function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
@@ -88,6 +89,8 @@ export function createTestCommand(): Command {
       if (testFiles.length === 0) {
         throw new Error('fino test: no test files specified');
       }
+
+      allowInternalForTests();
 
       let imported = 0;
       for (const raw of testFiles) {

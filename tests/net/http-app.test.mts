@@ -5,6 +5,7 @@
 import { describe, it } from 'fino:test/test';
 import { App, Router, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
 import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
+import { WebTransport } from 'fino:net/http/webtransport';
 import { v } from 'fino:validate';
 import * as loop from 'internal:runtime/loop';
 
@@ -231,6 +232,41 @@ describe('HTTP app built-ins', () => {
     } finally {
       await server.close();
     }
+  });
+
+  it('registers webtransport routes with inherited context values', async (t) => {
+    const app = new App()
+      .value('tenant', () => 'acme');
+    let sawContext = false;
+
+    app.webtransport('/wt/:room', async (session, ctx) => {
+      sawContext = session instanceof WebTransport
+        && ctx.method === 'WEBTRANSPORT'
+        && ctx.params?.room === 'lobby'
+        && ctx.tenant === 'acme';
+    });
+
+    t.equal(app.webtransport('/other', () => {}), app, 'webtransport() is chainable');
+
+    const incoming = {
+      kind: 'webtransport',
+      request: request('/wt/lobby'),
+      protocol: 'h3',
+      session: {
+        id: 'test-session',
+        protocol: 'h3',
+        transport: 'quic',
+        secure: true,
+        localAddress: null,
+        remoteAddress: null,
+        closed: Promise.resolve(),
+      },
+      reject() { throw new Error('unexpected reject'); },
+      accept() { return Promise.resolve(WebTransport.unavailable('https://local.test/wt/lobby', 'test')); },
+    } as any;
+
+    await (app as any)._handleWebTransportForTest(incoming);
+    t.equal(sawContext, true);
   });
 
   it('converts errors with errorHandler', async (t) => {

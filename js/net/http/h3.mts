@@ -42,6 +42,7 @@
 
 import { QuicEndpoint, QuicConnectionEvent } from '../quic.mts';
 import { H3ServerDriver } from '../../internal/net/http/h3/server.mts';
+import type { H3ServerDriverOptions } from '../../internal/net/http/h3/server.mts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.mts';
 import type { H3RequestInit } from '../../internal/net/http/h3/client.mts';
 import { h3Available as _h3Available, requireH3 as _requireH3 } from '../../internal/net/http/h3/bindings.mts';
@@ -139,7 +140,7 @@ export interface H3FetchInit extends H3RequestInit {
  * @returns A server handle exposing the bound address and close operation.
  * @throws When libnghttp3 is unavailable or the QUIC listener cannot start.
  */
-export async function serve(options: H3ServeOptions, handler: H3Handler): Promise<H3Server> {
+export async function serve(options: H3ServeOptions, handler: H3Handler, driverOptions: H3ServerDriverOptions = {}): Promise<H3Server> {
   requireH3();
 
   const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
@@ -166,7 +167,7 @@ export async function serve(options: H3ServeOptions, handler: H3Handler): Promis
     endpoint.addEventListener('connection', (event) => {
       const conn = (event as QuicConnectionEvent).connection;
       const driver = new H3ServerDriver();
-      void driver.run(conn, handler).catch(() => {});
+      void driver.run(conn, handler, driverOptions).catch(() => {});
     });
 
     return {

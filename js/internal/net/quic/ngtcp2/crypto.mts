@@ -31,6 +31,7 @@ import {
   sslGetAlpnSelected,
   sslGetCurrentCipherInfo,
   sslGetPeerCertificate,
+  sslExportKeyingMaterial,
   sslGetServername,
   sslGetVerifyResult,
   sslExportSession,
@@ -69,6 +70,7 @@ import {
   getGnutlsServername,
   getGnutlsVerifyResult,
   exportGnutlsSession,
+  exportGnutlsKeyingMaterial,
   getGnutlsCipherInfo,
   importGnutlsSession,
   initCryptoGnutls,
@@ -229,6 +231,14 @@ export function getPeerCertificate(session: QuicTlsSession | null): Uint8Array |
   if (session === null) return null;
   if (session.backend === 'ossl') return sslGetPeerCertificate(session.handle as object);
   return getGnutlsPeerCertificate(session.handle as GnutlsSession);
+}
+
+export function exportKeyingMaterial(session: QuicTlsSession | null, label: string, context: Uint8Array, length: number): ArrayBuffer {
+  if (session === null) throw new Error('QUIC TLS session is not available');
+  if (session.backend === 'ossl') {
+    return sslExportKeyingMaterial(session.handle as object, label, context, length);
+  }
+  return exportGnutlsKeyingMaterial(session.handle as GnutlsSession, label, context, length);
 }
 
 export function newServerSession(ctx: QuicTlsContext, alpnProtocols: string[], earlyDataMax = 0): QuicTlsSession {
