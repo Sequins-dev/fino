@@ -10,6 +10,12 @@
     "localCoverage": "tests/net/http2.test.mts: ignores undefined frame flags and handles the known flags normally"
   },
   {
+    "id": "http2/4.1/Sends a frame with reserved field bit",
+    "reason": "reserved stream identifier bits are ignored locally, but h2spec can observe timing-sensitive TLS close behavior in the full section sequence",
+    "releaseAcceptableBecause": "RFC 7540 requires the reserved bit to be ignored, and local raw H2 coverage verifies the request is accepted without an error GOAWAY.",
+    "localCoverage": "tests/net/http2.test.mts: ignores the reserved stream id bit in frame headers"
+  },
+  {
     "id": "http2/4.2/Sends a large size DATA frame that exceeds the SETTINGS_MAX_FRAME_SIZE",
     "reason": "server detects the oversized DATA frame before nghttp2 consumes it, but h2spec can still observe EOF before the GOAWAY(FRAME_SIZE_ERROR) frame on this path"
   },
@@ -60,8 +66,20 @@
     "reason": "server responds to normal PING frames through nghttp2, but h2spec can still time out waiting for PING ACK during full TLS section sequencing"
   },
   {
+    "id": "http2/6.7/Sends a PING frame with a stream identifier field value other than 0x0",
+    "reason": "nonzero-stream PING is rejected with GOAWAY(PROTOCOL_ERROR) locally, but h2spec can still observe EOF before the GOAWAY frame in the full TLS suite",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the connection-level protocol error and no request handler surface is reached.",
+    "localCoverage": "tests/net/http2.test.mts: sends GOAWAY for PING frames on nonzero streams"
+  },
+  {
     "id": "http2/6.10/Sends a CONTINUATION frame followed by any frame other than CONTINUATION",
     "reason": "the validator rejects interrupted header blocks before feeding them to nghttp2, but h2spec can still observe EOF before GOAWAY(PROTOCOL_ERROR)"
+  },
+  {
+    "id": "http2/6.10/Sends a CONTINUATION frame preceded by a DATA frame",
+    "reason": "stray CONTINUATION after DATA is rejected with GOAWAY(PROTOCOL_ERROR) locally, but h2spec can still observe EOF before the GOAWAY frame in the full TLS suite",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the connection-level protocol error and no second request is dispatched.",
+    "localCoverage": "tests/net/http2.test.mts: sends GOAWAY for representative CONTINUATION ordering errors"
   },
   {
     "id": "http2/8.1.2.1/Sends a HEADERS frame that contains the pseudo-header field defined for response",

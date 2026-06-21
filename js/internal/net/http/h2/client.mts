@@ -3,16 +3,17 @@
  *
  * Sends one HTTP/2 request over an already-connected reader/writer pair.
  * Each call opens its own nghttp2 client session (no pooling; that is Step 13).
- * Response body is buffered in full before resolving.
+ * Response headers resolve before the response body finishes. Body bytes are
+ * exposed through the shared HTTP stream queue.
  *
  * ## Flow
  *
  * 1. Create client Nghttp2Session -> nghttp2 queues the connection preface.
  * 2. Submit SETTINGS (empty) and the request HEADERS.
  * 3. Drain write -> preface + SETTINGS + HEADERS go on the wire.
- * 4. Loop recv(chunk) + drainWrite until the response stream END_STREAMs.
- * 5. Send GOAWAY, drain, close session, close writer.
- * 6. Resolve the returned Promise with the buffered Response.
+ * 4. Loop recv(chunk) + drainWrite in the background until END_STREAM.
+ * 5. Resolve the returned Promise when response headers are complete.
+ * 6. Send GOAWAY, drain, close session, close writer after stream completion.
  *
  * ## Example
  *
@@ -38,6 +39,7 @@ import type { BufferedBytesReader, BytesWriter } from '../../../stream.mts';
 import type { ClientDriver, ClientDriverOptions } from '../../../../net/http/driver.mts';
 import { Request, Response, Headers } from '../../../../net/http/index.mts';
 import { Scanner } from '../../../../parsing/scanner.mts';
+import { HttpBodyQueue, HttpStreamError } from '../stream.mts';
 import {
   NGHTTP2_FLAG_END_STREAM,
   NGHTTP2_FLAG_END_HEADERS,
@@ -64,8 +66,9 @@ interface H2ClientStream {
   headers: Headers;
   trailerHeaders: Headers;
   inTrailers: boolean;
-  bodyChunks: Uint8Array[];
+  body: HttpBodyQueue;
   done: boolean;
+  responseResolved: boolean;
   resolve: (res: Response) => void;
   reject: (err: Error) => void;
 }
@@ -77,9 +80,10 @@ interface H2ClientStream {
 /**
  * HTTP/2 client driver for a single connected reader/writer pair.
  *
- * Each `send()` call creates a fresh nghttp2 client session and buffers the
- * complete response body before resolving. Connection pooling is handled by the
- * separate HTTP/2 pool layer, not this one-shot driver.
+ * Each `send()` call creates a fresh nghttp2 client session and resolves when
+ * response headers are complete. Response DATA is streamed into the returned
+ * body. Connection pooling is handled by the separate HTTP/2 pool layer, not
+ * this one-shot driver.
  *
  * ```ts no_run
  * import { H2ClientDriver } from 'internal:net/http/h2/client';
@@ -108,8 +112,9 @@ export class H2ClientDriver implements ClientDriver {
    * Send one HTTP request over an already connected HTTP/2 stream pair.
    *
    * The request body is buffered before submission. The returned promise
-   * resolves with a fully buffered `Response`, rejects on stream close errors,
-   * and always attempts GOAWAY, session close, and writer close in `finally`.
+   * resolves when response headers are complete, with the body exposed as a
+   * streaming async iterable. A background receive loop drains DATA frames and
+   * always attempts GOAWAY, session close, and writer close when complete.
    *
    * ```ts no_run
    * import { Request } from 'fino:net/http';
@@ -165,6 +170,7 @@ export class H2ClientDriver implements ClientDriver {
 
         if (frameType === NGHTTP2_FRAME_TYPE_HEADERS) {
           if ((frameFlags & NGHTTP2_FLAG_END_HEADERS) === 0) return;
+          if (!s.inTrailers) resolveResponse(s);
           if (endStream) finishStream(s);
         }
 
@@ -175,39 +181,40 @@ export class H2ClientDriver implements ClientDriver {
 
       onDataChunk(streamId: number, data: Uint8Array): void {
         const s = streams.get(streamId);
-        if (s) s.bodyChunks.push(data);
+        if (s && !s.done) s.body.push(data);
       },
 
       onStreamClose(streamId: number, errorCode: number): void {
         const s = streams.get(streamId);
         if (s && !s.done) {
           s.done = true;
-          s.reject(new Error(`H2 stream ${streamId} closed with error ${errorCode}`));
+          const err = new HttpStreamError('closed', `H2 stream ${streamId} closed with error ${errorCode}`, {
+            streamId,
+            protocolCode: errorCode,
+          });
+          s.body.error(err);
+          if (!s.responseResolved) s.reject(err);
         }
         streams.delete(streamId);
       },
     };
 
-    function finishStream(s: H2ClientStream): void {
-      if (s.done) return;
-      s.done = true;
-
-      // Assemble body.
-      const total = s.bodyChunks.reduce((n, c) => n + c.byteLength, 0);
-      let bodyInit: BodyInit | null = null;
-      if (total > 0) {
-        const all = new Uint8Array(total);
-        let off = 0;
-        for (const c of s.bodyChunks) { all.set(c, off); off += c.byteLength; }
-        bodyInit = all.buffer;
-      }
-
-      const res = new Response(bodyInit, {
+    function resolveResponse(s: H2ClientStream): void {
+      if (s.responseResolved) return;
+      s.responseResolved = true;
+      const res = new Response(s.body as any, {
         status: s.status,
         headers: s.headers,
         trailers: s.trailerHeaders,
       } as any);
       s.resolve(res);
+    }
+
+    function finishStream(s: H2ClientStream): void {
+      if (s.done) return;
+      s.done = true;
+      s.body.close();
+      resolveResponse(s);
     }
 
     const session = Nghttp2Session.createClient(callbacks);
@@ -248,8 +255,9 @@ export class H2ClientDriver implements ClientDriver {
         headers: new Headers(),
         trailerHeaders: new Headers(),
         inTrailers: false,
-        bodyChunks: [],
+        body: new HttpBodyQueue(),
         done: false,
+        responseResolved: false,
         resolve,
         reject,
       });
@@ -266,25 +274,35 @@ export class H2ClientDriver implements ClientDriver {
       await drainWrite();
     }
 
-    // Receive the response.
-    let response!: Response;
-    try {
-      for await (const chunk of reader) {
-        await session.recv(chunk);
-        await drainWrite();
+    async function receiveResponse(): Promise<void> {
+      try {
+        for await (const chunk of reader) {
+          await session.recv(chunk);
+          await drainWrite();
 
-        // Check if our stream finished.
+          // Check if our stream finished.
+          const s = streams.get(streamId);
+          if (!s || s.done) break;
+        }
         const s = streams.get(streamId);
-        if (!s || s.done) break;
+        if (s && !s.done) finishStream(s);
+      } catch (e) {
+        const s = streams.get(streamId);
+        const err = e instanceof Error ? e : new Error(String(e));
+        if (s && !s.done) {
+          s.done = true;
+          s.body.error(err);
+          if (!s.responseResolved) s.reject(err);
+        }
+      } finally {
+        try { session.submitGoaway(0, 0); } catch {}
+        try { await drainWrite(); } catch {}
+        session.close();
+        await writer.close();
       }
-      response = await responseDeferred;
-    } finally {
-      try { session.submitGoaway(0, 0); } catch {}
-      try { await drainWrite(); } catch {}
-      session.close();
-      await writer.close();
     }
 
-    return response;
+    void receiveResponse();
+    return await responseDeferred;
   }
 }

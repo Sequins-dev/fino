@@ -576,7 +576,8 @@ export class HttpSession {
           referrerPolicy: init.referrerPolicy,
           trailers: init.trailers,
           tls: init.tls ?? this.#client.tls,
-        });
+          protocol: this.protocol,
+        } as any);
     timing.responseHeadersEnd = Date.now();
     const protocol = protocolFromResponse(response, this.protocol);
     const connection: HttpConnectionInfo = this.protocol === 'h3' && this.#h3Transport !== null

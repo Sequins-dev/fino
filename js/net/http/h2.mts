@@ -18,8 +18,8 @@
  *     outside this release baseline
  *   - h2spec section 6.9 is covered by deterministic local flow-control tests
  *     because h2spec v2.6 does not emit reliable JUnit for that section
- *   - request and response bodies are buffered at the public Request/Response
- *     boundary before application code consumes them
+ *   - one-shot H2 server/client paths stream bodies through the shared internal
+ *     HTTP stream queue; the H2 pool still buffers responses for compatibility
  *
  * The H2 server and client drivers are wired into `fino:net/http/server` and
  * the global `fetch` implementation automatically; applications usually import

@@ -59,6 +59,7 @@ import type { ServerDriver, ServerHandler, ServerDriverOptions } from '../../../
 import { isConnectionTakeover } from '../../../../net/http/driver.mts';
 import { Request, Response, Headers } from '../../../../net/http/index.mts';
 import { Scanner } from '../../../../parsing/scanner.mts';
+import { HttpBodyQueue, HttpStreamError } from '../stream.mts';
 import {
   NGHTTP2_FLAG_END_STREAM,
   NGHTTP2_FLAG_END_HEADERS,
@@ -96,8 +97,9 @@ interface H2ServerStream {
   headers: Headers;
   trailerHeaders: Headers;
   inTrailers: boolean;
-  bodyChunks: Uint8Array[];
+  body: HttpBodyQueue;
   bodyDone: boolean;
+  dispatched: boolean;
   // Set to true when client RST_STREAMs the stream. dispatchStream checks
   // this after triggerDispatch resolves and returns early if true.
   cancelled: boolean;
@@ -555,41 +557,13 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
   async function dispatchStream(stream: H2ServerStream): Promise<void> {
     const { streamId } = stream;
 
-    // Wait until the request body is fully received.
-    if (!stream.bodyDone) {
-      await new Promise<void>((resolve) => { stream.triggerDispatch = resolve; });
-    }
-
     // Client cancelled the stream (RST_STREAM received) while we were waiting.
     if (stream.cancelled) return;
 
-    const totalBodySize = stream.bodyChunks.reduce((n, c) => n + c.byteLength, 0);
-    let reqBody: BodyInit | null = null;
-    if (totalBodySize > 0) {
-      const all = new Uint8Array(totalBodySize);
-      let off = 0;
-      for (const c of stream.bodyChunks) { all.set(c, off); off += c.byteLength; }
-      reqBody = all.buffer;
-    }
-
-    // Validate content-length against actual body size (RFC 7540 Section 8.1.2.6).
-    const clHeader = stream.headers.get('content-length');
-    if (clHeader !== null) {
-      let clValue = -1;
-      try { clValue = _parseH2ContentLength(clHeader); }
-      catch {
-        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
-        await drainWrite();
-        return;
-      }
-      if (clValue !== totalBodySize) {
-        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
-        await drainWrite();
-        return;
-      }
-    }
-
     const url = `${stream.scheme}://${stream.authority}${stream.path}`;
+    const reqBody = stream.method === 'GET' || stream.method === 'HEAD'
+      ? null
+      : stream.body as any;
     const req = new Request(url, {
       method: stream.method,
       headers: stream.headers,
@@ -615,6 +589,36 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       res = new Response('Internal Server Error', { status: 500 });
     }
 
+    if (stream.cancelled) return;
+
+    // Validate content-length against actual body size once EOF arrives
+    // (RFC 7540 Section 8.1.2.6). The handler may already be streaming the
+    // body; this preserves early dispatch while still rejecting mismatches
+    // before response submission.
+    try { await stream.body.closed; }
+    catch {
+      if (!stream.cancelled) {
+        try { session.submitRstStream(streamId, NGHTTP2_INTERNAL_ERROR); } catch {}
+        await drainWrite();
+      }
+      return;
+    }
+    const clHeader = stream.headers.get('content-length');
+    if (clHeader !== null) {
+      let clValue = -1;
+      try { clValue = _parseH2ContentLength(clHeader); }
+      catch {
+        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
+        await drainWrite();
+        return;
+      }
+      if (clValue !== stream.body.receivedBytes) {
+        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
+        await drainWrite();
+        return;
+      }
+    }
+
     // Build and submit the response. If the stream was RST_STREAMed while the
     // handler was running, submitResponse will throw - catch and discard.
     const responseHeaders: Array<[string, string]> = [[':status', String(res.status)]];
@@ -623,23 +627,25 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       responseHeaders.push([k, v]);
     }
 
-    let bodyBytes: Uint8Array | null = null;
-    if (res.body) {
-      try {
-        const buf = await res.arrayBuffer();
-        bodyBytes = buf.byteLength > 0 ? new Uint8Array(buf) : null;
-      } catch { bodyBytes = null; }
-    }
-
     try {
       const hasTrailers = res._hasOutTrailers();
-      const hasBody = bodyBytes !== null || hasTrailers;
+      const bodyBytes = stream.method === 'HEAD' ? null : res._extractBytes();
+      const responseBody = stream.method === 'HEAD' ? null : res.body;
+      const hasStreamingBody = bodyBytes === null && responseBody !== null;
+      const hasBody = bodyBytes !== null || hasStreamingBody || hasTrailers;
       session.submitResponse(streamId, responseHeaders, hasBody);
       await drainWrite();
 
       if (bodyBytes) {
         session.setStreamData(streamId, bodyBytes);
         await drainWrite();
+      } else if (hasStreamingBody) {
+        for await (const chunk of responseBody as any as AsyncIterable<Uint8Array>) {
+          if (stream.cancelled) return;
+          if (chunk.byteLength === 0) continue;
+          session.setStreamData(streamId, chunk);
+          await drainWrite();
+        }
       }
 
       if (hasTrailers) {
@@ -673,6 +679,9 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
   }
 
   function startDispatch(stream: H2ServerStream): void {
+    if (stream.dispatched) return;
+    if (stream.cancelled) return;
+    stream.dispatched = true;
     // Absorb errors so Promise.all(inFlight) in the finally block never rejects.
     const done = dispatchStream(stream).catch(() => {});
     inFlight.add(done);
@@ -705,8 +714,9 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         headers: new Headers(),
         trailerHeaders: new Headers(),
         inTrailers: false,
-        bodyChunks: [],
+        body: new HttpBodyQueue(),
         bodyDone: false,
+        dispatched: false,
         cancelled: false,
         triggerDispatch: null,
         seenPseudos: new Set(),
@@ -772,6 +782,10 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
           if (s.headerError !== null) {
             try { session.submitRstStream(streamId, s.headerError); } catch {}
             s.cancelled = true;
+            s.body.error(new HttpStreamError('protocol', `H2 stream ${streamId} received invalid trailers`, {
+              streamId,
+              protocolCode: s.headerError,
+            }));
             if (s.triggerDispatch) { s.triggerDispatch(); s.triggerDispatch = null; }
             // Leave stream in map; onStreamClose will clean up.
             return;
@@ -779,6 +793,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
           // Trailers with END_STREAM unblock the body wait.
           if (endStream) {
             s.bodyDone = true;
+            s.body.close();
             if (s.triggerDispatch) { s.triggerDispatch(); s.triggerDispatch = null; }
           }
           return;
@@ -807,6 +822,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
 
         if (endStream) {
           s.bodyDone = true;
+          s.body.close();
           if (s.triggerDispatch) { s.triggerDispatch(); s.triggerDispatch = null; }
           else startDispatch(s);
         } else {
@@ -816,6 +832,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
 
       if (frameType === NGHTTP2_FRAME_TYPE_DATA && endStream) {
         s.bodyDone = true;
+        s.body.close();
         if (s.triggerDispatch) { s.triggerDispatch(); s.triggerDispatch = null; }
       }
     },
@@ -823,7 +840,11 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     onDataChunk(streamId: number, data: Uint8Array): void {
       const s = streams.get(streamId);
       if (!s || s.bodyDone) return;
-      s.bodyChunks.push(data);
+      if (!s.body.push(data)) {
+        s.cancelled = true;
+        try { session.submitRstStream(streamId, NGHTTP2_INTERNAL_ERROR); } catch {}
+        void drainWrite();
+      }
     },
 
     onStreamClose(streamId: number, _errorCode: number): void {
@@ -833,6 +854,10 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         // has not yet awaited triggerDispatch (bodyDone was true at dispatch
         // time - e.g. RST_STREAM arriving before the async handler runs).
         s.cancelled = true;
+        s.body.error(new HttpStreamError('cancelled', `H2 stream ${streamId} closed with error ${_errorCode}`, {
+          streamId,
+          protocolCode: _errorCode,
+        }));
         if (s.triggerDispatch !== null) {
           s.bodyDone = true;
           s.triggerDispatch();
@@ -849,6 +874,9 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     // below would hang forever because dispatchStream is stuck at triggerDispatch.
     for (const [, s] of streams) {
       s.cancelled = true;
+      s.body.error(new HttpStreamError('transport', `H2 stream ${s.streamId} drained before request body completed`, {
+        streamId: s.streamId,
+      }));
       if (s.triggerDispatch !== null) {
         s.bodyDone = true;
         s.triggerDispatch();
@@ -861,6 +889,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     const s = streams.get(streamId);
     if (!s) return;
     s.cancelled = true;
+    s.body.error(new HttpStreamError('cancelled', `H2 stream ${streamId} cancelled locally`, { streamId }));
     if (s.triggerDispatch !== null) {
       s.bodyDone = true;
       s.triggerDispatch();
@@ -986,6 +1015,8 @@ function _buildStream1(req: Request): H2ServerStream {
     headers.append(k, v);
   }
 
+  const body = new HttpBodyQueue();
+  body.close();
   return {
     streamId: 1,
     method: req.method,
@@ -995,9 +1026,10 @@ function _buildStream1(req: Request): H2ServerStream {
     headers,
     trailerHeaders: new Headers(),
     inTrailers: false,
-    bodyChunks: [],
+    body,
     // RFC 7540 Section 3.2: the upgrade request MUST NOT include a request body.
     bodyDone: true,
+    dispatched: false,
     cancelled: false,
     triggerDispatch: null,
     seenPseudos: new Set(),
@@ -1013,9 +1045,9 @@ function _buildStream1(req: Request): H2ServerStream {
 /**
  * HTTP/2 server driver backed by nghttp2.
  *
- * The driver validates request pseudo-headers, buffers request bodies, dispatches
- * a Fino HTTP handler, and submits response headers, body, and trailers. It
- * serializes all nghttp2 writes to avoid concurrent access to the session.
+ * The driver validates request pseudo-headers, streams request bodies into a
+ * Fino HTTP handler, and submits response headers, body chunks, and trailers.
+ * It serializes all nghttp2 writes to avoid concurrent access to the session.
  *
  * ```ts no_run
  * import { H2ServerDriver } from 'internal:net/http/h2/server';

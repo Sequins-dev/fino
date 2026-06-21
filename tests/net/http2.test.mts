@@ -328,6 +328,80 @@ async function h2PostRoundTrip(port: number, body: string): Promise<string> {
 }
 
 describe('H2 server — request bodies', () => {
+  it('dispatches POST handlers after headers while the body is still streaming', async (t) => {
+    if (!h2Available) return;
+
+    let handlerEntered: (() => void) | null = null;
+    const entered = new Promise<void>((resolve) => { handlerEntered = resolve; });
+    const server = serveHttp({ port: 0 }, async (req) => {
+      handlerEntered?.();
+      const text = await req.text();
+      return new Response(`streamed:${text}`);
+    });
+    const port = server.port;
+
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+    const [reader, writer] = sock.split();
+
+    let streamId = 0;
+    let responseClosed = false;
+    const responseChunks: Uint8Array[] = [];
+    const client = await openClientSession(writer, {
+      onBeginHeaders() {},
+      onHeader() {},
+      onFrameRecv() {},
+      onDataChunk(_streamId: number, data: Uint8Array) {
+        responseChunks.push(data);
+      },
+      onStreamClose(id: number) {
+        if (id === streamId) responseClosed = true;
+      },
+    });
+
+    async function flushClient() {
+      while (client.wantWrite()) {
+        const bytes = await client.flush();
+        if (bytes && bytes.byteLength > 0) await writer.write(bytes);
+      }
+      await writer.flush();
+    }
+
+    const requestHeaders: Array<[string, string]> = [
+      [':method', 'POST'],
+      [':path', '/'],
+      [':scheme', 'http'],
+      [':authority', `127.0.0.1:${port}`],
+    ];
+    streamId = client.submitRequest(requestHeaders, true);
+    await flushClient();
+
+    await Promise.race([
+      entered,
+      new Promise<void>((_, reject) => setTimeout(() => reject(new Error('handler did not enter before END_STREAM')), 250)),
+    ]);
+
+    client.setStreamData(streamId, _enc.encode('live-body'));
+    await flushClient();
+    client.setStreamData(streamId, null);
+    await flushClient();
+
+    for await (const chunk of reader as any) {
+      await client.recv(chunk);
+      await flushClient();
+      if (responseClosed) break;
+    }
+
+    client.close();
+    await writer.close();
+    await server.close();
+
+    const total = responseChunks.reduce((n, c) => n + c.byteLength, 0);
+    const all = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of responseChunks) { all.set(chunk, offset); offset += chunk.byteLength; }
+    t.equal(_dec.decode(all), 'streamed:live-body', 'streaming body reaches handler');
+  });
+
   it('handler receives POST body and can echo it', async (t) => {
     if (!h2Available) return;
 
@@ -381,6 +455,47 @@ async function h2ClientFetch(port: number, path: string, method = 'GET', body?: 
 }
 
 describe('H2ClientDriver', () => {
+  it('resolves responses after H2 headers before the response body finishes', async (t) => {
+    if (!h2Available) return;
+
+    let releaseBody: (() => void) | null = null;
+    const bodyGate = new Promise<void>((resolve) => { releaseBody = resolve; });
+    const server = serveHttp({ port: 0 }, async (_req) => {
+      async function* body() {
+        yield _enc.encode('first');
+        await bodyGate;
+        yield _enc.encode('-second');
+      }
+      return new Response(body(), { headers: { 'content-type': 'text/plain' } });
+    });
+    const port = server.port;
+
+    const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
+    const [reader, writer] = sock.split();
+    const req = new (globalThis as any).Request(`http://127.0.0.1:${port}/`);
+    const responsePromise = _h2Client.send(req, reader as any, writer, { signal: null });
+
+    let res: Response | null = null;
+    let text = '';
+    try {
+      res = await Promise.race([
+        responsePromise,
+        new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('response did not resolve before body completion')), 250)),
+      ]);
+      t.equal(res.status, 200, 'status is available before body completion');
+    } finally {
+      releaseBody?.();
+    }
+
+    try {
+      if (res !== null) text = await res.text();
+    } finally {
+      await server.close();
+    }
+
+    t.equal(text, 'first-second', 'body remains readable after early response resolution');
+  });
+
   it('GET / returns 200 with body', async (t) => {
     if (!h2Available) return;
 
@@ -776,6 +891,18 @@ describe('H2 server — robustness', () => {
     t.ok(goaway === null || frameErrorCode(goaway) === 0, 'client PING ACK does not cause an error GOAWAY');
   });
 
+  it('sends GOAWAY for PING frames on nonzero streams', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x06, 0x00, 1, new Uint8Array(8)));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'nonzero-stream PING gets GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'nonzero-stream PING uses PROTOCOL_ERROR');
+  });
+
   it('ignores undefined frame flags and handles the known flags normally', async (t) => {
     if (!h2Available) return;
 
@@ -787,6 +914,21 @@ describe('H2 server — robustness', () => {
     t.ok(pingAck !== undefined, 'server ACKed PING despite undefined flag bit');
     const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
     t.ok(errorGoaway === undefined, 'undefined flag bit did not trigger an error GOAWAY');
+  });
+
+  it('ignores the reserved stream id bit in frame headers', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const get = new Uint8Array(H2_GET_ROOT_LOCALHOST);
+    get[5] = 0x80;
+    const frames = await rawH2Exchange(server.port, get);
+    await server.close();
+
+    const responseHeaders = findFrame(frames, 0x01, 1);
+    t.ok(responseHeaders !== null, 'server responded to request despite reserved stream id bit');
+    const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
+    t.ok(errorGoaway === undefined, 'reserved stream id bit did not trigger an error GOAWAY');
   });
 
   it('RST_STREAMs streams above the max concurrent stream limit', async (t) => {
@@ -822,6 +964,11 @@ describe('H2 server — robustness', () => {
       ...H2_POST_ROOT_LOCALHOST,
       ...frame(0x09, 0x04, 1, new Uint8Array(0)),
     ]));
+    const dataThenContinuation = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...frame(0x00, 0x00, 1, _enc.encode('body')),
+      ...frame(0x09, 0x04, 1, new Uint8Array(0)),
+    ]));
     const onHalfClosed = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_GET_ROOT_LOCALHOST,
       ...frame(0x09, 0x04, 1, new Uint8Array(0)),
@@ -837,6 +984,7 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(findFrame(interruptedByExtension, 0x07)!), 0x01, 'extension frame during header block gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(stream0, 0x07)!), 0x01, 'CONTINUATION stream 0 gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(unexpectedOnOpen, 0x07)!), 0x01, 'unexpected CONTINUATION gets PROTOCOL_ERROR');
+    t.equal(frameErrorCode(findFrame(dataThenContinuation, 0x07)!), 0x01, 'DATA followed by CONTINUATION gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(onHalfClosed, 0x07)!), 0x01, 'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(afterRstStream, 0x07)!), 0x01, 'closed-stream CONTINUATION after RST_STREAM gets PROTOCOL_ERROR');
   });

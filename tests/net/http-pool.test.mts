@@ -11,8 +11,17 @@ import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import { Headers, Response } from 'fino:net/http';
 import { h2Available, createPoolEntry } from 'fino:net/http/h2';
+import { h3Available, serve as h3Serve } from 'fino:net/http/h3';
+import { quicAvailable } from 'fino:net/quic';
 import { H2ConnectionPool } from 'internal:net/http/pool';
-import { _fetchH2PoolHas, _resetFetchH2Pool } from 'internal:globals/fetch';
+import {
+  _fetchAltSvcHas,
+  _fetchH2PoolHas,
+  _fetchH3PoolHas,
+  _resetFetchAltSvc,
+  _resetFetchH2Pool,
+  _resetFetchH3Pool,
+} from 'internal:globals/fetch';
 import * as loop from 'internal:runtime/loop';
 
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
@@ -20,6 +29,7 @@ const KEY_PATH  = new URL('./fixtures/test.key', import.meta.url).pathname;
 
 const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
 const skipHttps = (!h2Available || !tlsAvailable) && 'requires libnghttp2 + OpenSSL';
+const skipGlobalH3 = (!quicAvailable || !h3Available || !tlsAvailable) && 'requires QUIC + libnghttp3 + OpenSSL';
 
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
   throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
@@ -451,6 +461,305 @@ describe('global fetch() — HTTPS H2 pool', () => {
     } finally {
       _resetFetchH2Pool();
       await server.close();
+    }
+  });
+});
+
+describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
+  it('discovers Alt-Svc and reuses one H3 session for later requests', { skip: skipGlobalH3 }, async (t) => {
+    _resetFetchH2Pool();
+    _resetFetchH3Pool();
+    _resetFetchAltSvc();
+    let tlsRequests = 0;
+    let h3Requests = 0;
+    const h3 = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: CERT_PATH,
+      privateKeyFile: KEY_PATH,
+    }, (request) => {
+      h3Requests++;
+      const url = new URL(request.url);
+      return new Response(`h3:${url.host}:${url.pathname}:${h3Requests}`);
+    });
+    const tls = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] } },
+      async () => new Response(`tls:${++tlsRequests}`, {
+        headers: { 'alt-svc': `h3=":${h3.port}"; ma=60` },
+      }),
+    );
+    const origin = httpsOrigin(tls.port);
+
+    try {
+      t.equal(await (await fetch(`${origin}/one`, {
+        tls: { rejectUnauthorized: false },
+      } as any)).text(), 'tls:1', 'first request uses the advertised HTTPS transport');
+      t.ok(_fetchAltSvcHas(origin), 'Alt-Svc entry is cached');
+      t.ok(!_fetchH3PoolHas(origin), 'H3 session is not opened until a later request');
+
+      const second = await fetch(`${origin}/two`, { tls: { rejectUnauthorized: false } } as any);
+      t.equal(await second.text(), `h3:127.0.0.1:${tls.port}:/two:1`, 'second request uses H3 and preserves original authority');
+      t.ok(_fetchH3PoolHas(origin), 'H3 pool entry is created for the origin');
+
+      const third = await fetch(`${origin}/three`, { tls: { rejectUnauthorized: false } } as any);
+      t.equal(await third.text(), `h3:127.0.0.1:${tls.port}:/three:2`, 'third request reuses pooled H3 session');
+      t.equal(tlsRequests, 1, 'only discovery request used HTTPS H1/H2 path');
+      t.equal(h3Requests, 2, 'later requests reached H3 server');
+    } finally {
+      _resetFetchH3Pool();
+      _resetFetchAltSvc();
+      _resetFetchH2Pool();
+      await tls.close();
+      await h3.close();
+    }
+  });
+
+  it('multiplexes concurrent requests over one discovered H3 session', { skip: skipGlobalH3 }, async (t) => {
+    _resetFetchH2Pool();
+    _resetFetchH3Pool();
+    _resetFetchAltSvc();
+    let h3Requests = 0;
+    const h3 = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: CERT_PATH,
+      privateKeyFile: KEY_PATH,
+    }, async (request) => {
+      h3Requests++;
+      const url = new URL(request.url);
+      if (url.pathname === '/slow') await loop.timeout(20);
+      return new Response(`h3:${url.pathname}`);
+    });
+    const tls = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] } },
+      async () => new Response('warm', {
+        headers: { 'alt-svc': `h3=":${h3.port}"; ma=60` },
+      }),
+    );
+    const origin = httpsOrigin(tls.port);
+
+    try {
+      await (await fetch(`${origin}/warm`, { tls: { rejectUnauthorized: false } } as any)).text();
+      const [a, b] = await Promise.all([
+        fetch(`${origin}/slow`, { tls: { rejectUnauthorized: false } } as any),
+        fetch(`${origin}/fast`, { tls: { rejectUnauthorized: false } } as any),
+      ]);
+      t.deepEqual([await a.text(), await b.text()].sort(), ['h3:/fast', 'h3:/slow']);
+      t.equal(h3Requests, 2, 'both concurrent requests reached H3');
+      t.ok(_fetchH3PoolHas(origin), 'one H3 pool entry remains');
+    } finally {
+      _resetFetchH3Pool();
+      _resetFetchAltSvc();
+      _resetFetchH2Pool();
+      await tls.close();
+      await h3.close();
+    }
+  });
+
+  it('falls back and evicts broken automatic H3 alternatives', { skip: skipGlobalH3 }, async (t) => {
+    _resetFetchH2Pool();
+    _resetFetchH3Pool();
+    _resetFetchAltSvc();
+    let tlsRequests = 0;
+    const tls = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] } },
+      async () => new Response(`tls:${++tlsRequests}`, {
+        headers: { 'alt-svc': 'h3=":9"; ma=60' },
+      }),
+    );
+    const origin = httpsOrigin(tls.port);
+
+    try {
+      t.equal(await (await fetch(`${origin}/warm`, { tls: { rejectUnauthorized: false } } as any)).text(), 'tls:1');
+      t.ok(_fetchAltSvcHas(origin), 'broken Alt-Svc is cached before use');
+
+      t.equal(await (await fetch(`${origin}/fallback`, { tls: { rejectUnauthorized: false } } as any)).text(), 'tls:2');
+      t.ok(_fetchAltSvcHas(origin), 'fallback response can advertise a fresh alternative');
+      t.ok(!_fetchH3PoolHas(origin), 'broken H3 pool entry is not retained');
+    } finally {
+      _resetFetchH3Pool();
+      _resetFetchAltSvc();
+      _resetFetchH2Pool();
+      await tls.close();
+    }
+  });
+
+  it('honors Alt-Svc clear and ma=0 eviction', { skip: skipGlobalH3 }, async (t) => {
+    _resetFetchH2Pool();
+    _resetFetchH3Pool();
+    _resetFetchAltSvc();
+    const h3 = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: CERT_PATH,
+      privateKeyFile: KEY_PATH,
+    }, () => new Response('h3'));
+    let header = `h3=":${h3.port}"; ma=60`;
+    const tls = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] } },
+      async () => new Response('tls', { headers: { 'alt-svc': header } }),
+    );
+    const origin = httpsOrigin(tls.port);
+
+    try {
+      await (await fetch(`${origin}/cache`, {
+        protocol: 'http/1.1',
+        tls: { rejectUnauthorized: false },
+      } as any)).text();
+      t.ok(_fetchAltSvcHas(origin), 'Alt-Svc is cached');
+
+      header = 'clear';
+      await (await fetch(`${origin}/clear`, {
+        protocol: 'http/1.1',
+        tls: { rejectUnauthorized: false },
+      } as any)).text();
+      t.ok(!_fetchAltSvcHas(origin), 'clear evicts cached Alt-Svc');
+
+      header = `h3=":${h3.port}"; ma=60`;
+      await (await fetch(`${origin}/cache-again`, {
+        protocol: 'http/1.1',
+        tls: { rejectUnauthorized: false },
+      } as any)).text();
+      t.ok(_fetchAltSvcHas(origin), 'Alt-Svc is cached again');
+
+      header = `h3=":${h3.port}"; ma=0`;
+      await (await fetch(`${origin}/ma-zero`, {
+        protocol: 'http/1.1',
+        tls: { rejectUnauthorized: false },
+      } as any)).text();
+      t.ok(!_fetchAltSvcHas(origin), 'ma=0 evicts cached Alt-Svc');
+    } finally {
+      _resetFetchH3Pool();
+      _resetFetchAltSvc();
+      _resetFetchH2Pool();
+      await tls.close();
+      await h3.close();
+    }
+  });
+
+  it('protocol override controls automatic H3 and explicit H3 fallback', { skip: skipGlobalH3 }, async (t) => {
+    _resetFetchH2Pool();
+    _resetFetchH3Pool();
+    _resetFetchAltSvc();
+    const h3 = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: CERT_PATH,
+      privateKeyFile: KEY_PATH,
+    }, (request) => new Response(`h3:${new URL(request.url).pathname}`));
+    let tlsRequests = 0;
+    const tls = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] } },
+      async () => new Response(`tls:${++tlsRequests}`, {
+        headers: { 'alt-svc': `h3=":${h3.port}"; ma=60` },
+      }),
+    );
+    const origin = httpsOrigin(tls.port);
+
+    try {
+      t.equal(await (await fetch(`${origin}/warm`, { tls: { rejectUnauthorized: false } } as any)).text(), 'tls:1');
+      t.equal(await (await fetch(`${origin}/bypass`, {
+        protocol: 'http/1.1',
+        tls: { rejectUnauthorized: false },
+      } as any)).text(), 'tls:2', 'http/1.1 override bypasses cached H3');
+
+      t.equal(await (await fetch(`${origin}/forced`, {
+        protocol: 'h3',
+        tls: { rejectUnauthorized: false },
+      } as any)).text(), 'h3:/forced', 'h3 override uses cached Alt-Svc');
+
+      t.equal(await (await fetch(`https://127.0.0.1:${h3.port}/direct`, {
+        protocol: 'h3',
+        tls: { rejectUnauthorized: false },
+      } as any)).text(), 'h3:/direct', 'h3 override connects directly when no Alt-Svc is cached');
+
+      await t.rejects(() => fetch(`https://127.0.0.1:9/fail`, {
+        protocol: 'h3',
+        tls: { rejectUnauthorized: false },
+      } as any), /QUIC|connect|refused|timed out|closed/i, 'explicit h3 does not fallback');
+    } finally {
+      _resetFetchH3Pool();
+      _resetFetchAltSvc();
+      _resetFetchH2Pool();
+      await tls.close();
+      await h3.close();
+    }
+  });
+
+  it('keeps non-replayable request bodies on H1/H2 despite cached Alt-Svc', { skip: skipGlobalH3 }, async (t) => {
+    _resetFetchH2Pool();
+    _resetFetchH3Pool();
+    _resetFetchAltSvc();
+    let h3Requests = 0;
+    const h3 = await h3Serve({
+      port: 0,
+      hostname: '127.0.0.1',
+      certificateFile: CERT_PATH,
+      privateKeyFile: KEY_PATH,
+    }, () => {
+      h3Requests++;
+      return new Response('h3');
+    });
+    const tls = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] } },
+      async (request) => new Response(`tls:${request.method}:${await request.text()}`, {
+        headers: { 'alt-svc': `h3=":${h3.port}"; ma=60` },
+      }),
+    );
+    const origin = httpsOrigin(tls.port);
+
+    try {
+      await (await fetch(`${origin}/warm`, { tls: { rejectUnauthorized: false } } as any)).text();
+      t.ok(_fetchAltSvcHas(origin), 'Alt-Svc is cached');
+
+      const body = {
+        async *[Symbol.asyncIterator]() {
+          yield new TextEncoder().encode('stream-body');
+        },
+      };
+      const response = await fetch(`${origin}/upload`, {
+        method: 'POST',
+        body,
+        tls: { rejectUnauthorized: false },
+      } as any);
+      t.equal(await response.text(), 'tls:POST:stream-body', 'streaming body stayed on HTTPS H1/H2 path');
+      t.equal(h3Requests, 0, 'H3 was not attempted for non-replayable body');
+    } finally {
+      _resetFetchH3Pool();
+      _resetFetchAltSvc();
+      _resetFetchH2Pool();
+      await tls.close();
+      await h3.close();
+    }
+  });
+});
+
+describe('global fetch() — protocol override', () => {
+  it('forces H2 when available and fails when ALPN does not negotiate h2', { skip: skipHttps }, async (t) => {
+    _resetFetchH2Pool();
+    const h2Server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('h2-ok'),
+    );
+    const h1Server = serveHttp({ port: 0 }, async () => new Response('h1-only'));
+
+    try {
+      const h2Origin = httpsOrigin(h2Server.port);
+      const h2Response = await fetch(`${h2Origin}/`, {
+        protocol: 'h2',
+        tls: { rejectUnauthorized: false },
+      } as any);
+      t.equal(await h2Response.text(), 'h2-ok', 'forced H2 request succeeds against H2-capable server');
+      t.ok(_fetchH2PoolHas(h2Origin), 'forced H2 request creates an H2 pool entry');
+
+      await t.rejects(() => fetch(`http://127.0.0.1:${h1Server.port}/`, {
+        protocol: 'h2',
+        tls: { rejectUnauthorized: false },
+      } as any), /h2|ALPN/i, 'forced H2 fails instead of downgrading to HTTP/1.1');
+    } finally {
+      _resetFetchH2Pool();
+      await h2Server.close();
+      await h1Server.close();
     }
   });
 });

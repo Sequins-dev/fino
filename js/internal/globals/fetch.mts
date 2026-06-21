@@ -75,6 +75,7 @@
 import { lookup } from 'fino:net/dns';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
+import { QuicEndpoint } from 'fino:net/quic';
 import {
   Request,
   Response,
@@ -85,6 +86,9 @@ import { H1ClientDriver } from 'fino:net/http/h1';
 import { H2ConnectionPool, createPoolEntry } from '../net/http/pool.mts';
 import { h2Available } from '../net/http/h2/bindings.mts';
 import type { Address } from 'fino:net/socket';
+import type { QuicAddress, QuicConnection } from 'fino:net/quic';
+import { H3ClientSession } from '../net/http/h3/client.mts';
+import { h3Available } from '../net/http/h3/bindings.mts';
 import {
   brotliAvailable,
   createDecompressor,
@@ -131,6 +135,7 @@ interface FetchInit {
     ca?: string;
     rejectUnauthorized?: boolean;
   };
+  protocol?: 'auto' | 'http/1.1' | 'h2' | 'h3';
 }
 
 interface TraceRuntime {
@@ -143,6 +148,85 @@ interface ClosableSocket {
   close(): void;
 }
 
+type FetchProtocol = NonNullable<FetchInit['protocol']>;
+
+interface AltSvcEntry {
+  host: string;
+  port: number;
+  expiresAt: number;
+}
+
+interface H3Target {
+  address: QuicAddress;
+  serverName: string;
+}
+
+class H3PoolEntry {
+  readonly #origin: string;
+  readonly #target: AltSvcEntry;
+  readonly #tls: FetchInit['tls'] | undefined;
+  #endpoint: QuicEndpoint | null = null;
+  #conn: QuicConnection | null = null;
+  #session: H3ClientSession | null = null;
+  #ready: Promise<H3ClientSession> | null = null;
+  #closed = false;
+
+  constructor(origin: string, target: AltSvcEntry, tls?: FetchInit['tls']) {
+    this.#origin = origin;
+    this.#target = target;
+    this.#tls = tls;
+  }
+
+  async session(): Promise<H3ClientSession> {
+    if (this.#closed) throw new Error('H3 pool entry is closed');
+    if (this.#session !== null) return this.#session;
+    if (this.#ready !== null) return this.#ready;
+
+    this.#ready = (async () => {
+      const target = await _resolveH3Target(this.#target.host, this.#target.port);
+      const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+      this.#endpoint = endpoint;
+      try {
+        const conn = await endpoint.connect({
+          address: target.address,
+          alpnProtocols: ['h3'],
+          serverName: target.serverName,
+          ...(this.#tls?.ca !== undefined ? { ca: this.#tls.ca as any } : {}),
+          ...(this.#tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
+        });
+        this.#conn = conn;
+        conn.addEventListener('close', () => {
+          _h3Pool.delete(this.#origin);
+          this.close();
+        }, { once: true });
+        this.#session = await H3ClientSession.create(conn);
+        return this.#session;
+      } catch (error) {
+        await endpoint.close();
+        this.#endpoint = null;
+        this.#ready = null;
+        throw error;
+      }
+    })();
+
+    return this.#ready;
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    try { this.#session?.close(); } catch (_) {}
+    try { this.#conn?.close(); } catch (_) {}
+    void this.#endpoint?.close();
+    this.#session = null;
+    this.#conn = null;
+    this.#endpoint = null;
+  }
+}
+
+const _altSvcCache = new Map<string, AltSvcEntry>();
+const _h3Pool = new Map<string, H3PoolEntry>();
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -153,6 +237,158 @@ function _parseHttpUrl(url: string, context = 'fetch'): URL {
     throw new TypeError(`${context}: non-HTTP/S URL is not allowed: '${parsed.href}'`);
   }
   return parsed;
+}
+
+function _originKey(parsed: URL): string {
+  const port = parsed.port ? Number(parsed.port) : (parsed.protocol === 'https:' ? 443 : 80);
+  return `${parsed.protocol}//${parsed.hostname}:${port}`;
+}
+
+function _urlHostname(url: URL): string {
+  const hostname = url.hostname;
+  return hostname.startsWith('[') && hostname.endsWith(']') ? hostname.slice(1, -1) : hostname;
+}
+
+async function _resolveH3Target(host: string, port: number): Promise<H3Target> {
+  const hostname = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+  const result = await lookup(hostname, { family: hostname.includes(':') ? 6 : 4 } as any);
+  return {
+    address: {
+      family: result.family === 6 ? 'ipv6' : 'ipv4',
+      ip: result.address,
+      port,
+    },
+    serverName: hostname,
+  };
+}
+
+function _isReplayableForH3(body: FetchBody | null): boolean {
+  return body === null ||
+    typeof body === 'string' ||
+    body instanceof Uint8Array ||
+    body instanceof ArrayBuffer;
+}
+
+function _parseAltSvcFieldValue(value: string, originUrl: URL): AltSvcEntry | 'clear' | null {
+  if (value.trim().toLowerCase() === 'clear') return 'clear';
+
+  for (const rawAlt of value.split(',')) {
+    const parts = rawAlt.split(';').map(part => part.trim()).filter(Boolean);
+    const first = parts[0];
+    if (!first) continue;
+    const eq = first.indexOf('=');
+    if (eq < 0) continue;
+    const protocol = first.slice(0, eq).trim().toLowerCase();
+    if (protocol !== 'h3') continue;
+    let authority = first.slice(eq + 1).trim();
+    if (authority.startsWith('"') && authority.endsWith('"')) {
+      authority = authority.slice(1, -1);
+    }
+
+    let ma = 86400;
+    for (let i = 1; i < parts.length; i++) {
+      const param = parts[i]!;
+      const paramEq = param.indexOf('=');
+      if (paramEq < 0) continue;
+      const name = param.slice(0, paramEq).trim().toLowerCase();
+      if (name !== 'ma') continue;
+      const parsedMa = Number(param.slice(paramEq + 1).trim().replace(/^"|"$/g, ''));
+      if (Number.isFinite(parsedMa) && parsedMa >= 0) ma = Math.floor(parsedMa);
+    }
+    if (ma === 0) return 'clear';
+
+    let host = _urlHostname(originUrl);
+    let port = originUrl.port ? Number(originUrl.port) : 443;
+    if (authority.startsWith(':')) {
+      const parsedPort = Number(authority.slice(1));
+      if (!Number.isInteger(parsedPort) || parsedPort <= 0 || parsedPort > 65535) continue;
+      port = parsedPort;
+    } else {
+      try {
+        const parsed = new URL(`https://${authority}`);
+        host = _urlHostname(parsed);
+        port = parsed.port ? Number(parsed.port) : 443;
+      } catch (_) {
+        continue;
+      }
+    }
+    return { host, port, expiresAt: Date.now() + ma * 1000 };
+  }
+  return null;
+}
+
+function _processAltSvc(url: string, response: Response): void {
+  const parsed = _parseHttpUrl(url);
+  if (parsed.protocol !== 'https:') return;
+  const header = response.headers.get('alt-svc');
+  if (header === null) return;
+  const origin = _originKey(parsed);
+  const parsedAltSvc = _parseAltSvcFieldValue(header, parsed);
+  if (parsedAltSvc === 'clear') {
+    _altSvcCache.delete(origin);
+    _evictH3(origin);
+  } else if (parsedAltSvc !== null) {
+    _altSvcCache.set(origin, parsedAltSvc);
+  }
+}
+
+function _getAltSvc(origin: string): AltSvcEntry | null {
+  const entry = _altSvcCache.get(origin);
+  if (entry === undefined) return null;
+  if (entry.expiresAt <= Date.now()) {
+    _altSvcCache.delete(origin);
+    _evictH3(origin);
+    return null;
+  }
+  return entry;
+}
+
+function _evictH3(origin: string): void {
+  const entry = _h3Pool.get(origin);
+  if (entry !== undefined) {
+    _h3Pool.delete(origin);
+    entry.close();
+  }
+}
+
+async function _singleFetchH3(
+  url: string,
+  method: string,
+  headers: Headers,
+  body: FetchBody,
+  tls: FetchInit['tls'] | undefined,
+  target: AltSvcEntry,
+  trailers?: Headers | (() => Headers | Promise<Headers>),
+): Promise<Response> {
+  const parsed = _parseHttpUrl(url);
+  const origin = _originKey(parsed);
+  let entry = _h3Pool.get(origin);
+  if (entry === undefined) {
+    entry = new H3PoolEntry(origin, target, tls);
+    _h3Pool.set(origin, entry);
+  }
+  try {
+    const session = await entry.session();
+    const response = await session.request(url, {
+      method,
+      headers: new Headers(headers),
+      body: body !== null ? body as any : undefined,
+      trailers: trailers as any,
+    } as any);
+    return buildWireResponse({
+      version: 'HTTP/3',
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+      body: response.body as any,
+      url,
+      redirected: false,
+      inTrailers: response.trailers,
+    });
+  } catch (error) {
+    _evictH3(origin);
+    throw error;
+  }
 }
 
 /** Close a socket if it is open. Idempotent. */
@@ -251,6 +487,7 @@ async function _singleFetch(
   runtime: TraceRuntime = {},
   trailers?: Headers | (() => Headers | Promise<Headers>),
   tls?: FetchInit['tls'],
+  protocol: FetchProtocol = 'auto',
 ): Promise<{ response: Response; sock: Socket | TlsSocket | null }> {
   const parsed   = _parseHttpUrl(url);
   const isHttps  = parsed.protocol === 'https:';
@@ -258,11 +495,32 @@ async function _singleFetch(
   const portStr  = parsed.port;
   const port     = portStr ? parseInt(portStr, 10) : (isHttps ? 443 : 80);
   const isDefaultPort = (isHttps && port === 443) || (!isHttps && port === 80);
+  const origin = _originKey(parsed);
+
+  if (protocol === 'h3') {
+    if (!isHttps) throw new TypeError('fetch: protocol h3 requires an HTTPS URL');
+    if (!h3Available) throw new Error('fetch: protocol h3 requires libnghttp3');
+    const target = _getAltSvc(origin) ?? { host: _urlHostname(parsed), port, expiresAt: Number.MAX_SAFE_INTEGER };
+    const response = await _singleFetchH3(url, method, headers, body, tls, target, trailers);
+    return { response, sock: null };
+  }
+
+  if (protocol === 'auto' && isHttps && h3Available && _isReplayableForH3(body)) {
+    const target = _getAltSvc(origin);
+    if (target !== null) {
+      try {
+        const response = await _singleFetchH3(url, method, headers, body, tls, target, trailers);
+        return { response, sock: null };
+      } catch (_) {
+        _altSvcCache.delete(origin);
+        _evictH3(origin);
+      }
+    }
+  }
 
   // ---- H2 pool fast-path (HTTPS only) --------------------------------------
 
-  if (isHttps && h2Available) {
-    const origin = `https://${hostname}:${port}`;
+  if (protocol !== 'http/1.1' && isHttps && h2Available) {
     const poolEntry = _h2Pool.get(origin);
     if (poolEntry) {
       const outReq = new Request(url, {
@@ -338,7 +596,11 @@ async function _singleFetch(
       timeUnixNano: Date.now() * 1_000_000,
     }));
     try {
-      const alpn = h2Available ? ['h2', 'http/1.1'] : undefined;
+      const alpn = protocol === 'h2'
+        ? ['h2']
+        : protocol === 'http/1.1'
+          ? ['http/1.1']
+          : h2Available ? ['h2', 'http/1.1'] : undefined;
       const tlsConnectP = TlsSocket.connect(addr, {
         hostname,
         alpn,
@@ -424,7 +686,6 @@ async function _singleFetch(
     // ---- H2 via negotiated ALPN ----------------------------------------------
 
     if (isHttps && h2Available && (sock as TlsSocket).negotiatedProtocol === 'h2') {
-      const origin = `https://${hostname}:${port}`;
       const entry = createPoolEntry(reader, writer);
       _h2Pool.add(origin, entry);
       const outReq = new Request(url, {
@@ -435,6 +696,10 @@ async function _singleFetch(
       } as any);
       const response = await entry.send(outReq);
       return { response, sock: null };
+    }
+
+    if (protocol === 'h2') {
+      throw new Error('fetch: protocol h2 was requested but TLS ALPN did not negotiate h2');
     }
 
     // ---- Build request with auto-injected Host ----------------------------
@@ -745,9 +1010,13 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
 
   const signal   = (init && init.signal)   ? init.signal   : null;
   const redirect = (init && init.redirect) ? init.redirect : 'follow';
+  const protocol = init?.protocol ?? 'auto';
 
   if (redirect !== 'follow' && redirect !== 'error' && redirect !== 'manual') {
     throw new TypeError(`fetch: invalid redirect mode '${redirect}'`);
+  }
+  if (protocol !== 'auto' && protocol !== 'http/1.1' && protocol !== 'h2' && protocol !== 'h3') {
+    throw new TypeError(`fetch: invalid protocol '${protocol}'`);
   }
 
   // Per spec: GET and HEAD requests must not have a body
@@ -821,7 +1090,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     let sock: Socket | TlsSocket | null;
     try {
       ({ response, sock } = await _singleFetch(
-        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers, init?.tls
+        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers, init?.tls, protocol
       ));
     } catch (error) {
       topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {
@@ -836,6 +1105,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     }
 
     const status = response.status;
+    _processAltSvc(currentUrl, response);
 
     // ---- Redirect handling ---------------------------------------------------
 
@@ -983,4 +1253,42 @@ export function _fetchH2PoolHas(origin: string): boolean {
  */
 export function _resetFetchH2Pool(): void {
   _h2Pool.closeAll();
+}
+
+/**
+ * Return whether the internal global fetch HTTP/3 pool has a live entry.
+ *
+ * @internal
+ */
+export function _fetchH3PoolHas(origin: string): boolean {
+  return _h3Pool.has(origin);
+}
+
+/**
+ * Close and clear all internal global fetch HTTP/3 pool entries.
+ *
+ * @internal
+ */
+export function _resetFetchH3Pool(): void {
+  for (const [, entry] of _h3Pool) entry.close();
+  _h3Pool.clear();
+}
+
+/**
+ * Return whether the internal global fetch Alt-Svc cache has a valid entry.
+ *
+ * @internal
+ */
+export function _fetchAltSvcHas(origin: string): boolean {
+  return _getAltSvc(origin) !== null;
+}
+
+/**
+ * Clear the internal global fetch Alt-Svc cache and dependent H3 sessions.
+ *
+ * @internal
+ */
+export function _resetFetchAltSvc(): void {
+  _altSvcCache.clear();
+  _resetFetchH3Pool();
 }
