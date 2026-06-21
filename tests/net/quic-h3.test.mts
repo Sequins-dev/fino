@@ -148,7 +148,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
 
       t.equal(response.status, 200, 'response status is 200');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'hello h3', 'response body matches');
 
       session.close();
@@ -180,9 +180,112 @@ describe('HTTP/3 (h3 ALPN)', () => {
       }));
 
       t.equal(response.status, 200, 'response status is 200');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(receivedBody, 'request-body-data', 'server received request body');
       t.equal(text, 'echo:request-body-data', 'response body echoes request');
+
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('streams request bodies to the server before EOF', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+
+      let releaseSecondChunk!: () => void;
+      const secondChunkReady = new Promise<void>((resolve) => { releaseSecondChunk = resolve; });
+      let handlerEntered = false;
+      let firstChunk = '';
+      let responseText = '';
+
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, async (req) => {
+        handlerEntered = true;
+        const reader = req.body!.getReader();
+        const first = await reader.read();
+        firstChunk = first.done ? '' : new TextDecoder().decode(first.value);
+        const chunks = [firstChunk];
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          chunks.push(new TextDecoder().decode(next.value));
+        }
+        return new Response(`echo:${chunks.join('')}`);
+      });
+
+      async function* requestBody() {
+        yield new TextEncoder().encode('first-');
+        await secondChunkReady;
+        yield new TextEncoder().encode('second');
+      }
+
+      const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
+      const requestPromise = session.request('https://localhost/upload', {
+        method: 'POST',
+        body: requestBody() as any,
+      });
+
+      await pipe.pumpUntilCondition(() => firstChunk !== '' ? true : null);
+      t.equal(handlerEntered, true, 'handler is entered before request EOF');
+      t.equal(firstChunk, 'first-', 'handler can read the first chunk before request EOF');
+
+      releaseSecondChunk();
+      const response = await pipe.pumpUntil(requestPromise);
+      responseText = await response.text();
+      t.equal(responseText, 'echo:first-second', 'server receives the complete streamed body');
+
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('streams response bodies to the client before EOF', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+
+      let releaseSecondChunk!: () => void;
+      const secondChunkReady = new Promise<void>((resolve) => { releaseSecondChunk = resolve; });
+
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, () => {
+        async function* body() {
+          yield new TextEncoder().encode('first-');
+          await secondChunkReady;
+          yield new TextEncoder().encode('second');
+        }
+        return new Response(body() as any, {
+          headers: { 'content-type': 'text/plain' },
+        });
+      });
+
+      const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
+      const response = await pipe.pumpUntil(session.request('https://localhost/stream'));
+      t.equal(response.status, 200, 'response resolves once headers arrive');
+
+      const reader = response.body!.getReader();
+      const first = await pipe.pumpUntil(reader.read());
+      t.equal(first.done, false, 'first body read yields data');
+      t.equal(new TextDecoder().decode(first.value), 'first-', 'client sees first chunk before response EOF');
+
+      releaseSecondChunk();
+      const second = await pipe.pumpUntil(reader.read());
+      t.equal(second.done, false, 'second body read yields data');
+      t.equal(new TextDecoder().decode(second.value), 'second', 'client sees second chunk after producer resumes');
+      const done = await pipe.pumpUntil(reader.read());
+      t.equal(done.done, true, 'stream closes after response EOF');
 
       session.close();
       clientConn.destroy();
@@ -333,7 +436,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const response = await pipe.pumpUntil(session.request('https://localhost/binary'));
 
       t.equal(response.status, 200, 'status 200');
-      const received = new Uint8Array(await response.arrayBuffer());
+      const received = new Uint8Array(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(received.byteLength, 256, 'received 256 bytes');
       t.ok(received.every((b, i) => b === original[i]), 'binary bytes match');
 
@@ -394,7 +497,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       }));
 
       t.equal(response.status, 200, 'server dispatched request with trailers');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'echo:trailer-body', 'server received body before trailers');
       t.deepEqual(receivedTrailers, [['x-checksum', '42']], 'server received request trailers');
 
@@ -422,7 +525,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
 
       t.equal(response.status, 200, 'response with trailers resolves correctly');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'body-with-trailers', 'response body is complete');
       const trailers = await response.trailers;
       t.equal(trailers.get('x-digest'), 'sha256-abc', 'response trailer received by client');
@@ -980,7 +1083,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
 
       t.equal(response.status, 200, 'response status is 200');
       t.equal(response.headers.get('content-length'), '5', 'content-length is forwarded to client');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'hello', 'response body is correct');
 
       session.close();
@@ -1016,7 +1119,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       t.equal(response.status, 200, 'PUT returns 200');
       t.equal(receivedMethod, 'PUT', 'server received PUT method');
       t.equal(receivedBody, 'put-data', 'server received PUT body');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'echo:put-data', 'response body echoes PUT request');
 
       session.close();
@@ -1093,7 +1196,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
 
       t.equal(response.status, 200, 'large body response status');
       t.equal(receivedByteCount, bodySize, 'server received all bytes');
-      const received = new Uint8Array(await response.arrayBuffer());
+      const received = new Uint8Array(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(received.byteLength, bodySize, 'client received all echoed bytes');
       t.ok(received.every((b, i) => b === (i & 0xff)), 'echoed bytes match original');
 
@@ -1122,7 +1225,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
 
       t.equal(response.status, 200, 'HEAD returns 200');
       t.equal(response.headers.get('content-length'), '17', 'content-length header forwarded');
-      const body = new Uint8Array(await response.arrayBuffer());
+      const body = new Uint8Array(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(body.byteLength, 0, 'body is empty for HEAD response');
 
       session.close();
@@ -1157,7 +1260,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       t.equal(response.status, 200, 'PATCH returns 200');
       t.equal(response.headers.get('x-method'), 'PATCH', 'server received PATCH method');
       t.equal(receivedMethod, 'PATCH', 'server method matches');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'echo:patch-payload', 'response body echoes PATCH request');
 
       session.close();
@@ -1245,7 +1348,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const response = await pipe.pumpUntil(session.request('https://localhost/'));
 
       t.equal(response.status, 200, 'response with filtered trailers is 200');
-      const text = new TextDecoder().decode(await response.arrayBuffer());
+      const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'body', 'response body is correct');
       const trailers = await response.trailers;
       t.equal(trailers.get('x-safe'), 'yes', 'safe trailer is received');
@@ -1320,6 +1423,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       // Complete request 1 (stream 0) — server's onEndHeaders responds with 200.
       const req1 = await pipe.pumpUntil(clientSession.request('https://localhost/'));
       t.equal(req1.status, 200, 'request 1 succeeds before GOAWAY');
+      await pipe.pumpUntil(req1.arrayBuffer());
 
       // Pump the GOAWAY through to the client. After this returns, onShutdown has
       // fired and #goawayLastStreamId is set — so request() throws before opening

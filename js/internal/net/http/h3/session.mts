@@ -36,8 +36,14 @@ export interface H3SessionCallbacks {
   onShutdown?(lastStreamId: bigint): void;
 }
 
+export type H3BodySource = Uint8Array | AsyncIterable<Uint8Array | ArrayBuffer>;
+
 interface BodySlot {
   bytes: Uint8Array | null;
+  iterator: AsyncIterator<Uint8Array | ArrayBuffer> | null;
+  pulling: boolean;
+  done: boolean;
+  error: unknown;
   trailers?: Array<[string, string]>;
 }
 
@@ -275,7 +281,15 @@ export class Nghttp3Session {
           Pointer.writeU32(pflagsPtr, 0, NGHTTP3_DATA_FLAG_EOF);
           return 0;
         }
+        if (slot.error !== null) {
+          this.#bodySlots.delete(streamId);
+          return NGHTTP3_ERR_FATAL;
+        }
         if (slot.bytes === null || slot.bytes.length === 0) {
+          if (!slot.done) {
+            this.#pullBodyChunk(streamId, slot);
+            return NGHTTP3_ERR_WOULDBLOCK;
+          }
           if (slot.trailers !== undefined) {
             // Body done, trailers follow. Signal EOF+NO_END_STREAM so nghttp3 keeps the
             // stream open, then queue trailers for submission after writev_stream returns.
@@ -334,13 +348,13 @@ export class Nghttp3Session {
   // Submit operations — synchronous; safe to call outside #withMu on the JS thread.
   // -------------------------------------------------------------------------
 
-  submitResponse(streamId: bigint, headers: Array<[string, string]>, body?: Uint8Array, trailers?: Array<[string, string]>): void {
+  submitResponse(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(headers);
     const effectiveBody = body === undefined && trailers !== undefined ? new Uint8Array(0) : body;
     const drPtr = effectiveBody !== undefined ? Pointer.of(this.#drBuf) : null;
     if (effectiveBody !== undefined) {
-      this.#bodySlots.set(streamId, { bytes: effectiveBody, trailers });
+      this.#bodySlots.set(streamId, this.#makeBodySlot(effectiveBody, trailers));
     }
     const rc = sym!.nghttp3_conn_submit_response(
       this.#conn, streamId, Pointer.of(nvBuf), nv, drPtr,
@@ -348,13 +362,13 @@ export class Nghttp3Session {
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_response failed: ${rc}`);
   }
 
-  submitRequest(streamId: bigint, headers: Array<[string, string]>, body?: Uint8Array, trailers?: Array<[string, string]>): void {
+  submitRequest(streamId: bigint, headers: Array<[string, string]>, body?: H3BodySource, trailers?: Array<[string, string]>): void {
     if (this.#closed) throw new Error('session closed');
     const { buf: nvBuf, nv } = buildNvArray(headers);
     const effectiveBody = body === undefined && trailers !== undefined ? new Uint8Array(0) : body;
     const drPtr = effectiveBody !== undefined ? Pointer.of(this.#drBuf) : null;
     if (effectiveBody !== undefined) {
-      this.#bodySlots.set(streamId, { bytes: effectiveBody, trailers });
+      this.#bodySlots.set(streamId, this.#makeBodySlot(effectiveBody, trailers));
     }
     const rc = sym!.nghttp3_conn_submit_request(
       this.#conn, streamId, Pointer.of(nvBuf), nv, drPtr, null,
@@ -369,6 +383,54 @@ export class Nghttp3Session {
       this.#conn, streamId, Pointer.of(nvBuf), nv,
     ) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_trailers failed: ${rc}`);
+  }
+
+  #makeBodySlot(body: H3BodySource, trailers?: Array<[string, string]>): BodySlot {
+    if (body instanceof Uint8Array) {
+      return { bytes: body, iterator: null, pulling: false, done: true, error: null, trailers };
+    }
+    return {
+      bytes: null,
+      iterator: body[Symbol.asyncIterator](),
+      pulling: false,
+      done: false,
+      error: null,
+      trailers,
+    };
+  }
+
+  #pullBodyChunk(streamId: bigint, slot: BodySlot): void {
+    if (slot.iterator === null || slot.pulling || slot.done || this.#closed) return;
+    slot.pulling = true;
+    Promise.resolve(slot.iterator.next()).then((result) => {
+      slot.pulling = false;
+      if (this.#closed || this.#bodySlots.get(streamId) !== slot) return;
+      if (result.done) {
+        slot.done = true;
+      } else {
+        const value = result.value;
+        slot.bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+        if (slot.bytes.byteLength === 0) {
+          this.#pullBodyChunk(streamId, slot);
+          return;
+        }
+      }
+      if (!this.#closed) {
+        const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
+        if (rc !== 0) {
+          slot.error = new Error(`nghttp3_conn_resume_stream failed: ${rc}`);
+        }
+        void this.drainWrites().catch(() => {});
+      }
+    }, (error) => {
+      slot.pulling = false;
+      slot.error = error;
+      if (!this.#closed && this.#bodySlots.get(streamId) === slot) {
+        const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
+        if (rc !== 0) this.close();
+        void this.drainWrites().catch(() => {});
+      }
+    });
   }
 
   // -------------------------------------------------------------------------

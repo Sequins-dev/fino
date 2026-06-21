@@ -1,5 +1,6 @@
 import { Nghttp3Session } from './session.mts';
 import type { H3SessionCallbacks } from './session.mts';
+import { H3BodyQueue } from './body-queue.mts';
 import { h3Available } from './bindings.mts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
@@ -18,7 +19,7 @@ interface H3ServerStream {
   headers: Array<[string, string]>;
   trailerHeaders: Array<[string, string]>;
   inTrailers: boolean;
-  bodyChunks: Uint8Array[];
+  body: H3BodyQueue;
   bodyDone: boolean;
   cancelled: boolean;
   badRequest: boolean;
@@ -32,7 +33,7 @@ function makeStream(streamId: bigint): H3ServerStream {
     streamId,
     method: '', path: '', scheme: '', authority: '',
     headers: [], trailerHeaders: [],
-    inTrailers: false, bodyChunks: [],
+    inTrailers: false, body: new H3BodyQueue(),
     bodyDone: false, cancelled: false, badRequest: false, dispatched: false,
     seenPseudos: new Set(), seenRegular: false,
   };
@@ -85,8 +86,12 @@ export class H3ServerDriver {
           return;
         }
         const noBody = fin || st.method === 'GET' || st.method === 'HEAD' || st.method === 'CONNECT';
-        if (noBody) st.bodyDone = true;
+        if (noBody) {
+          st.bodyDone = true;
+          st.body.close();
+        }
         if (noBody) startDispatch(st);
+        else startDispatch(st);
       },
 
       onBeginTrailers(streamId) {
@@ -100,27 +105,39 @@ export class H3ServerDriver {
       onEndTrailers(streamId) {
         const st = streams.get(streamId);
         if (!st) return;
+        st.body.close();
         st.bodyDone = true;
         startDispatch(st);
       },
 
       onRecvData(streamId, data) {
         const st = streams.get(streamId);
-        if (st && !st.cancelled) st.bodyChunks.push(data);
+        if (st && !st.cancelled) st.body.push(data);
       },
 
       onEndStream(streamId) {
         const st = streams.get(streamId);
         if (!st) return;
         st.bodyDone = true;
+        st.body.close();
         startDispatch(st);
       },
 
-      onStreamClose(streamId) { streams.delete(streamId); },
-
-      onResetStream(streamId) {
+      onStreamClose(streamId, appErrorCode) {
         const st = streams.get(streamId);
-        if (st) { st.cancelled = true; st.bodyDone = true; }
+        if (st && !st.bodyDone) {
+          st.body.error(new Error(`H3 stream closed with error 0x${appErrorCode.toString(16)}`));
+        }
+        streams.delete(streamId);
+      },
+
+      onResetStream(streamId, appErrorCode) {
+        const st = streams.get(streamId);
+        if (st) {
+          st.cancelled = true;
+          st.bodyDone = true;
+          st.body.error(new Error(`H3 stream reset with error 0x${appErrorCode.toString(16)}`));
+        }
       },
 
       onAckedStreamData() {},
@@ -128,7 +145,7 @@ export class H3ServerDriver {
 
     session = Nghttp3Session.createServer(callbacks);
 
-    // Dispatch a request to the handler once headers + body are complete.
+    // Dispatch a request to the handler once headers are complete.
     function startDispatch(st: H3ServerStream): void {
       if (st.dispatched) return;
       if (st.cancelled && !st.badRequest) return;
@@ -163,20 +180,13 @@ export class H3ServerDriver {
 
       const url = `${st.scheme || 'https'}://${st.authority || 'localhost'}${st.path}`;
 
-      let bodyBytes: Uint8Array | undefined;
-      if (st.bodyChunks.length > 0) {
-        const total = st.bodyChunks.reduce((s, c) => s + c.length, 0);
-        bodyBytes = new Uint8Array(total);
-        let off = 0;
-        for (const c of st.bodyChunks) { bodyBytes.set(c, off); off += c.length; }
-      }
-
       const reqHeaders = new Headers(st.headers);
       if (st.authority) reqHeaders.set('host', st.authority);
 
       let req: Request;
       try {
-        req = new Request(url, { method: st.method, headers: reqHeaders, body: bodyBytes });
+        const body = st.method === 'GET' || st.method === 'HEAD' ? undefined : st.body;
+        req = new Request(url, { method: st.method, headers: reqHeaders, body: body as any });
       } catch {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
@@ -203,22 +213,6 @@ export class H3ServerDriver {
         if (!_FORBIDDEN_RESP.has(lc)) respHeaders.push([lc, value]);
       });
 
-      let respBody: Uint8Array | undefined;
-      try {
-        if (response.body && st.method !== 'HEAD') {
-          const ab = await response.arrayBuffer();
-          if (ab.byteLength > 0) respBody = new Uint8Array(ab);
-        }
-      } catch {
-        if (!st.cancelled) {
-          try {
-            session.submitResponse(st.streamId, [[':status', '500']]);
-            await session.drainWrites();
-          } catch { /* stream may already be closed */ }
-        }
-        return;
-      }
-
       if (st.cancelled) return;
 
       let respTrailers: Array<[string, string]> | undefined;
@@ -239,6 +233,10 @@ export class H3ServerDriver {
           if (!_FORBIDDEN_RESP.has(lc)) trailerList.push([lc, v]);
         }
         if (trailerList.length > 0) respTrailers = trailerList;
+      }
+      let respBody: any;
+      if (st.method !== 'HEAD') {
+        respBody = (response as any)._extractBytes?.() ?? (response.body as any) ?? undefined;
       }
       session.submitResponse(st.streamId, respHeaders, respBody, respTrailers);
       await session.drainWrites();
@@ -270,6 +268,7 @@ export class H3ServerDriver {
           if (st && !st.cancelled) {
             st.cancelled = true;
             st.bodyDone = true;
+            st.body.error(new Error('H3 stream closed: connection error'));
           }
           if (session.isClosed) {
             conn.destroy();

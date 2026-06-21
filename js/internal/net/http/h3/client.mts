@@ -1,5 +1,6 @@
 import { Nghttp3Session } from './session.mts';
-import type { H3SessionCallbacks } from './session.mts';
+import type { H3BodySource, H3SessionCallbacks } from './session.mts';
+import { H3BodyQueue } from './body-queue.mts';
 import { h3Available } from './bindings.mts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
@@ -11,12 +12,26 @@ export interface H3RequestInit extends RequestInit {
 interface PendingRequest {
   status: string;
   responseHeaders: Array<[string, string]>;
-  bodyChunks: Uint8Array[];
+  body: H3BodyQueue;
   trailerHeaders: Array<[string, string]>;
   inTrailers: boolean;
   done: boolean;
-  resolve: (() => void) | null;
+  responseResolved: boolean;
+  resolve: ((response: Response) => void) | null;
   reject: ((e: Error) => void) | null;
+  trailers: Promise<Headers>;
+  trailerResolve: ((headers: Headers) => void) | null;
+  trailerReject: ((reason: unknown) => void) | null;
+}
+
+function bodySourceFromInit(url: string | URL, init?: H3RequestInit): H3BodySource | undefined {
+  if (init?.body == null) return undefined;
+  if (init.body instanceof Uint8Array) return init.body.byteLength > 0 ? init.body : undefined;
+  if (init.body instanceof ArrayBuffer) {
+    return init.body.byteLength > 0 ? new Uint8Array(init.body) : undefined;
+  }
+  const stream = new Request(url, init).body;
+  return stream === null ? undefined : stream as any;
 }
 
 export class H3ClientSession {
@@ -48,8 +63,10 @@ export class H3ClientSession {
           existing.inTrailers = false;
         } else {
           instance.#pending.set(streamId, {
-            status: '', responseHeaders: [], bodyChunks: [], trailerHeaders: [],
-            inTrailers: false, done: false, resolve: null, reject: null,
+            status: '', responseHeaders: [], body: new H3BodyQueue(), trailerHeaders: [],
+            inTrailers: false, done: false, responseResolved: false,
+            resolve: null, reject: null, trailers: Promise.resolve(new Headers()),
+            trailerResolve: null, trailerReject: null,
           });
         }
       },
@@ -61,6 +78,7 @@ export class H3ClientSession {
         else if (!name.startsWith(':')) req.responseHeaders.push([name, value]);
       },
       onEndHeaders(streamId, fin) {
+        instance.#resolveResponse(streamId);
         if (fin) instance.#markDone(streamId);
       },
       onBeginTrailers(streamId) {
@@ -74,20 +92,26 @@ export class H3ClientSession {
       onEndTrailers(streamId) { instance.#markDone(streamId); },
       onRecvData(streamId, data) {
         const req = instance.#pending.get(streamId);
-        if (req) req.bodyChunks.push(data);
+        if (req) req.body.push(data);
       },
       onEndStream(streamId) { instance.#markDone(streamId); },
       onStreamClose(streamId, appErrorCode) {
         const req = instance.#pending.get(streamId);
         if (req && !req.done) {
-          req.reject?.(new Error(`H3 stream closed with error 0x${appErrorCode.toString(16)}`));
+          const error = new Error(`H3 stream closed with error 0x${appErrorCode.toString(16)}`);
+          req.body.error(error);
+          req.trailerReject?.(error);
+          req.reject?.(error);
           instance.#pending.delete(streamId);
         }
       },
       onResetStream(streamId, appErrorCode) {
         const req = instance.#pending.get(streamId);
         if (req) {
-          req.reject?.(new Error(`H3 stream reset with error 0x${appErrorCode.toString(16)}`));
+          const error = new Error(`H3 stream reset with error 0x${appErrorCode.toString(16)}`);
+          req.body.error(error);
+          req.trailerReject?.(error);
+          req.reject?.(error);
           instance.#pending.delete(streamId);
         }
       },
@@ -100,7 +124,10 @@ export class H3ClientSession {
           if (sid > lastStreamId) {
             if (!req.done) {
               req.done = true;
-              req.reject?.(new Error(`H3 stream rejected: server GOAWAY (last accepted: ${lastStreamId})`));
+              const error = new Error(`H3 stream rejected: server GOAWAY (last accepted: ${lastStreamId})`);
+              req.body.error(error);
+              req.trailerReject?.(error);
+              req.reject?.(error);
             }
             instance.#pending.delete(sid);
           }
@@ -115,7 +142,10 @@ export class H3ClientSession {
       for (const [, req] of instance.#pending) {
         if (!req.done) {
           req.done = true;
-          req.reject?.(new Error('H3 stream closed: connection closed'));
+          const error = new Error('H3 stream closed: connection closed');
+          req.body.error(error);
+          req.trailerReject?.(error);
+          req.reject?.(error);
         }
       }
       instance.#pending.clear();
@@ -211,57 +241,36 @@ export class H3ClientSession {
         const pending = this.#pending.get(sid);
         if (pending && !pending.done) {
           pending.done = true;
-          pending.reject?.(new Error('H3 stream closed: connection error'));
+          const error = new Error('H3 stream closed: connection error');
+          pending.body.error(error);
+          pending.trailerReject?.(error);
+          pending.reject?.(error);
           this.#pending.delete(sid);
         }
       }
     })();
 
-    let bodyBytes: Uint8Array | undefined;
-    if (init?.body) {
-      if (init.body instanceof Uint8Array) {
-        if (init.body.byteLength > 0) bodyBytes = init.body;
-      } else {
-        const ab = init.body instanceof ArrayBuffer
-          ? init.body
-          : await new Request(url, init).arrayBuffer();
-        if (ab.byteLength > 0) bodyBytes = new Uint8Array(ab);
-      }
-    }
+    const body = bodySourceFromInit(url, init);
 
     const responsePromise = new Promise<Response>((resolve, reject) => {
+      let trailerResolve!: (headers: Headers) => void;
+      let trailerReject!: (reason: unknown) => void;
+      const trailers = new Promise<Headers>((trResolve, trReject) => {
+        trailerResolve = trResolve;
+        trailerReject = trReject;
+      });
       const pending: PendingRequest = {
-        status: '', responseHeaders: [], bodyChunks: [], trailerHeaders: [],
-        inTrailers: false, done: false,
-        resolve: null, reject: null,
+        status: '', responseHeaders: [], body: new H3BodyQueue(), trailerHeaders: [],
+        inTrailers: false, done: false, responseResolved: false,
+        resolve: null, reject: null, trailers, trailerResolve, trailerReject,
       };
-      pending.resolve = () => {
-        const statusNum = Number(pending.status);
-        if (!pending.status || !Number.isInteger(statusNum) || statusNum < 100 || statusNum > 999) {
-          reject(new Error(`H3: missing or invalid :status pseudo-header (got: "${pending.status}")`));
-          this.#pending.delete(sid);
-          return;
-        }
-        const headers = new Headers(pending.responseHeaders as HeadersInit);
-        let body: BodyInit | undefined;
-        if (pending.bodyChunks.length > 0) {
-          const total = pending.bodyChunks.reduce((s, c) => s + c.length, 0);
-          const buf = new Uint8Array(total);
-          let off = 0;
-          for (const c of pending.bodyChunks) { buf.set(c, off); off += c.length; }
-          body = buf;
-        }
-        const trailerInit = pending.trailerHeaders.length > 0
-          ? new Headers(pending.trailerHeaders as HeadersInit)
-          : undefined;
-        resolve(new Response(body, { status: statusNum, headers, trailers: trailerInit } as any));
-      };
+      pending.resolve = (response) => resolve(response);
       pending.reject = reject;
       this.#pending.set(sid, pending);
     });
 
     try {
-      this.#session.submitRequest(sid, reqHeaders, bodyBytes, init?.trailers);
+      this.#session.submitRequest(sid, reqHeaders, body, init?.trailers);
       await this.#session.drainWrites();
     } catch (e) {
       this.#pending.delete(sid);
@@ -270,11 +279,31 @@ export class H3ClientSession {
     return responsePromise;
   }
 
+  #resolveResponse(streamId: bigint): void {
+    const pending = this.#pending.get(streamId);
+    if (!pending || pending.responseResolved) return;
+    pending.responseResolved = true;
+    const statusNum = Number(pending.status);
+    if (!pending.status || !Number.isInteger(statusNum) || statusNum < 100 || statusNum > 999) {
+      pending.reject?.(new Error(`H3: missing or invalid :status pseudo-header (got: "${pending.status}")`));
+      this.#pending.delete(streamId);
+      return;
+    }
+    const headers = new Headers(pending.responseHeaders as HeadersInit);
+    pending.resolve?.(new Response(pending.body as any, {
+      status: statusNum,
+      headers,
+      trailers: () => pending.trailers,
+    } as any));
+  }
+
   #markDone(streamId: bigint): void {
     const req = this.#pending.get(streamId);
     if (!req || req.done) return;
     req.done = true;
-    req.resolve?.();
+    this.#resolveResponse(streamId);
+    req.body.close();
+    req.trailerResolve?.(new Headers(req.trailerHeaders as HeadersInit));
     this.#pending.delete(streamId);
   }
 

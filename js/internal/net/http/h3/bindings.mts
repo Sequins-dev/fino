@@ -64,6 +64,7 @@ const _SYMBOLS = {
   nghttp3_conn_add_write_offset: { parameters: ['pointer', 'i64', 'usize'], result: 'i32' },
   nghttp3_conn_block_stream:     { parameters: ['pointer', 'i64'], result: 'void' },
   nghttp3_conn_unblock_stream:   { parameters: ['pointer', 'i64'], result: 'i32' },
+  nghttp3_conn_resume_stream:    { parameters: ['pointer', 'i64'], result: 'i32' },
 
   // Stream binding — called once per connection during startup.
   nghttp3_conn_bind_control_stream: { parameters: ['pointer', 'i64'], result: 'i32' },

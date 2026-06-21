@@ -26,9 +26,9 @@ remains explicit:
 - CONNECT tunnels.
 - External H3 interop/conformance lanes beyond local loopback.
 
-> Status: research and project tracker. Phase 1 is complete. Phase 2 is
-> complete for the release H3 request/response baseline once streaming H3 bodies
-> are in place. Phase 3 tracks the remaining unified HTTP server/App work.
+> Status: research and project tracker. Phase 1 and Phase 2 are complete for
+> the release QUIC and H3 request/response baseline. Phase 3 tracks the
+> remaining unified HTTP server/App work.
 
 ## 1. Goal
 
@@ -264,7 +264,7 @@ Legend: `not started`, `researching`, `in progress`, `blocked`, `done`.
 | Phase | Area | Status | Notes |
 | --- | --- | --- | --- |
 | 1 | QUIC only | done | Low-level QUIC API, TLS, streams, datagrams, migration, diagnostics, and local conformance evidence. |
-| 2 | HTTP/3 | in progress | H3 request/response baseline exists; streaming body completion is the remaining release gap. |
+| 2 | HTTP/3 | done | H3 request/response baseline with streaming request/response bodies. |
 | 3 | Unified HTTP architecture | in progress | Shared session/stream model for H1/H2/H3 and H3 server/App integration. |
 | 4 | fetch, pooling, Alt-Svc | not started | H3 origin pool and fallback policy. |
 | 5 | Advanced H3 features | not started | WebTransport, H3 DATAGRAM, Capsule, CONNECT tunnels, and H3 WebSockets. |
@@ -419,11 +419,12 @@ External/interoperability tests:
 
 Phase 2 builds `fino:net/http/h3` on top of Phase 1.
 
-Status: in progress. Dynamic libnghttp3 loading, H3 client/server sessions,
+Status: done. Dynamic libnghttp3 loading, H3 client/server sessions,
 control/QPACK streams, nghttp3 read/write bridging, write-offset accounting,
 Fetch-shaped header conversion, validation, trailers, resets, GOAWAY, and local
-loopback/simulated tests are implemented. The remaining release task is true
-streaming request and response body delivery instead of full-body buffering.
+loopback/simulated tests are implemented. Request and response bodies are
+streamed through the H3 session instead of being fully buffered before handler
+dispatch or response resolution.
 
 Tasks:
 
