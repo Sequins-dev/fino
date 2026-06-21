@@ -2,7 +2,8 @@
 
 Current transport conformance evidence is tracked in
 `research-docs/research/quic-conformance-matrix.md`. This older note preserves
-the original research plan and may describe deferred work that has since landed.
+the original research plan; where the two differ, the conformance matrix is the
+release evidence source.
 
 ## HTTP/3 Release Stance
 
@@ -15,8 +16,9 @@ Builds that do enable `libnghttp3` must pass the local HTTP/3 verification lane:
 simulated QUIC/H3 request-response tests and loopback UDP H3 tests in
 `tests/net/quic-h3.test.mts`.
 
-The HTTP/3 release scope is one-shot request/response helpers and lower-level
-sessions over QUIC. Deferred H3 scope remains explicit:
+The HTTP/3 release scope is request/response helpers and lower-level sessions
+over QUIC, including streaming request and response bodies. Deferred H3 scope
+remains explicit:
 
 - Connection reuse and H3 origin pooling.
 - WebTransport and Capsule protocol support.
@@ -24,9 +26,9 @@ sessions over QUIC. Deferred H3 scope remains explicit:
 - CONNECT tunnels.
 - External H3 interop/conformance lanes beyond local loopback.
 
-> Status: research and project tracker. This document records the current
-> design intent for QUIC and HTTP/3 in fino. It is not an implementation
-> commitment for every item at once; Phase 1 is deliberately scoped to QUIC.
+> Status: research and project tracker. Phase 1 is complete. Phase 2 is
+> complete for the release H3 request/response baseline once streaming H3 bodies
+> are in place. Phase 3 tracks the remaining unified HTTP server/App work.
 
 ## 1. Goal
 
@@ -47,7 +49,7 @@ Primary goals:
 
 Current default decisions:
 
-- **Phase 1 delivers QUIC only.** No HTTP/3 in the first implementation phase.
+- **Phase 1 delivered QUIC only.** HTTP/3 was added in the following phase.
 - **OpenSSL 3.5+ is the first TLS backend** through `ngtcp2_crypto_ossl`.
 - **JS FFI is the default boundary.** Native Rust/C++ shims are fallback only.
 - **High-level request/response remains the default developer experience.**
@@ -95,13 +97,14 @@ Research notes:
 
 Useful existing pieces:
 
-- `fino:net/socket` already exposes low-level socket creation, nonblocking
-  mode, UDP `sendto` / `recvfrom`, address encoding, and event-loop readable /
-  writable integration.
-- `internal:runtime/loop` already exposes readable readiness and timers, which
-  QUIC needs for UDP packet receipt and ngtcp2 expiry handling.
-- `internal:openssl` already loads OpenSSL dynamically and centralizes crypto /
-  TLS bindings.
+- `fino:net/quic` exposes QUIC endpoints, listeners, connections, streams,
+  datagrams, migration/path validation, 0-RTT/session ticket support, qlog and
+  key logging, and transport diagnostics.
+- The QUIC implementation includes UDP packet routing, CID lifecycle handling,
+  OpenSSL QUIC TLS integration, timers, loss/recovery, stream flow control, and
+  close/reset behavior.
+- `fino:net/http/h3` exposes optional libnghttp3-backed HTTP/3 `serve()`,
+  `fetch()`, and lower-level client/server session drivers.
 - `fino:net/http/server` currently binds TCP, accepts optional TLS, negotiates
   H2 through ALPN, detects h2c prefaces, and dispatches to H1 or H2 drivers.
 - HTTP handlers currently expose `(Request) => Response` and hide most
@@ -114,14 +117,12 @@ Useful existing pieces:
 
 Important gaps:
 
-- There is no high-level UDP socket class, only low-level helpers.
-- There is no QUIC-aware TLS setup in `internal:openssl`.
-- There is no CID routing table, packet dispatcher, QUIC timer loop, or
-  ACK-driven outbound data retention.
 - The HTTP driver interface is connection-reader/writer oriented. QUIC/H3 needs
   a session/stream model instead.
-- Current H2 server code buffers request and response bodies more than a mature
-  multiplexed architecture should.
+- H3 is available through `fino:net/http/h3`, but it is not yet integrated into
+  the unified `fino:net/http/server` or `App.listen()` paths.
+- Current H2 server code still buffers request and response bodies more than a
+  mature multiplexed architecture should.
 
 ## 4. Architecture Direction
 
@@ -262,9 +263,11 @@ Legend: `not started`, `researching`, `in progress`, `blocked`, `done`.
 
 | Phase | Area | Status | Notes |
 | --- | --- | --- | --- |
-| 3 | Unified HTTP architecture | not started | Shared session/stream model for H1/H2/H3. |
+| 1 | QUIC only | done | Low-level QUIC API, TLS, streams, datagrams, migration, diagnostics, and local conformance evidence. |
+| 2 | HTTP/3 | in progress | H3 request/response baseline exists; streaming body completion is the remaining release gap. |
+| 3 | Unified HTTP architecture | in progress | Shared session/stream model for H1/H2/H3 and H3 server/App integration. |
 | 4 | fetch, pooling, Alt-Svc | not started | H3 origin pool and fallback policy. |
-| 5 | Advanced QUIC/H3 features | not started | 0-RTT, DATAGRAM, WebTransport, H3 WebSockets. |
+| 5 | Advanced H3 features | not started | WebTransport, H3 DATAGRAM, Capsule, CONNECT tunnels, and H3 WebSockets. |
 
 ## 6. Phase 1: QUIC Only
 
@@ -272,6 +275,9 @@ Phase 1 acceptance target: a working low-level QUIC module that can establish
 client and server connections, negotiate ALPN, open streams, exchange bytes,
 handle resets/closes, and pass focused loopback tests. No HTTP/3 behavior is in
 scope for this phase.
+
+Status: done. See `research-docs/research/quic-conformance-matrix.md` for the
+current local conformance lanes and deferred external interop rationale.
 
 ### 6.1 Build and Availability
 
@@ -413,6 +419,12 @@ External/interoperability tests:
 
 Phase 2 builds `fino:net/http/h3` on top of Phase 1.
 
+Status: in progress. Dynamic libnghttp3 loading, H3 client/server sessions,
+control/QPACK streams, nghttp3 read/write bridging, write-offset accounting,
+Fetch-shaped header conversion, validation, trailers, resets, GOAWAY, and local
+loopback/simulated tests are implemented. The remaining release task is true
+streaming request and response body delivery instead of full-body buffering.
+
 Tasks:
 
 - Add dynamic loading for `libnghttp3`.
@@ -438,6 +450,9 @@ Tests:
 
 The current HTTP server API is connection-driver oriented. H3 should push the
 core HTTP model toward sessions and logical streams.
+
+Status: in progress. The logical stream API and H3 server/App integration are
+being added while preserving the existing request-handler default.
 
 Target internal shape:
 
@@ -518,7 +533,8 @@ API concerns:
 - Server APIs need a way to tell handlers whether a request arrived as early
   data so applications can reject unsafe operations.
 
-Status: deferred.
+Status: implemented at the QUIC transport layer. Fetch-level 0-RTT policy
+remains deferred until the Phase 4 pool/fallback design exists.
 
 ### 10.2 QUIC DATAGRAM
 
@@ -543,7 +559,7 @@ API concerns:
   drop behavior.
 - Observability should count sent, received, dropped, and rejected datagrams.
 
-Status: deferred.
+Status: implemented at the QUIC transport layer.
 
 ### 10.3 HTTP Datagrams
 
@@ -557,7 +573,7 @@ Requirements:
 - Map H3 datagram payloads to the associated stream/session context.
 - Coordinate with QUIC DATAGRAM negotiation.
 
-Status: deferred until H3 and QUIC DATAGRAM exist.
+Status: deferred for the H3 layer.
 
 ### 10.4 WebTransport
 
