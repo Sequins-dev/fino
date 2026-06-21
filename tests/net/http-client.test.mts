@@ -135,7 +135,7 @@ describe('HttpClient protocol sessions', () => {
     _resetFetchH2Pool();
     let count = 0;
     const server = serveHttp(
-      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH }, idleTimeoutMs: 25, headersTimeoutMs: 25 },
       async () => new Response(`h2:${++count}`),
     );
     const origin = `https://127.0.0.1:${server.port}`;

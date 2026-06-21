@@ -63,8 +63,9 @@ async function expandArg(arg: string): Promise<string[]> {
  * The returned command requires at least one positional path. Directory inputs
  * expand to matching `.test.mts` files, glob inputs are resolved from the current working
  * directory, and direct files are imported as given. `--filter` is optional and
- * forwards a substring filter to the test runner. The command throws when no
- * files are supplied or expansion finds no test files.
+ * forwards a substring filter to the test runner. `--durations` adds TAP
+ * duration metadata to every result line. The command throws when no files are
+ * supplied or expansion finds no test files.
  *
  * ```js
  * import { createTestCommand } from 'internal:commands/test';
@@ -83,6 +84,7 @@ export function createTestCommand(): Command {
       const testFiles = Array.isArray(ctx.args.files) ? ctx.args.files : [];
       const filter = typeof ctx.options.filter === 'string' ? ctx.options.filter : undefined;
       const showOutput = typeof ctx.options['show-output'] === 'string' ? ctx.options['show-output'] : 'failures';
+      const durations = ctx.options.durations === true;
       if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
         throw new Error(`Invalid --show-output value "${showOutput}" (expected failures, always, or never)`);
       }
@@ -105,11 +107,12 @@ export function createTestCommand(): Command {
       }
 
       const { run } = await import('fino:test/test');
-      return run(filter === undefined ? { showOutput } : { filter, showOutput });
+      return run(filter === undefined ? { showOutput, durations } : { filter, showOutput, durations });
     },
     options: [
       { flags: '--filter', type: 'string', description: 'Run only describe groups whose full path contains the filter text' },
       { flags: '--show-output', type: 'string', description: 'Show captured console output: failures, always, or never' },
+      { flags: '--durations', type: 'boolean', description: 'Annotate TAP result lines with duration metadata' },
     ],
     positionals: [
       { name: 'files', type: 'string', multiple: true, required: true, description: 'Test files to import and run' },

@@ -18,9 +18,11 @@ import {
   _fetchAltSvcHas,
   _fetchH2PoolHas,
   _fetchH3PoolHas,
+  _closeFetchH2PoolEntryForTest,
   _resetFetchAltSvc,
   _resetFetchH2Pool,
   _resetFetchH3Pool,
+  _setFetchH3HandshakeTimeoutForTest,
 } from 'internal:globals/fetch';
 import * as loop from 'internal:runtime/loop';
 
@@ -412,7 +414,7 @@ describe('global fetch() — HTTPS H2 pool', () => {
   it('evicts the pooled entry after server close tears down transport', { skip: skipHttps }, async (t) => {
     _resetFetchH2Pool();
     const server = serveHttp(
-      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH }, idleTimeoutMs: 25, headersTimeoutMs: 25 },
       async () => new Response('ok'),
     );
     const origin = httpsOrigin(server.port);
@@ -420,8 +422,8 @@ describe('global fetch() — HTTPS H2 pool', () => {
     try {
       t.equal(await (await fetch(`${origin}/`, { tls: { rejectUnauthorized: false } } as any)).text(), 'ok');
       t.ok(_fetchH2PoolHas(origin), 'pool entry exists before close');
+      t.ok(_closeFetchH2PoolEntryForTest(origin), 'pool entry close is initiated');
       await server.close();
-      await loop.timeout(50);
       t.ok(!_fetchH2PoolHas(origin), 'pool entry is evicted after transport close');
     } finally {
       _resetFetchH2Pool();
@@ -470,6 +472,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
     _resetFetchH2Pool();
     _resetFetchH3Pool();
     _resetFetchAltSvc();
+    _setFetchH3HandshakeTimeoutForTest(50);
     let tlsRequests = 0;
     let h3Requests = 0;
     const server = serve({
@@ -510,6 +513,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.equal(tlsRequests, 1, 'only discovery request used HTTPS H1/H2 path');
       t.equal(h3Requests, 2, 'later requests reached H3 server');
     } finally {
+      _setFetchH3HandshakeTimeoutForTest(null);
       _resetFetchH3Pool();
       _resetFetchAltSvc();
       _resetFetchH2Pool();
@@ -566,6 +570,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
     _resetFetchH2Pool();
     _resetFetchH3Pool();
     _resetFetchAltSvc();
+    _setFetchH3HandshakeTimeoutForTest(50);
     let tlsRequests = 0;
     const tls = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH, protocols: ['http/1.1'] }, idleTimeoutMs: 25, headersTimeoutMs: 25 },
@@ -583,6 +588,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.ok(_fetchAltSvcHas(origin), 'fallback response can advertise a fresh alternative');
       t.ok(!_fetchH3PoolHas(origin), 'broken H3 pool entry is not retained');
     } finally {
+      _setFetchH3HandshakeTimeoutForTest(null);
       _resetFetchH3Pool();
       _resetFetchAltSvc();
       _resetFetchH2Pool();
@@ -647,6 +653,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
     _resetFetchH2Pool();
     _resetFetchH3Pool();
     _resetFetchAltSvc();
+    _setFetchH3HandshakeTimeoutForTest(50);
     let tlsRequests = 0;
     const server = serve({
       port: 0,
@@ -691,8 +698,10 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       await t.rejects(() => fetch(`https://127.0.0.1:9/fail`, {
         protocol: 'h3',
         tls: { rejectUnauthorized: false },
-      } as any), /QUIC|connect|refused|timed out|closed/i, 'explicit h3 does not fallback');
+      } as any), undefined, 'explicit h3 does not fallback');
+      t.equal(tlsRequests, 2, 'failed explicit h3 did not fall back to TLS');
     } finally {
+      _setFetchH3HandshakeTimeoutForTest(null);
       _resetFetchH3Pool();
       _resetFetchAltSvc();
       _resetFetchH2Pool();

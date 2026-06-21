@@ -58,10 +58,10 @@
  * output even when tests fail.
  *
  * The release contract is intentionally smaller than Node's `node:test` API:
- * TAP output, name filters, skip reasons, lifecycle hooks, and captured output
- * are supported. `only`, `todo`, per-test timeouts, concurrency controls,
- * subtest creation from an assertion object, and pluggable reporters are not
- * part of this module.
+ * TAP output, name filters, skip reasons, per-test metadata, duration
+ * annotations, lifecycle hooks, and captured output are supported. `only`,
+ * `todo`, per-test timeouts, concurrency controls, subtest creation from an
+ * assertion object, and pluggable reporters are not part of this module.
  *
  * ## Internal representation
  *
@@ -78,7 +78,7 @@
  */
 
 import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../internal/globals/console.mts';
-import { Assert, AssertionError } from './assert.mts';
+import { Assert, AssertionError, type AssertCallbacks } from './assert.mts';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
 
 // ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ import { scheduleSync as _scheduleSync } from 'internal:async-context';
 
 interface LeafNode {
   name: string;
-  fn: (t: Assert) => void | Promise<void>;
+  fn: (t: TestContext) => void | Promise<void>;
   children: null;
   skip: string | null;
 }
@@ -127,7 +127,23 @@ interface LeafRunResult {
 
 interface RunContext {
   showOutput: ShowOutputMode;
+  durations: boolean;
 }
+
+/**
+ * Primitive value accepted by `TestContext#meta()`.
+ */
+export type TestMetadataValue = string | number | boolean | bigint | null | undefined;
+
+/**
+ * Metadata object accepted by `TestContext#meta()`.
+ *
+ * Keys must match `[A-Za-z_][A-Za-z0-9_.:-]*`. Repeated calls merge keys, and
+ * later values overwrite earlier values.
+ */
+export type TestMetadata = Record<string, TestMetadataValue>;
+
+type MetadataCallback = (values: TestMetadata) => void;
 
 /**
  * Options passed to `run()` when executing registered tests manually.
@@ -139,10 +155,14 @@ interface RunContext {
  * prints it only in final failure diagnostics, `always` writes output as tests
  * run, and `never` keeps captured output hidden. The CLI passes this from
  * `fino test --show-output`.
+ *
+ * `durations` appends runner-owned `duration=<ms>ms` metadata to every TAP
+ * result line. The CLI passes this from `fino test --durations`.
  */
 export interface RunOptions {
   filter?: string;
   showOutput?: ShowOutputMode;
+  durations?: boolean;
 }
 
 /**
@@ -164,7 +184,7 @@ export type RegisterOptions = { skip?: SkipOption };
  * The assertion helper collects failures for TAP output. Returning a promise
  * lets the runner await async test work.
  */
-export type TestFn = (t: Assert) => void | Promise<void>;
+export type TestFn = (t: TestContext) => void | Promise<void>;
 
 /**
  * Registration callback used by `suite()` and `describe()`.
@@ -182,6 +202,79 @@ const _tests: TestNode[] = [];
 
 /** The group node currently being registered into, or null for top-level. */
 let _current: GroupNode | null = null;
+
+// ---------------------------------------------------------------------------
+// Test context metadata
+// ---------------------------------------------------------------------------
+
+/**
+ * Assertion context passed to `test()` and `it()` callbacks.
+ *
+ * `TestContext` extends `Assert`, so existing assertion calls such as
+ * `t.equal(actual, expected)` continue to work. The additional `meta()` method
+ * attaches primitive key/value metadata to the leaf test's TAP result line.
+ * Repeated calls merge keys and later values overwrite earlier ones.
+ *
+ * Metadata keys must match `[A-Za-z_][A-Za-z0-9_.:-]*`. Values may be strings,
+ * numbers, booleans, bigints, `null`, or `undefined`.
+ *
+ * ```ts no_run
+ * import { test } from 'fino:test/test';
+ *
+ * test('parses empty input', (t) => {
+ *   t.meta({ case: 'empty', rows: 0 });
+ *   t.equal(parse(''), []);
+ * });
+ * ```
+ */
+export class TestContext extends Assert {
+  #onMeta: MetadataCallback;
+
+  /**
+   * Create a test context.
+   *
+   * The runner supplies assertion callbacks and a metadata sink for the current
+   * leaf test. Application code normally receives instances from `test()` or
+   * `it()` callbacks rather than constructing this class directly.
+   *
+   * @internal
+   */
+  constructor(callbacks: AssertCallbacks & { onMeta?: MetadataCallback } = {}) {
+    const { onMeta, ...assertCallbacks } = callbacks;
+    super(assertCallbacks);
+    this.#onMeta = onMeta ?? (() => {});
+  }
+
+  /**
+   * Attach primitive metadata to this test's final TAP result line.
+   *
+   * Later calls merge with previous metadata and overwrite duplicate keys.
+   * Invalid keys or unsupported value types throw `TypeError`, which fails the
+   * current test like any other thrown error.
+   */
+  meta(values: TestMetadata): void {
+    if (values === null || typeof values !== 'object' || Array.isArray(values)) {
+      throw new TypeError('test metadata must be an object');
+    }
+    for (const [key, value] of Object.entries(values)) {
+      if (!/^[A-Za-z_][A-Za-z0-9_.:-]*$/.test(key)) {
+        throw new TypeError(`Invalid test metadata key "${key}"`);
+      }
+      const type = typeof value;
+      if (
+        value !== null
+        && value !== undefined
+        && type !== 'string'
+        && type !== 'number'
+        && type !== 'boolean'
+        && type !== 'bigint'
+      ) {
+        throw new TypeError(`Invalid test metadata value for "${key}"`);
+      }
+    }
+    this.#onMeta(values);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Registration helpers
@@ -440,6 +533,36 @@ function _log(depth: number, msg: string): void {
   console.log(_indent(depth) + msg);
 }
 
+function _nowMs(): number {
+  return typeof globalThis.performance?.now === 'function'
+    ? globalThis.performance.now()
+    : Date.now();
+}
+
+function _durationMeta(ctx: RunContext, startMs: number): TestMetadata {
+  if (!ctx.durations) return {};
+  return { duration: (_nowMs() - startMs).toFixed(2) + 'ms' };
+}
+
+function _formatMetadataValue(value: TestMetadataValue): string {
+  if (typeof value === 'string') {
+    if (!/[\s,"#]/.test(value)) return value;
+    return JSON.stringify(value);
+  }
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  return String(value);
+}
+
+function _formatMetadata(metadata: TestMetadata): string {
+  const parts = Object.entries(metadata).map(([key, value]) => `${key}=${_formatMetadataValue(value)}`);
+  return parts.length === 0 ? '' : ' # ' + parts.join(', ');
+}
+
+function _resultLine(status: 'ok' | 'not ok', num: number, name: string, directive: string = '', metadata: TestMetadata = {}): string {
+  return status + ' ' + num + ' - ' + name + directive + _formatMetadata(metadata);
+}
+
 function _formatErrorLines(err: unknown): string[] {
   const lines: string[] = [];
   if (err instanceof AggregateError) {
@@ -520,14 +643,19 @@ async function _captureConsole<T>(ctx: RunContext, output: ConsoleCaptureRecord[
  * @returns {'pass'|'fail'|'skip'}
  */
 async function _runLeaf(ctx: RunContext, path: string[], entry: LeafNode, num: number, depth: number, hooks: GroupNode | null, inheritedSkip: string | null = null): Promise<LeafRunResult> {
+  const startMs = _nowMs();
   const skipReason = inheritedSkip ?? entry.skip;
   if (skipReason !== null) {
     const suffix = skipReason !== '' ? ' # SKIP ' + skipReason : ' # SKIP';
-    _log(depth, 'ok ' + num + ' - ' + entry.name + suffix);
+    _log(depth, _resultLine('ok', num, entry.name, suffix, _durationMeta(ctx, startMs)));
     return { status: 'skip', diagnostic: null };
   }
   const failures: unknown[] = [];
-  const t = new Assert({ onFail(err) { failures.push(err); } });
+  const metadata: TestMetadata = {};
+  const t = new TestContext({
+    onFail(err) { failures.push(err); },
+    onMeta(values) { Object.assign(metadata, values); },
+  });
   let output: ConsoleCaptureRecord[] = [];
 
   try {
@@ -563,10 +691,12 @@ async function _runLeaf(ctx: RunContext, path: string[], entry: LeafNode, num: n
       if (failures.length > 0) throw new AggregateError(failures, failures.length + ' assertion(s) failed');
     });
 
-    _log(depth, 'ok ' + num + ' - ' + entry.name);
+    const lineMetadata = { ...metadata, ..._durationMeta(ctx, startMs) };
+    _log(depth, _resultLine('ok', num, entry.name, '', lineMetadata));
     return { status: 'pass', diagnostic: null };
   } catch (err) {
-    _log(depth, 'not ok ' + num + ' - ' + entry.name);
+    const lineMetadata = { ...metadata, ..._durationMeta(ctx, startMs) };
+    _log(depth, _resultLine('not ok', num, entry.name, '', lineMetadata));
     return {
       status: 'fail',
       diagnostic: {
@@ -592,6 +722,7 @@ async function _runLeaf(ctx: RunContext, path: string[], entry: LeafNode, num: n
  * @returns {{ passed: number, failed: number, skipped: number }}
  */
 async function _runEntries(ctx: RunContext, entries: TestNode[], depth: number, parentNode: GroupNode | null, inheritedSkip: string | null = null, path: string[] = []): Promise<RunResult> {
+  const runStartMs = _nowMs();
   _log(depth, '1..' + entries.length);
 
   // A skip on the parent group propagates to all children.
@@ -626,7 +757,7 @@ async function _runEntries(ctx: RunContext, entries: TestNode[], depth: number, 
       for (let i = 0; i < entries.length; i++) {
         const failedEntry = entries[i];
         if (failedEntry === undefined) continue;
-        _log(depth, 'not ok ' + (i + 1) + ' - ' + failedEntry.name);
+        _log(depth, _resultLine('not ok', i + 1, failedEntry.name, '', _durationMeta(ctx, runStartMs)));
         failed++;
       }
       diagnostics.push({
@@ -656,21 +787,23 @@ async function _runEntries(ctx: RunContext, entries: TestNode[], depth: number, 
           else skipped++;
         } else {
           // Group node — recurse.
+          const groupStartMs = _nowMs();
           _log(depth, '# Subtest: ' + entry.name);
           const childSkip = groupSkip ?? entry.skip ?? null;
           const childPath = entry.kind === 'describe' ? [...path, entry.name] : path;
           const { passed: gp, failed: gf, skipped: gs, diagnostics: gd } = await _runEntries(ctx, entry.children, depth + 1, entry, childSkip !== entry.skip ? childSkip : null, childPath);
           _log(depth, '');
+          const groupMetadata = _durationMeta(ctx, groupStartMs);
           if (gf === 0 && gp === 0 && gs > 0) {
             // All children skipped — mark the group as skipped too.
             const suffix = childSkip !== null && childSkip !== '' ? ' # SKIP ' + childSkip : ' # SKIP';
-            _log(depth, 'ok ' + num + ' - ' + entry.name + suffix);
+            _log(depth, _resultLine('ok', num, entry.name, suffix, groupMetadata));
             skipped++;
           } else if (gf === 0) {
-            _log(depth, 'ok ' + num + ' - ' + entry.name);
+            _log(depth, _resultLine('ok', num, entry.name, '', groupMetadata));
             passed++;
           } else {
-            _log(depth, 'not ok ' + num + ' - ' + entry.name);
+            _log(depth, _resultLine('not ok', num, entry.name, '', groupMetadata));
             failed++;
             diagnostics.push(...gd);
           }
@@ -763,10 +896,11 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
  */
 export async function run(options: RunOptions = {}): Promise<void> {
   const showOutput = options.showOutput ?? 'failures';
+  const durations = options.durations === true;
   console.log('TAP version 13');
 
   const entries = options.filter ? _filterEntries(_tests, options.filter) : _tests;
-  const { passed, failed, skipped, diagnostics } = await _runEntries({ showOutput }, entries, 0, null);
+  const { passed, failed, skipped, diagnostics } = await _runEntries({ showOutput, durations }, entries, 0, null);
   const total = passed + failed + skipped;
 
   console.log('');

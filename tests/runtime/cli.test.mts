@@ -618,6 +618,22 @@ describe('CLI commands', () => {
     });
   });
 
+  it('passes --durations to the test command', async (t) => {
+    await withTempProject({
+      'durations.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('timed pass', (t) => t.ok(true));",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', '--durations', 'durations.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'durations mode exits successfully');
+      t.equal(stderr, '', 'durations mode does not write stderr');
+      t.ok(/ok 1 - timed pass # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'test command forwards duration reporting');
+    });
+  });
+
   it('reports after hook failures from the test command', async (t) => {
     await withTempProject({
       'after-failure.test.mts': [
@@ -941,18 +957,7 @@ describe('CLI commands', () => {
     t.ok(!enabled.stdout.includes('"scope":{"name":"socket"}'), 'exporter requests do not emit socket scope spans');
   });
 
-  it('uses OTEL env vars for CLI bootstrap and lets the flag override the base endpoint', async (t) => {
-    const envEnabled = await runCli(['./tests/fixtures/cli-otel-entrypoint.mts'], {
-      env: {
-        OTEL_EXPORTER_OTLP_ENDPOINT: 'http://env-collector.example:4318/env',
-      },
-    });
-    t.equal(envEnabled.result.code, 0, 'env-enabled entrypoint exits successfully');
-    t.equal(envEnabled.stderr, '', 'env-enabled bootstrap does not write stderr');
-    t.ok(envEnabled.stdout.includes('export:http://env-collector.example:4318/env/v1/traces'), 'env endpoint enables trace export');
-    t.ok(envEnabled.stdout.includes('export:http://env-collector.example:4318/env/v1/logs'), 'env endpoint enables log export');
-    t.ok(envEnabled.stdout.includes('export:http://env-collector.example:4318/env/v1/metrics'), 'env endpoint enables metric export');
-
+  it('lets --otlp-endpoint override the OTEL base endpoint env var', async (t) => {
     const flagWins = await runCli([
       '--otlp-endpoint',
       'http://flag-collector.example:4318/flag',

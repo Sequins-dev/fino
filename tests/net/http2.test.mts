@@ -139,6 +139,13 @@ const H2_GET_ROOT_LOCALHOST = hexBytes(
   0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74, // "localhost"
 );
 
+// GET / HPACK block with :method, :path, and :authority, but no :scheme.
+const H2_GET_ROOT_LOCALHOST_NO_SCHEME = hexBytes(
+  0x82, 0x84,       // :method GET, :path /
+  0x41, 0x09,       // :authority = localhost
+  0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+);
+
 // HEADERS frame for POST / (stream 1, END_HEADERS only — body follows)
 // HPACK: :method=POST(idx3), :path=/(idx4), :scheme=http(idx6), :authority=localhost
 const H2_POST_ROOT_LOCALHOST = hexBytes(
@@ -1134,6 +1141,23 @@ describe('H2 server — robustness', () => {
     t.ok(emptyRst !== null, 'empty :path gets RST_STREAM');
     t.equal(frameErrorCode(missingRst!), 0x01, 'missing :path reset uses PROTOCOL_ERROR');
     t.equal(frameErrorCode(emptyRst!), 0x01, 'empty :path reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs request HEADERS with missing :scheme before dispatch', async (t) => {
+    if (!h2Available) return;
+
+    let dispatched = false;
+    const server = serveHttp({ port: 0 }, async () => {
+      dispatched = true;
+      return new Response('ok');
+    });
+    const frames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST_NO_SCHEME));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'missing :scheme gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'missing :scheme reset uses PROTOCOL_ERROR');
+    t.equal(dispatched, false, 'invalid request does not reach handler');
   });
 
   it('RST_STREAMs a second request HEADERS frame on an open stream', async (t) => {

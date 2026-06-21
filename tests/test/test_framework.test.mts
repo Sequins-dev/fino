@@ -159,6 +159,130 @@ describe('t.rejects', () => {
 });
 
 describe('runner behavior', () => {
+  it('emits per-test metadata on passing leaves', async (t) => {
+    await withTempProject({
+      'meta-pass.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('metadata pass', (t) => {",
+        "  t.meta({ case: 'empty', rows: 0, nullable: null, missing: undefined, ready: true, count: 2n });",
+        "  t.ok(true);",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'meta-pass.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'metadata fixture exits successfully');
+      t.equal(stderr, '', 'metadata fixture does not write stderr');
+      t.ok(stdout.includes('ok 1 - metadata pass # case=empty, rows=0, nullable=null, missing=undefined, ready=true, count=2'), 'passing leaf includes metadata');
+    });
+  });
+
+  it('emits per-test metadata on failing leaves', async (t) => {
+    await withTempProject({
+      'meta-fail.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('metadata fail', (t) => {",
+        "  t.meta({ case: 'bad' });",
+        "  t.equal(1, 2, 'different');",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', 'meta-fail.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'failing metadata fixture exits nonzero');
+      t.ok(stdout.includes('not ok 1 - metadata fail # case=bad'), 'failing leaf includes metadata');
+    });
+  });
+
+  it('merges repeated metadata calls and overwrites older keys', async (t) => {
+    await withTempProject({
+      'meta-merge.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('metadata merge', (t) => {",
+        "  t.meta({ case: 'first', rows: 1 });",
+        "  t.meta({ case: 'second', done: false });",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', 'meta-merge.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'merged metadata fixture exits successfully');
+      t.ok(stdout.includes('ok 1 - metadata merge # case=second, rows=1, done=false'), 'later metadata overwrites existing keys');
+    });
+  });
+
+  it('quotes unsafe string metadata values', async (t) => {
+    await withTempProject({
+      'meta-quote.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('metadata quote', (t) => {",
+        "  t.meta({ simple: 'alpha', spaced: 'two words', comma: 'a,b', quoted: 'say \"hi\"', hash: 'a#b' });",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', 'meta-quote.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'quoted metadata fixture exits successfully');
+      t.ok(stdout.includes('ok 1 - metadata quote # simple=alpha, spaced="two words", comma="a,b", quoted="say \\"hi\\"", hash="a#b"'), 'unsafe strings are JSON quoted');
+    });
+  });
+
+  it('leaves TAP output unchanged when metadata is absent', async (t) => {
+    await withTempProject({
+      'no-meta.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('plain pass', (t) => t.ok(true));",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', 'no-meta.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'plain fixture exits successfully');
+      t.ok(stdout.includes('ok 1 - plain pass\n'), 'plain result has no metadata comment');
+      t.ok(!stdout.includes('ok 1 - plain pass #'), 'plain result has no trailing metadata segment');
+    });
+  });
+
+  it('keeps metadata off standalone Assert instances', async (t) => {
+    await withTempProject({
+      'assert-meta.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "import { Assert } from 'fino:test/assert';",
+        "test('standalone assert', (t) => {",
+        "  t.equal(typeof new Assert().meta, 'undefined');",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', 'assert-meta.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'standalone assert fixture exits successfully');
+      t.ok(stdout.includes('ok 1 - standalone assert'), 'standalone Assert has no meta method');
+    });
+  });
+
+  it('rejects invalid metadata keys', async (t) => {
+    await withTempProject({
+      'meta-invalid.test.mts': [
+        "import { test } from 'fino:test/test';",
+        "test('invalid metadata', (t) => {",
+        "  t.meta({ 'bad key': 'value' });",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', 'meta-invalid.test.mts'], { cwd: dir });
+
+      t.equal(result.code, 1, 'invalid metadata fixture exits nonzero');
+      t.ok(stdout.includes('not ok 1 - invalid metadata'), 'invalid metadata fails the leaf');
+      t.ok(stdout.includes('TypeError: Invalid test metadata key "bad key"'), 'invalid metadata reports TypeError');
+    });
+  });
+
   it('emits TAP output for passing files', async (t) => {
     await withTempProject({
       'tap.test.mts': [
@@ -411,6 +535,38 @@ describe('runner behavior', () => {
       t.equal(result.code, 1, 'invalid mode exits nonzero');
       t.equal(stdout, '', 'invalid mode does not start TAP output');
       t.ok(stderr.includes('Invalid --show-output value "bad"'), 'invalid mode is reported');
+    });
+  });
+
+  it('adds duration metadata to every result line when requested', async (t) => {
+    await withTempProject({
+      'durations.test.mts': [
+        "import { after, describe, it, test } from 'fino:test/test';",
+        "test('leaf pass', (t) => { t.meta({ duration: 'user' }); });",
+        "test('leaf fail', () => { throw new Error('boom'); });",
+        "test('leaf skip', { skip: 'blocked' }, () => { throw new Error('skip body'); });",
+        "describe('skipped group', { skip: 'blocked' }, () => {",
+        "  it('child skip', () => {});",
+        "});",
+        "describe('after fail group', () => {",
+        "  after(() => { throw new Error('after failed'); });",
+        "  it('body pass', () => {});",
+        "});",
+        '',
+      ].join('\n'),
+    }, async (dir) => {
+      const { stdout, result } = await runCli(['test', '--durations', 'durations.test.mts'], { cwd: dir });
+      const resultLines = stdout.split('\n').filter((line) => /^\s*(ok|not ok) \d+ - /.test(line));
+
+      t.equal(result.code, 1, 'durations fixture exits nonzero');
+      t.ok(resultLines.length >= 7, 'fixture emits multiple result lines');
+      for (const line of resultLines) {
+        t.ok(/# duration=\d+(?:\.\d+)?ms\b/.test(line), 'result line includes duration metadata: ' + line);
+      }
+      t.ok(stdout.includes('ok 1 - leaf pass # duration='), 'runner duration overrides user duration');
+      t.ok(/ok \d+ - leaf skip # SKIP blocked # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'skipped leaf keeps SKIP directive before duration');
+      t.ok(/ok \d+ - skipped group # SKIP blocked # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'skipped group keeps SKIP directive before duration');
+      t.ok(/not ok \d+ - after fail group # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'hook-generated group failure includes duration');
     });
   });
 });

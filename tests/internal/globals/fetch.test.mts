@@ -392,12 +392,13 @@ describe('AbortSignal', () => {
     // connection is already open. This tests that body streaming respects
     // cancellation and the connection is properly released.
     let controller!: AbortController;
+    let releaseBody!: () => void;
+    const bodyReleased = new Promise<void>((resolve) => { releaseBody = resolve; });
     const server = serveHttp({ port: 0 }, async () => {
       // Slow chunked body: send first chunk, then stall.
       async function* slowBody() {
         yield new TextEncoder().encode('first-chunk');
-        // Wait long enough that the abort fires mid-stream.
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+        await bodyReleased;
         yield new TextEncoder().encode('never-arrives');
       }
       // Transfer-Encoding: chunked enables true streaming (without it, serveHttp()
@@ -427,6 +428,7 @@ describe('AbortSignal', () => {
       }
       t.ok(threw, 'body reading throws when signal aborts mid-stream');
     } finally {
+      releaseBody();
       await server.close();
     }
   });

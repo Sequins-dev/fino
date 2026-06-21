@@ -42,7 +42,7 @@
  */
 
 import { Headers, Request, Response, buildWireResponse } from './index.mts';
-import { fetch as runtimeFetch } from '../../internal/globals/fetch.mts';
+import { fetch as runtimeFetch, _closeFetchH2PoolEntry } from '../../internal/globals/fetch.mts';
 import { EventSource } from './eventsource.mts';
 import type { EventSourceInit } from './eventsource.mts';
 import { WebSocketConnection } from './websocket.mts';
@@ -710,6 +710,7 @@ export class HttpSession {
     if (this.#state === 'closed') return;
     this.#state = 'closed';
     await this.#closeH3Transport();
+    if (this.protocol === 'h2') _closeFetchH2PoolEntry(this.origin);
     this.#events.push({ type: 'closed', session: this, reason: options.reason });
   }
 }

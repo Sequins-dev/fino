@@ -165,6 +165,7 @@ class H3PoolEntry {
   readonly #origin: string;
   readonly #target: AltSvcEntry;
   readonly #tls: FetchInit['tls'] | undefined;
+  readonly #handshakeTimeoutMs: number | null;
   #endpoint: QuicEndpoint | null = null;
   #conn: QuicConnection | null = null;
   #session: H3ClientSession | null = null;
@@ -172,10 +173,11 @@ class H3PoolEntry {
   #closed = false;
   #stage = 'new';
 
-  constructor(origin: string, target: AltSvcEntry, tls?: FetchInit['tls']) {
+  constructor(origin: string, target: AltSvcEntry, tls?: FetchInit['tls'], handshakeTimeoutMs: number | null = null) {
     this.#origin = origin;
     this.#target = target;
     this.#tls = tls;
+    this.#handshakeTimeoutMs = handshakeTimeoutMs;
   }
 
   async session(): Promise<H3ClientSession> {
@@ -194,6 +196,7 @@ class H3PoolEntry {
           address: target.address,
           alpnProtocols: ['h3'],
           serverName: target.serverName,
+          ...(this.#handshakeTimeoutMs !== null ? { connection: { handshakeTimeoutMs: this.#handshakeTimeoutMs } } : {}),
           ...(this.#tls?.ca !== undefined ? { ca: this.#tls.ca as any } : {}),
           ...(this.#tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
         });
@@ -247,6 +250,7 @@ class H3PoolEntry {
 
 const _altSvcCache = new Map<string, AltSvcEntry>();
 const _h3Pool = new Map<string, H3PoolEntry>();
+let _h3HandshakeTimeoutMsForTest: number | null = null;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -385,7 +389,7 @@ async function _singleFetchH3(
   const origin = _originKey(parsed);
   let entry = _h3Pool.get(origin);
   if (entry === undefined) {
-    entry = new H3PoolEntry(origin, target, tls);
+    entry = new H3PoolEntry(origin, target, tls, _h3HandshakeTimeoutMsForTest);
     _h3Pool.set(origin, entry);
   }
   try {
@@ -1279,6 +1283,31 @@ export function _fetchH2PoolHas(origin: string): boolean {
 }
 
 /**
+ * Gracefully close one internal global fetch HTTP/2 pool entry for tests.
+ *
+ * The entry remains in the pool map until normal liveness checks evict it, so
+ * `_fetchH2PoolHas()` observes the same `goingAway` state used by production
+ * acquisition.
+ *
+ * @internal
+ */
+export function _closeFetchH2PoolEntry(origin: string): boolean {
+  const entry = _h2Pool.get(origin);
+  if (entry === undefined) return false;
+  entry.close();
+  return true;
+}
+
+/**
+ * Gracefully close one internal global fetch HTTP/2 pool entry for tests.
+ *
+ * @internal
+ */
+export function _closeFetchH2PoolEntryForTest(origin: string): boolean {
+  return _closeFetchH2PoolEntry(origin);
+}
+
+/**
  * Close and clear all internal global fetch HTTP/2 pool entries.
  *
  * Use this only in tests to isolate origin-keyed pool state between cases.
@@ -1306,6 +1335,22 @@ export function _fetchH3PoolHas(origin: string): boolean {
 export function _resetFetchH3Pool(): void {
   for (const [, entry] of _h3Pool) entry.close();
   _h3Pool.clear();
+}
+
+/**
+ * Override automatic fetch HTTP/3 handshake timeout for deterministic tests.
+ *
+ * Passing `null` restores the runtime default. Existing H3 pool entries keep
+ * the timeout they were created with, so tests should reset the H3 pool after
+ * changing this value.
+ *
+ * @internal
+ */
+export function _setFetchH3HandshakeTimeoutForTest(ms: number | null): void {
+  if (ms !== null && (!Number.isFinite(ms) || ms < 1)) {
+    throw new TypeError('fetch H3 handshake timeout must be null or a positive finite number');
+  }
+  _h3HandshakeTimeoutMsForTest = ms === null ? null : Math.floor(ms);
 }
 
 /**
