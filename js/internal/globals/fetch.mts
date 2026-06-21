@@ -170,6 +170,7 @@ class H3PoolEntry {
   #session: H3ClientSession | null = null;
   #ready: Promise<H3ClientSession> | null = null;
   #closed = false;
+  #stage = 'new';
 
   constructor(origin: string, target: AltSvcEntry, tls?: FetchInit['tls']) {
     this.#origin = origin;
@@ -183,7 +184,9 @@ class H3PoolEntry {
     if (this.#ready !== null) return this.#ready;
 
     this.#ready = (async () => {
+      this.#stage = 'resolve';
       const target = await _resolveH3Target(this.#target.host, this.#target.port);
+      this.#stage = `connect ${target.address.ip}:${target.address.port}`;
       const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
       this.#endpoint = endpoint;
       try {
@@ -195,11 +198,13 @@ class H3PoolEntry {
           ...(this.#tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
         });
         this.#conn = conn;
+        this.#stage = 'create h3 session';
         conn.addEventListener('close', () => {
           _h3Pool.delete(this.#origin);
           this.close();
         }, { once: true });
         this.#session = await H3ClientSession.create(conn);
+        this.#stage = 'ready';
         return this.#session;
       } catch (error) {
         const closeInfo = this.#conn?.closeInfo;
@@ -218,6 +223,14 @@ class H3PoolEntry {
 
   closeInfo(): QuicConnection['closeInfo'] | null {
     return this.#conn?.closeInfo ?? null;
+  }
+
+  stage(): string {
+    return this.#stage;
+  }
+
+  setStage(stage: string): void {
+    this.#stage = stage;
   }
 
   close(): void {
@@ -377,9 +390,14 @@ async function _singleFetchH3(
   }
   try {
     const session = await entry.session();
+    entry.setStage('request');
+    const h3Headers: Array<[string, string]> = [[':authority', parsed.host]];
+    headers.forEach((value, name) => {
+      if (!name.startsWith(':')) h3Headers.push([name, value]);
+    });
     const response = await session.request(url, {
       method,
-      headers: new Headers(headers),
+      headers: h3Headers,
       body: body !== null ? body as any : undefined,
       trailers: trailers as any,
     } as any);
@@ -395,9 +413,13 @@ async function _singleFetchH3(
     });
   } catch (error) {
     const closeInfo = entry.closeInfo();
+    const stage = entry.stage();
     _evictH3(origin);
     if (closeInfo !== null && error instanceof Error && error.message === 'QUIC connection is closed') {
-      throw new Error(`QUIC connection is closed (${closeInfo.type} ${closeInfo.errorCode}${closeInfo.reason ? `: ${closeInfo.reason}` : ''})`);
+      throw new Error(`QUIC connection is closed during ${stage} (${closeInfo.type} ${closeInfo.errorCode}${closeInfo.reason ? `: ${closeInfo.reason}` : ''})`);
+    }
+    if (error instanceof Error && error.message === 'QUIC connection is closed') {
+      throw new Error(`QUIC connection is closed during ${stage}`);
     }
     throw error;
   }

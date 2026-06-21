@@ -95,6 +95,8 @@ export interface ServeOptions {
   tls?: {
     cert: string;  // path to PEM certificate file
     key:  string;  // path to PEM private key file
+    /** TLS ALPN protocols to offer. Defaults to ['h2', 'http/1.1'] when HTTP/2 is available. */
+    protocols?: readonly Extract<HttpProtocol, 'http/1.1' | 'h2'>[];
   };
   /** Enable the HTTP/1.1 → h2c Upgrade dance (RFC 7540 §3.2) on plain TCP. */
   allowH2cUpgrade?: boolean;
@@ -370,10 +372,14 @@ export function serve(
   const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
 
   let sslCtx = options.tls ? sslCtxLoadCertKey(options.tls.cert, options.tls.key) : null;
+  const tlsProtocols = options.tls?.protocols ?? (h2Available ? ['h2', 'http/1.1'] : ['http/1.1']);
+  const alpnProtocols = tlsProtocols.filter((protocol): protocol is 'h2' | 'http/1.1' => {
+    return protocol === 'http/1.1' || (protocol === 'h2' && h2Available);
+  });
   // Register ALPN select callback so TLS clients can negotiate h2.
   // The returned FfiCallback is retained alongside sslCtx and closed on server.close().
-  let alpnCb: object | null = (sslCtx !== null && h2Available)
-    ? sslCtxSetAlpnServerProtos(sslCtx, ['h2', 'http/1.1'])
+  let alpnCb: object | null = (sslCtx !== null && alpnProtocols.includes('h2'))
+    ? sslCtxSetAlpnServerProtos(sslCtx, alpnProtocols)
     : null;
 
   const inFlight = new Set<Promise<void>>();
