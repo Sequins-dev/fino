@@ -57,7 +57,14 @@ import { parseCookieHeader, serializeCookie, type CookieOptions } from '../../se
 import { compile } from '../../validate.mts';
 import { Headers, Request, Response } from './index.mts';
 import { serve } from './server.mts';
-import type { ConnectionTakeover, HttpProtocol, HttpStream } from './driver.mts';
+import type {
+  AcceptedHttpRequest,
+  HttpSession,
+  IncomingHttp,
+  IncomingWebSocketRequest,
+} from './server.mts';
+import { WebSocketConnection } from './websocket.mts';
+import type { ConnectionTakeover, HttpProtocol } from './driver.mts';
 
 /**
  * Standard HTTP methods supported by route builders.
@@ -110,8 +117,10 @@ export interface HttpContext {
   method: string;
   /** Protocol carrying the current request. */
   protocol: HttpProtocol;
-  /** Logical stream metadata for server-dispatched requests. */
-  stream?: HttpStream;
+  /** Transport session carrying the current request. */
+  session?: HttpSession;
+  /** Accept object that produced this request, when dispatched by `App.listen()`. */
+  incoming?: IncomingHttp;
   /** URLPattern path parameters when a route matched.
    *
    * ```ts no_run
@@ -126,6 +135,10 @@ export interface HttpContext {
    * ```
    */
   [key: string]: unknown;
+}
+
+export interface WebSocketContext extends HttpContext {
+  incoming: IncomingWebSocketRequest;
 }
 
 /**
@@ -155,6 +168,8 @@ export type Middleware = (ctx: HttpContext, next: () => Promise<Response | Conne
  * ```
  */
 export type Handler = (ctx: HttpContext) => Response | ConnectionTakeover | Promise<Response | ConnectionTakeover>;
+
+export type WebSocketHandler = (socket: WebSocketConnection, ctx: WebSocketContext) => void | Promise<void>;
 
 /**
  * Context value producer used by `.value(name, producer)`.
@@ -311,6 +326,14 @@ type Endpoint = {
   meta: OperationMeta;
 };
 
+type WebSocketEndpoint = {
+  path: string;
+  pattern: URLPattern;
+  stack: StackItem[];
+  slots: string[];
+  handler: WebSocketHandler;
+};
+
 type BuildState = {
   stack: StackItem[];
   slots: Set<string>;
@@ -423,7 +446,8 @@ function appendPath(prefix: string, path: string): string {
 
 interface HandleInfo {
   protocol?: HttpProtocol;
-  stream?: HttpStream;
+  session?: HttpSession;
+  incoming?: IncomingHttp;
 }
 
 function makeInitialContext(app: App, endpoint: Endpoint, req: Request, params: Record<string, string>, info: HandleInfo): HttpContext {
@@ -434,9 +458,25 @@ function makeInitialContext(app: App, endpoint: Endpoint, req: Request, params: 
     method: endpoint.method,
     protocol: info.protocol ?? 'http/1.1',
   };
-  if (info.stream !== undefined) ctx.stream = info.stream;
+  if (info.session !== undefined) ctx.session = info.session;
+  if (info.incoming !== undefined) ctx.incoming = info.incoming;
   for (const slot of endpoint.slots) ctx[slot] = undefined;
   ctx.params = params;
+  return ctx;
+}
+
+function makeInitialWebSocketContext(app: App, endpoint: WebSocketEndpoint, incoming: IncomingWebSocketRequest, params: Record<string, string>): WebSocketContext {
+  const ctx = {
+    request: incoming.request,
+    app,
+    route: endpoint.path,
+    method: 'WEBSOCKET',
+    protocol: incoming.protocol,
+    session: incoming.session,
+    incoming,
+    params,
+  } as WebSocketContext;
+  for (const slot of endpoint.slots) ctx[slot] = undefined;
   return ctx;
 }
 
@@ -666,6 +706,7 @@ export class App extends BuilderBase<App> {
    * @internal
    */
   #endpoints: Endpoint[] = [];
+  #webSocketEndpoints: WebSocketEndpoint[] = [];
   /**
    * Private property `#requestContext` used by `App`.
    *
@@ -786,6 +827,34 @@ export class App extends BuilderBase<App> {
    */
   options(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder { return this.#direct('OPTIONS', path, stack); }
 
+  /** Register a WebSocket route.
+   *
+   * ```ts no_run
+   * app.websocket('/chat', async (socket) => {
+   *   socket.addEventListener('message', (event) => socket.send(event.data));
+   * });
+   * ```
+   */
+  websocket(path: string, ...stack: Array<Middleware | WebSocketHandler>): this {
+    if (stack.length === 0) throw new Error('WebSocket route requires a handler');
+    const handler = stack[stack.length - 1] as WebSocketHandler;
+    const middleware = stack.slice(0, -1) as Middleware[];
+    const state = forkState(this._state);
+    for (const fn of middleware) state.stack.push({ type: 'middleware', fn, meta: metadataOf(fn) });
+    const endpoint: WebSocketEndpoint = {
+      path,
+      pattern: new URLPattern({ pathname: path }),
+      stack: state.stack,
+      slots: [...state.slots],
+      handler,
+    };
+    if (this.#webSocketEndpoints.some((current) => current.path === path)) {
+      throw new Error(`Duplicate WebSocket route ${path}`);
+    }
+    this.#webSocketEndpoints.push(endpoint);
+    return this;
+  }
+
   /**
    * Private method `#direct` used by `App`.
    *
@@ -864,6 +933,30 @@ export class App extends BuilderBase<App> {
     return defaultNotFound();
   }
 
+  async #handleWebSocket(incoming: IncomingWebSocketRequest): Promise<void> {
+    const path = pathFromRequest(incoming.request);
+    for (const endpoint of this.#webSocketEndpoints) {
+      const match = endpoint.pattern.exec({ pathname: path });
+      if (match === null) continue;
+      const ctx = makeInitialWebSocketContext(this, endpoint, incoming, { ...match.pathname.groups });
+      await this.#requestContext.runWithValue(ctx, async () => {
+        let socket: WebSocketConnection;
+        try {
+          socket = await incoming.accept();
+        } catch {
+          await incoming.reject(new Response('Bad Request', { status: 400 }));
+          return;
+        }
+        for (const item of endpoint.stack) {
+          if (item.type === 'producer') ctx[item.name] = await item.fn(ctx);
+        }
+        await endpoint.handler(socket, ctx);
+      });
+      return;
+    }
+    await incoming.reject();
+  }
+
   /** Start an HTTP server that dispatches requests to this app.
    *
    * The returned server is the same object returned by `serve()`.
@@ -873,9 +966,18 @@ export class App extends BuilderBase<App> {
    * ```
    */
   listen(options: Parameters<typeof serve>[0]): ReturnType<typeof serve> {
-    return serve({ ...options, mode: 'stream' } as any, async (stream) => {
-      const result = await this.handle(stream.request, { protocol: stream.protocol, stream });
-      await stream.respond(result);
+    return serve(options, async (incoming, session) => {
+      if (incoming.kind === 'websocket') {
+        await this.#handleWebSocket(incoming);
+        return;
+      }
+      const accepted: AcceptedHttpRequest = await incoming.accept();
+      const result = await this.handle(accepted.request, {
+        protocol: accepted.protocol,
+        session,
+        incoming,
+      });
+      await accepted.respond(result);
     });
   }
 

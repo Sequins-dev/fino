@@ -5,7 +5,9 @@
 import { describe, it } from 'fino:test/test';
 import { App, Router, body, cookies, defineMiddleware, defineProducer, errorHandler, memorySessionStore, schema, sessions } from 'fino:net/http/app';
 import { Request, Response } from 'fino:net/http';
+import { WebSocketConnection, MessageEvent } from 'fino:net/http/websocket';
 import { v } from 'fino:validate';
+import * as loop from 'internal:runtime/loop';
 
 function request(path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}): Request {
   return new Request(`http://example.test${path}`, {
@@ -20,11 +22,11 @@ describe('HTTP app routing and middleware', () => {
     const app = new App();
     app.get('/proto', (ctx) => Response.json({
       protocol: ctx.protocol,
-      hasStream: ctx.stream !== undefined,
+      hasIncoming: ctx.incoming !== undefined,
     }));
 
     const res = await app.handle(request('/proto'));
-    t.deepEqual(await res.json(), { protocol: 'http/1.1', hasStream: false });
+    t.deepEqual(await res.json(), { protocol: 'http/1.1', hasIncoming: false });
   });
 
   it('runs middleware in Koa order and exposes async request context', async (t) => {
@@ -192,6 +194,41 @@ describe('HTTP app built-ins', () => {
       const doc = await res.json() as any;
       t.equal(doc.info.title, 'Served API');
       t.equal(doc.info.version, '2.0.0');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('accepts websocket routes over listen()', async (t) => {
+    const app = new App();
+    app.websocket('/chat', async (socket, ctx) => {
+      t.equal(ctx.incoming.kind, 'websocket', 'websocket context exposes incoming');
+      socket.addEventListener('message', (event) => {
+        void socket.send(`echo:${(event as MessageEvent).data}`);
+      });
+    });
+
+    const server = app.listen({ port: 0, hostname: '127.0.0.1' });
+    try {
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/chat`);
+      const opened = new Promise<void>((resolve) => client.addEventListener('open', () => resolve(), { once: true }));
+      await opened;
+      const message = new Promise<MessageEvent>((resolve, reject) => {
+        const timer = loop.timeout(1000);
+        timer.then(() => reject(new Error('timed out waiting for websocket echo'))).catch(() => {});
+        client.addEventListener('message', (event) => {
+          timer.cancel();
+          resolve(event as MessageEvent);
+        }, { once: true });
+      });
+      await client.send('hello');
+      t.equal((await message).data, 'echo:hello', 'websocket route echoes messages');
+      await client.close();
+
+      const invalid = await fetch(`http://127.0.0.1:${server.port}/chat`, {
+        headers: { upgrade: 'websocket' } as any,
+      });
+      t.equal(invalid.status, 400, 'invalid websocket upgrade matching route gets 400');
     } finally {
       await server.close();
     }
