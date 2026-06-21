@@ -43,7 +43,7 @@
  */
 
 import { describe, it, before, after } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { DiskFileSystem } from 'fino:file';
 import { Process } from 'fino:process';
 import { h2Available } from 'fino:net/http/h2';
@@ -311,7 +311,7 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
 
   before(async () => {
     if (skip) return;
-    server = serve(
+    server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
       async () => new Response('ok'),
     );

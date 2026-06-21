@@ -6,7 +6,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { serve } from 'fino:net/http/server';
+import { serve, serveHttp } from 'fino:net/http/server';
 import { Request, Response } from 'fino:net/http';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
@@ -56,7 +56,7 @@ describe('Request / Response basics', () => {
   it('binds and serves on IPv6 loopback when available', async (t) => {
     let server: ReturnType<typeof serve> | null = null;
     try {
-      server = serve({ hostname: '::1', port: 0 }, async () => new Response('ipv6-ok'));
+      server = serveHttp({ hostname: '::1', port: 0 }, async () => new Response('ipv6-ok'));
     } catch (err: unknown) {
       t.ok(
         String(err).includes('EADDRNOTAVAIL') || String(err).includes('unsupported') || String(err).includes('address'),
@@ -90,7 +90,7 @@ describe('Request / Response basics', () => {
   it('binds IPv6 wildcard when family is explicitly ipv6', async (t) => {
     let server: ReturnType<typeof serve> | null = null;
     try {
-      server = serve({ family: 'ipv6', port: 0 }, async () => new Response('ipv6-family-ok'));
+      server = serveHttp({ family: 'ipv6', port: 0 }, async () => new Response('ipv6-family-ok'));
     } catch (err: unknown) {
       t.ok(
         String(err).includes('EADDRNOTAVAIL') || String(err).includes('unsupported') || String(err).includes('address'),
@@ -116,7 +116,7 @@ describe('Request / Response basics', () => {
   });
 
   it('accepts listen backlog and reuse options', async (t) => {
-    const server = serve(
+    const server = serveHttp(
       { hostname: '127.0.0.1', port: 0, backlog: 1, reuseAddr: true },
       async () => new Response('listen-options-ok'),
     );
@@ -137,7 +137,7 @@ describe('Request / Response basics', () => {
     let serverRef: ReturnType<typeof serve> | null = null;
 
     {
-      await using server = serve({ port: 0 }, async () => new Response('unused'));
+      await using server = serveHttp({ port: 0 }, async () => new Response('unused'));
       serverRef = server;
       t.ok(server.port > 0, 'server is listening inside await using scope');
     }
@@ -154,7 +154,7 @@ describe('Request / Response basics', () => {
   });
 
   it('basic GET request/response', async (t) => {
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       t.equal(req.method, 'GET', 'method is GET');
       t.equal(req.url, `http://localhost:${server.port}/`, 'url parsed correctly');
       return new Response('hello');
@@ -171,41 +171,101 @@ describe('Request / Response basics', () => {
     await server.close();
   });
 
-  it('supports stream-mode handlers with protocol metadata', async (t) => {
+  it('serve() request accept/respond exposes session metadata', async (t) => {
     let seenProtocol = '';
+    let seenSessionProtocol = '';
     let seenPath = '';
-    const server = serve({ port: 0, mode: 'stream' } as any, async (stream: any) => {
-      seenProtocol = stream.protocol;
-      seenPath = new URL(stream.request.url).pathname;
-      await stream.respond(new Response(`${stream.protocol}:${stream.request.method}`));
+    const server = serve({ port: 0 }, async (incoming, session) => {
+      t.equal(incoming.kind, 'request', 'plain request dispatches request kind');
+      const accepted = await incoming.accept();
+      seenProtocol = incoming.protocol;
+      seenSessionProtocol = session.protocol;
+      seenPath = new URL(accepted.request.url).pathname;
+      t.equal(accepted.session, session, 'accepted request shares the session');
+      await accepted.respond(new Response(`${accepted.protocol}:${accepted.request.method}`));
     });
     const port = server.port;
 
-    const raw = `GET /stream-mode HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const raw = `GET /accept-mode HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
     const response = await roundtrip(port, raw);
 
-    t.equal(seenProtocol, 'http/1.1', 'stream exposes HTTP/1.1 protocol');
-    t.equal(seenPath, '/stream-mode', 'stream exposes request');
-    t.ok(response.startsWith('HTTP/1.1 200'), 'stream handler sends 200');
-    t.ok(response.endsWith('http/1.1:GET'), 'stream response body is sent');
+    t.equal(seenProtocol, 'http/1.1', 'incoming exposes HTTP/1.1 protocol');
+    t.equal(seenSessionProtocol, 'http/1.1', 'session exposes HTTP/1.1 protocol');
+    t.equal(seenPath, '/accept-mode', 'accepted request exposes request');
+    t.ok(response.startsWith('HTTP/1.1 200'), 'accepted handler sends 200');
+    t.ok(response.endsWith('http/1.1:GET'), 'accepted response body is sent');
 
     await server.close();
   });
 
-  it('returns 500 when a stream-mode handler does not respond', async (t) => {
-    const server = serve({ port: 0, mode: 'stream' } as any, async () => {});
+  it('serve() can reject requests with default and explicit responses', async (t) => {
+    const server = serve({ port: 0 }, async (incoming) => {
+      if (new URL(incoming.request.url).pathname === '/default') {
+        await incoming.reject();
+        return;
+      }
+      await incoming.reject(new Response('nope', { status: 403 }));
+    });
+    const port = server.port;
+
+    const defaultResponse = await roundtrip(port, `GET /default HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`);
+    t.ok(defaultResponse.startsWith('HTTP/1.1 404'), 'default request reject yields 404');
+
+    const explicitResponse = await roundtrip(port, `GET /explicit HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`);
+    t.ok(explicitResponse.startsWith('HTTP/1.1 403'), 'explicit reject response is sent');
+    t.ok(explicitResponse.endsWith('nope'), 'explicit reject body is sent');
+
+    await server.close();
+  });
+
+  it('serve() returns 500 when handler makes no accept/reject decision', async (t) => {
+    const server = serve({ port: 0 }, async () => {});
     const port = server.port;
 
     const raw = `GET /missing-response HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
     const response = await roundtrip(port, raw);
 
-    t.ok(response.startsWith('HTTP/1.1 500'), 'missing stream response yields 500');
+    t.ok(response.startsWith('HTTP/1.1 500'), 'missing decision yields 500');
+
+    await server.close();
+  });
+
+  it('serve() returns 500 when accepted request does not respond', async (t) => {
+    const server = serve({ port: 0 }, async (incoming) => {
+      await incoming.accept();
+    });
+    const port = server.port;
+
+    const raw = `GET /missing-response HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const response = await roundtrip(port, raw);
+
+    t.ok(response.startsWith('HTTP/1.1 500'), 'missing accepted response yields 500');
+
+    await server.close();
+  });
+
+  it('serve() lifecycle methods reject double decisions', async (t) => {
+    const errors: string[] = [];
+    const server = serve({ port: 0 }, async (incoming) => {
+      const accepted = await incoming.accept();
+      try { await incoming.accept(); } catch (err) { errors.push((err as Error).name); }
+      try { await incoming.reject(); } catch (err) { errors.push((err as Error).name); }
+      await accepted.respond(new Response('once'));
+      try { await accepted.respond(new Response('twice')); } catch (err) { errors.push((err as Error).name); }
+    });
+    const port = server.port;
+
+    const raw = `GET /double HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
+    const response = await roundtrip(port, raw);
+
+    t.ok(response.startsWith('HTTP/1.1 200'), 'first response is sent');
+    t.deepEqual(errors, ['TypeError', 'TypeError', 'TypeError'], 'double decisions throw TypeError');
 
     await server.close();
   });
 
   it('POST request with body', async (t) => {
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       t.equal(req.method, 'POST', 'method is POST');
       const body = await req.text();
       t.equal(body, 'hello body', 'body received');
@@ -223,7 +283,7 @@ describe('Request / Response basics', () => {
   });
 
   it('handler throws → 500 response', async (t) => {
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       throw new Error('boom');
     });
     const port = server.port;
@@ -237,7 +297,7 @@ describe('Request / Response basics', () => {
   });
 
   it('204 No Content response has no content-length header (RFC 7230 §3.3.2)', async (t) => {
-    const server = serve({ port: 0 }, async () => new Response(null, { status: 204 }));
+    const server = serveHttp({ port: 0 }, async () => new Response(null, { status: 204 }));
     const port = server.port;
 
     const raw = `DELETE / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -252,7 +312,7 @@ describe('Request / Response basics', () => {
   it('HTTP TE+CL: content-length removed when transfer-encoding: chunked is present', async (t) => {
     // Regression test for A4: when both TE:chunked and Content-Length coexist,
     // Content-Length must be stripped (prevents request-smuggling via framing ambiguity).
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       // Handler returns a chunked response; serve() should strip any Content-Length
       // that would otherwise coexist.
       return new Response('hello', {
@@ -281,7 +341,7 @@ describe('Request / Response basics', () => {
     // We verify by making two sequential fetch calls to the same server; if the
     // chunked body is left partially drained, the second fetch would fail or hang.
     let callCount = 0;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       callCount++;
       const url = new URL(req.url);
       return new Response(`response-${url.pathname.slice(1)}`, {
@@ -303,7 +363,7 @@ describe('Request / Response basics', () => {
   });
 
   it('streaming response body (async generator) is transmitted correctly', async (t) => {
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       async function* stream() {
         yield new TextEncoder().encode('chunk-one-');
         yield new TextEncoder().encode('chunk-two-');
@@ -324,7 +384,7 @@ describe('Request / Response basics', () => {
   it('HEAD request receives no body even when Content-Length is set', async (t) => {
     // Regression for the HEAD framing bug: parseResponse must treat HEAD
     // responses as bodyless regardless of Content-Length.
-    const server = serve({ port: 0 }, async () => new Response('full body here'));
+    const server = serveHttp({ port: 0 }, async () => new Response('full body here'));
     try {
       const res = await fetch(`http://127.0.0.1:${server.port}/`, { method: 'HEAD' });
       t.equal(res.status, 200, 'HEAD returns 200');
@@ -338,7 +398,7 @@ describe('Request / Response basics', () => {
   });
 
   it('content-length auto-injection', async (t) => {
-    const server = serve({ port: 0 }, async () => new Response('hello!'));
+    const server = serveHttp({ port: 0 }, async () => new Response('hello!'));
     const port = server.port;
 
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -351,7 +411,7 @@ describe('Request / Response basics', () => {
   });
 
   it('existing content-length not overwritten', async (t) => {
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       return new Response('hi', { headers: { 'content-length': '2' } });
     });
     const port = server.port;
@@ -366,7 +426,7 @@ describe('Request / Response basics', () => {
   });
 
   it('Response.json() body', async (t) => {
-    const server = serve({ port: 0 }, async () => Response.json({ ok: true }));
+    const server = serveHttp({ port: 0 }, async () => Response.json({ ok: true }));
     const port = server.port;
 
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -379,7 +439,7 @@ describe('Request / Response basics', () => {
   });
 
   it('null body response', async (t) => {
-    const server = serve({ port: 0 }, async () => new Response(null, { status: 204 }));
+    const server = serveHttp({ port: 0 }, async () => new Response(null, { status: 204 }));
     const port = server.port;
 
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -394,7 +454,7 @@ describe('Request / Response basics', () => {
 describe('HTTP protocol conformance', () => {
   it('sends 100 Continue before reading an expected request body', async (t) => {
     let receivedBody = '';
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       receivedBody = await req.text();
       return new Response('accepted');
     });
@@ -446,7 +506,7 @@ describe('HTTP protocol conformance', () => {
 
   it('rejects unsupported Expect values before calling the handler', async (t) => {
     let handlerCalled = false;
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       handlerCalled = true;
       return new Response('unexpected');
     });
@@ -469,7 +529,7 @@ describe('HTTP protocol conformance', () => {
 
   it('returns 408 when request headers exceed headersTimeoutMs', async (t) => {
     let handlerCalled = false;
-    const server = serve({ port: 0, headersTimeoutMs: 10 }, async () => {
+    const server = serveHttp({ port: 0, headersTimeoutMs: 10 }, async () => {
       handlerCalled = true;
       return new Response('unexpected');
     });
@@ -492,7 +552,7 @@ describe('HTTP protocol conformance', () => {
   });
 
   it('closes idle keep-alive connections after idleTimeoutMs', async (t) => {
-    const server = serve({ port: 0, idleTimeoutMs: 10 }, async () => new Response('first'));
+    const server = serveHttp({ port: 0, idleTimeoutMs: 10 }, async () => new Response('first'));
     const port = server.port;
     const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
     const [reader, writer] = sock.split();
@@ -519,7 +579,7 @@ describe('HTTP protocol conformance', () => {
     // RFC 7230 §3.3.2: conflicting CL values are a framing error — the server
     // MUST reject the request rather than silently using the first value.
     let handlerCalled = false;
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       handlerCalled = true;
       return new Response('should not reach handler');
     });
@@ -539,7 +599,7 @@ describe('HTTP protocol conformance', () => {
   });
 
   it('duplicate identical Content-Length headers are accepted', async (t) => {
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const body = await req.text();
       return new Response(body);
     });
@@ -559,7 +619,7 @@ describe('HTTP protocol conformance', () => {
 describe('Connection management', () => {
   it('graceful shutdown via server.close()', async (t) => {
     let handled = 0;
-    const server = serve({ port: 0 }, async () => {
+    const server = serveHttp({ port: 0 }, async () => {
       handled++;
       return new Response('ok');
     });
@@ -573,7 +633,7 @@ describe('Connection management', () => {
   });
 
   it('Connection: close header injected correctly', async (t) => {
-    const server = serve({ port: 0 }, async () => new Response('bye'));
+    const server = serveHttp({ port: 0 }, async () => new Response('bye'));
     const port = server.port;
 
     const raw = `GET / HTTP/1.1\r\nHost: localhost:${port}\r\nConnection: close\r\n\r\n`;
@@ -586,7 +646,7 @@ describe('Connection management', () => {
 
   it('keep-alive — two requests on same connection', async (t) => {
     let count = 0;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       count++;
       return new Response(`req${count}`);
     });
@@ -634,7 +694,7 @@ describe('Connection management', () => {
     // A handler that throws must drain the request body so the HTTP parser
     // state is not corrupted for the next request on the same connection.
     let callCount = 0;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       callCount++;
       if (callCount === 1) {
         // First call: read nothing from the body, then throw.
@@ -688,7 +748,7 @@ describe('Connection management', () => {
     let inFlight = 0;
     let maxConcurrent = 0;
 
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       inFlight++;
       if (inFlight > maxConcurrent) maxConcurrent = inFlight;
       await loop.timeout(10);
@@ -710,7 +770,7 @@ describe('Connection management', () => {
   });
 
   it('pipelined responses preserve request order when handlers finish out of order', async (t) => {
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const url = new URL(req.url);
       if (url.pathname === '/slow') await loop.timeout(20);
       return new Response(url.pathname.slice(1));
@@ -754,7 +814,7 @@ describe('Connection management', () => {
 
   it('parses multiple pipelined requests from a single client write', async (t) => {
     const seen: string[] = [];
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const url = new URL(req.url);
       seen.push(url.pathname);
       return new Response(url.pathname.slice(1));

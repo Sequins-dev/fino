@@ -383,6 +383,7 @@ export class H1ServerDriver implements ServerDriver {
     let connectionFailed = false;
     let stopAfterSeq = Number.POSITIVE_INFINITY;
     let notifier: (() => void) | null = null;
+    let bodyDrainCount = 0;
 
     const maxConcurrent = opts.maxConcurrent;
 
@@ -401,7 +402,12 @@ export class H1ServerDriver implements ServerDriver {
     }
 
     function shouldReadMore() {
-      return !parserDone && !connectionFailed && nextSeq < stopAfterSeq && queuedCount() < maxConcurrent;
+      return !parserDone && !connectionFailed && bodyDrainCount === 0 && nextSeq < stopAfterSeq && queuedCount() < maxConcurrent;
+    }
+
+    function shouldStop() {
+      return connectionFailed ||
+        (parserDone && inFlight === 0 && pending.size === 0 && !readPumpActive && !flushActive);
     }
 
     async function makeCloseResponse(status: number, body: string, reqVersion = 'HTTP/1.1'): Promise<PreparedResponse> {
@@ -520,13 +526,15 @@ export class H1ServerDriver implements ServerDriver {
           }
 
           const _requestContext = otelActive ? consumeRequestContext(requestId) : null;
+          if (req.hasBody) bodyDrainCount++;
           const _handleAsync = async () => {
             let res: Response | ConnectionTakeover;
+            let handlerError: unknown = null;
             try {
               res = await handler(req);
             } catch (e) {
               res = new Response('Internal Server Error', { status: 500 });
-              keepAlive = false;
+              handlerError = e;
               if (_topicRequestError.hasSubscribers) {
                 _topicRequestError.publish(otelRuntimeEvent('http.server', 'request', 'error', {
                   requestId,
@@ -542,22 +550,37 @@ export class H1ServerDriver implements ServerDriver {
             if (isConnectionTakeover(res)) {
               if (seq < stopAfterSeq) stopAfterSeq = seq;
               parserDone = true;
+              readPumpActive = false;
               pending.set(seq, { kind: 'upgrade', conn: res });
+              if (req.hasBody) bodyDrainCount--;
               inFlight--;
               notify();
               return;
             }
 
-            try {
-              await _drainBody(req);
-            } catch (e) {
-              keepAlive = false;
+            let drainAfterQueue = false;
+            if (handlerError !== null && req.hasBody && !req.bodyUsed) {
+              drainAfterQueue = true;
+            } else {
+              try {
+                await _drainBody(req);
+              } catch (e) {
+                keepAlive = false;
+              }
+              if (req.hasBody) {
+                bodyDrainCount--;
+                notify();
+              }
             }
 
-            if ((res.headers.get('connection') || '').toLowerCase().trim() === 'close') {
+            try {
+              if ((res.headers.get('connection') || '').toLowerCase().trim() === 'close') {
+                keepAlive = false;
+              }
+              if (!keepAlive && seq < stopAfterSeq) stopAfterSeq = seq;
+            } catch {
               keepAlive = false;
             }
-            if (!keepAlive && seq < stopAfterSeq) stopAfterSeq = seq;
 
             let prepared: PreparedResponse;
             try {
@@ -598,6 +621,19 @@ export class H1ServerDriver implements ServerDriver {
             }
 
             pending.set(seq, { kind: 'response', prepared, closeAfter: !keepAlive });
+            if (drainAfterQueue) {
+              notify();
+              try {
+                await _drainBody(req);
+              } catch {
+                keepAlive = false;
+                if (seq < stopAfterSeq) stopAfterSeq = seq;
+                const current = pending.get(seq);
+                if (current?.kind === 'response') current.closeAfter = true;
+              }
+              bodyDrainCount--;
+              notify();
+            }
             inFlight--;
             notify();
           };
@@ -672,12 +708,14 @@ export class H1ServerDriver implements ServerDriver {
         if (!readPumpActive && shouldReadMore()) void pumpReads();
         if (!flushActive && hasReadyResponses()) void flushResponses();
 
-        if (connectionFailed) break;
-        if (parserDone && inFlight === 0 && pending.size === 0 && !readPumpActive && !flushActive) {
-          break;
-        }
+        if (shouldStop()) break;
 
-        await new Promise<void>(resolve => { notifier = resolve; });
+        await new Promise<void>(resolve => {
+          notifier = resolve;
+          if (shouldStop() || (!readPumpActive && shouldReadMore()) || (!flushActive && hasReadyResponses())) {
+            notify();
+          }
+        });
       }
     } finally {
       await writer.close();

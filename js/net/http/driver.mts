@@ -28,7 +28,7 @@
  */
 
 import type { BytesReader, BytesWriter } from '../../internal/stream.mts';
-import type { Request, Response, Headers } from './index.mts';
+import type { Request, Response } from './index.mts';
 
 // ---------------------------------------------------------------------------
 // Server side
@@ -63,51 +63,6 @@ export type HttpProtocol = 'http/1.1' | 'h2' | 'h3';
  * ```
  */
 export type ServerHandler = (req: Request) => ServerResult | Promise<ServerResult>;
-
-/**
- * Logical HTTP request stream passed to advanced stream-mode handlers.
- */
-export interface HttpStream {
-  /** Fetch-compatible request for this logical stream. */
-  readonly request: Request;
-  /** Negotiated protocol carrying this stream. */
-  readonly protocol: HttpProtocol;
-  /** Submit the response for this stream. Must be called exactly once. */
-  respond(response: ServerResult): Promise<void>;
-}
-
-/**
- * Function invoked for each server-side logical HTTP stream in stream mode.
- */
-export type ServerStreamHandler = (stream: HttpStream) => void | Promise<void>;
-
-/**
- * Adapt an advanced stream-mode handler to the existing request-handler driver
- * contract.
- *
- * @internal
- */
-export async function dispatchHttpStream(
-  request: Request,
-  protocol: HttpProtocol,
-  handler: ServerStreamHandler,
-): Promise<ServerResult> {
-  let responded = false;
-  let result: ServerResult | null = null;
-  const stream: HttpStream = {
-    request,
-    protocol,
-    respond(response: ServerResult): Promise<void> {
-      if (responded) throw new Error('HTTP stream already responded');
-      responded = true;
-      result = response;
-      return Promise.resolve();
-    },
-  };
-  await handler(stream);
-  if (!responded || result === null) throw new Error('HTTP stream handler did not respond');
-  return result;
-}
 
 /**
  * Shared server driver options supplied by `serve`.

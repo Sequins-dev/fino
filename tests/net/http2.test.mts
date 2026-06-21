@@ -6,7 +6,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { h2Available, h2Version, H2ClientDriver, Nghttp2Session } from 'fino:net/http/h2';
-import { serve } from 'fino:net/http/server';
+import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { Response } from 'fino:net/http';
 import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.mts';
@@ -239,7 +239,7 @@ describe('H2 server — prior-knowledge h2c', () => {
   it('responds to GET / with plain text body', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       return new Response('hello from h2');
     });
     const port = server.port;
@@ -259,7 +259,7 @@ describe('H2 server — prior-knowledge h2c', () => {
   it('server accepts and acknowledges initial SETTINGS', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async (_req) => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async (_req) => new Response('ok'));
     const port = server.port;
 
     const raw = await h2RoundTrip(port);
@@ -283,7 +283,7 @@ describe('H2 server — prior-knowledge h2c', () => {
     let capturedMethod = '';
     let capturedPath = '';
 
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       capturedMethod = req.method;
       capturedPath = new URL(req.url).pathname;
       return new Response('captured');
@@ -332,7 +332,7 @@ describe('H2 server — request bodies', () => {
     if (!h2Available) return;
 
     let capturedBody = '';
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       capturedBody = await req.text();
       return new Response(capturedBody);
     });
@@ -349,7 +349,7 @@ describe('H2 server — request bodies', () => {
     if (!h2Available) return;
 
     let capturedBody: string | null = null;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       capturedBody = req.body ? await req.text() : null;
       return new Response('ok');
     });
@@ -384,7 +384,7 @@ describe('H2ClientDriver', () => {
   it('GET / returns 200 with body', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async (_req) => new Response('hello from h2 client'));
+    const server = serveHttp({ port: 0 }, async (_req) => new Response('hello from h2 client'));
     const port = server.port;
 
     const res = await h2ClientFetch(port, '/');
@@ -398,7 +398,7 @@ describe('H2ClientDriver', () => {
   it('POST / sends body and handler echoes it', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       const body = await req.text();
       return new Response(`echo:${body}`, { status: 201 });
     });
@@ -416,7 +416,7 @@ describe('H2ClientDriver', () => {
     if (!h2Available) return;
 
     let capturedHeader = '';
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       capturedHeader = req.headers.get('x-custom') ?? '';
       return new Response('ok');
     });
@@ -444,7 +444,7 @@ describe('H2 server — ConnectionTakeover rejection', () => {
   it('non-h2 ConnectionTakeover (e.g. WebSocket) gets RST_STREAM INTERNAL_ERROR', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async (_req) => {
+    const server = serveHttp({ port: 0 }, async (_req) => {
       // Simulate WebSocket: a ConnectionTakeover not compatible with h2.
       return {
         compatibleProtocols: new Set(['http/1.1']),
@@ -490,7 +490,7 @@ describe('H2 server — h2c Upgrade (RFC 7540 §3.2)', () => {
   it('server responds with 101 Switching Protocols and serves stream 1 over h2', async (t) => {
     if (!h2Available) return;
 
-    const server = serve(
+    const server = serveHttp(
       { port: 0, allowH2cUpgrade: true },
       async (req) => new Response('upgraded:' + new URL(req.url).pathname),
     );
@@ -569,7 +569,7 @@ describe('H2 server — h2c Upgrade (RFC 7540 §3.2)', () => {
   it('normal h1 requests still work when allowH2cUpgrade is true but client does not upgrade', async (t) => {
     if (!h2Available) return;
 
-    const server = serve(
+    const server = serveHttp(
       { port: 0, allowH2cUpgrade: true },
       async (_req) => new Response('hello h1'),
     );
@@ -611,7 +611,7 @@ describe('H2 server — robustness', () => {
     if (!h2Available) return;
 
     let captured = 0;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       captured = (await req.arrayBuffer()).byteLength;
       return new Response('ok');
     });
@@ -631,7 +631,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY when a new client stream id is lower than a previous stream id', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, new Uint8Array([
       ...frame(0x01, 0x05, 3, H2_GET_ROOT_LOCALHOST.subarray(9)),
       ...frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
@@ -646,7 +646,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for DATA and RST_STREAM on an idle stream', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const dataFrames = await rawH2Exchange(server.port, dataFrameFor(1, new Uint8Array(0), 0x01));
     const rstFrames = await rawH2Exchange(server.port, rstStreamFrame(1, 0));
     await server.close();
@@ -658,7 +658,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for RST_STREAM on stream 0', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, rstStreamFrame(0, 0));
     await server.close();
 
@@ -670,7 +670,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs DATA and HEADERS sent after the client half-closes the stream', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const dataFrames = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_GET_ROOT_LOCALHOST,
       ...dataFrameFor(1, _enc.encode('late'), 0x01),
@@ -692,7 +692,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs DATA and HEADERS sent after client RST_STREAM closes a stream', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const dataFrames = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_POST_ROOT_LOCALHOST,
       ...rstStreamFrame(1, 0),
@@ -716,7 +716,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for malformed DATA padding', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_POST_ROOT_LOCALHOST,
       ...frame(0x00, 0x08, 1, hexBytes(8, 1, 2, 3)),
@@ -731,7 +731,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY immediately for DATA larger than the default max frame size', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const oversizedHeaderOnly = frame(0x00, 0x00, 1, new Uint8Array(16 * 1024 + 1)).subarray(0, 9);
     const frames = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_POST_ROOT_LOCALHOST,
@@ -748,7 +748,7 @@ describe('H2 server — robustness', () => {
   it('validates PRIORITY stream id, length, and self-dependency', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const stream0 = await rawH2Exchange(server.port, frame(0x02, 0x00, 0, new Uint8Array(5)));
     const wrongLength = await rawH2Exchange(server.port, frame(0x02, 0x00, 1, new Uint8Array(4)));
     const selfDependency = await rawH2Exchange(server.port, priorityFrame(1, 1));
@@ -765,7 +765,7 @@ describe('H2 server — robustness', () => {
   it('closes cleanly for invalid PING length and ignores client PING ACK', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const invalidPing = await rawH2Exchange(server.port, frame(0x06, 0x00, 0, new Uint8Array(7)));
     const ackPing = await rawH2Exchange(server.port, frame(0x06, 0x01, 0, new Uint8Array(8)));
     await server.close();
@@ -779,7 +779,7 @@ describe('H2 server — robustness', () => {
   it('ignores undefined frame flags and handles the known flags normally', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, frame(0x06, 0x80, 0, new Uint8Array(8)));
     await server.close();
 
@@ -792,7 +792,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs streams above the max concurrent stream limit', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const requestFrames: number[] = [];
     for (let streamId = 1; streamId <= 65; streamId += 2) {
       requestFrames.push(...frame(0x01, 0x04, streamId, H2_POST_ROOT_LOCALHOST.subarray(9)));
@@ -808,7 +808,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for representative CONTINUATION ordering errors', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const interrupted = await rawH2Exchange(server.port, new Uint8Array([
       ...frame(0x01, 0x01, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
       ...frame(0x00, 0x00, 1, new Uint8Array(0)),
@@ -844,7 +844,7 @@ describe('H2 server — robustness', () => {
   it('ACKs peer SETTINGS frames after the initial SETTINGS exchange', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, frame(0x04, 0x00, 0, hexBytes(
       0x00, 0x03, 0x00, 0x00, 0x00, 0x40,
     )));
@@ -857,7 +857,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY for SETTINGS ACK frames with payload', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, frame(0x04, 0x01, 0, hexBytes(
       0x00, 0x03, 0x00, 0x00, 0x00, 0x40,
     )));
@@ -871,7 +871,7 @@ describe('H2 server — robustness', () => {
   it('sends GOAWAY when a client sends PUSH_PROMISE', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_GET_ROOT_LOCALHOST,
       ...frame(0x05, 0x04, 1, hexBytes(
@@ -889,7 +889,7 @@ describe('H2 server — robustness', () => {
   it('closes cleanly for an invalid connection preface', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: server.port });
     const [reader, writer] = sock.split();
     await writer.write(_enc.encode('PRI * HTTP/2.0\r\n\r\nbad-preface'));
@@ -906,7 +906,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs request HEADERS with response-only pseudo-headers', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const invalidRequestBlock = hexBytes(
       0x82, 0x84, 0x86, // :method GET, :path /, :scheme http
       0x88,             // :status 200 is response-only and invalid in requests
@@ -922,7 +922,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs request HEADERS with missing or empty :path', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const missingPathBlock = hexBytes(
       0x82, 0x86,       // :method GET, :scheme http
       0x41, 0x09,
@@ -950,7 +950,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs a second request HEADERS frame on an open stream', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, new Uint8Array([
       ...H2_POST_ROOT_LOCALHOST,
       ...frame(0x01, 0x04, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
@@ -965,7 +965,7 @@ describe('H2 server — robustness', () => {
   it('RST_STREAMs requests whose content-length does not match DATA length', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const frames = await rawH2Exchange(server.port, new Uint8Array([
       ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST_CL4),
       ...dataFrameFor(1, _enc.encode('bad'), 0x01),
@@ -983,7 +983,7 @@ describe('H2 server — robustness', () => {
     // Handler that waits for a body — so the server will be in triggerDispatch
     // state when the client sends RST_STREAM.
     let handlerStarted = false;
-    const server = serve({ port: 0 }, async (req) => {
+    const server = serveHttp({ port: 0 }, async (req) => {
       handlerStarted = true;
       await req.text(); // reads body — but body never arrives on RST_STREAM
       return new Response('ok');
@@ -1047,7 +1047,7 @@ describe('H2 server — robustness', () => {
   it('server sends MAX_CONCURRENT_STREAMS in SETTINGS', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
 
     const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });
@@ -1084,7 +1084,7 @@ describe('H2 server — robustness', () => {
   it('server closes gracefully on malformed frame', async (t) => {
     if (!h2Available) return;
 
-    const server = serve({ port: 0 }, async () => new Response('ok'));
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
 
     const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port });

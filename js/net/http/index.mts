@@ -448,21 +448,21 @@ function _createReader(source: AsyncByteSource) {
         // Drain any leftover bytes from the header read first.
         const rem = remaining();
         if (rem !== null && rem.byteLength > 0) {
-          buf = null;
-          offset = 0;
           if (bytesLeft !== null) {
-            if (rem.byteLength <= bytesLeft) {
-              bytesLeft -= rem.byteLength;
-              return { done: false, value: rem };
+            const take = Math.min(rem.byteLength, bytesLeft);
+            const slice = rem.subarray(0, take);
+            bytesLeft -= take;
+            if (take === rem.byteLength) {
+              buf = null;
+              offset = 0;
+            } else {
+              buf = rem;
+              offset = take;
             }
-            // More leftover than we need — slice.
-            const slice = rem.subarray(0, bytesLeft);
-            // Keep the rest for the next consumer (unlikely but correct).
-            buf = rem;
-            offset = bytesLeft;
-            bytesLeft = 0;
             return { done: false, value: slice };
           }
+          buf = null;
+          offset = 0;
           return { done: false, value: rem };
         }
 
@@ -477,17 +477,17 @@ function _createReader(source: AsyncByteSource) {
         const chunk = current.subarray(offset);
 
         if (bytesLeft !== null) {
-          if (chunk.byteLength <= bytesLeft) {
-            bytesLeft -= chunk.byteLength;
+          const take = Math.min(chunk.byteLength, bytesLeft);
+          const slice = chunk.subarray(0, take);
+          bytesLeft -= take;
+          if (take === chunk.byteLength) {
             buf = null;
             offset = 0;
-            return { done: false, value: chunk };
+          } else {
+            // More data than needed — keep the rest in buffer for the next
+            // consumer (e.g. the next request header on keep-alive).
+            offset += take;
           }
-          // More data than needed — take what we need, keep the rest in buffer
-          // for the next consumer (e.g. the next request header on keep-alive).
-          const slice = chunk.subarray(0, bytesLeft);
-          offset = bytesLeft; // buf stays as-is; offset points past the slice
-          bytesLeft = 0;
           return { done: false, value: slice };
         }
         buf = null;

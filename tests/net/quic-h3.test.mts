@@ -134,7 +134,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
     }
   });
 
-  it('unified HTTP serve() can enable H3 stream mode', async (t) => {
+  it('unified HTTP serve() can enable H3 accept mode', async (t) => {
     if (!available) return;
 
     const server = httpServe({
@@ -142,9 +142,9 @@ describe('HTTP/3 (h3 ALPN)', () => {
       hostname: '127.0.0.1',
       tls: { cert: TEST_CERT, key: TEST_KEY },
       h3: true,
-      mode: 'stream',
-    } as any, async (stream: any) => {
-      await stream.respond(new Response(`protocol:${stream.protocol}`));
+    } as any, async (incoming: any) => {
+      const accepted = await incoming.accept();
+      await accepted.respond(new Response(`protocol:${accepted.protocol}`));
     });
 
     try {
@@ -152,17 +152,17 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
         quic: { verifyPeer: false },
       });
-      t.equal(await response.text(), 'protocol:h3', 'unified stream mode handles H3 requests');
+      t.equal(await response.text(), 'protocol:h3', 'unified accept mode handles H3 requests');
     } finally {
       await server.close();
     }
   });
 
-  it('App.listen() exposes H3 protocol and stream context', async (t) => {
+  it('App.listen() exposes H3 protocol and session context', async (t) => {
     if (!available) return;
 
     const app = new App();
-    app.get('/proto', (ctx) => new Response(`${ctx.protocol}:${ctx.stream?.protocol ?? 'none'}`));
+    app.get('/proto', (ctx) => new Response(`${ctx.protocol}:${ctx.session?.protocol ?? 'none'}`));
 
     const server = app.listen({
       port: 0,
@@ -176,7 +176,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
       const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
         quic: { verifyPeer: false },
       });
-      t.equal(await response.text(), 'h3:h3', 'app context sees H3 protocol and stream');
+      t.equal(await response.text(), 'h3:h3', 'app context sees H3 protocol and session');
     } finally {
       await server.close();
     }

@@ -11,9 +11,9 @@
  * ## Usage
  *
  * ```ts no_run
- *   import { serve } from 'fino:net/http/server';
+ *   import { serveHttp } from 'fino:net/http/server';
  *
- *   const server = serve({ port: 3000 }, async (req) => {
+ *   const server = serveHttp({ port: 3000 }, async (req) => {
  *     return new Response('hello');
  *   });
  *
@@ -54,9 +54,12 @@ import { H2ServerDriver } from '../../internal/net/http/h2/server.mts';
 import { h2Available } from '../../internal/net/http/h2/bindings.mts';
 import { serve as serveH3, requireH3 } from './h3.mts';
 import type { H3Server, H3ServeOptions } from './h3.mts';
-import { dispatchHttpStream } from './driver.mts';
-import type { ConnectionTakeover, HttpProtocol, ServerHandler, ServerStreamHandler } from './driver.mts';
-import type { Request } from './index.mts';
+import { _headerTokenList } from './index.mts';
+import { WebSocketConnection } from './websocket.mts';
+import type { WebSocketAcceptOptions } from './websocket.mts';
+import type { ConnectionTakeover, HttpProtocol, ServerHandler, ServerResult } from './driver.mts';
+import type { Request, Response } from './index.mts';
+import { Response as HttpResponse } from './index.mts';
 import type { Address, ListenOptions } from '../socket.mts';
 
 // H2 client preface: "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
@@ -76,8 +79,6 @@ function _isH2Preface(bytes: Uint8Array): boolean {
 interface ServeOptions {
   port:      number;
   hostname?: string;
-  /** Handler mode. Defaults to Fetch request/response mode. */
-  mode?: 'request' | 'stream';
   /** Explicit IP family for the listening socket. Defaults from hostname. */
   family?: 'ipv4' | 'ipv6';
   /** Listen backlog passed through to Socket.listen(). */
@@ -109,6 +110,150 @@ interface ServeServer {
   [Symbol.asyncDispose](): Promise<void>;
 }
 
+export type HttpTransport = 'tcp' | 'tls' | 'quic';
+
+export interface HttpSession {
+  readonly id: string;
+  readonly protocol: HttpProtocol;
+  readonly transport: HttpTransport;
+  readonly secure: boolean;
+  readonly localAddress: unknown | null;
+  readonly remoteAddress: unknown | null;
+  readonly closed: Promise<void>;
+}
+
+interface IncomingBase<TKind extends string> {
+  readonly kind: TKind;
+  readonly request: Request;
+  readonly protocol: HttpProtocol;
+  readonly session: HttpSession;
+  reject(response?: Response): Promise<void>;
+}
+
+export interface IncomingHttpRequest extends IncomingBase<'request'> {
+  accept(): Promise<AcceptedHttpRequest>;
+}
+
+export interface AcceptedHttpRequest {
+  readonly kind: 'request';
+  readonly request: Request;
+  readonly protocol: HttpProtocol;
+  readonly session: HttpSession;
+  respond(response: ServerResult): Promise<void>;
+}
+
+export interface IncomingWebSocketRequest extends IncomingBase<'websocket'> {
+  readonly subprotocols: readonly string[];
+  accept(options?: WebSocketAcceptOptions): Promise<WebSocketConnection>;
+}
+
+export type IncomingHttp =
+  | IncomingHttpRequest
+  | IncomingWebSocketRequest;
+
+export type ServerAcceptHandler = (
+  incoming: IncomingHttp,
+  session: HttpSession,
+) => void | Promise<void>;
+
+let _sessionSeq = 0;
+
+function _makeSession(protocol: HttpProtocol, transport: HttpTransport, addresses?: { localAddress?: unknown; remoteAddress?: unknown }): HttpSession {
+  return {
+    id: `http-session-${++_sessionSeq}`,
+    protocol,
+    transport,
+    secure: transport !== 'tcp',
+    localAddress: addresses?.localAddress ?? null,
+    remoteAddress: addresses?.remoteAddress ?? null,
+    closed: Promise.resolve(),
+  };
+}
+
+function _isWebSocketUpgradeAttempt(request: Request, protocol: HttpProtocol): boolean {
+  if (protocol !== 'http/1.1') return false;
+  return (request.headers.get('upgrade') ?? '').toLowerCase().trim() === 'websocket';
+}
+
+function _defaultReject(kind: IncomingHttp['kind']): Response {
+  return kind === 'websocket'
+    ? new HttpResponse('Bad Request', { status: 400 })
+    : new HttpResponse('Not Found', { status: 404 });
+}
+
+function _makeAcceptAdapter(
+  handler: ServerAcceptHandler,
+  protocol: HttpProtocol,
+  transport: HttpTransport,
+  addresses?: { localAddress?: unknown; remoteAddress?: unknown },
+): ServerHandler {
+  return async (request: Request): Promise<ServerResult> => {
+    const session = _makeSession(protocol, transport, addresses);
+    const kind = _isWebSocketUpgradeAttempt(request, protocol) ? 'websocket' : 'request';
+    let decision: 'pending' | 'accepted' | 'rejected' = 'pending';
+    let responded = false;
+    let result: ServerResult | null = null;
+
+    function assertPending(action: string): void {
+      if (decision !== 'pending') throw new TypeError(`HTTP incoming already ${decision}; cannot ${action}`);
+    }
+
+    const base = {
+      kind,
+      request,
+      protocol,
+      session,
+      reject(response?: Response): Promise<void> {
+        assertPending('reject');
+        decision = 'rejected';
+        result = response ?? _defaultReject(kind);
+        return Promise.resolve();
+      },
+    };
+
+    const incoming: IncomingHttp = kind === 'websocket'
+      ? {
+          ...base,
+          kind: 'websocket',
+          subprotocols: _headerTokenList(request.headers.get('sec-websocket-protocol')),
+          accept(options?: WebSocketAcceptOptions): Promise<WebSocketConnection> {
+            assertPending('accept');
+            const socket = WebSocketConnection.accept(request, options);
+            decision = 'accepted';
+            result = socket;
+            return Promise.resolve(socket);
+          },
+        }
+      : {
+          ...base,
+          kind: 'request',
+          accept(): Promise<AcceptedHttpRequest> {
+            assertPending('accept');
+            decision = 'accepted';
+            const accepted: AcceptedHttpRequest = {
+              kind: 'request',
+              request,
+              protocol,
+              session,
+              respond(response: ServerResult): Promise<void> {
+                if (responded) throw new TypeError('HTTP request already responded');
+                responded = true;
+                result = response;
+                return Promise.resolve();
+              },
+            };
+            return Promise.resolve(accepted);
+          },
+        };
+
+    await handler(incoming, session);
+    if (decision === 'pending') throw new Error('HTTP incoming handler did not accept or reject');
+    if (decision === 'accepted' && kind === 'request' && !responded) throw new Error('Accepted HTTP request did not respond');
+    if (result === null) throw new Error('HTTP incoming handler did not produce a response');
+    return result;
+  };
+}
+
 const _h1Driver = new H1ServerDriver();
 const _h2Driver = new H2ServerDriver();
 
@@ -127,7 +272,7 @@ function _listenOptions(options: ServeOptions): ListenOptions {
 }
 
 /**
- * Start an HTTP server.
+ * Start an accept-based HTTP server.
  *
  * Each incoming connection is handled concurrently. The event loop is
  * implicitly kept alive as long as the server is open.
@@ -143,14 +288,17 @@ function _listenOptions(options: ServeOptions): ListenOptions {
  * ```ts no_run
  * import { serve } from 'fino:net/http/server';
  *
- * const server = serve({ port: 3000 }, async (req) => new Response('hello'));
+ * const server = serve({ port: 3000 }, async (incoming) => {
+ *   const accepted = await incoming.accept();
+ *   await accepted.respond(new Response('hello'));
+ * });
  * console.log(server.port);
  * await server.close();
  * ```
  */
 export function serve(
   options: ServeOptions,
-  handler: ServerHandler | ServerStreamHandler,
+  handler: ServerAcceptHandler,
 ): ServeServer {
   if (options.h3 !== undefined && options.h3 !== false) {
     if (options.tls === undefined) throw new Error('serve: h3 requires tls certificate and key');
@@ -194,11 +342,8 @@ export function serve(
     };
   }
 
-  function _handlerFor(protocol: HttpProtocol): ServerHandler {
-    if (options.mode === 'stream') {
-      return (req) => dispatchHttpStream(req, protocol, handler as ServerStreamHandler);
-    }
-    return handler as ServerHandler;
+  function _handlerFor(protocol: HttpProtocol, transport: HttpTransport, addresses?: { localAddress?: unknown; remoteAddress?: unknown }): ServerHandler {
+    return _makeAcceptAdapter(handler, protocol, transport, addresses);
   }
 
   const h3Options = options.h3;
@@ -210,7 +355,7 @@ export function serve(
         hostname: boundAddress.ip,
         certificateFile: options.tls!.cert,
         privateKeyFile: options.tls!.key,
-      }, _handlerFor('h3')).then((server) => { h3Server = server; })
+      }, _handlerFor('h3', 'quic')).then((server) => { h3Server = server; })
     : Promise.resolve();
   h3Ready.catch(() => {
     if (closeSignalResolve) closeSignalResolve();
@@ -231,9 +376,15 @@ export function serve(
               const [reader, writer] = tlsConn.split();
               try {
                 if (h2Available && proto === 'h2') {
-                  await _h2Driver.run(reader, writer, _handlerFor('h2'), { maxConcurrent: 32 });
+                  await _h2Driver.run(reader, writer, _handlerFor('h2', 'tls', {
+                    localAddress: tcpConn.localAddress,
+                    remoteAddress: tcpConn.remoteAddress,
+                  }), { maxConcurrent: 32 });
                 } else {
-                  await _h1Driver.run(reader, writer, _handlerFor('http/1.1'), _driverOptions());
+                  await _h1Driver.run(reader, writer, _handlerFor('http/1.1', 'tls', {
+                    localAddress: tcpConn.localAddress,
+                    remoteAddress: tcpConn.remoteAddress,
+                  }), _driverOptions());
                 }
               } catch {
                 try { await reader.close(); } catch {}
@@ -250,11 +401,17 @@ export function serve(
             if (h2Available) {
               const preface = await reader.peek(24);
               if (_isH2Preface(preface)) {
-                await _h2Driver.run(reader, writer, _handlerFor('h2'), { maxConcurrent: 32 });
+                await _h2Driver.run(reader, writer, _handlerFor('h2', 'tcp', {
+                  localAddress: tcpConn.localAddress,
+                  remoteAddress: tcpConn.remoteAddress,
+                }), { maxConcurrent: 32 });
                 return;
               }
             }
-            await _h1Driver.run(reader, writer, _handlerFor('http/1.1'), _driverOptions());
+            await _h1Driver.run(reader, writer, _handlerFor('http/1.1', 'tcp', {
+              localAddress: tcpConn.localAddress,
+              remoteAddress: tcpConn.remoteAddress,
+            }), _driverOptions());
           })();
         }
 
@@ -288,4 +445,18 @@ export function serve(
       return this.close();
     },
   };
+}
+
+export function serveHttp(
+  options: ServeOptions,
+  handler: ServerHandler,
+): ServeServer {
+  return serve(options, async (incoming) => {
+    if (incoming.kind !== 'request') {
+      await incoming.reject();
+      return;
+    }
+    const accepted = await incoming.accept();
+    await accepted.respond(await handler(accepted.request));
+  });
 }
