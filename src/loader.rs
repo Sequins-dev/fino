@@ -235,6 +235,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:net/http/app", "net/http/app"),
     source_builtin!("fino:net/http/driver", "net/http/driver"),
     source_builtin!("fino:net/http/h1", "net/http/h1"),
+    source_builtin!("fino:net/http/client", "net/http/client"),
     source_builtin!("fino:net/http/server", "net/http/server"),
     source_builtin!(
         "internal:net/http/h2/bindings",

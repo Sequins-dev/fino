@@ -7,9 +7,38 @@ The HTTP APIs are built around Fetch-compatible `Request`, `Response`, and
 `Headers` objects. Use `fino:net/http/server` for application servers, and drop
 down to lower protocol modules only when building tooling or custom transports.
 
+## Create a Client
+
+Use `HttpClient` when code needs reusable request policy, default headers,
+logical sessions, protocol metadata, SSE, or WebSocket helpers:
+
+```ts
+import { HttpClient } from 'fino:net/http/client';
+
+const client = new HttpClient({
+  baseUrl: 'https://api.example.com',
+  headers: { authorization: 'Bearer token' },
+  protocols: ['h2', 'http/1.1'],
+});
+
+const response = await client.request('/users');
+console.log(response.status, response.protocol, await response.json());
+
+const fetchResponse = await client.fetch('/users');
+const session = await client.session('https://api.example.com', { protocol: 'h2' });
+await session.close();
+await client.close();
+```
+
+`HttpResponse` is separate from Fetch `Response`: it exposes request, session,
+connection, timing, protocol, and trailer metadata, then adapts back through
+`toFetchResponse()` when a Fetch-compatible value is needed. Cookies and auth
+are explicit headers or caller-owned state; the client does not create an
+ambient browser cookie jar.
+
 ## Start a Server
 
-Use `serve` with a port and a request handler:
+Use `serveHttp` with a port and a request handler:
 
 ```ts
 import { serveHttp } from 'fino:net/http/server';
