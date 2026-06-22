@@ -28,6 +28,12 @@
     "reason": "half-closed HEADERS is deterministically RST_STREAMed with STREAM_CLOSED locally, but h2spec can still observe EOF before the reset frame in the full TLS suite"
   },
   {
+    "id": "http2/5.1/half closed (remote): Sends a CONTINUATION frame",
+    "reason": "half-closed CONTINUATION without an active header block is rejected locally, but h2spec can still observe timing-sensitive TLS close behavior in the full suite",
+    "releaseAcceptableBecause": "RFC 9113 treats an unexpected CONTINUATION without an active header block as a connection-level protocol error, and local raw-wire coverage verifies that behavior.",
+    "localCoverage": "tests/net/http2.test.mts: sends GOAWAY for representative CONTINUATION ordering errors"
+  },
+  {
     "id": "http2/5.1/closed: Sends a HEADERS frame",
     "reason": "closed-stream HEADERS is reset by the pre-recv validator locally, but h2spec still observes timing-sensitive close behavior in the full TLS suite"
   },
