@@ -29,7 +29,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Findings `JS-SPEC-001`, `JS-SPEC-002`, and `JS-SPEC-004` |
 | Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` through `JS-SPEC-008` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` through `JS-SPEC-011` |
-| Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Findings `JS-SPEC-012` through `JS-SPEC-014` |
+| Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Findings `JS-SPEC-012` and `JS-SPEC-014` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | Finding `JS-SPEC-015` |
 | Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Findings `JS-SPEC-016` through `JS-SPEC-018` |
 
@@ -256,26 +256,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   unsupported algorithms, invalid key usages, non-extractable export/wrap, and
   malformed import material.
 
-### JS-SPEC-013
-
-- Subsystem/files: Security, `js/security/cors.mts`,
-  `tests/security/core.test.mts`.
-- Spec target and section: Fetch CORS protocol response header processing.
-- Expected behavior: CORS helper output should be a safe policy helper and
-  should not imply full browser enforcement. Credentialed wildcard responses
-  must reflect a concrete origin or be rejected.
-- Observed implementation/test gap: The implementation correctly documents that
-  it is policy-only and reflects wildcard origins when credentials are enabled.
-  It always emits `access-control-allow-credentials: true` when requested, even
-  if the supplied origin is denied and no `access-control-allow-origin` is
-  emitted. That may be acceptable as a header builder, but the behavior should
-  be tested and documented as "denied origin with credentials emits no allow
-  origin" so applications do not mistake the helper for an enforcement layer.
-- Priority: P2.
-- Suggested follow-up: Add explicit tests for denied origins, wildcard plus
-  credentials, invalid token names, and `Vary: Origin` behavior; document that
-  callers must still return the correct status and preflight body.
-
 ### JS-SPEC-014
 
 - Subsystem/files: Security and validation, `js/security/jwt.mts`,
@@ -392,7 +372,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P1 | OpenTelemetry | Map tests to traces, logs, metrics, resources, propagation, OTLP/HTTP JSON, retry, compression, and partial-success spec sections. |
 | P1 | Package integrity | Cover OpenSSL-unavailable integrity skip, SHA-1 fallback, strongest-SRI selection, malformed integrity, and unsupported algorithm behavior. |
 | P2 | Archive/compression | Add fixtures for central-directory disagreements, unsupported ZIP/tar extensions, path traversal, CRC, and decompressed-size limits. |
-| P2 | CORS/JWK/JSON Schema/SQLite | Add tests documenting helper-policy limits, permissive JWK selection, ignored schema keywords, and SQLite VFS unsupported controls. |
+| P2 | JWK/JSON Schema/SQLite | Add tests documenting permissive JWK selection, ignored schema keywords, and SQLite VFS unsupported controls. |
 
 ## Accepted Divergences And Non-Goals
 
