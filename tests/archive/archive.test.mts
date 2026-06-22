@@ -72,6 +72,13 @@ function makeTarHeader(name: string, size: number, typeflag: number = 48): Uint8
   return hdr;
 }
 
+function refreshTarChecksum(header: Uint8Array): void {
+  header.fill(0x20, 148, 156);
+  let sum = 0;
+  for (let i = 0; i < 512; i++) sum += header[i]!;
+  header.set(encodeUtf8(sum.toString(8).padStart(6, '0') + '\0 '), 148);
+}
+
 function crc32(bytes: Uint8Array): number {
   let crc = 0xffffffff;
   for (const byte of bytes) {
@@ -547,6 +554,33 @@ describe('fino:archive', () => {
         () => listArchive(`${TEST_DIR}/${name}.tar`),
         /Unsupported tar archive/i,
         `${name} tar entry is rejected`,
+      );
+    }
+  });
+
+  it('rejects tar numeric fields containing non-octal characters', async (t) => {
+    const payload = encodeUtf8('x');
+    const padded = new Uint8Array(512);
+    padded.set(payload);
+
+    for (const [field, offset, value] of [
+      ['mode', 100, '0000648\0'],
+      ['size', 124, '0000000001x'],
+      ['mtime', 136, '0000000001z'],
+    ] as Array<[string, number, string]>) {
+      const archive = new Uint8Array(512 + 512 + 1024);
+      const header = makeTarHeader(`${field}.txt`, payload.byteLength);
+      header.set(encodeUtf8(value), offset);
+      refreshTarChecksum(header);
+      archive.set(header, 0);
+      archive.set(padded, 512);
+
+      const archivePath = `${TEST_DIR}/invalid-tar-${field}.tar`;
+      await fs.writeFile(archivePath, archive);
+      await t.rejects(
+        () => listArchive(archivePath),
+        /octal/i,
+        `${field} field with non-octal characters is rejected`,
       );
     }
   });

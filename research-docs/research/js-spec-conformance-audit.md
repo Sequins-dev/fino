@@ -30,7 +30,7 @@ prioritization. It does not include source fixes.
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
-| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001 to FFS-005 |
+| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001, FFS-002, FFS-004, and FFS-005 |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-002 to RTE-005 |
 
 Existing release notes already document broad intentional non-parity areas:
@@ -193,18 +193,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P1
 - Follow-up: apply `MAX_DECOMPRESSED_BYTES` and stored-size consistency checks in
   the store branch.
-
-### FFS-003: Tar numeric fields are parsed without octal validation
-
-- Files: `js/archive.mts`
-- Spec target: POSIX ustar header numeric fields.
-- Expected behavior: numeric fields contain valid octal digits plus permitted
-  terminators, or a declared supported alternative.
-- Current behavior: values are passed to `parseInt(..., 8)` without ensuring all
-  characters are valid octal.
-- Coverage gap: no valid-checksum tar fixtures with invalid numeric fields.
-- Priority: P2
-- Follow-up: validate octal fields strictly and reject `NaN`.
 
 ### FFS-004: XML parser accepts invalid names and namespace errors
 

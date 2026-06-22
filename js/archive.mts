@@ -581,15 +581,29 @@ function writeOctal(view: Uint8Array, offset: number, width: number, value: numb
   view[offset + width - 1] = 0x20;
 }
 
-function parseTarOctal(bytes: Uint8Array, offset: number, length: number): number {
+function parseTarOctal(bytes: Uint8Array, offset: number, length: number, field = 'numeric field'): number {
   let value = '';
+  let sawTerminator = false;
   for (let i = offset; i < offset + length; i++) {
     const byte = bytes[i]!;
-    if (byte === 0 || byte === 0x20) break;
+    if (byte === 0 || byte === 0x20) {
+      sawTerminator = true;
+      continue;
+    }
+    if (sawTerminator) {
+      throw new Error(`Invalid tar archive: ${field} contains data after terminator`);
+    }
+    if (byte < 0x30 || byte > 0x37) {
+      throw new Error(`Invalid tar archive: ${field} contains non-octal data`);
+    }
     value += String.fromCharCode(byte);
   }
-  const trimmed = value.trim();
-  return trimmed === '' ? 0 : parseInt(trimmed, 8);
+  if (value === '') return 0;
+  const parsed = parseInt(value, 8);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(`Invalid tar archive: ${field} contains an invalid octal value`);
+  }
+  return parsed;
 }
 
 function isZeroBlock(bytes: Uint8Array, offset: number): boolean {
@@ -1906,7 +1920,7 @@ function parseTar(bytes: Uint8Array): LoadedArchiveEntry[] {
   let offset = 0;
   while (offset + 512 <= bytes.byteLength) {
     if (isZeroBlock(bytes, offset)) break;
-    const storedChecksum = parseTarOctal(bytes, offset + 148, 8);
+    const storedChecksum = parseTarOctal(bytes, offset + 148, 8, 'checksum');
     let checksum = 0;
     for (let i = 0; i < 512; i++) {
       checksum += (i >= 148 && i < 156) ? 0x20 : bytes[offset + i]!;
@@ -1915,9 +1929,9 @@ function parseTar(bytes: Uint8Array): LoadedArchiveEntry[] {
       throw new Error('Invalid tar archive: header checksum mismatch');
     }
     const name = decodeUtf8(bytes.subarray(offset, offset + 100)).replace(/\0.*$/, '');
-    const mode = parseTarOctal(bytes, offset + 100, 8) || DEFAULT_MODE;
-    const size = parseTarOctal(bytes, offset + 124, 12);
-    const mtimeValue = parseTarOctal(bytes, offset + 136, 12);
+    const mode = parseTarOctal(bytes, offset + 100, 8, 'mode') || DEFAULT_MODE;
+    const size = parseTarOctal(bytes, offset + 124, 12, 'size');
+    const mtimeValue = parseTarOctal(bytes, offset + 136, 12, 'mtime');
     const typeFlag = bytes[offset + 156];
     if (typeFlag === 55 || typeFlag === 76 || typeFlag === 103 || typeFlag === 120) {
       throw new Error('Unsupported tar archive: long-name and PAX entries are not supported');
