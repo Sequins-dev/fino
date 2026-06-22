@@ -167,6 +167,14 @@ const H2_POST_ROOT_LOCALHOST_CL4 = hexBytes(
   0x5c, 0x01, 0x34,
 );
 
+// POST / with malformed content-length: "4x".
+const H2_POST_ROOT_LOCALHOST_CL4X = hexBytes(
+  0x83, 0x84, 0x86,
+  0x41, 0x09,
+  0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+  0x5c, 0x02, 0x34, 0x78,
+);
+
 /** Build a DATA frame for stream 1 with END_STREAM. */
 function dataFrame(body: Uint8Array): Uint8Array {
   const len = body.byteLength;
@@ -1257,6 +1265,86 @@ describe('H2 server — robustness', () => {
     const rst = findFrame(frames, 0x03, 1);
     t.ok(rst !== null, 'mismatched content-length gets RST_STREAM');
     t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs malformed content-length before handler dispatch', async (t) => {
+    if (!h2Available) return;
+
+    let dispatched = false;
+    const server = serveHttp({ port: 0 }, async () => {
+      dispatched = true;
+      return new Response('ok');
+    });
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST_CL4X),
+      ...dataFrameFor(1, _enc.encode('body'), 0x01),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'malformed content-length gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+    t.equal(dispatched, false, 'malformed content-length does not reach handler');
+  });
+
+  it('rejects handler body reads and sends no response for short content-length bodies', async (t) => {
+    if (!h2Available) return;
+
+    let bodyRejected = false;
+    const server = serveHttp({ port: 0 }, async (req) => {
+      try {
+        await req.text();
+      } catch {
+        bodyRejected = true;
+      }
+      return new Response('should-not-send');
+    });
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST_CL4),
+      ...dataFrameFor(1, _enc.encode('bad'), 0x01),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(bodyRejected, 'handler body read rejects');
+    t.ok(rst !== null, 'short body gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+    t.equal(findFrame(frames, 0x01, 1), null, 'server sends no response HEADERS');
+    t.equal(findFrame(frames, 0x00, 1), null, 'server sends no response DATA');
+  });
+
+  it('RST_STREAMs content-length overruns without delivering overrun bytes', async (t) => {
+    if (!h2Available) return;
+
+    let captured = '';
+    let bodyRejected = false;
+    const server = serveHttp({ port: 0 }, async (req) => {
+      const reader = req.body!.getReader();
+      try {
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          captured += _dec.decode(next.value);
+        }
+      } catch {
+        bodyRejected = true;
+      }
+      return new Response('should-not-send');
+    });
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST_CL4),
+      ...dataFrameFor(1, _enc.encode('1234'), 0x00),
+      ...dataFrameFor(1, _enc.encode('5'), 0x01),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.equal(captured, '1234', 'handler did not receive overrun bytes');
+    t.ok(bodyRejected, 'handler body read rejects on overrun');
+    t.ok(rst !== null, 'overrun gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+    t.equal(findFrame(frames, 0x01, 1), null, 'server sends no response HEADERS');
+    t.equal(findFrame(frames, 0x00, 1), null, 'server sends no response DATA');
   });
 
   it('server does not hang after client RST_STREAMs a pending request', async (t) => {

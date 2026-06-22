@@ -142,8 +142,8 @@
   {
     "id": "http2/8.1.2.6/Sends a HEADERS frame with the \"content-length\" header field which does not equal the DATA frame payload length",
     "reason": "mismatched content-length is RST_STREAMed with PROTOCOL_ERROR locally after body completion, but h2spec can still report the TLS suite case as failing",
-    "releaseAcceptableBecause": "The handler is not invoked for mismatched request bodies and local raw-wire coverage verifies deterministic stream reset.",
-    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs requests whose content-length does not match DATA length"
+    "releaseAcceptableBecause": "The server preserves progressive request-body processing allowed by RFC 9113, but malformed bodies deterministically error the request body, reset the stream with PROTOCOL_ERROR, and never produce a successful application response.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs malformed, short, and overlong content-length request bodies without response HEADERS/DATA"
   },
   {
     "id": "http2/8.2/Sends a PUSH_PROMISE frame",

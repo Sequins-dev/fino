@@ -29,7 +29,7 @@ prioritization. It does not include source fixes.
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gap WEB-003 |
-| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-003 to NET-004 |
+| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gap NET-003 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
@@ -73,21 +73,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P1
 - Follow-up: maintain a session map in H3 client/server drivers and demux
   unidirectional streams before nghttp3 processing.
-
-### NET-004: HTTP/2 content-length mismatch can reach handlers before rejection
-
-- Files: `js/internal/net/http/h2/server.mts`,
-  `tests/integration/h2spec-allowed-failures.json`
-- Spec target: RFC 9113/RFC 7540 request validity.
-- Expected behavior: mismatched `content-length` and DATA length should reject
-  without exposing a successful request body to application logic.
-- Current behavior: source inspection suggests the handler is invoked before EOF
-  validation; tests assert wire reset but not handler isolation. The h2spec
-  allowlist rationale says the handler is not invoked, which appears inconsistent.
-- Coverage gap: no regression test verifies handler non-invocation.
-- Priority: P2
-- Follow-up: decide whether early streaming is intentional; fix behavior or
-  update documentation and tests.
 
 ## Test Coverage Priorities
 

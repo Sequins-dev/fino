@@ -103,6 +103,7 @@ interface H2ServerStream {
   inTrailers: boolean;
   body: HttpBodyQueue;
   bodyDone: boolean;
+  expectedContentLength: number | null;
   dispatched: boolean;
   // Set to true when client RST_STREAMs the stream. dispatchStream checks
   // this after triggerDispatch resolves and returns early if true.
@@ -558,6 +559,20 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     return drainChain;
   }
 
+  function resetMalformedBody(stream: H2ServerStream, message: string): void {
+    stream.cancelled = true;
+    stream.body.error(new HttpStreamError('protocol', message, {
+      streamId: stream.streamId,
+      protocolCode: NGHTTP2_PROTOCOL_ERROR,
+    }));
+    if (stream.triggerDispatch) {
+      stream.triggerDispatch();
+      stream.triggerDispatch = null;
+    }
+    try { session.submitRstStream(stream.streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
+    void drainWrite();
+  }
+
   async function dispatchStream(stream: H2ServerStream): Promise<void> {
     const { streamId } = stream;
 
@@ -595,10 +610,6 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
 
     if (stream.cancelled) return;
 
-    // Validate content-length against actual body size once EOF arrives
-    // (RFC 7540 Section 8.1.2.6). The handler may already be streaming the
-    // body; this preserves early dispatch while still rejecting mismatches
-    // before response submission.
     try { await stream.body.closed; }
     catch {
       if (!stream.cancelled) {
@@ -606,21 +617,6 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         await drainWrite();
       }
       return;
-    }
-    const clHeader = stream.headers.get('content-length');
-    if (clHeader !== null) {
-      let clValue = -1;
-      try { clValue = _parseH2ContentLength(clHeader); }
-      catch {
-        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
-        await drainWrite();
-        return;
-      }
-      if (clValue !== stream.body.receivedBytes) {
-        try { session.submitRstStream(streamId, NGHTTP2_PROTOCOL_ERROR); } catch {}
-        await drainWrite();
-        return;
-      }
     }
 
     // Build and submit the response. If the stream was RST_STREAMed while the
@@ -720,6 +716,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         inTrailers: false,
         body: new HttpBodyQueue(),
         bodyDone: false,
+        expectedContentLength: null,
         dispatched: false,
         cancelled: false,
         triggerDispatch: null,
@@ -824,7 +821,22 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
           return;
         }
 
+        const clHeader = s.headers.get('content-length');
+        if (clHeader !== null) {
+          try {
+            s.expectedContentLength = _parseH2ContentLength(clHeader);
+          } catch {
+            resetMalformedBody(s, `H2 stream ${streamId} received invalid content-length`);
+            return;
+          }
+        }
+
         if (endStream) {
+          if (s.expectedContentLength !== null && s.body.receivedBytes !== s.expectedContentLength) {
+            s.bodyDone = true;
+            resetMalformedBody(s, `H2 stream ${streamId} content-length did not match DATA length`);
+            return;
+          }
           s.bodyDone = true;
           s.body.close();
           if (s.triggerDispatch) { s.triggerDispatch(); s.triggerDispatch = null; }
@@ -835,6 +847,11 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       }
 
       if (frameType === NGHTTP2_FRAME_TYPE_DATA && endStream) {
+        if (s.expectedContentLength !== null && s.body.receivedBytes !== s.expectedContentLength) {
+          s.bodyDone = true;
+          resetMalformedBody(s, `H2 stream ${streamId} content-length did not match DATA length`);
+          return;
+        }
         s.bodyDone = true;
         s.body.close();
         if (s.triggerDispatch) { s.triggerDispatch(); s.triggerDispatch = null; }
@@ -844,6 +861,20 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     onDataChunk(streamId: number, data: Uint8Array): void {
       const s = streams.get(streamId);
       if (!s || s.bodyDone) return;
+      if (s.expectedContentLength !== null) {
+        const remaining = s.expectedContentLength - s.body.receivedBytes;
+        if (data.byteLength > remaining) {
+          if (remaining > 0 && !s.body.push(data.subarray(0, remaining))) {
+            s.cancelled = true;
+            try { session.submitRstStream(streamId, NGHTTP2_INTERNAL_ERROR); } catch {}
+            void drainWrite();
+            return;
+          }
+          s.bodyDone = true;
+          resetMalformedBody(s, `H2 stream ${streamId} content-length exceeded DATA length`);
+          return;
+        }
+      }
       if (!s.body.push(data)) {
         s.cancelled = true;
         try { session.submitRstStream(streamId, NGHTTP2_INTERNAL_ERROR); } catch {}
@@ -1033,6 +1064,7 @@ function _buildStream1(req: Request): H2ServerStream {
     body,
     // RFC 7540 Section 3.2: the upgrade request MUST NOT include a request body.
     bodyDone: true,
+    expectedContentLength: null,
     dispatched: false,
     cancelled: false,
     triggerDispatch: null,
