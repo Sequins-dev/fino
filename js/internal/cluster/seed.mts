@@ -17,23 +17,22 @@
  *
  * ```ts no_run
  * import { SeedServer } from 'internal:cluster/seed';
- * import { WebSocketSeedTransport } from 'internal:cluster/websocket-transport';
+ * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
  *
- * const transport = new WebSocketSeedTransport('__seed__', 8787);
+ * const transport = new WebTransportSeedTransport('__seed__', 8787);
  * const seed = new SeedServer(transport);
  *
  * seed.start();
- * // Workers connect to ws://127.0.0.1:8787 and send HELLO.
+ * // Workers connect to https://127.0.0.1:8787/__fino_cluster and send HELLO.
  * seed.stop();
  * ```
  *
  * @internal
  */
 
-import type { ClusterTransport } from './transport.mts';
-import { type ClusterMessage, nodeIdFromId } from './protocol.mts';
+import type { ClusterSeedTransport } from './transport.mts';
+import { type ClusterMessage } from './protocol.mts';
 import { RealmRegistry } from './registry.mts';
-import { WebSocketSeedTransport } from './websocket-transport.mts';
 
 const HEARTBEAT_INTERVAL_MS = 2500;
 const HEARTBEAT_TIMEOUT_MS  = 7500; // 3x interval - tolerate one missed beat
@@ -42,13 +41,13 @@ const HEARTBEAT_TIMEOUT_MS  = 7500; // 3x interval - tolerate one missed beat
  * Cluster seed router for membership, spawn, and port-message routing.
  *
  * The server owns the authoritative registry of which node hosts each port. It
- * listens on a `WebSocketSeedTransport`, sends heartbeats checks every 2500 ms,
+ * listens on a `WebTransportSeedTransport`, sends heartbeats checks every 2500 ms,
  * and treats peers as down after 7500 ms without a heartbeat.
  *
  * ```ts no_run
- * import { WebSocketSeedTransport } from 'internal:cluster/websocket-transport';
+ * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
  * import { SeedServer } from 'internal:cluster/seed';
- * const seed = new SeedServer(new WebSocketSeedTransport('__seed__', 8787));
+ * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
  * seed.start();
  * ```
  *
@@ -76,7 +75,7 @@ export class SeedServer {
    *
    * @internal
    */
-  #transport: WebSocketSeedTransport;
+  #transport: ClusterSeedTransport;
   /**
    * Private property `#registry` used by `SeedServer`.
    *
@@ -217,18 +216,18 @@ export class SeedServer {
   #heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
-   * Create a seed server around an already-created WebSocket seed transport.
+   * Create a seed server around an already-created WebTransport seed transport.
    *
    * The constructor does not listen, register handlers, or start timers. Call
    * `start()` once to begin accepting workers.
    *
    * ```ts no_run
-   * import { WebSocketSeedTransport } from 'internal:cluster/websocket-transport';
+   * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
    * import { SeedServer } from 'internal:cluster/seed';
-   * const seed = new SeedServer(new WebSocketSeedTransport('__seed__', 8787));
+   * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
    * ```
    */
-  constructor(transport: WebSocketSeedTransport) {
+  constructor(transport: ClusterSeedTransport) {
     this.#transport = transport;
   }
 
@@ -240,15 +239,15 @@ export class SeedServer {
    * should pair a single `start()` with `stop()`.
    *
    * ```ts no_run
-   * import { WebSocketSeedTransport } from 'internal:cluster/websocket-transport';
+   * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
    * import { SeedServer } from 'internal:cluster/seed';
-   * const seed = new SeedServer(new WebSocketSeedTransport('__seed__', 8787));
+   * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
    * seed.start();
    * ```
    */
-  start(): void {
+  async start(): Promise<void> {
     this.#transport.on((from, msg) => this.#handle(from, msg));
-    this.#transport.listen();
+    await this.#transport.listen();
     this.#heartbeatTimer = setInterval(() => this.#checkHeartbeats(), HEARTBEAT_INTERVAL_MS);
   }
 
@@ -260,9 +259,9 @@ export class SeedServer {
    * `stop()` after the timer is already cleared is harmless.
    *
    * ```ts no_run
-   * import { WebSocketSeedTransport } from 'internal:cluster/websocket-transport';
+   * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
    * import { SeedServer } from 'internal:cluster/seed';
-   * const seed = new SeedServer(new WebSocketSeedTransport('__seed__', 8787));
+   * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
    * seed.stop();
    * ```
    */

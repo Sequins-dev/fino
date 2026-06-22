@@ -39,16 +39,16 @@ class TestSeedTransport {
   broadcast(msg: ClusterMessage): void { this.sent.push({ to: '__broadcast__', msg }); }
   broadcastExcept(except: string, msg: ClusterMessage): void { this.sent.push({ to: `except:${except}`, msg }); }
   on(handler: (from: string, msg: ClusterMessage) => void): void { this.#handlers.push(handler); }
-  listen(): void { this.listenCalled = true; }
+  async listen(): Promise<void> { this.listenCalled = true; }
   close(): void { this.#handlers = []; }
 }
 
 let _activeSeed: SeedServer | null = null;
 
-function makeSeed(nodeId = 'seed-node'): { seed: SeedServer; transport: TestSeedTransport } {
+async function makeSeed(nodeId = 'seed-node'): Promise<{ seed: SeedServer; transport: TestSeedTransport }> {
   const transport = new TestSeedTransport(nodeId);
   const seed = new SeedServer(transport as any);
-  seed.start();
+  await seed.start();
   _activeSeed = seed;
   return { seed, transport };
 }
@@ -65,13 +65,13 @@ function stopActiveSeed(): void {
 describe('SeedServer — HELLO / WELCOME', () => {
   afterEach(stopActiveSeed);
 
-  it('start() calls listen() on the transport', (t) => {
-    const { transport } = makeSeed();
+  it('start() calls listen() on the transport', async (t) => {
+    const { transport } = await makeSeed();
     t.ok(transport.listenCalled, 'listen() was called on start');
   });
 
-  it('HELLO from a new node triggers WELCOME sent back to that node', (t) => {
-    const { transport } = makeSeed();
+  it('HELLO from a new node triggers WELCOME sent back to that node', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 100 } });
     const welcomes = transport.sentOfType('WELCOME');
     t.equal(welcomes.length, 1, 'one WELCOME sent');
@@ -80,8 +80,8 @@ describe('SeedServer — HELLO / WELCOME', () => {
     t.ok(Array.isArray(w.peers), 'peers is array');
   });
 
-  it('second node gets PEER_UP for existing nodes in broadcast', (t) => {
-    const { transport } = makeSeed();
+  it('second node gets PEER_UP for existing nodes in broadcast', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.sent = []; // clear
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
@@ -93,8 +93,8 @@ describe('SeedServer — HELLO / WELCOME', () => {
 describe('SeedServer — SPAWN routing', () => {
   afterEach(stopActiveSeed);
 
-  it('SPAWN with no eligible peer → SPAWN_ACK { ok: false }', (t) => {
-    const { transport } = makeSeed();
+  it('SPAWN with no eligible peer → SPAWN_ACK { ok: false }', async (t) => {
+    const { transport } = await makeSeed();
     // Only one node — no other peers
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.sent = [];
@@ -110,8 +110,8 @@ describe('SeedServer — SPAWN routing', () => {
     t.ok(typeof acks[0]!.error === 'string', 'SPAWN_ACK error message set');
   });
 
-  it('SPAWN with two peers → forwarded to peer, SPAWN_ACK routed back to requester', (t) => {
-    const { transport } = makeSeed();
+  it('SPAWN with two peers → forwarded to peer, SPAWN_ACK routed back to requester', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.8, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.1, memory: 0 } });
     transport.sent = [];
@@ -143,8 +143,8 @@ describe('SeedServer — SPAWN routing', () => {
     t.ok((acks[0]!.msg as any).ok, 'ok=true preserved');
   });
 
-  it('reroutes later SPAWN requests after a lower-load peer goes down', (t) => {
-    const { transport } = makeSeed();
+  it('reroutes later SPAWN requests after a lower-load peer goes down', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.9, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.1, memory: 0 } });
     transport.inject('worker-3', { t: 'HELLO', nodeId: 'worker-3', load: { cpu: 0.2, memory: 0 } });
@@ -170,8 +170,8 @@ describe('SeedServer — SPAWN routing', () => {
     t.equal(transport.sent.find(s => s.msg.t === 'SPAWN')?.to, 'worker-3', 'next spawn skips down peer');
   });
 
-  it('rejects a pending SPAWN if the selected target goes down before SPAWN_ACK', (t) => {
-    const { transport } = makeSeed();
+  it('rejects a pending SPAWN if the selected target goes down before SPAWN_ACK', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.9, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.1, memory: 0 } });
     transport.sent = [];
@@ -198,8 +198,8 @@ describe('SeedServer — SPAWN routing', () => {
 describe('SeedServer — PORT_MSG routing', () => {
   afterEach(stopActiveSeed);
 
-  it('PORT_MSG is forwarded to the node hosting toPort', (t) => {
-    const { transport } = makeSeed();
+  it('PORT_MSG is forwarded to the node hosting toPort', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0.5, memory: 0 } });
 
@@ -224,8 +224,8 @@ describe('SeedServer — PORT_MSG routing', () => {
     t.equal(portMsgs[0]!.to, 'worker-1', 'PORT_MSG routed to worker-1');
   });
 
-  it('PORT_MSG to unknown port is silently dropped', (t) => {
-    const { transport } = makeSeed();
+  it('PORT_MSG to unknown port is silently dropped', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.sent = [];
     transport.inject('worker-1', {
@@ -239,8 +239,8 @@ describe('SeedServer — PORT_MSG routing', () => {
 describe('SeedServer — REALM_EXIT graceful cascade', () => {
   afterEach(stopActiveSeed);
 
-  it('REALM_EXIT sends TERMINATE to nodes hosting direct children', (t) => {
-    const { transport } = makeSeed();
+  it('REALM_EXIT sends TERMINATE to nodes hosting direct children', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
 
@@ -263,8 +263,8 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     t.equal(terminates.length, 0, 'no TERMINATE sent — exiting realm had no descendants');
   });
 
-  it('REALM_EXIT is forwarded to the parent host', (t) => {
-    const { transport } = makeSeed();
+  it('REALM_EXIT is forwarded to the parent host', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
 
@@ -284,8 +284,8 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     t.equal((exits[0]!.msg as { realmId: string }).realmId, 'worker-2/11', 'child realmId preserved');
   });
 
-  it('REALM_EXIT sends TERMINATE to nodes hosting grandchildren', (t) => {
-    const { transport } = makeSeed();
+  it('REALM_EXIT sends TERMINATE to nodes hosting grandchildren', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-3', { t: 'HELLO', nodeId: 'worker-3', load: { cpu: 0, memory: 0 } });
@@ -322,8 +322,8 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     t.ok(terminateIds.includes('worker-3/20'), 'grandchild portId in TERMINATE');
   });
 
-  it('exiting realm itself does NOT receive a redundant TERMINATE', (t) => {
-    const { transport } = makeSeed();
+  it('exiting realm itself does NOT receive a redundant TERMINATE', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
 
@@ -347,8 +347,8 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
     t.equal(toWorker2.length, 0, 'exiting realm does not receive TERMINATE for itself');
   });
 
-  it('multi-level exit: all descendants across 3 nodes get TERMINATE', (t) => {
-    const { transport } = makeSeed();
+  it('multi-level exit: all descendants across 3 nodes get TERMINATE', async (t) => {
+    const { transport } = await makeSeed();
     for (const w of ['worker-1', 'worker-2', 'worker-3', 'worker-4']) {
       transport.inject(w, { t: 'HELLO', nodeId: w, load: { cpu: 0, memory: 0 } });
     }
@@ -396,8 +396,8 @@ describe('SeedServer — REALM_EXIT graceful cascade', () => {
 describe('SeedServer — nodeDown cascade', () => {
   afterEach(stopActiveSeed);
 
-  it('PEER_DOWN sends TERMINATE for orphaned child ports to surviving parents', (t) => {
-    const { transport } = makeSeed();
+  it('PEER_DOWN sends TERMINATE for orphaned child ports to surviving parents', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
 
@@ -420,8 +420,8 @@ describe('SeedServer — nodeDown cascade', () => {
     t.ok(sentToWorker1.length > 0, 'TERMINATE sent to surviving worker-1');
   });
 
-  it('dead node does NOT receive TERMINATE for its own ports', (t) => {
-    const { transport } = makeSeed();
+  it('dead node does NOT receive TERMINATE for its own ports', async (t) => {
+    const { transport } = await makeSeed();
     transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
     transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: { cpu: 0, memory: 0 } });
 
@@ -442,8 +442,8 @@ describe('SeedServer — nodeDown cascade', () => {
     t.equal(toWorker2.length, 0, 'dead node does not receive TERMINATE');
   });
 
-  it('heartbeat timeout broadcasts PEER_DOWN and terminates dependent child ports', (t) => {
-    const { seed, transport } = makeSeed();
+  it('heartbeat timeout broadcasts PEER_DOWN and terminates dependent child ports', async (t) => {
+    const { seed, transport } = await makeSeed();
     const realNow = Date.now;
     let now = 1_000;
     Date.now = () => now;

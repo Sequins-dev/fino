@@ -222,7 +222,7 @@ export type ClusterMessage =
  *
  * This function intentionally performs no additional validation; callers that
  * need wire validation should round-trip through `decode()`. The return value
- * is a UTF-16 JavaScript string suitable for WebSocket text frames.
+ * is a UTF-16 JavaScript string suitable for WebTransport JSON frames.
  *
  * ```ts
  * import { encode } from 'internal:cluster/protocol';

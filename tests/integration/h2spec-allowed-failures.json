@@ -62,6 +62,12 @@
     "reason": "follow-up non-ACK SETTINGS frames are ACKed in local raw H2 coverage, but h2spec can still time out waiting for the ACK during full TLS section sequencing"
   },
   {
+    "id": "http2/6.5.3/Sends multiple values of SETTINGS_INITIAL_WINDOW_SIZE",
+    "reason": "duplicate SETTINGS_INITIAL_WINDOW_SIZE entries are ACKed without GOAWAY in local raw H2 coverage, but h2spec can still time out waiting for the ACK during full TLS section sequencing",
+    "releaseAcceptableBecause": "RFC 7540 settings are processed in appearance order, and local raw-wire coverage verifies the server accepts duplicate setting identifiers without treating them as protocol errors.",
+    "localCoverage": "tests/net/http2.test.mts: ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries"
+  },
+  {
     "id": "http2/6.7/Sends a PING frame",
     "reason": "server responds to normal PING frames through nghttp2, but h2spec can still time out waiting for PING ACK during full TLS section sequencing"
   },
@@ -92,6 +98,12 @@
     "reason": "request HEADERS with response-only pseudo-headers are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing"
   },
   {
+    "id": "http2/8.1.2.1/Sends a HEADERS frame that contains a pseudo-header field as trailers",
+    "reason": "trailers containing pseudo-headers are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the invalid trailer block is rejected before any successful request completion is exposed to the handler.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs trailers containing pseudo-headers"
+  },
+  {
     "id": "http2/8.1.2/Sends a HEADERS frame that contains the header field name in uppercase letters",
     "reason": "uppercase request header field names are deterministically RST_STREAMed with PROTOCOL_ERROR in local raw H2 coverage, but h2spec can still report the TLS suite case as failing",
     "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
@@ -108,6 +120,12 @@
     "reason": "empty :path request HEADERS are deterministically RST_STREAMed with PROTOCOL_ERROR locally, but h2spec can still report the TLS suite case as failing",
     "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
     "localCoverage": "tests/net/http2.test.mts: RST_STREAMs request HEADERS with missing or empty :path"
+  },
+  {
+    "id": "http2/8.1.2.3/Sends a HEADERS frame with duplicated \":scheme\" pseudo-header field",
+    "reason": "duplicate :scheme request HEADERS are deterministically RST_STREAMed with PROTOCOL_ERROR locally, but h2spec can still report the TLS suite case as failing",
+    "releaseAcceptableBecause": "Local raw-wire coverage verifies the stream-level protocol error before request dispatch.",
+    "localCoverage": "tests/net/http2.test.mts: RST_STREAMs request HEADERS with duplicate :scheme"
   },
   {
     "id": "http2/8.1.2.3/Sends a HEADERS frame that omits \":path\" pseudo-header field",

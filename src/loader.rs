@@ -305,8 +305,12 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:cluster/protocol", "internal/cluster/protocol"),
     source_builtin!("internal:cluster/transport", "internal/cluster/transport"),
     source_builtin!(
-        "internal:cluster/websocket-transport",
-        "internal/cluster/websocket-transport"
+        "internal:cluster/webtransport-framing",
+        "internal/cluster/webtransport-framing"
+    ),
+    source_builtin!(
+        "internal:cluster/webtransport-transport",
+        "internal/cluster/webtransport-transport"
     ),
     source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),

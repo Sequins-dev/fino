@@ -19,6 +19,7 @@ import { h3Available } from './bindings.mts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import { WebTransport } from '../../../../net/http/webtransport.mts';
+import { decodeWebTransportStreamPrefix } from './webtransport.mts';
 
 export type H3Handler = (request: Request) => Response | Promise<Response>;
 export type H3WebTransportHandler = (
@@ -68,6 +69,7 @@ export class H3ServerDriver {
     if (!h3Available) throw new Error('libnghttp3 is not available');
 
     const streams = new Map<bigint, H3ServerStream>();
+    const webTransports = new Map<bigint, WebTransport>();
     const inFlight = new Set<Promise<void>>();
     let session: Nghttp3Session;
 
@@ -207,6 +209,8 @@ export class H3ServerDriver {
             result = new Response('Internal Server Error', { status: 500 });
           }
           if (result instanceof WebTransport) {
+            webTransports.set(st.streamId, result);
+            result.closed.finally(() => webTransports.delete(st.streamId)).catch(() => {});
             session.submitResponse(st.streamId, [[':status', '200']], keepConnectOpenBody());
             await session.drainWrites();
             return;
@@ -310,14 +314,29 @@ export class H3ServerDriver {
       const stream = (event as QuicStreamEvent).stream;
       const sid = BigInt(stream.id);
 
-      // Only bidirectional streams can be written to; unidirectional (control, QPACK) are receive-only.
-      if (stream.direction === 'bidirectional') {
-        session.addQuicStream(sid, stream.writer);
-      }
-
-      // Read loop — serialized through the session mutex.
       void (async () => {
+        let first: Uint8Array | null = null;
         try {
+          const firstRead = await stream.reader.read() as Uint8Array | null;
+          if (firstRead === null) {
+            await session.readStream(sid, new Uint8Array(0), true);
+            return;
+          }
+          first = firstRead;
+
+          if (stream.direction === 'bidirectional') {
+            try {
+              const prefix = decodeWebTransportStreamPrefix(first);
+              const wt = webTransports.get(prefix.sessionId);
+              if (wt !== undefined) {
+                (wt as any)._acceptIncomingQuicStream(stream, first);
+                return;
+              }
+            } catch { /* not a WebTransport data stream */ }
+            session.addQuicStream(sid, stream.writer);
+          }
+
+          await session.readStream(sid, first, false);
           while (true) {
             const bytes = await stream.reader.read() as Uint8Array | null;
             const fin   = bytes === null;

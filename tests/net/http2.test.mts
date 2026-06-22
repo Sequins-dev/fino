@@ -1010,6 +1010,22 @@ describe('H2 server — robustness', () => {
     t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
   });
 
+  it('ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x04, 0x00, 0, hexBytes(
+      0x00, 0x04, 0x00, 0x01, 0x00, 0x00,
+      0x00, 0x04, 0x00, 0x00, 0xff, 0xff,
+    )));
+    await server.close();
+
+    const settingsAcks = frames.filter(f => f.type === 0x04 && f.flags === 0x01 && f.length === 0);
+    const goaway = findFrame(frames, 0x07);
+    t.ok(settingsAcks.length >= 2, `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`);
+    if (goaway) t.equal(frameErrorCode(goaway), 0x00, 'duplicate SETTINGS entries do not trigger an error GOAWAY');
+  });
+
   it('sends GOAWAY for SETTINGS ACK frames with payload', async (t) => {
     if (!h2Available) return;
 
@@ -1112,6 +1128,43 @@ describe('H2 server — robustness', () => {
 
     const rst = findFrame(frames, 0x03, 1);
     t.ok(rst !== null, 'pseudo-header after regular header gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs request HEADERS with duplicate :scheme', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const duplicateSchemeBlock = hexBytes(
+      0x82, 0x84, 0x86, // :method GET, :path /, :scheme http
+      0x86,             // duplicate :scheme http
+      0x41, 0x09,
+      0x6c,0x6f,0x63,0x61,0x6c,0x68,0x6f,0x73,0x74,
+    );
+    const frames = await rawH2Exchange(server.port, frame(0x01, 0x05, 1, duplicateSchemeBlock));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'duplicate :scheme gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs trailers containing pseudo-headers', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const trailersWithPseudoBlock = hexBytes(
+      0x84, // :path / is invalid in trailers
+    );
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_POST_ROOT_LOCALHOST,
+      ...dataFrameFor(1, _enc.encode('body'), 0x00),
+      ...frame(0x01, 0x05, 1, trailersWithPseudoBlock),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'pseudo-header in trailers gets RST_STREAM');
     t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
   });
 

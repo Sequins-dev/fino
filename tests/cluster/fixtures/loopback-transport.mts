@@ -4,7 +4,7 @@
  * LoopbackTransport pairs two transport instances so that messages sent
  * on one are delivered to the other synchronously (via a queued task),
  * with no real network or file descriptors. This lets cluster tests run
- * fully in-process without spawning OS processes or WebSocket servers.
+ * fully in-process without spawning OS processes or WebTransport servers.
  *
  * Usage:
  *   const [a, b] = LoopbackTransport.pair('nodeA', 'nodeB');

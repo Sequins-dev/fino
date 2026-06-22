@@ -1,8 +1,7 @@
 /**
  * internal:cluster/transport - ClusterTransport interface.
  *
- * All cluster logic depends only on this interface. Switching from WebSocket
- * to QUIC (or any other transport) requires only a new implementation, not
+ * All cluster logic depends only on this interface. Switching transport implementations (or any other transport) requires only a new implementation, not
  * changes to the protocol or routing layers.
  *
  * ## Example
@@ -33,7 +32,7 @@ import type { ClusterMessage } from './protocol.mts';
 /**
  * Minimal transport contract used by the cluster client and seed router.
  *
- * Implementations may route over WebSocket, QUIC, in-memory channels, or a
+ * Implementations may route over WebTransport, QUIC, in-memory channels, or a
  * future provider. The transport owns connection state and emits decoded
  * `ClusterMessage` values; higher layers own membership, spawn, and port
  * routing semantics.
@@ -71,7 +70,7 @@ export interface ClusterTransport {
    * On seed nodes this routes directly to the peer's connection.
    * On worker nodes this sends through the seed which routes it onward.
    *
-   * Missing or closed peers are transport-defined; WebSocket transports drop the
+   * Missing or closed peers are transport-defined; WebTransport transports drop the
    * send silently because connection-close handling emits `PEER_DOWN`
    * separately.
    *
@@ -80,14 +79,14 @@ export interface ClusterTransport {
    * transport.send('seed', { t: 'HEARTBEAT', ts: Date.now() });
    * ```
    */
-  send(to: string, msg: ClusterMessage): void;
+  send(to: string, msg: ClusterMessage): void | Promise<void>;
 
   /**
    * Broadcast a message to all connected peers.
    * Seed-only: throws if called on a worker transport.
    *
    * Implementations should not deliver the message back to themselves unless
-   * explicitly documented. WebSocket worker transport throws because workers
+   * explicitly documented. WebTransport worker transport throws because workers
    * have a single upstream seed connection.
    *
    * ```ts
@@ -125,4 +124,10 @@ export interface ClusterTransport {
    * ```
    */
   close(): void;
+}
+
+/** Seed-side extension used by the cluster router. */
+export interface ClusterSeedTransport extends ClusterTransport {
+  listen(): Promise<void>;
+  broadcastExcept(exceptNodeId: string, msg: ClusterMessage): void;
 }

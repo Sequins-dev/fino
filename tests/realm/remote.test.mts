@@ -13,6 +13,8 @@ import {
 } from 'fino:realm';
 import { startCluster, leaveCluster } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
+import { quicAvailable } from 'fino:net/quic';
+import { h3Available } from 'internal:net/http/h3/bindings';
 
 import type echoFn from './fixtures/echo-fn.mts';
 import type errorFn from './fixtures/error-fn.mts';
@@ -21,6 +23,10 @@ import type facadeSinkFn from './fixtures/facade-sink-fn.mts';
 import type facadeStreamFn from './fixtures/facade-stream-fn.mts';
 
 const root = `${cwd()}/tests/realm/fixtures`;
+const clusterTls = {
+  cert: `${cwd()}/tests/net/fixtures/test.crt`,
+  key: `${cwd()}/tests/net/fixtures/test.key`,
+};
 
 function fixture(name: string): string {
   return `file://${root}/${name}`;
@@ -50,7 +56,7 @@ async function readLine(proc: Process): Promise<string> {
 }
 
 async function waitForWorker(port: number): Promise<Process> {
-  const proc = new Process(execPath, ['tests/cluster/fixtures/worker-process.mts', String(port)]);
+  const proc = new Process(execPath, ['tests/cluster/fixtures/worker-process.mts', `https://127.0.0.1:${port}/__fino_cluster`]);
   try {
     const line = await withTimeout(readLine(proc), 2_000, 'worker readiness');
     if (line !== 'worker ready') throw new Error(`unexpected worker readiness line: ${line}`);
@@ -69,9 +75,10 @@ async function stopWorker(proc: Process): Promise<void> {
   }
 }
 
-async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T> {
+async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  if (!quicAvailable || !h3Available) return undefined;
   const port = randomPort();
-  await withTimeout(startCluster({ port, nodeId: `realm-remote-seed-${port}` }), 2_000, 'startCluster');
+  await withTimeout(startCluster({ port, nodeId: `realm-remote-seed-${port}`, tls: clusterTls }), 2_000, 'startCluster');
   let worker: Process | null = null;
   try {
     worker = await waitForWorker(port);

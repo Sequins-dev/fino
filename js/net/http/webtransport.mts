@@ -249,6 +249,11 @@ export class WebTransport {
     return transport;
   }
 
+  /** @internal */
+  _acceptIncomingQuicStream(stream: any, firstChunk: Uint8Array): void {
+    void this.#routeIncomingStream(stream, firstChunk);
+  }
+
   get url(): string { return this.#url; }
   get ready(): Promise<void> { return this.#ready.promise; }
   get closed(): Promise<WebTransportCloseInfo> { return this.#closed.promise; }
@@ -419,8 +424,8 @@ export class WebTransport {
     throw new Error('WebTransport serverCertificateHashes validation failed: no certificate hash matched');
   }
 
-  async #routeIncomingStream(stream: any): Promise<void> {
-    const first = await stream.reader.read();
+  async #routeIncomingStream(stream: any, firstChunk?: Uint8Array): Promise<void> {
+    const first = firstChunk ?? await stream.reader.read();
     if (!(first instanceof Uint8Array) || this.#sessionStreamId === null) return;
     let decoded;
     try {

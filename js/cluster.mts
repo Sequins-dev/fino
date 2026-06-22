@@ -1,8 +1,8 @@
 /**
  * fino:cluster - public API for cluster participation.
  *
- * Cluster transport currently uses WebSocket:
- * https://www.rfc-editor.org/rfc/rfc6455
+ * Cluster transport uses WebTransport over HTTP/3:
+ * https://www.w3.org/TR/webtransport/
  *
  * A node joins the cluster in one of two roles:
  *
@@ -20,27 +20,32 @@
  * Only one cluster connection per process is supported. Calling either
  * function when already connected throws.
  *
- * Current release scope uses the WebSocket transport with one trusted seed
- * node. Seed election and cluster authentication are not implemented in this
- * release. Direct peer-to-peer `PORT_MSG` delivery and QUIC transport remain
- * deferred; control-plane and data-plane messages continue to route through
- * the seed-backed WebSocket cluster.
+ * Current release scope uses one trusted seed node. Seed election and cluster
+ * authentication are not implemented in this release. Direct peer-to-peer
+ * `PORT_MSG` delivery remains deferred; control-plane and data-plane messages
+ * route through the seed-backed WebTransport cluster.
  *
  * @example
  * ```ts no_run
  * import { startCluster, leaveCluster } from 'fino:cluster';
  * import { Realm } from 'fino:realm';
  *
- * await startCluster({ port: 9999, nodeId: 'seed-a' });
+ * await startCluster({ port: 9999, nodeId: 'seed-a', tls: { cert: './cert.pem', key: './key.pem' } });
  * const realm = new Realm({ entry: './worker.mts', remote: true });
  * await realm.call('healthcheck');
  * leaveCluster();
  * ```
  */
 
-import { WebSocketSeedTransport, WebSocketWorkerTransport } from 'internal:cluster/websocket-transport';
+import {
+  DEFAULT_CLUSTER_PATH,
+  WebTransportSeedTransport,
+  WebTransportWorkerTransport,
+  type WebTransportWorkerConnectOptions,
+} from 'internal:cluster/webtransport-transport';
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
+import type { WebTransportHash } from 'fino:net/http/webtransport';
 
 // Internal support export for fino:realm. Application code should use
 // startCluster(), joinCluster(), leaveCluster(), and Realm({ remote: true }).
@@ -69,7 +74,7 @@ let _seed:   SeedServer    | null = null;
  */
 export interface StartClusterOptions {
   /**
-   * TCP port the seed WebSocket server will listen on.
+   * TCP/UDP port the seed HTTP/3 WebTransport server will listen on.
    *
    * The port must be available on the local host. There is no default because
    * the first cluster node must advertise a stable address to workers.
@@ -77,10 +82,11 @@ export interface StartClusterOptions {
    * ```ts no_run
    * import { startCluster } from 'fino:cluster';
    *
-   * await startCluster({ port: 9999 });
+   * await startCluster({ port: 9999, tls: { cert: './cert.pem', key: './key.pem' } });
    * ```
    */
   port: number;
+  hostname?: string;
   /**
    * Optional node identifier.
    *
@@ -94,6 +100,12 @@ export interface StartClusterOptions {
    * ```
    */
   nodeId?: string;
+  tls: {
+    cert: string;
+    key: string;
+  };
+  path?: string;
+  h3?: true | { quic?: Record<string, unknown> };
 }
 
 /**
@@ -102,24 +114,24 @@ export interface StartClusterOptions {
  * ```ts no_run
  * import { joinCluster, type JoinClusterOptions } from 'fino:cluster';
  *
- * const opts: JoinClusterOptions = { seed: 'ws://127.0.0.1:9999' };
+ * const opts: JoinClusterOptions = { seed: 'https://127.0.0.1:9999/__fino_cluster' };
  * await joinCluster(opts);
  * ```
  */
 export interface JoinClusterOptions {
   /**
-   * WebSocket URL of the seed node.
+   * HTTPS WebTransport URL of the seed node.
    *
-   * The URL must include the `ws://` scheme and a reachable host and port. The
-   * call fails if the connection cannot be established.
+   * The URL must include the `https://` scheme and a reachable host and port.
+   * When the path is omitted, `/__fino_cluster` is used.
    *
    * ```ts no_run
    * import { joinCluster } from 'fino:cluster';
    *
-   * await joinCluster({ seed: 'ws://seed.example.test:9999' });
+   * await joinCluster({ seed: 'https://seed.example.test:9999/__fino_cluster' });
    * ```
    */
-  seed: string;
+  seed: string | URL;
   /**
    * Optional worker node identifier.
    *
@@ -129,10 +141,16 @@ export interface JoinClusterOptions {
    * ```ts no_run
    * import { joinCluster } from 'fino:cluster';
    *
-   * await joinCluster({ seed: 'ws://127.0.0.1:9999', nodeId: 'worker-a' });
+   * await joinCluster({ seed: 'https://127.0.0.1:9999/__fino_cluster', nodeId: 'worker-a' });
    * ```
    */
   nodeId?: string;
+  tls?: {
+    ca?: string;
+    rejectUnauthorized?: boolean;
+  };
+  quic?: Record<string, unknown>;
+  serverCertificateHashes?: readonly WebTransportHash[];
 }
 
 /**
@@ -162,13 +180,22 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   }
 
   const nodeId = opts.nodeId ?? `seed-${opts.port}`;
-  const seedTransport = new WebSocketSeedTransport(nodeId, opts.port);
+  const path = opts.path ?? DEFAULT_CLUSTER_PATH;
+  const seedTransport = new WebTransportSeedTransport(nodeId, {
+    port: opts.port,
+    hostname: opts.hostname,
+    tls: opts.tls,
+    path,
+    h3: opts.h3 ?? true,
+  });
   _seed = new SeedServer(seedTransport);
-  _seed.start();
+  await _seed.start();
 
   // Also join as a worker (connect to self) - seeds participate as workers.
-  const workerTransport = new WebSocketWorkerTransport(nodeId);
-  await workerTransport.connect(`ws://127.0.0.1:${opts.port}`);
+  const workerTransport = new WebTransportWorkerTransport(nodeId);
+  await workerTransport.connect(`https://127.0.0.1:${opts.port}${path}`, { cpu: 0, memory: 0 }, {
+    tls: { rejectUnauthorized: false },
+  });
   _client = new ClusterClient(workerTransport, nodeId);
   _client.start();
 }
@@ -186,7 +213,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
  * ```ts no_run
  * import { joinCluster, leaveCluster } from 'fino:cluster';
  *
- * await joinCluster({ seed: 'ws://127.0.0.1:9999', nodeId: 'worker-a' });
+ * await joinCluster({ seed: 'https://127.0.0.1:9999/__fino_cluster', nodeId: 'worker-a' });
  * leaveCluster();
  * ```
  */
@@ -196,10 +223,23 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
   }
 
   const nodeId = opts.nodeId ?? `worker-${Math.random().toString(36).slice(2, 9)}`;
-  const transport = new WebSocketWorkerTransport(nodeId);
-  await transport.connect(opts.seed);
+  const seed = normalizeClusterSeed(opts.seed);
+  const transport = new WebTransportWorkerTransport(nodeId);
+  const connectOptions: WebTransportWorkerConnectOptions = {
+    tls: opts.tls,
+    quic: opts.quic,
+    serverCertificateHashes: opts.serverCertificateHashes,
+  };
+  await transport.connect(seed, { cpu: 0, memory: 0 }, connectOptions);
   _client = new ClusterClient(transport, nodeId);
   _client.start();
+}
+
+function normalizeClusterSeed(seed: string | URL): URL {
+  const url = new URL(String(seed));
+  if (url.protocol !== 'https:') throw new TypeError('WebTransport cluster seeds must use https: URLs');
+  if (url.pathname === '/') url.pathname = DEFAULT_CLUSTER_PATH;
+  return url;
 }
 
 /**

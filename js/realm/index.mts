@@ -9,7 +9,7 @@
  * `process`, and `remote` modes. Thread and process realms provide lifecycle,
  * messaging, `run()`, `call()`, facade, and import-rule behavior with transport
  * parity where the underlying serializers allow it. Remote realms run over the
- * current trusted `fino:cluster` WebSocket transport and require an active
+ * current trusted `fino:cluster` WebTransport transport and require an active
  * cluster before construction. Cluster authentication, hostile-peer handling,
  * and remote `watch` / `repl` modes are outside this baseline.
  *
@@ -1724,7 +1724,7 @@ export interface RealmOptions {
   /**
    * If true, spawn the child Realm on a remote cluster node. Requires a
    * prior call to `startCluster()` or `joinCluster()` from `fino:cluster`.
-   * Messaging uses the cluster PORT_MSG protocol over WebSocket.
+   * Messaging uses the cluster PORT_MSG protocol over WebTransport.
    * Mutually exclusive with `thread` and `process`.
    *
    * ```ts no_run
@@ -2715,6 +2715,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       const cluster = getCluster()!;
       base = (this.#spawnPromise ?? Promise.resolve('')).then(
         (childPortId: string) => new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
+          let settled = false;
           const entry: ActiveChild = {
             handle: -1,
             kind: 'remote',
@@ -2724,15 +2725,23 @@ export class Realm<F extends RealmFn = RealmFn> {
           };
           _activeChildren.push(entry);
           cluster.onRealmExit(childPortId, (error?: string) => {
-            const idx = _activeChildren.indexOf(entry);
-            if (idx >= 0) _activeChildren.splice(idx, 1);
-            if (error) reject(new Error(error));
-            else reject(new Error('Realm exited before returning a call result'));
+            setTimeout(() => {
+              if (settled) return;
+              settled = true;
+              const idx = _activeChildren.indexOf(entry);
+              if (idx >= 0) _activeChildren.splice(idx, 1);
+              if (error) reject(new Error(error));
+              else reject(new Error('Realm exited before returning a call result'));
+            }, 25);
           });
           const handler = (ev: unknown) => {
+            if (settled) return;
+            settled = true;
             const data = (ev as { data?: unknown }).data;
             clusterPort.removeEventListener('message', handler as any);
             clusterPort.close();
+            const idx = _activeChildren.indexOf(entry);
+            if (idx >= 0) _activeChildren.splice(idx, 1);
             _resolveCallResponse(data, resolve, reject);
           };
           clusterPort.addEventListener('message', handler as any);

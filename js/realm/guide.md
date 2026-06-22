@@ -185,7 +185,7 @@ errors, call errors, and `terminate()` follow the same parent-facing contracts
 as thread and process realms.
 
 Remote realms isolate execution in another process and usually another host,
-but they use the current WebSocket cluster transport and single-seed control
+but they use the current WebTransport cluster transport and single-seed control
 plane. They are not a security boundary by themselves: use import rules,
 facades, network placement, and future cluster authentication together for
 untrusted workloads. `watch: true` and `repl: true` are intentionally unsupported

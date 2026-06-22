@@ -88,6 +88,8 @@ interface RealmRelay {
   threadHandle: number;
   wakeReadFd: number;
   closed: boolean;
+  pendingSends: Promise<void>[];
+  lastCallError?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +106,8 @@ interface RealmRelay {
  *
  * ```ts no_run
  * import { ClusterClient } from 'internal:cluster/client';
- * import { WebSocketWorkerTransport } from 'internal:cluster/websocket-transport';
- * const transport = new WebSocketWorkerTransport('worker-1');
+ * import { WebTransportWorkerTransport } from 'internal:cluster/webtransport-transport';
+ * const transport = new WebTransportWorkerTransport('worker-1');
  * const client = new ClusterClient(transport, 'worker-1');
  * client.start();
  * ```
@@ -675,6 +677,7 @@ export class ClusterClient {
       threadHandle: handle,
       wakeReadFd,
       closed: false,
+      pendingSends: [],
     };
     this.#relays.set(childPortId, relay);
 
@@ -725,8 +728,15 @@ export class ClusterClient {
       this.#relays.delete(relay.childPortId);
       const msg: ClusterMessage = stepError !== undefined
         ? { t: 'REALM_EXIT', realmId: relay.childPortId, error: stepError }
+        : relay.lastCallError !== undefined
+          ? { t: 'REALM_EXIT', realmId: relay.childPortId, error: relay.lastCallError }
         : { t: 'REALM_EXIT', realmId: relay.childPortId };
-      this.#transport.send('__seed__', msg);
+      const pending = relay.pendingSends.splice(0);
+      Promise.allSettled(pending).then(() => {
+        this.#transport.send('__seed__', msg);
+      }).catch(() => {
+        this.#transport.send('__seed__', msg);
+      });
     };
 
     // Drive the child realm on every event-loop tick so that timers, microtasks,
@@ -796,18 +806,22 @@ export class ClusterClient {
         try {
           const peeked = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
           isTerminate = peeked !== null && typeof peeked === 'object' && (peeked as any).__terminate === true;
+          if (peeked !== null && typeof peeked === 'object' && (peeked as any).__call_error === true) {
+            relay.lastCallError = String((peeked as { message?: unknown }).message ?? 'Realm call failed');
+          }
         } catch { /* not a terminate signal - forward as normal */ }
 
         if (isTerminate) { finalize(); return; }
 
         // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
         const payload = encodePayload(parts);
-        this.#transport.send('__seed__', {
+        const sent = this.#transport.send('__seed__', {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
           payload,
         });
+        if (sent instanceof Promise) relay.pendingSends.push(sent);
       } catch (err: unknown) {
         console.error(`fino:cluster relay drain error: ${err}`);
       }
