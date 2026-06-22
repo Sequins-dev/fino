@@ -317,3 +317,52 @@ export function decodeWebTransportStreamPrefix(bytes: Uint8Array): {
     headerLength: session.nextOffset,
   };
 }
+
+/**
+ * Decode a WebTransport stream header when the QUIC read may not contain the
+ * full prefix yet.
+ */
+export function inspectWebTransportStreamPrefix(bytes: Uint8Array): {
+  state: 'complete';
+  kind: WebTransportStreamKind;
+  sessionId: bigint;
+  headerLength: number;
+} | {
+  state: 'incomplete';
+} | {
+  state: 'not-webtransport';
+} {
+  let type;
+  try {
+    type = decodeQuicVarint(bytes);
+  } catch (error) {
+    if (error instanceof RangeError && /truncated|out of bounds/.test(error.message)) {
+      return { state: 'incomplete' };
+    }
+    return { state: 'not-webtransport' };
+  }
+
+  let kind: WebTransportStreamKind;
+  if (type.value === BigInt(WEBTRANSPORT_BIDI_STREAM_TYPE)) {
+    kind = 'bidirectional';
+  } else if (type.value === BigInt(WEBTRANSPORT_UNI_STREAM_TYPE)) {
+    kind = 'unidirectional';
+  } else {
+    return { state: 'not-webtransport' };
+  }
+
+  try {
+    const session = decodeQuicVarint(bytes, type.nextOffset);
+    return {
+      state: 'complete',
+      kind,
+      sessionId: session.value << 2n,
+      headerLength: session.nextOffset,
+    };
+  } catch (error) {
+    if (error instanceof RangeError && /truncated|out of bounds/.test(error.message)) {
+      return { state: 'incomplete' };
+    }
+    return { state: 'not-webtransport' };
+  }
+}

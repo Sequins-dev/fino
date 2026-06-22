@@ -56,14 +56,82 @@ async function readPemCertificateDer(path: string): Promise<Uint8Array> {
 
 function h3Pipe(): QuicPipe {
   return new QuicPipe({
-    server: { alpnProtocols: ['h3'], connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 } },
-    client: { alpnProtocols: ['h3'], connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0 } },
+    server: { alpnProtocols: ['h3'], connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0, initialMaxStreamsUni: 16 } },
+    client: { alpnProtocols: ['h3'], connection: { maxIdleTimeoutMs: 0, streamIdleTimeoutMs: 0, initialMaxStreamsUni: 16 } },
   });
 }
 
 async function h3Handshake(pipe: QuicPipe) {
   const { client, server } = await pipe.handshake();
   return { client, server };
+}
+
+async function h3WebTransportPair(pipe: QuicPipe): Promise<{
+  client: QuicConnection;
+  server: QuicConnection;
+  serverRun: Promise<void>;
+  clientSession: H3ClientSession;
+  clientTransport: WebTransport;
+  serverTransport: WebTransport;
+}> {
+  let resolveAccepted!: (wt: WebTransport) => void;
+  const acceptedPromise = new Promise<WebTransport>((resolve) => { resolveAccepted = resolve; });
+  const { client, server } = await h3Handshake(pipe);
+  const driver = new H3ServerDriver();
+  const serverRun = driver.run(server, () => new Response('unexpected'), {
+    onWebTransport(_request, session) {
+      resolveAccepted(session);
+      return session;
+    },
+  });
+  const clientSession = await H3ClientSession.create(client);
+  const clientTransport = await pipe.pumpUntil(clientSession.webtransport('https://example.test/wt'));
+  const serverTransport = await pipe.pumpUntil(acceptedPromise);
+  await clientTransport.ready;
+  await serverTransport.ready;
+  return { client, server, serverRun, clientSession, clientTransport, serverTransport };
+}
+
+async function readIncomingUnidirectionalBytes(
+  pipe: QuicPipe,
+  transport: WebTransport,
+): Promise<Uint8Array> {
+  const incoming = transport.incomingUnidirectionalStreams.getReader();
+  try {
+    const next = await pipe.pumpUntil(incoming.read());
+    if (next.done || next.value === undefined) throw new Error('WebTransport unidirectional stream was not delivered');
+    const reader = next.value.getReader();
+    try {
+      const bytes = await pipe.pumpUntil(reader.read());
+      if (bytes.done || bytes.value === undefined) throw new Error('WebTransport unidirectional stream had no payload');
+      return bytes.value;
+    } finally {
+      reader.releaseLock();
+    }
+  } finally {
+    incoming.releaseLock();
+  }
+}
+
+async function readIncomingBidirectionalBytes(
+  pipe: QuicPipe,
+  transport: WebTransport,
+): Promise<Uint8Array> {
+  const incoming = transport.incomingBidirectionalStreams.getReader();
+  try {
+    const next = await pipe.pumpUntil(incoming.read());
+    if (next.done || next.value === undefined) throw new Error('WebTransport bidirectional stream was not delivered');
+    const reader = next.value.readable.getReader();
+    try {
+      const bytes = await pipe.pumpUntil(reader.read());
+      if (bytes.done || bytes.value === undefined) throw new Error('WebTransport bidirectional stream had no payload');
+      return bytes.value;
+    } finally {
+      reader.releaseLock();
+    }
+  } finally {
+    incoming.releaseLock();
+  }
 }
 
 async function rawH3RequestStatus(
@@ -408,6 +476,91 @@ describe('HTTP/3 (h3 ALPN)', () => {
       receivedReader.releaseLock();
       t.equal(next.done, false);
       t.deepEqual([...(next.value ?? new Uint8Array())], [0x45], 'server receives WT datagram for accepted session');
+
+      client.destroy();
+      server.destroy();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('routes client-created WebTransport unidirectional streams to the server session', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const prefix = encodeWebTransportStreamPrefix('unidirectional', 0n);
+      const stream = await pipe.pumpUntil(client.openUnidirectionalStream()) as QuicStream;
+      await stream.writer.write(prefix.subarray(0, 1));
+      await stream.writer.write(prefix.subarray(1));
+      await stream.writer.write(new Uint8Array([0x11, 0x12]));
+
+      t.deepEqual([...(await readIncomingUnidirectionalBytes(pipe, serverTransport))], [0x11, 0x12], 'server receives client WT unidirectional payload after a split prefix');
+
+      client.destroy();
+      server.destroy();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('routes server-created WebTransport unidirectional streams to the client session', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const send = await pipe.pumpUntil(serverTransport.createUnidirectionalStream());
+      const writer = send.getWriter();
+      await writer.write(new Uint8Array([0x21, 0x22]));
+      writer.releaseLock();
+
+      t.deepEqual([...(await readIncomingUnidirectionalBytes(pipe, clientTransport))], [0x21, 0x22], 'client receives server WT unidirectional payload');
+
+      client.destroy();
+      server.destroy();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('routes client-created WebTransport bidirectional streams to the server session', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const stream = await pipe.pumpUntil(clientTransport.createBidirectionalStream());
+      const writer = stream.writable.getWriter();
+      await writer.write(new Uint8Array([0x31, 0x32]));
+      writer.releaseLock();
+
+      t.deepEqual([...(await readIncomingBidirectionalBytes(pipe, serverTransport))], [0x31, 0x32], 'server receives client WT bidirectional payload');
+
+      client.destroy();
+      server.destroy();
+      await pipe.pumpUntil(serverRun.catch(() => {}));
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('routes server-created WebTransport bidirectional streams to the client session', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client, server, serverRun, clientTransport, serverTransport } = await h3WebTransportPair(pipe);
+      const stream = await pipe.pumpUntil(serverTransport.createBidirectionalStream());
+      const writer = stream.writable.getWriter();
+      await writer.write(new Uint8Array([0x41, 0x42]));
+      writer.releaseLock();
+
+      t.deepEqual([...(await readIncomingBidirectionalBytes(pipe, clientTransport))], [0x41, 0x42], 'client receives server WT bidirectional payload');
 
       client.destroy();
       server.destroy();

@@ -29,7 +29,7 @@ prioritization. It does not include source fixes.
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | No open gaps |
-| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gap NET-003 |
+| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | No open gaps |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
@@ -42,27 +42,11 @@ unless a finding below calls out missing documentation or contradictory tests.
 
 ## Findings
 
-### NET-003: Incoming WebTransport unidirectional streams are not H3-routed
-
-- Files: `js/internal/net/http/h3/server.mts`,
-  `js/internal/net/http/h3/client.mts`, `js/net/http/webtransport.mts`
-- Spec target: WebTransport over HTTP/3 stream mapping.
-- Expected behavior: incoming bidirectional and unidirectional QUIC streams
-  should be demultiplexed by WebTransport stream type/session ID and delivered
-  to the correct WebTransport stream queues.
-- Current behavior: public WebTransport can route both kinds once handed a stream,
-  but H3 client/server paths appear to route only bidirectional WebTransport
-  streams; remote unidirectional streams are passed to nghttp3 as H3/QPACK/control
-  input.
-- Coverage gap: no end-to-end H3 tests where either peer creates a WebTransport
-  unidirectional stream and the other reads it from `incomingUnidirectionalStreams`.
-- Priority: P1
-- Follow-up: maintain a session map in H3 client/server drivers and demux
-  unidirectional streams before nghttp3 processing.
+No open gaps.
 
 ## Test Coverage Priorities
 
-- P1 networking: end-to-end WebTransport unidirectional stream routing.
+No open priorities.
 
 ## Accepted Divergences And Non-Goals
 

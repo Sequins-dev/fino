@@ -19,7 +19,7 @@ import { h3Available } from './bindings.mts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import { WebTransport } from '../../../../net/http/webtransport.mts';
-import { decodeWebTransportStreamPrefix } from './webtransport.mts';
+import { inspectWebTransportStreamPrefix } from './webtransport.mts';
 
 export type H3Handler = (request: Request) => Response | Promise<Response>;
 export type H3WebTransportHandler = (
@@ -77,6 +77,10 @@ export class H3ServerDriver {
     const streams = new Map<bigint, H3ServerStream>();
     const webTransports = new Map<bigint, WebTransport>();
     const inFlight = new Set<Promise<void>>();
+    let resolvePeerSettingsReceived: (() => void) | null = null;
+    const peerSettingsReceived = new Promise<void>((resolve) => {
+      resolvePeerSettingsReceived = resolve;
+    });
     let session: Nghttp3Session;
 
     const callbacks: H3SessionCallbacks = {
@@ -181,6 +185,10 @@ export class H3ServerDriver {
       },
 
       onAckedStreamData() {},
+      onRecvSettings() {
+        resolvePeerSettingsReceived?.();
+        resolvePeerSettingsReceived = null;
+      },
     };
 
     session = Nghttp3Session.createServer(callbacks, { webTransport: true });
@@ -204,6 +212,7 @@ export class H3ServerDriver {
       }
       if (st.cancelled) return;
       if (st.method === 'CONNECT' && st.protocol === 'webtransport-h3') {
+        if (!session.peerSettingsReceived) await peerSettingsReceived;
         if (!session.peerWebTransportReady) {
           try {
             session.submitResponse(st.streamId, [
@@ -224,6 +233,7 @@ export class H3ServerDriver {
           const wt = WebTransport._fromHttp3(url, {
             connection: conn,
             sessionStreamId: st.streamId,
+            routeIncomingStreams: false,
           });
           let result: WebTransport | Response;
           try {
@@ -340,22 +350,36 @@ export class H3ServerDriver {
       void (async () => {
         let first: Uint8Array | null = null;
         try {
-          const firstRead = await stream.reader.read() as Uint8Array | null;
-          if (firstRead === null) {
+          if (webTransports.size === 0) {
+            if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
+            while (true) {
+              const bytes = await stream.reader.read() as Uint8Array | null;
+              const fin = bytes === null;
+              await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              if (fin) break;
+            }
+            return;
+          }
+
+          const routed = await readWebTransportPrefix(stream.reader);
+          if (routed.buffer === null) {
             await session.readStream(sid, new Uint8Array(0), true);
             return;
           }
-          first = firstRead;
+
+          first = routed.buffer;
+          if (
+            routed.prefix?.kind === stream.direction
+            && routed.prefix.sessionId !== undefined
+          ) {
+            const wt = webTransports.get(routed.prefix.sessionId);
+            if (wt !== undefined) {
+              (wt as any)._acceptIncomingQuicStream(stream, first);
+              return;
+            }
+          }
 
           if (stream.direction === 'bidirectional') {
-            try {
-              const prefix = decodeWebTransportStreamPrefix(first);
-              const wt = webTransports.get(prefix.sessionId);
-              if (wt !== undefined) {
-                (wt as any)._acceptIncomingQuicStream(stream, first);
-                return;
-              }
-            } catch { /* not a WebTransport data stream */ }
             session.addQuicStream(sid, stream.writer);
           }
 
@@ -415,4 +439,31 @@ export class H3ServerDriver {
 
 async function* keepConnectOpenBody(): AsyncIterable<Uint8Array> {
   await new Promise<never>(() => {});
+}
+
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  if (parts.length === 1) return parts[0]!;
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
+async function readWebTransportPrefix(reader: { read(): Promise<Uint8Array | null> }): Promise<{
+  buffer: Uint8Array | null;
+  prefix: ReturnType<typeof inspectWebTransportStreamPrefix> | null;
+}> {
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk === null) return { buffer: chunks.length === 0 ? null : concatBytes(chunks), prefix: null };
+    chunks.push(chunk);
+    const buffer = concatBytes(chunks);
+    const prefix = inspectWebTransportStreamPrefix(buffer);
+    if (prefix.state !== 'incomplete') return { buffer, prefix };
+  }
 }

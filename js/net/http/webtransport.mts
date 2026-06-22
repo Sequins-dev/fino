@@ -176,6 +176,7 @@ export interface Http3WebTransportInit {
   responseHeaders?: Headers;
   protocol?: string;
   options?: WebTransportOptions;
+  routeIncomingStreams?: boolean;
 }
 
 type PromiseState<T> = {
@@ -378,12 +379,14 @@ export class WebTransport {
       this.#datagrams._push(decoded.payload);
     });
 
-    init.connection.addEventListener('stream', (event) => {
-      if (this.#state !== 'connected' || this.#sessionStreamId === null) return;
-      const stream = (event as Event & { stream?: any }).stream;
-      if (stream === undefined || stream?.reader?.read === undefined) return;
-      void this.#routeIncomingStream(stream);
-    });
+    if (init.routeIncomingStreams !== false) {
+      init.connection.addEventListener('stream', (event) => {
+        if (this.#state !== 'connected' || this.#sessionStreamId === null) return;
+        const stream = (event as Event & { stream?: any }).stream;
+        if (stream === undefined || stream?.reader?.read === undefined) return;
+        void this.#routeIncomingStream(stream);
+      });
+    }
 
     init.connection.addEventListener('close', () => {
       const closeInfo = init.connection.closeInfo ?? null;

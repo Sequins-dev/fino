@@ -94,6 +94,17 @@ function protoSettingsToMap(settingsPtr: ArrayBuffer | null): Map<number, number
   return settings;
 }
 
+function concatBytes(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.byteLength;
+  }
+  return out;
+}
+
 export class Nghttp3Session {
   #conn: ArrayBuffer;          // nghttp3_conn* (8-byte pointer)
   #callbacks: Array<{ close(): void }> = [];
@@ -102,6 +113,7 @@ export class Nghttp3Session {
   #bodySlots = new Map<bigint, BodySlot>();
   #pendingTrailers = new Map<bigint, Array<[string, string]>>();
   #yieldedBytes = new Map<bigint, Uint8Array>();
+  #webTransportSettingsPrefixes = new Map<bigint, Uint8Array>();
   #quicStreams = new Map<bigint, { writer: { write(b: Uint8Array): Promise<void>; close(): Promise<void> } }>();
   #closed = false;
   #ready = false;   // true once bindControlStream has been called
@@ -510,7 +522,8 @@ export class Nghttp3Session {
     return this.#withMu(async () => {
       if (this.#closed) throw new Error('session closed');
       if (this.#webTransport && data.byteLength > 0) {
-        const settings = readWebTransportSettings(data);
+        const buffered = this.#bufferWebTransportSettingsPrefix(streamId, data);
+        const settings = readWebTransportSettings(buffered);
         if (settings.size > 0) this.#recordPeerSettings(settings);
       }
       const ts = BigInt(Math.floor(performance.now() * 1_000_000));
@@ -684,10 +697,24 @@ export class Nghttp3Session {
 
   #recordPeerSettings(settings: ReadonlyMap<number, number>): void {
     const merged = new Map(this.#peerSettings);
-    for (const [id, value] of settings) merged.set(id, value);
+    for (const [id, value] of settings) {
+      if (value === 0 && merged.get(id) === 1) continue;
+      merged.set(id, value);
+    }
     this.#peerSettings = merged;
     this.#peerSettingsReceived = true;
     this.#cb.onRecvSettings?.(this.peerSettings);
+  }
+
+  #bufferWebTransportSettingsPrefix(streamId: bigint, data: Uint8Array): Uint8Array {
+    const previous = this.#webTransportSettingsPrefixes.get(streamId);
+    const buffered = previous === undefined ? data : concatBytes([previous, data]);
+    if (buffered.byteLength > 4096) {
+      this.#webTransportSettingsPrefixes.delete(streamId);
+      return data;
+    }
+    this.#webTransportSettingsPrefixes.set(streamId, buffered);
+    return buffered;
   }
 
   #patchOutgoingStreamBytes(streamId: bigint, bytes: Uint8Array): Uint8Array {
