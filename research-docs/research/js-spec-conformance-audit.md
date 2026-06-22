@@ -28,7 +28,7 @@ prioritization. It does not include source fixes.
 
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
+| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 and WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-004 and FFS-005 |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gap RTE-004 |
@@ -60,19 +60,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P1
 - Follow-up: implement handler slots as listener-list entries and add parity
   tests for BroadcastChannel, EventSource, and WebSocket.
-
-### WEB-002: `MessagePort.postMessage()` ignores invalid transfer-list ports
-
-- Files: `js/globals/messaging.mts`
-- Spec target: HTML channel messaging and structured serialize with transfer.
-- Expected behavior: duplicate, closed, already-neutered, or invalid transfer
-  entries should fail atomically with a DOM-style clone error.
-- Current behavior: closed/neutered ports are skipped and duplicate ports can be
-  collapsed after mutation.
-- Coverage gap: no tests for duplicate ports, already-transferred ports, closed
-  ports, or mixed valid/invalid atomic failure.
-- Priority: P1
-- Follow-up: pre-validate the whole transfer list before mutating port state.
 
 ### WEB-003: Transferred ports are not reconstructed inside `event.data`
 
@@ -214,8 +201,7 @@ unless a finding below calls out missing documentation or contradictory tests.
 
 ## Test Coverage Priorities
 
-- P1 web platform: event-handler attribute dispatch parity and MessagePort
-  transfer-list validation.
+- P1 web platform: event-handler attribute dispatch parity.
 - P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
   rejection, and end-to-end WebTransport unidirectional stream routing.
 - P1 archive/XML: XML name and namespace invalid cases.

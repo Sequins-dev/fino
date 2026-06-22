@@ -36,7 +36,7 @@
  */
 
 import { Event, EventTarget } from './eventtarget.mts';
-import { structuredClone } from './encoding.mts';
+import { DOMException, structuredClone } from './encoding.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
 import { threadPortSend, threadPortRecv } from 'internal:realm-native';
@@ -300,6 +300,10 @@ interface QueueItem {
   data: any;
   /** Ports captured during same-Isolate transfer — re-entangled on delivery. */
   transferredPortPartners?: MessagePort[];
+}
+
+function messagePortDataCloneError(message: string): DOMException {
+  return new DOMException(message, 'DataCloneError');
 }
 
 /**
@@ -710,26 +714,39 @@ export class MessagePort extends EventTarget {
     // --- Intra-Isolate mode ---
     if (!this.#partner) return;
 
-    // Separate out any MessagePort instances from the transfer list.
-    const portPartners: MessagePort[] = [];
+    // Validate the whole transfer list before cloning or neutering so failure
+    // leaves ports and queued messages unchanged.
+    const transferPorts: MessagePort[] = [];
     const abTransfer: Transferable[] = [];
+    const seenTransfer = new Set<Transferable>();
     if (rawTransfer) {
       for (const item of rawTransfer) {
+        if (seenTransfer.has(item)) {
+          throw messagePortDataCloneError('Duplicate value in MessagePort transfer list');
+        }
+        seenTransfer.add(item);
         if (item instanceof MessagePort) {
-          if (item.#neutered || item.#closed) continue;
-          const partner = item.#partner;
-          item.#neutered = true;
-          _activePorts.delete(item);
-          item.#partner?._disentangle();
-          item.#partner = null;
-          if (partner !== null) portPartners.push(partner);
-        } else {
+          if (item.#closed) throw messagePortDataCloneError('Closed MessagePort cannot be transferred');
+          if (item.#neutered) throw messagePortDataCloneError('Neutered MessagePort cannot be transferred');
+          transferPorts.push(item);
+        } else if (item instanceof ArrayBuffer) {
           abTransfer.push(item);
+        } else {
+          throw messagePortDataCloneError('MessagePort transfer list only supports ArrayBuffer and MessagePort values');
         }
       }
     }
 
     const cloned = structuredClone(message, abTransfer.length > 0 ? { transfer: abTransfer } : undefined);
+    const portPartners: MessagePort[] = [];
+    for (const port of transferPorts) {
+      const partner = port.#partner;
+      port.#neutered = true;
+      _activePorts.delete(port);
+      port.#partner?._disentangle();
+      port.#partner = null;
+      if (partner !== null) portPartners.push(partner);
+    }
     const item: QueueItem = { data: cloned };
     if (portPartners.length > 0) item.transferredPortPartners = portPartners;
     this.#partner.#queue.push(item);

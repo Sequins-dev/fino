@@ -5,6 +5,10 @@
 import { describe, it } from 'fino:test/test';
 import { MessageChannel, MessagePort, MessageEvent } from 'fino:realm/messaging';
 
+function isDataCloneError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'DataCloneError';
+}
+
 describe('MessageChannel', () => {
   it('is available on globalThis with MessagePort and MessageEvent', (t) => {
     t.equal(globalThis.MessageChannel, MessageChannel, 'global MessageChannel matches module export');
@@ -135,6 +139,109 @@ describe('MessageChannel', () => {
     carrier.port1.close();
     carrier.port2.close();
     receivedPorts[0]?.close();
+  });
+
+  it('rejects duplicate transferred ports atomically', async (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+    let delivered: unknown = undefined;
+
+    t.throws(
+      () => carrier.port1.postMessage('duplicate-port', [carried.port1, carried.port1]),
+      isDataCloneError,
+      'duplicate transfer entry throws DataCloneError',
+    );
+
+    carried.port2.onmessage = (ev) => { delivered = ev.data; };
+    carried.port1.postMessage('still-entangled');
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    t.equal(delivered, 'still-entangled', 'failed duplicate transfer did not neuter the port');
+
+    carried.port1.close();
+    carried.port2.close();
+    carrier.port1.close();
+    carrier.port2.close();
+  });
+
+  it('rejects closed transferred ports', (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+
+    carried.port1.close();
+
+    t.throws(
+      () => carrier.port1.postMessage('closed-port', [carried.port1]),
+      isDataCloneError,
+      'closed port transfer throws DataCloneError',
+    );
+
+    carried.port2.close();
+    carrier.port1.close();
+    carrier.port2.close();
+  });
+
+  it('rejects already transferred ports', async (t) => {
+    const carried = new MessageChannel();
+    const firstCarrier = new MessageChannel();
+    const secondCarrier = new MessageChannel();
+
+    firstCarrier.port1.postMessage('first-transfer', [carried.port1]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    t.throws(
+      () => secondCarrier.port1.postMessage('second-transfer', [carried.port1]),
+      isDataCloneError,
+      'already transferred port throws DataCloneError',
+    );
+
+    carried.port2.close();
+    firstCarrier.port1.close();
+    firstCarrier.port2.close();
+    secondCarrier.port1.close();
+    secondCarrier.port2.close();
+  });
+
+  it('rejects invalid transfer entries', (t) => {
+    const carrier = new MessageChannel();
+
+    t.throws(
+      () => carrier.port1.postMessage('bad-transfer', [{} as Transferable]),
+      isDataCloneError,
+      'unsupported transfer entry throws DataCloneError',
+    );
+
+    carrier.port1.close();
+    carrier.port2.close();
+  });
+
+  it('rejects mixed valid and invalid transfers atomically', async (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+    let carriedDelivered: unknown = undefined;
+    let carrierDelivered = false;
+
+    carrier.port2.onmessage = () => { carrierDelivered = true; };
+
+    t.throws(
+      () => carrier.port1.postMessage('mixed-transfer', [carried.port1, {} as Transferable]),
+      isDataCloneError,
+      'mixed valid and invalid transfers throw DataCloneError',
+    );
+
+    carried.port2.onmessage = (ev) => { carriedDelivered = ev.data; };
+    carried.port1.postMessage('still-entangled');
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+
+    t.equal(carriedDelivered, 'still-entangled', 'valid port remains usable after failed mixed transfer');
+    t.equal(carrierDelivered, false, 'failed mixed transfer does not queue a message');
+
+    carried.port1.close();
+    carried.port2.close();
+    carrier.port1.close();
+    carrier.port2.close();
   });
 
   it('postMessage after close() on sender is silently dropped', async (t) => {
