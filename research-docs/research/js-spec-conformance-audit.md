@@ -26,7 +26,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Findings `JS-SPEC-001` through `JS-SPEC-004` |
+| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Findings `JS-SPEC-001`, `JS-SPEC-002`, and `JS-SPEC-004` |
 | Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` through `JS-SPEC-008` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` through `JS-SPEC-011` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Findings `JS-SPEC-012` through `JS-SPEC-014` |
@@ -71,24 +71,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 - Suggested follow-up: Build a Streams requirement map from the WHATWG spec and
   add focused tests for promise timing, release-lock behavior, BYOB edge cases,
   pipe abort/prevent flags, and tee cancellation.
-
-### JS-SPEC-003
-
-- Subsystem/files: Web globals, `js/globals/encoding.mts`.
-- Spec target and section: WHATWG Encoding Standard, TextEncoder/TextDecoder.
-- Expected behavior: A conforming TextDecoder supports the standard decoder set,
-  label matching, BOM behavior, fatal mode, streaming decode, and detached
-  buffer behavior.
-- Observed implementation/test gap: The module intentionally supports only
-  UTF-8 labels and rejects all legacy encodings. That limit is clearly
-  documented, but the inventory previously marked the area as having no open
-  gaps. This is an intentional partial implementation, not full Encoding
-  Standard conformance.
-- Priority: P2.
-- Suggested follow-up: Keep UTF-8-only as an accepted divergence if release
-  scope stays server-side, but change any "full Encoding" claims to
-  "UTF-8 TextEncoder/TextDecoder subset" and ensure tests cover every accepted
-  UTF-8 label plus rejection of representative legacy labels.
 
 ### JS-SPEC-004
 
