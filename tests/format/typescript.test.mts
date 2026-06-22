@@ -1,5 +1,8 @@
 import { describe, it } from 'fino:test/test';
 import { parse, transpile, format, lint } from 'fino:format/typescript';
+import { DiskFileSystem } from 'fino:file';
+
+const fs = new DiskFileSystem();
 
 describe('fino:format/typescript', () => {
   it('parses TypeScript and exposes the full AST, comments, and tokens', (t) => {
@@ -30,6 +33,23 @@ export function add(value: number): Promise<Response> {
     t.ok(parsed.errors.length > 0, 'parse diagnostics are returned');
     t.ok(parsed.errors[0]!.message.length > 0, 'diagnostics include messages');
     t.equal(parsed.ast.type, 'Program', 'recoverable parse still returns AST JSON');
+  });
+
+  it('parses string literals that use hex escapes', (t) => {
+    const parsed = parse("const s = 'Hello, World! \\x00\\xFF\\xAB';\n", { filename: 'hex-escape.mts', tokens: true });
+
+    t.equal(parsed.ok, true, 'hex-escaped string source parses successfully');
+    t.equal(parsed.errors.length, 0, 'hex-escaped string has no parse diagnostics');
+    t.equal(parsed.ast.type, 'Program', 'AST JSON is materialized');
+  });
+
+  it('parses source files with mixed unicode and hex escapes for docs extraction', async (t) => {
+    const source = String(await fs.readFile('tests/internal/globals/encoding.test.mts'));
+    const parsed = parse(source, { filename: 'tests/internal/globals/encoding.test.mts', tokens: true });
+
+    t.equal(parsed.ok, true, 'encoding test source parses successfully');
+    t.equal(parsed.errors.length, 0, 'encoding test source has no parse diagnostics');
+    t.ok(parsed.tokens.length > 0, 'tokens are materialized for doc extraction');
   });
 
   it('transpiles TypeScript to JavaScript and source maps', (t) => {

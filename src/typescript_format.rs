@@ -299,8 +299,8 @@ fn parse_source(source: &str, options: &ParseOptions) -> Result<String, String> 
         .with_config(RuntimeParserConfig::new(options.tokens))
         .parse();
 
-    let ast = serde_json::from_str(&ret.program.to_estree_ts_json(true))
-        .map_err(|err| format!("failed to serialize AST: {err}"))?;
+    let ast_json = ret.program.to_estree_ts_json(true);
+    let ast = parse_estree_json(&ast_json)?;
     let comments = ret
         .program
         .comments
@@ -333,6 +333,105 @@ fn parse_source(source: &str, options: &ParseOptions) -> Result<String, String> 
         source_type: source_type_result(source_type),
     };
     serde_json::to_string(&result).map_err(|err| format!("failed to serialize parse result: {err}"))
+}
+
+fn parse_estree_json(input: &str) -> Result<serde_json::Value, String> {
+    match serde_json::from_str(input) {
+        Ok(value) => Ok(value),
+        Err(first_err) => {
+            let escaped = escape_invalid_json_hex_escapes(input);
+            if escaped == input {
+                return Err(format!("failed to serialize AST: {first_err}"));
+            }
+            serde_json::from_str(&escaped)
+                .map_err(|err| format!("failed to serialize AST: {err}"))
+        }
+    }
+}
+
+fn escape_invalid_json_hex_escapes(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(input.len());
+    let mut in_string = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !in_string {
+            out.push(b as char);
+            if b == b'"' {
+                in_string = true;
+            }
+            i += 1;
+            continue;
+        }
+
+        if b == b'"' {
+            out.push('"');
+            in_string = false;
+            i += 1;
+            continue;
+        }
+
+        if b == b'\\' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'x' {
+                out.push_str("\\\\x");
+                i += 2;
+                continue;
+            }
+            if next == b'u' && i + 5 < bytes.len() {
+                if let Some(code) = hex_escape_code(&bytes[i + 2..i + 6]) {
+                    if (0xD800..=0xDFFF).contains(&code) && !is_valid_surrogate_pair_escape(bytes, i) {
+                        out.push_str("\\\\u");
+                        out.push_str(&input[i + 2..i + 6]);
+                        i += 6;
+                        continue;
+                    }
+                }
+            }
+            out.push('\\');
+            out.push(next as char);
+            i += 2;
+            continue;
+        }
+
+        out.push(b as char);
+        i += 1;
+    }
+    out
+}
+
+fn hex_escape_code(bytes: &[u8]) -> Option<u32> {
+    if bytes.len() != 4 {
+        return None;
+    }
+    let mut value = 0u32;
+    for &b in bytes {
+        value = (value << 4)
+            | match b {
+                b'0'..=b'9' => u32::from(b - b'0'),
+                b'a'..=b'f' => u32::from(b - b'a' + 10),
+                b'A'..=b'F' => u32::from(b - b'A' + 10),
+                _ => return None,
+            };
+    }
+    Some(value)
+}
+
+fn is_valid_surrogate_pair_escape(bytes: &[u8], i: usize) -> bool {
+    let Some(high) = hex_escape_code(bytes.get(i + 2..i + 6).unwrap_or_default()) else {
+        return false;
+    };
+    if !(0xD800..=0xDBFF).contains(&high) {
+        return false;
+    }
+    if bytes.get(i + 6) != Some(&b'\\') || bytes.get(i + 7) != Some(&b'u') {
+        return false;
+    }
+    let Some(low) = hex_escape_code(bytes.get(i + 8..i + 12).unwrap_or_default()) else {
+        return false;
+    };
+    (0xDC00..=0xDFFF).contains(&low)
 }
 
 fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, String> {
