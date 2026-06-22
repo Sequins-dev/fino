@@ -15,6 +15,47 @@ import {
 const cryptoAvailable = (globalThis as typeof globalThis & { cryptoAvailable?: boolean }).cryptoAvailable;
 
 describe('fino:security JWK helpers', () => {
+  it('selects JWKs permissively when optional metadata is omitted', (t) => {
+    const generic = { kty: 'oct', k: 'c2VjcmV0', kid: 'generic' };
+    const restricted = {
+      kty: 'oct',
+      k: 'c2VjcmV0',
+      kid: 'restricted',
+      alg: 'HS384',
+      use: 'enc',
+      key_ops: ['encrypt'],
+    };
+    const keyWithoutAlg = { kty: 'oct', k: 'c2VjcmV0', kid: 'no-alg', use: 'sig', key_ops: ['verify'] };
+    const keyWithoutUse = { kty: 'oct', k: 'c2VjcmV0', kid: 'no-use', alg: 'HS256', key_ops: ['verify'] };
+    const keyWithoutOps = { kty: 'oct', k: 'c2VjcmV0', kid: 'no-ops', alg: 'HS256', use: 'sig' };
+
+    t.equal(
+      selectJwk([generic], { alg: 'HS256', use: 'sig', key_ops: ['verify'] })?.kid,
+      'generic',
+      'missing alg, use, and key_ops are permissive',
+    );
+    t.equal(
+      selectJwk([restricted, keyWithoutAlg], { alg: 'HS256', use: 'sig', key_ops: ['verify'] })?.kid,
+      'no-alg',
+      'missing alg can match when other declared metadata matches',
+    );
+    t.equal(
+      selectJwk([restricted, keyWithoutUse], { alg: 'HS256', use: 'sig', key_ops: ['verify'] })?.kid,
+      'no-use',
+      'missing use can match when other declared metadata matches',
+    );
+    t.equal(
+      selectJwk([restricted, keyWithoutOps], { alg: 'HS256', use: 'sig', key_ops: ['verify'] })?.kid,
+      'no-ops',
+      'missing key_ops can match when other declared metadata matches',
+    );
+    t.equal(
+      selectJwk([restricted], { alg: 'HS256', use: 'sig', key_ops: ['verify'] }),
+      undefined,
+      'declared incompatible alg, use, and key_ops do not match',
+    );
+  });
+
   it('generates, imports, exports, selects, and thumbprints keys', async (t) => {
     if (!cryptoAvailable) {
       t.ok(true, 'OpenSSL not available; skipping JWK crypto test');

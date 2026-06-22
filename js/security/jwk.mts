@@ -427,7 +427,8 @@ export async function jwkThumbprint(jwk: JsonWebKeyLike): Promise<string> {
  *
  * Returns `undefined` when no candidate satisfies the selector. The search is
  * order-preserving, so put the preferred or current key first when several keys
- * could match.
+ * could match. Candidate keys that omit `alg`, `use`, or `key_ops` are treated
+ * as generic keys for that field and may match a selector that requests it.
  *
  * ```ts no_run
  * import { selectJwk } from 'fino:security/jwk';
