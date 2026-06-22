@@ -13,6 +13,10 @@
  * parsing incoming multipart request bodies into FormData is intentionally
  * outside the release scope.
  *
+ * Fino also supports `new FormData(existingFormData)` as a nonstandard
+ * convenience extension for shallow-copying entries. Browser constructors
+ * accept an HTML form element instead.
+ *
  *
  * ## Entry normalization (_normalizeEntry)
  *
@@ -226,8 +230,8 @@ export class FormData {
   /**
    * Create an empty FormData or shallow-copy an existing FormData.
    *
-   * The copy preserves entry order. File objects are not deep-cloned by this
-   * constructor.
+   * The copy-constructor form is a nonstandard Fino extension. It preserves
+   * entry order and does not deep-clone File objects.
    *
    * ```typescript no_run
    * const source = new FormData();

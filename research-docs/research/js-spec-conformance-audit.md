@@ -28,7 +28,7 @@ prioritization. It does not include source fixes.
 
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 and WEB-007 |
+| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001 to FFS-005 |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-002 to RTE-005 |
@@ -87,17 +87,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P2
 - Follow-up: decide whether message-graph port transfer is release scope; if so,
   add an internal transfer map for `MessagePort.postMessage()`.
-
-### WEB-007: `FormData(existingFormData)` is nonstandard
-
-- Files: `js/globals/formdata.mts`
-- Spec target: XMLHttpRequest/FormData constructor.
-- Expected behavior: browser constructor accepts no argument or DOM form inputs,
-  not another `FormData`.
-- Current behavior: Fino supports a copy constructor and tests lock it in.
-- Coverage gap: tests do not label this as a Fino extension.
-- Priority: P3
-- Follow-up: document as nonstandard extension or remove the overload.
 
 ### NET-001: HTTP/3 request pseudo-header validation is incomplete
 

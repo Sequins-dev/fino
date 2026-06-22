@@ -411,8 +411,8 @@ describe('FormData [Symbol.toStringTag]', () => {
   });
 });
 
-describe('FormData copy constructor (F9)', () => {
-  it('new FormData(existingFormData) copies all entries', (t) => {
+describe('FormData copy constructor Fino extension', () => {
+  it('new FormData(existingFormData) copies all entries as a Fino extension', (t) => {
     const src = new FormData();
     src.append('a', '1');
     src.append('b', '2');
@@ -422,7 +422,7 @@ describe('FormData copy constructor (F9)', () => {
     t.equal(copy.get('b'), '2', 'b copied');
   });
 
-  it('copy is independent — mutating copy does not affect source', (t) => {
+  it('Fino extension copy is independent when mutating copy', (t) => {
     const src = new FormData();
     src.append('x', 'original');
     const copy = new FormDataWithCopy(src);
@@ -431,7 +431,7 @@ describe('FormData copy constructor (F9)', () => {
     t.equal(copy.get('x'), 'modified', 'copy has new value');
   });
 
-  it('copy is independent — mutating source does not affect copy', (t) => {
+  it('Fino extension copy is independent when mutating source', (t) => {
     const src = new FormData();
     src.append('x', 'original');
     const copy = new FormDataWithCopy(src);
