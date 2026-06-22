@@ -7,20 +7,28 @@
  * scalar types, expands anchors and aliases within configured limits, and never
  * constructs arbitrary application objects from tags.
  *
- * Supports the full YAML 1.2 core schema including:
- *   - Block mappings and sequences (indentation-driven)
- *   - Flow mappings {} and sequences []
- *   - Scalars: plain, single-quoted, double-quoted, block literal | and folded >
- *   - Core schema type resolution (null/~, booleans, ints, floats, strings)
- *   - Anchors (&) and aliases (*) with expansion-limit safety
- *   - Explicit tags (!!str, !!int, !!float, !!bool, !!null, !!seq, !!map, !!binary, !!timestamp)
- *   - Merge keys (<<: *anchor and <<: [*a, *b])
- *   - Complex mapping keys (? key) - mappings with non-string keys return Map<unknown, YamlValue>
- *   - Comments, document markers --- / ..., parseAll for multi-document streams
+ * YAML 1.2.2 conformance matrix:
+ *
+ * | Area | Status |
+ * | --- | --- |
+ * | Block mappings/sequences | Supported for indentation-driven collections. |
+ * | Flow collections | Supported for `[]` sequences and `{}` mappings. |
+ * | Scalar styles | Plain, single-quoted, double-quoted, literal `|`, and folded `>` scalars are supported. |
+ * | Core scalar resolution | YAML 1.2 core `null`, booleans, integers, floats, and strings are resolved; YAML 1.1 words such as `yes`, `on`, and `Off` stay strings. |
+ * | Anchors and aliases | Supported within one document with expansion and depth limits; undefined, recursive, and cross-document aliases are rejected. |
+ * | Explicit core tags | `!!str`, `!!int`, `!!float`, `!!bool`, `!!null`, `!!seq`, `!!map`, `!!binary`, and `!!timestamp` are supported. |
+ * | Merge keys | `<<: *anchor` and `<<: [*a, *b]` are absorbed into the enclosing mapping. |
+ * | Complex keys | `? key` is supported; mappings with non-string keys return `Map<unknown, YamlValue>`. |
+ * | Comments and markers | Comments, `---`, `...`, and `parseAll()` multi-document streams are supported; comments and markers are not re-emitted. |
+ * | Stringify normalization | Output preserves the value graph but normalizes comments, source anchor names, document markers, and merge syntax. |
+ * | Security limits | Alias expansion count and depth are bounded, and arbitrary object construction is never performed. |
+ * | Intentional limits | `%YAML`/`%TAG` directives, custom tags, local tags, and application object construction are rejected. |
+ *
+ * This parser targets Fino's core-schema configuration use cases, not complete
+ * YAML processor parity.
  *
  * YAML directives (`%YAML`, `%TAG`) are outside the release baseline and are
- * rejected. This parser targets Fino's core-schema configuration use cases, not
- * complete YAML processor parity.
+ * rejected.
  *
  * **Permanently excluded** (security baseline - never executes code):
  *   - Arbitrary type construction (!!ruby/object, etc.)

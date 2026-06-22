@@ -34,6 +34,13 @@ describe('fino:format/yaml — scalars', () => {
     t.equal(parse('not-a-number-really'), 'not-a-number-really');
   });
 
+  it('keeps YAML 1.1 boolean-like words as YAML 1.2 core strings', (t) => {
+    t.equal(parse('yes'), 'yes');
+    t.equal(parse('on'), 'on');
+    t.equal(parse('Off'), 'Off');
+    t.deepEqual(parse('a: yes\nb: on\nc: Off'), { a: 'yes', b: 'on', c: 'Off' });
+  });
+
   it('parses single-quoted strings', (t) => {
     t.equal(parse("'hello'"), 'hello');
     t.equal(parse("'it''s a quote'"), "it's a quote");
@@ -156,6 +163,10 @@ describe('fino:format/yaml — comments and markers', () => {
   it('rejects YAML directives outside the core-schema baseline', (t) => {
     t.throws(() => parse('%YAML 1.2\n---\na: 1'), /directive|unexpected|expected/i);
   });
+
+  it('rejects TAG directives outside the core-schema baseline', (t) => {
+    t.throws(() => parse('%TAG !e! tag:example.com,2026:\n---\nx: !e!thing value'), /directive|unexpected|expected/i);
+  });
 });
 
 describe('fino:format/yaml — anchors & aliases', () => {
@@ -192,6 +203,11 @@ describe('fino:format/yaml — anchors & aliases', () => {
 
   it('undefined alias throws', (t) => {
     t.throws(() => parse('x: *nope'), /undefined alias/i);
+  });
+
+  it('rejects self-referential aliases instead of constructing cycles', (t) => {
+    t.throws(() => parse('x: &x [*x]'), /undefined alias/i);
+    t.throws(() => parse('x: &x {self: *x}'), /undefined alias/i);
   });
 
   it('alias expansion limit exceeded', (t) => {
