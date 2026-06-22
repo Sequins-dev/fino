@@ -38,8 +38,10 @@
  *
  * ## WebSocket (WHATWG facade)
  *
- * Strict spec-compliant global. Wraps a WebSocketConnection.
- * No extra methods — spec surface only.
+ * WHATWG-compatible global facade. Wraps a WebSocketConnection and exposes the
+ * browser API surface: constructor validation, `CONNECTING`/`OPEN`/`CLOSING`/
+ * `CLOSED` states, `url`, `protocol`, `extensions`, `bufferedAmount`,
+ * `binaryType`, event handler properties, `send()`, and `close()`.
  *
  * ```ts no_run
  *   const ws = new WebSocket('wss://example.com/ws', ['chat.v1']);
@@ -48,6 +50,19 @@
  *   ws.onmessage = (e) => console.log(e.data);
  *   ws.onclose   = (e) => console.log('closed', e.code, e.wasClean);
  * ```
+ *
+ * ### WebSocket API conformance matrix
+ *
+ * | Area | Baseline | Coverage |
+ * | --- | --- | --- |
+ * | Constructor | Accepts `ws:` and `wss:` URLs, rejects fragments and duplicate requested protocols synchronously. | `tests/net/websocket.test.mts` |
+ * | Lifecycle | Starts at `CONNECTING`, forwards `open`, `message`, `error`, and `close`, and exposes browser ready-state constants. | `tests/net/websocket.test.mts` |
+ * | Sending | `send()` accepts strings, binary buffers, typed arrays, and blobs once open; pre-open sends throw because this release does not buffer before `OPEN`. | `tests/net/websocket.test.mts` |
+ * | Binary receive | `binaryType` defaults to `blob`; `arraybuffer` switches binary messages to copied ArrayBuffers; invalid assignments throw `TypeError` without changing the previous value. | `tests/net/websocket.test.mts` |
+ * | Close | `close()` validates application close codes and the 123-byte UTF-8 reason limit synchronously before starting the close handshake. | `tests/net/websocket.test.mts` |
+ * | Negotiation properties | `protocol` reflects the accepted subprotocol, `extensions` is an empty string, and `bufferedAmount` is numeric. | `tests/net/websocket.test.mts` |
+ * | Extensions | Intentional limit: extension negotiation is unsupported, so `Sec-WebSocket-Extensions` responses are rejected and RSV bits fail protocol validation. | `tests/net/websocket.test.mts` |
+ * | HTTP/2 and HTTP/3 | Intentional limit: WebSocket over HTTP/2 (RFC 8441) and HTTP/3 are deferred; this release uses HTTP/1.1 Upgrade only. | `tests/net/http2.test.mts` and research docs |
  *
  *
  * ## Close handshake
@@ -2409,9 +2424,12 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 // ---------------------------------------------------------------------------
 
 /**
- * WHATWG WebSocket — strict spec surface, no runtime extensions.
+ * WHATWG-compatible WebSocket facade with no runtime extensions.
  *
  * For server-side or lower-level control, use `WebSocketConnection` directly.
+ * This facade intentionally does not buffer `send()` calls before `OPEN`, does
+ * not negotiate extensions, and uses the HTTP/1.1 Upgrade path provided by
+ * `WebSocketConnection`; HTTP/2 and HTTP/3 WebSocket transports are deferred.
  *
  * ```ts no_run
  * const ws = new WebSocket('wss://example.com/ws', ['chat.v1']);

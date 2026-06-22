@@ -898,6 +898,15 @@ describe('WHATWG WebSocket facade', () => {
     ok(threw);
   });
 
+  it('constructor throws SyntaxError for duplicate protocols', async () => {
+    let threw = false;
+    try { new WebSocket('ws://example.com/ws', ['a', 'a']); } catch (e: any) {
+      threw = true;
+      equal(e.name, 'SyntaxError');
+    }
+    ok(threw);
+  });
+
   it('starts in CONNECTING state', async () => {
     // Use an unresolvable host to keep it in CONNECTING without connecting
     // Actually we need a real server to avoid an immediate error; use our own.
@@ -977,6 +986,49 @@ describe('WHATWG WebSocket facade', () => {
       ok(msgEvt.data instanceof Blob);
       const bytes = new Uint8Array(await (msgEvt.data as unknown as Blob).arrayBuffer());
       deepEqual(Array.from(bytes), [1, 2]);
+
+      ws.close();
+      await waitForEvent(ws, 'close');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('binaryType rejects invalid assignments without changing the current value', async () => {
+    const server = serveWebSocket(() => {});
+
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+      equal(ws.binaryType, 'blob');
+      ws.binaryType = 'arraybuffer';
+      equal(ws.binaryType, 'arraybuffer');
+
+      let threw = false;
+      try { ws.binaryType = 'bytes' as any; } catch (e: any) {
+        threw = true;
+        ok(e instanceof TypeError);
+      }
+      ok(threw);
+      equal(ws.binaryType, 'arraybuffer');
+
+      await waitForEvent(ws, 'open');
+      ws.close();
+      await waitForEvent(ws, 'close');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('exposes negotiated protocol, empty extensions, and numeric bufferedAmount', async () => {
+    const server = serveWebSocket(() => {}, { protocol: 'chat.v1' });
+
+    try {
+      const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws`, ['chat.v1', 'chat.v2']);
+      await waitForEvent(ws, 'open');
+
+      equal(ws.protocol, 'chat.v1');
+      equal(ws.extensions, '');
+      equal(typeof ws.bufferedAmount, 'number');
 
       ws.close();
       await waitForEvent(ws, 'close');
