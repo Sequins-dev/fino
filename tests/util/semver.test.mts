@@ -20,6 +20,12 @@ describe('fino:semver parse', () => {
     t.throws(() => parse('1.2.3-01'), /Invalid semver version/, 'numeric prerelease leading zero rejected');
     t.throws(() => parse('1.2.3-alpha..1'), /Invalid semver version/, 'empty prerelease identifier rejected');
   });
+
+  it('rejects unsafe numeric identifiers', (t) => {
+    t.throws(() => parse('9007199254740992.0.0'), /Invalid semver version/, 'unsafe major is rejected');
+    t.throws(() => parse('1.2.3-9007199254740992'), /Invalid semver version/, 'unsafe prerelease number is rejected');
+    t.equal(valid('1.2.3-9007199254740992'), null, 'valid returns null for unsafe prerelease number');
+  });
 });
 
 describe('fino:semver compare', () => {

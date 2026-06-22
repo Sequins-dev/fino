@@ -374,6 +374,11 @@ describe('Blob constructor — invalid parts argument', () => {
     t.throws(() => new Blob(42 as any), /sequence|iterable|converted/i, 'number parts throws');
     t.throws(() => new Blob({} as any), /sequence|iterable|converted/i, 'plain object parts throws');
   });
+
+  it('explicit null parts throws TypeError', (t) => {
+    t.throws(() => new Blob(null as any), /sequence|iterable|converted/i, 'null parts throws');
+    t.equal(new Blob(undefined).size, 0, 'undefined parts still creates an empty Blob');
+  });
 });
 
 describe('File.lastModified — integer truncation', () => {

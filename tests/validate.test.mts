@@ -116,6 +116,14 @@ describe('fino:validate', () => {
     }
   });
 
+  it('supports raw JSON Schema type arrays', (t) => {
+    const schema = { type: ['string', 'null'] };
+
+    t.equal(safeParse(schema, 'ok').success, true, 'string is accepted');
+    t.equal(safeParse(schema, null).success, true, 'null is accepted');
+    t.equal(safeParse(schema, 42).success, false, 'other types are rejected');
+  });
+
   it('clones object and array defaults before returning parsed values', (t) => {
     const schema = v.object({
       settings: v.any().default({ tags: ['api'], nested: { enabled: true } }),

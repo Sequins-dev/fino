@@ -81,6 +81,7 @@ function readNumericIdentifier(sc: Scanner, input: string, name: string): string
   const value = sc.eatWhile(isDigit);
   if (value === '') throw new Error(`Invalid semver ${name} '${input}'`);
   if (value.length > 1 && value.startsWith('0')) throw new Error(`Invalid semver ${name} '${input}'`);
+  if (!Number.isSafeInteger(Number(value))) throw new Error(`Invalid semver ${name} '${input}'`);
   return value;
 }
 
@@ -94,6 +95,9 @@ function readIdentifier(sc: Scanner, input: string, name: string, strictNumeric:
   const value = sc.eatWhile(isAlphaNumHyphen);
   if (value === '') throw new Error(`Invalid semver ${name} '${input}'`);
   if (strictNumeric && value.length > 1 && value.startsWith('0') && [...value].every((ch) => ch >= '0' && ch <= '9')) {
+    throw new Error(`Invalid semver ${name} '${input}'`);
+  }
+  if (strictNumeric && [...value].every((ch) => ch >= '0' && ch <= '9') && !Number.isSafeInteger(Number(value))) {
     throw new Error(`Invalid semver ${name} '${input}'`);
   }
   return value;

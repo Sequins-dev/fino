@@ -101,7 +101,11 @@ describe('BroadcastChannel', () => {
   it('postMessage on closed channel throws', (t) => {
     const bc = new BroadcastChannel('throw-test');
     bc.close();
-    t.throws(() => bc.postMessage('oops'), /closed/, 'throws on closed channel');
+    t.throws(
+      () => bc.postMessage('oops'),
+      (err) => err instanceof DOMException && err.name === 'InvalidStateError' && /closed/.test(err.message),
+      'throws InvalidStateError on closed channel',
+    );
   });
 
   it('channels on different names are isolated', async (t) => {

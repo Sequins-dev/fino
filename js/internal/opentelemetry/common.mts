@@ -3442,15 +3442,16 @@ export class W3CTraceContextPropagator extends TextMapPropagator {
     const traceparent = api.get(carrier, 'traceparent');
     if (typeof traceparent !== 'string') return null;
     const trimmed = traceparent.trim();
-    // Spec: accept any version (forward-compat).
-    // For v00, require exactly 55 chars. For unknown versions, parse permissively.
-    const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})/i.exec(trimmed);
+    // Spec: accept unknown lowercase versions for forward compatibility, but
+    // reject the reserved ff version and uppercase hex fields.
+    const match = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})/.exec(trimmed);
     if (!match) return null;
     const version = match[1];
     const traceId = match[2];
     const spanId = match[3];
     const flags = match[4];
     if (!traceId || !spanId || !flags) return null;
+    if (version === 'ff') return null;
     // Reject all-zeros invalid IDs.
     if (/^0+$/.test(traceId) || /^0+$/.test(spanId)) return null;
     // For v00, disallow trailing content.

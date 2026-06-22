@@ -191,6 +191,16 @@ export interface SseEvent {
  * ```
  */
 export interface EventSourceInit {
+  /** Reflects the HTML EventSource credential mode flag.
+   *
+   * Fino does not maintain a browser cookie jar or enforce browser CORS policy;
+   * this option is exposed for standards-shaped API compatibility.
+   *
+   * ```ts no_run
+   * new EventSource(url, { withCredentials: true }).withCredentials; // true
+   * ```
+   */
+  withCredentials?: boolean;
   /** Extra HTTP headers for the SSE request.
    *
    * ```ts no_run
@@ -716,6 +726,7 @@ export class EventSource extends EventTarget {
    */
   #extraHeaders: Headers;
   #tlsOptions: EventSourceInit['tls'] | undefined;
+  #withCredentials: boolean;
   /**
    * Private property `#currentReader` used by `EventSource`.
    *
@@ -824,6 +835,7 @@ export class EventSource extends EventTarget {
     this.#retryInterval = DEFAULT_RETRY_MS;
     this.#extraHeaders  = init?.headers ? new Headers(init.headers) : new Headers();
     this.#tlsOptions    = init?.tls;
+    this.#withCredentials = init?.withCredentials === true;
     this.#currentReader = null;
     this.#onopen        = null;
     this.#onmessage     = null;
@@ -859,6 +871,18 @@ export class EventSource extends EventTarget {
    * ```
    */
   get lastEventId() { return this.#lastEventId ?? ''; }
+
+  /** Whether the constructor was created with `withCredentials: true`.
+   *
+   * Fino exposes the standards-shaped reflected property, but does not add
+   * browser-managed cookies or CORS enforcement.
+   *
+   * ```ts no_run
+   * const es = new EventSource('/events', { withCredentials: true });
+   * console.log(es.withCredentials);
+   * ```
+   */
+  get withCredentials() { return this.#withCredentials; }
 
   /** Callback for `open` events (connection established).
    *

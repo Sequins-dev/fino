@@ -33,6 +33,7 @@
  */
 
 import { Event, EventTarget } from './eventtarget.mts';
+import { DOMException } from './encoding.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { subscribe, publish, receive, unsubscribe, wakeSubscriber } from 'internal:broadcast';
 import { readable, removeRead } from 'internal:runtime/loop';
@@ -208,7 +209,8 @@ export class BroadcastChannel extends EventTarget {
    * Publish a structured-clone-serializable message to peer subscribers.
    *
    * Transfer lists are not supported by BroadcastChannel. Calling this after
-   * close() throws an Error. Serialization failures propagate to the caller.
+   * close() throws `InvalidStateError`. Serialization failures propagate to the
+   * caller.
    *
    * ```typescript no_run
    * const bc = new BroadcastChannel('jobs');
@@ -216,7 +218,7 @@ export class BroadcastChannel extends EventTarget {
    * ```
    */
   postMessage(message: unknown): void {
-    if (this.#closed) throw new Error('BroadcastChannel is closed');
+    if (this.#closed) throw new DOMException('BroadcastChannel is closed', 'InvalidStateError');
     // serialize() returns [mainBytes, ...transferStores]; BroadcastChannel
     // does not support transfer, so we only need the main bytes.
     const serResult = (serialize as (v: unknown) => Uint8Array[])(message);

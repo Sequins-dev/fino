@@ -312,8 +312,9 @@ function childPath(path: string, key: string | number): string {
   return path ? `${path}.${key}` : key;
 }
 
-function schemaType(schema: JsonSchema): string | undefined {
+function schemaType(schema: JsonSchema): string | string[] | undefined {
   const type = schema.type;
+  if (Array.isArray(type) && type.every((item) => typeof item === 'string')) return type;
   return typeof type === 'string' ? type : undefined;
 }
 
@@ -402,8 +403,8 @@ function compileSchema(schema: JsonSchema): ValidatorFn {
       return { value, issues };
     }
 
-    if (type !== undefined && !typeMatches(value, type)) {
-      issues.push(issue(path, 'type', `expected ${type}`, value));
+    if (type !== undefined && !(Array.isArray(type) ? type.some((item) => typeMatches(value, item)) : typeMatches(value, type))) {
+      issues.push(issue(path, 'type', `expected ${Array.isArray(type) ? type.join(' or ') : type}`, value));
       return { value, issues };
     }
 

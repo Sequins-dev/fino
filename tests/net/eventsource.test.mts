@@ -321,6 +321,22 @@ describe('EventSource integration', () => {
     t.equal(EventSource.CLOSED, 2);
   });
 
+  it('reflects withCredentials constructor option', (t) => {
+    const defaultSource = new EventSource('http://127.0.0.1:1/events');
+    const credentialed = new EventSource('http://127.0.0.1:1/events', { withCredentials: true });
+    const explicitFalse = new EventSource('http://127.0.0.1:1/events', { withCredentials: false });
+
+    try {
+      t.equal(defaultSource.withCredentials, false, 'default is false');
+      t.equal(credentialed.withCredentials, true, 'true option is reflected');
+      t.equal(explicitFalse.withCredentials, false, 'false option is reflected');
+    } finally {
+      defaultSource.close();
+      credentialed.close();
+      explicitFalse.close();
+    }
+  });
+
   it('receives message events via onmessage', async (t) => {
     const received: string[] = [];
 

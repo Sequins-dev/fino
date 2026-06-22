@@ -232,10 +232,10 @@ export class Blob {
   /**
    * Create a Blob from strings, buffers, views, or other Blobs.
    *
-   * Null or omitted parts create an empty Blob. Non-iterable parts throw a
-   * TypeError. `endings: 'native'` normalizes string-part line endings before
-   * encoding; the default `transparent` preserves them. The internal BYTES_INIT
-   * path is private to this module and is used by slice() to avoid
+   * Omitted parts create an empty Blob. Non-iterable parts, including `null`,
+   * throw a TypeError. `endings: 'native'` normalizes string-part line endings
+   * before encoding; the default `transparent` preserves them. The internal
+   * BYTES_INIT path is private to this module and is used by slice() to avoid
    * re-normalizing already-owned bytes.
    *
    * ```typescript no_run
@@ -259,12 +259,12 @@ export class Blob {
     this.#type = /[^\x20-\x7e]/.test(lowered) ? '' : lowered;
     const endings = options != null && options.endings === 'native' ? 'native' : 'transparent';
 
-    if (parts == null) {
+    if (parts === undefined) {
       this.#bytes = new Uint8Array(0);
       _blobBytes.set(this, this.#bytes);
       return;
     }
-    if (typeof (parts as any)[Symbol.iterator] !== 'function') {
+    if (parts === null || typeof (parts as any)[Symbol.iterator] !== 'function') {
       throw new TypeError('Failed to construct Blob: The provided value cannot be converted to a sequence.');
     }
 

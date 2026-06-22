@@ -1593,6 +1593,22 @@ describe('fino:opentelemetry', () => {
       t.equal(extracted.baggage.get('tenant'), 'alpha', 'baggage value extracted');
     });
 
+    it('rejects invalid W3C traceparent values', (t) => {
+      const propagator = new W3CTraceContextPropagator();
+      const validTraceId = '0123456789abcdef0123456789abcdef';
+      const validSpanId = '0123456789abcdef';
+
+      for (const traceparent of [
+        `ff-${validTraceId}-${validSpanId}-01`,
+        `00-${validTraceId.toUpperCase()}-${validSpanId}-01`,
+        `00-${validTraceId}-${validSpanId.toUpperCase()}-01`,
+        `00-${validTraceId}-${validSpanId}-01-extra`,
+        `00-${validTraceId.slice(1)}-${validSpanId}-01`,
+      ]) {
+        t.equal(propagator.extract({ traceparent }), null, `${traceparent} is rejected`);
+      }
+    });
+
     it('supports exporter retries, timeout options, per-signal endpoints, compression, and hooks', async (t) => {
       const events: HookEvent[] = [];
       const received: CapturedFetchRecord[] = [];
