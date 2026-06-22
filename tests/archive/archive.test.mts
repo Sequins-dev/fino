@@ -521,6 +521,43 @@ describe('fino:archive', () => {
     });
   });
 
+  it('rejects unsafe stored zip entry sizes while reading', async (t) => {
+    const payload = encodeUtf8('tiny');
+    const original = makeStoredZip([
+      { name: 'file.txt', data: payload },
+    ]);
+    const local = findSignature(original, 0x04034b50);
+    const central = findSignature(original, 0x02014b50);
+    t.ok(local >= 0 && central >= 0, 'fixture zip contains local and central records');
+
+    const hugeSize = 600 * 1024 * 1024;
+    const huge = original.slice();
+    let view = new DataView(huge.buffer);
+    view.setUint32(local + 22, hugeSize, true);
+    view.setUint32(central + 24, hugeSize, true);
+    await fs.writeFile(TEST_DIR + '/stored-huge-size.zip', huge);
+    const hugeArchive = await openArchive(TEST_DIR + '/stored-huge-size.zip');
+    await t.rejects(
+      () => hugeArchive.read('file.txt'),
+      /limit|exceeding|512|bytes/i,
+      'stored entries reject declared sizes above the decompressed-size limit',
+    );
+    await hugeArchive.close();
+
+    const mismatched = original.slice();
+    view = new DataView(mismatched.buffer);
+    view.setUint32(local + 22, payload.byteLength + 1, true);
+    view.setUint32(central + 24, payload.byteLength + 1, true);
+    await fs.writeFile(TEST_DIR + '/stored-size-mismatch.zip', mismatched);
+    const mismatchedArchive = await openArchive(TEST_DIR + '/stored-size-mismatch.zip');
+    await t.rejects(
+      () => mismatchedArchive.read('file.txt'),
+      /size mismatch|Invalid zip archive/i,
+      'stored entries require compressed and uncompressed sizes to match',
+    );
+    await mismatchedArchive.close();
+  });
+
   it('validates zip CRC while reading and extracting', async (t) => {
     const archivePath = TEST_DIR + '/crc.zip';
     const archive = await createArchive(archivePath);

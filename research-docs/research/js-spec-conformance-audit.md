@@ -30,7 +30,7 @@ prioritization. It does not include source fixes.
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
-| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-002, FFS-004, and FFS-005 |
+| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-004 and FFS-005 |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-003 and RTE-004 |
 
 Existing release notes already document broad intentional non-parity areas:
@@ -168,19 +168,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: rerun with newer h2spec/harness isolation, reduce allowlist, and map
   local flow-control tests to omitted subsections.
 
-### FFS-002: Stored ZIP entries bypass decompressed-size guard
-
-- Files: `js/archive.mts`
-- Spec target: archive module safety contract and ZIP method 0.
-- Expected behavior: size caps and size-equality checks apply to stored entries
-  as well as deflated entries.
-- Current behavior: stored entries verify CRC and return bytes without the same
-  cap or `compressedSize === size` consistency check.
-- Coverage gap: no large stored-ZIP or stored-size mismatch fixture.
-- Priority: P1
-- Follow-up: apply `MAX_DECOMPRESSED_BYTES` and stored-size consistency checks in
-  the store branch.
-
 ### FFS-004: XML parser accepts invalid names and namespace errors
 
 - Files: `js/format/xml.mts`
@@ -244,7 +231,7 @@ unless a finding below calls out missing documentation or contradictory tests.
   transfer-list validation.
 - P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
   rejection, and end-to-end WebTransport unidirectional stream routing.
-- P1 archive/XML: stored ZIP size guard and XML name and namespace invalid cases.
+- P1 archive/XML: XML name and namespace invalid cases.
 - P2 runtime/security: encoded `import.meta.url` paths.
 
 ## Accepted Divergences And Non-Goals

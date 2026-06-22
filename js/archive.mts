@@ -1839,6 +1839,15 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
       loader: async () => {
         if (kind === 'directory') return new Uint8Array(0);
         if (method === ZIP_METHOD_STORE) {
+          if (size > MAX_DECOMPRESSED_BYTES) {
+            throw new Error(
+              `Archive entry '${name}' is ${size} bytes, ` +
+              `exceeding the ${MAX_DECOMPRESSED_BYTES}-byte limit`,
+            );
+          }
+          if (compressedSize !== size) {
+            throw new Error(`Invalid zip archive: size mismatch for '${name}'`);
+          }
           if (crc32(compressed) !== crc) {
             throw new Error(`Invalid zip archive: CRC mismatch for '${name}'`);
           }
