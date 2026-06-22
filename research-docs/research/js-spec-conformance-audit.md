@@ -26,33 +26,34 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Finding `JS-SPEC-002` |
+| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | No open findings |
 | Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Finding `JS-SPEC-005` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | No open findings |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | No open findings |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
 | Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | No open findings |
 
+## Closed Conformance Evidence
+
+### Web Streams
+
+The WHATWG Streams release subset is covered by a focused conformance map
+against the Streams Standard living specification. `js/globals/webstreams.mts`
+links the authoritative spec and documents the supported implementation model:
+readable, writable, transform, byte/BYOB, queuing strategy, pipe, tee, and
+non-transferable stream behavior.
+
+| Spec area | Implementation | Evidence | Status |
+| --- | --- | --- | --- |
+| Readable streams, default readers, locking, cancellation, and async iteration | `ReadableStream`, `ReadableStreamDefaultReader` | `tests/internal/globals/webstreams.test.mts`: basics, cancellation, lock errors, invalid receivers, released-reader errors, closed promise timing | Covered |
+| Byte streams and BYOB readers | `ReadableByteStreamController`, `ReadableStreamBYOBReader`, `ReadableStreamBYOBRequest` | `tests/internal/globals/webstreams.test.mts`: BYOB reads, `byobRequest`, pending read release, cancel behavior, detached view rejection | Covered |
+| Writable streams, writers, close/abort, backpressure, and `ready` | `WritableStream`, `WritableStreamDefaultWriter`, `WritableStreamDefaultController` | `tests/internal/globals/webstreams.test.mts`: serialized writes, abort, close, desired size, `ready`, released-writer promise behavior | Covered |
+| Transform streams and controllers | `TransformStream`, `TransformStreamDefaultController` | `tests/internal/globals/webstreams.test.mts`: transform, flush, terminate, error propagation, `pipeThrough` | Covered |
+| Piping, prevent flags, abort signals, and tee cancellation | `pipeTo()`, `pipeThrough()`, `tee()` | `tests/internal/globals/webstreams.test.mts`: locked-stream rejection, preventClose/preventAbort/preventCancel, already-aborted signals, composite tee cancellation | Covered |
+| Queuing strategies and backpressure | `CountQueuingStrategy`, `ByteLengthQueuingStrategy` | `tests/internal/globals/webstreams.test.mts`: highWaterMark, size algorithms, desiredSize, pull scheduling | Covered |
+| Transferable streams | Structured clone and realm messaging integration | `tests/internal/globals/encoding.test.mts`, `tests/realm/transfer.test.mts`; audit non-goal says streams are not general-purpose transferable surfaces | Intentional limit |
+
 ## Findings
-
-### JS-SPEC-002
-
-- Subsystem/files: Web globals, `js/globals/webstreams.mts`, `js/stream.mts`.
-- Spec target and section: WHATWG Streams default reader, BYOB reader,
-  backpressure, tee, pipe, transfer, and queuing strategy algorithms.
-- Expected behavior: Supported stream surfaces should match locking, promise
-  timing, cancellation, close/error propagation, BYOB view handling, and
-  backpressure algorithms for the claimed API subset.
-- Observed implementation/test gap: The implementation is broad and includes
-  BYOB, transform, queuing strategies, and pipe operations, but the documented
-  conformance evidence is local focused tests rather than a section-by-section
-  Streams map. Transfer and structured clone are explicitly unsupported, but
-  remaining algorithmic differences such as microtask timing and BYOB detached
-  buffer behavior are not enumerated.
-- Priority: P1.
-- Suggested follow-up: Build a Streams requirement map from the WHATWG spec and
-  add focused tests for promise timing, release-lock behavior, BYOB edge cases,
-  pipe abort/prevent flags, and tee cancellation.
 
 ### JS-SPEC-005
 
@@ -80,7 +81,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Priority | Subsystem | Coverage to add or strengthen |
 | --- | --- | --- |
 | P0 | HTTP/2 | Burn down `tests/integration/h2spec-allowed-failures.json`; capture exact GOAWAY/RST behavior for timing-sensitive failures. |
-| P1 | Web Streams | Add WHATWG Streams algorithm coverage for BYOB, lock release, promise timing, `tee()`, and pipe abort/prevent flags. |
 
 ## Accepted Divergences And Non-Goals
 
