@@ -499,7 +499,7 @@ class H2ServerFrameValidator {
 
   #validatePing(flags: number, streamId: number, length: number): H2RawAction | 'ignore' | null {
     if (streamId !== 0) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
-    if (length !== 8) return { kind: 'close' };
+    if (length !== 8) return { kind: 'goaway', errorCode: NGHTTP2_FRAME_SIZE_ERROR };
     if ((flags & 0x01) !== 0) return 'ignore';
     return null;
   }

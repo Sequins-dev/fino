@@ -134,23 +134,32 @@ async function readIncomingBidirectionalBytes(
   }
 }
 
-async function rawH3RequestStatus(
+async function rawH3RequestOutcome(
   pipe: QuicPipe,
   clientConn: QuicConnection,
   headers: Array<[string, string]>,
+  maxTurns = 1000,
 ): Promise<string> {
-  let status = '';
-  let resolveStatus!: () => void;
-  const responsePromise = new Promise<void>((resolve) => { resolveStatus = resolve; });
+  let outcome = '';
+  let resolveOutcome!: () => void;
+  const responsePromise = new Promise<void>((resolve) => { resolveOutcome = resolve; });
+
+  const finish = (value: string): void => {
+    if (outcome !== '') return;
+    outcome = value;
+    resolveOutcome();
+  };
 
   const clientSession = Nghttp3Session.createClient({
     onBeginHeaders() {},
     onRecvHeader(_sid, _token, name, value) {
-      if (name === ':status') { status = value; resolveStatus(); }
+      if (name === ':status') finish(`status:${value}`);
     },
     onEndHeaders() {}, onBeginTrailers() {}, onRecvTrailer() {}, onEndTrailers() {},
     onRecvData() {}, onEndStream() {},
-    onStreamClose() {}, onResetStream() {}, onAckedStreamData() {},
+    onStreamClose(_sid, appErrorCode) { if (appErrorCode !== 0n) finish(`stream-error:${appErrorCode}`); },
+    onResetStream(_sid, appErrorCode) { finish(`stream-error:${appErrorCode}`); },
+    onAckedStreamData() {},
   });
 
   clientConn.addEventListener('stream', (event) => {
@@ -195,9 +204,15 @@ async function rawH3RequestStatus(
 
   clientSession.submitRequest(requestSid, headers);
   await pipe.pumpUntil(clientSession.drainWrites());
-  await pipe.pumpUntil(responsePromise);
+  try {
+    await pipe.pumpUntil(responsePromise, maxTurns);
+  } catch (error) {
+    if (outcome !== '') throw error;
+    await pipe.runUntilSettled();
+    outcome = 'no-response';
+  }
   clientSession.close();
-  return status;
+  return outcome;
 }
 
 describe('HTTP/3 (h3 ALPN)', () => {
@@ -424,7 +439,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         },
       });
 
-      const status = await rawH3RequestStatus(pipe, clientConn, [
+      const outcome = await rawH3RequestOutcome(pipe, clientConn, [
         [':method', 'CONNECT'],
         [':scheme', 'https'],
         [':path', '/wt'],
@@ -432,7 +447,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
         [':protocol', 'webtransport-h3'],
       ]);
 
-      t.equal(status, '400', 'server rejects WebTransport without complete peer SETTINGS');
+      t.equal(outcome, 'status:400', 'server rejects WebTransport without complete peer SETTINGS');
       t.equal(webTransportCalled, false, 'onWebTransport is not invoked');
 
       clientConn.destroy();
@@ -2330,13 +2345,13 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('unexpected');
       });
 
-      const status = await rawH3RequestStatus(pipe, clientConn, [
+      const outcome = await rawH3RequestOutcome(pipe, clientConn, [
         [':method', 'GET'],
         [':path', '/missing-scheme'],
         [':authority', 'localhost'],
-      ]);
+      ], 80);
 
-      t.equal(status, '400', 'server rejects missing :scheme');
+      t.equal(outcome, 'no-response', 'server rejects missing :scheme without an HTTP response');
       t.equal(handlerCalled, false, 'handler is not invoked for malformed request control data');
 
       clientConn.destroy();
@@ -2360,15 +2375,15 @@ describe('HTTP/3 (h3 ALPN)', () => {
         return new Response('unexpected');
       });
 
-      const status = await rawH3RequestStatus(pipe, clientConn, [
+      const outcome = await rawH3RequestOutcome(pipe, clientConn, [
         [':method', 'GET'],
         [':scheme', 'https'],
         [':path', '/invalid-protocol'],
         [':authority', 'localhost'],
         [':protocol', 'webtransport-h3'],
-      ]);
+      ], 80);
 
-      t.equal(status, '400', 'server rejects :protocol outside CONNECT');
+      t.equal(outcome, 'no-response', 'server rejects :protocol outside CONNECT without an HTTP response');
       t.equal(handlerCalled, false, 'handler is not invoked for invalid extended CONNECT pseudo-header use');
 
       clientConn.destroy();

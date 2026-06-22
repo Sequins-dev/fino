@@ -909,7 +909,7 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(selfRst!), 0x01, 'self-dependent PRIORITY gets stream PROTOCOL_ERROR');
   });
 
-  it('closes cleanly for invalid PING length and ignores client PING ACK', async (t) => {
+  it('sends GOAWAY for invalid PING length and ignores client PING ACK', async (t) => {
     if (!h2Available) return;
 
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
@@ -917,7 +917,7 @@ describe('H2 server — robustness', () => {
     const ackPing = await rawH2Exchange(server.port, frame(0x06, 0x01, 0, new Uint8Array(8)));
     await server.close();
 
-    t.ok(findFrame(invalidPing, 0x07) === null, 'invalid PING length closes without GOAWAY');
+    t.equal(frameErrorCode(findFrame(invalidPing, 0x07)!), 0x06, 'invalid PING length gets FRAME_SIZE_ERROR');
     t.ok(findFrame(ackPing, 0x06) === null, 'client PING ACK is ignored');
     const goaway = findFrame(ackPing, 0x07);
     t.ok(goaway === null || frameErrorCode(goaway) === 0, 'client PING ACK does not cause an error GOAWAY');
@@ -963,7 +963,7 @@ describe('H2 server — robustness', () => {
     t.ok(errorGoaway === undefined, 'reserved stream id bit did not trigger an error GOAWAY');
   });
 
-  it('RST_STREAMs streams above the max concurrent stream limit', async (t) => {
+  it('RST_STREAMs HEADERS that exceed the advertised concurrent stream limit', async (t) => {
     if (!h2Available) return;
 
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
@@ -974,6 +974,8 @@ describe('H2 server — robustness', () => {
     const frames = await rawH2Exchange(server.port, new Uint8Array(requestFrames));
     await server.close();
 
+    const resetStreamIds = frames.filter(f => f.type === 0x03).map(f => f.streamId);
+    t.ok(resetStreamIds.includes(65), 'stream above advertised limit is reset');
     const rst = findFrame(frames, 0x03, 65);
     t.ok(rst !== null, 'stream above the advertised limit gets RST_STREAM');
     t.equal(frameErrorCode(rst!), 0x07, 'reset uses REFUSED_STREAM');
