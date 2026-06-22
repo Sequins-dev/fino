@@ -479,4 +479,42 @@ describe('SeedServer — nodeDown cascade', () => {
     t.equal(terminates.length, 1, 'timeout terminates parent-side child port');
     t.equal((terminates[0]!.msg as Extract<ClusterMessage, { t: 'TERMINATE' }>).realmId, 'worker-2/heartbeat');
   });
+
+  it('stale worker heartbeat timestamp does not evict a peer just received by the seed', async (t) => {
+    const { seed, transport } = await makeSeed();
+    const realNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+      now = 9_000;
+      transport.sent = [];
+      transport.inject('worker-1', { t: 'HEARTBEAT', ts: 1_000 });
+      seed._checkHeartbeatsForTest();
+    } finally {
+      Date.now = realNow;
+    }
+
+    const peerDowns = transport.sentOfType('PEER_DOWN');
+    t.equal(peerDowns.length, 0, 'stale worker timestamp is ignored for liveness');
+  });
+
+  it('future worker heartbeat timestamp does not keep an overdue peer alive', async (t) => {
+    const { seed, transport } = await makeSeed();
+    const realNow = Date.now;
+    let now = 1_000;
+    Date.now = () => now;
+    try {
+      transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 0 } });
+      transport.inject('worker-1', { t: 'HEARTBEAT', ts: 1_000_000 });
+      transport.sent = [];
+      now = 9_000;
+      seed._checkHeartbeatsForTest();
+    } finally {
+      Date.now = realNow;
+    }
+
+    const peerDowns = transport.sentOfType('PEER_DOWN');
+    t.ok(peerDowns.some(msg => msg.nodeId === 'worker-1'), 'future worker timestamp does not suppress timeout');
+  });
 });

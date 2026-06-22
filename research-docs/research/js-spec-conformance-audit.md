@@ -31,7 +31,7 @@ prioritization. It does not include source fixes.
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001, FFS-002, FFS-004, and FFS-005 |
-| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-003 to RTE-005 |
+| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-003 and RTE-004 |
 
 Existing release notes already document broad intentional non-parity areas:
 server-side Fetch/CORS/cookie behavior, Fino-native OpenTelemetry instead of
@@ -251,19 +251,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: build self-join URL from `opts.hostname` or document/validate
   loopback-only self-participation.
 
-### RTE-005: Cluster heartbeat liveness trusts sender timestamps
-
-- Files: `js/internal/cluster/seed.mts`
-- Spec target: cluster membership/liveness semantics.
-- Expected behavior: liveness is based on seed receive time, not worker-supplied
-  timestamps.
-- Current behavior: `HEARTBEAT` stores `msg.ts` and timeout compares local
-  `Date.now()` against that sender value.
-- Coverage gap: no tests for future timestamps, stale timestamps from healthy
-  peers, or skewed workers.
-- Priority: P1
-- Follow-up: store `Date.now()` on receipt and treat `msg.ts` as diagnostic only.
-
 ## Test Coverage Priorities
 
 - P1 web platform: event-handler attribute dispatch parity and MessagePort
@@ -272,7 +259,6 @@ unless a finding below calls out missing documentation or contradictory tests.
   rejection, and end-to-end WebTransport unidirectional stream routing.
 - P1 archive/XML: ZIP local/central mismatch, stored ZIP size guard, and XML name
   and namespace invalid cases.
-- P1 cluster: heartbeat liveness based on seed receive time.
 - P2 runtime/security: encoded `import.meta.url` paths.
 
 ## Accepted Divergences And Non-Goals

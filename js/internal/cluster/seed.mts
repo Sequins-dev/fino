@@ -343,7 +343,7 @@ export class SeedServer {
       }
 
       case 'HEARTBEAT': {
-        this.#lastSeen.set(from, msg.ts);
+        this.#lastSeen.set(from, Date.now());
         break;
       }
 
