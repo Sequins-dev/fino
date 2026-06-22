@@ -25,16 +25,18 @@ complete.
 2. Verify the top-level module comment.
    - Ensure every related authoritative spec is linked in the module-level `/** */` comment.
    - Keep links close to the module overview, usually under a `Learn more:` or `Useful references:` markdown list.
-   - Mention the implemented subset, compatibility baseline, or intentional limits when the module does not implement the full spec.
+   - Mention the implemented subset, compatibility baseline, or out-of-scope spec areas when the module does not implement the full spec.
+   - If any supported or claimed surface deviates from the spec, treat it as non-conformance to raise and fix, or leave it as an unresolved finding when blocked.
 
 3. Read the authoritative spec text before changing behavior.
    - Use the linked spec as the source of truth, not memory or secondary documentation.
    - Compare the relevant sections methodically. For large specs, start from the sections named by the implementation, tests, comments, constants, frame types, algorithms, or error names.
-   - When the implementation intentionally supports only part of a spec, define the supported subset precisely before judging conformance.
+   - When the implementation intentionally supports only part of a spec, define the supported subset precisely before judging conformance. A supported subset must still conform within its claimed surface.
 
 4. Build a conformance map while working.
    - For each relevant spec section, record: requirement, implementation location, test location, status, and notes.
    - Status should be one of: `covered`, `missing-test`, `missing-implementation`, `intentional-limit`, or `not-applicable`.
+   - Use `intentional-limit` only for genuinely out-of-scope spec areas outside the claimed or supported surface. Do not use it for implemented-but-nonconforming behavior; record that as a gap to fix or an unresolved finding if blocked.
    - Include this map in the final response for audits, or encode durable notes in nearby comments/tests when they help future readers.
 
 5. Align code shape with spec shape when it improves clarity.
@@ -61,5 +63,5 @@ complete.
 
 - Name the spec links used.
 - Summarize implementation and test changes by spec requirement.
-- Call out intentional limits or unresolved conformance gaps.
+- Call out unresolved conformance gaps and blocked out-of-scope areas. Make clear that gaps are not complete until conforming behavior lands.
 - List the exact tests or checks run.
