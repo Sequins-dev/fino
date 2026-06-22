@@ -1,8 +1,14 @@
 /**
  * fino:cluster - public API for cluster participation.
  *
- * Cluster transport uses WebTransport over HTTP/3:
- * https://www.w3.org/TR/webtransport/
+ * Cluster transport uses WebTransport over HTTP/3, with realm port payloads
+ * modeled after HTML channel messaging where the cluster serializer supports
+ * the same value shape.
+ *
+ * Learn more:
+ *
+ * - WebTransport: https://www.w3.org/TR/webtransport/
+ * - HTML channel messaging: https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
  *
  * A node joins the cluster in one of two roles:
  *
@@ -24,6 +30,17 @@
  * authentication are not implemented in this release. Direct peer-to-peer
  * `PORT_MSG` delivery remains deferred; control-plane and data-plane messages
  * route through the seed-backed WebTransport cluster.
+ *
+ * Remote realm messaging conformance:
+ *
+ * | Topic | Current behavior |
+ * | --- | --- |
+ * | Trust model | A single trusted seed routes membership, spawn, and port traffic. Hostile-peer handling, authentication failures, seed election, and peer authorization are unsupported. |
+ * | Spawn routing | `Realm({ remote: true })` sends `SPAWN` through the seed, which selects a worker and returns `SPAWN_ACK`; failures reject the pending spawn. |
+ * | Port routing | `PORT_MSG` frames route through the seed by destination port ID. Direct peer-to-peer port delivery and transport negotiation are not part of the public protocol. |
+ * | Ordering | Messages sent over one routed port pair are delivered in send order by the reliable WebTransport stream path used for each `PORT_MSG`; the API does not promise global ordering across unrelated ports. |
+ * | Transfers | `ArrayBuffer` transfer stores are preserved through the serializer and cluster payload. `MessagePort` and other live handle transfers are rejected for remote realms. |
+ * | Close and errors | Local port close unregisters the parent-side port, remote realm exit rejects or resolves the waiting `run()` / `call()`, and connection close rejects pending spawns and active remote calls. |
  *
  * @example
  * ```ts no_run

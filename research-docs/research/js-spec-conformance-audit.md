@@ -31,7 +31,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` and `JS-SPEC-010` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
-| Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Findings `JS-SPEC-016` and `JS-SPEC-018` |
+| Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Finding `JS-SPEC-016` |
 
 ## Findings
 
@@ -234,27 +234,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 - Suggested follow-up: Add an OpenTelemetry spec matrix and mark OTLP JSON wire
   fields as covered, package API differences as intentional limits, and
   protobuf/gRPC as out of scope.
-
-### JS-SPEC-018
-
-- Subsystem/files: Cluster and realm, `js/cluster.mts`, `js/realm/**`,
-  `js/internal/cluster/**`, `tests/cluster/**`, `tests/realm/**`.
-- Spec target and section: WebTransport security/lifecycle expectations and
-  HTML messaging semantics used by remote realm ports.
-- Expected behavior: Remote realm messaging over WebTransport should preserve
-  message ordering, clone/transfer limits, close/error behavior, and security
-  boundaries promised by the public API.
-- Observed implementation/test gap: The cluster module documents a trusted seed
-  and no authentication, seed election, hostile-peer handling, or direct
-  peer-to-peer port delivery. Realm docs also state that import rules and
-  facades are not security boundaries by themselves. Tests cover current
-  routing and rejection behavior, but the audit should not describe this area
-  as fully spec-conformant WebTransport or HTML messaging parity.
-- Priority: P1.
-- Suggested follow-up: Keep trusted-cluster assumptions prominent, add a
-  remote-message conformance table for ordering, failure, and transfer limits,
-  and ensure future tests distinguish HTML messaging semantics from Fino cluster
-  routing policy.
 
 ## Test Coverage Priorities
 
