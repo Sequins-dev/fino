@@ -27,7 +27,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Findings `JS-SPEC-001`, `JS-SPEC-002`, and `JS-SPEC-004` |
-| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` through `JS-SPEC-008` |
+| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005`, `JS-SPEC-006`, and `JS-SPEC-008` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` and `JS-SPEC-010` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
@@ -135,26 +135,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   sections and mark GOAWAY, DATAGRAM callback proof, reset-at support, and
   capsule fallback as `missing-test`, `missing-implementation`, or
   `intentional-limit` explicitly.
-
-### JS-SPEC-007
-
-- Subsystem/files: Networking, `js/net/quic.mts`,
-  `js/internal/net/quic/**`, `tests/net/quic-node-interop.test.mts`,
-  `tests/net/quic-hq.test.mts`, `research-docs/research/quic-conformance-matrix.md`.
-- Spec target and section: RFC 9000/9001/9002 QUIC, RFC 9221 DATAGRAM, and
-  external peer interoperability.
-- Expected behavior: Local QUIC behavior should be backed by deterministic
-  tests and external peer interop for wire compatibility where feasible.
-- Observed implementation/test gap: The QUIC matrix is strong for local and
-  simulator coverage, but external interop remains gated on optional tools.
-  Node QUIC and ngtcp2 HQ tests skip when environment tooling is absent, and
-  advanced migration, external Version Negotiation, and resumed-session interop
-  remain deferred.
-- Priority: P1.
-- Suggested follow-up: Keep local coverage as direct evidence, but add a
-  release lane that records whether `NODE_QUIC_BIN` and ngtcp2 HQ tools were
-  present. Treat skipped external interop as `not-testable-locally`, not
-  `covered`.
 
 ### JS-SPEC-008
 
@@ -285,7 +265,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P0 | WebCrypto | Assert WebCrypto named errors and key-usage checks for every supported algorithm and unsupported path. |
 | P1 | Web Streams | Add WHATWG Streams algorithm coverage for BYOB, lock release, promise timing, `tee()`, and pipe abort/prevent flags. |
 | P1 | Structured clone/messaging | Add cloneability and transferability matrix tests across same-isolate, thread, process, and remote realm modes. |
-| P1 | QUIC external interop | Record configured external tool presence and keep skipped Node/ngtcp2 interop separate from covered local behavior. |
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 | P1 | YAML/XML | Turn fixture corpora into spec-production maps and add missing negative fixtures for directives, namespace errors, and character validity. |
 | P1 | OpenTelemetry | Map tests to traces, logs, metrics, resources, propagation, OTLP/HTTP JSON, retry, compression, and partial-success spec sections. |
@@ -309,6 +288,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   package, OTLP protobuf, or OTLP/gRPC parity.
 - Cluster assumes one trusted seed. Authentication, seed election,
   hostile-peer behavior, and direct peer-to-peer port delivery are deferred.
-- QUIC external interop, advanced peer-controlled migration/VN, and some
+- QUIC optional peer lanes, advanced peer-controlled migration/VN, and some
   backend-specific TLS parity remain gated or deferred where existing research
   docs say so.
