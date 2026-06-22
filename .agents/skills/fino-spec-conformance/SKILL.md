@@ -5,7 +5,15 @@ description: Audit Fino JavaScript modules against authoritative specifications.
 
 # Fino Spec Conformance
 
-Use this skill to make spec-backed Fino code auditable: the module comment points to the authoritative text, implementation structure is easy to compare with that text, and tests prove each required behavior or document an intentional limit.
+Use this skill to make spec-backed Fino code auditable: the module comment points to the authoritative text, implementation structure is easy to compare with that text, and tests prove each required behavior.
+
+Conformance is always the goal. Tests may expose non-conformance, but they must
+not encode a spec violation as the desired final behavior. If work uncovers a
+place where Fino does not conform, even if the current implementation or notes
+seem to treat it as intentional, raise it and address it so the implementation
+conforms. If immediate conformance is genuinely blocked, leave the failing or
+skipped coverage tied to a clear unresolved finding instead of marking the gap
+complete.
 
 ## Workflow
 
@@ -34,15 +42,19 @@ Use this skill to make spec-backed Fino code auditable: the module comment point
    - Avoid large rewrites only for aesthetics. Restructure when it materially improves correctness review or prevents misreading.
    - Preserve hot-path performance and existing module boundaries.
 
-6. Prove behavior with tests.
+6. Prove conforming behavior with tests.
    - Use `$fino-test-coverage-gaps` for the coverage audit portion when tests need review or expansion.
    - Put tests in the closest `tests/` domain folder and name them by observable behavior, not implementation detail.
    - For spec-backed behavior, group or comment tests by spec section when that makes traceability clearer.
    - Cover success paths, boundary values, malformed inputs, unsupported features, security limits, and platform-dependent gates.
+   - Do not add tests whose final assertion is that Fino violates the spec. A
+     regression test may first fail because it exposes non-conformance, but the
+     implementation must then be fixed so the test asserts the conforming
+     result.
 
 7. Report deviations precisely.
    - Do not call behavior spec-conformant when it is only compatible with common practice.
-   - For intentional gaps, state the reason, user-visible behavior, and test coverage that prevents accidental drift.
+   - For any remaining gap, state the reason, user-visible behavior, and what blocks immediate conformance. Do not remove or close the finding until conforming behavior is implemented.
    - If a spec requirement cannot be verified locally, state what remains unverified and why.
 
 ## Final Response Checklist

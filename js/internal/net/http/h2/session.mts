@@ -271,6 +271,7 @@ export class Nghttp2Session {
    * @internal
    */
   #streamHasData = new Set<number>(); // streams that have received >=1 DATA frame
+  #pendingConsumedData: Array<[number, number]> = [];
   /**
    * Private property `#closed` used by `Nghttp2Session`.
    *
@@ -492,17 +493,30 @@ export class Nghttp2Session {
     // 5. Create the nghttp2 session.
     //    nghttp2_session_server_new2(session**, callbacks*, user_data*, option*)
     //    We pass Pointer.of(sessionHandle) for the out-pointer.
-    let rc: number;
-    if (isServer) {
-      rc = sym!.nghttp2_session_server_new2(
-        Pointer.of(sessionHandle), cbsHandle, null, null,
-      ) as number;
-    } else {
-      rc = sym!.nghttp2_session_client_new2(
-        Pointer.of(sessionHandle), cbsHandle, null, null,
-      ) as number;
+    const optionHandle = new ArrayBuffer(8);
+    const optionRc = sym!.nghttp2_option_new(Pointer.of(optionHandle)) as number;
+    if (optionRc !== 0) {
+      session.#closed = true;
+      sym!.nghttp2_session_callbacks_del(cbsHandle);
+      throw new Error(`nghttp2_option_new failed: ${optionRc}`);
     }
-    sym!.nghttp2_session_callbacks_del(cbsHandle);
+    sym!.nghttp2_option_set_no_auto_window_update(optionHandle, 1);
+
+    let rc: number;
+    try {
+      if (isServer) {
+        rc = sym!.nghttp2_session_server_new2(
+          Pointer.of(sessionHandle), cbsHandle, null, optionHandle,
+        ) as number;
+      } else {
+        rc = sym!.nghttp2_session_client_new2(
+          Pointer.of(sessionHandle), cbsHandle, null, optionHandle,
+        ) as number;
+      }
+    } finally {
+      sym!.nghttp2_option_del(optionHandle);
+      sym!.nghttp2_session_callbacks_del(cbsHandle);
+    }
 
     if (rc !== 0) {
       session.#closed = true;
@@ -611,6 +625,7 @@ export class Nghttp2Session {
       ) => {
         const bytes = Pointer.copyFrom(dataPtrBuf, Number(len)) as Uint8Array;
         cb.onDataChunk(streamId, bytes);
+        if (bytes.byteLength > 0) this.#pendingConsumedData.push([streamId, bytes.byteLength]);
         return 0;
       },
     );
@@ -683,15 +698,17 @@ export class Nghttp2Session {
       ): number => {
         const slot = this.#streamDataSlots.get(streamId);
         if (!slot) return NGHTTP2_ERR_DEFERRED;
-        if (slot.eof) {
-          let flags = NGHTTP2_DATA_FLAG_EOF;
-          if (slot.noEndStream) flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
-          Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
-          slot.eof = false;
-          slot.noEndStream = false;
-          return 0;
+        if (!slot.bytes) {
+          if (slot.eof) {
+            let flags = NGHTTP2_DATA_FLAG_EOF;
+            if (slot.noEndStream) flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+            Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
+            slot.eof = false;
+            slot.noEndStream = false;
+            return 0;
+          }
+          return NGHTTP2_ERR_DEFERRED;
         }
-        if (!slot.bytes) return NGHTTP2_ERR_DEFERRED;
         const chunk = slot.bytes;
         const toWrite = Math.min(chunk.byteLength, Number(length));
         Pointer.copyTo(bufPtrBuf, chunk.subarray(0, toWrite));
@@ -699,6 +716,13 @@ export class Nghttp2Session {
           slot.bytes = chunk.subarray(toWrite);
         } else {
           slot.bytes = undefined;
+          if (slot.eof) {
+            let flags = NGHTTP2_DATA_FLAG_EOF;
+            if (slot.noEndStream) flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
+            Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
+            slot.eof = false;
+            slot.noEndStream = false;
+          }
         }
         return toWrite;
       },
@@ -776,6 +800,10 @@ export class Nghttp2Session {
       const n = await sym!.nghttp2_session_mem_recv2(
         this.#sessionHandle, Pointer.of(bytes), bytes.byteLength,
       ) as bigint;
+      while (this.#pendingConsumedData.length > 0) {
+        const [streamId, size] = this.#pendingConsumedData.shift()!;
+        sym!.nghttp2_session_consume(this.#sessionHandle, streamId, size);
+      }
       return Number(n);
     });
   }
@@ -1031,7 +1059,6 @@ export class Nghttp2Session {
       this.#streamDataSlots.set(streamId, slot);
     }
     if (bytes === null) {
-      slot.bytes = undefined;
       slot.eof = true;
     } else {
       slot.bytes = bytes;
@@ -1065,6 +1092,7 @@ export class Nghttp2Session {
     this.#callbacks.length = 0;
     this.#streamDataSlots.clear();
     this.#streamHasData.clear();
+    this.#pendingConsumedData.length = 0;
   }
 
   [Symbol.dispose](): void {

@@ -136,10 +136,11 @@ export class H2ClientDriver implements ClientDriver {
     let drainChain: Promise<void> = Promise.resolve();
     function drainWrite(): Promise<void> {
       drainChain = drainChain.then(async () => {
-        while (session.wantWrite()) {
+        do {
           const bytes = await session.flush();
           if (bytes && bytes.byteLength > 0) await writer.write(bytes);
-        }
+          else break;
+        } while (session.wantWrite());
         await writer.flush();
       });
       return drainChain;

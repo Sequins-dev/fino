@@ -29,7 +29,7 @@ prioritization. It does not include source fixes.
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 and WEB-003 |
-| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
+| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-004 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
@@ -139,21 +139,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P2
 - Follow-up: decide whether early streaming is intentional; fix behavior or
   update documentation and tests.
-
-### NET-005: h2spec baseline still carries allowlist and omitted coverage debt
-
-- Files: `tests/integration/h2spec.test.mts`,
-  `tests/integration/h2spec-allowed-failures.json`, `tests/net/http2.test.mts`
-- Spec target: RFC 7540/7541 h2spec coverage, mapped to RFC 9113 where relevant.
-- Expected behavior: runnable h2spec cases pass or have narrow source-backed
-  exceptions; omitted sections have deterministic local equivalents.
-- Current behavior: many allowlist entries are timing/harness related, and
-  sections `6.6` and `6.9` are omitted with local coverage rationale.
-- Coverage gap: h2spec `6.9` local equivalents are not clearly named by
-  subsection, making regression tracking harder.
-- Priority: P2
-- Follow-up: rerun with newer h2spec/harness isolation, reduce allowlist, and map
-  local flow-control tests to omitted subsections.
 
 ## Test Coverage Priorities
 

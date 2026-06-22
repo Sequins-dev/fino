@@ -125,6 +125,7 @@ const _SYMBOLS = {
   nghttp2_session_want_read:               { parameters: ['pointer'],          result: 'i32' },
   nghttp2_session_want_write:              { parameters: ['pointer'],          result: 'i32' },
   nghttp2_session_resume_data:             { parameters: ['pointer', 'i32'],  result: 'i32' },
+  nghttp2_session_consume:                 { parameters: ['pointer', 'i32', 'usize'], result: 'i32' },
   nghttp2_session_get_stream_user_data:    { parameters: ['pointer', 'i32'],  result: 'pointer' },
   nghttp2_session_set_stream_user_data:    { parameters: ['pointer', 'i32', 'pointer'], result: 'i32' },
   nghttp2_session_get_local_settings:      { parameters: ['pointer', 'i32'],  result: 'u32' },

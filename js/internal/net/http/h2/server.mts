@@ -543,7 +543,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
 
   function drainWrite(): Promise<void> {
     drainChain = drainChain.then(async () => {
-      while (session.wantWrite()) {
+      do {
         const bytes = await session.flush();
         if (bytes && bytes.byteLength > 0) {
           await writer.write(bytes);
@@ -552,7 +552,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
           // Break so _recvLoop can process the next incoming WINDOW_UPDATE.
           break;
         }
-      }
+      } while (session.wantWrite());
       await writer.flush();
     });
     return drainChain;

@@ -463,6 +463,22 @@ async function h2ClientFetch(port: number, path: string, method = 'GET', body?: 
 }
 
 describe('H2ClientDriver', () => {
+  it('h2spec 6.9.1 drains a response body larger than the default flow-control window', async (t) => {
+    if (!h2Available) return;
+
+    const body = 'x'.repeat(128 * 1024);
+    const server = serveHttp({ port: 0 }, async (_req) => new Response(body));
+    const port = server.port;
+
+    const res = await h2ClientFetch(port, '/');
+    const text = await res.text();
+    await server.close();
+
+    t.equal(res.status, 200, 'status is 200');
+    t.equal(text.length, body.length, 'entire response body drained');
+    t.equal(text, body, 'response body bytes are intact');
+  });
+
   it('resolves responses after H2 headers before the response body finishes', async (t) => {
     if (!h2Available) return;
 
@@ -1010,7 +1026,7 @@ describe('H2 server — robustness', () => {
     t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
   });
 
-  it('ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', async (t) => {
+  it('h2spec 6.9.2 ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', async (t) => {
     if (!h2Available) return;
 
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));

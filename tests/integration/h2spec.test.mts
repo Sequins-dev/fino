@@ -233,7 +233,7 @@ const _OMITTED_SECTIONS: OmittedSection[] = [
     section: 'http2/6.9',
     reason: 'h2spec v2.6 does not produce reliable JUnit for 6.9 as a section and does not emit JUnit for 6.9.1/6.9.2 when invoked directly.',
     releaseAcceptableBecause: 'Local loopback tests cover the release-critical flow-control invariants deterministically while the h2spec harness remains live for runnable sections.',
-    localCoverage: 'tests/net/http2.test.mts covers max DATA frame size, request body flow, WINDOW_UPDATE-driven response progress, and malformed frame shutdown.',
+    localCoverage: 'tests/net/http2.test.mts: h2spec 6.9.1 drains a response body larger than the default flow-control window; h2spec 6.9.2 ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries.',
   },
 ];
 
@@ -334,6 +334,9 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
       t.ok(entry.releaseAcceptableBecause.length > 0, `${entry.section} has release rationale`);
       t.ok(entry.localCoverage.length > 0, `${entry.section} names local coverage`);
     }
+    const flowControl = _OMITTED_SECTIONS.find(s => s.section === 'http2/6.9')!;
+    t.ok(flowControl.localCoverage.includes('h2spec 6.9.1'), 'http2/6.9 names local 6.9.1 coverage');
+    t.ok(flowControl.localCoverage.includes('h2spec 6.9.2'), 'http2/6.9 names local 6.9.2 coverage');
     for (const section of _SECTIONS) {
       t.ok(!_OMITTED_SECTION_SET.has(section), `${section} is not marked omitted`);
     }
