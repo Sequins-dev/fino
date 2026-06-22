@@ -28,7 +28,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | --- | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Findings `JS-SPEC-001`, `JS-SPEC-002`, and `JS-SPEC-004` |
 | Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` through `JS-SPEC-008` |
-| Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` through `JS-SPEC-011` |
+| Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` and `JS-SPEC-010` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
 | Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Findings `JS-SPEC-016` through `JS-SPEC-018` |
@@ -214,27 +214,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   fixtures, with every unsupported DTD validation rule recorded as an
   intentional limit.
 
-### JS-SPEC-011
-
-- Subsystem/files: Formats/archives/compression, `js/archive.mts`,
-  `js/compress.mts`, `tests/archive/archive.test.mts`,
-  `tests/compress.test.mts`.
-- Spec target and section: ZIP APPNOTE, POSIX ustar/pax tar, RFC 1950 zlib,
-  RFC 1951 DEFLATE, RFC 1952 gzip, RFC 7932 Brotli.
-- Expected behavior: The archive and compression APIs should validate wire
-  metadata, reject unsupported extensions before unsafe extraction, and prove
-  size-limit behavior for untrusted inputs.
-- Observed implementation/test gap: ZIP64, ZIP data descriptors, tar PAX/GNU
-  long names, hardlinks, symlinks, and streaming archive APIs are documented as
-  outside baseline. The remaining gap is coverage traceability: the audit doc
-  previously treated these as no-gap areas, but the supported subset needs a
-  matrix for CRC checking, central-directory/local-header disagreement, path
-  normalization, typeflag handling, gzip member metadata, and decompressed-size
-  limits.
-- Priority: P2.
-- Suggested follow-up: Add an archive-format matrix and fixture names for
-  rejected ZIP/tar extensions and malicious metadata combinations.
-
 ### JS-SPEC-012
 
 - Subsystem/files: Security/crypto, `js/globals/crypto.mts`,
@@ -328,7 +307,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 | P1 | YAML/XML | Turn fixture corpora into spec-production maps and add missing negative fixtures for directives, namespace errors, and character validity. |
 | P1 | OpenTelemetry | Map tests to traces, logs, metrics, resources, propagation, OTLP/HTTP JSON, retry, compression, and partial-success spec sections. |
-| P2 | Archive/compression | Add fixtures for central-directory disagreements, unsupported ZIP/tar extensions, path traversal, CRC, and decompressed-size limits. |
 | P2 | SQLite | Add tests documenting SQLite VFS unsupported controls. |
 
 ## Accepted Divergences And Non-Goals

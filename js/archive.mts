@@ -28,6 +28,25 @@
  * Unsupported ZIP and tar extensions are rejected or skipped before extraction
  * writes file contents.
  *
+ * ## Supported subset and validation map
+ *
+ * - ZIP entries use local headers plus central-directory records. Opening
+ *   rejects truncated records, ZIP64 markers, data-descriptor entries, and
+ *   central/local disagreement for flags, method, CRC, sizes, and name.
+ * - ZIP file data is accepted only for stored and raw DEFLATE entries. Reads
+ *   and extraction verify CRC-32 and enforce the decompressed entry-size limit.
+ * - Tar parsing accepts regular files, directories, and POSIX ustar names.
+ *   Header checksums, octal numeric fields, and payload lengths are validated.
+ * - Tar symlink and hardlink typeflags are ignored during extraction; PAX and
+ *   GNU long-name extensions are rejected because this module does not merge
+ *   extension metadata into following entries.
+ * - Archive paths are normalized to slash-separated relative names. Extraction
+ *   rejects absolute paths and parent-directory escapes before touching output.
+ * - `ArchiveExtractOptions.maxEntries` and `maxTotalBytes` add caller-supplied
+ *   extraction limits on top of the built-in per-entry decompressed-size limit.
+ * - `tar.gz` relies on `fino:compress` gzip member validation for the wrapping
+ *   stream, then applies the same tar validation as plain `.tar` archives.
+ *
  * ## Safety model
  *
  * Extraction rejects absolute paths and parent-directory escapes before writing

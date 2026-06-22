@@ -45,6 +45,10 @@ function concat(parts: Uint8Array[]): Uint8Array {
   return out;
 }
 
+function readU32LE(bytes: Uint8Array, offset: number): number {
+  return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, true);
+}
+
 function supportedFormats(): CompressionFormat[] {
   return brotliAvailable
     ? ['gzip', 'deflate', 'deflate-raw', 'brotli']
@@ -87,6 +91,17 @@ describe('one-shot compression', () => {
     const compressed = compress(HELLO, { format: 'gzip' });
     t.equal(compressed[0], 0x1f, 'first byte is 0x1f');
     t.equal(compressed[1], 0x8b, 'second byte is 0x8b');
+  });
+
+  it('gzip produces a valid member frame', (t) => {
+    const input = bytes('gzip framing '.repeat(25));
+    const compressed = compress(input, { format: 'gzip' });
+    t.ok(compressed.byteLength >= 18, 'gzip member includes header and trailer');
+    t.equal(compressed[0], 0x1f, 'first magic byte is 0x1f');
+    t.equal(compressed[1], 0x8b, 'second magic byte is 0x8b');
+    t.equal(compressed[2], 8, 'compression method is DEFLATE');
+    t.equal((compressed[3]! & 0xe0), 0, 'reserved flag bits are clear');
+    t.equal(readU32LE(compressed, compressed.byteLength - 4), input.byteLength, 'ISIZE matches original input length');
   });
 
   it('rejects corrupt compressed data', (t) => {
