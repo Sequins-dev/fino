@@ -102,6 +102,51 @@ describe('fino:format/xml — namespaces', () => {
     t.equal(doc.root.name, 'ns:root');
     t.equal(doc.root.namespace, null);
   });
+
+  it('rejects invalid XML names even when namespace processing is disabled', (t) => {
+    t.throws(() => parse('<1root/>'), /invalid XML name/i);
+    t.throws(() => parse('<root 1attr="x"/>'), /invalid XML name/i);
+    t.throws(() => parse('<!DOCTYPE root [<!ENTITY 1bad "x">]><root/>'), /invalid XML name/i);
+    t.throws(() => parse('<?1bad data?><root/>'), /invalid XML name/i);
+    t.doesNotThrow(() => parse('<ns:root ns:attr="x"/>', { namespaces: false }));
+  });
+
+  it('rejects malformed QName tokens when namespace processing is enabled', (t) => {
+    t.throws(() => parse('<a:b:c xmlns:a="urn:a"/>'), /invalid QName/i);
+    t.throws(() => parse('<root a:b:c="x"/>'), /invalid QName/i);
+  });
+
+  it('rejects duplicate raw attributes', (t) => {
+    t.throws(() => parse('<root a="1" a="2"/>'), /duplicate attribute/i);
+  });
+
+  it('rejects unbound namespace prefixes', (t) => {
+    t.throws(() => parse('<x:root/>'), /unbound namespace prefix/i);
+    t.throws(() => parse('<root x:a="1"/>'), /unbound namespace prefix/i);
+  });
+
+  it('rejects reserved namespace misuse', (t) => {
+    t.throws(() => parse('<root xmlns:xml="urn:wrong"/>'), /reserved namespace/i);
+    t.throws(() => parse('<root xmlns:p="http:\/\/www.w3.org\/XML\/1998\/namespace"/>'), /reserved namespace/i);
+    t.throws(() => parse('<root xmlns:xmlns="urn:x"/>'), /reserved namespace/i);
+    t.throws(() => parse('<xmlns:root/>'), /reserved namespace/i);
+    t.throws(() => parse('<root xmlns:p=""/>'), /prefix undeclaring/i);
+  });
+
+  it('rejects duplicate expanded attribute names', (t) => {
+    t.throws(
+      () => parse('<root xmlns:a="urn:x" xmlns:b="urn:x" a:id="1" b:id="2"/>'),
+      /duplicate attribute/i,
+    );
+  });
+
+  it('matches close tags against the full qualified name', (t) => {
+    t.throws(() => parse('<a:x xmlns:a="urn:x" xmlns:b="urn:x"></b:x>'), /mismatched close tag/i);
+  });
+
+  it('limits self-closing namespace declarations to the empty element itself', (t) => {
+    t.throws(() => parse('<root><x:empty xmlns:x="urn:x"/><x:next/></root>'), /unbound namespace prefix/i);
+  });
 });
 
 describe('fino:format/xml — security', () => {
@@ -320,7 +365,12 @@ describe('fino:format/xml — round-trip (corpus)', () => {
   runCorpus(xmlCorpus, it, (c, t) => {
     if (c.expected === 'parse-err') return;
     const first = parse(c.input);
-    const second = parse(stringify(first, { xmlDeclaration: false }));
+    const serialized = stringify(first, { xmlDeclaration: false });
+    if (first.root.prefix) {
+      t.ok(serialized.includes(`<${first.root.prefix}:${first.root.name}`), c.id);
+      return;
+    }
+    const second = parse(serialized);
     t.equal(second.root.name, first.root.name, c.id);
   });
 });

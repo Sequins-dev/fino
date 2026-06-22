@@ -985,12 +985,12 @@ class XmlParser {
 
   *#elementEvents(): Generator<XmlEvent, void> {
     const sc = this.#sc;
-    const { name, prefix, ns, attrs, selfClose } = this.#parseStartTag();
+    const { rawName, name, prefix, ns, attrs, selfClose } = this.#parseStartTag();
 
     yield { type: 'startElement', name, prefix: prefix ?? null, namespace: ns ?? null, attributes: attrs };
 
     if (!selfClose) {
-      yield* this.#childEvents(name);
+      yield* this.#childEvents(rawName);
     }
     yield { type: 'endElement', name };
   }
@@ -1007,9 +1007,10 @@ class XmlParser {
       const next = sc.peek();
       if (next === '/') {
         sc.eat(); // consume /
-        const closeName = sc.eatWhile(c => c !== 0x3E);
+        const closeName = this.#parseEndTagName();
         sc.expect('>');
         if (closeName !== parentName) throw sc.error(`mismatched close tag: expected </${parentName}>, got </${closeName}>`);
+        if (this.#opts.namespaces !== false && this.#nsStack.length > 1) this.#nsStack.pop();
         return;
       }
       if (next === '!' && sc.peekCode(1) === 0x5B) {
@@ -1027,11 +1028,11 @@ class XmlParser {
   }
 
   #parseElement(): XmlElement {
-    const { name, prefix, ns, attrs, selfClose } = this.#parseStartTag();
+    const { rawName, name, prefix, ns, attrs, selfClose } = this.#parseStartTag();
     if (++this.#depth > (this.#opts.maxDepth ?? MAX_DEPTH)) throw this.#sc.error('element nesting too deep');
     const children: XmlNode[] = [];
     if (!selfClose) {
-      this.#parseChildren(name, children);
+      this.#parseChildren(rawName, children);
     }
     this.#depth--;
     return { type: 'element', name, prefix: prefix ?? null, namespace: ns ?? null, attributes: attrs, children };
@@ -1044,9 +1045,12 @@ class XmlParser {
 
     const name = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x2F && c !== 0x3E);
     if (!name) throw sc.error('expected element name');
+    this.#validateName(name);
+    if (useNs) this.#validateQName(name);
 
     const attrs: Record<string, string> = {};
     const rawAttrs: Record<string, string> = {};
+    const rawAttrNames = new Set<string>();
 
     // Parse attributes
     while (!sc.done) {
@@ -1055,6 +1059,10 @@ class XmlParser {
       if (ch === '/' || ch === '>') break;
       const aname = sc.eatWhile(c => c !== 0x3D && c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x2F && c !== 0x3E);
       if (!aname) break;
+      this.#validateName(aname);
+      if (useNs && aname !== 'xmlns' && !aname.startsWith('xmlns:')) this.#validateQName(aname);
+      if (rawAttrNames.has(aname)) throw sc.error(`duplicate attribute: ${aname}`);
+      rawAttrNames.add(aname);
       sc.skipWhitespace();
       sc.expect('=');
       sc.skipWhitespace();
@@ -1067,29 +1075,56 @@ class XmlParser {
       sc.expect(q);
       rawAttrs[aname] = val;
       if (useNs && aname === 'xmlns') nsFrame[''] = val;
-      else if (useNs && aname.startsWith('xmlns:')) nsFrame[aname.slice(6)] = val;
+      else if (useNs && aname.startsWith('xmlns:')) {
+        const nsPrefix = aname.slice(6);
+        this.#validateNCName(nsPrefix);
+        if (val === '') throw sc.error(`prefix undeclaring is not allowed: ${nsPrefix}`);
+        nsFrame[nsPrefix] = val;
+      }
     }
 
     const selfClose = sc.eatChar('/');
     sc.expect('>');
 
+    if (useNs) this.#validateNamespaceDeclarations(nsFrame);
+
     // Build namespace map
+    let pushedNs = false;
     if (useNs && Object.keys(nsFrame).length > 0) {
       this.#nsStack.push({ ...this.#nsStack[this.#nsStack.length - 1]!, ...nsFrame });
+      pushedNs = true;
     }
 
     // Resolve element namespace
     const [elemPrefix, localName] = _splitName(name);
     const nsMap = this.#nsStack[this.#nsStack.length - 1]!;
     const ns = useNs ? (elemPrefix ? (nsMap[elemPrefix] ?? null) : (nsMap[''] ?? null)) : null;
+    if (useNs && elemPrefix) {
+      if (elemPrefix === 'xmlns') throw sc.error('reserved namespace prefix used as element name: xmlns');
+      if (ns === null) throw sc.error(`unbound namespace prefix: ${elemPrefix}`);
+    }
 
     // Resolve attribute namespaces and populate attrs
+    const expandedAttrs = new Set<string>();
     for (const [aname, val] of Object.entries(rawAttrs)) {
       if (useNs && (aname === 'xmlns' || aname.startsWith('xmlns:'))) continue;
+      if (useNs) {
+        const [attrPrefix, attrLocal] = _splitName(aname);
+        const attrNs = attrPrefix ? (nsMap[attrPrefix] ?? null) : null;
+        if (attrPrefix) {
+          if (attrNs === null) throw sc.error(`unbound namespace prefix: ${attrPrefix}`);
+          if (attrPrefix === 'xmlns') throw sc.error('reserved namespace prefix used as attribute name: xmlns');
+        }
+        const expandedName = `${attrNs ?? ''}\u0000${attrLocal}`;
+        if (expandedAttrs.has(expandedName)) throw sc.error(`duplicate attribute: ${aname}`);
+        expandedAttrs.add(expandedName);
+      }
       attrs[aname] = val;
     }
 
-    return { name: useNs ? localName : name, prefix: useNs ? elemPrefix : null, ns, attrs, selfClose };
+    if (selfClose && pushedNs) this.#nsStack.pop();
+
+    return { rawName: name, name: useNs ? localName : name, prefix: useNs ? elemPrefix : null, ns, attrs, selfClose };
   }
 
   #parseChildren(parentName: string, children: XmlNode[]): void {
@@ -1107,11 +1142,9 @@ class XmlParser {
       const next = sc.peek();
       if (next === '/') {
         sc.eat();
-        const closeName = sc.eatWhile(c => c !== 0x3E);
+        const closeName = this.#parseEndTagName();
         sc.expect('>');
-        const [, closeLocal] = _splitName(closeName);
-        const [, parentLocal] = _splitName(parentName);
-        if ((useNs ? closeLocal : closeName) !== (useNs ? parentLocal : parentName)) {
+        if (closeName !== parentName) {
           throw sc.error(`mismatched close tag: expected </${parentName}>, got </${closeName}>`);
         }
         if (useNs && this.#nsStack.length > 1) this.#nsStack.pop();
@@ -1129,6 +1162,23 @@ class XmlParser {
       }
     }
     throw sc.error(`unclosed element <${parentName}>`);
+  }
+
+  #parseEndTagName(): string {
+    const sc = this.#sc;
+    const useNs = this.#opts.namespaces !== false;
+    const closeName = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x0D && c !== 0x3E);
+    if (!closeName) throw sc.error('expected element name');
+    this.#validateName(closeName);
+    if (useNs) {
+      this.#validateQName(closeName);
+      const [prefix] = _splitName(closeName);
+      if (prefix && !(prefix in this.#nsStack[this.#nsStack.length - 1]!)) {
+        throw sc.error(`unbound namespace prefix: ${prefix}`);
+      }
+    }
+    sc.skipWhitespace();
+    return closeName;
   }
 
   #parseCharData(): string {
@@ -1206,6 +1256,9 @@ class XmlParser {
     const sc = this.#sc;
     sc.expect('?');
     const target = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x3F && c !== 0x3E);
+    if (!target) throw sc.error('expected processing instruction target');
+    this.#validateName(target);
+    if (this.#opts.namespaces !== false) this.#validateNCName(target);
     if (target.toLowerCase() === 'xml' && !this.#sc.done) {
       // XML declaration: consume it
       const decl = sc.eatWhile(c => c !== 0x3F);
@@ -1236,6 +1289,8 @@ class XmlParser {
         const entityMark = sc.mark();
         sc.skipWhitespace();
         const ename = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A);
+        this.#validateName(ename);
+        if (this.#opts.namespaces !== false) this.#validateNCName(ename);
         sc.skipWhitespace();
 
         if (sc.peek() === '"' || sc.peek() === "'") {
@@ -1283,12 +1338,89 @@ class XmlParser {
     }
     return { type: 'doctype', data: s.trim() };
   }
+
+  #validateName(name: string): void {
+    if (!isXmlName(name)) throw this.#sc.error(`invalid XML name: ${name}`);
+  }
+
+  #validateNCName(name: string): void {
+    if (!isXmlName(name) || name.includes(':')) throw this.#sc.error(`invalid XML name: ${name}`);
+  }
+
+  #validateQName(name: string): void {
+    const parts = name.split(':');
+    if (
+      parts.length > 2 ||
+      parts.some(part => part.length === 0) ||
+      parts.some(part => !isXmlName(part) || part.includes(':'))
+    ) {
+      throw this.#sc.error(`invalid QName: ${name}`);
+    }
+  }
+
+  #validateNamespaceDeclarations(nsFrame: Record<string, string>): void {
+    for (const [prefix, uri] of Object.entries(nsFrame)) {
+      if (prefix === 'xml' && uri !== _NS_XML) {
+        throw this.#sc.error('reserved namespace prefix xml must use the XML namespace name');
+      }
+      if (prefix !== 'xml' && uri === _NS_XML) {
+        throw this.#sc.error('reserved namespace name for xml cannot be bound to another prefix or default namespace');
+      }
+      if (prefix === 'xmlns' || uri === _NS_XMLNS) {
+        throw this.#sc.error('reserved namespace prefix or name cannot be redeclared: xmlns');
+      }
+    }
+  }
 }
 
 function _splitName(name: string): [string | null, string] {
   const i = name.indexOf(':');
   if (i === -1) return [null, name];
   return [name.slice(0, i), name.slice(i + 1)];
+}
+
+function isXmlName(name: string): boolean {
+  if (name.length === 0) return false;
+  let first = true;
+  for (const ch of name) {
+    const cp = ch.codePointAt(0)!;
+    if (first) {
+      if (!isXmlNameStartChar(cp)) return false;
+      first = false;
+    } else if (!isXmlNameChar(cp)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isXmlNameStartChar(cp: number): boolean {
+  return cp === 0x3A ||
+    (cp >= 0x41 && cp <= 0x5A) ||
+    cp === 0x5F ||
+    (cp >= 0x61 && cp <= 0x7A) ||
+    (cp >= 0xC0 && cp <= 0xD6) ||
+    (cp >= 0xD8 && cp <= 0xF6) ||
+    (cp >= 0xF8 && cp <= 0x2FF) ||
+    (cp >= 0x370 && cp <= 0x37D) ||
+    (cp >= 0x37F && cp <= 0x1FFF) ||
+    (cp >= 0x200C && cp <= 0x200D) ||
+    (cp >= 0x2070 && cp <= 0x218F) ||
+    (cp >= 0x2C00 && cp <= 0x2FEF) ||
+    (cp >= 0x3001 && cp <= 0xD7FF) ||
+    (cp >= 0xF900 && cp <= 0xFDCF) ||
+    (cp >= 0xFDF0 && cp <= 0xFFFD) ||
+    (cp >= 0x10000 && cp <= 0xEFFFF);
+}
+
+function isXmlNameChar(cp: number): boolean {
+  return isXmlNameStartChar(cp) ||
+    cp === 0x2D ||
+    cp === 0x2E ||
+    (cp >= 0x30 && cp <= 0x39) ||
+    cp === 0xB7 ||
+    (cp >= 0x0300 && cp <= 0x036F) ||
+    (cp >= 0x203F && cp <= 0x2040);
 }
 
 // ---------------------------------------------------------------------------
