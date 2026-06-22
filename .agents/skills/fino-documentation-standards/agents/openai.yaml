@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fino Documentation Standards"
+  short_description: "Ensure public JS docs are complete"
+  default_prompt: "Use $fino-documentation-standards to verify public Fino JS symbols are documented with markdown-first comments."

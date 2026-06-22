@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fino Spec Conformance"
+  short_description: "Audit JS modules against linked specs"
+  default_prompt: "Use $fino-spec-conformance to audit this spec-backed Fino module against its authoritative specification."

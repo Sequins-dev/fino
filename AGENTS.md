@@ -15,14 +15,10 @@
 Use 2-space indentation in `.mts` files and standard Rust formatting conventions in `src/`. Prefer clear, small helpers over deeply nested logic. Use `camelCase` for JS variables/functions, `PascalCase` for classes/types, and `snake_case` for Rust functions/modules. Keep hot-path code allocation-conscious; this runtime is performance-sensitive. Prefer ASCII unless a file already uses Unicode.
 
 ## JS Documentation Comments
-Add JSDoc comments for JS module headers, exported functions, classes,
-interfaces, types, and generated-doc-visible class members. Module-level
-comments should be in-depth: explain what the module does, when to use it,
-important defaults or safety limits, short examples, and relevant learning
-links such as protocol or file-format specifications. Symbol comments should
-describe behavior, defaults, return shape, failure or `null` cases, and security
-caveats where relevant. Use `@internal` for helper exports that support public
-APIs but are not application-facing.
+Use the `$fino-documentation-standards` skill when adding or changing public JS
+APIs or generated-doc-visible symbols. Comments should be markdown-formatted
+`/** */` blocks rather than tag-driven JSDoc prose, with `@internal` reserved
+for helper exports that need it.
 
 ## Testing Guidelines
 Add or update tests with every behavior change, especially for networking, parsing, and FFI paths. Name JS tests `*.test.mts` and place them in the closest domain folder. Favor focused regression tests over broad end-to-end additions. For server work, run at least the affected suite, for example `tests/net/serve.test.mts` and `tests/net/socket-class.test.mts`.

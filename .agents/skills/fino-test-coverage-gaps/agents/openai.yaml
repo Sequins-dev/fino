@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fino Test Coverage Gaps"
+  short_description: "Find missing behavior test coverage"
+  default_prompt: "Use $fino-test-coverage-gaps to audit this Fino change for missing behavior and branch coverage."
