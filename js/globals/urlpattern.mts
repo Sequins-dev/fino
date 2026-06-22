@@ -1,5 +1,5 @@
 /**
- * internal:globals/urlpattern — URLPattern global (WHATWG URL Pattern API)
+ * URLPattern global (WHATWG URL Pattern API)
  *
  * URLPattern lets you declare a pattern for URL matching and then test or
  * match URLs against it. The release baseline is routing-oriented: matching
@@ -107,7 +107,6 @@
  * //   \x            — literal escape
  * ```
  *
- * @internal
  */
 
 import { URL } from './url.mts';

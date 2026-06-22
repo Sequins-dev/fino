@@ -1,6 +1,10 @@
 /**
  * internal HTTP/1.1 server and client drivers.
  *
+ * Learn more:
+ * - HTTP/1.1 messaging: https://www.rfc-editor.org/rfc/rfc9112
+ * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+ *
  * H1ServerDriver.run()  drives one accepted connection: pipelined keep-alive
  * pump, OTel instrumentation, protocol-upgrade handoff, batched writev.
  *
@@ -36,8 +40,8 @@ import {
   Response,
 } from './index.mts';
 import type { Request } from './index.mts';
-import { TextEncoder as _TextEncoder } from '../../internal/globals/encoding.mts';
-import { atob } from '../../internal/globals/encoding.mts';
+import { TextEncoder as _TextEncoder } from '../../globals/encoding.mts';
+import { atob } from '../../globals/encoding.mts';
 import type { BytesReader, BytesWriter } from '../../internal/stream.mts';
 import type {
   ServerDriver,

@@ -1,6 +1,9 @@
 /**
  * fino:cluster - public API for cluster participation.
  *
+ * Cluster transport currently uses WebSocket:
+ * https://www.rfc-editor.org/rfc/rfc6455
+ *
  * A node joins the cluster in one of two roles:
  *
  * `startCluster({ port })` - Start a seed server on the given port AND

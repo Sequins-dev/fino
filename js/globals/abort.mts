@@ -1,5 +1,5 @@
 /**
- * internal:globals/abort — AbortController and AbortSignal globals.
+ * AbortController and AbortSignal globals.
  *
  * AbortController / AbortSignal is the cancellation primitive used across
  * the web platform: fetch(), stream readers, and any API that accepts a
@@ -60,7 +60,6 @@
  * AbortSignal.any(signals)     // signal that aborts when any input signal aborts
  * ```
  *
- * @internal
  */
 
 import { EventTarget, Event } from './eventtarget.mts';

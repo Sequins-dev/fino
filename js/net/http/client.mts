@@ -42,11 +42,11 @@
  */
 
 import { Headers, Request, Response, buildWireResponse } from './index.mts';
-import { fetch as runtimeFetch, _closeFetchH2PoolEntry } from '../../internal/globals/fetch.mts';
-import { EventSource } from './eventsource.mts';
-import type { EventSourceInit } from './eventsource.mts';
-import { WebSocketConnection } from './websocket.mts';
-import type { WebSocketConnectOptions } from './websocket.mts';
+import { fetch as runtimeFetch, _closeFetchH2PoolEntry } from '../../globals/fetch.mts';
+import { EventSource } from '../../globals/eventsource.mts';
+import type { EventSourceInit } from '../../globals/eventsource.mts';
+import { WebSocketConnection } from '../../globals/websocket.mts';
+import type { WebSocketConnectOptions } from '../../globals/websocket.mts';
 import { WebTransport } from './webtransport.mts';
 import type { WebTransportOptions } from './webtransport.mts';
 import type { H3FetchInit } from './h3.mts';

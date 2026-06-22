@@ -1,6 +1,8 @@
 /**
  * internal:net/quic/endpoint — low-level QUIC over ngtcp2.
  *
+ * QUIC transport specification: https://www.rfc-editor.org/rfc/rfc9000
+ *
  * This module implements the public `fino:net/quic` object model using UDP,
  * ngtcp2 and a selectable ngtcp2 crypto backend. It deliberately does not use
  * high-level QUIC transport APIs from TLS libraries; ngtcp2 owns QUIC packet
@@ -10,8 +12,8 @@
  * @internal
  */
 
-import { Event, EventTarget } from '../../globals/eventtarget.mts';
-import { atob, encodeUtf8 } from '../../globals/encoding.mts';
+import { Event, EventTarget } from '../../../globals/eventtarget.mts';
+import { atob, encodeUtf8 } from '../../../globals/encoding.mts';
 import { BytesReader, BytesWriter } from '../../stream.mts';
 import * as loop from '../../runtime/loop.mts';
 import { topic } from '../../../context/topic.mts';

@@ -1,6 +1,10 @@
 /**
  * internal:net/http/h3/server - HTTP/3 server driver over QUIC.
  *
+ * Learn more:
+ * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
+ * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+ *
  * Converts nghttp3 stream callbacks into Fetch-compatible `Request` objects,
  * dispatches the configured handler, and serializes `Response` headers, body,
  * and trailers back over QUIC streams.

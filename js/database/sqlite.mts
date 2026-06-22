@@ -1,6 +1,8 @@
 /**
  * fino:database/sqlite — SQLite database access via system libsqlite3.
  *
+ * SQLite C API reference: https://www.sqlite.org/c3ref/intro.html
+ *
  * Uses dlopen to load the system-installed `libsqlite3`. Release coverage
  * requires that library to be present; CI should set `FINO_REQUIRE_SQLITE=1`
  * when running SQLite tests so missing bindings fail the lane instead of

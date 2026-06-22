@@ -1,10 +1,13 @@
 /**
- * internal:globals/global — web-standard globals registry.
+ * Web-standard globals registry.
  *
  * This module is a barrel re-export that collects all web-platform APIs that
  * should be available as globals. It serves two purposes:
  *
- * 1. **globalThis registration** — `internal/main.mjs` imports this module and
+ * Web platform globals are defined across the WHATWG and W3C standards linked
+ * from each implementation module re-exported here.
+ *
+ * 1. **globalThis registration** — runtime bootstrap imports this module and
  *    assigns each export onto `globalThis`, making them available without an
  *    explicit import in user scripts (just like browsers and Node.js).
  *
@@ -19,25 +22,23 @@
  * keeps each module self-contained. The URL implementation does not need to
  * know or care that `URL` ends up on `globalThis`; that is this registry's
  * concern. This also makes it easy to add or remove globals: add an export
- * here and `internal/main.mjs`'s assignment loop picks it up.
+ * here and bootstrap's assignment loop picks it up.
  *
  *
  * ## What is NOT here
  *
  * - `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval` — also
- *   set on globalThis by `internal/main.mjs` but come from `fino:loop` directly, not
- *   this module, because they're wired to a specific loop handle.
+ *   set on globalThis by runtime bootstrap but come from the loop directly,
+ *   not this module, because they're wired to a specific loop handle.
  * - `process` — available as `fino:process` but not on globalThis (fino is
  *   not Node.js; prefer explicit imports for process-level APIs).
  *
  * ```typescript no_run
- * import { URL, ReadableStream, fetch } from 'internal:globals/global';
  * const url = new URL('https://example.com/');
  * const stream = ReadableStream.from(['chunk']);
  * const response = await fetch(url.href);
  * ```
  *
- * @internal
  */
 
 export { Event, CustomEvent, EventTarget } from './eventtarget.mts';
@@ -67,7 +68,8 @@ export { crypto, cryptoAvailable, tlsAvailable } from './crypto.mts';
 export { fetch } from './fetch.mts';
 export { Headers, Request, Response } from 'internal:net/http/wire';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
-export { WebSocket, CloseEvent, ErrorEvent } from 'fino:net/http/websocket';
+export { EventSource } from './eventsource.mts';
+export { WebSocket, CloseEvent, ErrorEvent } from './websocket.mts';
 export { WebTransport } from 'fino:net/http/webtransport';
 export { MessageEvent, MessagePort, MessageChannel, ThreadPort, _flushPorts } from './messaging.mts';
 export { BroadcastChannel } from './broadcast-channel.mts';

@@ -21,7 +21,7 @@ import * as loop from 'internal:runtime/loop';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
 import type { WebSocketAcceptOptions } from 'fino:net/http/websocket';
 import { digest } from '../../js/internal/openssl.mts';
-import { btoa } from '../../js/internal/globals/encoding.mts';
+import { btoa } from '../../js/globals/encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Helpers

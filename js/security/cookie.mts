@@ -1,6 +1,8 @@
 /**
  * fino:security/cookie - cookie serialization, parsing, signing, and sealing.
  *
+ * HTTP cookie specification: https://www.rfc-editor.org/rfc/rfc6265
+ *
  * Use this module for HTTP cookie values that need browser-compatible
  * attributes or tamper-evident storage. Plain serialization and parsing handle
  * request and response header syntax. Signing appends an HMAC so the original

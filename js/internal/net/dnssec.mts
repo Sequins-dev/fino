@@ -1,6 +1,10 @@
 /**
  * Internal DNSSEC helpers for `fino:net/dns`.
  *
+ * Learn more:
+ * - DNSSEC protocol modifications: https://www.rfc-editor.org/rfc/rfc4035
+ * - DNSSEC resource records: https://www.rfc-editor.org/rfc/rfc4034
+ *
  * This module keeps canonical DNS wire encoding and DNSSEC math away from the
  * resolver transport code. It intentionally has no socket dependencies so the
  * primitives can be tested with static fixtures.
@@ -22,7 +26,7 @@
  * @internal
  */
 
-import { atob, btoa, TextEncoder } from '../globals/encoding.mts';
+import { atob, btoa, TextEncoder } from '../../globals/encoding.mts';
 
 type RrsetRecord = {
   name: string;

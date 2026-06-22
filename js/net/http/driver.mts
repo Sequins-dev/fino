@@ -1,6 +1,8 @@
 /**
  * internal HTTP driver interfaces.
  *
+ * HTTP semantics specification: https://www.rfc-editor.org/rfc/rfc9110
+ *
  * Both H1ServerDriver and H2ServerDriver implement ServerDriver. Both
  * H1ClientDriver and H2ClientDriver implement ClientDriver. serve() and
  * fetch() dispatch to the right driver based on ALPN negotiation or h2c

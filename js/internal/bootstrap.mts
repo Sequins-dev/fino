@@ -51,7 +51,7 @@ import {
   clearInterval,
   queueMicrotask,
   performance,
-} from './globals/time.mts';
+} from '../globals/time.mts';
 import {
   Event,
   CustomEvent,
@@ -93,6 +93,7 @@ import {
   Response,
   CompressionStream,
   DecompressionStream,
+  EventSource,
   WebSocket,
   WebTransport,
   CloseEvent,
@@ -103,7 +104,7 @@ import {
   ThreadPort,
   _flushPorts,
   BroadcastChannel,
-} from './globals/global.mts';
+} from '../globals/global.mts';
 import { getWakeReadFd } from 'internal:thread-port';
 
 interface StackFrame {
@@ -196,6 +197,7 @@ Object.assign(globalThis, {
   Response,
   CompressionStream,
   DecompressionStream,
+  EventSource,
   WebSocket,
   WebTransport,
   CloseEvent,

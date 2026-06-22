@@ -5,6 +5,11 @@
  * header builders, signed or sealed cookies, PBKDF2 password records, JWK/JWKS
  * utilities, compact JWT/JWE helpers, and signed opaque JSON tokens.
  *
+ * Learn more:
+ * - Fetch CORS protocol: https://fetch.spec.whatwg.org/#http-cors-protocol
+ * - HTTP cookies: https://www.rfc-editor.org/rfc/rfc6265
+ * - JSON Web Token: https://www.rfc-editor.org/rfc/rfc7519
+ *
  * ```ts no_run
  * import { createSecurityHeaders, randomToken } from 'fino:security';
  *

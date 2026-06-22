@@ -19,7 +19,7 @@
  */
 
 import { dlopen } from 'fino:ffi';
-import { encodeUtf8, decodeUtf8 } from './internal/globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
 import { os } from 'internal:process';
 import { stdout as processStdout, stderr as processStderr } from './process.mts';
 import type { BytesWriter } from './internal/stream.mts';

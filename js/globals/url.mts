@@ -1,5 +1,5 @@
 /**
- * internal:globals/url — WHATWG URL and URLSearchParams globals.
+ * WHATWG URL and URLSearchParams globals.
  *
  * This is a pure-JS implementation of the common WHATWG URL Standard
  * (https://url.spec.whatwg.org/) surface used by the runtime. It handles
@@ -118,7 +118,6 @@
  * p.toString()  // 'a=1&b=hello+world'
  * ```
  *
- * @internal
  */
 
 // ---------------------------------------------------------------------------
@@ -241,7 +240,8 @@ function _formEncode(str: string): string {
   return result;
 }
 
-/** Decode an application/x-www-form-urlencoded string. */
+/**
+ *  Decode an application/x-www-form-urlencoded string. */
 function _formDecode(str: string): string {
   try {
     return decodeURIComponent(String(str).replace(/\+/g, '%20'));
@@ -250,7 +250,8 @@ function _formDecode(str: string): string {
   }
 }
 
-/** Parse a query string into [[name, value], ...] pairs. Leading '?' is stripped. */
+/**
+ *  Parse a query string into [[name, value], ...] pairs. Leading '?' is stripped. */
 function _parseQueryString(qs: string): [string, string][] {
   const list: [string, string][] = [];
   if (!qs) return list;
@@ -664,7 +665,8 @@ export class URLSearchParams {
 // URL parsing internals
 // ---------------------------------------------------------------------------
 
-/** Default ports for special schemes (value is string for direct comparison). */
+/**
+ *  Default ports for special schemes (value is string for direct comparison). */
 const _DEFAULT_PORTS: Record<string, string> = {
   http: '80',
   https: '443',
@@ -1048,7 +1050,8 @@ function _normalizePath(path: string, hasAuthority: boolean): string {
   return result;
 }
 
-/** Serialize a URL state object to a string. */
+/**
+ *  Serialize a URL state object to a string. */
 function _serialize(s: URLState): string {
   let href = s.scheme + ':';
   if (s.host !== '' || s.scheme === 'file') {
@@ -1067,7 +1070,8 @@ function _serialize(s: URLState): string {
   return href;
 }
 
-/** Compute the origin for a parsed URL state. */
+/**
+ *  Compute the origin for a parsed URL state. */
 function _origin(s: URLState): string {
   const { scheme, host, port } = s;
   if (scheme === 'http' || scheme === 'https' ||

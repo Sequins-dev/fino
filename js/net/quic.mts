@@ -1,6 +1,11 @@
 /**
  * fino:net/quic — low-level QUIC client and server endpoints.
  *
+ * Learn more:
+ * - QUIC transport: https://www.rfc-editor.org/rfc/rfc9000
+ * - QUIC TLS mapping: https://www.rfc-editor.org/rfc/rfc9001
+ * - QUIC loss detection and congestion control: https://www.rfc-editor.org/rfc/rfc9002
+ *
  * This module exposes QUIC as an EventTarget-first transport API. A
  * `QuicEndpoint` owns one or more UDP listeners and delivers accepted
  * connections through both `connection` events and the pull-based `accept()`

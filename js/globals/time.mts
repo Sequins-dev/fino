@@ -1,5 +1,5 @@
 /**
- * internal:globals/time — timer globals and performance.now().
+ * timer globals and performance.now().
  *
  * Implements the web-standard timer API:
  *   - `setTimeout(fn, ms, ...args)`  → integer id
@@ -8,6 +8,10 @@
  *   - `clearInterval(id)`
  *   - `queueMicrotask(fn)`
  *   - `performance.now()`            → milliseconds (float, monotonic)
+ *
+ * Learn more:
+ * - HTML timers: https://html.spec.whatwg.org/multipage/timers-and-user-prompts.html#timers
+ * - High Resolution Time: https://www.w3.org/TR/hr-time-3/
  *
  * All timer functions are automatically installed on `globalThis` before
  * user scripts run:
@@ -45,7 +49,6 @@
  * `timeOrigin`, and `toJSON()` only; it does not implement PerformanceEntry,
  * mark(), measure(), observers, or a performance timeline.
  *
- * @internal
  */
 
 import * as loop from 'internal:runtime/loop';
@@ -112,7 +115,6 @@ export const performance = {
    * Unix timestamp in milliseconds captured when this module loaded.
    *
    * ```typescript no_run
-   * import { performance } from 'internal:globals/time';
    * performance.timeOrigin <= Date.now(); // true
    * ```
    */
@@ -125,7 +127,6 @@ export const performance = {
    * measuring durations, not for wall-clock timestamps.
    *
    * ```typescript no_run
-   * import { performance } from 'internal:globals/time';
    * const start = performance.now();
    * const elapsed = performance.now() - start;
    * ```
@@ -140,7 +141,6 @@ export const performance = {
    * Only timeOrigin is included in this subset.
    *
    * ```typescript no_run
-   * import { performance } from 'internal:globals/time';
    * JSON.stringify(performance.toJSON());
    * ```
    */

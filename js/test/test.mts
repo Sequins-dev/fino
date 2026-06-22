@@ -77,7 +77,7 @@
  * applying hooks from `parentNode` to each leaf inside a `describe` group.
  */
 
-import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../internal/globals/console.mts';
+import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../globals/console.mts';
 import { Assert, AssertionError, type AssertCallbacks } from './assert.mts';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
 

@@ -34,7 +34,7 @@ import {
   type NativeSymbolMap,
 } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from '../globals/encoding.mts';
 
 /**
  * Result returned by symmetric encryption helpers.

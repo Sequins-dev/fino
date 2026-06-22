@@ -1,6 +1,8 @@
 /**
  * internal:net/http/h3/client - HTTP/3 client session over QUIC.
  *
+ * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ *
  * Owns request submission, response header/body/trailer assembly, and stream
  * close/error propagation for an already-established QUIC connection. Public
  * client APIs reach this through `fetch()` or `HttpClient`.

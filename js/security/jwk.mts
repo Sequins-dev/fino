@@ -1,6 +1,8 @@
 /**
  * fino:security/jwk - JSON Web Key generation, import, export, and selection.
  *
+ * JSON Web Key specification: https://www.rfc-editor.org/rfc/rfc7517
+ *
  * Use this module when JOSE helpers need keys in JWK or JWKS form. It can
  * generate symmetric, RSA, and EC keys, import JWKs into WebCrypto keys,
  * export public key material, compute RFC 7638 thumbprints, and select keys

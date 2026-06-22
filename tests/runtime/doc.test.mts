@@ -4,7 +4,7 @@
 
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Process, execPath } from 'fino:process';
+import { Process, cwd, execPath } from 'fino:process';
 import { sqliteAvailable } from 'fino:database/sqlite';
 
 const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1_000_000);
@@ -1187,6 +1187,26 @@ path: ../escape.md
     t.ok(await exists(fs, docsDir + '/hidden-source.html'), 'include-private emits hidden source page');
     t.ok(privateFacadeHtml.includes('Re-exported from <a href="hidden-source.html#hidden-source.HiddenThing">hidden-source.HiddenThing</a>.'), 'include-private links internal-source re-exports once the source page exists');
     t.equal(privateFacadeHtml.includes('Hidden class docs copied into public facades.'), false, 'include-private does not duplicate hidden source docs in facade');
+  });
+
+  it('documents moved web globals without exposing internal import specifiers', async (t) => {
+    const repoRoot = cwd();
+    const docsDir = repoRoot + '/docs';
+    await removeTree(fs, docsDir);
+
+    const run = await runCli(['doc', 'build', 'js/globals/fetch.mts', '--format', 'markdown', '--title', 'Globals Docs'], repoRoot);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+
+    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+    const fetchModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/fetch.mts');
+    t.ok(fetchModule, 'moved fetch globals module is documented by default');
+
+    const markdown = await fs.readFile(docsDir + '/js/globals/fetch.md');
+    t.equal(markdown.includes('internal:globals/'), false, 'generated module docs do not advertise internal globals specifiers');
+
+    await removeTree(fs, docsDir);
   });
 
   it('links OpenTelemetry facade re-exports from public signal modules', async (t) => {

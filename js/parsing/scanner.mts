@@ -26,7 +26,7 @@
  * ```
  */
 
-import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from '../globals/encoding.mts';
 
 /**
  * Text encodings supported by scanner text operations.

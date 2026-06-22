@@ -1,6 +1,11 @@
 /**
  * internal:net/http/h3/webtransport - WebTransport over HTTP/3 framing helpers.
  *
+ * Learn more:
+ * - WebTransport: https://w3c.github.io/webtransport/
+ * - WebTransport over HTTP/3: https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/
+ * - HTTP Datagrams: https://www.rfc-editor.org/rfc/rfc9297
+ *
  * This module contains protocol constants and byte-level helpers shared by the
  * HTTP/3 client and server WebTransport implementation. The helpers are pure:
  * they do not depend on nghttp3 or QUIC connection state, which keeps SETTINGS

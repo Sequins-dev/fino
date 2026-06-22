@@ -124,7 +124,7 @@
 
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from '../internal/globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from '../globals/encoding.mts';
 import * as loop from '../internal/runtime/loop.mts';
 import { FdReader, FdWriter, BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.mts';
 

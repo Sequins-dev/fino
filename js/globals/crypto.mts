@@ -1,7 +1,8 @@
 /**
- * internal:globals/crypto — Web Crypto API global.
+ * Web Crypto API global.
  *
  * Implements a useful subset of the W3C Web Cryptography API:
+ * https://www.w3.org/TR/WebCryptoAPI/
  *
  * - `crypto.getRandomValues(typedArray)`
  * - `crypto.randomUUID()`
@@ -39,7 +40,6 @@
  * ## Example
  *
  * ```typescript no_run
- * import { crypto, cryptoAvailable } from 'internal:globals/crypto';
  *
  * if (cryptoAvailable) {
  *   const data = new TextEncoder().encode('hello');
@@ -48,10 +48,9 @@
  * }
  * ```
  *
- * @internal
  */
 
-import * as openssl from '../openssl.mts';
+import * as openssl from '../internal/openssl.mts';
 import { _registerCryptoKeyCloneHelper } from './encoding.mts';
 import { v4 as _uuidV4 } from 'fino:uuid';
 
@@ -65,7 +64,8 @@ type KeyUsage  = 'encrypt' | 'decrypt' | 'sign' | 'verify' | 'deriveKey' | 'deri
 
 type BufferSource = ArrayBuffer | ArrayBufferView;
 
-/** Normalized algorithm object used internally after calling _normalizeAlgorithm(). */
+/**
+ *  Normalized algorithm object used internally after calling _normalizeAlgorithm(). */
 interface NormalizedAlgorithm {
   name: string;
   hash?: string | { name: string };
@@ -84,7 +84,8 @@ interface NormalizedAlgorithm {
   publicExponent?: Uint8Array; // RSA key generation
 }
 
-/** Algorithm descriptor stored on a CryptoKey. */
+/**
+ *  Algorithm descriptor stored on a CryptoKey. */
 interface CryptoKeyAlgorithm {
   name: string;
   hash?: { name: string };
@@ -556,7 +557,8 @@ function _rawSigToDer(raw: Uint8Array, coordSize: number): Uint8Array {
   return der;
 }
 
-/** Return the coordinate byte size for a CryptoKey's named curve. */
+/**
+ *  Return the coordinate byte size for a CryptoKey's named curve. */
 function _ecCoordSize(key: CryptoKey): number {
   return openssl.ecdsaCoordSize(key.algorithm.namedCurve ?? 'P-256');
 }

@@ -127,7 +127,7 @@
  * ```
  */
 
-import console from '../internal/globals/console.mts';
+import console from '../globals/console.mts';
 import { env, os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
 

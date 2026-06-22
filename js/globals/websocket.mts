@@ -1,7 +1,11 @@
 /**
- * fino:net/http/websocket — WebSocket client and server.
+ * WebSocket client and server.
  *
  * Implements RFC 6455 in two composable layers:
+ *
+ * Learn more:
+ * - WebSocket API: https://websockets.spec.whatwg.org/
+ * - WebSocket Protocol: https://www.rfc-editor.org/rfc/rfc6455
  *
  *
  * ## WebSocketConnection (lower-level engine)
@@ -20,8 +24,6 @@
  *   conn.addEventListener('close',   (e) => console.log(e.code));
  *
  *   // SERVER (inside a serve() handler)
- *   import { serve } from 'fino:net/http/server';
- *   import { WebSocketConnection } from 'fino:net/http/websocket';
  *
  *   serve({ port: 3000 }, async (incoming) => {
  *     if (incoming.kind === 'websocket') {
@@ -80,20 +82,20 @@
  * - PING → automatic PONG with echoed payload
  */
 
-import { encodeUtf8, btoa }  from '../../internal/globals/encoding.mts';
-import { digest }             from '../../internal/openssl.mts';
-import { Headers, _headerTokenList, _parseHeaders, _parseResponseLine } from './index.mts';
-import { Socket }             from '../socket.mts';
-import { TlsSocket }          from '../tls.mts';
-import { lookup }             from '../dns.mts';
-import * as loop              from '../../internal/runtime/loop.mts';
-import { EventTarget, Event } from '../../internal/globals/eventtarget.mts';
-import { MessageEvent } from '../../internal/globals/messaging.mts';
-import { URL }                from '../../internal/globals/url.mts';
-import { Blob }               from '../../internal/globals/blob.mts';
-import { crypto }             from '../../internal/globals/crypto.mts';
-import type { BytesReader, BytesWriter } from '../../internal/stream.mts';
-import type { IPv4Address, IPv6Address } from '../socket.mts';
+import { encodeUtf8, btoa }  from './encoding.mts';
+import { digest }             from '../internal/openssl.mts';
+import { Headers, _headerTokenList, _parseHeaders, _parseResponseLine } from '../net/http/index.mts';
+import { Socket }             from '../net/socket.mts';
+import { TlsSocket }          from '../net/tls.mts';
+import { lookup }             from '../net/dns.mts';
+import * as loop              from '../internal/runtime/loop.mts';
+import { EventTarget, Event } from './eventtarget.mts';
+import { MessageEvent } from './messaging.mts';
+import { URL }                from './url.mts';
+import { Blob }               from './blob.mts';
+import { crypto }             from './crypto.mts';
+import type { BytesReader, BytesWriter } from '../internal/stream.mts';
+import type { IPv4Address, IPv6Address } from '../net/socket.mts';
 import type { ConnectionTakeover } from 'internal:net/http/driver';
 
 // ---------------------------------------------------------------------------
@@ -121,7 +123,8 @@ const CLOSE_TIMEOUT_MS    = 5_000;
 // Event classes (CloseEvent, ErrorEvent — MessageEvent imported from shared module)
 // ---------------------------------------------------------------------------
 
-/** Web-compatible message event used for WebSocket `message` events.
+/**
+ *  Web-compatible message event used for WebSocket `message` events.
  *
  * The event data is a string for text messages and binary data for binary
  * messages, with the WHATWG facade applying `binaryType` conversion.
@@ -345,7 +348,8 @@ export interface WebSocketMessage {
 // Internal: buffered byte consumer
 // ---------------------------------------------------------------------------
 
-/** Accumulates byte chunks and provides consume(n) for exact-byte reads. */
+/**
+ *  Accumulates byte chunks and provides consume(n) for exact-byte reads. */
 class _Buf {
   #chunks: Uint8Array[] = [];
   #size:   number       = 0;
@@ -379,7 +383,8 @@ class _Buf {
   }
 }
 
-/** Read exactly n bytes from a Reader into a _Buf, then consume them. */
+/**
+ *  Read exactly n bytes from a Reader into a _Buf, then consume them. */
 async function _readExactly(
   reader: BytesReader,
   buf:    _Buf,
@@ -397,7 +402,8 @@ async function _readExactly(
 // Internal: frame helpers
 // ---------------------------------------------------------------------------
 
-/** XOR-mask data in-place using a 4-byte masking key. */
+/**
+ *  XOR-mask data in-place using a 4-byte masking key. */
 function _maskInPlace(data: Uint8Array, key: Uint8Array): void {
   for (let i = 0; i < data.length; i++) {
     data[i]! ^= key[i & 3]!;
@@ -472,7 +478,8 @@ function _encodeFrame(
 // Internal: handshake helpers
 // ---------------------------------------------------------------------------
 
-/** Generate a random 16-byte base64-encoded WebSocket handshake key. */
+/**
+ *  Generate a random 16-byte base64-encoded WebSocket handshake key. */
 function _handshakeKey(): string {
   const bytes = new Uint8Array(16);
   crypto.getRandomValues(bytes);
@@ -481,7 +488,8 @@ function _handshakeKey(): string {
   return btoa(binary);
 }
 
-/** Compute the Sec-WebSocket-Accept header value for a given Sec-WebSocket-Key. */
+/**
+ *  Compute the Sec-WebSocket-Accept header value for a given Sec-WebSocket-Key. */
 function _acceptHash(key: string): string {
   const combined = encodeUtf8(key + WS_GUID);
   const hash     = digest('sha-1', combined);

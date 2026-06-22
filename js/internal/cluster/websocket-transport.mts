@@ -1,6 +1,8 @@
 /**
  * internal:cluster/websocket-transport - WebSocket implementations of ClusterTransport.
  *
+ * WebSocket Protocol: https://www.rfc-editor.org/rfc/rfc6455
+ *
  * Two classes cover the two node roles:
  *
  * `WebSocketSeedTransport`   - seed node; accepts incoming WebSocket connections

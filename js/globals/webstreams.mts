@@ -1,5 +1,5 @@
 /**
- * internal:globals/webstreams — ReadableStream, WritableStream, TransformStream globals.
+ * ReadableStream, WritableStream, TransformStream globals.
  *
  * WHATWG Streams specification: https://streams.spec.whatwg.org/
  *
@@ -58,10 +58,9 @@
  * for await (const chunk of stream) console.log(chunk);
  * ```
  *
- * @internal
  */
 
-import { Writer } from '../stream.mts';
+import { Writer } from '../internal/stream.mts';
 import { AbortController } from './abort.mts';
 
 // ---------------------------------------------------------------------------

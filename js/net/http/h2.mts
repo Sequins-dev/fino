@@ -1,6 +1,10 @@
 /**
  * net/http/h2 — internal HTTP/2 capability metadata.
  *
+ * Learn more:
+ * - HTTP/2: https://www.rfc-editor.org/rfc/rfc9113
+ * - HPACK: https://www.rfc-editor.org/rfc/rfc7541
+ *
  * This module exposes the runtime's nghttp2-backed HTTP/2 availability for
  * internal wiring and tests.
  * HTTP/2 is selected automatically by the server for prior-knowledge h2c, h2c

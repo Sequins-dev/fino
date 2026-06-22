@@ -6,6 +6,9 @@
  * values use structured clone semantics for same-isolate realms and transport
  * serialization for thread, process, and remote realm ports.
  *
+ * HTML channel messaging model:
+ * https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
+ *
  * Transfer lists support `ArrayBuffer` values and `MessagePort` endpoints for
  * realm/thread ports. A transferred `MessagePort` is neutered on the sender
  * side and re-entangled for the receiver. Other structured-clone transferables
@@ -45,4 +48,4 @@
  * port1.start();
  * ```
  */
-export { MessagePort, MessageChannel, MessageEvent } from '../internal/globals/messaging.mts';
+export { MessagePort, MessageChannel, MessageEvent } from '../globals/messaging.mts';

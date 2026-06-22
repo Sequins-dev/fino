@@ -1,5 +1,7 @@
 /**
- * internal:globals/encoding — UTF-8 TextEncoder / TextDecoder globals.
+ * UTF-8 TextEncoder / TextDecoder globals.
+ *
+ * WHATWG Encoding Standard: https://encoding.spec.whatwg.org/
  *
  * This module provides two layers:
  *
@@ -74,9 +76,6 @@
  * ## Example
  *
  * ```typescript no_run
- * const { TextEncoder, TextDecoder, encodeUtf8, decodeUtf8 } =
- *   import 'internal:globals/encoding';
- *
  * const encoded = new TextEncoder().encode('hello');
  * console.log(new TextDecoder().decode(encoded));
  *
@@ -84,7 +83,6 @@
  * console.log(decodeUtf8(pathBytes));
  * ```
  *
- * @internal
  */
 
 import { detachArrayBuffer as _detachArrayBuffer } from 'internal:serializer';

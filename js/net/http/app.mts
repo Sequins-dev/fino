@@ -65,7 +65,7 @@ import type {
   IncomingWebSocketRequest,
   IncomingWebTransportRequest,
 } from './server.mts';
-import { WebSocketConnection } from './websocket.mts';
+import { WebSocketConnection } from '../../globals/websocket.mts';
 import { WebTransport } from './webtransport.mts';
 
 /**

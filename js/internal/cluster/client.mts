@@ -47,7 +47,7 @@ import {
 import { serialize, deserialize } from 'internal:serializer';
 import { createThreadContext, stepThreadContext, getThreadPortWakeReadFd, threadPortSend, threadPortRecv } from 'internal:realm-native';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { BaseTransportPort } from '../globals/messaging.mts';
+import { BaseTransportPort } from '../../globals/messaging.mts';
 
 const HEARTBEAT_MS = 2500;
 

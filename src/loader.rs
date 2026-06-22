@@ -125,7 +125,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:realm/pool", "realm/pool"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
-    source_builtin!("internal:globals/messaging", "internal/globals/messaging"),
+    source_builtin!("internal:globals/messaging", "globals/messaging"),
     // internal: CLI commands
     source_builtin!("internal:commands/root", "internal/commands/root"),
     source_builtin!("internal:commands/test", "internal/commands/test"),
@@ -145,30 +145,30 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
     source_builtin!("internal:commands/repl", "internal/commands/repl"),
     // internal: globals (web spec globals)
-    source_builtin!("internal:globals/encoding", "internal/globals/encoding"),
-    source_builtin!("internal:globals/console", "internal/globals/console"),
+    source_builtin!("internal:globals/encoding", "globals/encoding"),
+    source_builtin!("internal:globals/console", "globals/console"),
     source_builtin!(
         "internal:globals/eventtarget",
-        "internal/globals/eventtarget"
+        "globals/eventtarget"
     ),
-    source_builtin!("internal:globals/abort", "internal/globals/abort"),
-    source_builtin!("internal:globals/blob", "internal/globals/blob"),
-    source_builtin!("internal:globals/url", "internal/globals/url"),
-    source_builtin!("internal:globals/urlpattern", "internal/globals/urlpattern"),
-    source_builtin!("internal:globals/webstreams", "internal/globals/webstreams"),
-    source_builtin!("internal:globals/formdata", "internal/globals/formdata"),
-    source_builtin!("internal:globals/crypto", "internal/globals/crypto"),
-    source_builtin!("internal:globals/time", "internal/globals/time"),
-    source_builtin!("internal:globals/fetch", "internal/globals/fetch"),
+    source_builtin!("internal:globals/abort", "globals/abort"),
+    source_builtin!("internal:globals/blob", "globals/blob"),
+    source_builtin!("internal:globals/url", "globals/url"),
+    source_builtin!("internal:globals/urlpattern", "globals/urlpattern"),
+    source_builtin!("internal:globals/webstreams", "globals/webstreams"),
+    source_builtin!("internal:globals/formdata", "globals/formdata"),
+    source_builtin!("internal:globals/crypto", "globals/crypto"),
+    source_builtin!("internal:globals/time", "globals/time"),
+    source_builtin!("internal:globals/fetch", "globals/fetch"),
     source_builtin!(
         "internal:globals/compression-streams",
-        "internal/globals/compression-streams"
+        "globals/compression-streams"
     ),
     source_builtin!(
         "internal:globals/broadcast-channel",
-        "internal/globals/broadcast-channel"
+        "globals/broadcast-channel"
     ),
-    source_builtin!("internal:globals/global", "internal/globals/global"),
+    source_builtin!("internal:globals/global", "globals/global"),
     // internal: compression
     source_builtin!("internal:compress/common", "internal/compress/common"),
     source_builtin!("internal:compress/zlib", "internal/compress/zlib"),
@@ -275,8 +275,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:net/http/h3/client", "internal/net/http/h3/client"),
     source_builtin!("internal:net/http/h3", "net/http/h3"),
     source_builtin!("internal:net/http/pool", "internal/net/http/pool"),
-    source_builtin!("fino:net/http/eventsource", "net/http/eventsource"),
-    source_builtin!("fino:net/http/websocket", "net/http/websocket"),
+    source_builtin!("fino:net/http/eventsource", "globals/eventsource"),
+    source_builtin!("fino:net/http/websocket", "globals/websocket"),
     source_builtin!("fino:net/http/webtransport", "net/http/webtransport"),
     source_builtin!(
         "internal:net/quic/ngtcp2/bindings",

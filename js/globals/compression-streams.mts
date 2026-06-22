@@ -1,7 +1,8 @@
 /**
- * internal:compression-streams — CompressionStream and DecompressionStream.
+ * CompressionStream and DecompressionStream globals.
  *
- * WHATWG Compression Streams specification implementation.
+ * WHATWG Compression Streams specification implementation:
+ * https://compression.spec.whatwg.org/
  * Wraps the streaming compression API from fino:compress in the
  * standard Web Streams interface (ReadableStream / WritableStream pair).
  *
@@ -31,9 +32,6 @@
  * ## Example
  *
  * ```typescript no_run
- * const { CompressionStream, DecompressionStream } =
- *   import 'internal:globals/compression-streams';
- *
  * const source = new Blob(['hello']).stream();
  * const compressed = source.pipeThrough(new CompressionStream('gzip'));
  * const restored = compressed.pipeThrough(new DecompressionStream('gzip'));
@@ -42,7 +40,6 @@
  * console.log(text);
  * ```
  *
- * @internal
  */
 
 import { ReadableStream, WritableStream } from './webstreams.mts';

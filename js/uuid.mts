@@ -5,6 +5,8 @@
  * standardizes v7 (time-ordered). Randomness comes from libcrypto via
  * internal:openssl; no new Rust code is required.
  *
+ * UUID specification: https://www.rfc-editor.org/rfc/rfc9562
+ *
  * v7 same-millisecond monotonicity uses a module-level 12-bit counter (option
  * b from RFC 9562 section 6.2): the counter increments on each v7() call within
  * the same millisecond and resets with fresh random fill when the clock

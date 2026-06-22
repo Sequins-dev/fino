@@ -22,7 +22,7 @@
 
 import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from './globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from '../globals/encoding.mts';
 import { registerResolve, registerInitMeta, registerTranspile, getPackageMap } from 'internal:loader-hooks';
 import { transpile as transpileTypeScript } from 'fino:format/typescript';
 

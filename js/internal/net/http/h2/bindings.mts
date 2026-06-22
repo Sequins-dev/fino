@@ -1,6 +1,8 @@
 /**
  * internal:net/http/h2/bindings - system libnghttp2 via dlopen.
  *
+ * HTTP/2 specification: https://www.rfc-editor.org/rfc/rfc9113
+ *
  * Tries candidate paths in order; sets `h2Available` accordingly.
  * Homebrew paths are first so macOS users get the right build.
  *
@@ -26,7 +28,7 @@
 
 import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { TextEncoder as _TextEncoder, TextDecoder as _TextDecoder } from '../../../globals/encoding.mts';
+import { TextEncoder as _TextEncoder, TextDecoder as _TextDecoder } from '../../../../globals/encoding.mts';
 
 /**
  * Re-export the FFI pointer helper used by HTTP/2 internals.

@@ -1,5 +1,8 @@
 /**
- * BroadcastChannel — WHATWG-compatible one-to-many pub/sub across Realms.
+ * BroadcastChannel global for one-to-many pub/sub across Realms.
+ *
+ * HTML BroadcastChannel API:
+ * https://html.spec.whatwg.org/multipage/web-messaging.html#broadcasting-to-other-browsing-contexts
  *
  * Same-Realm and cross-Isolate delivery both flow through the Rust-side global
  * registry (`internal:broadcast`).  The registry fans out serialised message
@@ -17,7 +20,6 @@
  * ## Example
  *
  * ```typescript no_run
- * import { BroadcastChannel } from 'internal:globals/broadcast-channel';
  *
  * const channel = new BroadcastChannel('cache-invalidations');
  * channel.onmessage = (event) => {
@@ -28,7 +30,6 @@
  * channel.close();
  * ```
  *
- * @internal
  */
 
 import { Event, EventTarget } from './eventtarget.mts';

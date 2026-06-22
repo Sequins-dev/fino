@@ -1,5 +1,7 @@
 /**
- * internal:globals/fetch — spec-compliant Fetch API global implementation.
+ * Fetch API global implementation.
+ *
+ * WHATWG Fetch Standard: https://fetch.spec.whatwg.org/
  *
  * Implements Fino's release-supported server-side Fetch baseline:
  *   - HTTP and HTTPS support over plain TCP and TLS
@@ -69,7 +71,6 @@
  *   });
  * ```
  *
- * @internal
  */
 
 import { lookup } from 'fino:net/dns';
@@ -83,19 +84,19 @@ import {
   buildWireResponse,
 } from 'internal:net/http/wire';
 import { H1ClientDriver } from 'internal:net/http/h1';
-import { H2ConnectionPool, createPoolEntry } from '../net/http/pool.mts';
-import { h2Available } from '../net/http/h2/bindings.mts';
+import { H2ConnectionPool, createPoolEntry } from '../internal/net/http/pool.mts';
+import { h2Available } from '../internal/net/http/h2/bindings.mts';
 import type { Address } from 'fino:net/socket';
 import type { QuicAddress, QuicConnection } from 'fino:net/quic';
-import { H3ClientSession } from '../net/http/h3/client.mts';
-import { h3Available } from '../net/http/h3/bindings.mts';
+import { H3ClientSession } from '../internal/net/http/h3/client.mts';
+import { h3Available } from '../internal/net/http/h3/bindings.mts';
 import {
   brotliAvailable,
   createDecompressor,
 } from 'fino:compress';
 import { topic } from 'fino:context/topic';
-import { otelRuntimeEvent, otelRuntimeTopic } from '../opentelemetry/common.mts';
-import * as openssl from '../openssl.mts';
+import { otelRuntimeEvent, otelRuntimeTopic } from '../internal/opentelemetry/common.mts';
+import * as openssl from '../internal/openssl.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -103,7 +104,8 @@ import * as openssl from '../openssl.mts';
 
 const MAX_REDIRECTS = 20;
 
-/** HTTP status codes that the fetch spec treats as redirects. */
+/**
+ *  HTTP status codes that the fetch spec treats as redirects. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 let _fetchRequestSeq = 0;
 
@@ -429,7 +431,8 @@ async function _singleFetchH3(
   }
 }
 
-/** Close a socket if it is open. Idempotent. */
+/**
+ *  Close a socket if it is open. Idempotent. */
 function _closeSocket(sock: { closed: boolean; close(): void } | null | undefined): void {
   if (sock && !sock.closed) {
     try { sock.close(); } catch (_) {}

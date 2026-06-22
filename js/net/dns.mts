@@ -1,6 +1,8 @@
 /**
  * fino:dns — async DNS resolution via the RFC 1035 wire protocol.
  *
+ * DNS protocol specification: https://www.rfc-editor.org/rfc/rfc1035
+ *
  * This module implements DNS resolution entirely in JS by speaking the DNS
  * wire protocol directly over UDP sockets (from `fino:socket`) and falls back
  * to DNS-over-TCP when a UDP response is marked truncated. It reads nameservers
@@ -156,7 +158,7 @@
 import * as sock from './socket.mts';
 import * as loop from '../internal/runtime/loop.mts';
 import { DiskFileSystem } from '../file/fs.mts';
-import { decodeUtf8, encodeUtf8 } from '../internal/globals/encoding.mts';
+import { decodeUtf8, encodeUtf8 } from '../globals/encoding.mts';
 import { os } from 'internal:process';
 import { Scanner } from '../parsing/scanner.mts';
 import { ROOT_TRUST_ANCHORS, validateDnssecResponse, type DnssecCache } from 'internal:net/dnssec';

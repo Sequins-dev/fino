@@ -1,5 +1,5 @@
 /**
- * internal:globals/eventtarget — Event, CustomEvent, and EventTarget globals
+ * Event, CustomEvent, and EventTarget globals
  *
  * Pure JS implementation of the WHATWG EventTarget interface:
  * https://dom.spec.whatwg.org/#interface-eventtarget
@@ -21,7 +21,6 @@
  * ## Example
  *
  * ```typescript no_run
- * import { Event, EventTarget } from 'internal:globals/eventtarget';
  *
  * const target = new EventTarget();
  * target.addEventListener('ready', () => console.log('ready'), { once: true });
@@ -30,7 +29,6 @@
  * target.dispatchEvent(new Event('ready'));
  * ```
  *
- * @internal
  */
 
 // ---------------------------------------------------------------------------

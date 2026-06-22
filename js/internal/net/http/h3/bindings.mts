@@ -1,6 +1,8 @@
 /**
  * internal:net/http/h3/bindings - optional libnghttp3 dynamic bindings.
  *
+ * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ *
  * The HTTP/3 binding is intentionally optional. `h3Available === false` is a
  * supported release state for builds that do not ship libnghttp3; internal H3
  * helpers call `requireH3()` and fail before opening sockets when the library
@@ -17,7 +19,7 @@
 
 import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { TextEncoder as _TextEncoder, TextDecoder as _TextDecoder } from '../../../globals/encoding.mts';
+import { TextEncoder as _TextEncoder, TextDecoder as _TextDecoder } from '../../../../globals/encoding.mts';
 
 export { Pointer, FfiCallback };
 

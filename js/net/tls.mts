@@ -1,6 +1,8 @@
 /**
  * fino:tls — TLS socket layer.
  *
+ * TLS 1.3 specification: https://www.rfc-editor.org/rfc/rfc8446
+ *
  * `TlsSocket` extends `Socket` from `fino:socket`. TCP connection setup is
  * shared via `connectTcp()` — no duplication. TlsSocket overrides `split()`
  * to return `TlsReader`/`TlsWriter` (which handle SSL_read/SSL_write), and

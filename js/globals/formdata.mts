@@ -1,5 +1,9 @@
 /**
- * internal:globals/formdata — FormData global (WHATWG XHR / Fetch spec)
+ * FormData global (WHATWG XHR / Fetch spec).
+ *
+ * Learn more:
+ * - XMLHttpRequest FormData: https://xhr.spec.whatwg.org/#interface-formdata
+ * - Fetch body handling: https://fetch.spec.whatwg.org/
  *
  * `FormData` is the standard representation of an HTML form submission. It
  * holds an ordered list of name/value entries where values are either strings
@@ -62,12 +66,11 @@
  * fd.forEach((value, key, fd) => { ... });
  * ```
  *
- * @internal
  */
 
 import { Blob, File } from './blob.mts';
 import { encodeUtf8 } from './encoding.mts';
-import { randBytes } from '../openssl.mts';
+import { randBytes } from '../internal/openssl.mts';
 
 // ---------------------------------------------------------------------------
 // Multipart/form-data serialization

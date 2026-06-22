@@ -26,7 +26,7 @@
  */
 
 import { getPort } from 'internal:realm-bridge';
-import type { MessagePort } from '../internal/globals/messaging.mts';
+import type { MessagePort } from '../globals/messaging.mts';
 
 /**
  * Message port passed to this child realm, or `undefined` when none exists.

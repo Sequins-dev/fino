@@ -1,6 +1,11 @@
 /**
  * fino:security/jwt - compact JWT/JWS and JWE helpers backed by JWK keys.
  *
+ * Learn more:
+ * - JSON Web Token: https://www.rfc-editor.org/rfc/rfc7519
+ * - JSON Web Signature: https://www.rfc-editor.org/rfc/rfc7515
+ * - JSON Web Encryption: https://www.rfc-editor.org/rfc/rfc7516
+ *
  * This module signs and verifies compact JWTs with HMAC, RSA, RSASSA-PSS, and
  * ECDSA algorithms, and encrypts or decrypts compact JWE payloads with direct
  * symmetric keys or RSA-OAEP key wrapping. Key inputs may be single JWKs, arrays

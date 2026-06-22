@@ -1,5 +1,7 @@
 /**
- * internal:globals/console — standard Console API installed on globalThis.
+ * standard Console API installed on globalThis.
+ *
+ * Console Standard: https://console.spec.whatwg.org/
  *
  * Provides `console.log`, `warn`, `error`, `info`, `debug`, `assert`,
  * `dir`, `table`, `group`, `groupCollapsed`, `groupEnd`, `time`, `timeEnd`,
@@ -69,7 +71,6 @@
  * console.groupEnd();
  * ```
  *
- * @internal
  */
 
 import { writeLine } from 'internal:runtime/libc';
@@ -84,13 +85,15 @@ interface ConsoleShape {
   group(...args: unknown[]): void;
 }
 
-/** Captured console output record used by internal test tooling. */
+/**
+ *  Captured console output record used by internal test tooling. */
 export interface ConsoleCaptureRecord {
   fd: 1 | 2;
   text: string;
 }
 
-/** Callback that receives formatted console lines while capture is active. */
+/**
+ *  Callback that receives formatted console lines while capture is active. */
 export type ConsoleCaptureSink = (record: ConsoleCaptureRecord) => void;
 
 /**

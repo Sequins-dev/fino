@@ -1,6 +1,8 @@
 /**
  * fino:config — explicit ordered config loading over fino:validate.
  *
+ * JSON Schema specification: https://json-schema.org/specification
+ *
  * Config loading is intentionally explicit. Callers provide a `sources` list,
  * and that list is both the set of enabled source types and the precedence
  * order. Earlier sources are lower precedence; later sources override them.

@@ -1,6 +1,8 @@
 /**
  * internal:net/http/h2/session - Nghttp2Session wrapper.
  *
+ * HTTP/2 specification: https://www.rfc-editor.org/rfc/rfc9113
+ *
  * Owns the nghttp2_session*, all FfiCallbacks, and per-stream data slots.
  *
  * ## Pointer conventions (fino FFI)
@@ -32,7 +34,7 @@
  * @internal
  */
 
-import { TextDecoder as _TextDecoder } from '../../../globals/encoding.mts';
+import { TextDecoder as _TextDecoder } from '../../../../globals/encoding.mts';
 import {
   sym, FfiCallback, Pointer,
   h2Available,

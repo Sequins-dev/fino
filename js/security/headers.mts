@@ -1,4 +1,19 @@
 /**
+ * fino:security/headers - backend security header helpers.
+ *
+ * Builds conservative HTTP response headers for common browser-facing backend
+ * policies. The helpers only format configured header values; they do not
+ * inspect requests, enforce browser policy locally, or validate full CSP
+ * grammars. Applications should still test the resulting policy in target
+ * browsers.
+ *
+ * Learn more:
+ * - Content Security Policy: https://www.w3.org/TR/CSP3/
+ * - Referrer Policy: https://www.w3.org/TR/referrer-policy/
+ * - Strict-Transport-Security: https://www.rfc-editor.org/rfc/rfc6797
+ */
+
+/**
  * Case-insensitive HTTP header map represented with lower-case names.
  *
  * Header builders in this module normalize names to lower-case and store one

@@ -1,9 +1,12 @@
 /**
- * fino:net/http/eventsource — Server-Sent Events (SSE) client and server.
+ * Server-Sent Events (SSE) client and server.
  *
  * Implements the SSE wire protocol (W3C EventSource spec) in two composable
  * layers, following the same thin-primitive philosophy as Fino streams and
  * HTTP wire helpers.
+ *
+ * EventSource / SSE specification:
+ * https://html.spec.whatwg.org/multipage/server-sent-events.html
  *
  *
  * ## EventSourceReader (composable parser primitive)
@@ -13,7 +16,6 @@
  * to how `parseResponse()` consumes a byte stream.
  *
  * ```ts no_run
- *   import { EventSourceReader } from './eventsource.mts';
  *
  *   const reader = new EventSourceReader(response.body);
  *   for await (const event of reader) {
@@ -29,7 +31,6 @@
  * Server-side counterpart to EventSourceReader.
  *
  * ```ts no_run
- *   import { EventSourceWriter } from './eventsource.mts';
  *
  *   const esw = new EventSourceWriter(writer);
  *   await esw.event({ data: 'hello' });
@@ -50,7 +51,6 @@
  * pool or provide HTTP/2 or HTTP/3 transport behavior in this release baseline.
  *
  * ```ts no_run
- *   import { EventSource } from './eventsource.mts';
  *
  *   const es = new EventSource('http://localhost:3000/events');
  *   es.onopen    = () => { ... };
@@ -126,16 +126,16 @@
  *   Network concerns belong in EventSource only.
  */
 
-import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';
-import { Headers, parseResponse } from './index.mts';
-import { Socket } from '../socket.mts';
-import { TlsSocket } from '../tls.mts';
-import { lookup } from '../dns.mts';
-import * as loop from '../../internal/runtime/loop.mts';
-import { EventTarget, Event } from '../../internal/globals/eventtarget.mts';
-import { MessageEvent } from '../../internal/globals/messaging.mts';
-import { URL } from '../../internal/globals/url.mts';
-import type { Address, IPv4Address, IPv6Address } from '../socket.mts';
+import { decodeUtf8, encodeUtf8 } from './encoding.mts';
+import { Headers, parseResponse } from '../net/http/index.mts';
+import { Socket } from '../net/socket.mts';
+import { TlsSocket } from '../net/tls.mts';
+import { lookup } from '../net/dns.mts';
+import * as loop from '../internal/runtime/loop.mts';
+import { EventTarget, Event } from './eventtarget.mts';
+import { MessageEvent } from './messaging.mts';
+import { URL } from './url.mts';
+import type { Address, IPv4Address, IPv6Address } from '../net/socket.mts';
 
 /**
  * Parsed server-sent event yielded by `EventSourceReader`.
@@ -548,14 +548,18 @@ const CONNECTING = 0;
 const OPEN       = 1;
 const CLOSED     = 2;
 
-/** HTTP status codes that trigger reconnection rather than permanent failure. */
+/**
+ *  HTTP status codes that trigger reconnection rather than permanent failure. */
 const RETRIABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
-/** HTTP redirect statuses followed by the client before opening the stream. */
+/**
+ *  HTTP redirect statuses followed by the client before opening the stream. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-/** Redirect cap for one connection attempt. */
+/**
+ *  Redirect cap for one connection attempt. */
 const MAX_REDIRECTS = 20;
 
-/** Default reconnection interval per W3C spec (3 seconds). */
+/**
+ *  Default reconnection interval per W3C spec (3 seconds). */
 const DEFAULT_RETRY_MS = 3000;
 
 /**

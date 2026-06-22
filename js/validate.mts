@@ -1,6 +1,8 @@
 /**
  * fino:validate - JSON Schema validation with fluent builders.
  *
+ * JSON Schema specification: https://json-schema.org/specification
+ *
  * This module treats JSON Schema as the canonical schema representation. The
  * builder API is only a convenient way to construct JSON-Schema-shaped objects;
  * builders serialize directly with `toJSON()`, so they can be passed to

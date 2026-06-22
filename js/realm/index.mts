@@ -53,7 +53,7 @@ import {
   ThreadPort,
   BaseTransportPort,
   type MessageEvent,
-} from '../internal/globals/messaging.mts';
+} from '../globals/messaging.mts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
 import type { ClusterClient } from 'internal:cluster/client';

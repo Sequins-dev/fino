@@ -73,7 +73,7 @@
 
 import { dlopen } from 'fino:ffi';
 import type { DynamicLibrary } from 'fino:ffi';
-import { encodeUtf8 } from '../globals/encoding.mts';
+import { encodeUtf8 } from '../../globals/encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Platform library path

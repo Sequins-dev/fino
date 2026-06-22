@@ -47,7 +47,7 @@
 
 import { os } from 'internal:process';
 import { dlopen, Pointer } from 'fino:ffi';
-import { encodeUtf8, decodeUtf8 } from '../globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from '../../globals/encoding.mts';
 
 /**
  * True when the runtime is running on macOS.

@@ -1,6 +1,12 @@
 /**
  * fino:serve — HTTP server convenience.
  *
+ * Learn more:
+ * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+ * - HTTP/1.1 messaging: https://www.rfc-editor.org/rfc/rfc9112
+ * - HTTP/2: https://www.rfc-editor.org/rfc/rfc9113
+ * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
+ *
  * `serve()` wraps `Socket.listen()` and dispatches each accepted connection to
  * the HTTP/1.1 driver, the HTTP/2 driver for prior-knowledge h2c prefaces, or
  * the HTTP/2 driver for TLS connections that negotiate `h2` through ALPN. The
@@ -55,8 +61,8 @@ import { h2Available } from '../../internal/net/http/h2/bindings.mts';
 import { serve as serveH3, requireH3 } from './h3.mts';
 import type { H3Server, H3ServeOptions } from './h3.mts';
 import { _headerTokenList } from './index.mts';
-import { WebSocketConnection } from './websocket.mts';
-import type { WebSocketAcceptOptions } from './websocket.mts';
+import { WebSocketConnection } from '../../globals/websocket.mts';
+import type { WebSocketAcceptOptions } from '../../globals/websocket.mts';
 import { WebTransport } from './webtransport.mts';
 import type { WebTransportOptions } from './webtransport.mts';
 import type { H3WebTransportHandler } from '../../internal/net/http/h3/server.mts';

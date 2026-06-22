@@ -1,6 +1,8 @@
 /**
  * internal:net/http/h3/session - nghttp3 session wrapper.
  *
+ * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ *
  * Provides the low-level request/response submission, callback registration,
  * native buffer management, and event processing used by the internal HTTP/3
  * client and server drivers.
@@ -8,7 +10,7 @@
  * @internal
  */
 
-import { TextDecoder as _TextDecoder } from '../../../globals/encoding.mts';
+import { TextDecoder as _TextDecoder } from '../../../../globals/encoding.mts';
 import {
   sym, FfiCallback, Pointer,
   h3Available,

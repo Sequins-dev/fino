@@ -1,6 +1,8 @@
 /**
- * fino:realm/messaging internals — MessageEvent, MessagePort, MessageChannel,
- * ThreadPort.
+ * MessageEvent, MessagePort, MessageChannel, and ThreadPort globals.
+ *
+ * HTML channel messaging model:
+ * https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
  *
  * IntraPort transport: same-Isolate Realms exchange messages via direct JS
  * object references + structuredClone. postMessage clones the value and pushes
@@ -21,7 +23,6 @@
  * ## Example
  *
  * ```typescript no_run
- * import { MessageChannel } from 'internal:globals/messaging';
  *
  * const channel = new MessageChannel();
  * channel.port2.onmessage = (event) => {
@@ -32,7 +33,6 @@
  * channel.port1.postMessage({ type: 'ready' });
  * ```
  *
- * @internal
  */
 
 import { Event, EventTarget } from './eventtarget.mts';

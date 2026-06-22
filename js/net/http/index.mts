@@ -1,6 +1,11 @@
 /**
  * internal:net/http/wire — incremental HTTP/1.1 parser and serializer.
  *
+ * Learn more:
+ * - Fetch API objects: https://fetch.spec.whatwg.org/
+ * - HTTP/1.1 messaging: https://www.rfc-editor.org/rfc/rfc9112
+ * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+ *
  * This module implements HTTP/1.1 parsing and serialization entirely in JS,
  * building on Fino's async iterator model. There are no native bindings; the
  * parser is a hand-rolled state machine over byte chunks from any async source.
@@ -121,11 +126,11 @@
  * @internal
  */
 
-import { decodeUtf8, encodeUtf8 } from '../../internal/globals/encoding.mts';
-import { ReadableStream } from '../../internal/globals/webstreams.mts';
-import { Blob } from '../../internal/globals/blob.mts';
-import { FormData, _createMultipartBoundary, _serializeFormData } from '../../internal/globals/formdata.mts';
-import { URLSearchParams } from '../../internal/globals/url.mts';
+import { decodeUtf8, encodeUtf8 } from '../../globals/encoding.mts';
+import { ReadableStream } from '../../globals/webstreams.mts';
+import { Blob } from '../../globals/blob.mts';
+import { FormData, _createMultipartBoundary, _serializeFormData } from '../../globals/formdata.mts';
+import { URLSearchParams } from '../../globals/url.mts';
 import { Scanner } from '../../parsing/scanner.mts';
 
 // ---------------------------------------------------------------------------

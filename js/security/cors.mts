@@ -1,6 +1,8 @@
 /**
  * fino:security/cors - build CORS response headers from an origin policy.
  *
+ * Fetch CORS protocol: https://fetch.spec.whatwg.org/#http-cors-protocol
+ *
  * This module centralizes the small but easy-to-get-wrong rules around
  * reflected origins, wildcard origins, credentialed requests, preflight method
  * lists, and exposed response headers. It returns a plain header map so callers

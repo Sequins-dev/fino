@@ -1,6 +1,10 @@
 /**
  * internal:net/http/h2/server - H2ServerDriver.
  *
+ * Learn more:
+ * - HTTP/2: https://www.rfc-editor.org/rfc/rfc9113
+ * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
+ *
  * ## Stream lifecycle (server side)
  *
  * 1. onBeginHeaders(streamId, isTrailers=false) - allocate H2ServerStream.

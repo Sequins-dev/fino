@@ -31,7 +31,7 @@
 
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { encodeUtf8, decodeUtf8 } from '../globals/encoding.mts';
+import { encodeUtf8, decodeUtf8 } from '../../globals/encoding.mts';
 import { Path } from '../../file/path.mts';
 
 export { Pointer };

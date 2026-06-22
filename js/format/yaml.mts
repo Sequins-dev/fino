@@ -47,7 +47,7 @@
  */
 
 import { ParseError } from 'fino:parsing/scanner';
-import { decodeUtf8 } from '../internal/globals/encoding.mts';
+import { decodeUtf8 } from '../globals/encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Constants

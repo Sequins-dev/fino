@@ -17,7 +17,7 @@
 import { Command } from '../../process/argv.mts';
 import { Realm } from '../../realm/index.mts';
 import { stdin, stdout } from '../../process.mts';
-import { TextEncoder as _TextEncoder } from '../globals/encoding.mts';
+import { TextEncoder as _TextEncoder } from '../../globals/encoding.mts';
 
 const enc = new _TextEncoder();
 
