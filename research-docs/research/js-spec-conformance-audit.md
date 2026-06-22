@@ -31,7 +31,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` and `JS-SPEC-010` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
-| Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Finding `JS-SPEC-016` |
+| Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | No open findings |
 
 ## Findings
 
@@ -215,26 +215,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   unsupported algorithms, invalid key usages, non-extractable export/wrap, and
   malformed import material.
 
-### JS-SPEC-016
-
-- Subsystem/files: Observability, `js/opentelemetry/**`,
-  `js/internal/opentelemetry/**`, `tests/opentelemetry*.test.mts`.
-- Spec target and section: OpenTelemetry API/SDK, OTLP/HTTP JSON, W3C Trace
-  Context, and W3C Baggage.
-- Expected behavior: Fino-native OpenTelemetry should be clear about where it
-  conforms to wire formats and where it intentionally does not match upstream
-  package APIs or OTLP transports.
-- Observed implementation/test gap: The module documents Fino-native scope and
-  excludes OTLP protobuf/gRPC and full package parity. The remaining gap is a
-  signal-by-signal conformance table: traces, logs, metrics, resources,
-  baggage, trace context propagation, retry, compression, and partial success
-  handling are implemented, but tests are not mapped to OpenTelemetry spec
-  requirement sections.
-- Priority: P1.
-- Suggested follow-up: Add an OpenTelemetry spec matrix and mark OTLP JSON wire
-  fields as covered, package API differences as intentional limits, and
-  protobuf/gRPC as out of scope.
-
 ## Test Coverage Priorities
 
 | Priority | Subsystem | Coverage to add or strengthen |
@@ -246,7 +226,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P1 | Structured clone/messaging | Add cloneability and transferability matrix tests across same-isolate, thread, process, and remote realm modes. |
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 | P1 | YAML/XML | Turn fixture corpora into spec-production maps and add missing negative fixtures for directives, namespace errors, and character validity. |
-| P1 | OpenTelemetry | Map tests to traces, logs, metrics, resources, propagation, OTLP/HTTP JSON, retry, compression, and partial-success spec sections. |
 
 ## Accepted Divergences And Non-Goals
 
