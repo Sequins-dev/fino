@@ -529,6 +529,23 @@ function _dataCloneError(message: string): DOMException {
  * @returns {*}
  */
 export function structuredClone<T>(value: T, options?: { transfer?: ArrayBuffer[] }): T {
+  return _structuredCloneWithTransferMap(value, options);
+}
+
+/**
+ * Clone using the same implementation as global `structuredClone()`, with an
+ * optional object substitution map for internal message-transfer algorithms.
+ *
+ * The transfer map is intentionally not exposed on `globalThis.structuredClone`.
+ * It lets `MessagePort.postMessage()` replace transferred ports inside the
+ * message graph while keeping direct global `MessagePort` cloning unsupported.
+ *
+ * @internal
+ */
+export function _structuredCloneWithTransferMap<T>(
+  value: T,
+  options?: { transfer?: ArrayBuffer[]; transferMap?: WeakMap<object, unknown> },
+): T {
   const transferList = options?.transfer;
   const transferSet = transferList ? new Set<ArrayBuffer>(transferList) : null;
   if (transferList) {
@@ -544,7 +561,7 @@ export function structuredClone<T>(value: T, options?: { transfer?: ArrayBuffer[
     }
   }
   const seen = new WeakMap<object, unknown>();
-  const clone = _clone(value, seen, transferSet) as T;
+  const clone = _clone(value, seen, transferSet, options?.transferMap) as T;
   if (transferSet) {
     for (const buf of transferSet) {
       _detachArrayBuffer(buf);
@@ -553,7 +570,12 @@ export function structuredClone<T>(value: T, options?: { transfer?: ArrayBuffer[
   return clone;
 }
 
-function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set<ArrayBuffer> | null = null): unknown {
+function _clone(
+  value: unknown,
+  seen: WeakMap<object, unknown>,
+  transferSet: Set<ArrayBuffer> | null = null,
+  transferMap?: WeakMap<object, unknown>,
+): unknown {
   // Primitives
   if (value === null || typeof value !== 'object' && typeof value !== 'function') {
     if (typeof value === 'symbol') {
@@ -566,6 +588,8 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
   if (typeof value === 'function') {
     throw _dataCloneError('structuredClone: function values cannot be cloned.');
   }
+
+  if (transferMap?.has(value)) return transferMap.get(value);
 
   // Cycle check
   if (seen.has(value)) return seen.get(value);
@@ -663,8 +687,8 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     clone.stack = value.stack;
     if (value.name !== clone.name) clone.name = value.name;
     seen.set(value, clone);
-    (clone as any).errors = _clone((value as any).errors, seen, transferSet);
-    if ('cause' in value) (clone as any).cause = _clone((value as any).cause, seen, transferSet);
+    (clone as any).errors = _clone((value as any).errors, seen, transferSet, transferMap);
+    if ('cause' in value) (clone as any).cause = _clone((value as any).cause, seen, transferSet, transferMap);
     return clone;
   }
 
@@ -673,7 +697,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     const clone = new (value as any).constructor(value.message);
     clone.stack = value.stack;
     if (value.name !== clone.name) clone.name = value.name;
-    if ('cause' in value) (clone as any).cause = _clone((value as any).cause, seen, transferSet);
+    if ('cause' in value) (clone as any).cause = _clone((value as any).cause, seen, transferSet, transferMap);
     seen.set(value, clone);
     return clone;
   }
@@ -683,7 +707,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     const clone = new Map();
     seen.set(value, clone);
     for (const [k, v] of value) {
-      clone.set(_clone(k, seen, transferSet), _clone(v, seen, transferSet));
+      clone.set(_clone(k, seen, transferSet, transferMap), _clone(v, seen, transferSet, transferMap));
     }
     return clone;
   }
@@ -693,7 +717,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     const clone = new Set();
     seen.set(value, clone);
     for (const v of value) {
-      clone.add(_clone(v, seen, transferSet));
+      clone.add(_clone(v, seen, transferSet, transferMap));
     }
     return clone;
   }
@@ -709,7 +733,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
     seen.set(value, clone);
     for (let i = 0; i < value.length; i++) {
       if (Object.prototype.hasOwnProperty.call(value, i)) {
-        clone[i] = _clone(value[i], seen, transferSet);
+        clone[i] = _clone(value[i], seen, transferSet, transferMap);
       }
     }
     return clone;
@@ -728,7 +752,7 @@ function _clone(value: unknown, seen: WeakMap<object, unknown>, transferSet: Set
   const clone = Object.create(cloneProto);
   seen.set(value, clone);
   for (const key of Object.keys(value)) {
-    (clone as any)[key] = _clone((value as any)[key], seen, transferSet);
+    (clone as any)[key] = _clone((value as any)[key], seen, transferSet, transferMap);
   }
   return clone;
 }

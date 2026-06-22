@@ -15,10 +15,11 @@
  * loop.readable() so the event loop wakes when the partner sends a message.
  *
  * MessagePort transfer: a MessagePort can be transferred via postMessage. For
- * same-Isolate transfers the partner is captured in the queue item and a fresh
- * port is re-entangled on delivery. For cross-Isolate transfers a transit
- * channel is created (internal:transit-port) and the partner port is upgraded
- * in-place to use cross-thread messaging.
+ * same-Isolate transfers a fresh receiver-side port replaces matching
+ * MessagePort references in the cloned message data and is also exposed through
+ * MessageEvent.ports. For cross-Isolate transfers a transit channel is created
+ * (internal:transit-port) and the partner port is upgraded in-place to use
+ * cross-thread messaging.
  *
  * ## Example
  *
@@ -36,7 +37,7 @@
  */
 
 import { Event, EventTarget } from './eventtarget.mts';
-import { DOMException, structuredClone } from './encoding.mts';
+import { DOMException, _structuredCloneWithTransferMap } from './encoding.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
 import { threadPortSend, threadPortRecv } from 'internal:realm-native';
@@ -298,8 +299,8 @@ let _nextPortId = 0;
 
 interface QueueItem {
   data: any;
-  /** Ports captured during same-Isolate transfer — re-entangled on delivery. */
-  transferredPortPartners?: MessagePort[];
+  /** Receiver-side ports created during same-Isolate transfer. */
+  transferredPorts?: MessagePort[];
 }
 
 function messagePortDataCloneError(message: string): DOMException {
@@ -717,7 +718,7 @@ export class MessagePort extends EventTarget {
     // Validate the whole transfer list before cloning or neutering so failure
     // leaves ports and queued messages unchanged.
     const transferPorts: MessagePort[] = [];
-    const abTransfer: Transferable[] = [];
+    const abTransfer: ArrayBuffer[] = [];
     const seenTransfer = new Set<Transferable>();
     if (rawTransfer) {
       for (const item of rawTransfer) {
@@ -737,18 +738,39 @@ export class MessagePort extends EventTarget {
       }
     }
 
-    const cloned = structuredClone(message, abTransfer.length > 0 ? { transfer: abTransfer } : undefined);
-    const portPartners: MessagePort[] = [];
+    const transferredPorts: MessagePort[] = [];
+    const portTransferMap = transferPorts.length > 0 ? new WeakMap<object, unknown>() : undefined;
+    for (const port of transferPorts) {
+      const fresh = new MessagePort();
+      transferredPorts.push(fresh);
+      portTransferMap!.set(port, fresh);
+    }
+
+    const cloned = _structuredCloneWithTransferMap(
+      message,
+      abTransfer.length > 0 || portTransferMap
+        ? { transfer: abTransfer, transferMap: portTransferMap }
+        : undefined,
+    );
+
+    const portPartners: (MessagePort | null)[] = [];
     for (const port of transferPorts) {
       const partner = port.#partner;
+      portPartners.push(partner);
       port.#neutered = true;
       _activePorts.delete(port);
       port.#partner?._disentangle();
       port.#partner = null;
-      if (partner !== null) portPartners.push(partner);
+    }
+    for (let i = 0; i < transferredPorts.length; i++) {
+      const partner = portPartners[i];
+      if (partner !== null) {
+        transferredPorts[i]._entangle(partner);
+        partner._entangle(transferredPorts[i]);
+      }
     }
     const item: QueueItem = { data: cloned };
-    if (portPartners.length > 0) item.transferredPortPartners = portPartners;
+    if (transferredPorts.length > 0) item.transferredPorts = transferredPorts;
     this.#partner.#queue.push(item);
   }
 
@@ -878,48 +900,13 @@ export class MessagePort extends EventTarget {
     if (this.#transitHandle !== null) return; // handled by #watchTransit
     const pending = this.#queue.splice(0);
     for (const item of pending) {
-      const ports = this.#reconstructTransferredPorts(item.transferredPortPartners);
-      this.dispatchEvent(new MessageEvent('message', { data: item.data, ports }));
+      this.dispatchEvent(new MessageEvent('message', { data: item.data, ports: item.transferredPorts }));
     }
   }
 
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
-
-  /** Re-entangle each captured partner with a fresh port for the recipient. */
-  /**
-   * Private method `#reconstructTransferredPorts` used by `MessagePort`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #reconstructTransferredPorts() {
-   *     return 'reconstructTransferredPorts';
-   *   }
-   *
-   *   useInternalMethod() {
-   *     return this.#reconstructTransferredPorts();
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #reconstructTransferredPorts(partners?: MessagePort[]): MessagePort[] {
-    if (!partners || partners.length === 0) return [];
-    return partners.map((partner) => {
-      const fresh = new MessagePort();
-      fresh._entangle(partner);
-      partner._entangle(fresh);
-      return fresh;
-    });
-  }
 
   /** Start the transit watch loop and drain incoming messages from it. */
   /**

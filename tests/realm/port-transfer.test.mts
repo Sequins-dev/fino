@@ -16,6 +16,16 @@ function isDataCloneError(err: unknown): boolean {
   return err instanceof Error && err.name === 'DataCloneError';
 }
 
+function nextMessage(port: MessagePort, timeout = 2000): Promise<MessageEvent> {
+  return new Promise((resolve, reject) => {
+    const tid = setTimeout(() => reject(new Error('timeout')), timeout);
+    port.onmessage = (ev) => {
+      clearTimeout(tid);
+      resolve(ev);
+    };
+  });
+}
+
 describe('MessagePort transfer', () => {
   it('structuredClone rejects direct MessagePort transfer with DataCloneError', (t) => {
     const { port1, port2 } = new MessageChannel();
@@ -104,6 +114,63 @@ describe('MessagePort transfer', () => {
     });
 
     t.equal(echoed[0], 'hello from receiver', 'transferred port communicates with mc1.port2');
+  });
+
+  it('same-Isolate: transferred port inside message data is reconstructed', async (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+
+    carrier.port1.postMessage({ port: carried.port1 }, [carried.port1]);
+    const event = await nextMessage(carrier.port2);
+
+    t.ok(event.data.port instanceof MessagePort, 'message data contains a reconstructed MessagePort');
+    t.equal(event.data.port, event.ports[0], 'event.data.port is the same object as event.ports[0]');
+
+    event.data.port.postMessage('from data port');
+    const reply = await nextMessage(carried.port2);
+    t.equal(reply.data, 'from data port', 'reconstructed data port communicates with original partner');
+
+    carrier.port1.close();
+    carrier.port2.close();
+    carried.port2.close();
+    event.data.port.close();
+  });
+
+  it('same-Isolate: duplicate transferred port references in message data preserve identity', async (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+
+    carrier.port1.postMessage(
+      { first: carried.port1, nested: { second: carried.port1 }, list: [carried.port1] },
+      [carried.port1],
+    );
+    const event = await nextMessage(carrier.port2);
+
+    t.equal(event.data.first, event.ports[0], 'first reference uses transferred port object');
+    t.equal(event.data.nested.second, event.ports[0], 'nested reference preserves transferred port identity');
+    t.equal(event.data.list[0], event.ports[0], 'array reference preserves transferred port identity');
+
+    carrier.port1.close();
+    carrier.port2.close();
+    carried.port2.close();
+    event.ports[0]?.close();
+  });
+
+  it('same-Isolate: MessagePort in data without transfer list throws DataCloneError', (t) => {
+    const carried = new MessageChannel();
+    const carrier = new MessageChannel();
+    try {
+      t.throws(
+        () => carrier.port1.postMessage({ port: carried.port1 }),
+        isDataCloneError,
+        'MessagePort data without transfer list throws',
+      );
+    } finally {
+      carried.port1.close();
+      carried.port2.close();
+      carrier.port1.close();
+      carrier.port2.close();
+    }
   });
 
   it('cross-Isolate: port transferred to thread realm receives message', async (t) => {

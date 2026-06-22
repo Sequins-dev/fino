@@ -28,7 +28,7 @@ prioritization. It does not include source fixes.
 
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gap WEB-003 |
+| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | No open gaps |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gap NET-003 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
@@ -41,20 +41,6 @@ and non-browser runtime behaviors. Those are treated as accepted divergences
 unless a finding below calls out missing documentation or contradictory tests.
 
 ## Findings
-
-### WEB-003: Transferred ports are not reconstructed inside `event.data`
-
-- Files: `js/globals/messaging.mts`
-- Spec target: HTML structured serialize with transfer.
-- Expected behavior: if a transferred `MessagePort` appears inside the message
-  graph, the receiver should observe the transferred endpoint in `event.data`.
-- Current behavior: the implementation exposes transferred ports through
-  `MessageEvent.ports`; the global structured clone path rejects MessagePort
-  values inside the data graph.
-- Coverage gap: no browser-parity test for `{ port }` plus `[port]`.
-- Priority: P2
-- Follow-up: decide whether message-graph port transfer is release scope; if so,
-  add an internal transfer map for `MessagePort.postMessage()`.
 
 ### NET-003: Incoming WebTransport unidirectional streams are not H3-routed
 
