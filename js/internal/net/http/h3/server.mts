@@ -64,6 +64,12 @@ function makeStream(streamId: bigint): H3ServerStream {
   };
 }
 
+function hasInvalidRequestControlData(st: H3ServerStream): boolean {
+  if (st.method !== 'CONNECT' && (!st.method || !st.scheme || !st.path)) return true;
+  if (st.protocol && st.method !== 'CONNECT') return true;
+  return false;
+}
+
 export class H3ServerDriver {
   async run(conn: QuicConnection, handler: H3Handler, options: H3ServerDriverOptions = {}): Promise<void> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
@@ -109,6 +115,13 @@ export class H3ServerDriver {
         if (!st) return;
         if (st.badRequest) {
           st.bodyDone = true;
+          startDispatch(st);
+          return;
+        }
+        if (hasInvalidRequestControlData(st)) {
+          st.badRequest = true;
+          st.bodyDone = true;
+          st.body.close();
           startDispatch(st);
           return;
         }

@@ -1,6 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { quicAvailable, QuicStreamEvent } from 'fino:net/quic';
-import type { QuicStream } from 'fino:net/quic';
+import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import {
   fetch as h3Fetch,
   h3Available,
@@ -64,6 +64,72 @@ function h3Pipe(): QuicPipe {
 async function h3Handshake(pipe: QuicPipe) {
   const { client, server } = await pipe.handshake();
   return { client, server };
+}
+
+async function rawH3RequestStatus(
+  pipe: QuicPipe,
+  clientConn: QuicConnection,
+  headers: Array<[string, string]>,
+): Promise<string> {
+  let status = '';
+  let resolveStatus!: () => void;
+  const responsePromise = new Promise<void>((resolve) => { resolveStatus = resolve; });
+
+  const clientSession = Nghttp3Session.createClient({
+    onBeginHeaders() {},
+    onRecvHeader(_sid, _token, name, value) {
+      if (name === ':status') { status = value; resolveStatus(); }
+    },
+    onEndHeaders() {}, onBeginTrailers() {}, onRecvTrailer() {}, onEndTrailers() {},
+    onRecvData() {}, onEndStream() {},
+    onStreamClose() {}, onResetStream() {}, onAckedStreamData() {},
+  });
+
+  clientConn.addEventListener('stream', (event) => {
+    const stream = (event as QuicStreamEvent).stream;
+    const sid = BigInt(stream.id);
+    void (async () => {
+      try {
+        while (true) {
+          const bytes = await stream.reader.read() as Uint8Array | null;
+          const fin = bytes === null;
+          await clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+          if (fin) break;
+        }
+      } catch { /* session or connection closed */ }
+    })();
+  });
+
+  const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
+    clientConn.openUnidirectionalStream(),
+    clientConn.openUnidirectionalStream(),
+    clientConn.openUnidirectionalStream(),
+  ])) as QuicStream[];
+  for (const s of [ctrl, qenc, qdec]) clientSession.addQuicStream(BigInt(s.id), s.writer);
+  clientSession.bindControlStream(BigInt(ctrl.id));
+  clientSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
+  await pipe.pumpUntil(clientSession.drainWrites());
+
+  const requestStream = await pipe.pumpUntil(clientConn.openBidirectionalStream()) as QuicStream;
+  const requestSid = BigInt(requestStream.id);
+  clientSession.addQuicStream(requestSid, requestStream.writer);
+
+  void (async () => {
+    try {
+      while (true) {
+        const bytes = await requestStream.reader.read() as Uint8Array | null;
+        const fin = bytes === null;
+        await clientSession.readStream(requestSid, bytes ?? new Uint8Array(0), fin);
+        if (fin) break;
+      }
+    } catch { /* stream reset or session closed */ }
+  })();
+
+  clientSession.submitRequest(requestSid, headers);
+  await pipe.pumpUntil(clientSession.drainWrites());
+  await pipe.pumpUntil(responsePromise);
+  clientSession.close();
+  return status;
 }
 
 describe('HTTP/3 (h3 ALPN)', () => {
@@ -1986,6 +2052,68 @@ describe('HTTP/3 (h3 ALPN)', () => {
       t.ok(!clientSession.isClosed, 'nghttp3 client session remains open after 405');
 
       clientSession.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone).catch(() => {});
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('rejects non-CONNECT requests missing :scheme before handler dispatch', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+
+      let handlerCalled = false;
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, () => {
+        handlerCalled = true;
+        return new Response('unexpected');
+      });
+
+      const status = await rawH3RequestStatus(pipe, clientConn, [
+        [':method', 'GET'],
+        [':path', '/missing-scheme'],
+        [':authority', 'localhost'],
+      ]);
+
+      t.equal(status, '400', 'server rejects missing :scheme');
+      t.equal(handlerCalled, false, 'handler is not invoked for malformed request control data');
+
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone).catch(() => {});
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('rejects :protocol on non-CONNECT requests before handler dispatch', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+
+      let handlerCalled = false;
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, () => {
+        handlerCalled = true;
+        return new Response('unexpected');
+      });
+
+      const status = await rawH3RequestStatus(pipe, clientConn, [
+        [':method', 'GET'],
+        [':scheme', 'https'],
+        [':path', '/invalid-protocol'],
+        [':authority', 'localhost'],
+        [':protocol', 'webtransport-h3'],
+      ]);
+
+      t.equal(status, '400', 'server rejects :protocol outside CONNECT');
+      t.equal(handlerCalled, false, 'handler is not invoked for invalid extended CONNECT pseudo-header use');
+
       clientConn.destroy();
       await pipe.pumpUntil(serverDone).catch(() => {});
     } finally {

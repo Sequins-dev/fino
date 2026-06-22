@@ -29,7 +29,7 @@ prioritization. It does not include source fixes.
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gap WEB-003 |
-| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-004 |
+| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-002 to NET-004 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
@@ -55,22 +55,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P2
 - Follow-up: decide whether message-graph port transfer is release scope; if so,
   add an internal transfer map for `MessagePort.postMessage()`.
-
-### NET-001: HTTP/3 request pseudo-header validation is incomplete
-
-- Files: `js/internal/net/http/h3/server.mts`
-- Spec target: RFC 9114 request pseudo-headers, RFC 9110 request control data,
-  and extended CONNECT rules.
-- Expected behavior: non-CONNECT requests require valid `:method`, `:scheme`,
-  and `:path`; `:protocol` applies only to extended CONNECT; duplicates,
-  pseudo-after-regular, and context-invalid pseudo-headers should reject the
-  stream before handler dispatch.
-- Current behavior: dispatch rejects missing method/path, but missing `:scheme`
-  falls back to `https`, and `:protocol` can be accepted on ordinary requests.
-- Coverage gap: no raw H3 malformed pseudo-header tests comparable to H2.
-- Priority: P1
-- Follow-up: validate in H3 end-headers before dispatch and add raw malformed H3
-  tests.
 
 ### NET-002: WebTransport over H3 does not enforce peer SETTINGS readiness
 
@@ -123,8 +107,8 @@ unless a finding below calls out missing documentation or contradictory tests.
 
 ## Test Coverage Priorities
 
-- P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
-  rejection, and end-to-end WebTransport unidirectional stream routing.
+- P1 networking: WebTransport missing SETTINGS rejection and end-to-end
+  WebTransport unidirectional stream routing.
 
 ## Accepted Divergences And Non-Goals
 
