@@ -31,8 +31,9 @@
  * formats covered by the focused crypto tests. AES-CTR, AES-KW, full WPT
  * coverage, and full WebCrypto algorithm parity are outside this release
  * baseline. Unsupported algorithms and key formats reject with
- * `NotSupportedError`, malformed key material rejects with `DataError`, and
- * backend operation failures such as AES-GCM authentication failure reject with
+ * `NotSupportedError`, malformed key material rejects with `DataError`,
+ * key/type/usage mismatches reject with `InvalidAccessError`, and backend
+ * operation failures such as AES-GCM authentication failure reject with
  * `OperationError`.
  *
  * Registers `globalThis.crypto` at import time.
@@ -95,7 +96,7 @@ interface CryptoKeyAlgorithm {
   publicExponent?: Uint8Array;    // RSA: typically [0x01,0x00,0x01] = 65537
 }
 
-function _webCryptoError(name: 'DataError' | 'NotSupportedError' | 'OperationError', message: string): Error {
+function _webCryptoError(name: 'DataError' | 'InvalidAccessError' | 'NotSupportedError' | 'OperationError', message: string): Error {
   const err = new Error(message);
   err.name = name;
   return err;
@@ -331,12 +332,12 @@ function _checkCryptoAvailable() {
 }
 
 function _requiredBufferSource(value: BufferSource | undefined, name: string): BufferSource {
-  if (value === undefined) throw new Error(`${name} is required`);
+  if (value === undefined) throw _webCryptoError('DataError', `${name} is required`);
   return value;
 }
 
 function _requiredHash(value: string | { name: string } | undefined, name: string): string | { name: string } {
-  if (value === undefined) throw new Error(`${name} is required`);
+  if (value === undefined) throw _webCryptoError('DataError', `${name} is required`);
   return value;
 }
 
@@ -471,17 +472,17 @@ function _symmetricJwkAlg(algName: string, keyBytes: number, hash?: string | { n
   const bits = keyBytes * 8;
   if (algName === 'AES-GCM') return bits === 128 ? 'A128GCM' : 'A256GCM';
   if (algName === 'AES-CBC') return bits === 128 ? 'A128CBC' : 'A256CBC';
-  throw new Error(`JWK not supported for algorithm ${algName}`);
+  throw _webCryptoError('NotSupportedError', `JWK not supported for algorithm ${algName}`);
 }
 
 function _validateJwkKeyOps(jwkOps: unknown, requestedUsages: readonly KeyUsage[]): void {
   if (jwkOps === undefined) return;
   if (!Array.isArray(jwkOps) || jwkOps.some(op => typeof op !== 'string')) {
-    throw new Error('importKey: JWK key_ops must be an array of strings');
+    throw _webCryptoError('DataError', 'importKey: JWK key_ops must be an array of strings');
   }
   for (const usage of requestedUsages) {
     if (!jwkOps.includes(usage)) {
-      throw new Error(`importKey: requested usage "${usage}" is not allowed by JWK key_ops`);
+      throw _webCryptoError('InvalidAccessError', `importKey: requested usage "${usage}" is not allowed by JWK key_ops`);
     }
   }
 }
@@ -620,13 +621,16 @@ const subtle = {
     const alg = _normalizeAlgorithm(algorithm);
 
     if (_isEd25519Algorithm(alg.name)) {
-      if (key.type !== 'private') throw new Error('Ed25519 sign requires a private key');
-      if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+      if (key.type !== 'private') throw _webCryptoError('InvalidAccessError', 'Ed25519 sign requires a private key');
+      if (!key.usages.includes('sign')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow sign');
       return _toArrayBuffer(openssl.ed25519Sign(_pkeyPtr(key), _toUint8Array(data)));
     }
 
     if (alg.name === 'ECDSA') {
-      if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+      if (key.algorithm.name !== 'ECDSA' || key.type !== 'private') {
+        throw _webCryptoError('InvalidAccessError', 'ECDSA sign requires an ECDSA private key');
+      }
+      if (!key.usages.includes('sign')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow sign');
       const hashAlg = _digestAlgorithm(_hashName(_requiredHash(alg.hash, 'ECDSA hash')));
       const hash    = openssl.digest(hashAlg, _toUint8Array(data));
       const der     = openssl.ecdsaSign(hash, _pkeyPtr(key));
@@ -634,7 +638,10 @@ const subtle = {
     }
 
     if (alg.name === 'RSA-PSS') {
-      if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+      if (key.algorithm.name !== 'RSA-PSS' || key.type !== 'private') {
+        throw _webCryptoError('InvalidAccessError', 'RSA-PSS sign requires an RSA-PSS private key');
+      }
+      if (!key.usages.includes('sign')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow sign');
       const hashName = _hashName(_requiredHash(key.algorithm.hash, 'RSA-PSS hash'));
       const hashAlg  = _digestAlgorithm(hashName);
       const saltLen  = (alg as { saltLength?: number }).saltLength ?? -1;
@@ -642,14 +649,20 @@ const subtle = {
     }
 
     if (alg.name === 'RSASSA-PKCS1-V1_5') {
-      if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+      if (key.algorithm.name !== 'RSASSA-PKCS1-V1_5' || key.type !== 'private') {
+        throw _webCryptoError('InvalidAccessError', 'RSASSA-PKCS1-v1_5 sign requires an RSASSA-PKCS1-v1_5 private key');
+      }
+      if (!key.usages.includes('sign')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow sign');
       const hashName = _hashName(_requiredHash(key.algorithm.hash, 'RSASSA-PKCS1-v1_5 hash'));
       const hashAlg  = _digestAlgorithm(hashName);
       return _toArrayBuffer(openssl.rsaPkcs1Sign(_pkeyPtr(key), hashAlg, _toUint8Array(data)));
     }
 
-    if (alg.name !== 'HMAC') throw new Error('sign: unsupported algorithm "' + alg.name + '"');
-    if (!key.usages.includes('sign')) throw new Error('CryptoKey does not allow sign');
+    if (alg.name !== 'HMAC') throw _webCryptoError('NotSupportedError', 'sign: unsupported algorithm "' + alg.name + '"');
+    if (key.algorithm.name !== 'HMAC' || key.type !== 'secret') {
+      throw _webCryptoError('InvalidAccessError', 'HMAC sign requires an HMAC secret key');
+    }
+    if (!key.usages.includes('sign')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow sign');
     const hash = _digestAlgorithm(_hashName(_requiredHash(key.algorithm.hash, 'HMAC hash')));
     const mac  = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
     return _toArrayBuffer(mac);
@@ -672,15 +685,18 @@ const subtle = {
     const alg = _normalizeAlgorithm(algorithm);
 
     if (_isEd25519Algorithm(alg.name)) {
-      if (key.type !== 'public') throw new Error('Ed25519 verify requires a public key');
-      if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+      if (key.type !== 'public') throw _webCryptoError('InvalidAccessError', 'Ed25519 verify requires a public key');
+      if (!key.usages.includes('verify')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow verify');
       const sig = _toUint8Array(signature);
       if (sig.byteLength !== 64) return false;
       return openssl.ed25519Verify(_pkeyPtr(key), sig, _toUint8Array(data));
     }
 
     if (alg.name === 'ECDSA') {
-      if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+      if (key.algorithm.name !== 'ECDSA' || key.type !== 'public') {
+        throw _webCryptoError('InvalidAccessError', 'ECDSA verify requires an ECDSA public key');
+      }
+      if (!key.usages.includes('verify')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow verify');
       const hashAlg = _digestAlgorithm(_hashName(_requiredHash(alg.hash, 'ECDSA hash')));
       const hash    = openssl.digest(hashAlg, _toUint8Array(data));
       let derSig: Uint8Array;
@@ -693,21 +709,30 @@ const subtle = {
     }
 
     if (alg.name === 'RSA-PSS') {
-      if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+      if (key.algorithm.name !== 'RSA-PSS' || key.type !== 'public') {
+        throw _webCryptoError('InvalidAccessError', 'RSA-PSS verify requires an RSA-PSS public key');
+      }
+      if (!key.usages.includes('verify')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow verify');
       const hashName = _hashName(_requiredHash(key.algorithm.hash, 'RSA-PSS hash'));
       const hashAlg  = _digestAlgorithm(hashName);
       return openssl.rsaPssVerify(_pkeyPtr(key), hashAlg, _toUint8Array(signature), _toUint8Array(data));
     }
 
     if (alg.name === 'RSASSA-PKCS1-V1_5') {
-      if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+      if (key.algorithm.name !== 'RSASSA-PKCS1-V1_5' || key.type !== 'public') {
+        throw _webCryptoError('InvalidAccessError', 'RSASSA-PKCS1-v1_5 verify requires an RSASSA-PKCS1-v1_5 public key');
+      }
+      if (!key.usages.includes('verify')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow verify');
       const hashName = _hashName(_requiredHash(key.algorithm.hash, 'RSASSA-PKCS1-v1_5 hash'));
       const hashAlg  = _digestAlgorithm(hashName);
       return openssl.rsaPkcs1Verify(_pkeyPtr(key), hashAlg, _toUint8Array(signature), _toUint8Array(data));
     }
 
-    if (alg.name !== 'HMAC') throw new Error('verify: unsupported algorithm "' + alg.name + '"');
-    if (!key.usages.includes('verify')) throw new Error('CryptoKey does not allow verify');
+    if (alg.name !== 'HMAC') throw _webCryptoError('NotSupportedError', 'verify: unsupported algorithm "' + alg.name + '"');
+    if (key.algorithm.name !== 'HMAC' || key.type !== 'secret') {
+      throw _webCryptoError('InvalidAccessError', 'HMAC verify requires an HMAC secret key');
+    }
+    if (!key.usages.includes('verify')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow verify');
     const hash     = _digestAlgorithm(_hashName(_requiredHash(key.algorithm.hash, 'HMAC hash')));
     const expected = openssl.hmac(hash, _keyData(key), _toUint8Array(data));
     const actual   = _toUint8Array(signature);
@@ -737,15 +762,24 @@ const subtle = {
   async encrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
-    if (!key.usages.includes('encrypt')) throw new Error('CryptoKey does not allow encrypt');
+    if (!key.usages.includes('encrypt')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow encrypt');
 
     if (alg.name === 'RSA-OAEP') {
+      if (key.algorithm.name !== 'RSA-OAEP' || key.type !== 'public') {
+        throw _webCryptoError('InvalidAccessError', 'RSA-OAEP encrypt requires an RSA-OAEP public key');
+      }
       const hashName = _hashName(_requiredHash(key.algorithm.hash, 'RSA-OAEP hash'));
       const hashAlg  = _digestAlgorithm(hashName);
       const label    = alg.label ? _toUint8Array(alg.label as BufferSource) : null;
       return _toArrayBuffer(openssl.rsaOaepEncrypt(_pkeyPtr(key), hashAlg, label, _toUint8Array(data)));
     }
 
+    if (alg.name !== 'AES-GCM' && alg.name !== 'AES-CBC') {
+      throw _webCryptoError('NotSupportedError', 'encrypt: unsupported algorithm "' + alg.name + '"');
+    }
+    if (key.algorithm.name !== alg.name || key.type !== 'secret') {
+      throw _webCryptoError('InvalidAccessError', `${alg.name} encrypt requires a matching secret key`);
+    }
     const keyBytes = _keyData(key);
     const cipherAlg = _cipherAlgorithm(alg.name, keyBytes.byteLength);
     const iv  = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
@@ -783,15 +817,24 @@ const subtle = {
   async decrypt(algorithm: string | { name: string; [key: string]: unknown }, key: CryptoKey, data: BufferSource): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
-    if (!key.usages.includes('decrypt')) throw new Error('CryptoKey does not allow decrypt');
+    if (!key.usages.includes('decrypt')) throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow decrypt');
 
     if (alg.name === 'RSA-OAEP') {
+      if (key.algorithm.name !== 'RSA-OAEP' || key.type !== 'private') {
+        throw _webCryptoError('InvalidAccessError', 'RSA-OAEP decrypt requires an RSA-OAEP private key');
+      }
       const hashName = _hashName(_requiredHash(key.algorithm.hash, 'RSA-OAEP hash'));
       const hashAlg  = _digestAlgorithm(hashName);
       const label    = alg.label ? _toUint8Array(alg.label as BufferSource) : null;
       return _toArrayBuffer(openssl.rsaOaepDecrypt(_pkeyPtr(key), hashAlg, label, _toUint8Array(data)));
     }
 
+    if (alg.name !== 'AES-GCM' && alg.name !== 'AES-CBC') {
+      throw _webCryptoError('NotSupportedError', 'decrypt: unsupported algorithm "' + alg.name + '"');
+    }
+    if (key.algorithm.name !== alg.name || key.type !== 'secret') {
+      throw _webCryptoError('InvalidAccessError', `${alg.name} decrypt requires a matching secret key`);
+    }
     const keyBytes  = _keyData(key);
     const cipherAlg = _cipherAlgorithm(alg.name, keyBytes.byteLength);
     const iv = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
@@ -802,7 +845,7 @@ const subtle = {
       // Web Crypto convention: encrypted data = ciphertext || 16-byte tag
       const tagLength = (alg.tagLength ?? 128) / 8;
       const buf = _toUint8Array(data);
-      if (buf.byteLength < tagLength) throw new Error('AES-GCM: data too short (no tag)');
+      if (buf.byteLength < tagLength) throw _webCryptoError('OperationError', 'AES-GCM: data too short (no tag)');
       ciphertext = buf.subarray(0, buf.byteLength - tagLength);
       tag        = buf.subarray(buf.byteLength - tagLength);
     } else {
@@ -853,30 +896,35 @@ const subtle = {
         throw _webCryptoError('DataError', `importKey: ${alg.name} JWK requires kty "oct"`);
       }
       if ((alg.name === 'ECDSA' || alg.name === 'ECDH') && jwk.kty !== 'EC') {
-        throw new Error(`importKey: ${alg.name} JWK requires kty "EC"`);
+        throw _webCryptoError('DataError', `importKey: ${alg.name} JWK requires kty "EC"`);
       }
       if ((alg.name === 'RSA-OAEP' || alg.name === 'RSA-PSS' || alg.name === 'RSASSA-PKCS1-V1_5') && jwk.kty !== 'RSA') {
-        throw new Error(`importKey: ${alg.name} JWK requires kty "RSA"`);
+        throw _webCryptoError('DataError', `importKey: ${alg.name} JWK requires kty "RSA"`);
       }
       if (_isEd25519Algorithm(alg.name) && jwk.kty !== 'OKP') {
-        throw new Error('importKey: Ed25519 JWK requires kty "OKP"');
+        throw _webCryptoError('DataError', 'importKey: Ed25519 JWK requires kty "OKP"');
       }
       if (jwk.kty === 'OKP') {
-        if (!_isEd25519Algorithm(alg.name)) throw new Error('importKey: OKP JWK requires Ed25519 algorithm');
-        if (jwk.crv !== 'Ed25519') throw new Error('importKey: OKP JWK crv must be "Ed25519"');
-        if (typeof jwk.x !== 'string') throw new Error('importKey: Ed25519 JWK requires "x" field');
+        if (!_isEd25519Algorithm(alg.name)) throw _webCryptoError('DataError', 'importKey: OKP JWK requires Ed25519 algorithm');
+        if (jwk.crv !== 'Ed25519') throw _webCryptoError('DataError', 'importKey: OKP JWK crv must be "Ed25519"');
+        if (typeof jwk.x !== 'string') throw _webCryptoError('DataError', 'importKey: Ed25519 JWK requires "x" field');
         const x = _base64urlDecode(jwk.x);
-        if (x.byteLength !== 32) throw new Error('importKey: Ed25519 JWK x must be 32 bytes');
-        const pkey = typeof jwk.d === 'string'
-          ? openssl.evpPkeyImportRawPrivateEd25519(_base64urlDecode(jwk.d))
-          : openssl.evpPkeyImportRawPublicEd25519(x);
+        if (x.byteLength !== 32) throw _webCryptoError('DataError', 'importKey: Ed25519 JWK x must be 32 bytes');
+        let pkey: object;
+        try {
+          pkey = typeof jwk.d === 'string'
+            ? openssl.evpPkeyImportRawPrivateEd25519(_base64urlDecode(jwk.d))
+            : openssl.evpPkeyImportRawPublicEd25519(x);
+        } catch (err) {
+          throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed Ed25519 JWK');
+        }
         const keyType: KeyType = typeof jwk.d === 'string' ? 'private' : 'public';
         return new CryptoKey(keyType, extractable, { name: 'Ed25519' }, [...keyUsages], null, pkey);
       }
       if (jwk.kty === 'EC') {
         // EC JWK import (ECDSA and ECDH).
         if (typeof jwk.x !== 'string' || typeof jwk.y !== 'string') {
-          throw new Error('importKey: JWK kty="EC" requires "x" and "y" fields');
+          throw _webCryptoError('DataError', 'importKey: JWK kty="EC" requires "x" and "y" fields');
         }
         const crv = jwk.crv ?? (alg as { namedCurve?: string }).namedCurve ?? 'P-256';
         const coordSize = openssl.ecdsaCoordSize(crv);
@@ -888,14 +936,19 @@ const subtle = {
           if (arr.length === coordSize) return arr;
           const out = new Uint8Array(coordSize); out.set(arr, coordSize - arr.length); return out;
         };
-        const pkey = openssl.evpPkeyImportEcJwk(crv, padTo(x), padTo(y), d !== undefined ? padTo(d) : undefined);
+        let pkey: object;
+        try {
+          pkey = openssl.evpPkeyImportEcJwk(crv, padTo(x), padTo(y), d !== undefined ? padTo(d) : undefined);
+        } catch (err) {
+          throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed EC JWK');
+        }
         const keyType: KeyType = d !== undefined ? 'private' : 'public';
         return new CryptoKey(keyType, extractable, { name: alg.name, namedCurve: crv }, [...keyUsages], null, pkey);
       }
       if (jwk.kty === 'RSA') {
         // RSA JWK import.
         if (typeof jwk.n !== 'string' || typeof jwk.e !== 'string') {
-          throw new Error('importKey: RSA JWK requires "n" and "e" fields');
+          throw _webCryptoError('DataError', 'importKey: RSA JWK requires "n" and "e" fields');
         }
         const isPrivate = typeof jwk.d === 'string';
         const components: Parameters<typeof openssl.rsaImportComponents>[0] = {
@@ -910,7 +963,12 @@ const subtle = {
           if (jwk.dq) components.dq = _base64urlDecode(jwk.dq);
           if (jwk.qi) components.qi = _base64urlDecode(jwk.qi);
         }
-        const pkey = openssl.rsaImportComponents(components);
+        let pkey: object;
+        try {
+          pkey = openssl.rsaImportComponents(components);
+        } catch (err) {
+          throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed RSA JWK');
+        }
         const hashName = _hashName((alg as { hash?: string | { name: string } }).hash ?? 'SHA-256');
         const keyType: KeyType = isPrivate ? 'private' : 'public';
         return new CryptoKey(keyType, extractable, { name: alg.name, hash: { name: hashName } }, [...keyUsages], null, pkey);
@@ -921,14 +979,19 @@ const subtle = {
       const bytes = _base64urlDecode(jwk.k);
       const expectedAlg = _symmetricJwkAlg(alg.name, bytes.byteLength, alg.hash);
       if (jwk.alg !== undefined && jwk.alg !== expectedAlg) {
-        throw new Error(`importKey: JWK alg "${jwk.alg}" does not match ${expectedAlg}`);
+        throw _webCryptoError('DataError', `importKey: JWK alg "${jwk.alg}" does not match ${expectedAlg}`);
       }
       _validateJwkKeyOps(jwk.key_ops, keyUsages);
       return subtle.importKey('raw', bytes.buffer as ArrayBuffer, algorithm, extractable, keyUsages);
     }
     if (format === 'pkcs8') {
       const derBytes = _toUint8Array(keyData);
-      const pkey     = openssl.evpPkeyImportPkcs8(derBytes);
+      let pkey: object;
+      try {
+        pkey = openssl.evpPkeyImportPkcs8(derBytes);
+      } catch (err) {
+        throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed PKCS#8 key data');
+      }
       if (_isEd25519Algorithm(alg.name)) {
         return new CryptoKey('private', extractable, { name: 'Ed25519' }, [...keyUsages], null, pkey);
       }
@@ -944,24 +1007,40 @@ const subtle = {
     if (format === 'spki') {
       // SPKI import for EC and RSA public keys.
       if (_isEd25519Algorithm(alg.name)) {
-        const pkey = openssl.evpPkeyImportSpkiDer(_toUint8Array(keyData));
+        let pkey: object;
+        try {
+          pkey = openssl.evpPkeyImportSpkiDer(_toUint8Array(keyData));
+        } catch (err) {
+          throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed Ed25519 SPKI key data');
+        }
         return new CryptoKey('public', extractable, { name: 'Ed25519' }, [...keyUsages], null, pkey);
       }
       if (alg.name === 'RSA-OAEP' || alg.name === 'RSA-PSS' || alg.name === 'RSASSA-PKCS1-V1_5') {
         const hashName = _hashName((alg as { hash?: string | { name: string } }).hash ?? 'SHA-256');
-        const pkey = openssl.evpPkeyImportSpkiRsa(_toUint8Array(keyData));
+        let pkey: object;
+        try {
+          pkey = openssl.evpPkeyImportSpkiRsa(_toUint8Array(keyData));
+        } catch (err) {
+          throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed RSA SPKI key data');
+        }
         return new CryptoKey('public', extractable, { name: alg.name, hash: { name: hashName } }, [...keyUsages], null, pkey);
       }
       if (alg.name !== 'ECDSA' && alg.name !== 'ECDH') {
-        throw new Error('importKey: "spki" format only supported for EC algorithms (ECDSA, ECDH)');
+        throw _webCryptoError('NotSupportedError', 'importKey: "spki" format only supported for EC algorithms (ECDSA, ECDH)');
       }
       const derBytes = _toUint8Array(keyData);
-      const { pkey, namedCurve } = openssl.evpPkeyImportSpki(derBytes);
+      let pkey: object;
+      let namedCurve: string;
+      try {
+        ({ pkey, namedCurve } = openssl.evpPkeyImportSpki(derBytes));
+      } catch (err) {
+        throw _webCryptoError('DataError', err instanceof Error ? err.message : 'Malformed SPKI key data');
+      }
       // If the algorithm specifies a curve, validate it matches the SPKI header.
       const expectedCurve = (alg as { namedCurve?: string }).namedCurve;
       if (expectedCurve && expectedCurve !== namedCurve) {
         openssl.evpPkeyFree(pkey);
-        throw new Error(`importKey: SPKI curve (${namedCurve}) does not match algorithm.namedCurve (${expectedCurve})`);
+        throw _webCryptoError('DataError', `importKey: SPKI curve (${namedCurve}) does not match algorithm.namedCurve (${expectedCurve})`);
       }
       return new CryptoKey(
         'public',
@@ -978,7 +1057,7 @@ const subtle = {
     const bytes = _toUint8Array(keyData);
 
     if (_isEd25519Algorithm(alg.name)) {
-      if (bytes.byteLength !== 32) throw new Error('Ed25519 raw public key must be 32 bytes');
+      if (bytes.byteLength !== 32) throw _webCryptoError('DataError', 'Ed25519 raw public key must be 32 bytes');
       return new CryptoKey(
         'public',
         extractable,
@@ -1052,7 +1131,7 @@ const subtle = {
   async exportKey(format: KeyFormat, key: CryptoKey): Promise<ArrayBuffer | object> {
     _checkCryptoAvailable();
     if (format === 'jwk') {
-      if (!key.extractable) throw new Error('CryptoKey is not extractable');
+      if (!key.extractable) throw _webCryptoError('InvalidAccessError', 'CryptoKey is not extractable');
       const algName = key.algorithm.name;
 
       if (algName === 'Ed25519') {
@@ -1124,7 +1203,7 @@ const subtle = {
       } else if (algName === 'AES-CBC') {
         jwkAlg = algLen === 128 ? 'A128CBC' : 'A256CBC';
       } else {
-        throw new Error(`exportKey: JWK not supported for algorithm ${algName}`);
+        throw _webCryptoError('NotSupportedError', `exportKey: JWK not supported for algorithm ${algName}`);
       }
       return {
         kty: 'oct',
@@ -1135,13 +1214,13 @@ const subtle = {
       } as unknown as ArrayBuffer;
     }
     if (format === 'pkcs8') {
-      if (!key.extractable) throw new Error('CryptoKey is not extractable');
-      if (key.type !== 'private') throw new Error('exportKey: pkcs8 requires a private key');
+      if (!key.extractable) throw _webCryptoError('InvalidAccessError', 'CryptoKey is not extractable');
+      if (key.type !== 'private') throw _webCryptoError('InvalidAccessError', 'exportKey: pkcs8 requires a private key');
       return _toArrayBuffer(openssl.evpPkeyExportPkcs8(_pkeyPtr(key)));
     }
 
     if (format === 'spki') {
-      if (!key.extractable) throw new Error('CryptoKey is not extractable');
+      if (!key.extractable) throw _webCryptoError('InvalidAccessError', 'CryptoKey is not extractable');
       const algName = key.algorithm.name;
       if (algName === 'Ed25519') {
         return _toArrayBuffer(openssl.evpPkeyExportSpkiDer(_pkeyPtr(key)));
@@ -1150,16 +1229,16 @@ const subtle = {
         return _toArrayBuffer(openssl.evpPkeyExportSpkiRsa(_pkeyPtr(key)));
       }
       if (algName !== 'ECDSA' && algName !== 'ECDH') {
-        throw new Error('exportKey: "spki" format only supported for EC and RSA algorithms');
+        throw _webCryptoError('NotSupportedError', 'exportKey: "spki" format only supported for EC and RSA algorithms');
       }
       const namedCurve = key.algorithm.namedCurve ?? 'P-256';
       return _toArrayBuffer(openssl.evpPkeyExportSpki(_pkeyPtr(key), namedCurve));
     }
 
-    if (format !== 'raw') throw new Error(`exportKey: unsupported format "${format}"; supported: "raw", "pkcs8", "spki", "jwk"`);
-    if (!key.extractable) throw new Error('CryptoKey is not extractable');
+    if (format !== 'raw') throw _webCryptoError('NotSupportedError', `exportKey: unsupported format "${format}"; supported: "raw", "pkcs8", "spki", "jwk"`);
+    if (!key.extractable) throw _webCryptoError('InvalidAccessError', 'CryptoKey is not extractable');
     if (key.algorithm.name === 'Ed25519') {
-      if (key.type !== 'public') throw new Error('exportKey: raw Ed25519 requires a public key');
+      if (key.type !== 'public') throw _webCryptoError('InvalidAccessError', 'exportKey: raw Ed25519 requires a public key');
       return _toArrayBuffer(openssl.evpPkeyExportRawPublicEd25519(_pkeyPtr(key)));
     }
     return _toArrayBuffer(_keyData(key));
@@ -1280,7 +1359,7 @@ const subtle = {
       const digestName = _digestAlgorithm(hashName);
       // Key length defaults to the digest output size if not specified
       const keyLen = alg.length ? alg.length / 8 : ({ 'sha-1': 20, 'sha-256': 32, 'sha-384': 48, 'sha-512': 64 })[digestName];
-      if (keyLen === undefined) throw new Error(`Unsupported HMAC digest: ${digestName}`);
+      if (keyLen === undefined) throw _webCryptoError('NotSupportedError', `Unsupported HMAC digest: ${digestName}`);
       const buf = new ArrayBuffer(keyLen);
       openssl.randBytes(buf, keyLen);
       return new CryptoKey(
@@ -1295,7 +1374,7 @@ const subtle = {
     if (alg.name === 'AES-GCM' || alg.name === 'AES-CBC') {
       const length = alg.length ?? 256;
       if (length !== 128 && length !== 256) {
-        throw new Error(`${alg.name}: key length must be 128 or 256`);
+        throw _webCryptoError('DataError', `${alg.name}: key length must be 128 or 256`);
       }
       const keyLen = length / 8;
       const buf = new ArrayBuffer(keyLen);
@@ -1337,23 +1416,23 @@ const subtle = {
     const alg = _normalizeAlgorithm(algorithm);
     if (alg.name === 'ECDH') {
       if (!baseKey.usages.includes('deriveBits') && !baseKey.usages.includes('deriveKey')) {
-        throw new Error('CryptoKey does not allow deriveBits/deriveKey');
+        throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow deriveBits/deriveKey');
       }
-      if (baseKey.type !== 'private') throw new Error('ECDH deriveBits requires a private key');
+      if (baseKey.type !== 'private') throw _webCryptoError('InvalidAccessError', 'ECDH deriveBits requires a private key');
       const publicKeyParam = alg.public;
       if (!publicKeyParam || !(publicKeyParam instanceof CryptoKey)) {
-        throw new Error('ECDH deriveBits: algorithm.public must be an ECDH public CryptoKey');
+        throw _webCryptoError('DataError', 'ECDH deriveBits: algorithm.public must be an ECDH public CryptoKey');
       }
-      if (publicKeyParam.type !== 'public') throw new Error('ECDH deriveBits: algorithm.public must be a public key');
+      if (publicKeyParam.type !== 'public') throw _webCryptoError('InvalidAccessError', 'ECDH deriveBits: algorithm.public must be a public key');
       const privCurve = baseKey.algorithm.namedCurve;
       const pubCurve  = publicKeyParam.algorithm.namedCurve;
       if (privCurve !== pubCurve) {
-        throw new Error(`ECDH deriveBits: key curves do not match (${privCurve} vs ${pubCurve})`);
+        throw _webCryptoError('InvalidAccessError', `ECDH deriveBits: key curves do not match (${privCurve} vs ${pubCurve})`);
       }
       const secret = openssl.evpPkeyDeriveEcdh(_pkeyPtr(baseKey), _pkeyPtr(publicKeyParam));
       const requestedBytes = Math.ceil(length / 8);
       if (requestedBytes > secret.byteLength) {
-        throw new Error(`ECDH deriveBits: requested ${requestedBytes} bytes but shared secret is only ${secret.byteLength}`);
+        throw _webCryptoError('DataError', `ECDH deriveBits: requested ${requestedBytes} bytes but shared secret is only ${secret.byteLength}`);
       }
       return _toArrayBuffer(secret.subarray(0, requestedBytes));
     }
@@ -1363,18 +1442,18 @@ const subtle = {
 
     if (alg.name === 'PBKDF2') {
       if (!baseKey.usages.includes('deriveBits') && !baseKey.usages.includes('deriveKey')) {
-        throw new Error('CryptoKey does not allow deriveBits');
+        throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow deriveBits');
       }
       const salt       = _toUint8Array(_requiredBufferSource(alg.salt, 'PBKDF2 salt'));
       const iterations = alg.iterations;
-      if (iterations === undefined) throw new Error('PBKDF2 iterations are required');
+      if (iterations === undefined) throw _webCryptoError('DataError', 'PBKDF2 iterations are required');
       const hash       = _digestAlgorithm(_hashName(alg.hash ?? 'SHA-256'));
       return _toArrayBuffer(openssl.pbkdf2(keyBytes, salt, iterations, hash, keyLen));
     }
 
     if (alg.name === 'HKDF') {
       if (!baseKey.usages.includes('deriveBits') && !baseKey.usages.includes('deriveKey')) {
-        throw new Error('CryptoKey does not allow deriveBits');
+        throw _webCryptoError('InvalidAccessError', 'CryptoKey does not allow deriveBits');
       }
       const salt = alg.salt ? _toUint8Array(alg.salt) : new Uint8Array(0);
       const info = alg.info ? _toUint8Array(alg.info) : new Uint8Array(0);
@@ -1382,7 +1461,7 @@ const subtle = {
       return _toArrayBuffer(openssl.hkdf(hash, keyBytes, salt, info, keyLen));
     }
 
-    throw new Error('deriveBits: unsupported algorithm: ' + alg.name);
+    throw _webCryptoError('NotSupportedError', 'deriveBits: unsupported algorithm: ' + alg.name);
   },
 
   // -------------------------------------------------------------------------
@@ -1426,7 +1505,7 @@ const subtle = {
     } else if (derivedAlg.name === 'AES-GCM' || derivedAlg.name === 'AES-CBC') {
       lengthBits = derivedAlg.length ?? 256;
     } else {
-      throw new Error('deriveKey: unsupported derivedKeyType: ' + derivedAlg.name);
+      throw _webCryptoError('NotSupportedError', 'deriveKey: unsupported derivedKeyType: ' + derivedAlg.name);
     }
 
     const bits = await subtle.deriveBits(algorithm, baseKey, lengthBits);
@@ -1454,8 +1533,8 @@ const subtle = {
     wrapAlgorithm: string | { name: string; [k: string]: unknown },
   ): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
-    if (!key.extractable) throw new Error('wrapKey: key is not extractable');
-    if (!wrappingKey.usages.includes('wrapKey')) throw new Error('wrappingKey does not allow wrapKey');
+    if (!key.extractable) throw _webCryptoError('InvalidAccessError', 'wrapKey: key is not extractable');
+    if (!wrappingKey.usages.includes('wrapKey')) throw _webCryptoError('InvalidAccessError', 'wrappingKey does not allow wrapKey');
     const exported = await subtle.exportKey(format, key);
     const keyBytes = format === 'jwk'
       ? new TextEncoder().encode(JSON.stringify(exported))
@@ -1463,6 +1542,12 @@ const subtle = {
     // Call encrypt bypassing the 'encrypt' usage check — wrapKey's own 'wrapKey'
     // usage check above is the authoritative gate for this operation.
     const alg = _normalizeAlgorithm(wrapAlgorithm);
+    if (alg.name !== 'AES-GCM' && alg.name !== 'AES-CBC') {
+      throw _webCryptoError('NotSupportedError', 'wrapKey: unsupported algorithm "' + alg.name + '"');
+    }
+    if (wrappingKey.algorithm.name !== alg.name || wrappingKey.type !== 'secret') {
+      throw _webCryptoError('InvalidAccessError', `${alg.name} wrapKey requires a matching secret key`);
+    }
     const wrappingKeyBytes = _keyData(wrappingKey);
     const cipherAlg = _cipherAlgorithm(alg.name, wrappingKeyBytes.byteLength);
     const iv  = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
@@ -1507,10 +1592,16 @@ const subtle = {
     keyUsages: KeyUsage[],
   ): Promise<CryptoKey> {
     _checkCryptoAvailable();
-    if (!unwrappingKey.usages.includes('unwrapKey')) throw new Error('unwrappingKey does not allow unwrapKey');
+    if (!unwrappingKey.usages.includes('unwrapKey')) throw _webCryptoError('InvalidAccessError', 'unwrappingKey does not allow unwrapKey');
     // Bypass the 'decrypt' usage check in subtle.decrypt — unwrapKey's own
     // 'unwrapKey' usage check above is the authoritative gate.
     const alg = _normalizeAlgorithm(unwrapAlgorithm);
+    if (alg.name !== 'AES-GCM' && alg.name !== 'AES-CBC') {
+      throw _webCryptoError('NotSupportedError', 'unwrapKey: unsupported algorithm "' + alg.name + '"');
+    }
+    if (unwrappingKey.algorithm.name !== alg.name || unwrappingKey.type !== 'secret') {
+      throw _webCryptoError('InvalidAccessError', `${alg.name} unwrapKey requires a matching secret key`);
+    }
     const unwrappingKeyBytes = _keyData(unwrappingKey);
     const cipherAlg = _cipherAlgorithm(alg.name, unwrappingKeyBytes.byteLength);
     const iv = _toUint8Array(_requiredBufferSource(alg.iv, 'AES iv'));
@@ -1519,7 +1610,12 @@ const subtle = {
     const tagLen = ((alg.tagLength as number | undefined) ?? 128) / 8;
     const ct = wrappedBytes.subarray(0, wrappedBytes.byteLength - tagLen);
     const tag = wrappedBytes.subarray(wrappedBytes.byteLength - tagLen);
-    const decrypted = _toArrayBuffer(openssl.cipherDecrypt(cipherAlg, unwrappingKeyBytes, iv, ct, tag, aad));
+    let decrypted: ArrayBuffer;
+    try {
+      decrypted = _toArrayBuffer(openssl.cipherDecrypt(cipherAlg, unwrappingKeyBytes, iv, ct, tag, aad));
+    } catch (err) {
+      throw _webCryptoError('OperationError', err instanceof Error ? err.message : 'unwrapKey operation failed');
+    }
     if (format === 'raw') {
       return subtle.importKey('raw', decrypted, unwrappedKeyAlgorithm, extractable, keyUsages);
     }
@@ -1528,7 +1624,7 @@ const subtle = {
       const jwk = JSON.parse(text) as unknown;
       return subtle.importKey('jwk', jwk as BufferSource, unwrappedKeyAlgorithm, extractable, keyUsages);
     }
-    throw new Error(`unwrapKey: unsupported format "${format}"`);
+    throw _webCryptoError('NotSupportedError', `unwrapKey: unsupported format "${format}"`);
   },
 };
 

@@ -987,6 +987,96 @@ describe('WebCrypto release error names', { skip }, () => {
       rejectsWithName('DataError'),
       'malformed symmetric JWK uses DataError',
     );
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { kty: 'EC', crv: 'P-256', x: 'AQ' } as JsonWebKey, { name: 'ECDSA', namedCurve: 'P-256' }, true, ['verify']),
+      rejectsWithName('DataError'),
+      'malformed EC JWK uses DataError',
+    );
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { kty: 'RSA', n: 'AQ' } as JsonWebKey, { name: 'RSA-OAEP', hash: 'SHA-256' }, true, ['encrypt']),
+      rejectsWithName('DataError'),
+      'malformed RSA JWK uses DataError',
+    );
+    await t.rejects(
+      () => crypto.subtle.importKey('jwk', { kty: 'OKP', crv: 'Ed25519' } as JsonWebKey, 'Ed25519', true, ['verify']),
+      rejectsWithName('DataError'),
+      'malformed OKP JWK uses DataError',
+    );
+  });
+
+  it('uses InvalidAccessError for disallowed key operations', async (t) => {
+    const data = new Uint8Array([1, 2, 3]);
+    const hmacSignOnly = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const hmacVerifyOnly = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    const aesEncryptOnly = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt']);
+    const aesDecryptOnly = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['decrypt']);
+    const extractable = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, ['encrypt']);
+    const nonExtractable = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['encrypt']);
+    const wrapKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['wrapKey']);
+    const ed25519 = await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify']) as CryptoKeyPair;
+    const rawEd25519Public = await crypto.subtle.exportKey('raw', ed25519.publicKey);
+    const publicSignKey = await crypto.subtle.importKey('raw', rawEd25519Public, 'Ed25519', true, ['sign']);
+    const iv = new Uint8Array(12);
+
+    await t.rejects(
+      () => crypto.subtle.sign('HMAC', hmacVerifyOnly, data),
+      rejectsWithName('InvalidAccessError'),
+      'sign rejects keys without sign usage as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.verify('HMAC', hmacSignOnly, new Uint8Array(32), data),
+      rejectsWithName('InvalidAccessError'),
+      'verify rejects keys without verify usage as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.sign('Ed25519', publicSignKey, data),
+      rejectsWithName('InvalidAccessError'),
+      'sign rejects public signing keys as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.verify('Ed25519', ed25519.privateKey, new Uint8Array(64), data),
+      rejectsWithName('InvalidAccessError'),
+      'verify rejects private verification keys as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesDecryptOnly, data),
+      rejectsWithName('InvalidAccessError'),
+      'encrypt rejects keys without encrypt usage as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesEncryptOnly, new Uint8Array(16)),
+      rejectsWithName('InvalidAccessError'),
+      'decrypt rejects keys without decrypt usage as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.exportKey('raw', nonExtractable),
+      rejectsWithName('InvalidAccessError'),
+      'exportKey rejects non-extractable keys as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.wrapKey('raw', nonExtractable, wrapKey, { name: 'AES-GCM', iv }),
+      rejectsWithName('InvalidAccessError'),
+      'wrapKey rejects non-extractable keys as InvalidAccessError',
+    );
+    await t.rejects(
+      () => crypto.subtle.wrapKey('raw', extractable, aesEncryptOnly, { name: 'AES-GCM', iv }),
+      rejectsWithName('InvalidAccessError'),
+      'wrapKey rejects wrapping keys without wrapKey usage as InvalidAccessError',
+    );
+  });
+
+  it('uses NotSupportedError for unsupported derivation algorithms', async (t) => {
+    const baseKey = await crypto.subtle.importKey('raw', new Uint8Array(16), 'HKDF', false, ['deriveBits', 'deriveKey']);
+    await t.rejects(
+      () => crypto.subtle.deriveBits({ name: 'AES-GCM' } as any, baseKey, 128),
+      rejectsWithName('NotSupportedError'),
+      'unsupported deriveBits algorithm uses NotSupportedError',
+    );
+    await t.rejects(
+      () => crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new Uint8Array(0) }, baseKey, { name: 'AES-CTR', length: 128 } as any, true, ['encrypt']),
+      rejectsWithName('NotSupportedError'),
+      'unsupported deriveKey output algorithm uses NotSupportedError',
+    );
   });
 
   it('uses OperationError for failed decrypt operations', async (t) => {
