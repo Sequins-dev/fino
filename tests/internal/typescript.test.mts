@@ -83,6 +83,6 @@ describe('source maps', () => {
 
     t.ok(err instanceof Error, 'throws an Error');
     const error = err as Error;
-    t.ok(/js\/internal\/globals\/time\.mts:\d+/.test(error.stack ?? ''), 'stack points at original builtin mts file');
+    t.ok(/js\/globals\/time\.mts:\d+/.test(error.stack ?? ''), 'stack points at original builtin mts file');
   });
 });
