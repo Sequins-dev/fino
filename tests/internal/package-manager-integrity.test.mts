@@ -180,17 +180,17 @@ describe('verifyTarballIntegrity — malformed / unrecognised SRI (B3)', () => {
 });
 
 describe('B3 regression: verifyTarballIntegrity throws on mismatch (cleanup guard)', () => {
-  it('verifyTarballIntegrity throws for sha256 mismatch with a multi-value SRI', (t) => {
+  it('verifyTarballIntegrity throws for strongest supported mismatch with a multi-value SRI', (t) => {
     if (!openssl.cryptoAvailable) {
       t.ok(true, 'OpenSSL not available — skipping');
       return;
     }
-    // This test locks in the behavior after the multi-value SRI fix: the first
-    // token is verified, and a mismatch still throws (not silently passes).
-    const wrongHash = toBase64(new Uint8Array(32)); // all-zero hash
+    const sha256Digest = openssl.digest('sha-256', PAYLOAD);
+    const correctSha256 = toBase64(sha256Digest);
+    const wrongSha512 = toBase64(new Uint8Array(64));
     try {
-      verifyTarballIntegrity(PAYLOAD, `sha256-${wrongHash} sha512-ignored`, undefined, 'mismatch-pkg@1.0.0');
-      t.fail('should have thrown on wrong first-token hash');
+      verifyTarballIntegrity(PAYLOAD, `sha256-${correctSha256} sha512-${wrongSha512}`, undefined, 'mismatch-pkg@1.0.0');
+      t.fail('should have thrown on wrong strongest-supported hash');
     } catch (err) {
       t.ok(err instanceof Error, 'throws Error on mismatch');
       t.ok((err as Error).message.includes('mismatch-pkg'), 'error names the package');
@@ -199,27 +199,28 @@ describe('B3 regression: verifyTarballIntegrity throws on mismatch (cleanup guar
 });
 
 describe('verifyTarballIntegrity — multi-value SRI (space-separated)', () => {
-  it('uses only the first token from a multi-value SRI string', (t) => {
+  it('uses a supported token after an unsupported token', (t) => {
     if (!openssl.cryptoAvailable) {
       t.ok(true, 'OpenSSL not available — skipping');
       return;
     }
-    const digest = openssl.digest('sha-256', PAYLOAD);
+    const digest = openssl.digest('sha-512', PAYLOAD);
     const correctHash = toBase64(digest);
-    // First token is correct sha256; second token is garbage — should pass on first
-    verifyTarballIntegrity(PAYLOAD, `sha256-${correctHash} sha512-garbage`, undefined, 'test-pkg@1.0.0');
-    t.ok(true, 'multi-value SRI: first token verified, garbage second token ignored');
+    verifyTarballIntegrity(PAYLOAD, `sha3-unsupported sha512-${correctHash}`, undefined, 'test-pkg@1.0.0');
+    t.ok(true, 'multi-value SRI: supported token after unsupported token verified');
   });
 
-  it('throws when first token of multi-value SRI does not match', (t) => {
+  it('verifies the strongest supported token in a multi-value SRI string', (t) => {
     if (!openssl.cryptoAvailable) {
       t.ok(true, 'OpenSSL not available — skipping');
       return;
     }
-    const wrongHash = toBase64(new Uint8Array(32)); // all-zero hash
+    const sha256Digest = openssl.digest('sha-256', PAYLOAD);
+    const correctSha256 = toBase64(sha256Digest);
+    const wrongSha512 = toBase64(new Uint8Array(64));
     try {
-      verifyTarballIntegrity(PAYLOAD, `sha256-${wrongHash} sha512-ignored`, undefined, 'bad-pkg@1.0.0');
-      t.fail('should have thrown on wrong first-token hash');
+      verifyTarballIntegrity(PAYLOAD, `sha256-${correctSha256} sha512-${wrongSha512}`, undefined, 'bad-pkg@1.0.0');
+      t.fail('should have thrown on wrong strongest-supported hash');
     } catch (err) {
       t.ok(err instanceof Error, 'throws an Error');
       t.ok((err as Error).message.includes('bad-pkg'), 'error names the package');

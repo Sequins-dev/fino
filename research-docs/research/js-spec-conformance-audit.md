@@ -31,7 +31,7 @@ prioritization. It does not include source fixes.
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001, FFS-002, FFS-004, and FFS-005 |
-| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-002 to RTE-005 |
+| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-003 to RTE-005 |
 
 Existing release notes already document broad intentional non-parity areas:
 server-side Fetch/CORS/cookie behavior, Fino-native OpenTelemetry instead of
@@ -225,20 +225,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: implement bounded recursive expansion and XML char validation, or
   document recursion as unsupported.
 
-### RTE-002: Multi-token SRI verification checks only the first token
-
-- Files: `js/internal/package_manager.mts`
-- Spec target: Subresource Integrity metadata and npm `dist.integrity`.
-- Expected behavior: when multiple hash expressions exist, verification should
-  select a supported strongest usable hash token.
-- Current behavior: only the first token is parsed and verified; tests lock in
-  ignoring garbage second tokens.
-- Coverage gap: no tests for unsupported first plus valid second, or weaker valid
-  first plus stronger invalid second.
-- Priority: P2
-- Follow-up: parse all SRI tokens, rank supported algorithms, and verify the
-  strongest supported token.
-
 ### RTE-003: `import.meta` file URLs are raw path concatenations
 
 - Files: `js/internal/loader.mts`
@@ -287,8 +273,7 @@ unless a finding below calls out missing documentation or contradictory tests.
 - P1 archive/XML: ZIP local/central mismatch, stored ZIP size guard, and XML name
   and namespace invalid cases.
 - P1 cluster: heartbeat liveness based on seed receive time.
-- P2 runtime/security: SRI multi-token ranking and encoded `import.meta.url`
-  paths.
+- P2 runtime/security: encoded `import.meta.url` paths.
 
 ## Accepted Divergences And Non-Goals
 

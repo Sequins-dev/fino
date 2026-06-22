@@ -24,6 +24,9 @@ const fs = new DiskFileSystem();
 const DEFAULT_REGISTRY = env.FINO_NPM_REGISTRY ?? 'https://registry.npmjs.org';
 const PROBE_EXTENSIONS = ['.mjs', '.js', '.json', '.mts', '.ts'];
 const SRI_ALGORITHMS: Record<string, string> = { sha256: 'sha-256', sha384: 'sha-384', sha512: 'sha-512' };
+const SRI_STRENGTH: Record<string, number> = { sha256: 1, sha384: 2, sha512: 3 };
+
+type SriToken = { token: string; hashAlias: string; expectedB64: string };
 
 function isSriAlgorithmCode(code: number): boolean {
   return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5A) || (code >= 0x61 && code <= 0x7A);
@@ -36,28 +39,64 @@ function isBase64Code(code: number): boolean {
     code === 0x2B || code === 0x2F || code === 0x3D;
 }
 
-function firstSriToken(integrity: string): { token: string; hashAlias: string; expectedB64: string } {
-  const sc = new Scanner(integrity.trim(), { encoding: 'ascii', format: 'sri' });
+function parseSriToken(token: string): SriToken {
+  const sc = new Scanner(token, { encoding: 'ascii', format: 'sri' });
   const tokenStart = sc.mark();
   const hashAlias = sc.eatWhile(isSriAlgorithmCode).toLowerCase();
   if (hashAlias === '' || !sc.eatChar('-')) throw new Error('malformed integrity token');
   const expectedB64 = sc.eatWhile(isBase64Code);
   if (expectedB64 === '') throw new Error('malformed integrity token');
-  if (!sc.done && sc.peekCode() !== 0x20 && sc.peekCode() !== 0x09 && sc.peekCode() !== 0x0A && sc.peekCode() !== 0x0D) {
-    throw new Error('malformed integrity token');
-  }
+  if (!sc.done) throw new Error('malformed integrity token');
   return { token: sc.text(tokenStart), hashAlias, expectedB64 };
+}
+
+function parseSriTokens(integrity: string): { tokens: SriToken[]; malformed: boolean } {
+  const tokens: SriToken[] = [];
+  let malformed = false;
+  for (const token of integrity.trim().split(/\s+/)) {
+    if (token === '') continue;
+    try {
+      tokens.push(parseSriToken(token));
+    } catch (_) {
+      malformed = true;
+    }
+  }
+  return { tokens, malformed };
+}
+
+function strongestSupportedSri(tokens: SriToken[]): SriToken | null {
+  let strongest: SriToken | null = null;
+  for (const token of tokens) {
+    if (!SRI_ALGORITHMS[token.hashAlias]) continue;
+    if (!strongest || SRI_STRENGTH[token.hashAlias]! > SRI_STRENGTH[strongest.hashAlias]!) {
+      strongest = token;
+    }
+  }
+  return strongest;
+}
+
+function base64Digest(alg: string, bytes: Uint8Array): string {
+  const actual = openssl.digest(alg, bytes);
+  let actualB64 = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  for (let i = 0; i < actual.length; i += 3) {
+    const b0 = actual[i]!; const b1 = actual[i + 1] ?? 0; const b2 = actual[i + 2] ?? 0;
+    actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
+    actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
+    actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
+  }
+  return actualB64;
 }
 
 /**
  * Verify package tarball bytes against npm registry integrity metadata.
  *
- * `integrity` is expected to be an SRI token such as `sha512-...`; only the
- * first token is checked when the field contains multiple algorithms. `shasum`
- * is the legacy SHA-1 hex fallback. If OpenSSL is unavailable, or both metadata
- * fields are absent, the function returns without verification. Mismatches,
- * malformed metadata without a usable fallback, and unsupported algorithms
- * throw descriptive errors.
+ * `integrity` is expected to contain one or more SRI tokens such as
+ * `sha512-...`; when multiple supported tokens are present, the strongest one
+ * is checked. `shasum` is the legacy SHA-1 hex fallback. If OpenSSL is
+ * unavailable, or both metadata fields are absent, the function returns without
+ * verification. Mismatches, malformed metadata without a usable fallback, and
+ * unsupported algorithms throw descriptive errors.
  *
  * ```js
  * import { verifyTarballIntegrity } from 'internal:package_manager';
@@ -81,40 +120,28 @@ export function verifyTarballIntegrity(
   if (!openssl.cryptoAvailable) return;
 
   if (integrity) {
-    let parsedSri: { token: string; hashAlias: string; expectedB64: string } | null = null;
-    try {
-      // SRI may be multi-value (space-separated); use only the first token.
-      parsedSri = firstSriToken(integrity);
-      const { token, hashAlias, expectedB64 } = parsedSri;
+    const { tokens, malformed } = parseSriTokens(integrity);
+    const selected = strongestSupportedSri(tokens);
+    if (selected) {
+      const { token, hashAlias, expectedB64 } = selected;
       const alg = SRI_ALGORITHMS[hashAlias];
-      if (alg) {
-        // Known SRI algorithm — verify and return (don't fall through to shasum).
-        const actual = openssl.digest(alg, bytes);
-        let actualB64 = '';
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-        for (let i = 0; i < actual.length; i += 3) {
-          const b0 = actual[i]!; const b1 = actual[i + 1] ?? 0; const b2 = actual[i + 2] ?? 0;
-          actualB64 += chars[b0 >> 2]! + chars[((b0 & 3) << 4) | (b1 >> 4)]!;
-          actualB64 += i + 1 < actual.length ? chars[((b1 & 15) << 2) | (b2 >> 6)]! : '=';
-          actualB64 += i + 2 < actual.length ? chars[b2 & 63]! : '=';
-        }
-        if (actualB64 !== expectedB64) {
-          throw new Error(
-            `Integrity check failed for ${packageId}: expected ${integrity.slice(0, 20)}…`,
-          );
-        }
-        return;
-      }
-    } catch (error) {
-      if (!shasum) {
+      const actualB64 = base64Digest(alg, bytes);
+      if (actualB64 !== expectedB64) {
         throw new Error(
-          `Integrity check failed for ${packageId}: unrecognised integrity string "${integrity.slice(0, 30)}"`,
+          `Integrity check failed for ${packageId}: expected ${token.slice(0, 20)}…`,
         );
       }
+      return;
     }
-    if (parsedSri && !SRI_ALGORITHMS[parsedSri.hashAlias] && !shasum) {
+    const unsupported = tokens.find(token => !SRI_ALGORITHMS[token.hashAlias]);
+    if (unsupported && !shasum) {
       throw new Error(
-        `Integrity check failed for ${packageId}: unsupported integrity algorithm "${parsedSri.hashAlias}"`,
+        `Integrity check failed for ${packageId}: unsupported integrity algorithm "${unsupported.hashAlias}"`,
+      );
+    }
+    if (malformed && !shasum) {
+      throw new Error(
+        `Integrity check failed for ${packageId}: unrecognised integrity string "${integrity.slice(0, 30)}"`,
       );
     }
   }
