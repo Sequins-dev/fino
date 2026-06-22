@@ -36,11 +36,11 @@ docs are ignored and are not committed as release source.
   changes in the same commit as deterministic and live validation evidence, and
   treating unsupported DNSSEC algorithms and digests fail closed as intentional
   non-parity rather than ecosystem-complete DNSSEC support.
-- HTTP/3 is release-scoped to request/response behavior over QUIC when optional
-  libnghttp3 bindings are available. Public `fetch()` resolves URL hostnames
-  before QUIC connect and keeps the URL host as the default SNI name. Connection
-  pooling, WebTransport, Capsule, H3 DATAGRAM, CONNECT tunnels, and external
-  interop remain deferred.
+- HTTP/3 is release-scoped to request/response behavior over QUIC plus
+  WebTransport over H3 when optional libnghttp3 bindings are available. Public
+  `fetch()` resolves URL hostnames before QUIC connect and keeps the URL host
+  as the default SNI name. Connection pooling, Capsule fallback, CONNECT
+  tunnels outside the WebTransport path, and external interop remain deferred.
 - QUIC exposes transport-level client/server endpoints, streams, DATAGRAM,
   migration coverage, Version Negotiation handling, diagnostics, and local
   HTTP/3 transport coverage. ngtcp2 HQ, Node QUIC interop, and loopback

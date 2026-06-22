@@ -27,7 +27,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Finding `JS-SPEC-002` |
-| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005`, `JS-SPEC-006`, and `JS-SPEC-008` |
+| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` and `JS-SPEC-008` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | No open findings |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
@@ -75,29 +75,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   expected frame before close. Group the failures by RFC 9113 section in the
   h2spec audit so release gates can burn them down independently.
 
-### JS-SPEC-006
-
-- Subsystem/files: Networking, `js/internal/net/http/h3/**`,
-  `js/net/http/webtransport.mts`, `js/internal/net/http/h3/webtransport.mts`,
-  `research-docs/research/webtransport-http3.md`.
-- Spec target and section: WebTransport over HTTP/3 draft 15, RFC 9114, RFC
-  9297, and W3C WebTransport.
-- Expected behavior: WebTransport sessions should enforce SETTINGS negotiation,
-  Extended CONNECT semantics, HTTP Datagrams, stream prefixes, session close,
-  GOAWAY handling, server certificate hash validation, and mixed H3 traffic
-  behavior.
-- Observed implementation/test gap: The implementation has progressed through
-  public API shape, H3 SETTINGS, Extended CONNECT, datagrams, streams, and basic
-  lifecycle, but the research doc still lists native callback confirmation,
-  H3 GOAWAY session behavior, H2 capsule fallback, and ngtcp2 reset-at
-  availability as blockers or out-of-scope areas. These are not reflected as
-  open gaps in the previous spec audit.
-- Priority: P0.
-- Suggested follow-up: Add a WebTransport conformance matrix tied to draft-15
-  sections and mark GOAWAY, DATAGRAM callback proof, reset-at support, and
-  capsule fallback as `missing-test`, `missing-implementation`, or
-  `intentional-limit` explicitly.
-
 ### JS-SPEC-008
 
 - Subsystem/files: Networking, `js/net/dns.mts`,
@@ -143,7 +120,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Priority | Subsystem | Coverage to add or strengthen |
 | --- | --- | --- |
 | P0 | HTTP/2 | Burn down `tests/integration/h2spec-allowed-failures.json`; capture exact GOAWAY/RST behavior for timing-sensitive failures. |
-| P0 | WebTransport/H3 | Add draft-15 conformance tests for GOAWAY, DATAGRAM callback proof, reset-at support, SETTINGS negotiation failures, and session cleanup. |
 | P0 | WebCrypto | Assert WebCrypto named errors and key-usage checks for every supported algorithm and unsupported path. |
 | P1 | Web Streams | Add WHATWG Streams algorithm coverage for BYOB, lock release, promise timing, `tee()`, and pipe abort/prevent flags. |
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
