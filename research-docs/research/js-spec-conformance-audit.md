@@ -30,7 +30,7 @@ prioritization. It does not include source fixes.
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 and WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
-| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gap FFS-005 |
+| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
 Existing release notes already document broad intentional non-parity areas:
@@ -155,27 +155,11 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: rerun with newer h2spec/harness isolation, reduce allowlist, and map
   local flow-control tests to omitted subsections.
 
-### FFS-005: XML entity/reference handling is incomplete
-
-- Files: `js/format/xml.mts`
-- Spec target: XML 1.0 entity replacement text and character references.
-- Expected behavior: internal entity replacement text recursively expands under
-  cycle/depth limits, and numeric references are non-empty and XML-valid code
-  points.
-- Current behavior: internal entity values are returned raw, and numeric refs are
-  weakly validated before `String.fromCodePoint()`.
-- Coverage gap: no tests for nested/recursive entities, empty numeric refs,
-  surrogates, or out-of-range XML characters.
-- Priority: P2
-- Follow-up: implement bounded recursive expansion and XML char validation, or
-  document recursion as unsupported.
-
 ## Test Coverage Priorities
 
 - P1 web platform: event-handler attribute dispatch parity.
 - P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
   rejection, and end-to-end WebTransport unidirectional stream routing.
-- P1 archive/XML: XML entity/reference validation and bounded recursive expansion.
 
 ## Accepted Divergences And Non-Goals
 

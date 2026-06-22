@@ -1208,25 +1208,76 @@ class XmlParser {
         ? (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66)
         : (c >= 0x30 && c <= 0x39));
       sc.expect(';');
+      if (digits.length === 0) throw sc.error('invalid character reference');
       const cp = parseInt(digits, hex ? 16 : 10);
-      this.#expandedChars++;
-      if (this.#expandedChars > (this.#opts.maxEntityExpansion ?? MAX_ENTITY_EXPANSION)) {
-        throw sc.error('entity expansion limit exceeded');
-      }
+      if (!isXmlChar(cp)) throw sc.error(`invalid XML character reference: ${digits}`);
+      this.#addExpandedChars(1);
       return String.fromCodePoint(cp);
     }
     const name = sc.eatWhile(c => c !== 0x3B);
     sc.expect(';');
+    this.#validateName(name);
     if (name in _PREDEF) return _PREDEF[name]!;
     if (name in this.#entities) {
-      const expanded = this.#entities[name]!;
-      this.#expandedChars += expanded.length;
-      if (this.#expandedChars > (this.#opts.maxEntityExpansion ?? MAX_ENTITY_EXPANSION)) {
-        throw sc.error('entity expansion limit exceeded');
-      }
+      const expanded = this.#expandEntity(name, []);
+      this.#addExpandedChars(expanded.length);
       return expanded;
     }
     throw sc.error(`undefined entity: &${name};`);
+  }
+
+  #expandEntity(name: string, stack: string[]): string {
+    if (stack.includes(name)) throw this.#sc.error(`recursive entity reference: ${name}`);
+    const value = this.#entities[name];
+    if (value === undefined) throw this.#sc.error(`undefined entity: &${name};`);
+    return this.#expandEntityText(value, [...stack, name]);
+  }
+
+  #expandEntityText(value: string, stack: string[]): string {
+    let out = '';
+    for (let i = 0; i < value.length;) {
+      const amp = value.indexOf('&', i);
+      if (amp === -1) {
+        out += value.slice(i);
+        break;
+      }
+      out += value.slice(i, amp);
+      const semi = value.indexOf(';', amp + 1);
+      if (semi === -1) throw this.#sc.error('unterminated entity reference');
+      const ref = value.slice(amp + 1, semi);
+      if (ref.startsWith('#')) {
+        out += this.#expandCharacterReference(ref.slice(1));
+      } else if (ref in _PREDEF) {
+        out += _PREDEF[ref]!;
+      } else if (ref in this.#entities) {
+        const expanded = this.#expandEntity(ref, stack);
+        this.#addExpandedChars(expanded.length);
+        out += expanded;
+      } else {
+        throw this.#sc.error(`undefined entity: &${ref};`);
+      }
+      i = semi + 1;
+    }
+    return out;
+  }
+
+  #expandCharacterReference(body: string): string {
+    const hex = body.startsWith('x');
+    const digits = hex ? body.slice(1) : body;
+    if (digits.length === 0) throw this.#sc.error('invalid character reference');
+    const validDigits = hex ? /^[0-9A-Fa-f]+$/.test(digits) : /^[0-9]+$/.test(digits);
+    if (!validDigits) throw this.#sc.error('invalid character reference');
+    const cp = parseInt(digits, hex ? 16 : 10);
+    if (!isXmlChar(cp)) throw this.#sc.error(`invalid XML character reference: ${digits}`);
+    this.#addExpandedChars(1);
+    return String.fromCodePoint(cp);
+  }
+
+  #addExpandedChars(count: number): void {
+    this.#expandedChars += count;
+    if (this.#expandedChars > (this.#opts.maxEntityExpansion ?? MAX_ENTITY_EXPANSION)) {
+      throw this.#sc.error('entity expansion limit exceeded');
+    }
   }
 
   #parseCData(): string {
@@ -1421,6 +1472,15 @@ function isXmlNameChar(cp: number): boolean {
     cp === 0xB7 ||
     (cp >= 0x0300 && cp <= 0x036F) ||
     (cp >= 0x203F && cp <= 0x2040);
+}
+
+function isXmlChar(cp: number): boolean {
+  return cp === 0x09 ||
+    cp === 0x0A ||
+    cp === 0x0D ||
+    (cp >= 0x20 && cp <= 0xD7FF) ||
+    (cp >= 0xE000 && cp <= 0xFFFD) ||
+    (cp >= 0x10000 && cp <= 0x10FFFF);
 }
 
 // ---------------------------------------------------------------------------

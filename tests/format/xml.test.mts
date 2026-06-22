@@ -182,6 +182,30 @@ describe('fino:format/xml — security', () => {
     );
   });
 
+  it('expands nested internal entities in text', (t) => {
+    const doc = parse('<!DOCTYPE r [<!ENTITY a "A"><!ENTITY b "&a;B">]><r>&b;</r>');
+    t.equal((doc.root.children[0] as { data: string }).data, 'AB');
+  });
+
+  it('expands entity references inside attributes', (t) => {
+    const doc = parse('<!DOCTYPE r [<!ENTITY a "A"><!ENTITY b "&a;B">]><r value="&b;"/>');
+    t.equal(doc.root.attributes['value'], 'AB');
+  });
+
+  it('rejects recursive entity cycles', (t) => {
+    t.throws(
+      () => parse('<!DOCTYPE r [<!ENTITY a "&b;"><!ENTITY b "&a;">]><r>&a;</r>'),
+      /recursive entity/i,
+    );
+  });
+
+  it('rejects invalid numeric character references', (t) => {
+    t.throws(() => parse('<r>&#;</r>'), /invalid character reference/i);
+    t.throws(() => parse('<r>&#0;</r>'), /invalid XML character/i);
+    t.throws(() => parse('<r>&#xD800;</r>'), /invalid XML character/i);
+    t.throws(() => parse('<r>&#x110000;</r>'), /invalid XML character/i);
+  });
+
   it('explicit maxDepth rejects deeply nested input', (t) => {
     t.throws(() => parse('<root><child/></root>', { maxDepth: 1 }), /too deep/i);
   });
