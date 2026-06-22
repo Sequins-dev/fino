@@ -27,7 +27,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Finding `JS-SPEC-002` |
-| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` and `JS-SPEC-008` |
+| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Finding `JS-SPEC-005` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | No open findings |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
@@ -75,25 +75,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   expected frame before close. Group the failures by RFC 9113 section in the
   h2spec audit so release gates can burn them down independently.
 
-### JS-SPEC-008
-
-- Subsystem/files: Networking, `js/net/dns.mts`,
-  `js/internal/net/dnssec.mts`, `tests/net/dns-live.test.mts`.
-- Spec target and section: RFC 1035 DNS, RFC 4034/4035 DNSSEC, EDNS(0), NSEC,
-  and NSEC3 denial proofs.
-- Expected behavior: DNSSEC validation should prove positive answers, bogus
-  signatures, insecure delegations, and denial-of-existence behavior against
-  representative signed zones.
-- Observed implementation/test gap: Static tests and gated live smoke tests
-  exist, but live validation is skipped unless `FINO_DNS_LIVE=1` is set. The
-  smoke lane covers one signed domain and one bogus domain by default; it does
-  not visibly cover NSEC and NSEC3 denial proof variants, unsupported algorithm
-  fallback with an alternate supported signature, or insecure delegation proofs.
-- Priority: P1.
-- Suggested follow-up: Add deterministic DNSSEC fixtures for chain and denial
-  cases, then keep the live lane as an external smoke test rather than the only
-  proof of resolver conformance.
-
 ### JS-SPEC-012
 
 - Subsystem/files: Security/crypto, `js/globals/crypto.mts`,
@@ -122,7 +103,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P0 | HTTP/2 | Burn down `tests/integration/h2spec-allowed-failures.json`; capture exact GOAWAY/RST behavior for timing-sensitive failures. |
 | P0 | WebCrypto | Assert WebCrypto named errors and key-usage checks for every supported algorithm and unsupported path. |
 | P1 | Web Streams | Add WHATWG Streams algorithm coverage for BYOB, lock release, promise timing, `tee()`, and pipe abort/prevent flags. |
-| P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 
 ## Accepted Divergences And Non-Goals
 
