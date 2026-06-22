@@ -28,10 +28,10 @@ prioritization. It does not include source fixes.
 
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-007 |
+| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 and WEB-007 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
-| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001 to FFS-007 |
-| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-001 to RTE-005 |
+| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001 to FFS-005 |
+| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-002 to RTE-005 |
 
 Existing release notes already document broad intentional non-parity areas:
 server-side Fetch/CORS/cookie behavior, Fino-native OpenTelemetry instead of
@@ -87,42 +87,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P2
 - Follow-up: decide whether message-graph port transfer is release scope; if so,
   add an internal transfer map for `MessagePort.postMessage()`.
-
-### WEB-004: Closed `BroadcastChannel.postMessage()` throws generic `Error`
-
-- Files: `js/globals/broadcast-channel.mts`
-- Spec target: HTML BroadcastChannel.
-- Expected behavior: posting after close should throw a DOM-style invalid state
-  exception.
-- Current behavior: throws `Error('BroadcastChannel is closed')`.
-- Coverage gap: tests only match the message text.
-- Priority: P2
-- Follow-up: throw `DOMException` with name `InvalidStateError` if web parity is
-  desired.
-
-### WEB-005: `EventSource` omits `withCredentials`
-
-- Files: `js/globals/eventsource.mts`
-- Spec target: HTML `EventSource(url, init)` and readonly `withCredentials`.
-- Expected behavior: constructor supports `withCredentials?: boolean` and exposes
-  a readonly reflected property defaulting to `false`.
-- Current behavior: init supports only `headers` and `tls`; there is no property.
-- Coverage gap: no constructor/property tests.
-- Priority: P2
-- Follow-up: add reflected option/property while keeping browser credential
-  policy as a documented server-side non-goal.
-
-### WEB-006: `Blob` accepts explicit `null` as an empty part sequence
-
-- Files: `js/globals/blob.mts`
-- Spec target: File API `Blob(sequence<BlobPart> blobParts, ...)`.
-- Expected behavior: omitted parts default to empty; explicit `null` should fail
-  Web IDL sequence conversion.
-- Current behavior: `parts == null` is treated as empty.
-- Coverage gap: no `new Blob(null)` test.
-- Priority: P2
-- Follow-up: reject `null` and keep `undefined` as empty, unless permissiveness is
-  documented as a Fino extension.
 
 ### WEB-007: `FormData(existingFormData)` is nonstandard
 
@@ -284,45 +248,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: implement bounded recursive expansion and XML char validation, or
   document recursion as unsupported.
 
-### FFS-006: JSON Schema `type` arrays are ignored
-
-- Files: `js/validate.mts`
-- Spec target: JSON Schema `type` keyword.
-- Expected behavior: `type: ["string", "null"]` accepts either string or null and
-  rejects other values.
-- Current behavior: array-valued `type` becomes undefined and imposes no type
-  check.
-- Coverage gap: no tests for nullable/common type arrays.
-- Priority: P2
-- Follow-up: support string-array `type` or explicitly document and test it as
-  outside the subset.
-
-### FFS-007: SemVer numeric identifiers can exceed safe precision
-
-- Files: `js/semver.mts`
-- Spec target: SemVer 2.0.0 numeric precedence.
-- Expected behavior: numeric identifiers compare exactly by integer value.
-- Current behavior: identifiers are converted to `Number()`, so values beyond
-  `Number.MAX_SAFE_INTEGER` can compare incorrectly.
-- Coverage gap: no large numeric identifier tests.
-- Priority: P2
-- Follow-up: reject unsafe numeric identifiers or compare with exact string/BigInt
-  logic.
-
-### RTE-001: W3C `traceparent` extraction accepts invalid forms
-
-- Files: `js/internal/opentelemetry/common.mts`
-- Spec target: W3C Trace Context.
-- Expected behavior: invalid version `ff` and invalid uppercase hex forms should
-  be ignored rather than producing remote parent context.
-- Current behavior: extraction uses a case-insensitive regex and lowercases IDs;
-  it rejects all-zero IDs and some v00 trailing data but not version `ff` or
-  uppercase IDs.
-- Coverage gap: no negative propagation tests for version `ff`, uppercase IDs,
-  malformed lengths, or trailing data variants.
-- Priority: P2
-- Follow-up: tighten parser to the W3C grammar and add negative tests.
-
 ### RTE-002: Multi-token SRI verification checks only the first token
 
 - Files: `js/internal/package_manager.mts`
@@ -385,9 +310,8 @@ unless a finding below calls out missing documentation or contradictory tests.
 - P1 archive/XML: ZIP local/central mismatch, stored ZIP size guard, and XML name
   and namespace invalid cases.
 - P1 cluster: heartbeat liveness based on seed receive time.
-- P2 runtime/security: W3C trace-context negative cases, SRI multi-token ranking,
-  encoded `import.meta.url` paths, JSON Schema `type` arrays, and SemVer unsafe
-  numeric identifiers.
+- P2 runtime/security: SRI multi-token ranking and encoded `import.meta.url`
+  paths.
 
 ## Accepted Divergences And Non-Goals
 
@@ -411,4 +335,3 @@ unless a finding below calls out missing documentation or contradictory tests.
 - QUIC external interop, advanced peer-controlled migration/VN, and some
   backend-specific TLS parity remain gated or deferred where existing research
   docs say so.
-
