@@ -31,7 +31,7 @@ prioritization. It does not include source fixes.
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 and WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-004 and FFS-005 |
-| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gap RTE-004 |
+| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
 Existing release notes already document broad intentional non-parity areas:
 server-side Fetch/CORS/cookie behavior, Fino-native OpenTelemetry instead of
@@ -185,19 +185,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P2
 - Follow-up: implement bounded recursive expansion and XML char validation, or
   document recursion as unsupported.
-
-### RTE-004: `startCluster()` self-join ignores configured hostname
-
-- Files: `js/cluster.mts`
-- Spec target: WebTransport URL authority and public `StartClusterOptions.hostname`.
-- Expected behavior: seed self-connection uses a reachable authority for the
-  configured listener or rejects invalid combinations clearly.
-- Current behavior: seed transport receives `opts.hostname`, but local worker
-  self-join always connects to `https://127.0.0.1:${port}${path}`.
-- Coverage gap: no test for non-default hostname/self-join URL.
-- Priority: P2
-- Follow-up: build self-join URL from `opts.hostname` or document/validate
-  loopback-only self-participation.
 
 ## Test Coverage Priorities
 

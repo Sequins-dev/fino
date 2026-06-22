@@ -90,6 +90,19 @@ describe('fino:cluster public WebTransport integration', () => {
     }
   });
 
+  it('startCluster self-joins through the configured IPv6 hostname and path', async (t) => {
+    if (!quicAvailable || !h3Available) return;
+    const port = randomPort();
+    const path = `/__fino_cluster_ipv6_${port}`;
+    await withTimeout(
+      startCluster({ port, hostname: '::1', path, nodeId: 'cluster-ipv6-self-join', tls: clusterTls }),
+      2_000,
+      'startCluster IPv6 self-join',
+    );
+    leaveCluster();
+    t.ok(true, 'seed self-join used configured IPv6 hostname and custom path');
+  });
+
   it('leaveCluster is idempotent and allows a later start', async (t) => {
     if (!quicAvailable || !h3Available) return;
     leaveCluster();

@@ -180,7 +180,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   }
 
   const nodeId = opts.nodeId ?? `seed-${opts.port}`;
-  const path = opts.path ?? DEFAULT_CLUSTER_PATH;
+  const path = normalizeClusterPath(opts.path);
   const seedTransport = new WebTransportSeedTransport(nodeId, {
     port: opts.port,
     hostname: opts.hostname,
@@ -193,7 +193,8 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
 
   // Also join as a worker (connect to self) - seeds participate as workers.
   const workerTransport = new WebTransportWorkerTransport(nodeId);
-  await workerTransport.connect(`https://127.0.0.1:${opts.port}${path}`, { cpu: 0, memory: 0 }, {
+  const selfJoinHost = clusterSelfJoinHost(opts.hostname);
+  await workerTransport.connect(`https://${selfJoinHost}:${opts.port}${path}`, { cpu: 0, memory: 0 }, {
     tls: { rejectUnauthorized: false },
   });
   _client = new ClusterClient(workerTransport, nodeId);
@@ -238,8 +239,24 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
 function normalizeClusterSeed(seed: string | URL): URL {
   const url = new URL(String(seed));
   if (url.protocol !== 'https:') throw new TypeError('WebTransport cluster seeds must use https: URLs');
-  if (url.pathname === '/') url.pathname = DEFAULT_CLUSTER_PATH;
+  if (url.pathname === '/') url.pathname = normalizeClusterPath(undefined);
   return url;
+}
+
+function normalizeClusterPath(path: string | undefined): string {
+  if (path === undefined || path === '') return DEFAULT_CLUSTER_PATH;
+  return path.startsWith('/') ? path : `/${path}`;
+}
+
+function clusterSelfJoinHost(hostname: string | undefined): string {
+  if (hostname === undefined || hostname === '') return '127.0.0.1';
+  const host = hostname.startsWith('[') && hostname.endsWith(']')
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (host === '0.0.0.0') return '127.0.0.1';
+  if (host === '::') return '[::1]';
+  if (host.includes(':')) return `[${host}]`;
+  return hostname;
 }
 
 /**
