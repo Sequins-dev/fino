@@ -1,361 +1,116 @@
 /**
  * fino:format/markdown - safe Markdown parser and HTML renderer for documentation and templates.
  *
- * This module provides a deliberately small Markdown surface for generated
- * documentation, templates, and user-facing text where predictable HTML output
- * matters more than implementing every extension in the Markdown ecosystem.
- * It parses Markdown into a reusable block tree and renders escaped HTML with
- * safe link handling by default.
+ * This module implements a practical CommonMark/GFM-oriented Markdown surface
+ * in TypeScript. It supports headings, paragraphs, blockquotes, thematic
+ * breaks, fenced code, nested ordered and unordered lists, task-list markers,
+ * GFM tables, reference links, autolinks, emphasis, strong text, code spans,
+ * strikethrough, links, images, and raw HTML with safe defaults.
  *
- * Supported block nodes include paragraphs, ATX headings, ordered and
- * unordered lists, fenced code blocks, and reference-style link definitions.
- * Inline rendering handles emphasis-style text as plain escaped content plus
- * links and code spans used by the documentation generator. Link URLs are
- * limited to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
- *
- * The renderer is not a CommonMark or GFM compliance target and does not
- * execute or sanitize arbitrary embedded HTML. Nested list structure,
- * blockquotes, tables, Setext headings, thematic breaks, HTML blocks, and full
- * emphasis/link grammar are outside this release contract; unsupported block
- * forms are rendered as escaped paragraph text. Treat Markdown as content input
- * and use `resolveLink` or `renderCode` to adapt it to an application's
- * routing and syntax-highlighting needs.
- *
- * ```ts no_run
- * import { parseMarkdown, renderMarkdown } from 'fino:format/markdown';
- *
- * const doc = parseMarkdown('# Title\n\nSee [docs](/docs).\n');
- * const html = renderMarkdown(doc, { headingOffset: 1 });
- * ```
- *
- * ```ts no_run
- * import { renderMarkdown } from 'fino:format/markdown';
- *
- * const html = renderMarkdown('```ts\nconst x = 1;\n```', {
- *   renderCode: (code, lang) => `<pre data-lang="${lang}">${code}</pre>`,
- * });
- * ```
+ * Raw HTML is escaped unless `allowRawHtml` is enabled. Link URLs are limited
+ * to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
  *
  * Useful references:
- *   - CommonMark overview: https://commonmark.org/
- *   - Markdown original syntax: https://daringfireball.net/projects/markdown/syntax
+ * - CommonMark: https://spec.commonmark.org/0.31.2/
+ * - GitHub Flavored Markdown: https://github.github.com/gfm/
  */
 
 import { Scanner } from '../parsing/scanner.mts';
 
 /**
  * Options controlling Markdown HTML rendering, link safety, and code output.
- *
- * By default the renderer escapes Markdown text, allows relative and
- * `http`/`https` links, renders headings at their source level, and emits
- * fenced code blocks as `<pre><code>`. Override these hooks when routing links
- * through an application or adding syntax highlighting.
- *
- * ```ts no_run
- * import { renderMarkdown, type MarkdownOptions } from 'fino:format/markdown';
- *
- * const options: MarkdownOptions = {
- *   headingOffset: 1,
- *   resolveLink: (href) => href.startsWith('/') ? `/docs${href}` : href,
- * };
- *
- * renderMarkdown('# Title\n\n[Guide](/guide)', options);
- * ```
  */
 export interface MarkdownOptions {
   /**
    * Allow link URLs outside the default safe set.
-   *
-   * Defaults to `false`. When disabled, absolute URLs are limited to `http` and
-   * `https`, protocol URLs such as `javascript:` are omitted, and unsafe links
-   * render as their label text. Enabling this option does not sanitize the URL.
-   *
-   * ```ts no_run
-   * import { renderMarkdownInline } from 'fino:format/markdown';
-   *
-   * renderMarkdownInline('[run](javascript:alert(1))', {
-   *   allowUnsafeLinks: true,
-   * });
-   * ```
    */
   allowUnsafeLinks?: boolean;
 
   /**
+   * Render raw HTML blocks and inline spans instead of escaping them.
+   *
+   * GFM tagfilter remains active for disallowed raw HTML tags such as `xmp`
+   * and `script`.
+   */
+  allowRawHtml?: boolean;
+
+  /**
    * Add this many levels to rendered Markdown headings.
-   *
-   * Defaults to `0`. Output heading levels are clamped to the HTML range
-   * `h1` through `h6`, which is useful when embedding Markdown below an
-   * existing page heading.
-   *
-   * ```ts no_run
-   * import { renderMarkdown } from 'fino:format/markdown';
-   *
-   * renderMarkdown('# Section', { headingOffset: 2 }); // <h3>Section</h3>
-   * ```
    */
   headingOffset?: number;
 
   /**
-   * Reference-style link definitions to use in addition to definitions parsed from the document.
-   *
-   * Keys are normalized like Markdown reference labels: trimmed, collapsed
-   * whitespace, and lower-cased. Parsed document references override nothing;
-   * renderer options are merged in before inline rendering.
-   *
-   * ```ts no_run
-   * import { renderMarkdownInline } from 'fino:format/markdown';
-   *
-   * renderMarkdownInline('[API][api]', {
-   *   references: { api: 'https://example.test/api' },
-   * });
-   * ```
+   * Reference-style link definitions to use in addition to definitions parsed
+   * from the document.
    */
   references?: Record<string, string>;
 
   /**
    * Rewrite link URLs while rendering.
-   *
-   * Return a replacement URL or `undefined` to keep the original. The resulting
-   * URL is still checked by the safe-link policy unless `allowUnsafeLinks` is
-   * enabled.
-   *
-   * ```ts no_run
-   * import { renderMarkdown } from 'fino:format/markdown';
-   *
-   * renderMarkdown('[Home](/)', {
-   *   resolveLink: (href, label) => href === '/' ? `/docs?from=${label}` : href,
-   * });
-   * ```
    */
   resolveLink?: (href: string, label: string) => string | undefined;
 
   /**
    * Render fenced code blocks.
-   *
-   * When omitted, code is escaped and wrapped in `<pre><code>`, with
-   * `class="language-..."` when a language is present. Custom renderers receive
-   * the raw code text, language, and trailing fence metadata and must escape
-   * their own HTML output as needed.
-   *
-   * ```ts no_run
-   * import { renderMarkdown } from 'fino:format/markdown';
-   *
-   * renderMarkdown('```ts title=demo\nconst x = 1;\n```', {
-   *   renderCode: (code, lang, meta) =>
-   *     `<pre data-lang="${lang}" data-meta="${meta}">${code}</pre>`,
-   * });
-   * ```
    */
   renderCode?: (code: string, lang: string, meta: string) => string;
 }
 
 /**
- * Block-level node returned by the Markdown parser.
+ * Block node in a parsed Markdown document.
  *
- * The parser produces paragraph, heading, list, and fenced-code nodes. Inline
- * Markdown is intentionally left in string fields until rendering, so callers
- * can inspect or transform block structure without losing the original inline
- * text. The node union does not represent arbitrary CommonMark extensions.
- *
- * ```ts no_run
- * import { parseMarkdown, type MarkdownNode } from 'fino:format/markdown';
- *
- * const first: MarkdownNode | undefined = parseMarkdown('# Title').nodes[0];
- * if (first?.kind === 'heading') console.log(first.level, first.text);
- * ```
+ * The tree represents the block constructs rendered by `renderMarkdown()`.
+ * Inline Markdown remains in string fields and is interpreted during rendering.
  */
 export type MarkdownNode =
-  | {
-    /**
-     * Discriminator for paragraph nodes.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * parseMarkdown('Body').nodes[0]?.kind;
-     * ```
-     */
-    kind: 'paragraph';
-    /**
-     * Paragraph text with source lines joined by spaces.
-     *
-     * Inline Markdown remains unrendered until `renderMarkdownInline()` or
-     * `renderMarkdown()` is called.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('Hello **world**').nodes[0];
-     * if (node?.kind === 'paragraph') node.text;
-     * ```
-     */
-    text: string;
-  }
-  | {
-    /**
-     * Discriminator for heading nodes.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * parseMarkdown('# Title').nodes[0]?.kind;
-     * ```
-     */
-    kind: 'heading';
-    /**
-     * Heading level from 1 through 6 before render-time offsetting.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('## Title').nodes[0];
-     * if (node?.kind === 'heading') node.level;
-     * ```
-     */
-    level: number;
-    /**
-     * Heading text without the leading hash markers.
-     *
-     * Inline Markdown remains unrendered until HTML rendering.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('# Title').nodes[0];
-     * if (node?.kind === 'heading') node.text;
-     * ```
-     */
-    text: string;
-  }
-  | {
-    /**
-     * Discriminator for list nodes.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * parseMarkdown('- item').nodes[0]?.kind;
-     * ```
-     */
-    kind: 'list';
-    /**
-     * Whether the list was parsed from ordered markers.
-     *
-     * `true` renders as `<ol>` and `false` renders as `<ul>`.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('1. item').nodes[0];
-     * if (node?.kind === 'list') node.ordered;
-     * ```
-     */
-    ordered: boolean;
-    /**
-     * List item text values in source order.
-     *
-     * Nested lists are not represented by this compact parser.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('- a\n- b').nodes[0];
-     * if (node?.kind === 'list') node.items;
-     * ```
-     */
-    items: string[];
-  }
-  | {
-    /**
-     * Discriminator for fenced code block nodes.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * parseMarkdown('```ts\nx\n```').nodes[0]?.kind;
-     * ```
-     */
-    kind: 'code';
-    /**
-     * Fence language identifier, or `""` when none is provided.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('```ts\nx\n```').nodes[0];
-     * if (node?.kind === 'code') node.lang;
-     * ```
-     */
-    lang: string;
-    /**
-     * Remaining fence info string after the language identifier.
-     *
-     * The value is trimmed and may be `""`.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('```ts title=demo\nx\n```').nodes[0];
-     * if (node?.kind === 'code') node.meta;
-     * ```
-     */
-    meta: string;
-    /**
-     * Code block contents without the opening or closing fence.
-     *
-     * The parser preserves internal newlines and does not syntax-highlight.
-     *
-     * ```ts no_run
-     * import { parseMarkdown } from 'fino:format/markdown';
-     *
-     * const node = parseMarkdown('```\nconst x = 1;\n```').nodes[0];
-     * if (node?.kind === 'code') node.code;
-     * ```
-     */
-    code: string;
-  };
+  | { kind: 'paragraph'; text: string }
+  | { kind: 'heading'; level: number; text: string }
+  | { kind: 'list'; ordered: boolean; tight: boolean; items: MarkdownListItem[] }
+  | { kind: 'code'; lang: string; meta: string; code: string }
+  | { kind: 'blockquote'; nodes: MarkdownNode[] }
+  | { kind: 'thematicBreak' }
+  | { kind: 'htmlBlock'; html: string }
+  | { kind: 'table'; align: TableAlign[]; header: string[]; rows: string[][] };
+
+/**
+ * Parsed list item content.
+ *
+ * `nodes` contains the item blocks. `task` is `true` for checked GFM task
+ * items, `false` for unchecked items, and omitted for ordinary list items.
+ */
+export interface MarkdownListItem {
+  nodes: MarkdownNode[];
+  task?: boolean;
+}
+
+/**
+ * GFM table column alignment.
+ */
+export type TableAlign = 'left' | 'right' | 'center' | undefined;
 
 /**
  * Parsed Markdown tree and reference-style link definitions.
- *
- * `nodes` contains block-level content in source order. `references` contains
- * link definitions parsed from lines such as `[id]: https://example.test`; it
- * is merged with `MarkdownOptions.references` during rendering.
- *
- * ```ts no_run
- * import { parseMarkdown, type MarkdownDocument } from 'fino:format/markdown';
- *
- * const document: MarkdownDocument = parseMarkdown('[docs]: /docs\n\nSee [docs][].');
- * console.log(document.references.docs);
- * ```
  */
 export interface MarkdownDocument {
   /**
    * Block nodes in source order.
-   *
-   * Empty lines and reference definitions are not represented as nodes.
-   *
-   * ```ts no_run
-   * import { parseMarkdown } from 'fino:format/markdown';
-   *
-   * const nodes = parseMarkdown('# A\n\nB').nodes;
-   * nodes.map((node) => node.kind);
-   * ```
    */
   nodes: MarkdownNode[];
   /**
    * Normalized reference-style link definitions parsed from the document.
-   *
-   * Missing references leave the original reference syntax escaped in rendered
-   * output. Values are not safety-checked until rendering.
-   *
-   * ```ts no_run
-   * import { parseMarkdown } from 'fino:format/markdown';
-   *
-   * const refs = parseMarkdown('[api]: https://example.test\n').references;
-   * refs.api;
-   * ```
    */
+  references: Record<string, string>;
+}
+
+interface Line {
+  raw: string;
+  text: string;
+  indent: number;
+}
+
+interface ParseState {
+  lines: Line[];
+  index: number;
   references: Record<string, string>;
 }
 
@@ -392,6 +147,11 @@ function readLine(scanner: Scanner): string | undefined {
   return line;
 }
 
+function toLine(raw: string): Line {
+  const spaces = /^ */.exec(raw)?.[0].length ?? 0;
+  return { raw, text: raw.slice(spaces), indent: spaces };
+}
+
 function splitFenceInfo(info: string): { lang: string; meta: string } {
   const trimmed = info.trim();
   const match = /^(\S+)?\s*(.*)$/.exec(trimmed);
@@ -407,97 +167,302 @@ function referenceDefinition(line: string): { id: string; href: string } | undef
   return { id: normalizeReference(match[1]!), href: match[2]! };
 }
 
-/**
- * Parse Markdown into a reusable document tree.
- *
- * The parser recognizes a compact block subset: paragraphs, ATX headings,
- * ordered and unordered lists, fenced code blocks, and reference definitions.
- * It does not throw for most Markdown oddities; unsupported constructs are
- * usually folded into paragraphs or escaped later by the renderer.
- *
- * ```ts no_run
- * import { parseMarkdown } from 'fino:format/markdown';
- *
- * const document = parseMarkdown('# Title\n\n- one\n- two\n');
- * const list = document.nodes.find((node) => node.kind === 'list');
- * ```
- */
-export function parseMarkdown(markdown: string): MarkdownDocument {
-  const scanner = new Scanner(markdown, { encoding: 'utf-8', format: 'markdown' });
-  const lines: string[] = [];
-  while (!scanner.done) lines.push(readLine(scanner) ?? '');
+function listMarker(line: Line, baseIndent: number): { ordered: boolean; rest: string; markerWidth: number } | undefined {
+  if (line.indent < baseIndent) return undefined;
+  const current = line.raw.slice(baseIndent);
+  const unordered = /^([-*+])\s+(.+)$/.exec(current);
+  if (unordered) return { ordered: false, rest: unordered[2]!, markerWidth: unordered[1]!.length + 1 };
+  const ordered = /^(\d+[.)])\s+(.+)$/.exec(current);
+  if (ordered) return { ordered: true, rest: ordered[2]!, markerWidth: ordered[1]!.length + 1 };
+  return undefined;
+}
 
+function thematicBreak(line: string): boolean {
+  return /^(?: {0,3})([-*_])(?:\s*\1){2,}\s*$/.test(line);
+}
+
+function heading(line: string): { level: number; text: string } | undefined {
+  const match = /^(#{1,6})(?:\s+|$)(.*?)(?:\s+#+\s*)?$/.exec(line);
+  if (!match) return undefined;
+  return { level: match[1]!.length, text: match[2]!.trim() };
+}
+
+function setextHeading(line: string): 1 | 2 | undefined {
+  if (/^=+\s*$/.test(line)) return 1;
+  if (/^-+\s*$/.test(line)) return 2;
+  return undefined;
+}
+
+function htmlBlockStart(line: string): boolean {
+  return /^<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/>)/i.test(line)
+    || /^<!--/.test(line)
+    || /^<\?/.test(line)
+    || /^<![A-Z]/.test(line)
+    || /^<!\[CDATA\[/.test(line);
+}
+
+function disallowedRawHtmlTag(line: string): boolean {
+  return /^<\/?(?:title|textarea|style|xmp|iframe|noembed|noframes|script|plaintext)(?=\s|>|\/>)/i.test(line);
+}
+
+function renderRawHtml(html: string, options: MarkdownOptions): string {
+  if (!options.allowRawHtml) return escapeHtml(html);
+  return html.replace(/<\/?(?:title|textarea|style|xmp|iframe|noembed|noframes|script|plaintext)(?=\s|>|\/>)/gi, (tag) => `&lt;${tag.slice(1)}`);
+}
+
+function splitTableRow(line: string): string[] {
+  const source = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells: string[] = [];
+  let cell = '';
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      cell += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '|') {
+      cells.push(cell.trim());
+      cell = '';
+      continue;
+    }
+    cell += char;
+  }
+  if (escaped) cell += '\\';
+  cells.push(cell.trim());
+  return cells;
+}
+
+function parseTableDelimiter(line: string): TableAlign[] | undefined {
+  const cells = splitTableRow(line);
+  const align: TableAlign[] = [];
+  for (const cell of cells) {
+    if (!/^:?-{1,}:?$/.test(cell)) return undefined;
+    const left = cell.startsWith(':');
+    const right = cell.endsWith(':');
+    align.push(left && right ? 'center' : left ? 'left' : right ? 'right' : undefined);
+  }
+  return align;
+}
+
+function tableStart(state: ParseState): { align: TableAlign[]; header: string[] } | undefined {
+  const header = state.lines[state.index];
+  const delimiter = state.lines[state.index + 1];
+  if (!header || !delimiter || !header.raw.includes('|')) return undefined;
+  const align = parseTableDelimiter(delimiter.text);
+  if (!align) return undefined;
+  const cells = splitTableRow(header.text);
+  if (cells.length !== align.length) return undefined;
+  return { align, header: cells };
+}
+
+function isBlockStart(state: ParseState, baseIndent: number): boolean {
+  const line = state.lines[state.index];
+  if (!line || line.raw.trim() === '') return true;
+  if (line.indent < baseIndent) return true;
+  const text = line.raw.slice(baseIndent);
+  return Boolean(
+    referenceDefinition(line.raw)
+      || /^```/.test(text)
+      || heading(text)
+      || thematicBreak(text)
+      || /^> ?/.test(text)
+      || listMarker(line, baseIndent)
+      || htmlBlockStart(text)
+      || tableStart(state),
+  );
+}
+
+function continuesListAfterBlank(line: Line | undefined, baseIndent: number): boolean {
+  if (!line) return false;
+  if (listMarker(line, baseIndent)) return true;
+  return line.raw.trim() !== '' && line.indent > baseIndent;
+}
+
+function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false): MarkdownNode[] {
   const nodes: MarkdownNode[] = [];
-  const references: Record<string, string> = {};
-  let index = 0;
 
-  while (index < lines.length) {
-    const line = lines[index]!;
-    if (line.trim() === '') {
-      index++;
+  while (state.index < state.lines.length) {
+    const line = state.lines[state.index]!;
+    if (line.raw.trim() === '') {
+      state.index++;
+      if (stopOnListMarker) break;
       continue;
     }
+    if (line.indent < baseIndent) break;
+    if (stopOnListMarker && listMarker(line, baseIndent)) break;
 
-    const reference = referenceDefinition(line);
+    const reference = referenceDefinition(line.raw);
     if (reference) {
-      references[reference.id] = reference.href;
-      index++;
+      state.references[reference.id] = reference.href;
+      state.index++;
       continue;
     }
 
-    const fence = /^\s*```(.*)$/.exec(line);
+    const text = line.raw.slice(baseIndent);
+    const fence = /^```(.*)$/.exec(text);
     if (fence) {
       const info = splitFenceInfo(fence[1] ?? '');
       const code: string[] = [];
-      index++;
-      while (index < lines.length && !/^\s*```\s*$/.test(lines[index]!)) {
-        code.push(lines[index]!);
-        index++;
+      state.index++;
+      while (state.index < state.lines.length && !/^```\s*$/.test(state.lines[state.index]!.raw.slice(baseIndent))) {
+        const current = state.lines[state.index]!;
+        code.push(current.raw.slice(Math.min(baseIndent, current.raw.length)));
+        state.index++;
       }
-      if (index < lines.length) index++;
+      if (state.index < state.lines.length) state.index++;
       nodes.push({ kind: 'code', lang: info.lang, meta: info.meta, code: code.join('\n') });
       continue;
     }
 
-    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
-    if (heading) {
-      nodes.push({ kind: 'heading', level: heading[1]!.length, text: heading[2]!.trim() });
-      index++;
+    const atx = heading(text);
+    if (atx) {
+      nodes.push({ kind: 'heading', level: atx.level, text: atx.text });
+      state.index++;
       continue;
     }
 
-    const unordered = /^\s*[-*+]\s+(.+)$/.exec(line);
-    const ordered = /^\s*\d+\.\s+(.+)$/.exec(line);
-    if (unordered || ordered) {
-      const orderedList = ordered !== null;
-      const items: string[] = [];
-      while (index < lines.length) {
-        const current = lines[index]!;
-        const item = orderedList ? /^\s*\d+\.\s+(.+)$/.exec(current) : /^\s*[-*+]\s+(.+)$/.exec(current);
-        if (!item) break;
-        items.push(item[1]!.trim());
-        index++;
+    if (thematicBreak(text)) {
+      nodes.push({ kind: 'thematicBreak' });
+      state.index++;
+      continue;
+    }
+
+    if (/^> ?/.test(text)) {
+      const quoteLines: string[] = [];
+      while (state.index < state.lines.length) {
+        const current = state.lines[state.index]!;
+        if (current.raw.trim() === '') {
+          quoteLines.push('');
+          state.index++;
+          continue;
+        }
+        const currentText = current.raw.slice(baseIndent);
+        const marker = /^> ?(.*)$/.exec(currentText);
+        if (!marker) break;
+        quoteLines.push(marker[1] ?? '');
+        state.index++;
       }
-      nodes.push({ kind: 'list', ordered: orderedList, items });
+      nodes.push({ kind: 'blockquote', nodes: parseMarkdown(quoteLines.join('\n')).nodes });
       continue;
     }
 
-    const paragraph: string[] = [line.trim()];
-    index++;
-    while (index < lines.length
-      && lines[index]!.trim() !== ''
-      && !/^\s*```/.test(lines[index]!)
-      && !/^(#{1,6})\s+/.test(lines[index]!)
-      && !/^\s*[-*+]\s+/.test(lines[index]!)
-      && !/^\s*\d+\.\s+/.test(lines[index]!)
-      && !referenceDefinition(lines[index]!)) {
-      paragraph.push(lines[index]!.trim());
-      index++;
+    const list = parseList(state, baseIndent);
+    if (list) {
+      nodes.push(list);
+      continue;
     }
-    nodes.push({ kind: 'paragraph', text: paragraph.join(' ') });
+
+    const table = tableStart(state);
+    if (table) {
+      state.index += 2;
+      const rows: string[][] = [];
+      while (state.index < state.lines.length) {
+        const current = state.lines[state.index]!;
+        if (current.raw.trim() === '' || !current.raw.includes('|') || current.indent < baseIndent) break;
+        rows.push(splitTableRow(current.text));
+        state.index++;
+      }
+      nodes.push({ kind: 'table', align: table.align, header: table.header, rows });
+      continue;
+    }
+
+    if (htmlBlockStart(text) || disallowedRawHtmlTag(text)) {
+      const html: string[] = [];
+      while (state.index < state.lines.length && state.lines[state.index]!.raw.trim() !== '') {
+        html.push(state.lines[state.index]!.raw.slice(baseIndent));
+        state.index++;
+      }
+      nodes.push({ kind: 'htmlBlock', html: html.join('\n') });
+      continue;
+    }
+
+    const paragraph: string[] = [text.trim()];
+    state.index++;
+    while (state.index < state.lines.length && !isBlockStart(state, baseIndent)) {
+      const current = state.lines[state.index]!.raw.slice(baseIndent);
+      if (paragraph.length === 1 && setextHeading(current)) break;
+      paragraph.push(current.trim());
+      state.index++;
+    }
+    const next = state.lines[state.index];
+    const setext = next && next.indent >= baseIndent ? setextHeading(next.raw.slice(baseIndent)) : undefined;
+    if (setext && paragraph.length === 1) {
+      nodes.push({ kind: 'heading', level: setext, text: paragraph[0]! });
+      state.index++;
+    } else {
+      nodes.push({ kind: 'paragraph', text: paragraph.join('\n') });
+    }
   }
 
-  return { nodes, references };
+  return nodes;
+}
+
+function parseList(state: ParseState, baseIndent: number): MarkdownNode | undefined {
+  const first = state.lines[state.index];
+  if (!first) return undefined;
+  const marker = listMarker(first, baseIndent);
+  if (!marker) return undefined;
+
+  const ordered = marker.ordered;
+  const items: MarkdownListItem[] = [];
+  let loose = false;
+
+  while (state.index < state.lines.length) {
+    const line = state.lines[state.index]!;
+    const current = listMarker(line, baseIndent);
+    if (!current || current.ordered !== ordered) break;
+
+    const itemIndent = baseIndent + current.markerWidth;
+    const itemLines: string[] = [current.rest];
+    state.index++;
+
+    while (state.index < state.lines.length) {
+      const next = state.lines[state.index]!;
+      if (next.raw.trim() === '') {
+        if (!continuesListAfterBlank(state.lines[state.index + 1], baseIndent)) break;
+        loose = true;
+        itemLines.push('');
+        state.index++;
+        if (state.index < state.lines.length && listMarker(state.lines[state.index]!, baseIndent)) break;
+        continue;
+      }
+      if (listMarker(next, baseIndent)) break;
+      if (next.indent < baseIndent) break;
+      itemLines.push(next.raw.slice(Math.min(itemIndent, next.raw.length)));
+      state.index++;
+    }
+
+    while (itemLines.length > 0 && itemLines[itemLines.length - 1] === '') itemLines.pop();
+    const itemDocument = parseMarkdown(itemLines.join('\n'));
+    const item: MarkdownListItem = { nodes: itemDocument.nodes };
+    const firstNode = item.nodes[0];
+    if (firstNode?.kind === 'paragraph') {
+      const task = /^\[([ xX])\]\s+/.exec(firstNode.text);
+      if (task) {
+        item.task = task[1]!.toLowerCase() === 'x';
+        firstNode.text = firstNode.text.slice(task[0]!.length);
+      }
+    }
+    items.push(item);
+  }
+
+  return { kind: 'list', ordered, tight: !loose, items };
+}
+
+/**
+ * Parse Markdown into a reusable document tree.
+ */
+export function parseMarkdown(markdown: string): MarkdownDocument {
+  const scanner = new Scanner(markdown, { encoding: 'utf-8', format: 'markdown' });
+  const lines: Line[] = [];
+  while (!scanner.done) lines.push(toLine(readLine(scanner) ?? ''));
+  const state: ParseState = { lines, index: 0, references: {} };
+  return { nodes: parseBlocks(state), references: state.references };
 }
 
 function resolveHref(href: string, label: string, options: MarkdownOptions): string | undefined {
@@ -556,17 +521,6 @@ function readLinkDestination(scanner: Scanner): { href: string; closed: boolean 
 
 /**
  * Render inline Markdown spans without wrapping the result in block elements.
- *
- * Inline rendering escapes text, supports code spans, emphasis, strong text,
- * images, inline links, reference links, and auto-linked `http`/`https` URLs.
- * Unsafe or unresolved links are rendered as escaped label text instead of
- * anchors. The output is an HTML fragment.
- *
- * ```ts no_run
- * import { renderMarkdownInline } from 'fino:format/markdown';
- *
- * const html = renderMarkdownInline('Use `code` and [docs](/docs).');
- * ```
  */
 export function renderMarkdownInline(markdown: string, options: MarkdownOptions = {}): string {
   const references = Object.assign({}, options.references ?? {});
@@ -577,6 +531,13 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
     if (scanner.match('\\')) {
       if (!scanner.done) html += escapeHtml(scanner.eat());
       else html += '\\';
+      continue;
+    }
+
+    if (scanner.match('~~')) {
+      const text = scanner.eatUntil((value) => value === 0x7E);
+      if (scanner.match('~~')) html += `<del>${renderMarkdownInline(text, options)}</del>`;
+      else html += '~~' + escapeHtml(text);
       continue;
     }
 
@@ -649,6 +610,16 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
       continue;
     }
 
+    const rawRest = scanner.peek(4096);
+    if (rawRest.startsWith('<')) {
+      const tag = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?>/.exec(rawRest);
+      if (tag) {
+        scanner.eat(tag[0].length);
+        html += renderRawHtml(tag[0], options);
+        continue;
+      }
+    }
+
     const rest = scanner.peek(8);
     if (rest.startsWith('http://') || rest.startsWith('https://')) {
       const raw = scanner.eatUntil((value) => value <= 0x20);
@@ -663,46 +634,84 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
   return html;
 }
 
+function renderNode(node: MarkdownNode, options: MarkdownOptions, inTightList = false): string {
+  if (node.kind === 'paragraph') {
+    const body = renderMarkdownInline(node.text, options);
+    return inTightList ? body : `<p>${body}</p>`;
+  }
+  if (node.kind === 'heading') {
+    const level = Math.min(6, Math.max(1, node.level + (options.headingOffset ?? 0)));
+    return `<h${level}>${renderMarkdownInline(node.text, options)}</h${level}>\n`;
+  }
+  if (node.kind === 'thematicBreak') return '<hr />\n';
+  if (node.kind === 'blockquote') {
+    const body = renderNodes(node.nodes, options);
+    return `<blockquote>\n${body}${body.endsWith('\n') ? '' : '\n'}</blockquote>\n`;
+  }
+  if (node.kind === 'htmlBlock') return `${renderRawHtml(node.html, options)}\n`;
+  if (node.kind === 'table') return renderTable(node, options);
+  if (node.kind === 'list') return renderList(node, options);
+  if (options.renderCode) return options.renderCode(node.code, node.lang, node.meta);
+  const className = node.lang ? ` class="language-${escapeAttribute(node.lang)}"` : '';
+  return `<pre><code${className}>${escapeHtml(node.code)}</code></pre>`;
+}
+
+function renderNodes(nodes: MarkdownNode[], options: MarkdownOptions, inTightList = false): string {
+  let html = '';
+  for (const node of nodes) {
+    const rendered = renderNode(node, options, inTightList);
+    if (html && !html.endsWith('\n')) html += '\n';
+    html += rendered;
+  }
+  return html;
+}
+
+function renderList(list: Extract<MarkdownNode, { kind: 'list' }>, options: MarkdownOptions): string {
+  const tag = list.ordered ? 'ol' : 'ul';
+  const output = [`<${tag}>`];
+  for (const item of list.items) {
+    const body = renderNodes(item.nodes, options, list.tight);
+    const task = item.task === undefined ? '' : `<input type="checkbox"${item.task ? ' checked=""' : ''} disabled="" /> `;
+    if (list.tight) {
+      output.push(`<li>${task}${body}</li>`);
+    } else {
+      output.push(`<li>`);
+      output.push(task ? task + body : body);
+      output.push(`</li>`);
+    }
+  }
+  output.push(`</${tag}>`);
+  return output.join('\n') + '\n';
+}
+
+function renderTable(table: Extract<MarkdownNode, { kind: 'table' }>, options: MarkdownOptions): string {
+  const output = ['<table>', '<thead>', '<tr>'];
+  for (let index = 0; index < table.header.length; index++) {
+    const align = table.align[index] ? ` align="${table.align[index]}"` : '';
+    output.push(`<th${align}>${renderMarkdownInline(table.header[index] ?? '', options)}</th>`);
+  }
+  output.push('</tr>', '</thead>');
+  if (table.rows.length > 0) {
+    output.push('<tbody>');
+    for (const row of table.rows) {
+      output.push('<tr>');
+      for (let index = 0; index < table.header.length; index++) {
+        const align = table.align[index] ? ` align="${table.align[index]}"` : '';
+        output.push(`<td${align}>${renderMarkdownInline(row[index] ?? '', options)}</td>`);
+      }
+      output.push('</tr>');
+    }
+    output.push('</tbody>');
+  }
+  output.push('</table>');
+  return output.join('\n') + '\n';
+}
+
 /**
  * Render a Markdown document or source string to HTML.
- *
- * String input is parsed first; passing a `MarkdownDocument` reuses an existing
- * block tree. The renderer joins block HTML with newlines, escapes text by
- * default, and uses `renderCode` for fenced code blocks when supplied.
- *
- * ```ts no_run
- * import { parseMarkdown, renderMarkdown } from 'fino:format/markdown';
- *
- * const document = parseMarkdown('# Title\n\nBody');
- * const html = renderMarkdown(document, { headingOffset: 1 });
- * ```
  */
 export function renderMarkdown(markdown: string | MarkdownDocument, options: MarkdownOptions = {}): string {
   const document = typeof markdown === 'string' ? parseMarkdown(markdown) : markdown;
   const references = Object.assign({}, document.references, options.references ?? {});
-  const renderOptions = { ...options, references };
-  const output: string[] = [];
-
-  for (const node of document.nodes) {
-    if (node.kind === 'paragraph') {
-      output.push(`<p>${renderMarkdownInline(node.text, renderOptions)}</p>`);
-    } else if (node.kind === 'heading') {
-      const level = Math.min(6, Math.max(1, node.level + (options.headingOffset ?? 0)));
-      output.push(`<h${level}>${renderMarkdownInline(node.text, renderOptions)}</h${level}>`);
-    } else if (node.kind === 'list') {
-      const tag = node.ordered ? 'ol' : 'ul';
-      output.push(`<${tag}>`);
-      for (const item of node.items) output.push(`<li>${renderMarkdownInline(item, renderOptions)}</li>`);
-      output.push(`</${tag}>`);
-    } else if (node.kind === 'code') {
-      if (options.renderCode) {
-        output.push(options.renderCode(node.code, node.lang, node.meta));
-      } else {
-        const className = node.lang ? ` class="language-${escapeAttribute(node.lang)}"` : '';
-        output.push(`<pre><code${className}>${escapeHtml(node.code)}</code></pre>`);
-      }
-    }
-  }
-
-  return output.join('\n');
+  return renderNodes(document.nodes, { ...options, references });
 }

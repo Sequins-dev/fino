@@ -78,13 +78,13 @@ const value = "<safe>";
     t.ok(html.includes('Raw &lt;b&gt;HTML&lt;/b&gt;.'), 'raw inline HTML is escaped');
   });
 
-  it('keeps nested lists in the compact flat-list model', (t) => {
+  it('renders nested lists as nested list items', (t) => {
     const html = renderMarkdown('- parent\n  - child\n- sibling');
 
     t.equal(
       html,
-      '<ul>\n<li>parent</li>\n<li>child</li>\n<li>sibling</li>\n</ul>',
-      'indented nested markers render as flat items',
+      '<ul>\n<li>parent\n<ul>\n<li>child</li>\n</ul>\n</li>\n<li>sibling</li>\n</ul>\n',
+      'indented nested markers stay inside their parent list item',
     );
   });
 
@@ -134,11 +134,47 @@ const value = "<safe>";
     t.equal(renderMarkdownInline('[mail](mailto:team@example.test)'), 'mail', 'other protocols are omitted by default');
   });
 
-  it('renders unsupported CommonMark and GFM blocks as safe plain content', (t) => {
-    t.equal(renderMarkdown('> quoted'), '<p>&gt; quoted</p>', 'blockquotes are plain escaped paragraphs');
-    t.equal(renderMarkdown('| a | b |\n| - | - |'), '<p>| a | b | | - | - |</p>', 'tables are plain paragraphs');
-    t.equal(renderMarkdown('Title\n====='), '<p>Title =====</p>', 'Setext headings are plain paragraphs');
-    t.equal(renderMarkdown('---'), '<p>---</p>', 'thematic breaks are plain paragraphs');
-    t.equal(renderMarkdown('<div>\nraw\n</div>'), '<p>&lt;div&gt; raw &lt;/div&gt;</p>', 'HTML blocks are escaped paragraphs');
+  it('renders CommonMark block constructs', (t) => {
+    t.equal(renderMarkdown('> quoted'), '<blockquote>\n<p>quoted</p>\n</blockquote>\n', 'blockquotes render as blockquotes');
+    t.equal(renderMarkdown('Title\n====='), '<h1>Title</h1>\n', 'Setext headings render as headings');
+    t.equal(renderMarkdown('---'), '<hr />\n', 'thematic breaks render as horizontal rules');
+  });
+
+  it('renders GFM tables with alignment and inline spans', (t) => {
+    const html = renderMarkdown('| Name | Score | Note |\n| :--- | ---: | :---: |\n| **Ada** | 5 < 7 | `ok` |');
+
+    t.equal(
+      html,
+      '<table>\n<thead>\n<tr>\n<th align="left">Name</th>\n<th align="right">Score</th>\n<th align="center">Note</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td align="left"><strong>Ada</strong></td>\n<td align="right">5 &lt; 7</td>\n<td align="center"><code>ok</code></td>\n</tr>\n</tbody>\n</table>\n',
+      'tables render with alignment, escaped cells, and inline markup',
+    );
+  });
+
+  it('keeps lazy continuation lines inside list items', (t) => {
+    t.equal(
+      renderMarkdown('- first\n  continuation\n- second'),
+      '<ul>\n<li>first\ncontinuation</li>\n<li>second</li>\n</ul>\n',
+    );
+  });
+
+  it('follows CommonMark tight and loose list behavior', (t) => {
+    t.equal(renderMarkdown('- tight\n- list'), '<ul>\n<li>tight</li>\n<li>list</li>\n</ul>\n', 'tight lists omit paragraph wrappers');
+    t.equal(renderMarkdown('- loose\n\n- list'), '<ul>\n<li>\n<p>loose</p>\n</li>\n<li>\n<p>list</p>\n</li>\n</ul>\n', 'loose lists keep paragraph wrappers');
+  });
+
+  it('renders focused GFM inline and table extensions', (t) => {
+    t.equal(renderMarkdownInline('~~done~~'), '<del>done</del>', 'strikethrough renders as del');
+    t.equal(renderMarkdown('- [x] shipped\n- [ ] pending'), '<ul>\n<li><input type="checkbox" checked="" disabled="" /> shipped</li>\n<li><input type="checkbox" disabled="" /> pending</li>\n</ul>\n', 'task lists render checkbox markers');
+    t.equal(renderMarkdownInline('https://example.test/docs'), '<a href="https://example.test/docs">https://example.test/docs</a>', 'bare autolinks render as anchors');
+    t.equal(renderMarkdown('| a \\| b | c |\n| --- | --- |\n| x | y |'), '<table>\n<thead>\n<tr>\n<th>a | b</th>\n<th>c</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>x</td>\n<td>y</td>\n</tr>\n</tbody>\n</table>\n', 'escaped pipes stay in table cells');
+    t.equal(renderMarkdown('- a\n\n| b | c |\n| - | - |'), '<ul>\n<li>a</li>\n</ul>\n<table>\n<thead>\n<tr>\n<th>b</th>\n<th>c</th>\n</tr>\n</thead>\n</table>\n', 'table starts after the list instead of being absorbed');
+  });
+
+  it('filters disallowed raw HTML tags even when raw HTML is enabled', (t) => {
+    t.equal(renderMarkdown('<xmp>unsafe</xmp>', { allowRawHtml: true }), '&lt;xmp>unsafe&lt;/xmp>\n');
+  });
+
+  it('allows raw HTML only when explicitly requested', (t) => {
+    t.equal(renderMarkdown('<div>\nraw\n</div>', { allowRawHtml: true }), '<div>\nraw\n</div>\n');
   });
 });
