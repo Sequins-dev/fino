@@ -492,6 +492,35 @@ describe('fino:archive', () => {
     );
   });
 
+  it('rejects zip local headers that disagree with the central directory', async (t) => {
+    const original = makeStoredZip([
+      { name: 'file.txt', data: encodeUtf8('zip local header') },
+    ]);
+    const local = findSignature(original, 0x04034b50);
+    t.ok(local >= 0, 'fixture zip contains a local file header');
+
+    async function rejectMutatedLocal(name: string, mutate: (bytes: Uint8Array, view: DataView) => void): Promise<void> {
+      const bytes = original.slice();
+      mutate(bytes, new DataView(bytes.buffer));
+      const archivePath = `${TEST_DIR}/${name}.zip`;
+      await fs.writeFile(archivePath, bytes);
+      await t.rejects(
+        () => listArchive(archivePath),
+        /Invalid zip archive|data descriptor/i,
+        `${name} mismatch is rejected`,
+      );
+    }
+
+    await rejectMutatedLocal('local-flags', (_bytes, view) => view.setUint16(local + 6, 0x08, true));
+    await rejectMutatedLocal('local-method', (_bytes, view) => view.setUint16(local + 8, 8, true));
+    await rejectMutatedLocal('local-crc', (_bytes, view) => view.setUint32(local + 14, 0x12345678, true));
+    await rejectMutatedLocal('local-compressed-size', (_bytes, view) => view.setUint32(local + 18, 1, true));
+    await rejectMutatedLocal('local-uncompressed-size', (_bytes, view) => view.setUint32(local + 22, 1, true));
+    await rejectMutatedLocal('local-filename', (bytes) => {
+      bytes[local + 30] = 'x'.charCodeAt(0);
+    });
+  });
+
   it('validates zip CRC while reading and extracting', async (t) => {
     const archivePath = TEST_DIR + '/crc.zip';
     const archive = await createArchive(archivePath);
@@ -499,8 +528,11 @@ describe('fino:archive', () => {
     await archive.close();
 
     const corrupted = await readBytes(fs, archivePath);
-    const central = findSignature(corrupted, 0x02014b50);
-    new DataView(corrupted.buffer).setUint32(central + 16, 0x12345678, true);
+    const local = findSignature(corrupted, 0x04034b50);
+    const view = new DataView(corrupted.buffer);
+    const localNameLength = view.getUint16(local + 26, true);
+    const localExtraLength = view.getUint16(local + 28, true);
+    corrupted[local + 30 + localNameLength + localExtraLength] ^= 0xff;
     await fs.writeFile(TEST_DIR + '/crc-bad.zip', corrupted);
 
     const opened = await openArchive(TEST_DIR + '/crc-bad.zip');

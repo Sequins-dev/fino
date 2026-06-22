@@ -30,7 +30,7 @@ prioritization. It does not include source fixes.
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
-| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-001, FFS-002, FFS-004, and FFS-005 |
+| File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-002, FFS-004, and FFS-005 |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-003 and RTE-004 |
 
 Existing release notes already document broad intentional non-parity areas:
@@ -168,19 +168,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: rerun with newer h2spec/harness isolation, reduce allowlist, and map
   local flow-control tests to omitted subsections.
 
-### FFS-001: ZIP central/local header consistency is not validated
-
-- Files: `js/archive.mts`
-- Spec target: ZIP APPNOTE local file header and central directory records.
-- Expected behavior: central and local header fields should agree for supported
-  entries, including flags, method, CRC, sizes, and filename when data
-  descriptors are not used.
-- Current behavior: parser trusts central metadata and uses local name/extra
-  lengths mainly to locate payload bytes.
-- Coverage gap: no fixtures for central/local metadata mismatch.
-- Priority: P1
-- Follow-up: compare local and central fields and reject unsupported local flags.
-
 ### FFS-002: Stored ZIP entries bypass decompressed-size guard
 
 - Files: `js/archive.mts`
@@ -257,8 +244,7 @@ unless a finding below calls out missing documentation or contradictory tests.
   transfer-list validation.
 - P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
   rejection, and end-to-end WebTransport unidirectional stream routing.
-- P1 archive/XML: ZIP local/central mismatch, stored ZIP size guard, and XML name
-  and namespace invalid cases.
+- P1 archive/XML: stored ZIP size guard and XML name and namespace invalid cases.
 - P2 runtime/security: encoded `import.meta.url` paths.
 
 ## Accepted Divergences And Non-Goals

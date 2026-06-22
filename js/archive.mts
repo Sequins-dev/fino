@@ -1798,8 +1798,30 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
     if (view.getUint32(localOffset, true) !== ZIP_LOCAL_FILE_HEADER) {
       throw new Error('Invalid zip archive: local file header missing');
     }
+    const localFlags = view.getUint16(localOffset + 6, true);
+    if ((localFlags & 0x08) !== 0) {
+      throw new Error('Unsupported zip archive: data descriptor entries are not supported');
+    }
+    const localMethod = view.getUint16(localOffset + 8, true);
+    const localCrc = view.getUint32(localOffset + 14, true);
+    const localCompressedSize = view.getUint32(localOffset + 18, true);
+    const localSize = view.getUint32(localOffset + 22, true);
     const localNameLength = view.getUint16(localOffset + 26, true);
     const localExtraLength = view.getUint16(localOffset + 28, true);
+    ensureRange(localOffset + 30, localNameLength + localExtraLength, 'local file metadata');
+    const localNameBytes = bytes.subarray(localOffset + 30, localOffset + 30 + localNameLength);
+    const matchesName = localNameBytes.byteLength === nameBytes.byteLength &&
+      localNameBytes.every((byte, index) => byte === nameBytes[index]);
+    if (
+      localFlags !== flags ||
+      localMethod !== method ||
+      localCrc !== crc ||
+      localCompressedSize !== compressedSize ||
+      localSize !== size ||
+      !matchesName
+    ) {
+      throw new Error(`Invalid zip archive: local header mismatch for '${name}'`);
+    }
     const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
     ensureRange(dataOffset, compressedSize, `local file data for '${name}'`);
     const compressed = bytes.slice(dataOffset, dataOffset + compressedSize);
