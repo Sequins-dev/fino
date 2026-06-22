@@ -24,6 +24,21 @@
  * It reparses accumulated input until a complete document is available and is
  * therefore not a true bounded-memory streaming parser for very large XML.
  *
+ * XML 1.0 / Namespaces conformance matrix:
+ *
+ * | Area | Status |
+ * | --- | --- |
+ * | Document/root structure | Enforces exactly one root element and rejects element content after the root. |
+ * | Names and QNames | Validates XML names, namespace QNames, unbound prefixes, and reserved `xml`/`xmlns` namespace use. |
+ * | Duplicate attributes | Rejects duplicate raw attributes and duplicate expanded names after namespace resolution. |
+ * | Entity/reference handling | Expands predefined, numeric, and internal DTD entities; rejects undefined, recursive, invalid-character, and external entities unless explicitly resolved. |
+ * | Comments, CDATA, PI, and prolog | Parses comments, CDATA, processing instructions, and supported prolog nodes while enforcing XML character validity and comment/CDATA delimiters. |
+ * | XML declaration | Parses and skips a leading XML declaration; `xml` processing-instruction targets outside that declaration path are rejected. |
+ * | Serializer normalization | Emits structural XML, escapes text and attributes, and can add a declaration; it does not preserve entity spelling, consumed namespace declarations, or text-exact prolog/trailer nodes. |
+ * | `parseStream()` limits | Emits SAX-style events after reparsing accumulated input; it is not a bounded-memory streaming parser. |
+ * | XXE/entity/depth safety | External entities are disabled by default, entity expansion is capped, recursive entities are rejected, and element depth is bounded. |
+ * | Intentional non-goals | DTD validation and text-exact prolog round-tripping are outside the supported surface. |
+ *
  * Two output surfaces:
  *   - Tree (DOM-lite):  parse(input)  -> XmlDocument
  *   - SAX/streaming:   parseStream(src) -> AsyncIterableIterator<XmlEvent>
@@ -929,7 +944,7 @@ class XmlParser {
       if (!sc.match('<')) throw sc.error('expected <');
       const next = sc.peek();
       if (next === '?') {
-        const pi = this.#parsePI();
+        const pi = this.#parsePI(prolog.length === 0 && root === null);
         // Skip XML declaration
         if (pi.target.toLowerCase() !== 'xml') prolog.push(pi);
       } else if (next === '!' && sc.peekCode(1) === 0x2D && sc.peekCode(2) === 0x2D) {
@@ -968,14 +983,15 @@ class XmlParser {
   *events(): Generator<XmlEvent, void> {
     const sc = this.#sc;
     // Skip prolog
+    let firstPi = true;
     while (!sc.done) {
       sc.skipWhitespace();
       if (sc.done) break;
       if (sc.match('<')) {
         const next = sc.peek();
-        if (next === '?') { this.#parsePI(); continue; }
-        if (next === '!' && sc.peekCode(1) === 0x2D) { this.#parseComment(); continue; }
-        if (sc.peek(8) === '!DOCTYPE') { this.#parseDoctype(); continue; }
+        if (next === '?') { this.#parsePI(firstPi); firstPi = false; continue; }
+        if (next === '!' && sc.peekCode(1) === 0x2D) { this.#parseComment(); firstPi = false; continue; }
+        if (sc.peek(8) === '!DOCTYPE') { this.#parseDoctype(); firstPi = false; continue; }
         break;
       }
       break;
@@ -1186,14 +1202,15 @@ class XmlParser {
     let s = '';
     while (!sc.done && sc.peek() !== '<') {
       if (sc.peek() === '&') { s += this.#parseEntityRef(); continue; }
-      s += sc.eat();
+      if (sc.peek(3) === ']]>') throw sc.error(']]> not allowed in character data');
+      s += this.#eatXmlChar('character data');
     }
     return s;
   }
 
   #parseAttrChar(sc: Scanner, quote: string): string {
     if (sc.peek() === '&') return this.#parseEntityRef();
-    const ch = sc.eat();
+    const ch = this.#eatXmlChar('attribute value');
     if (ch === '<') throw sc.error('< not allowed in attribute value');
     return ch;
   }
@@ -1286,7 +1303,7 @@ class XmlParser {
     let s = '';
     while (!sc.done) {
       if (sc.match(']]>')) return s;
-      s += sc.eat();
+      s += this.#eatXmlChar('CDATA section');
     }
     throw sc.error('unterminated CDATA section');
   }
@@ -1298,12 +1315,12 @@ class XmlParser {
     while (!sc.done) {
       if (sc.match('-->')) return { type: 'comment', data: s };
       if (sc.peek() === '-' && sc.peekCode(1) === 0x2D) throw sc.error('-- not allowed inside comment');
-      s += sc.eat();
+      s += this.#eatXmlChar('comment');
     }
     throw sc.error('unterminated comment');
   }
 
-  #parsePI(): XmlPI {
+  #parsePI(allowXmlDeclaration = false): XmlPI {
     const sc = this.#sc;
     sc.expect('?');
     const target = sc.eatWhile(c => c !== 0x20 && c !== 0x09 && c !== 0x0A && c !== 0x3F && c !== 0x3E);
@@ -1311,15 +1328,26 @@ class XmlParser {
     this.#validateName(target);
     if (this.#opts.namespaces !== false) this.#validateNCName(target);
     if (target.toLowerCase() === 'xml' && !this.#sc.done) {
+      if (!allowXmlDeclaration) throw sc.error('xml declaration is only allowed at the start of a document');
       // XML declaration: consume it
-      const decl = sc.eatWhile(c => c !== 0x3F);
+      let decl = '';
+      while (!sc.done && sc.peek() !== '?') decl += this.#eatXmlChar('XML declaration');
       sc.match('?>');
       return { type: 'pi', target, data: decl.trim() };
     }
     sc.skipWhitespace();
-    const data = sc.eatWhile(c => !(c === 0x3F && sc.peekCode(1) === 0x3E));
+    let data = '';
+    while (!sc.done && !(sc.peekCode() === 0x3F && sc.peekCode(1) === 0x3E)) {
+      data += this.#eatXmlChar('processing instruction');
+    }
     sc.match('?>');
     return { type: 'pi', target, data: data.trim() };
+  }
+
+  #eatXmlChar(context: string): string {
+    const cp = this.#sc.peekCode();
+    if (!isXmlChar(cp)) throw this.#sc.error(`invalid XML character in ${context}`);
+    return this.#sc.eat();
   }
 
   #parseDoctype(): XmlDoctype {

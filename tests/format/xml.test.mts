@@ -140,12 +140,54 @@ describe('fino:format/xml — namespaces', () => {
     );
   });
 
+  it('keeps namespace duplicate and reserved-prefix behavior covered as matrix evidence', (t) => {
+    t.throws(() => parse('<root xmlns:xml="urn:wrong"/>'), /reserved namespace/i);
+    t.throws(() => parse('<root xmlns:p="http:\/\/www.w3.org\/XML\/1998\/namespace"/>'), /reserved namespace/i);
+    t.throws(
+      () => parse('<root xmlns:a="urn:x" xmlns:b="urn:x" a:id="1" b:id="2"/>'),
+      /duplicate attribute/i,
+    );
+  });
+
+  it('accepts supported XML declaration attributes only at the document start', (t) => {
+    t.equal(parse('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><root/>').root.name, 'root');
+    t.throws(() => parse('<!--lead--><?xml version="1.0"?><root/>'), /xml declaration/i);
+    t.throws(() => parse('<root><?xml version="1.0"?></root>'), /xml declaration/i);
+    t.throws(() => parse('<root/><?xml version="1.0"?>'), /xml declaration/i);
+  });
+
   it('matches close tags against the full qualified name', (t) => {
     t.throws(() => parse('<a:x xmlns:a="urn:x" xmlns:b="urn:x"></b:x>'), /mismatched close tag/i);
   });
 
   it('limits self-closing namespace declarations to the empty element itself', (t) => {
     t.throws(() => parse('<root><x:empty xmlns:x="urn:x"/><x:next/></root>'), /unbound namespace prefix/i);
+  });
+});
+
+describe('fino:format/xml — character validity', () => {
+  it('rejects raw invalid XML characters in text', (t) => {
+    t.throws(() => parse('<root>ok\u0001bad</root>'), /invalid XML character/i);
+  });
+
+  it('rejects raw invalid XML characters in attribute values', (t) => {
+    t.throws(() => parse('<root attr="ok\u0001bad"/>'), /invalid XML character/i);
+  });
+
+  it('rejects raw invalid XML characters in CDATA', (t) => {
+    t.throws(() => parse('<root><![CDATA[ok\u0001bad]]></root>'), /invalid XML character/i);
+  });
+
+  it('rejects raw invalid XML characters in comments', (t) => {
+    t.throws(() => parse('<root><!-- ok\u0001bad --></root>'), /invalid XML character/i);
+  });
+
+  it('rejects raw invalid XML characters in processing instruction data', (t) => {
+    t.throws(() => parse('<root><?pi ok\u0001bad?></root>'), /invalid XML character/i);
+  });
+
+  it('rejects the CDATA close delimiter in character data', (t) => {
+    t.throws(() => parse('<root>not cdata ]]></root>'), /\]\]> not allowed/i);
   });
 });
 
