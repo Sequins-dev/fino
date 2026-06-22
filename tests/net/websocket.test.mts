@@ -417,6 +417,80 @@ describe('WebSocketConnection.connect() URL validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('WebSocket end-to-end via serve()', () => {
+  it('handler properties run as EventTarget listeners for open and message', async () => {
+    let openCurrentTarget: EventTarget | null = null;
+    let openPhase = Event.NONE;
+    let messageCurrentTarget: EventTarget | null = null;
+    let messagePhase = Event.NONE;
+    const order: string[] = [];
+
+    const server = serveWebSocket((ws) => {
+        ws.addEventListener('message', e => {
+          void ws.send((e as MessageEvent).data as string);
+        });
+    });
+
+    try {
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
+      client.addEventListener('open', () => { order.push('open-listener'); });
+      client.onopen = (event) => {
+        order.push('open-handler');
+        openCurrentTarget = event.currentTarget;
+        openPhase = event.eventPhase;
+      };
+      await waitForEvent(client, 'open');
+
+      client.addEventListener('message', () => { order.push('message-listener'); });
+      const messageDone = new Promise<void>((resolve) => {
+        client.onmessage = (event) => {
+          order.push('message-handler');
+          messageCurrentTarget = event.currentTarget;
+          messagePhase = event.eventPhase;
+          resolve();
+        };
+      });
+      await client.send('dispatch-state');
+      await messageDone;
+      await client.close();
+
+      deepEqual(order, ['open-listener', 'open-handler', 'message-listener', 'message-handler']);
+      equal(openCurrentTarget, client, 'open currentTarget is the connection');
+      equal(openPhase, Event.AT_TARGET, 'open handler runs at AT_TARGET');
+      equal(messageCurrentTarget, client, 'message currentTarget is the connection');
+      equal(messagePhase, Event.AT_TARGET, 'message handler runs at AT_TARGET');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('stopImmediatePropagation before WebSocketConnection onmessage prevents the handler property', async () => {
+    let handled = false;
+    const server = serveWebSocket((ws) => {
+        ws.addEventListener('message', e => {
+          void ws.send((e as MessageEvent).data as string);
+        });
+    });
+
+    try {
+      const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
+      await waitForEvent(client, 'open');
+      const stopped = new Promise<void>((resolve) => {
+        client.addEventListener('message', (event) => {
+          event.stopImmediatePropagation();
+          setTimeout(resolve, 20);
+        });
+        client.onmessage = () => { handled = true; };
+      });
+      await client.send('stop');
+      await stopped;
+      await client.close();
+
+      equal(handled, false, 'onmessage did not run after stopImmediatePropagation');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('echoes text messages', async () => {
     const server = serveWebSocket((ws) => {
         ws.addEventListener('message', e => {
@@ -762,6 +836,50 @@ describe('WebSocket raw frame protocol violations', () => {
 // ---------------------------------------------------------------------------
 
 describe('WHATWG WebSocket facade', () => {
+  it('handler properties run as EventTarget listeners for open and message', async () => {
+    let openCurrentTarget: EventTarget | null = null;
+    let openPhase = Event.NONE;
+    let messageCurrentTarget: EventTarget | null = null;
+    let messagePhase = Event.NONE;
+    const order: string[] = [];
+
+    const server = serveWebSocket((ws) => {
+        ws.addEventListener('open', async () => {
+          await ws.send('facade-message');
+        });
+    });
+
+    try {
+      const client = new WebSocket(`ws://127.0.0.1:${server.port}/ws`);
+      client.addEventListener('open', () => { order.push('open-listener'); });
+      client.onopen = (event) => {
+        order.push('open-handler');
+        openCurrentTarget = event.currentTarget;
+        openPhase = event.eventPhase;
+      };
+      client.addEventListener('message', () => { order.push('message-listener'); });
+      const messageDone = new Promise<void>((resolve) => {
+        client.onmessage = (event) => {
+          order.push('message-handler');
+          messageCurrentTarget = event.currentTarget;
+          messagePhase = event.eventPhase;
+          client.close();
+          resolve();
+        };
+      });
+
+      await messageDone;
+
+      deepEqual(order, ['open-listener', 'open-handler', 'message-listener', 'message-handler']);
+      equal(openCurrentTarget, client, 'open currentTarget is the facade');
+      equal(openPhase, Event.AT_TARGET, 'open handler runs at AT_TARGET');
+      equal(messageCurrentTarget, client, 'message currentTarget is the facade');
+      equal(messagePhase, Event.AT_TARGET, 'message handler runs at AT_TARGET');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('constructor throws SyntaxError for non-ws URL', async () => {
     let threw = false;
     try { new WebSocket('http://example.com'); } catch (e: any) {

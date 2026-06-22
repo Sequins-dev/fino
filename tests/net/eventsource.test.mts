@@ -377,6 +377,46 @@ describe('EventSource integration', () => {
     await server.close();
   });
 
+  it('onopen and onmessage run as EventTarget listeners in dispatch order', async (t) => {
+    const order: string[] = [];
+    let openCurrentTarget: EventTarget | null = null;
+    let openPhase = Event.NONE;
+    let messageCurrentTarget: EventTarget | null = null;
+    let messagePhase = Event.NONE;
+
+    const server = serveHttp({ port: 0 }, async (_req) =>
+      sseResponse(sseBody({ data: 'dispatch-state' })),
+    );
+
+    await new Promise<void>((resolve, reject) => {
+      const tid = setTimeout(() => reject(new Error('timeout waiting for EventSource message')), 2000);
+      const es = new EventSource(`http://127.0.0.1:${server.port}/events`);
+      es.addEventListener('open', () => { order.push('open-listener'); });
+      es.onopen = (event) => {
+        order.push('open-handler');
+        openCurrentTarget = event.currentTarget;
+        openPhase = event.eventPhase;
+      };
+      es.addEventListener('message', () => { order.push('message-listener'); });
+      es.onmessage = (event) => {
+        order.push('message-handler');
+        messageCurrentTarget = event.currentTarget;
+        messagePhase = event.eventPhase;
+        es.close();
+        clearTimeout(tid);
+        resolve();
+      };
+    });
+
+    t.deepEqual(order, ['open-listener', 'open-handler', 'message-listener', 'message-handler']);
+    t.equal(openCurrentTarget instanceof EventSource, true, 'open currentTarget is set during handler');
+    t.equal(openPhase, Event.AT_TARGET, 'open handler runs at AT_TARGET');
+    t.equal(messageCurrentTarget instanceof EventSource, true, 'message currentTarget is set during handler');
+    t.equal(messagePhase, Event.AT_TARGET, 'message handler runs at AT_TARGET');
+
+    await server.close();
+  });
+
   it('readyState is OPEN while receiving events', async (t) => {
     let stateWhenOpen = -1;
 

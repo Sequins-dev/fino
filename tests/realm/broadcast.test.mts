@@ -80,6 +80,57 @@ describe('BroadcastChannel', () => {
     receiver.close();
   });
 
+  it('onmessage runs as an EventTarget listener at the target phase', async (t) => {
+    const sender = new BroadcastChannel(uniqueName('broadcast-handler-state'));
+    const receiver = new BroadcastChannel(sender.name);
+
+    try {
+      const observed = await new Promise<{ currentTarget: EventTarget | null; target: EventTarget | null; eventPhase: number }>((resolve, reject) => {
+        const tid = setTimeout(() => reject(new Error('timeout waiting for message')), 2000);
+        receiver.onmessage = (ev) => {
+          clearTimeout(tid);
+          resolve({
+            currentTarget: ev.currentTarget,
+            target: ev.target,
+            eventPhase: ev.eventPhase,
+          });
+        };
+        sender.postMessage('state');
+      });
+
+      t.equal(observed.currentTarget, receiver, 'currentTarget is the channel while handler runs');
+      t.equal(observed.target, receiver, 'target is the channel');
+      t.equal(observed.eventPhase, Event.AT_TARGET, 'handler runs at AT_TARGET');
+    } finally {
+      sender.close();
+      receiver.close();
+    }
+  });
+
+  it('stopImmediatePropagation before onmessage prevents the handler property', async (t) => {
+    const sender = new BroadcastChannel(uniqueName('broadcast-handler-stop'));
+    const receiver = new BroadcastChannel(sender.name);
+    let handled = false;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tid = setTimeout(() => reject(new Error('timeout waiting for listener')), 2000);
+        receiver.addEventListener('message', (event) => {
+          event.stopImmediatePropagation();
+          clearTimeout(tid);
+          setTimeout(resolve, 20);
+        });
+        receiver.onmessage = () => { handled = true; };
+        sender.postMessage('stop');
+      });
+
+      t.equal(handled, false, 'onmessage did not run after stopImmediatePropagation');
+    } finally {
+      sender.close();
+      receiver.close();
+    }
+  });
+
   it('closed channel does not receive messages', async (t) => {
     const sender = new BroadcastChannel('close-test');
     const receiver = new BroadcastChannel('close-test');

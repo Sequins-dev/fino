@@ -1353,28 +1353,44 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * conn.onopen = null;
    * ```
    */
-  set onopen(fn: ((e: Event) => void) | null)        { this.#onopen    = typeof fn === 'function' ? fn : null; }
+  set onopen(fn: ((e: Event) => void) | null)        {
+    if (this.#onopen !== null) this.removeEventListener('open', this.#onopen as any);
+    this.#onopen = typeof fn === 'function' ? fn : null;
+    if (this.#onopen !== null) this.addEventListener('open', this.#onopen as any);
+  }
   /** Set the `message` callback, or `null` to clear it.
    *
    * ```ts no_run
    * conn.onmessage = null;
    * ```
    */
-  set onmessage(fn: ((e: MessageEvent) => void) | null) { this.#onmessage = typeof fn === 'function' ? fn : null; }
+  set onmessage(fn: ((e: MessageEvent) => void) | null) {
+    if (this.#onmessage !== null) this.removeEventListener('message', this.#onmessage as any);
+    this.#onmessage = typeof fn === 'function' ? fn : null;
+    if (this.#onmessage !== null) this.addEventListener('message', this.#onmessage as any);
+  }
   /** Set the `error` callback, or `null` to clear it.
    *
    * ```ts no_run
    * conn.onerror = null;
    * ```
    */
-  set onerror(fn: ((e: ErrorEvent) => void) | null)  { this.#onerror   = typeof fn === 'function' ? fn : null; }
+  set onerror(fn: ((e: ErrorEvent) => void) | null)  {
+    if (this.#onerror !== null) this.removeEventListener('error', this.#onerror as any);
+    this.#onerror = typeof fn === 'function' ? fn : null;
+    if (this.#onerror !== null) this.addEventListener('error', this.#onerror as any);
+  }
   /** Set the `close` callback, or `null` to clear it.
    *
    * ```ts no_run
    * conn.onclose = null;
    * ```
    */
-  set onclose(fn: ((e: CloseEvent) => void) | null)  { this.#onclose   = typeof fn === 'function' ? fn : null; }
+  set onclose(fn: ((e: CloseEvent) => void) | null)  {
+    if (this.#onclose !== null) this.removeEventListener('close', this.#onclose as any);
+    this.#onclose = typeof fn === 'function' ? fn : null;
+    if (this.#onclose !== null) this.addEventListener('close', this.#onclose as any);
+  }
 
   // ---------------------------------------------------------------------------
   // Public send / close API
@@ -1906,7 +1922,6 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
     queueMicrotask(() => {
       const e = new Event('open');
       this.dispatchEvent(e);
-      if (this.#onopen) this.#onopen.call(this, e);
     });
 
     this.#readPump().catch(() => {});
@@ -2272,7 +2287,6 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   #deliverMessage(msg: WebSocketMessage): void {
     const e = new MessageEvent('message', { data: msg.data });
     this.dispatchEvent(e);
-    if (this.#onmessage) this.#onmessage.call(this, e);
 
     if (this.#msgWaiters.length > 0) {
       this.#msgWaiters.shift()!({ done: false, value: msg });
@@ -2339,7 +2353,6 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   #fireError(err?: unknown): void {
     const e = new ErrorEvent('error', { error: err });
     this.dispatchEvent(e);
-    if (this.#onerror) this.#onerror.call(this, e);
   }
 
   /** Final cleanup: transition to CLOSED, fire 'close', resolve the done promise. */
@@ -2379,7 +2392,6 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 
       const e = new CloseEvent('close', { code, reason, wasClean });
       this.dispatchEvent(e);
-      if (this.#onclose) this.#onclose.call(this, e);
     }
 
     try { this.#rawReader?.close(); } catch (_) {}
@@ -2608,7 +2620,6 @@ export class WebSocket extends EventTarget {
     this.#conn.addEventListener('open', function wsOpen(e: Event) {
       const fwd = new Event('open');
       self.dispatchEvent(fwd);
-      if (self.#onopen) self.#onopen.call(self, fwd);
     });
 
     this.#conn.addEventListener('message', function wsMessage(e: Event) {
@@ -2628,13 +2639,11 @@ export class WebSocket extends EventTarget {
 
       const fwd = new MessageEvent('message', { data });
       self.dispatchEvent(fwd);
-      if (self.#onmessage) self.#onmessage.call(self, fwd);
     });
 
     this.#conn.addEventListener('error', function wsError(e: Event) {
       const fwd = new ErrorEvent('error', { error: (e as ErrorEvent).error });
       self.dispatchEvent(fwd);
-      if (self.#onerror) self.#onerror.call(self, fwd);
     });
 
     this.#conn.addEventListener('close', function wsClose(e: Event) {
@@ -2645,7 +2654,6 @@ export class WebSocket extends EventTarget {
         wasClean: ce.wasClean,
       });
       self.dispatchEvent(fwd);
-      if (self.#onclose) self.#onclose.call(self, fwd);
     });
   }
 
@@ -2747,28 +2755,44 @@ export class WebSocket extends EventTarget {
    * ws.onopen = null;
    * ```
    */
-  set onopen(fn: ((e: Event) => void) | null)        { this.#onopen    = typeof fn === 'function' ? fn : null; }
+  set onopen(fn: ((e: Event) => void) | null)        {
+    if (this.#onopen !== null) this.removeEventListener('open', this.#onopen as any);
+    this.#onopen = typeof fn === 'function' ? fn : null;
+    if (this.#onopen !== null) this.addEventListener('open', this.#onopen as any);
+  }
   /** Set the `message` callback, or `null` to clear it.
    *
    * ```ts no_run
    * ws.onmessage = null;
    * ```
    */
-  set onmessage(fn: ((e: MessageEvent) => void) | null) { this.#onmessage = typeof fn === 'function' ? fn : null; }
+  set onmessage(fn: ((e: MessageEvent) => void) | null) {
+    if (this.#onmessage !== null) this.removeEventListener('message', this.#onmessage as any);
+    this.#onmessage = typeof fn === 'function' ? fn : null;
+    if (this.#onmessage !== null) this.addEventListener('message', this.#onmessage as any);
+  }
   /** Set the `error` callback, or `null` to clear it.
    *
    * ```ts no_run
    * ws.onerror = null;
    * ```
    */
-  set onerror(fn: ((e: ErrorEvent) => void) | null)  { this.#onerror   = typeof fn === 'function' ? fn : null; }
+  set onerror(fn: ((e: ErrorEvent) => void) | null)  {
+    if (this.#onerror !== null) this.removeEventListener('error', this.#onerror as any);
+    this.#onerror = typeof fn === 'function' ? fn : null;
+    if (this.#onerror !== null) this.addEventListener('error', this.#onerror as any);
+  }
   /** Set the `close` callback, or `null` to clear it.
    *
    * ```ts no_run
    * ws.onclose = null;
    * ```
    */
-  set onclose(fn: ((e: CloseEvent) => void) | null)  { this.#onclose   = typeof fn === 'function' ? fn : null; }
+  set onclose(fn: ((e: CloseEvent) => void) | null)  {
+    if (this.#onclose !== null) this.removeEventListener('close', this.#onclose as any);
+    this.#onclose = typeof fn === 'function' ? fn : null;
+    if (this.#onclose !== null) this.addEventListener('close', this.#onclose as any);
+  }
 
   // ── send / close (WHATWG spec: synchronous, fire-and-forget) ─────────────────
 

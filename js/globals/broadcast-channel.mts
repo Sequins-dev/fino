@@ -145,6 +145,8 @@ export class BroadcastChannel extends EventTarget {
    * @internal
    */
   #closed = false;
+  #onmessage: ((ev: MessageEvent) => void) | null = null;
+  #onmessageerror: ((ev: MessageEvent) => void) | null = null;
 
   /**
    * Handler invoked for successfully deserialized message events.
@@ -157,7 +159,12 @@ export class BroadcastChannel extends EventTarget {
    * bc.onmessage = (event) => console.log(event.data);
    * ```
    */
-  onmessage: ((ev: MessageEvent) => void) | null = null;
+  get onmessage() { return this.#onmessage; }
+  set onmessage(fn: ((ev: MessageEvent) => void) | null) {
+    if (this.#onmessage !== null) this.removeEventListener('message', this.#onmessage as any);
+    this.#onmessage = typeof fn === 'function' ? fn : null;
+    if (this.#onmessage !== null) this.addEventListener('message', this.#onmessage as any);
+  }
 
   /**
    * Handler invoked when received bytes cannot be deserialized.
@@ -170,7 +177,12 @@ export class BroadcastChannel extends EventTarget {
    * bc.onmessageerror = (event) => console.log(event.data);
    * ```
    */
-  onmessageerror: ((ev: MessageEvent) => void) | null = null;
+  get onmessageerror() { return this.#onmessageerror; }
+  set onmessageerror(fn: ((ev: MessageEvent) => void) | null) {
+    if (this.#onmessageerror !== null) this.removeEventListener('messageerror', this.#onmessageerror as any);
+    this.#onmessageerror = typeof fn === 'function' ? fn : null;
+    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror as any);
+  }
 
   /**
    * Subscribe to a named BroadcastChannel.
@@ -327,13 +339,11 @@ export class BroadcastChannel extends EventTarget {
         if (deserError) {
           const ev = new MessageEvent('messageerror', { data: null });
           this.dispatchEvent(ev);
-          this.onmessageerror?.(ev);
           continue;
         }
 
         const ev = new MessageEvent('message', { data });
         this.dispatchEvent(ev);
-        this.onmessage?.(ev);
       }
     }
     // Loop exited — clean up the Rust subscription and any residual watcher.

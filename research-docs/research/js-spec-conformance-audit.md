@@ -28,7 +28,7 @@ prioritization. It does not include source fixes.
 
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 and WEB-003 |
+| Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gap WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-004 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
@@ -41,25 +41,6 @@ and non-browser runtime behaviors. Those are treated as accepted divergences
 unless a finding below calls out missing documentation or contradictory tests.
 
 ## Findings
-
-### WEB-001: Event handler properties run outside `EventTarget` dispatch
-
-- Files: `js/globals/broadcast-channel.mts`, `js/globals/eventsource.mts`,
-  `js/globals/websocket.mts`
-- Spec target: DOM `EventTarget` dispatch and HTML/WebSocket/EventSource event
-  handler attributes.
-- Expected behavior: `onmessage`, `onopen`, `onerror`, and similar handler
-  properties should behave like listener-list event handler attributes, with
-  `currentTarget`, `target`, `eventPhase`, ordering, and removal semantics
-  matching dispatch.
-- Current behavior: these classes dispatch an event and then manually invoke the
-  handler property, so callbacks can observe post-dispatch event state and a
-  separate ordering path.
-- Coverage gap: no tests assert handler/listener ordering, `currentTarget`,
-  `target`, or `eventPhase` for these handler properties.
-- Priority: P1
-- Follow-up: implement handler slots as listener-list entries and add parity
-  tests for BroadcastChannel, EventSource, and WebSocket.
 
 ### WEB-003: Transferred ports are not reconstructed inside `event.data`
 
@@ -142,7 +123,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 
 ## Test Coverage Priorities
 
-- P1 web platform: event-handler attribute dispatch parity.
 - P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
   rejection, and end-to-end WebTransport unidirectional stream routing.
 

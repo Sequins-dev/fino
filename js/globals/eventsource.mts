@@ -897,7 +897,11 @@ export class EventSource extends EventTarget {
    * es.onopen = null;
    * ```
    */
-  set onopen(fn: ((e: Event) => void) | null)  { this.#onopen = typeof fn === 'function' ? fn : null; }
+  set onopen(fn: ((e: Event) => void) | null)  {
+    if (this.#onopen !== null) this.removeEventListener('open', this.#onopen as any);
+    this.#onopen = typeof fn === 'function' ? fn : null;
+    if (this.#onopen !== null) this.addEventListener('open', this.#onopen as any);
+  }
 
   /** Callback for `message` events (default-type SSE events).
    *
@@ -912,7 +916,11 @@ export class EventSource extends EventTarget {
    * es.onmessage = null;
    * ```
    */
-  set onmessage(fn: ((e: MessageEvent) => void) | null) { this.#onmessage = typeof fn === 'function' ? fn : null; }
+  set onmessage(fn: ((e: MessageEvent) => void) | null) {
+    if (this.#onmessage !== null) this.removeEventListener('message', this.#onmessage as any);
+    this.#onmessage = typeof fn === 'function' ? fn : null;
+    if (this.#onmessage !== null) this.addEventListener('message', this.#onmessage as any);
+  }
 
   /** Callback for `error` events (connection errors and fatal failures).
    *
@@ -927,7 +935,11 @@ export class EventSource extends EventTarget {
    * es.onerror = null;
    * ```
    */
-  set onerror(fn: ((e: Event) => void) | null) { this.#onerror = typeof fn === 'function' ? fn : null; }
+  set onerror(fn: ((e: Event) => void) | null) {
+    if (this.#onerror !== null) this.removeEventListener('error', this.#onerror as any);
+    this.#onerror = typeof fn === 'function' ? fn : null;
+    if (this.#onerror !== null) this.addEventListener('error', this.#onerror as any);
+  }
 
   /**
    * Close the connection and prevent any further reconnection.
@@ -1178,7 +1190,6 @@ export class EventSource extends EventTarget {
   #fireOpen(origin: string) {
     const e = new Event('open');
     this.dispatchEvent(e);
-    if (this.#onopen) this.#onopen.call(this, e);
   }
 
   /**
@@ -1211,9 +1222,6 @@ export class EventSource extends EventTarget {
       origin,
     });
     this.dispatchEvent(e);
-    if (event.type === 'message' && this.#onmessage) {
-      this.#onmessage.call(this, e);
-    }
   }
 
   /**
@@ -1242,7 +1250,6 @@ export class EventSource extends EventTarget {
   #fireError() {
     const e = new Event('error');
     this.dispatchEvent(e);
-    if (this.#onerror) this.#onerror.call(this, e);
   }
 }
 
