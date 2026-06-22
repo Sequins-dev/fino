@@ -104,6 +104,28 @@ function normalizeFileUrl(specifier: string): string {
   }
 }
 
+function fileUrlFromPath(path: string): string {
+  const bytes = encodeUtf8(path);
+  let encoded = '';
+  for (const byte of bytes) {
+    if (
+      byte === 0x2f ||
+      (byte >= 0x30 && byte <= 0x39) ||
+      (byte >= 0x41 && byte <= 0x5a) ||
+      (byte >= 0x61 && byte <= 0x7a) ||
+      byte === 0x2d ||
+      byte === 0x2e ||
+      byte === 0x5f ||
+      byte === 0x7e
+    ) {
+      encoded += String.fromCharCode(byte);
+    } else {
+      encoded += '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+    }
+  }
+  return 'file://' + encoded;
+}
+
 function normalizeBareSpecifier(specifier: string): { packageName: string; subpath: string } {
   if (specifier.startsWith('@')) {
     const firstSlash = specifier.indexOf('/');
@@ -210,7 +232,7 @@ function initImportMeta(
   filename: string,
   root: string,
 ): void {
-  importMeta.url = 'file://' + filename;
+  importMeta.url = fileUrlFromPath(filename);
   importMeta.filename = filename;
 
   const lastSlash = filename.lastIndexOf('/');
@@ -231,16 +253,16 @@ function initImportMeta(
       raw = spec;
     } else {
       const packageResolved = resolveWithPackageMap(spec, dirname);
-      if (packageResolved !== null) return 'file://' + packageResolved;
+      if (packageResolved !== null) return fileUrlFromPath(packageResolved);
       raw = root + '/' + spec;
     }
 
     const canonical = realpath(raw);
-    if (canonical !== null && !isDirectory(canonical)) return 'file://' + canonical;
+    if (canonical !== null && !isDirectory(canonical)) return fileUrlFromPath(canonical);
 
     for (const ext of ['.ts', '.mts', '.mjs', '.js', '.json']) {
       const probed = realpath(raw + ext);
-      if (probed !== null) return 'file://' + probed;
+      if (probed !== null) return fileUrlFromPath(probed);
     }
 
     throw new Error(`Cannot resolve '${spec}': No such file or directory`);

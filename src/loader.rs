@@ -756,7 +756,7 @@ pub fn resolve_module_callback<'s>(
         referrer
             .script_id()
             .and_then(|id| state_rc.borrow().module_paths.get(&id).cloned())
-            .map(|p| format!("file://{}", p.to_string_lossy()))
+            .map(|p| file_url_from_path(&p))
     });
 
     if spec.starts_with("fino:") || spec.starts_with("internal:") {
@@ -834,7 +834,7 @@ pub unsafe extern "C" fn init_import_meta_callback(
 
     // Rust fallback (before internal:loader registers its callback).
     let filename = path.to_string_lossy();
-    let url = format!("file://{filename}");
+    let url = file_url_from_path(&path);
 
     if let Some(url_str) = v8::String::new(scope, &url) {
         let key = v8::String::new(scope, "url").unwrap();
@@ -927,7 +927,7 @@ fn meta_resolve(
 
     match raw.canonicalize() {
         Ok(canonical) if canonical.is_file() => {
-            let url = format!("file://{}", canonical.to_string_lossy());
+            let url = file_url_from_path(&canonical);
             if let Some(s) = v8::String::new(scope, &url) {
                 rv.set(s.into());
             }
@@ -991,9 +991,9 @@ pub fn dynamic_import_callback<'s>(
 
     // Derive the referrer's directory for relative-path resolution.
     let referrer_dir: Option<PathBuf> = if referrer_is_user_code {
-        PathBuf::from(&referrer_url["file://".len()..])
-            .parent()
-            .map(|p| p.to_path_buf())
+        file_url_to_path(&referrer_url)
+            .ok()
+            .and_then(|p| p.parent().map(|parent| parent.to_path_buf()))
     } else {
         None
     };
@@ -1465,7 +1465,7 @@ fn load_fs_module_uncached<'s>(
     scope: &mut v8::HandleScope<'s>,
     path: &Path,
 ) -> Option<v8::Local<'s, v8::Module>> {
-    let resource_name = format!("file://{}", path.to_string_lossy());
+    let resource_name = file_url_from_path(path);
     let text = std::fs::read_to_string(path).ok()?;
 
     if is_json(path) {
@@ -1619,6 +1619,23 @@ fn file_url_to_path(specifier: &str) -> Result<PathBuf, String> {
     Ok(PathBuf::from(percent_decode_file_url_path(path)?))
 }
 
+fn file_url_from_path(path: &Path) -> String {
+    let mut url = String::from("file://");
+    for byte in path.to_string_lossy().as_bytes() {
+        match *byte {
+            b'/' | b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'-' | b'.' | b'_' | b'~' => {
+                url.push(*byte as char);
+            }
+            _ => {
+                url.push('%');
+                url.push(hex_digit(byte >> 4));
+                url.push(hex_digit(byte & 0x0f));
+            }
+        }
+    }
+    url
+}
+
 fn percent_decode_file_url_path(path: &str) -> Result<String, String> {
     let bytes = path.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -1640,6 +1657,14 @@ fn percent_decode_file_url_path(path: &str) -> Result<String, String> {
         }
     }
     String::from_utf8(out).map_err(|_| "Invalid file URL: decoded path is not UTF-8".to_string())
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => (b'0' + value) as char,
+        10..=15 => (b'A' + value - 10) as char,
+        _ => unreachable!(),
+    }
 }
 
 fn hex_value(byte: u8) -> Option<u8> {

@@ -93,8 +93,8 @@ describe('properties', () => {
     t.ok(thisFile.startsWith(thisDir + '/'), 'filename is inside dirname');
   });
 
-  it('import.meta.url matches file:// + filename', (t) => {
-    t.equal(thisUrl, 'file://' + thisFile, 'url == file:// + filename');
+  it('import.meta.url parses back to the decoded filename', (t) => {
+    t.equal(decodeURIComponent(new URL(thisUrl).pathname), thisFile, 'url pathname decodes to filename');
   });
 });
 
@@ -139,10 +139,57 @@ describe('resolve()', () => {
     const encoded = `file://${root}/space%20dir/mod.mts`;
     const resolved = meta.resolve(encoded);
     t.ok(resolved.startsWith('file://'), 'percent-encoded file path resolves to a file URL');
-    t.ok(resolved.endsWith('/space dir/mod.mts'), 'percent-encoded file path resolves to decoded local path');
+    t.ok(resolved.endsWith('/space%20dir/mod.mts'), 'percent-encoded file path resolves to encoded file URL');
+    t.ok(
+      decodeURIComponent(new URL(resolved).pathname).endsWith('/space dir/mod.mts'),
+      'resolved file URL decodes to local path',
+    );
 
     const imported = await import(encoded);
     t.equal(imported.default, 'decoded-url', 'dynamic import accepts percent-encoded local file URL');
+  });
+
+  it('import.meta file URLs encode reserved path characters', async (t) => {
+    const fs = new DiskFileSystem();
+    const root = `/tmp/fino-import-meta-encoded-${Date.now()}-${Math.floor(Math.random() * 1_000_000)}`;
+    const filename = 'meta space #query?percent%.mts';
+    const absolute = root + '/' + filename;
+    await ensureDir(fs, root);
+    await fs.writeFile(absolute, [
+      'const relative = import.meta.resolve("./meta space #query?percent%.mts");',
+      'const absolute = import.meta.resolve(import.meta.filename);',
+      'const fileInput = import.meta.resolve(import.meta.url);',
+      'console.log(JSON.stringify({',
+      '  url: import.meta.url,',
+      '  filename: import.meta.filename,',
+      '  dirname: import.meta.dirname,',
+      '  pathname: new URL(import.meta.url).pathname,',
+      '  relative,',
+      '  absolute,',
+      '  fileInput,',
+      '}));',
+      '',
+    ].join('\n'));
+
+    const result = await runCli([filename], root);
+    t.equal(result.code, 0, 'encoded import-meta fixture exits successfully');
+    t.equal(result.stderr, '', 'encoded import-meta fixture has no stderr');
+    const info = JSON.parse(result.stdout.trim()) as {
+      url: string;
+      filename: string;
+      dirname: string;
+      pathname: string;
+      relative: string;
+      absolute: string;
+      fileInput: string;
+    };
+    t.ok(info.filename.endsWith('/' + filename), 'import.meta.filename remains decoded');
+    t.equal(info.dirname, info.filename.slice(0, -('/' + filename).length), 'import.meta.dirname remains decoded');
+    t.ok(info.url.includes('meta%20space%20%23query%3Fpercent%25.mts'), 'import.meta.url encodes reserved path bytes');
+    t.equal(decodeURIComponent(info.pathname), info.filename, 'URL pathname decodes back to filename');
+    t.equal(info.relative, info.url, 'relative resolve returns the encoded module file URL');
+    t.equal(info.absolute, info.url, 'absolute resolve returns the encoded module file URL');
+    t.equal(info.fileInput, info.url, 'file URL input resolves to the canonical encoded file URL');
   });
 
   it('import.meta.resolve rejects malformed and non-local file URLs', async (t) => {

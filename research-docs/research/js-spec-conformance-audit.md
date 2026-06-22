@@ -31,7 +31,7 @@ prioritization. It does not include source fixes.
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gaps WEB-001 to WEB-003 |
 | Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-001 to NET-005 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | Gaps FFS-004 and FFS-005 |
-| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gaps RTE-003 and RTE-004 |
+| Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | Gap RTE-004 |
 
 Existing release notes already document broad intentional non-parity areas:
 server-side Fetch/CORS/cookie behavior, Fino-native OpenTelemetry instead of
@@ -199,19 +199,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Follow-up: implement bounded recursive expansion and XML char validation, or
   document recursion as unsupported.
 
-### RTE-003: `import.meta` file URLs are raw path concatenations
-
-- Files: `js/internal/loader.mts`
-- Spec target: WHATWG file URL serialization and host `import.meta.url`.
-- Expected behavior: paths with spaces, `#`, `?`, `%`, and reserved characters
-  are percent-encoded in file URLs and round-trip through `new URL()`.
-- Current behavior: URLs are built as `'file://' + filename` or canonical path;
-  tests assert raw concatenation.
-- Coverage gap: no imported module path with reserved URL characters.
-- Priority: P2
-- Follow-up: add a file URL serializer and update tests to expect encoded URLs
-  while keeping `import.meta.filename` decoded.
-
 ### RTE-004: `startCluster()` self-join ignores configured hostname
 
 - Files: `js/cluster.mts`
@@ -232,7 +219,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - P1 networking: H3 malformed pseudo-header tests, WebTransport missing SETTINGS
   rejection, and end-to-end WebTransport unidirectional stream routing.
 - P1 archive/XML: XML name and namespace invalid cases.
-- P2 runtime/security: encoded `import.meta.url` paths.
 
 ## Accepted Divergences And Non-Goals
 

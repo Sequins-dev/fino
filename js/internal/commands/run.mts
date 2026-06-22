@@ -29,12 +29,34 @@ import {
 } from '../../opentelemetry.mts';
 import { createCliOtelRuntime } from '../opentelemetry/bootstrap.mts';
 
+function fileUrlFromPath(path: string): string {
+  const bytes = new TextEncoder().encode(path);
+  let encoded = '';
+  for (const byte of bytes) {
+    if (
+      byte === 0x2f ||
+      (byte >= 0x30 && byte <= 0x39) ||
+      (byte >= 0x41 && byte <= 0x5a) ||
+      (byte >= 0x61 && byte <= 0x7a) ||
+      byte === 0x2d ||
+      byte === 0x2e ||
+      byte === 0x5f ||
+      byte === 0x7e
+    ) {
+      encoded += String.fromCharCode(byte);
+    } else {
+      encoded += '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+    }
+  }
+  return 'file://' + encoded;
+}
+
 function normalizeScriptSpecifier(script: string): string {
   if (script.startsWith('file://')) return script;
-  if (script.startsWith('/')) return `file://${script}`;
-  if (script.startsWith('./') || script.startsWith('../')) return `file://${cwd()}/${script}`;
+  if (script.startsWith('/')) return fileUrlFromPath(script);
+  if (script.startsWith('./') || script.startsWith('../')) return fileUrlFromPath(`${cwd()}/${script}`);
   if (script.includes(':')) return script;
-  return `file://${cwd()}/./${script}`;
+  return fileUrlFromPath(`${cwd()}/./${script}`);
 }
 
 function runWithProviders<R>(
