@@ -31,7 +31,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` and `JS-SPEC-010` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
-| Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Findings `JS-SPEC-016` through `JS-SPEC-018` |
+| Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Findings `JS-SPEC-016` and `JS-SPEC-018` |
 
 ## Findings
 
@@ -255,24 +255,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   fields as covered, package API differences as intentional limits, and
   protobuf/gRPC as out of scope.
 
-### JS-SPEC-017
-
-- Subsystem/files: Database, `js/database/sqlite.mts`,
-  `js/internal/database/sqlite/vfs.mts`, `tests/sqlite*.test.mts`.
-- Spec target and section: SQLite C API and sqlite3_vfs contract.
-- Expected behavior: Database wrappers and the JS VFS should preserve SQLite
-  result codes, locking expectations, file-control behavior, sync/truncate
-  semantics, and statement lifecycle guarantees for the supported API subset.
-- Observed implementation/test gap: The public module documents a focused
-  baseline and recommends native PRAGMAs for wider SQLite features. Tests cover
-  core SQL and virtual file behavior, but the previous audit did not identify
-  unsupported VFS controls, WAL/concurrency parity, backup, serialize, or
-  busy-timeout convenience APIs as intentional limits.
-- Priority: P2.
-- Suggested follow-up: Add a SQLite C/VFS requirement map from the implemented
-  methods to tests, and keep unsupported file controls returning `SQLITE_NOTFOUND`
-  documented as an intentional VFS subset.
-
 ### JS-SPEC-018
 
 - Subsystem/files: Cluster and realm, `js/cluster.mts`, `js/realm/**`,
@@ -307,7 +289,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 | P1 | YAML/XML | Turn fixture corpora into spec-production maps and add missing negative fixtures for directives, namespace errors, and character validity. |
 | P1 | OpenTelemetry | Map tests to traces, logs, metrics, resources, propagation, OTLP/HTTP JSON, retry, compression, and partial-success spec sections. |
-| P2 | SQLite | Add tests documenting SQLite VFS unsupported controls. |
 
 ## Accepted Divergences And Non-Goals
 

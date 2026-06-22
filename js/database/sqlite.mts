@@ -17,6 +17,28 @@
  * for backup, serialize/deserialize, busy-timeout helpers, and broader
  * WAL/concurrency parity are outside this baseline.
  *
+ * ## Supported SQLite C/VFS subset
+ *
+ * `Database` covers the core C API lifecycle used by this module:
+ * open/close, prepare/step/finalize, parameter binding, column reads,
+ * transactions through SQL, and trusted extension loading. It does not wrap
+ * backup, serialization, or busy-timeout convenience APIs; use SQLite SQL,
+ * PRAGMA statements, or native extensions for those features.
+ *
+ * Fino's JavaScript `sqlite3_vfs` implements the file operations SQLite needs
+ * for normal database and journal I/O through the active `FileSystem` provider:
+ * open, delete, access, full-pathname, read, write, truncate, sync, file size,
+ * sector size, device characteristics, locking, unlock, reserved-lock checks,
+ * randomness, sleep, current time, and last-error callbacks.
+ *
+ * Deterministic file controls are supported for lock state, size hints, chunk
+ * size, file pointer, last errno, persistent WAL state, powersafe overwrite,
+ * disabled mmap size, moved-file checks, lock timeout, and data version.
+ * Unsupported controls such as VFS name/proxy hooks, PRAGMA interception,
+ * temp-filename allocation, atomic write groups, size limits, reserve bytes,
+ * external-reader, checksum-file, null-I/O, and filestat return
+ * `SQLITE_NOTFOUND` so SQLite can use its normal fallback paths.
+ *
  * Usage:
  * ```ts no_run
  *   import { Database } from 'fino:database/sqlite';
