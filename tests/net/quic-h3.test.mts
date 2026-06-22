@@ -270,6 +270,110 @@ describe('HTTP/3 (h3 ALPN)', () => {
     }
   });
 
+  it('H3 client rejects WebTransport when server SETTINGS are incomplete', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      let receivedWebTransportConnect = false;
+
+      let serverSession!: Nghttp3Session;
+      serverSession = Nghttp3Session.createServer({
+        onBeginHeaders() {},
+        onRecvHeader(_sid, _token, name, value) {
+          if (name === ':protocol' && value === 'webtransport-h3') receivedWebTransportConnect = true;
+        },
+        onEndHeaders(sid) {
+          void (async () => {
+            try {
+              serverSession.submitResponse(sid, [[':status', '200']]);
+              await serverSession.drainWrites();
+            } catch { /* connection or session closed */ }
+          })();
+        },
+        onBeginTrailers() {}, onRecvTrailer() {}, onEndTrailers() {},
+        onRecvData() {}, onEndStream() {},
+        onStreamClose() {}, onResetStream() {}, onAckedStreamData() {},
+      });
+
+      serverConn.addEventListener('stream', (event) => {
+        const stream = (event as QuicStreamEvent).stream;
+        const sid = BigInt(stream.id);
+        void (async () => {
+          try {
+            if (stream.direction === 'bidirectional') serverSession.addQuicStream(sid, stream.writer);
+            while (true) {
+              const bytes = await stream.reader.read() as Uint8Array | null;
+              const fin = bytes === null;
+              await serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              if (fin) break;
+            }
+          } catch { /* session or connection closed */ }
+        })();
+      });
+
+      const [ctrl, qenc, qdec] = await pipe.pumpUntil(Promise.all([
+        serverConn.openUnidirectionalStream(),
+        serverConn.openUnidirectionalStream(),
+        serverConn.openUnidirectionalStream(),
+      ])) as QuicStream[];
+      for (const s of [ctrl, qenc, qdec]) serverSession.addQuicStream(BigInt(s.id), s.writer);
+      serverSession.bindControlStream(BigInt(ctrl.id));
+      serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
+      const clientSessionPromise = H3ClientSession.create(clientConn);
+      await pipe.pumpUntil(serverSession.drainWrites());
+      const clientSession = await pipe.pumpUntil(clientSessionPromise);
+
+      await t.rejects(
+        () => pipe.pumpUntil(clientSession.webtransport('https://example.test/wt')),
+        /SETTINGS|WebTransport readiness/,
+        'client rejects before sending extended CONNECT',
+      );
+      t.equal(receivedWebTransportConnect, false, 'server does not receive WebTransport CONNECT');
+
+      serverSession.close();
+      clientConn.destroy();
+      serverConn.destroy();
+    } finally {
+      await pipe.close();
+    }
+  });
+
+  it('H3 server rejects WebTransport CONNECT when client SETTINGS are incomplete', async (t) => {
+    if (!available) return;
+
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+
+      let webTransportCalled = false;
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, () => new Response('unexpected'), {
+        onWebTransport(_request, session) {
+          webTransportCalled = true;
+          return session;
+        },
+      });
+
+      const status = await rawH3RequestStatus(pipe, clientConn, [
+        [':method', 'CONNECT'],
+        [':scheme', 'https'],
+        [':path', '/wt'],
+        [':authority', 'localhost'],
+        [':protocol', 'webtransport-h3'],
+      ]);
+
+      t.equal(status, '400', 'server rejects WebTransport without complete peer SETTINGS');
+      t.equal(webTransportCalled, false, 'onWebTransport is not invoked');
+
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone).catch(() => {});
+    } finally {
+      await pipe.close();
+    }
+  });
+
   it('H3 client and server complete WebTransport extended CONNECT takeover', async (t) => {
     if (!available) return;
 

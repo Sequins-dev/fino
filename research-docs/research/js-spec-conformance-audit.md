@@ -29,7 +29,7 @@ prioritization. It does not include source fixes.
 | Area | Files | Specs | Current coverage | Result |
 | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/realm/messaging.mts` | DOM, HTML, Fetch, URL, Streams, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Gap WEB-003 |
-| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-002 to NET-004 |
+| Networking | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*` | Gaps NET-003 to NET-004 |
 | File/format/security | `js/file/**`, `js/archive.mts`, `js/compress.mts`, `js/format/**`, `js/security/**`, `js/uuid.mts`, `js/semver.mts`, `js/validate.mts` | POSIX, ZIP/tar/gzip, compression RFCs, CSV/TOML/YAML/XML, JOSE, UUID, SemVer, JSON Schema | `tests/file/**`, `tests/archive/**`, `tests/format/**`, `tests/security/**`, utility tests | No open gaps |
 | Runtime/ecosystem | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | POSIX, ESM/package/SRI, OpenTelemetry, SQLite, WebTransport, WHATWG messaging | runtime, internal, OTel, SQLite, cluster, realm tests | No open gaps |
 
@@ -55,22 +55,6 @@ unless a finding below calls out missing documentation or contradictory tests.
 - Priority: P2
 - Follow-up: decide whether message-graph port transfer is release scope; if so,
   add an internal transfer map for `MessagePort.postMessage()`.
-
-### NET-002: WebTransport over H3 does not enforce peer SETTINGS readiness
-
-- Files: `js/internal/net/http/h3/session.mts`,
-  `js/internal/net/http/h3/client.mts`, `js/internal/net/http/h3/server.mts`,
-  `js/internal/net/http/h3/webtransport.mts`
-- Spec target: WebTransport over HTTP/3 draft-15, RFC 9220, RFC 9297.
-- Expected behavior: WebTransport sessions should be established only after the
-  peer advertises required settings for extended CONNECT, H3 DATAGRAM, and
-  WebTransport enablement.
-- Current behavior: peer settings are tracked, but client/server setup does not
-  appear to gate success on complete readiness.
-- Coverage gap: no negative tests for missing/partial peer settings.
-- Priority: P1
-- Follow-up: gate setup on complete peer settings or explicitly document a
-  temporary interop mode.
 
 ### NET-003: Incoming WebTransport unidirectional streams are not H3-routed
 
@@ -107,8 +91,7 @@ unless a finding below calls out missing documentation or contradictory tests.
 
 ## Test Coverage Priorities
 
-- P1 networking: WebTransport missing SETTINGS rejection and end-to-end
-  WebTransport unidirectional stream routing.
+- P1 networking: end-to-end WebTransport unidirectional stream routing.
 
 ## Accepted Divergences And Non-Goals
 

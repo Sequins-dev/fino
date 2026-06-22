@@ -204,6 +204,16 @@ export class H3ServerDriver {
       }
       if (st.cancelled) return;
       if (st.method === 'CONNECT' && st.protocol === 'webtransport-h3') {
+        if (!session.peerWebTransportReady) {
+          try {
+            session.submitResponse(st.streamId, [
+              [':status', '400'],
+              ['content-type', 'text/plain'],
+            ], new TextEncoder().encode('WebTransport over HTTP/3 requires complete peer SETTINGS'));
+            await session.drainWrites();
+          } catch {}
+          return;
+        }
         if (options.onWebTransport !== undefined) {
           const url = `${st.scheme || 'https'}://${st.authority || 'localhost'}${st.path || '/'}`;
           const reqHeaders = new Headers(st.headers);

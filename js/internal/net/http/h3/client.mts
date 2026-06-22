@@ -69,10 +69,15 @@ export class H3ClientSession {
   #pending = new Map<bigint, PendingRequest>();
   #closed = false;
   #goawayLastStreamId: bigint | null = null;
+  #peerSettingsReceived: Promise<void>;
+  #resolvePeerSettingsReceived: (() => void) | null = null;
 
   private constructor(conn: QuicConnection, session: Nghttp3Session) {
     this.#conn = conn;
     this.#session = session;
+    this.#peerSettingsReceived = new Promise((resolve) => {
+      this.#resolvePeerSettingsReceived = resolve;
+    });
   }
 
   static async create(conn: QuicConnection): Promise<H3ClientSession> {
@@ -161,6 +166,9 @@ export class H3ClientSession {
             instance.#pending.delete(sid);
           }
         }
+      },
+      onRecvSettings() {
+        instance.#markPeerSettingsReceived();
       },
     };
 
@@ -323,6 +331,10 @@ export class H3ClientSession {
 
   async webtransport(url: string | URL, init: H3RequestInit = {}): Promise<WebTransport> {
     if (this.#closed) throw new Error('H3 session is closed');
+    await this.#waitForPeerSettings();
+    if (!this.#session.peerWebTransportReady) {
+      throw new Error('WebTransport over HTTP/3 requires peer SETTINGS for Extended CONNECT, H3 DATAGRAM, and WebTransport readiness');
+    }
     const headers: Array<[string, string]> = [];
     const sourceHeaders = init.headers;
     if (sourceHeaders instanceof Headers) {
@@ -352,6 +364,16 @@ export class H3ClientSession {
       protocol: response.headers.get('sec-webtransport-protocol') ?? '',
       options: init.webTransportOptions,
     });
+  }
+
+  #markPeerSettingsReceived(): void {
+    this.#resolvePeerSettingsReceived?.();
+    this.#resolvePeerSettingsReceived = null;
+  }
+
+  async #waitForPeerSettings(): Promise<void> {
+    if (this.#session.peerSettingsReceived) return;
+    await this.#peerSettingsReceived;
   }
 
   #resolveResponse(streamId: bigint): void {
