@@ -30,7 +30,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005` through `JS-SPEC-008` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | Findings `JS-SPEC-009` through `JS-SPEC-011` |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
-| Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | Finding `JS-SPEC-015` |
+| Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
 | Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | Findings `JS-SPEC-016` through `JS-SPEC-018` |
 
 ## Findings
@@ -256,27 +256,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
   unsupported algorithms, invalid key usages, non-extractable export/wrap, and
   malformed import material.
 
-### JS-SPEC-015
-
-- Subsystem/files: Runtime/package manager, `js/internal/package_manager.mts`,
-  `js/internal/loader.mts`.
-- Spec target and section: W3C Subresource Integrity, npm registry metadata,
-  package tarball extraction, and ESM package resolution compatibility.
-- Expected behavior: Integrity verification should use the strongest supported
-  hash token, reject malformed metadata without a safe fallback, and avoid
-  unsafe extraction paths.
-- Observed implementation/test gap: SRI parsing and hash selection are present,
-  and package extraction delegates to archive safety. The package manager
-  intentionally skips verification when OpenSSL is unavailable and falls back
-  to legacy SHA-1 `shasum` when SRI is unsupported or malformed. That behavior
-  needs a release/security posture note because it is a practical npm
-  compatibility choice, not strict modern SRI enforcement.
-- Priority: P1.
-- Suggested follow-up: Keep the fallback if required for npm compatibility, but
-  add a test and doc note that release builds should require OpenSSL for package
-  installation integrity, and consider a strict mode that rejects SHA-1-only
-  metadata.
-
 ### JS-SPEC-016
 
 - Subsystem/files: Observability, `js/opentelemetry/**`,
@@ -349,7 +328,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 | P1 | YAML/XML | Turn fixture corpora into spec-production maps and add missing negative fixtures for directives, namespace errors, and character validity. |
 | P1 | OpenTelemetry | Map tests to traces, logs, metrics, resources, propagation, OTLP/HTTP JSON, retry, compression, and partial-success spec sections. |
-| P1 | Package integrity | Cover OpenSSL-unavailable integrity skip, SHA-1 fallback, strongest-SRI selection, malformed integrity, and unsupported algorithm behavior. |
 | P2 | Archive/compression | Add fixtures for central-directory disagreements, unsupported ZIP/tar extensions, path traversal, CRC, and decompressed-size limits. |
 | P2 | SQLite | Add tests documenting SQLite VFS unsupported controls. |
 

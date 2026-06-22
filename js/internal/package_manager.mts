@@ -5,6 +5,10 @@
  * metadata, extracts packages into `.fino/packages`, and writes the runtime
  * package map consumed by the internal loader.
  *
+ * Builds that install packages from registries should include OpenSSL support
+ * for real tarball integrity enforcement. SHA-1 `shasum` metadata is accepted
+ * only as a legacy npm fallback when modern SRI metadata is absent or unusable.
+ *
  * ```js
  * import { installPackages } from 'internal:package_manager';
  * console.log(typeof installPackages);
@@ -95,8 +99,11 @@ function base64Digest(alg: string, bytes: Uint8Array): string {
  * `sha512-...`; when multiple supported tokens are present, the strongest one
  * is checked. `shasum` is the legacy SHA-1 hex fallback. If OpenSSL is
  * unavailable, or both metadata fields are absent, the function returns without
- * verification. Mismatches, malformed metadata without a usable fallback, and
- * unsupported algorithms throw descriptive errors.
+ * verification. Release builds that install packages should enable OpenSSL so
+ * integrity metadata is actually enforced. Mismatches, malformed metadata
+ * without a usable fallback, and unsupported algorithms throw descriptive
+ * errors. SHA-1 `shasum` is a legacy npm fallback for registries that do not
+ * provide usable SRI metadata.
  *
  * ```js
  * import { verifyTarballIntegrity } from 'internal:package_manager';
