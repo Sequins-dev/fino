@@ -158,7 +158,7 @@ describe('Process realm transfer behavior', () => {
     realm.terminate();
   });
 
-  it('transfers MessagePort to a process realm or rejects explicitly', async (t) => {
+  it('rejects MessagePort transfer to a process realm explicitly', async (t) => {
     const realm = new Realm({
       process: true,
       entry: new URL('./fixtures/port-echo-transfer.mts', import.meta.url).pathname,
@@ -167,26 +167,14 @@ describe('Process realm transfer behavior', () => {
 
     const { port1, port2 } = new MessageChannel();
     realm.port.start();
-    let postError: Error | null = null;
-    try {
-      realm.port.postMessage('use this port', [port1]);
-    } catch (err) {
-      postError = err as Error;
-    }
-
-    if (postError !== null) {
-      t.ok(/transfer|port|process/i.test(postError.message), 'unsupported process MessagePort transfer rejects explicitly');
-    } else {
-      const reply = await Promise.race([
-        new Promise<string>((resolve) => {
-          port2.onmessage = (ev) => resolve(ev.data as string);
-        }),
-        new Promise<string>((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
-      ]);
-      t.equal(reply, 'echo from thread', 'process realm sent message via transferred port');
-    }
+    t.throws(
+      () => realm.port.postMessage('use this port', [port1]),
+      /transfer|ArrayBuffer|MessagePort/i,
+      'process realm MessagePort transfer rejects synchronously',
+    );
 
     realm.terminate();
+    port1.close();
     port2.close();
   });
 

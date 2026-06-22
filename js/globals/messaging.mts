@@ -4,6 +4,12 @@
  * HTML channel messaging model:
  * https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
  *
+ * Message payloads use the structured-clone subset documented on
+ * `structuredClone()` in `js/globals/encoding.mts`. That subset is intentionally
+ * narrower than the complete HTML structured clone algorithm: functions,
+ * symbols, weak collections, custom prototypes, streams, and direct
+ * `MessagePort` values without transfer reject with `DataCloneError`.
+ *
  * IntraPort transport: same-Isolate Realms exchange messages via direct JS
  * object references + structuredClone. postMessage clones the value and pushes
  * it to the partner port's queue. _flushPorts() dispatches all queued messages
@@ -20,6 +26,15 @@
  * MessageEvent.ports. For cross-Isolate transfers a transit channel is created
  * (internal:transit-port) and the partner port is upgraded in-place to use
  * cross-thread messaging.
+ *
+ * Realm transport matrix:
+ *
+ * | Transport | Clone path | Transfer support |
+ * | --- | --- | --- |
+ * | Same-isolate `MessagePort` | Runtime structured-clone subset. | `ArrayBuffer` and `MessagePort`. |
+ * | Thread `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
+ * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
+ * | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
  *
  * ## Example
  *

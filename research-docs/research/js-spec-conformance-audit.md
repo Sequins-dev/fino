@@ -26,7 +26,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Findings `JS-SPEC-002` and `JS-SPEC-004` |
+| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | Finding `JS-SPEC-002` |
 | Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Findings `JS-SPEC-005`, `JS-SPEC-006`, and `JS-SPEC-008` |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | No open findings |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | Finding `JS-SPEC-012` |
@@ -53,26 +53,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 - Suggested follow-up: Build a Streams requirement map from the WHATWG spec and
   add focused tests for promise timing, release-lock behavior, BYOB edge cases,
   pipe abort/prevent flags, and tee cancellation.
-
-### JS-SPEC-004
-
-- Subsystem/files: Web globals and realm messaging,
-  `js/globals/encoding.mts`, `js/globals/messaging.mts`,
-  `js/realm/messaging.mts`, `js/realm/index.mts`.
-- Spec target and section: HTML structured clone and channel messaging.
-- Expected behavior: `structuredClone()`, `MessagePort`, and `MessageChannel`
-  should clone and transfer every supported platform object according to the
-  HTML algorithms, or document the supported subset precisely.
-- Observed implementation/test gap: Same-isolate and realm messaging support
-  ArrayBuffer and MessagePort transfer in selected paths, while global
-  structured clone rejects MessagePort and streams. Tests cover unsupported
-  payload rejection, but the docs do not provide a durable cloneability matrix
-  for Blob, File, CryptoKey, URL, Error, Map/Set, typed arrays, and port
-  transfer across same-isolate, thread, process, and remote realms.
-- Priority: P1.
-- Suggested follow-up: Add a structured-clone support table and cross-link it
-  from messaging docs. Add focused tests for every supported built-in and every
-  intentionally rejected transferable per realm mode.
 
 ### JS-SPEC-005
 
@@ -166,7 +146,6 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | P0 | WebTransport/H3 | Add draft-15 conformance tests for GOAWAY, DATAGRAM callback proof, reset-at support, SETTINGS negotiation failures, and session cleanup. |
 | P0 | WebCrypto | Assert WebCrypto named errors and key-usage checks for every supported algorithm and unsupported path. |
 | P1 | Web Streams | Add WHATWG Streams algorithm coverage for BYOB, lock release, promise timing, `tee()`, and pipe abort/prevent flags. |
-| P1 | Structured clone/messaging | Add cloneability and transferability matrix tests across same-isolate, thread, process, and remote realm modes. |
 | P1 | DNSSEC | Add deterministic fixtures for NSEC/NSEC3 denial, insecure delegation, unsupported algorithm fallback, and bogus signatures. |
 
 ## Accepted Divergences And Non-Goals

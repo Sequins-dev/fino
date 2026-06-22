@@ -497,26 +497,35 @@ function _dataCloneError(message: string): DOMException {
 /**
  * Deep-clone a value using the structured clone algorithm (subset).
  *
- * Supported types:
- *   primitives, plain objects, Arrays, Date, RegExp, Map, Set, URL,
- *   URLSearchParams, DOMException, CryptoKey, ArrayBuffer, TypedArrays,
- *   DataView, Error (message + name + cause), AggregateError (including
- *   errors), Blob, File.
- *
- * Unsupported (throws DataCloneError):
- *   Functions, Symbols, WeakMap, WeakSet, streams, and MessagePort values
- *   passed directly to global structuredClone().
- *
- * Release limitations:
- *   Transfer lists are limited to ArrayBuffer; stream and direct MessagePort
- *   transfer remain unsupported in global structuredClone().
- *
+ * Fino implements a documented subset of the HTML
+ * [structured clone algorithm](https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializeinternal).
  * Cycles are detected and reproduced correctly.
  *
- * The transfer option accepts ArrayBuffers. Transferred ArrayBuffers are copied
- * into the clone and then detached with V8's native detach operation, so the
- * source buffer's byteLength becomes zero. Supplying the same buffer more than
- * once in the transfer list throws DataCloneError.
+ * ## structured-clone support matrix
+ *
+ * | Category | Global `structuredClone()` support |
+ * | --- | --- |
+ * | Primitives | `undefined`, `null`, boolean, number, string, and `bigint` clone by value. Symbols throw `DataCloneError`. |
+ * | Plain objects | Plain objects and null-prototype objects clone recursively. Objects with custom prototypes throw `DataCloneError`. |
+ * | Arrays | Dense and sparse arrays clone recursively while preserving holes. |
+ * | Dates and regexps | `Date` clones preserve time values. `RegExp` clones preserve source and flags, with `lastIndex` reset. |
+ * | Wrapper objects | `Boolean`, `Number`, and `String` wrapper objects clone with their primitive value. |
+ * | Maps and sets | `Map` and `Set` clone entries recursively, including cyclic references. |
+ * | Errors | `Error`, `AggregateError`, and `DOMException` clone their supported name/message/cause/error details. |
+ * | URL types | `URL` and `URLSearchParams` clone from their serialized form. |
+ * | File API | `Blob` and `File` clone by byte-copying their internal storage. |
+ * | Crypto | `CryptoKey` clones through the WebCrypto module's internal key-material helper. |
+ * | Binary data | `ArrayBuffer`, typed arrays, `BigInt64Array`, `BigUint64Array`, and `DataView` clone with copied backing bytes. |
+ * | Cycles | Object, array, map, and set cycles are preserved in the cloned graph. |
+ *
+ * Transfer lists support only `ArrayBuffer`. Transferred buffers are copied into
+ * the clone and then detached with V8's native detach operation, so the source
+ * buffer's `byteLength` becomes zero. Supplying the same buffer more than once
+ * in the transfer list throws `DataCloneError`.
+ *
+ * Functions, symbols, weak collections, objects with custom prototypes,
+ * streams, direct `MessagePort` values, stream transfer entries, and
+ * `MessagePort` transfer entries throw `DataCloneError`.
  *
  * ```typescript no_run
  * const original: any = { nested: new Map([['x', 1]]) };
@@ -524,9 +533,6 @@ function _dataCloneError(message: string): DOMException {
  * const copy = structuredClone(original);
  * copy.self === copy; // true
  * ```
- *
- * @param {*} value
- * @returns {*}
  */
 export function structuredClone<T>(value: T, options?: { transfer?: ArrayBuffer[] }): T {
   return _structuredCloneWithTransferMap(value, options);

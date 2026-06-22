@@ -311,6 +311,7 @@ describe('structuredClone', () => {
     t.equal(structuredClone(42), 42, 'number');
     t.equal(structuredClone('hello'), 'hello', 'string');
     t.equal(structuredClone(true), true, 'boolean');
+    t.equal(structuredClone(9007199254740993n), 9007199254740993n, 'bigint');
     t.equal(structuredClone(null), null, 'null');
     t.equal(structuredClone(undefined), undefined, 'undefined');
   });
@@ -676,5 +677,24 @@ describe('structuredClone', () => {
       isDataCloneError,
       'stream transfer throws DataCloneError',
     );
+  });
+
+  it('MessagePort clone and transfer are explicitly unsupported globally', (t) => {
+    const { port1, port2 } = new MessageChannel();
+    try {
+      t.throws(
+        () => structuredClone(port1),
+        isDataCloneError,
+        'direct MessagePort value throws DataCloneError',
+      );
+      t.throws(
+        () => structuredClone({ port: port1 }, { transfer: [port1 as any] }),
+        isDataCloneError,
+        'MessagePort transfer entry throws DataCloneError',
+      );
+    } finally {
+      port1.close();
+      port2.close();
+    }
   });
 });

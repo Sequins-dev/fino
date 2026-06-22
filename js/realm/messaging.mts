@@ -9,12 +9,23 @@
  * HTML channel messaging model:
  * https://html.spec.whatwg.org/multipage/web-messaging.html#channel-messaging
  *
- * Transfer lists support `ArrayBuffer` values and `MessagePort` endpoints for
- * realm/thread ports. A transferred `MessagePort` is neutered on the sender
- * side and re-entangled for the receiver. Other structured-clone transferables
- * such as streams are not supported yet. Same-isolate messages use the runtime
- * structured-clone subset, so functions, symbols, weak collections, and objects
- * with unsupported prototypes fail synchronously during `postMessage()`.
+ * Same-isolate messages use the runtime structured-clone subset documented on
+ * global `structuredClone()` in `js/globals/encoding.mts`, so functions,
+ * symbols, weak collections, streams, and objects with unsupported prototypes
+ * fail synchronously during `postMessage()`.
+ *
+ * Realm transport matrix:
+ *
+ * | Realm port | Clone path | Transfer support |
+ * | --- | --- | --- |
+ * | Same-isolate `MessagePort` | Runtime structured-clone subset. | `ArrayBuffer` and `MessagePort`. |
+ * | Thread `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
+ * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
+ * | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
+ *
+ * A transferred `MessagePort` is neutered on the sender side and re-entangled
+ * for the receiver where the transport supports it. Other structured-clone
+ * transferables such as streams are not supported yet.
  *
  * ```ts no_run
  * import { MessageChannel } from 'fino:realm/messaging';
