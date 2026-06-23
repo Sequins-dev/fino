@@ -303,6 +303,29 @@ function cloneDefault(value: unknown): unknown {
   return out;
 }
 
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!jsonEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (isRecord(a) || isRecord(b)) {
+    if (!isRecord(a) || !isRecord(b)) return false;
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    for (const key of aKeys) {
+      if (!Object.prototype.hasOwnProperty.call(b, key) || !jsonEqual(a[key], b[key])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 function issue(path: string, keyword: string, message: string, value: unknown): ValidationIssue {
   return { path, keyword, message, value };
 }
@@ -393,12 +416,12 @@ function compileSchema(schema: JsonSchema): ValidatorFn {
       return { value, issues: issues.concat(branchIssues.slice(0, 3)) };
     }
 
-    if (Object.prototype.hasOwnProperty.call(schema, 'const') && value !== schema.const) {
+    if (Object.prototype.hasOwnProperty.call(schema, 'const') && !jsonEqual(value, schema.const)) {
       issues.push(issue(path, 'const', `must equal ${JSON.stringify(schema.const)}`, value));
       return { value, issues };
     }
 
-    if (Array.isArray(schema.enum) && !schema.enum.some((item) => item === value)) {
+    if (Array.isArray(schema.enum) && !schema.enum.some((item) => jsonEqual(item, value))) {
       issues.push(issue(path, 'enum', `must be one of ${schema.enum.map((item) => JSON.stringify(item)).join(', ')}`, value));
       return { value, issues };
     }
@@ -1104,7 +1127,7 @@ export const v = {
   /**
    * Create a schema that accepts exactly one literal value.
    *
-   * The value is stored as JSON Schema `const` and compared with strict
+   * The value is stored as JSON Schema `const` and compared with JSON-value
    * equality during validation.
    *
    * ```ts no_run
@@ -1118,7 +1141,7 @@ export const v = {
    * Create a schema that accepts one of the provided values.
    *
    * Values are copied into JSON Schema `enum` with `slice()`. Validation uses
-   * strict equality against each enum member.
+   * JSON-value equality against each enum member.
    *
    * ```ts no_run
    * import { v } from 'fino:validate';
