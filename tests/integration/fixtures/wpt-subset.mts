@@ -108,6 +108,12 @@ test(() => {
 }, 'DOMException exposes name and message');
 
 test(() => {
+  assert_equals(new DOMException('', 'AbortError').code, 20);
+  assert_equals(new DOMException('', 'TimeoutError').code, 23);
+  assert_equals(new DOMException('', 'InvalidStateError').code, 11);
+}, 'DOMException exposes legacy code values for named errors');
+
+test(() => {
   const original = { nested: { value: 1 }, items: ['a', 'b'] };
   const clone = structuredClone(original);
   assert_array_equals(clone.items, ['a', 'b']);
@@ -252,6 +258,23 @@ test(() => {
   assert_equals(redirected.headers.get('location'), 'https://example.test/login');
   assert_throws_js(RangeError, () => Response.redirect('https://example.test/', 200));
 }, 'Response.redirect validates redirect status values');
+
+test(() => {
+  const response = Response.error();
+  assert_equals(response.type, 'error');
+  assert_equals(response.status, 0);
+  assert_false(response.ok);
+  assert_equals(response.body, null);
+}, 'Response.error creates a network error response');
+
+promise_test(async () => {
+  const response = new Response('a=1&a=2&b=3', {
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+  });
+  const form = await response.formData();
+  assert_array_equals(form.getAll('a'), ['1', '2']);
+  assert_equals(form.get('b'), '3');
+}, 'Response.formData parses URL-encoded bodies with duplicate names');
 `,
   },
   {
@@ -363,6 +386,36 @@ promise_test(async () => {
   await writer.close();
 }, 'WritableStream exposes default controller and writer types');
 
+promise_test(async () => {
+  const writes = [];
+  let closed = false;
+  const writable = new WritableStream({
+    write(chunk) {
+      writes.push(chunk);
+    },
+    close() {
+      closed = true;
+    },
+  });
+  const writer = writable.getWriter();
+  await writer.write('a');
+  await writer.write('b');
+  await writer.close();
+  assert_array_equals(writes, ['a', 'b']);
+  assert_true(closed);
+}, 'WritableStream writer serializes writes and close');
+
+promise_test(async () => {
+  let abortReason = null;
+  const writable = new WritableStream({
+    abort(reason) {
+      abortReason = reason;
+    },
+  });
+  await writable.abort('stop');
+  assert_equals(abortReason, 'stop');
+}, 'WritableStream abort forwards reason to underlying sink');
+
 test(() => {
   let readableController;
   const readable = new ReadableStream({
@@ -374,6 +427,25 @@ test(() => {
   assert_true(readableController instanceof ReadableStreamDefaultController);
   assert_true(readable.getReader() instanceof ReadableStreamDefaultReader);
 }, 'ReadableStream exposes default controller and reader types');
+
+promise_test(async () => {
+  let transformController;
+  const stream = new TransformStream({
+    transform(chunk, controller) {
+      transformController = controller;
+      controller.enqueue(chunk + '!');
+    },
+  });
+  assert_true(stream.readable instanceof ReadableStream);
+  assert_true(stream.writable instanceof WritableStream);
+  const writer = stream.writable.getWriter();
+  const reader = stream.readable.getReader();
+  await writer.write('go');
+  assert_equals((await reader.read()).value, 'go!');
+  await writer.close();
+  assert_true((await reader.read()).done);
+  assert_true(transformController instanceof TransformStreamDefaultController);
+}, 'TransformStream connects writable input to transformed readable output');
 `,
   },
   {
@@ -615,6 +687,37 @@ promise_test(async () => {
   const hex = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
   assert_equals(hex, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
 }, 'crypto random values UUID and SHA-256 digest work when OpenSSL is available');
+
+promise_test(async () => {
+  if (!cryptoAvailable) return;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new Uint8Array(32).fill(0x0b),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify'],
+  );
+  const data = new TextEncoder().encode('Hi There');
+  const signature = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
+  assert_equals(signature.byteLength, 32);
+  assert_true(await crypto.subtle.verify({ name: 'HMAC' }, key, signature, data));
+}, 'crypto.subtle signs and verifies HMAC-SHA-256');
+
+promise_test(async () => {
+  if (!cryptoAvailable) return;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new Uint8Array(16).fill(1),
+    { name: 'AES-GCM', length: 128 },
+    false,
+    ['encrypt', 'decrypt'],
+  );
+  const iv = new Uint8Array(12).fill(2);
+  const data = new TextEncoder().encode('secret');
+  const encrypted = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, data);
+  const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted);
+  assert_equals(new TextDecoder().decode(decrypted), 'secret');
+}, 'crypto.subtle encrypts and decrypts AES-GCM');
 `,
   },
   {
@@ -695,6 +798,12 @@ promise_test(async () => {
   sender.close();
   receiver.close();
 }, 'BroadcastChannel delivers to another channel with the same name');
+
+test(() => {
+  const channel = new BroadcastChannel('wpt-closed-channel');
+  channel.close();
+  assert_throws_js(DOMException, () => channel.postMessage('closed'));
+}, 'BroadcastChannel postMessage throws after close');
 `,
   },
   {
@@ -713,6 +822,19 @@ promise_test(async () => {
   source.close();
   assert_equals(source.readyState, EventSource.CLOSED);
 }, 'EventSource opens an SSE stream and dispatches named events');
+
+test(() => {
+  assert_equals(EventSource.CONNECTING, 0);
+  assert_equals(EventSource.OPEN, 1);
+  assert_equals(EventSource.CLOSED, 2);
+}, 'EventSource exposes readyState constants');
+
+test(() => {
+  const source = new EventSource(new URL('/events', __wpt.httpUrl), { withCredentials: true });
+  assert_true(source.withCredentials);
+  source.close();
+  assert_equals(source.readyState, EventSource.CLOSED);
+}, 'EventSource reflects withCredentials and closes synchronously');
 `,
   },
   {
