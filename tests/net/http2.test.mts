@@ -143,6 +143,24 @@ async function rawTlsH2Exchange(port: number, frames: Uint8Array): Promise<RawFr
   return rawFrames;
 }
 
+async function rawTlsH2ExchangeReadFrames(port: number, frames: Uint8Array, limit: number): Promise<RawFrame[]> {
+  const sock = await TlsSocket.connect(
+    { family: 'ipv4', ip: '127.0.0.1', port },
+    { hostname: '127.0.0.1', rejectUnauthorized: false, alpn: ['h2'] },
+  );
+  if (sock.negotiatedProtocol !== 'h2') {
+    sock.close();
+    throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
+  }
+  const [reader, writer] = sock.split();
+  await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...frames]));
+  await writer.flush();
+  const rawFrames = await readRawFrames(reader, limit);
+  try { await reader.close(); } catch {}
+  try { await writer.close(); } catch {}
+  return rawFrames;
+}
+
 function findFrame(frames: RawFrame[], type: number, streamId?: number): RawFrame | null {
   return frames.find(f => f.type === type && (streamId === undefined || f.streamId === streamId)) ?? null;
 }
@@ -1075,6 +1093,25 @@ describe('H2 server — robustness', () => {
     t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
   });
 
+  it('TLS ACKs peer SETTINGS frames after the initial SETTINGS exchange', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(0x04, 0x00, 0, hexBytes(
+        0x00, 0x03, 0x00, 0x00, 0x00, 0x40,
+      )), 3);
+
+      const settingsAcks = frames.filter(f => f.type === 0x04 && f.flags === 0x01 && f.length === 0);
+      const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
+      t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
+      t.equal(errorGoaway, undefined, 'follow-up SETTINGS does not trigger an error GOAWAY');
+    } finally {
+      await server.close();
+    }
+  });
+
   it('h2spec 6.9.2 ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', async (t) => {
     if (!h2Available) return;
 
@@ -1089,6 +1126,62 @@ describe('H2 server — robustness', () => {
     const goaway = findFrame(frames, 0x07);
     t.ok(settingsAcks.length >= 2, `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`);
     if (goaway) t.equal(frameErrorCode(goaway), 0x00, 'duplicate SETTINGS entries do not trigger an error GOAWAY');
+  });
+
+  it('TLS ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(0x04, 0x00, 0, hexBytes(
+        0x00, 0x04, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x04, 0x00, 0x00, 0xff, 0xff,
+      )), 3);
+
+      const settingsAcks = frames.filter(f => f.type === 0x04 && f.flags === 0x01 && f.length === 0);
+      const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
+      t.ok(settingsAcks.length >= 2, `server ACKed initial and duplicate SETTINGS frames (${settingsAcks.length})`);
+      t.equal(errorGoaway, undefined, 'duplicate SETTINGS entries do not trigger an error GOAWAY');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('TLS sends PING ACK frames with matching payloads', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const payload = hexBytes(0xde, 0xad, 0xbe, 0xef, 0x10, 0x20, 0x30, 0x40);
+      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(0x06, 0x00, 0, payload), 3);
+
+      const pingAck = frames.find(f => f.type === 0x06 && (f.flags & 0x01) !== 0);
+      const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
+      t.ok(pingAck !== undefined, 'server sent PING ACK');
+      t.deepEqual([...pingAck!.payload], [...payload], 'PING ACK payload matches request payload');
+      t.equal(errorGoaway, undefined, 'normal PING does not trigger an error GOAWAY');
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('TLS ignores client PING ACK frames', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const frames = await rawTlsH2ExchangeReadFrames(server.port, frame(0x06, 0x01, 0, new Uint8Array(8)), 2);
+
+      const responsePing = frames.find(f => f.type === 0x06);
+      const errorGoaway = frames.find(f => f.type === 0x07 && frameErrorCode(f) !== 0);
+      t.equal(responsePing, undefined, 'client PING ACK does not get a response PING');
+      t.equal(errorGoaway, undefined, 'client PING ACK does not trigger an error GOAWAY');
+    } finally {
+      await server.close();
+    }
   });
 
   it('sends GOAWAY for SETTINGS ACK frames with payload', async (t) => {
