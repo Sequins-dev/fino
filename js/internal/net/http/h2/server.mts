@@ -422,14 +422,14 @@ class H2ServerFrameValidator {
 
   #validateData(flags: number, streamId: number, length: number, payloadOff: number): H2RawAction | null {
     if (streamId === 0) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
-    const s = this.#streams.get(streamId);
-    if (!s) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
-    if (s.state !== 'open') return { kind: 'rst', streamId, errorCode: NGHTTP2_STREAM_CLOSED };
     if ((flags & NGHTTP2_FLAG_PADDED) !== 0) {
       if (length === 0) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
       const padLength = this.#buffer[payloadOff]!;
       if (padLength >= length) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
     }
+    const s = this.#streams.get(streamId);
+    if (!s) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
+    if (s.state !== 'open') return { kind: 'rst', streamId, errorCode: NGHTTP2_STREAM_CLOSED };
     if ((flags & NGHTTP2_FLAG_END_STREAM) !== 0) {
       s.state = 'halfClosedRemote';
       this.#openStreams = Math.max(0, this.#openStreams - 1);

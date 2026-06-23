@@ -10,6 +10,7 @@ import { H2ClientDriver } from '../../js/internal/net/http/h2/client.mts';
 import { Nghttp2Session } from '../../js/internal/net/http/h2/session.mts';
 import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
+import { TlsSocket } from 'fino:net/tls';
 import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.mts';
 
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
@@ -22,6 +23,11 @@ if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
 
 const _enc = new TextEncoder();
 const _dec = new TextDecoder();
+const tlsAvailable = (globalThis as typeof globalThis & { tlsAvailable?: boolean }).tlsAvailable;
+const skipTlsH2 = (!h2Available || !tlsAvailable) && 'requires libnghttp2 + OpenSSL';
+
+const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
+const KEY_PATH  = new URL('./fixtures/test.key',  import.meta.url).pathname;
 
 function hexBytes(...args: number[]): Uint8Array { return new Uint8Array(args); }
 
@@ -116,6 +122,24 @@ async function rawH2Exchange(port: number, frames: Uint8Array): Promise<RawFrame
   await writer.close();
   const rawFrames = await readRawFrames(reader);
   try { await reader.close(); } catch {}
+  return rawFrames;
+}
+
+async function rawTlsH2Exchange(port: number, frames: Uint8Array): Promise<RawFrame[]> {
+  const sock = await TlsSocket.connect(
+    { family: 'ipv4', ip: '127.0.0.1', port },
+    { hostname: '127.0.0.1', rejectUnauthorized: false, alpn: ['h2'] },
+  );
+  if (sock.negotiatedProtocol !== 'h2') {
+    sock.close();
+    throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
+  }
+  const [reader, writer] = sock.split();
+  await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...frames]));
+  await writer.flush();
+  const rawFrames = await readRawFrames(reader);
+  try { await reader.close(); } catch {}
+  try { await writer.close(); } catch {}
   return rawFrames;
 }
 
@@ -875,6 +899,21 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
   });
 
+  it('sends GOAWAY for malformed DATA padding after END_STREAM', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...H2_GET_ROOT_LOCALHOST,
+      ...frame(0x00, 0x08, 1, hexBytes(8, 1, 2, 3)),
+    ]));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'server sent GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+  });
+
   it('sends GOAWAY immediately for DATA larger than the default max frame size', async (t) => {
     if (!h2Available) return;
 
@@ -1064,6 +1103,24 @@ describe('H2 server — robustness', () => {
     const goaway = findFrame(frames, 0x07);
     t.ok(goaway !== null, 'server sent GOAWAY');
     t.equal(frameErrorCode(goaway!), 0x06, 'GOAWAY uses FRAME_SIZE_ERROR');
+  });
+
+  it('sends TLS GOAWAY for SETTINGS ACK frames with payload', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const frames = await rawTlsH2Exchange(server.port, frame(0x04, 0x01, 0, hexBytes(
+        0x00, 0x03, 0x00, 0x00, 0x00, 0x40,
+      )));
+
+      const goaway = findFrame(frames, 0x07);
+      t.ok(goaway !== null, 'server sent GOAWAY before TLS close');
+      t.equal(frameErrorCode(goaway!), 0x06, 'GOAWAY uses FRAME_SIZE_ERROR');
+    } finally {
+      await server.close();
+    }
   });
 
   it('sends GOAWAY when a client sends PUSH_PROMISE', async (t) => {

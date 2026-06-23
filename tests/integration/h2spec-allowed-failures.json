@@ -54,12 +54,6 @@
     "reason": "malformed padded DATA is rejected with GOAWAY(PROTOCOL_ERROR) in local raw H2 coverage, but h2spec can still observe EOF before the GOAWAY frame"
   },
   {
-    "id": "http2/6.4/Sends a RST_STREAM frame with 0x0 stream identifier",
-    "reason": "RST_STREAM on stream 0 is rejected with GOAWAY(PROTOCOL_ERROR) locally, but h2spec can still observe EOF before the GOAWAY in the full TLS suite",
-    "releaseAcceptableBecause": "The protocol error is deterministic on the raw-wire path and does not expose a request handler surface.",
-    "localCoverage": "tests/net/http2.test.mts: sends GOAWAY for RST_STREAM on stream 0"
-  },
-  {
     "id": "http2/6.5/Sends a SETTINGS frame with ACK flag and payload",
     "reason": "SETTINGS ACK frames with payload are rejected with GOAWAY(FRAME_SIZE_ERROR) in local raw H2 coverage, but h2spec can still observe EOF before the GOAWAY frame"
   },
