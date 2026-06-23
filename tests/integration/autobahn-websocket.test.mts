@@ -37,14 +37,17 @@ const DOCKER_CANDIDATES = [
 
 const AUTOBahn_IMAGE = 'crossbario/autobahn-testsuite';
 const CASES = [
-  '1.*',
-  '2.*',
-  '3.*',
-  '4.*',
-  '5.*',
-  '6.*',
-  '7.*',
-  '9.*',
+  '1.1.1', '1.1.2', '1.2.1', '1.2.2',
+  '2.1', '2.2', '2.3', '2.4',
+  '3.1', '3.2', '3.3',
+  '4.1.1', '4.1.2', '4.2.1', '4.2.2',
+  '5.1', '5.2', '5.3',
+  '6.1.1', '6.2.1', '6.3.1',
+  '7.1.1', '7.3.1', '7.5.1', '7.7.1', '7.9.1',
+  '9.1.1', '9.2.1', '9.3.1', '9.4.1',
+];
+const FOLLOW_UP_CASES = [
+  '10.*',
 ];
 
 interface AutobahnCase {
@@ -261,7 +264,7 @@ async function startEchoServer(): Promise<ReturnType<typeof serve>> {
   });
 }
 
-async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string): Promise<void> {
+async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string, casePatterns: string[]): Promise<void> {
   const configPath = `${reportDir}/fuzzingclient.json`;
   const host = tool.kind === 'docker' ? 'host.docker.internal' : '127.0.0.1';
   const config = {
@@ -271,7 +274,7 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string):
       url: `ws://${host}:${port}/`,
       options: { version: 18 },
     }],
-    cases: CASES,
+    cases: casePatterns,
     excludeCases: [
       '8.*',
       '11.*',
@@ -297,18 +300,30 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string):
 }
 
 const tool = await findAutobahnTool();
-let server: ReturnType<typeof serve>;
+let server: ReturnType<typeof serve> | undefined;
 let cases = new Map<string, AutobahnCase>();
+
+async function collectAutobahnCases(casePatterns: string[]): Promise<Map<string, AutobahnCase>> {
+  const reportDir = `/tmp/fino-autobahn-${Date.now()}`;
+  server = await startEchoServer();
+  try {
+    await runAutobahn(tool!, server.port, reportDir, casePatterns);
+    return new Map(parseAutobahnIndex(await readText(`${reportDir}/index.json`)).map(c => [c.id, c]));
+  } finally {
+    await server.close();
+    server = undefined;
+  }
+}
 
 describe('Autobahn — RFC 6455 WebSocket conformance', () => {
   before(async () => {
     if (tool === null) {
       throw new Error('Autobahn harness unavailable: install wstest or pre-load the crossbario/autobahn-testsuite Docker image');
     }
-    const reportDir = `/tmp/fino-autobahn-${Date.now()}`;
-    server = await startEchoServer();
-    await runAutobahn(tool, server.port, reportDir);
-    cases = new Map(parseAutobahnIndex(await readText(`${reportDir}/index.json`)).map(c => [c.id, c]));
+    cases = await collectAutobahnCases(CASES);
+    for (const [id, result] of await collectAutobahnCases(FOLLOW_UP_CASES)) {
+      cases.set(id, result);
+    }
   });
 
   after(async () => {
@@ -332,13 +347,7 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
   });
 
   defineCaseTests(groupCases([
-    '1.1.1', '1.1.2', '1.2.1', '1.2.2',
-    '2.1', '2.2', '2.3', '2.4',
-    '3.1', '3.2', '3.3',
-    '4.1.1', '4.1.2', '4.2.1', '4.2.2',
-    '5.1', '5.2', '5.3',
-    '6.1.1', '6.2.1', '6.3.1',
-    '7.1.1', '7.3.1', '7.5.1', '7.7.1', '7.9.1',
-    '9.1.1', '9.2.1', '9.3.1',
+    ...CASES,
+    '10.1.1',
   ]), [], id => cases.get(id));
 });
