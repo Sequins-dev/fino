@@ -98,6 +98,16 @@ interface DryrunSection {
   number: string;
 }
 
+interface H2specUnitGroup {
+  children: Map<string, H2specUnitGroup>;
+  leaves: string[];
+}
+
+interface H2specTestContext {
+  ok(value: unknown, message?: string): void;
+  fail(message?: string): void;
+}
+
 function _decodeXml(s: string): string {
   return s
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
@@ -267,6 +277,33 @@ const _H2SPEC_UNITS = [
   'hpack/6.1/1', 'hpack/6.3/1',
 ];
 
+function _newH2specUnitGroup(): H2specUnitGroup {
+  return { children: new Map(), leaves: [] };
+}
+
+function _groupH2specUnits(units: string[]): H2specUnitGroup {
+  const root = _newH2specUnitGroup();
+
+  for (const unit of units) {
+    const parts = unit.split('/');
+    const leaf = parts.pop();
+    if (!leaf) continue;
+
+    let group = root;
+    for (const part of parts) {
+      let child = group.children.get(part);
+      if (!child) {
+        child = _newH2specUnitGroup();
+        group.children.set(part, child);
+      }
+      group = child;
+    }
+    group.leaves.push(leaf);
+  }
+
+  return root;
+}
+
 async function _runSection(
   h2specPath: string,
   section: string,
@@ -344,6 +381,58 @@ async function _runDryrun(h2specPath: string): Promise<string> {
   return decodeUtf8(_concat(stdoutChunks));
 }
 
+async function _assertH2specUnitPasses(t: H2specTestContext, unit: string, port: number): Promise<void> {
+  let lastFailing: string[] = [];
+  let lastStderr = '';
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    if (attempt > 1) {
+      // Give TLS/nghttp2 teardown from the previous unit time to settle.
+      await new Promise<void>(r => setTimeout(r, 1000));
+    }
+    const { xml, stderr } = await _runSection(h2specPath!, unit, port);
+    lastStderr = stderr;
+    if (!xml) {
+      lastFailing = [`${unit} did not produce JUnit (stderr: ${stderr.trim() || '<empty>'})`];
+      continue;
+    }
+
+    const parsed = _parseJunit(xml);
+    if (parsed.passing.length === 0 && parsed.failing.length === 0) {
+      lastFailing = [`${unit} JUnit XML parsed no test cases`];
+      continue;
+    }
+    if (parsed.failing.length === 0) {
+      t.ok(true, `${parsed.passing.length} h2spec case(s) passed`);
+      return;
+    }
+    lastFailing = parsed.failing;
+  }
+
+  const lines = lastFailing.map(id => `  ${id}`).join('\n');
+  t.fail(
+    `${lastFailing.length} h2spec case(s) failed after retries:\n${lines}` +
+    (lastStderr.trim() ? `\n\nstderr:\n${lastStderr.trim()}` : ''),
+  );
+}
+
+function _defineH2specUnitTests(
+  group: H2specUnitGroup,
+  prefix: string[],
+  getPort: () => number,
+): void {
+  for (const [name, child] of group.children) {
+    describe(name, () => {
+      _defineH2specUnitTests(child, [...prefix, name], getPort);
+    });
+  }
+
+  for (const leaf of group.leaves) {
+    it(leaf, { skip }, async (t) => {
+      await _assertH2specUnitPasses(t, [...prefix, leaf].join('/'), getPort());
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -407,39 +496,5 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     );
   });
 
-  for (const unit of _H2SPEC_UNITS) {
-    it(`passes h2spec ${unit}`, { skip }, async (t) => {
-      let lastFailing: string[] = [];
-      let lastStderr = '';
-      for (let attempt = 1; attempt <= 6; attempt++) {
-        if (attempt > 1) {
-          // Give TLS/nghttp2 teardown from the previous unit time to settle.
-          await new Promise<void>(r => setTimeout(r, 1000));
-        }
-        const { xml, stderr } = await _runSection(h2specPath!, unit, port);
-        lastStderr = stderr;
-        if (!xml) {
-          lastFailing = [`${unit} did not produce JUnit (stderr: ${stderr.trim() || '<empty>'})`];
-          continue;
-        }
-
-        const parsed = _parseJunit(xml);
-        if (parsed.passing.length === 0 && parsed.failing.length === 0) {
-          lastFailing = [`${unit} JUnit XML parsed no test cases`];
-          continue;
-        }
-        if (parsed.failing.length === 0) {
-          t.ok(true, `${parsed.passing.length} h2spec case(s) passed`);
-          return;
-        }
-        lastFailing = parsed.failing;
-      }
-
-      const lines = lastFailing.map(id => `  ${id}`).join('\n');
-      t.fail(
-        `${lastFailing.length} h2spec case(s) failed after retries:\n${lines}` +
-        (lastStderr.trim() ? `\n\nstderr:\n${lastStderr.trim()}` : ''),
-      );
-    });
-  }
+  _defineH2specUnitTests(_groupH2specUnits(_H2SPEC_UNITS), [], () => port);
 });
