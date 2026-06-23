@@ -778,6 +778,14 @@ describe('WebSocket raw frame protocol violations', () => {
     await expectServerCloseForRawClientFrame(rawFrame(0x1, new Uint8Array([0xff]), { mask: true }), 1007);
   });
 
+  it('closes invalid UTF-8 close reasons with 1007', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x8, new Uint8Array([0x03, 0xe8, 0xff]), { mask: true }), 1007);
+  });
+
+  it('closes invalid received close codes with 1002', async () => {
+    await expectServerCloseForRawClientFrame(rawFrame(0x8, new Uint8Array([0x00, 0x00]), { mask: true }), 1002);
+  });
+
   it('closes payloads above maxPayloadSize with 1009', async () => {
     await expectServerCloseForRawClientFrame(
       rawFrame(0x1, enc('12345'), { mask: true }),

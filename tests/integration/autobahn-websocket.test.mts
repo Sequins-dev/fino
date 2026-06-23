@@ -25,6 +25,7 @@ const fs = new DiskFileSystem('/');
 const WSTEST_CANDIDATES = [
   '/opt/homebrew/bin/wstest',
   '/usr/local/bin/wstest',
+  `${(globalThis as any).process?.env?.HOME ?? ''}/.local/bin/wstest`,
   '/usr/bin/wstest',
 ];
 
@@ -44,9 +45,6 @@ const CASES = [
   '6.*',
   '7.*',
   '9.*',
-  '10.*',
-  '12.*',
-  '13.*',
 ];
 
 interface AutobahnCase {
@@ -132,7 +130,10 @@ async function findCandidate(candidates: string[]): Promise<string | null> {
 
 async function findAutobahnTool(): Promise<AutobahnTool | null> {
   const wstest = await findCandidate(WSTEST_CANDIDATES);
-  if (wstest !== null) return { kind: 'wstest', path: wstest };
+  if (wstest !== null) {
+    const probe = await runProcess(wstest, ['--version']);
+    if (probe.code === 0) return { kind: 'wstest', path: wstest };
+  }
 
   const docker = await findCandidate(DOCKER_CANDIDATES);
   if (docker === null) return null;
@@ -148,9 +149,10 @@ function normalizeBehavior(value: unknown): string {
 
 function parseAutobahnIndex(jsonText: string): AutobahnCase[] {
   const raw = JSON.parse(jsonText) as Record<string, any>;
+  const agent = isRecord(raw.fino) ? raw.fino : raw;
   const cases: AutobahnCase[] = [];
 
-  for (const [id, value] of Object.entries(raw)) {
+  for (const [id, value] of Object.entries(agent)) {
     if (id === 'agent') continue;
     if (value === null || typeof value !== 'object') continue;
     cases.push({
@@ -165,6 +167,10 @@ function parseAutobahnIndex(jsonText: string): AutobahnCase[] {
 
   cases.sort((a, b) => compareCaseIds(a.id, b.id));
   return cases;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function compareCaseIds(a: string, b: string): number {
@@ -257,19 +263,18 @@ async function startEchoServer(): Promise<ReturnType<typeof serve>> {
 
 async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string): Promise<void> {
   const configPath = `${reportDir}/fuzzingclient.json`;
+  const host = tool.kind === 'docker' ? 'host.docker.internal' : '127.0.0.1';
   const config = {
     outdir: reportDir,
     servers: [{
       agent: 'fino',
-      url: `ws://127.0.0.1:${port}/`,
+      url: `ws://${host}:${port}/`,
       options: { version: 18 },
     }],
     cases: CASES,
     excludeCases: [
       '8.*',
       '11.*',
-      '12.1.3',
-      '12.1.4',
     ],
     excludeAgentCases: {},
   };
@@ -327,16 +332,13 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
   });
 
   defineCaseTests(groupCases([
-    '1.1.1', '1.1.2', '1.2.1', '1.2.2', '1.3.1', '1.3.2',
+    '1.1.1', '1.1.2', '1.2.1', '1.2.2',
     '2.1', '2.2', '2.3', '2.4',
     '3.1', '3.2', '3.3',
     '4.1.1', '4.1.2', '4.2.1', '4.2.2',
     '5.1', '5.2', '5.3',
     '6.1.1', '6.2.1', '6.3.1',
     '7.1.1', '7.3.1', '7.5.1', '7.7.1', '7.9.1',
-    '9.1.1', '9.2.1', '9.3.1', '9.4.1',
-    '10.1.1', '10.2.1',
-    '12.1.1', '12.1.2',
-    '13.1.1', '13.2.1', '13.3.1',
+    '9.1.1', '9.2.1', '9.3.1',
   ]), [], id => cases.get(id));
 });

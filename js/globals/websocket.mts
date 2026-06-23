@@ -134,6 +134,13 @@ const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const DEFAULT_MAX_PAYLOAD = 16 * 1024 * 1024; // 16 MiB
 const CLOSE_TIMEOUT_MS    = 5_000;
 
+function _validReceivedCloseCode(code: number): boolean {
+  if (code < 1000 || code > 4999) return false;
+  if (code === 1004 || code === 1005 || code === 1006 || code === 1015) return false;
+  if (code >= 1016 && code <= 2999) return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Event classes (CloseEvent, ErrorEvent — MessageEvent imported from shared module)
 // ---------------------------------------------------------------------------
@@ -2154,13 +2161,22 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
         if (opcode === OP_CLOSE) {
           let code   = 1005;  // No Status Received
           let reason = '';
+          if (payload.byteLength === 1) {
+            await this.#failProtocol(1002, 'CLOSE payload length must be 0 or at least 2 bytes');
+            break;
+          }
           if (payload.byteLength >= 2) {
             code = (payload[0]! << 8) | payload[1]!;
+            if (!_validReceivedCloseCode(code)) {
+              await this.#failProtocol(1002, 'Invalid WebSocket close code: ' + code);
+              break;
+            }
             if (payload.byteLength > 2) {
               try {
                 reason = new TextDecoder('utf-8', { fatal: true }).decode(payload.subarray(2));
               } catch {
-                reason = '';
+                await this.#failProtocol(1007, 'Invalid UTF-8 in WebSocket close reason');
+                break;
               }
             }
           }
