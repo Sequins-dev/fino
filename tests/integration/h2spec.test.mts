@@ -421,13 +421,14 @@ function _defineH2specUnitTests(
   getPort: () => number,
 ): void {
   for (const [name, child] of group.children) {
-    describe(name, () => {
+    const label = prefix.length === 0 ? `suite ${name}` : `section ${name}`;
+    describe(label, () => {
       _defineH2specUnitTests(child, [...prefix, name], getPort);
     });
   }
 
   for (const leaf of group.leaves) {
-    it(leaf, { skip }, async (t) => {
+    it(`case ${leaf}`, { skip }, async (t) => {
       await _assertH2specUnitPasses(t, [...prefix, leaf].join('/'), getPort());
     });
   }
