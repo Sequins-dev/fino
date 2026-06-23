@@ -58,12 +58,6 @@
     "reason": "SETTINGS ACK frames with payload are rejected with GOAWAY(FRAME_SIZE_ERROR) in local raw H2 coverage, but h2spec can still observe EOF before the GOAWAY frame"
   },
   {
-    "id": "http2/6.5.3/Sends multiple values of SETTINGS_INITIAL_WINDOW_SIZE",
-    "reason": "duplicate SETTINGS_INITIAL_WINDOW_SIZE entries are ACKed without GOAWAY in local raw H2 coverage, but h2spec can still time out waiting for the ACK during full TLS section sequencing",
-    "releaseAcceptableBecause": "RFC 7540 settings are processed in appearance order, and local raw-wire coverage verifies the server accepts duplicate setting identifiers without treating them as protocol errors.",
-    "localCoverage": "tests/net/http2.test.mts: ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries"
-  },
-  {
     "id": "http2/6.7/Sends a PING frame",
     "reason": "server responds to normal PING frames through nghttp2, but h2spec can still time out waiting for PING ACK during full TLS section sequencing"
   },
