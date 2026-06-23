@@ -32,13 +32,34 @@ interface HarnessAssert {
 
 interface WptContext {
   wsUrl: string;
+  httpUrl: string;
   collect(readable: ReadableStream<Uint8Array>): Promise<Uint8Array>;
   event(target: EventTarget, name: string): Promise<any>;
 }
 
 const wsServer = serve({ port: 0 }, async (incoming) => {
   if (incoming.kind !== 'websocket') {
-    await incoming.reject(new Response('', { status: 404 }));
+    const accepted = await incoming.accept();
+    const url = new URL(accepted.request.url);
+    if (url.pathname === '/fetch-json') {
+      await accepted.respond(Response.json({
+        method: accepted.request.method,
+        header: accepted.request.headers.get('x-wpt-test'),
+      }, {
+        headers: { 'x-wpt-response': 'ok' },
+      }));
+      return;
+    }
+    if (url.pathname === '/events') {
+      await accepted.respond(new Response('event: update\ndata: hello\nid: 7\n\n', {
+        headers: {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-store',
+        },
+      }));
+      return;
+    }
+    await accepted.respond(new Response('', { status: 404 }));
     return;
   }
   const ws = await incoming.accept();
@@ -51,6 +72,7 @@ const wsServer = serve({ port: 0 }, async (incoming) => {
 
 const wptContext: WptContext = {
   wsUrl: `ws://127.0.0.1:${wsServer.port}/`,
+  httpUrl: `http://127.0.0.1:${wsServer.port}/`,
   async collect(readable: ReadableStream<Uint8Array>): Promise<Uint8Array> {
     const reader = readable.getReader();
     const chunks: Uint8Array[] = [];
