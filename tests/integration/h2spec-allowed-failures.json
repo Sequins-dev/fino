@@ -58,10 +58,6 @@
     "reason": "SETTINGS ACK frames with payload are rejected with GOAWAY(FRAME_SIZE_ERROR) in local raw H2 coverage, but h2spec can still observe EOF before the GOAWAY frame"
   },
   {
-    "id": "http2/6.7/Sends a PING frame",
-    "reason": "server responds to normal PING frames through nghttp2, but h2spec can still time out waiting for PING ACK during full TLS section sequencing"
-  },
-  {
     "id": "http2/6.7/Sends a PING frame with ACK",
     "reason": "client PING ACK frames are ignored locally without an error GOAWAY, but h2spec can still report timeout/EOF during full TLS section sequencing",
     "releaseAcceptableBecause": "RFC 7540 requires endpoints to ignore PING ACK frames; local raw-wire coverage verifies no PING response and no protocol error.",
