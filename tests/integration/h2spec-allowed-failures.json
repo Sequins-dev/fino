@@ -78,12 +78,6 @@
     "localCoverage": "tests/net/http2.test.mts: closes cleanly for invalid PING length and ignores client PING ACK"
   },
   {
-    "id": "http2/6.7/Sends a PING frame with a stream identifier field value other than 0x0",
-    "reason": "nonzero-stream PING is rejected with GOAWAY(PROTOCOL_ERROR) locally, but h2spec can still observe EOF before the GOAWAY frame in the full TLS suite",
-    "releaseAcceptableBecause": "Local raw-wire coverage verifies the connection-level protocol error and no request handler surface is reached.",
-    "localCoverage": "tests/net/http2.test.mts: sends GOAWAY for PING frames on nonzero streams"
-  },
-  {
     "id": "http2/6.10/Sends a CONTINUATION frame followed by any frame other than CONTINUATION",
     "reason": "the validator rejects interrupted header blocks before feeding them to nghttp2, but h2spec can still observe EOF before GOAWAY(PROTOCOL_ERROR)"
   },
