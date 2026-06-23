@@ -7,9 +7,9 @@
  *
  * ## Pass/fail
  *
- * The test parses h2spec's JUnit XML output and fails when any runnable case
- * fails. Sections that h2spec v2.6 cannot report reliably are listed
- * explicitly below and covered by local raw-wire regression tests.
+ * The test parses h2spec's JUnit XML output and fails when any scheduled case
+ * fails. h2spec v2.6 exposes no server-side `http2/6.6` PUSH_PROMISE cases in
+ * `--dryrun`; Fino still covers client-sent PUSH_PROMISE rejection locally.
  *
  * ## Per-section invocation
  *
@@ -143,13 +143,6 @@ function _mergeH2specResults(aggregate: H2specAggregate, results: H2specResults)
   }
 }
 
-interface OmittedSection {
-  section: string;
-  reason: string;
-  releaseAcceptableBecause: string;
-  localCoverage: string;
-}
-
 // ---------------------------------------------------------------------------
 // Concat helper
 // ---------------------------------------------------------------------------
@@ -182,8 +175,7 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 //
 // Section 6 is further split into subsections: h2spec v2.6 also panics when
 // running `http2/6` as a unit (same inter-section bug across its subsections).
-// Omitted subsections are kept in _OMITTED_SECTIONS below so the release
-// baseline is explicit and test-covered instead of hidden in comments.
+// h2spec v2.6 exposes no runnable server-side `http2/6.6` cases in dry-run.
 // Section 6.10 is split into leaf cases for the same reason as 4.2: case 1 can
 // leave response teardown in flight and make case 2 report EOF despite passing
 // when invoked independently.
@@ -199,27 +191,13 @@ const _SECTIONS = [
   'http2/5.1.1', 'http2/5.1.2', 'http2/5.3', 'http2/5.4', 'http2/5.5',
   'http2/6.1', 'http2/6.2', 'http2/6.3', 'http2/6.4', 'http2/6.5',
   'http2/6.7', 'http2/6.8',
+  'http2/6.9/1', 'http2/6.9/2', 'http2/6.9/3',
+  'http2/6.9.1/1', 'http2/6.9.1/2', 'http2/6.9.1/3',
+  'http2/6.9.2/1', 'http2/6.9.2/2', 'http2/6.9.2/3',
   'http2/6.10/1', 'http2/6.10/2', 'http2/6.10/3',
   'http2/6.10/4', 'http2/6.10/5', 'http2/6.10/6',
   'http2/7', 'http2/8.1', 'http2/8.2',
 ];
-
-const _OMITTED_SECTIONS: OmittedSection[] = [
-  {
-    section: 'http2/6.6',
-    reason: 'PUSH_PROMISE is client-push behavior; the Fino HTTP/2 server does not advertise or originate server push.',
-    releaseAcceptableBecause: 'A server that never enables push has no application-facing PUSH_PROMISE surface to validate for this release.',
-    localCoverage: 'tests/net/http2.test.mts covers server rejection/closure behavior for unsupported or invalid frame classes.',
-  },
-  {
-    section: 'http2/6.9',
-    reason: 'h2spec v2.6 does not produce reliable JUnit for 6.9 as a section and does not emit JUnit for 6.9.1/6.9.2 when invoked directly.',
-    releaseAcceptableBecause: 'Local loopback tests cover the release-critical flow-control invariants deterministically while the h2spec harness remains live for runnable sections.',
-    localCoverage: 'tests/net/http2.test.mts: h2spec 6.9.1 drains a response body larger than the default flow-control window; h2spec 6.9.2 ACKs duplicate SETTINGS_INITIAL_WINDOW_SIZE entries.',
-  },
-];
-
-const _OMITTED_SECTION_SET = new Set(_OMITTED_SECTIONS.map(s => s.section));
 
 async function _runSection(
   h2specPath: string,
@@ -302,26 +280,6 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
 
   after(async () => {
     if (server) await server.close();
-  });
-
-  it('documents release-acceptable omitted h2spec sections', (t) => {
-    t.deepEqual(
-      _OMITTED_SECTIONS.map(s => s.section),
-      ['http2/6.6', 'http2/6.9'],
-      'only PUSH_PROMISE and h2spec 6.9 flow-control sections are omitted',
-    );
-    for (const entry of _OMITTED_SECTIONS) {
-      t.ok(!_SECTIONS.includes(entry.section), `${entry.section} is not also scheduled`);
-      t.ok(entry.reason.length > 0, `${entry.section} has an omission reason`);
-      t.ok(entry.releaseAcceptableBecause.length > 0, `${entry.section} has release rationale`);
-      t.ok(entry.localCoverage.length > 0, `${entry.section} names local coverage`);
-    }
-    const flowControl = _OMITTED_SECTIONS.find(s => s.section === 'http2/6.9')!;
-    t.ok(flowControl.localCoverage.includes('h2spec 6.9.1'), 'http2/6.9 names local 6.9.1 coverage');
-    t.ok(flowControl.localCoverage.includes('h2spec 6.9.2'), 'http2/6.9 names local 6.9.2 coverage');
-    for (const section of _SECTIONS) {
-      t.ok(!_OMITTED_SECTION_SET.has(section), `${section} is not marked omitted`);
-    }
   });
 
   it('treats a later duplicate pass as clearing an earlier failure', (t) => {

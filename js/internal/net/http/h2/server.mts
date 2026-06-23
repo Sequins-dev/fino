@@ -190,7 +190,10 @@ function _hasUppercase(s: string): boolean {
 const _FORBIDDEN_HEADERS = new Set(['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade']);
 
 const NGHTTP2_FRAME_SIZE_ERROR = 0x06;
+const NGHTTP2_FLOW_CONTROL_ERROR = 0x03;
 const _DEFAULT_MAX_FRAME_SIZE = 16 * 1024;
+const _INITIAL_FLOW_CONTROL_WINDOW = 65_535;
+const _MAX_FLOW_CONTROL_WINDOW = 0x7fffffff;
 const _H2_PREFACE = new Uint8Array([
   0x50, 0x52, 0x49, 0x20, 0x2A, 0x20, 0x48, 0x54, 0x54, 0x50, 0x2F, 0x32,
   0x2E, 0x30, 0x0D, 0x0A, 0x0D, 0x0A, 0x53, 0x4D, 0x0D, 0x0A, 0x0D, 0x0A,
@@ -200,6 +203,7 @@ type H2RawStreamState = 'open' | 'halfClosedRemote' | 'closed';
 
 interface H2RawStream {
   state: H2RawStreamState;
+  outboundWindow: number;
 }
 
 interface H2RawAction {
@@ -280,6 +284,7 @@ class H2ServerFrameValidator {
   #streams = new Map<number, H2RawStream>();
   #halfClosedInCurrentPush = new Set<number>();
   #openStreams = 0;
+  #outboundConnectionWindow = _INITIAL_FLOW_CONTROL_WINDOW;
 
   constructor(
     private readonly maxConcurrent: number,
@@ -291,7 +296,7 @@ class H2ServerFrameValidator {
     this.#optionalPreface = optionalPreface;
     if (upgradeStream1) {
       this.#lastClientStreamId = 1;
-      this.#streams.set(1, { state: 'halfClosedRemote' });
+      this.#streams.set(1, { state: 'halfClosedRemote', outboundWindow: _INITIAL_FLOW_CONTROL_WINDOW });
     }
   }
 
@@ -455,10 +460,10 @@ class H2ServerFrameValidator {
       }
       this.#lastClientStreamId = streamId;
       if (this.#openStreams >= this.maxConcurrent) {
-        this.#streams.set(streamId, { state: 'closed' });
+        this.#streams.set(streamId, { state: 'closed', outboundWindow: _INITIAL_FLOW_CONTROL_WINDOW });
         return { kind: 'rst', streamId, errorCode: NGHTTP2_REFUSED_STREAM };
       }
-      this.#streams.set(streamId, { state: 'open' });
+      this.#streams.set(streamId, { state: 'open', outboundWindow: _INITIAL_FLOW_CONTROL_WINDOW });
       this.#openStreams++;
     }
     if ((flags & NGHTTP2_FLAG_END_HEADERS) === 0) this.#continuationStream = streamId;
@@ -490,7 +495,7 @@ class H2ServerFrameValidator {
     const existing = this.#streams.get(streamId);
     if (!existing) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
     if (existing?.state === 'open') this.#openStreams = Math.max(0, this.#openStreams - 1);
-    this.#streams.set(streamId, { state: 'closed' });
+    this.#streams.set(streamId, { state: 'closed', outboundWindow: existing.outboundWindow });
     return null;
   }
 
@@ -521,6 +526,18 @@ class H2ServerFrameValidator {
       if (streamId === 0) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
       return { kind: 'rst', streamId, errorCode: NGHTTP2_PROTOCOL_ERROR };
     }
+    if (streamId === 0) {
+      if (this.#outboundConnectionWindow + increment > _MAX_FLOW_CONTROL_WINDOW) {
+        return { kind: 'goaway', errorCode: NGHTTP2_FLOW_CONTROL_ERROR };
+      }
+      this.#outboundConnectionWindow += increment;
+      return null;
+    }
+    const existing = this.#streams.get(streamId);
+    if (existing && existing.outboundWindow + increment > _MAX_FLOW_CONTROL_WINDOW) {
+      return { kind: 'rst', streamId, errorCode: NGHTTP2_FLOW_CONTROL_ERROR };
+    }
+    if (existing) existing.outboundWindow += increment;
     return null;
   }
 }

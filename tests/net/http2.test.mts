@@ -87,6 +87,15 @@ function rstStreamFrame(streamId: number, errorCode: number): Uint8Array {
   ));
 }
 
+function windowUpdateFrame(streamId: number, increment: number): Uint8Array {
+  return frame(0x08, 0x00, streamId, hexBytes(
+    (increment >> 24) & 0x7f,
+    (increment >> 16) & 0xff,
+    (increment >> 8) & 0xff,
+    increment & 0xff,
+  ));
+}
+
 async function readRawFrames(reader: any, limit = 16): Promise<RawFrame[]> {
   const frames: RawFrame[] = [];
   for (let i = 0; i < limit; i++) {
@@ -1217,6 +1226,86 @@ describe('H2 server — robustness', () => {
 
     const settingsAcks = frames.filter(f => f.type === 0x04 && f.flags === 0x01 && f.length === 0);
     t.ok(settingsAcks.length >= 2, `server ACKed initial and follow-up SETTINGS frames (${settingsAcks.length})`);
+  });
+
+  it('sends GOAWAY for connection WINDOW_UPDATE increment 0', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, windowUpdateFrame(0, 0));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'connection WINDOW_UPDATE increment 0 gets GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+  });
+
+  it('RST_STREAMs stream WINDOW_UPDATE increment 0', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST.subarray(9)),
+      ...windowUpdateFrame(1, 0),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'stream WINDOW_UPDATE increment 0 gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x01, 'reset uses PROTOCOL_ERROR');
+  });
+
+  it('sends GOAWAY for WINDOW_UPDATE frames with invalid length', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x08, 0x00, 0, hexBytes(0x00, 0x00, 0x00)));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'invalid WINDOW_UPDATE length gets GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x06, 'GOAWAY uses FRAME_SIZE_ERROR');
+  });
+
+  it('sends FLOW_CONTROL_ERROR when connection WINDOW_UPDATE overflows', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, windowUpdateFrame(0, 0x7fffffff));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'connection window overflow gets GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x03, 'GOAWAY uses FLOW_CONTROL_ERROR');
+  });
+
+  it('RST_STREAMs when stream WINDOW_UPDATE overflows', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, new Uint8Array([
+      ...frame(0x01, 0x04, 1, H2_POST_ROOT_LOCALHOST.subarray(9)),
+      ...windowUpdateFrame(1, 0x7fffffff),
+    ]));
+    await server.close();
+
+    const rst = findFrame(frames, 0x03, 1);
+    t.ok(rst !== null, 'stream window overflow gets RST_STREAM');
+    t.equal(frameErrorCode(rst!), 0x03, 'reset uses FLOW_CONTROL_ERROR');
+  });
+
+  it('sends GOAWAY for SETTINGS_INITIAL_WINDOW_SIZE above the maximum flow-control window', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x04, 0x00, 0, hexBytes(
+      0x00, 0x04, 0x80, 0x00, 0x00, 0x00,
+    )));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'oversized SETTINGS_INITIAL_WINDOW_SIZE gets GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x03, 'GOAWAY uses FLOW_CONTROL_ERROR');
   });
 
   it('TLS ACKs peer SETTINGS frames after the initial SETTINGS exchange', { skip: skipTlsH2 }, async (t) => {
