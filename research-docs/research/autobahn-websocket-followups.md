@@ -15,11 +15,7 @@ unsupported WebSocket feature.
 
 ## Cases To Revisit
 
-| Case | Current state | Next step |
-| --- | --- | --- |
-| `1.3.1` | Removed from nested assertions after Autobahn did not emit it for the initial lane. | Determine why Autobahn omits this case, re-enable if applicable, and fix any Fino behavior it exposes. |
-| `1.3.2` | Removed from nested assertions after Autobahn did not emit it for the initial lane. | Determine why Autobahn omits this case, re-enable if applicable, and fix any Fino behavior it exposes. |
-| `10.2.1` | Removed with Autobahn group `10.*` from the initial lane. | Identify the group 10 requirement and either implement/fix support or document a precise unsupported-feature reason. |
+No open cases are currently tracked.
 
 ## Already Addressed From The Same Harness Pass
 

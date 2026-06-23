@@ -46,8 +46,13 @@ const CASES = [
   '7.1.1', '7.3.1', '7.5.1', '7.7.1', '7.9.1',
   '9.1.1', '9.2.1', '9.3.1', '9.4.1',
 ];
-const FOLLOW_UP_CASES = [
+const DISCOVERY_CASE_PATTERNS = [
   '10.*',
+];
+// Autobahn 25.10.1's WebSocket registry emits only this group 10 case.
+// It has no WebSocket 1.3.* cases and no 10.2.1 case.
+const EXPECTED_DISCOVERY_CASES = [
+  '10.1.1',
 ];
 const EXCLUDED_CASES = [
   '8.*',
@@ -307,6 +312,7 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string, 
 const tool = await findAutobahnTool();
 let server: ReturnType<typeof serve> | undefined;
 let cases = new Map<string, AutobahnCase>();
+let discoveredCaseIds: string[] = [];
 
 async function collectAutobahnCases(casePatterns: string[]): Promise<Map<string, AutobahnCase>> {
   const reportDir = `/tmp/fino-autobahn-${Date.now()}`;
@@ -326,7 +332,9 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
       throw new Error('Autobahn harness unavailable: install wstest or pre-load the crossbario/autobahn-testsuite Docker image');
     }
     cases = await collectAutobahnCases(CASES);
-    for (const [id, result] of await collectAutobahnCases(FOLLOW_UP_CASES)) {
+    const discoveredCases = await collectAutobahnCases(DISCOVERY_CASE_PATTERNS);
+    discoveredCaseIds = [...discoveredCases.keys()].sort(compareCaseIds);
+    for (const [id, result] of discoveredCases) {
       cases.set(id, result);
     }
   });
@@ -351,8 +359,12 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
     t.ok(cases.size > 0, 'Autobahn report contains scheduled cases');
   });
 
+  it('discovers the expected Autobahn case IDs', (t) => {
+    t.deepEqual(discoveredCaseIds, EXPECTED_DISCOVERY_CASES, 'Autobahn discovery case IDs match the asserted follow-up set');
+  });
+
   defineCaseTests(groupCases([
     ...CASES,
-    '10.1.1',
+    ...EXPECTED_DISCOVERY_CASES,
   ]), [], id => cases.get(id));
 });
