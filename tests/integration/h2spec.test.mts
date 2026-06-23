@@ -10,15 +10,16 @@
  * The test parses h2spec's JUnit XML output and fails when any scheduled case
  * fails. h2spec v2.6 exposes no server-side `http2/6.6` PUSH_PROMISE cases in
  * `--dryrun`; Fino still covers client-sent PUSH_PROMISE rejection locally.
+ * Every scheduled h2spec unit is its own test so failures identify the exact
+ * Generic, HTTP/2, or HPACK leaf that failed.
  *
- * ## Per-section invocation
+ * ## Per-unit invocation
  *
  * h2spec v2.6 has a Go-level panic in its inter-section transition code when
  * passed multiple section args in one invocation. Running sections 3-8 in a
  * single call reliably crashes before writing JUnit. The fix: invoke h2spec
- * once per section; each invocation writes its own JUnit file; we parse and
- * merge the results. Individual sections handle Error: EOF gracefully (with
- * Go's recover()), so each per-section JUnit is always written.
+ * once per dry-run leaf; each invocation writes its own JUnit file and maps to
+ * one Fino test.
  *
  * ## Case IDs
  *
@@ -92,6 +93,11 @@ interface H2specAggregate {
   failing: Set<string>;
 }
 
+interface DryrunSection {
+  indent: number;
+  number: string;
+}
+
 function _decodeXml(s: string): string {
   return s
     .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)))
@@ -143,6 +149,47 @@ function _mergeH2specResults(aggregate: H2specAggregate, results: H2specResults)
   }
 }
 
+function _parseH2specDryrun(stdout: string): string[] {
+  const units: string[] = [];
+  const stack: DryrunSection[] = [];
+  let suite = '';
+
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('Generic tests for HTTP/2 server')) {
+      suite = 'generic';
+      stack.length = 0;
+      continue;
+    }
+    if (line.startsWith('Hypertext Transfer Protocol Version 2')) {
+      suite = 'http2';
+      stack.length = 0;
+      continue;
+    }
+    if (line.startsWith('HPACK: Header Compression for HTTP/2')) {
+      suite = 'hpack';
+      stack.length = 0;
+      continue;
+    }
+
+    const section = /^(\s*)(\d+(?:\.\d+)*)\. /.exec(line);
+    if (section) {
+      const indent = section[1].length;
+      while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
+      stack.push({ indent, number: section[2] });
+      continue;
+    }
+
+    const leaf = /^(\s*)(\d+): /.exec(line);
+    if (!leaf || !suite) continue;
+
+    const indent = leaf[1].length;
+    const parent = [...stack].reverse().find(entry => entry.indent < indent)?.number;
+    if (parent) units.push(`${suite}/${parent}/${leaf[2]}`);
+  }
+
+  return units;
+}
+
 // ---------------------------------------------------------------------------
 // Concat helper
 // ---------------------------------------------------------------------------
@@ -156,52 +203,68 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// Run h2spec for a single section, return merged results
+// Run h2spec for a single unit and return its JUnit XML
 // ---------------------------------------------------------------------------
 
 // h2spec v2.6 panics in its inter-section transition code when multiple section
 // args are passed in one invocation (the Go recover() only applies within a
-// section's test goroutines, not across sections). Running one section at a
+// section's test goroutines, not across sections). Running one leaf unit at a
 // time gives each invocation a clean Go process; each writes JUnit reliably.
 //
-// Section 5 is split into leaf cases/subsections: the 5.1 parent invocation
-// includes 5.1.1 and 5.1.2, and h2spec can abort during that parent traversal
-// before writing JUnit. Running the 5.1 leaf cases and child subsections as
-// separate h2spec processes gives each invocation a clean report boundary.
-//
-// Section 4.2 is split into leaf cases because h2spec v2.6 can leave reset
-// teardown from the accepted max-size DATA case in flight and report EOF on the
-// following oversized-DATA case when the whole subsection runs in one process.
-//
-// Section 6.1 is split into leaf cases for the same reason: reset-heavy DATA
-// cases can make the invalid-padding case report EOF when the subsection runs
-// in one h2spec process.
-//
-// Section 6 is further split into subsections: h2spec v2.6 also panics when
-// running `http2/6` as a unit (same inter-section bug across its subsections).
-// h2spec v2.6 exposes no runnable server-side `http2/6.6` cases in dry-run.
-// Section 6.10 is split into leaf cases for the same reason as 4.2: case 1 can
-// leave response teardown in flight and make case 2 report EOF despite passing
-// when invoked independently.
-//
-// Section 8 is split into 8.1 and 8.2 for the same inter-section panic reason:
-// running `http2/8` as a unit panics at the 8.1→8.2 transition, producing no
-// JUnit output and no stderr. Running each top-level child separately avoids it.
-const _SECTIONS = [
-  'http2/3', 'http2/4.1', 'http2/4.2/1', 'http2/4.2/2', 'http2/4.2/3',
+// Keep this list aligned to `h2spec --dryrun`: Generic server cases, RFC HTTP/2
+// section cases, and HPACK cases. Parent sections are intentionally expanded to
+// leaves so h2spec teardown from one case cannot mask another case's result.
+const _H2SPEC_UNITS = [
+  'generic/1/1',
+  'generic/2/1', 'generic/2/2', 'generic/2/3', 'generic/2/4', 'generic/2/5',
+  'generic/3.1/1', 'generic/3.1/2', 'generic/3.1/3',
+  'generic/3.2/1', 'generic/3.2/2', 'generic/3.2/3',
+  'generic/3.3/1', 'generic/3.3/2', 'generic/3.3/3', 'generic/3.3/4', 'generic/3.3/5',
+  'generic/3.4/1', 'generic/3.5/1', 'generic/3.7/1', 'generic/3.8/1',
+  'generic/3.9/1', 'generic/3.9/2',
+  'generic/3.10/1', 'generic/3.10/2',
+  'generic/4/1', 'generic/4/2', 'generic/4/3', 'generic/4/4',
+  'generic/5/1', 'generic/5/2', 'generic/5/3', 'generic/5/4', 'generic/5/5',
+  'generic/5/6', 'generic/5/7', 'generic/5/8', 'generic/5/9', 'generic/5/10',
+  'generic/5/11', 'generic/5/12', 'generic/5/13', 'generic/5/14', 'generic/5/15',
+
+  'http2/3.5/1', 'http2/3.5/2',
+  'http2/4.1/1', 'http2/4.1/2', 'http2/4.1/3',
+  'http2/4.2/1', 'http2/4.2/2', 'http2/4.2/3',
+  'http2/4.3/1', 'http2/4.3/2', 'http2/4.3/3',
   'http2/5.1/1', 'http2/5.1/2', 'http2/5.1/3', 'http2/5.1/4', 'http2/5.1/5',
   'http2/5.1/6', 'http2/5.1/7', 'http2/5.1/8', 'http2/5.1/9', 'http2/5.1/10',
   'http2/5.1/11', 'http2/5.1/12', 'http2/5.1/13',
-  'http2/5.1.1', 'http2/5.1.2', 'http2/5.3', 'http2/5.4', 'http2/5.5',
+  'http2/5.1.1/1', 'http2/5.1.1/2', 'http2/5.1.2/1',
+  'http2/5.3.1/1', 'http2/5.3.1/2', 'http2/5.4.1/1',
+  'http2/5.5/1', 'http2/5.5/2',
   'http2/6.1/1', 'http2/6.1/2', 'http2/6.1/3',
-  'http2/6.2', 'http2/6.3', 'http2/6.4', 'http2/6.5',
-  'http2/6.7', 'http2/6.8',
+  'http2/6.2/1', 'http2/6.2/2', 'http2/6.2/3', 'http2/6.2/4',
+  'http2/6.3/1', 'http2/6.3/2',
+  'http2/6.4/1', 'http2/6.4/2', 'http2/6.4/3',
+  'http2/6.5/1', 'http2/6.5/2', 'http2/6.5/3',
+  'http2/6.5.2/1', 'http2/6.5.2/2', 'http2/6.5.2/3', 'http2/6.5.2/4', 'http2/6.5.2/5',
+  'http2/6.5.3/1', 'http2/6.5.3/2',
+  'http2/6.7/1', 'http2/6.7/2', 'http2/6.7/3', 'http2/6.7/4',
+  'http2/6.8/1',
   'http2/6.9/1', 'http2/6.9/2', 'http2/6.9/3',
   'http2/6.9.1/1', 'http2/6.9.1/2', 'http2/6.9.1/3',
   'http2/6.9.2/1', 'http2/6.9.2/2', 'http2/6.9.2/3',
   'http2/6.10/1', 'http2/6.10/2', 'http2/6.10/3',
   'http2/6.10/4', 'http2/6.10/5', 'http2/6.10/6',
-  'http2/7', 'http2/8.1', 'http2/8.2',
+  'http2/7/1', 'http2/7/2',
+  'http2/8.1/1', 'http2/8.1.2/1',
+  'http2/8.1.2.1/1', 'http2/8.1.2.1/2', 'http2/8.1.2.1/3', 'http2/8.1.2.1/4',
+  'http2/8.1.2.2/1', 'http2/8.1.2.2/2',
+  'http2/8.1.2.3/1', 'http2/8.1.2.3/2', 'http2/8.1.2.3/3', 'http2/8.1.2.3/4',
+  'http2/8.1.2.3/5', 'http2/8.1.2.3/6', 'http2/8.1.2.3/7',
+  'http2/8.1.2.6/1', 'http2/8.1.2.6/2',
+  'http2/8.2/1',
+
+  'hpack/2.3.3/1', 'hpack/2.3.3/2',
+  'hpack/4.2/1',
+  'hpack/5.2/1', 'hpack/5.2/2', 'hpack/5.2/3',
+  'hpack/6.1/1', 'hpack/6.3/1',
 ];
 
 async function _runSection(
@@ -260,6 +323,27 @@ async function _runSection(
   return { xml: '', stderr: lastStderr };
 }
 
+async function _runDryrun(h2specPath: string): Promise<string> {
+  const proc = new Process(h2specPath, ['--dryrun']);
+  try { proc.stdin.close(); } catch {}
+
+  const stdoutChunks: Uint8Array[] = [];
+  const stderrChunks: Uint8Array[] = [];
+  const drainOut = (async () => { for await (const c of proc.stdout) stdoutChunks.push(c); })();
+  const drainErr = (async () => { for await (const c of proc.stderr) stderrChunks.push(c); })();
+  const { code } = await proc.wait();
+  await drainOut;
+  await drainErr;
+  try { await proc.stdout.close(); } catch {}
+  try { await proc.stderr.close(); } catch {}
+
+  if (code !== 0) {
+    throw new Error(`h2spec --dryrun exited ${code}: ${decodeUtf8(_concat(stderrChunks)).trim()}`);
+  }
+
+  return decodeUtf8(_concat(stdoutChunks));
+}
+
 // ---------------------------------------------------------------------------
 // Suite
 // ---------------------------------------------------------------------------
@@ -310,73 +394,52 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     t.deepEqual([...aggregate.failing], [], 'the duplicate case is not counted as failing');
   });
 
-  it('passes every runnable h2spec case', { skip }, async (t) => {
-    const aggregate: H2specAggregate = { passing: new Set(), failing: new Set() };
-    const missingSections: string[] = [];
-    const sectionFailures = new Map<string, Set<string>>();
+  it('schedules every h2spec dryrun leaf', { skip }, async (t) => {
+    const actual = _parseH2specDryrun(await _runDryrun(h2specPath!));
+    const scheduled = [..._H2SPEC_UNITS];
+    const missing = actual.filter(unit => !scheduled.includes(unit));
+    const extra = scheduled.filter(unit => !actual.includes(unit));
 
-    for (let si = 0; si < _SECTIONS.length; si++) {
-      const section = _SECTIONS[si]!;
-      // Give the server time to finish cleanup from the previous section's
-      // connection teardown (TLS + nghttp2 async cleanup) before the next
-      // section's probe connection arrives. Reset-heavy 5.1 leaf cases can
-      // leave cleanup in flight for longer than h2spec's process exit.
-      if (si > 0) await new Promise<void>(r => setTimeout(r, 2000));
-      const { xml, stderr } = await _runSection(h2specPath!, section, port);
-      if (!xml) {
-        missingSections.push(`${section} (stderr: ${stderr.trim() || '<empty>'})`);
-        continue;
-      }
-      const parsed = _parseJunit(xml);
-      sectionFailures.set(section, new Set(parsed.failing));
-      _mergeH2specResults(aggregate, parsed);
-    }
+    t.deepEqual(
+      { missing, extra },
+      { missing: [], extra: [] },
+      'scheduled leaves match h2spec --dryrun',
+    );
+  });
 
-    if (missingSections.length > 0) {
-      t.fail(
-        `h2spec did not produce JUnit output for section(s):\n  ${missingSections.join('\n  ')}`,
-      );
-      return;
-    }
-
-    if (aggregate.passing.size === 0 && aggregate.failing.size === 0) {
-      t.fail('JUnit XML parsed no test cases — check h2spec version / XML format.');
-      return;
-    }
-
-    for (let retry = 1; retry <= 5 && aggregate.failing.size > 0; retry++) {
-      const retrySections = _SECTIONS.filter(section => {
-        const failing = sectionFailures.get(section);
-        return failing !== undefined && [...aggregate.failing].some(id => failing.has(id));
-      });
-      if (retrySections.length === 0) break;
-      for (const section of retrySections) {
-        await new Promise<void>(r => setTimeout(r, 2000));
-        const { xml, stderr } = await _runSection(h2specPath!, section, port);
+  for (const unit of _H2SPEC_UNITS) {
+    it(`passes h2spec ${unit}`, { skip }, async (t) => {
+      let lastFailing: string[] = [];
+      let lastStderr = '';
+      for (let attempt = 1; attempt <= 6; attempt++) {
+        if (attempt > 1) {
+          // Give TLS/nghttp2 teardown from the previous unit time to settle.
+          await new Promise<void>(r => setTimeout(r, 1000));
+        }
+        const { xml, stderr } = await _runSection(h2specPath!, unit, port);
+        lastStderr = stderr;
         if (!xml) {
-          missingSections.push(`${section} retry ${retry} (stderr: ${stderr.trim() || '<empty>'})`);
+          lastFailing = [`${unit} did not produce JUnit (stderr: ${stderr.trim() || '<empty>'})`];
           continue;
         }
+
         const parsed = _parseJunit(xml);
-        sectionFailures.set(section, new Set(parsed.failing));
-        _mergeH2specResults(aggregate, parsed);
+        if (parsed.passing.length === 0 && parsed.failing.length === 0) {
+          lastFailing = [`${unit} JUnit XML parsed no test cases`];
+          continue;
+        }
+        if (parsed.failing.length === 0) {
+          t.ok(true, `${parsed.passing.length} h2spec case(s) passed`);
+          return;
+        }
+        lastFailing = parsed.failing;
       }
-      if (missingSections.length > 0) {
-        t.fail(
-          `h2spec did not produce JUnit output for retried section(s):\n  ${missingSections.join('\n  ')}`,
-        );
-        return;
-      }
-    }
 
-    if (aggregate.failing.size > 0) {
-      const lines = [...aggregate.failing].map(id => `  ${id}`).join('\n');
+      const lines = lastFailing.map(id => `  ${id}`).join('\n');
       t.fail(
-        `${aggregate.failing.size} h2spec case(s) failed:\n${lines}`,
+        `${lastFailing.length} h2spec case(s) failed after retries:\n${lines}` +
+        (lastStderr.trim() ? `\n\nstderr:\n${lastStderr.trim()}` : ''),
       );
-      return;
-    }
-
-    t.ok(true, `${aggregate.passing.size} h2spec case(s) passed`);
-  });
+    });
+  }
 });
