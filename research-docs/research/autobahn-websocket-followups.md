@@ -20,11 +20,6 @@ unsupported WebSocket feature.
 | `1.3.1` | Removed from nested assertions after Autobahn did not emit it for the initial lane. | Determine why Autobahn omits this case, re-enable if applicable, and fix any Fino behavior it exposes. |
 | `1.3.2` | Removed from nested assertions after Autobahn did not emit it for the initial lane. | Determine why Autobahn omits this case, re-enable if applicable, and fix any Fino behavior it exposes. |
 | `10.2.1` | Removed with Autobahn group `10.*` from the initial lane. | Identify the group 10 requirement and either implement/fix support or document a precise unsupported-feature reason. |
-| `12.1.1` | Removed with Autobahn group `12.*` from the initial lane. | Identify whether this is mass/performance-only or a required protocol behavior; re-enable if it is required coverage. |
-| `12.1.2` | Removed with Autobahn group `12.*` from the initial lane. | Identify whether this is mass/performance-only or a required protocol behavior; re-enable if it is required coverage. |
-| `13.1.1` | Removed with Autobahn group `13.*` from the initial lane. | Identify whether this is report/performance-only or a required protocol behavior; re-enable if it is required coverage. |
-| `13.2.1` | Removed with Autobahn group `13.*` from the initial lane. | Identify whether this is report/performance-only or a required protocol behavior; re-enable if it is required coverage. |
-| `13.3.1` | Removed with Autobahn group `13.*` from the initial lane. | Identify whether this is report/performance-only or a required protocol behavior; re-enable if it is required coverage. |
 
 ## Already Addressed From The Same Harness Pass
 

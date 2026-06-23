@@ -49,6 +49,14 @@ const CASES = [
 const FOLLOW_UP_CASES = [
   '10.*',
 ];
+const EXCLUDED_CASES = [
+  '8.*',
+  '11.*',
+  // These are permessage-deflate extension cases, which are outside the
+  // current WebSocket release scope.
+  '12.*',
+  '13.*',
+];
 
 interface AutobahnCase {
   id: string;
@@ -275,10 +283,7 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string, 
       options: { version: 18 },
     }],
     cases: casePatterns,
-    excludeCases: [
-      '8.*',
-      '11.*',
-    ],
+    excludeCases: EXCLUDED_CASES,
     excludeAgentCases: {},
   };
   await fs.mkdir(reportDir);
