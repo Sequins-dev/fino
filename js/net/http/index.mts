@@ -1411,8 +1411,9 @@ export class Request {
    * sentinel.
    *
    * Body values may be strings, bytes, ArrayBuffers, FormData, async iterables,
-   * ReadableStreams, or null. Reading the body later marks it used; cloning is
-   * only allowed before disturbance.
+   * ReadableStreams, or null. GET and HEAD requests reject non-null bodies.
+   * Reading the body later marks it used; cloning is only allowed before
+   * disturbance.
    *
    * ```ts no_run
    * const req = new Request('/submit', { method: 'POST', body: 'hello' });
@@ -1440,6 +1441,9 @@ export class Request {
     this.#version = '';
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
     if (init && init.body != null) {
+      if (this.#method === 'GET' || this.#method === 'HEAD') {
+        throw new TypeError(`Request with ${this.#method} method cannot have a body`);
+      }
       if (init.body instanceof FormData) {
         const fd = init.body;
         const boundary = _createMultipartBoundary();

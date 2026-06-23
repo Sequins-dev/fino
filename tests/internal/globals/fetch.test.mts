@@ -850,6 +850,22 @@ describe('Compression', () => {
 });
 
 describe('fetch() — body on GET/HEAD', () => {
+  it('Request constructor with GET body throws TypeError', (t) => {
+    t.throws(
+      () => new Request('http://127.0.0.1/', { method: 'GET', body: 'hello' }),
+      /body/i,
+      'GET Request with body throws TypeError',
+    );
+  });
+
+  it('Request constructor with HEAD body throws TypeError', (t) => {
+    t.throws(
+      () => new Request('http://127.0.0.1/', { method: 'HEAD', body: 'hello' }),
+      /body/i,
+      'HEAD Request with body throws TypeError',
+    );
+  });
+
   it('GET request with body throws TypeError', async (t) => {
     await t.rejects(
       async () => fetch('http://127.0.0.1:19824/', { method: 'GET', body: 'hello' }),

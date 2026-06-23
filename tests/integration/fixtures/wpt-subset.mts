@@ -65,9 +65,36 @@ test(() => {
 }, 'TextEncoder emits UTF-8 bytes');
 
 test(() => {
+  const dest = new Uint8Array(5);
+  const result = new TextEncoder().encodeInto('a\\u00e9', dest);
+  assert_equals(result.read, 2);
+  assert_equals(result.written, 3);
+  assert_array_equals(Array.from(dest.slice(0, 3)), [0x61, 0xc3, 0xa9]);
+}, 'TextEncoder encodeInto reports code units read and bytes written');
+
+test(() => {
+  const dest = new Uint8Array(1);
+  const result = new TextEncoder().encodeInto('\\u00e9', dest);
+  assert_equals(result.read, 0);
+  assert_equals(result.written, 0);
+}, 'TextEncoder encodeInto does not emit partial multi-byte sequences');
+
+test(() => {
   const text = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([0xf0, 0x9f, 0x9a, 0x80]));
   assert_equals(text, '\\ud83d\\ude80');
 }, 'TextDecoder decodes valid four byte UTF-8');
+
+test(() => {
+  const decoder = new TextDecoder();
+  const first = decoder.decode(new Uint8Array([0xc3]), { stream: true });
+  const second = decoder.decode(new Uint8Array([0xa9]));
+  assert_equals(first + second, '\\u00e9');
+}, 'TextDecoder stream option buffers partial UTF-8 sequences');
+
+test(() => {
+  assert_throws_js(TypeError, () => new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array([0xff])));
+  assert_throws_js(RangeError, () => new TextDecoder('windows-1252'));
+}, 'TextDecoder rejects fatal malformed bytes and unsupported labels');
 `,
   },
   {
@@ -92,6 +119,28 @@ test(() => {
   assert_equals(atob('SGVsbG8='), 'Hello');
   assert_equals(btoa('Hello'), 'SGVsbG8=');
 }, 'atob and btoa roundtrip ASCII bytes');
+
+test(() => {
+  const map = new Map();
+  map.set('self', map);
+  const clone = structuredClone(map);
+  assert_true(clone instanceof Map);
+  assert_equals(clone.get('self'), clone);
+}, 'structuredClone preserves Map cycles');
+
+test(() => {
+  const buffer = new ArrayBuffer(4);
+  new Uint8Array(buffer).set([1, 2, 3, 4]);
+  const clone = structuredClone({ buffer }, { transfer: [buffer] });
+  assert_array_equals(Array.from(new Uint8Array(clone.buffer)), [1, 2, 3, 4]);
+  assert_equals(buffer.byteLength, 0);
+}, 'structuredClone transfers ArrayBuffer and detaches the source');
+
+test(() => {
+  const buffer = new ArrayBuffer(1);
+  assert_throws_js(Error, () => structuredClone({ buffer }, { transfer: [buffer, buffer] }));
+  assert_throws_js(Error, () => structuredClone(() => {}));
+}, 'structuredClone rejects duplicate transfers and uncloneable values');
 `,
   },
   {
@@ -122,6 +171,19 @@ test(() => {
   const signal = AbortSignal.abort(reason);
   assert_throws_js(Error, () => signal.throwIfAborted());
 }, 'AbortSignal.throwIfAborted throws abort reason');
+
+promise_test(async () => {
+  const signal = AbortSignal.timeout(1);
+  assert_false(signal.aborted);
+  await __wpt.event(signal, 'abort');
+  assert_true(signal.aborted);
+  assert_equals(signal.reason.name, 'TimeoutError');
+}, 'AbortSignal.timeout aborts with TimeoutError');
+
+test(() => {
+  assert_throws_js(RangeError, () => AbortSignal.timeout(-1));
+  assert_throws_js(RangeError, () => AbortSignal.timeout(Infinity));
+}, 'AbortSignal.timeout rejects invalid delays');
 `,
   },
   {
@@ -134,6 +196,18 @@ test(() => {
   assert_equals(headers.get('content-type'), 'text/plain');
   assert_equals(headers.get('X-Test'), 'a, b');
 }, 'Headers normalizes names and combines appended values');
+
+test(() => {
+  const headers = new Headers({ a: '1', b: '2' });
+  headers.set('a', '3');
+  headers.delete('b');
+  headers.append('c', '4');
+  assert_true(headers.has('a'));
+  assert_false(headers.has('b'));
+  assert_array_equals([...headers.keys()], ['a', 'c']);
+  assert_array_equals([...headers.values()], ['3', '4']);
+  assert_array_equals([...headers.entries()].map(([name, value]) => name + '=' + value), ['a=3', 'c=4']);
+}, 'Headers set delete has and iteration reflect normalized list state');
 
 test(() => {
   const request = new Request('https://example.test/path', {
@@ -194,6 +268,11 @@ promise_test(async () => {
   assert_equals(body.method, 'GET');
   assert_equals(body.header, 'fetch');
 }, 'fetch resolves loopback HTTP response with headers and JSON body');
+
+test(() => {
+  assert_throws_js(TypeError, () => new Request('https://example.test/', { method: 'GET', body: 'nope' }));
+  assert_throws_js(TypeError, () => new Request('https://example.test/', { method: 'HEAD', body: 'nope' }));
+}, 'Request rejects bodies for GET and HEAD');
 `,
   },
   {
@@ -220,6 +299,42 @@ promise_test(async () => {
   assert_equals(second.value, 'B');
   assert_true(done.done);
 }, 'ReadableStream pipeThrough applies TransformStream');
+
+promise_test(async () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue('x');
+      controller.enqueue('y');
+      controller.close();
+    },
+  });
+  const [left, right] = stream.tee();
+  const readAll = async (branch) => {
+    const out = [];
+    for await (const chunk of branch) out.push(chunk);
+    return out;
+  };
+  assert_array_equals(await readAll(left), ['x', 'y']);
+  assert_array_equals(await readAll(right), ['x', 'y']);
+}, 'ReadableStream tee creates two async iterable branches');
+
+promise_test(async () => {
+  let cancelReason = null;
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue('first');
+    },
+    cancel(reason) {
+      cancelReason = reason;
+    },
+  });
+  const iterator = stream[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  assert_equals(first.value, 'first');
+  await iterator.return('stop');
+  assert_equals(cancelReason, 'stop');
+  assert_false(stream.locked);
+}, 'ReadableStream async iterator return cancels and releases the lock');
 `,
   },
   {
@@ -549,6 +664,25 @@ promise_test(async () => {
   channel.port1.close();
   channel.port2.close();
 }, 'MessageChannel delivers a posted message');
+
+promise_test(async () => {
+  const transferChannel = new MessageChannel();
+  const carrier = new MessageChannel();
+  const received = __wpt.event(carrier.port1, 'message');
+  carrier.port1.start();
+  carrier.port2.postMessage({ port: transferChannel.port1 }, [transferChannel.port1]);
+  const event = await received;
+  assert_true(event.ports[0] instanceof MessagePort);
+  const reply = __wpt.event(transferChannel.port2, 'message');
+  transferChannel.port2.start();
+  event.ports[0].postMessage('transferred');
+  const replyEvent = await reply;
+  assert_equals(replyEvent.data, 'transferred');
+  event.ports[0].close();
+  transferChannel.port2.close();
+  carrier.port1.close();
+  carrier.port2.close();
+}, 'MessagePort transfer re-entangles the received port');
 
 promise_test(async () => {
   const name = 'wpt-subset-' + Math.random();
