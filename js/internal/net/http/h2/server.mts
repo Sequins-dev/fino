@@ -413,7 +413,7 @@ class H2ServerFrameValidator {
       case NGHTTP2_FRAME_TYPE_RST_STREAM:
         return this.#validateRstStream(streamId, length);
       case NGHTTP2_FRAME_TYPE_SETTINGS:
-        return this.#validateSettings(flags, streamId, length);
+        return this.#validateSettings(flags, streamId, length, payloadOff);
       case NGHTTP2_FRAME_TYPE_PUSH_PROMISE:
         return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
       case NGHTTP2_FRAME_TYPE_PING:
@@ -499,12 +499,25 @@ class H2ServerFrameValidator {
     return null;
   }
 
-  #validateSettings(flags: number, streamId: number, length: number): H2RawAction | null {
+  #validateSettings(flags: number, streamId: number, length: number, payloadOff: number): H2RawAction | null {
     if (streamId !== 0) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
     if ((flags & 0x01) !== 0) {
       if (length !== 0) return { kind: 'goaway', errorCode: NGHTTP2_FRAME_SIZE_ERROR };
     } else if (length % 6 !== 0) {
       return { kind: 'goaway', errorCode: NGHTTP2_FRAME_SIZE_ERROR };
+    } else {
+      for (let off = payloadOff; off < payloadOff + length; off += 6) {
+        const id = (this.#buffer[off]! << 8) | this.#buffer[off + 1]!;
+        if (id === 0x04) {
+          const value = ((this.#buffer[off + 2]! << 24) |
+            (this.#buffer[off + 3]! << 16) |
+            (this.#buffer[off + 4]! << 8) |
+            this.#buffer[off + 5]!) >>> 0;
+          if (value > _MAX_FLOW_CONTROL_WINDOW) {
+            return { kind: 'goaway', errorCode: NGHTTP2_FLOW_CONTROL_ERROR };
+          }
+        }
+      }
     }
     return null;
   }

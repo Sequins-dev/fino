@@ -1308,6 +1308,20 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(goaway!), 0x03, 'GOAWAY uses FLOW_CONTROL_ERROR');
   });
 
+  it('sends GOAWAY for SETTINGS_INITIAL_WINDOW_SIZE with all bits set', async (t) => {
+    if (!h2Available) return;
+
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const frames = await rawH2Exchange(server.port, frame(0x04, 0x00, 0, hexBytes(
+      0x00, 0x04, 0xff, 0xff, 0xff, 0xff,
+    )));
+    await server.close();
+
+    const goaway = findFrame(frames, 0x07);
+    t.ok(goaway !== null, 'all-bits-set SETTINGS_INITIAL_WINDOW_SIZE gets GOAWAY');
+    t.equal(frameErrorCode(goaway!), 0x03, 'GOAWAY uses FLOW_CONTROL_ERROR');
+  });
+
   it('TLS ACKs peer SETTINGS frames after the initial SETTINGS exchange', { skip: skipTlsH2 }, async (t) => {
     const server = serveHttp(
       { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },

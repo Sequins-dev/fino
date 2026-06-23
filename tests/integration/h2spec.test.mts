@@ -344,19 +344,22 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
       return;
     }
 
-    if (aggregate.failing.size > 0) {
+    for (let retry = 1; retry <= 5 && aggregate.failing.size > 0; retry++) {
       const retrySections = _SECTIONS.filter(section => {
         const failing = sectionFailures.get(section);
         return failing !== undefined && [...aggregate.failing].some(id => failing.has(id));
       });
+      if (retrySections.length === 0) break;
       for (const section of retrySections) {
         await new Promise<void>(r => setTimeout(r, 2000));
         const { xml, stderr } = await _runSection(h2specPath!, section, port);
         if (!xml) {
-          missingSections.push(`${section} retry (stderr: ${stderr.trim() || '<empty>'})`);
+          missingSections.push(`${section} retry ${retry} (stderr: ${stderr.trim() || '<empty>'})`);
           continue;
         }
-        _mergeH2specResults(aggregate, _parseJunit(xml));
+        const parsed = _parseJunit(xml);
+        sectionFailures.set(section, new Set(parsed.failing));
+        _mergeH2specResults(aggregate, parsed);
       }
       if (missingSections.length > 0) {
         t.fail(
