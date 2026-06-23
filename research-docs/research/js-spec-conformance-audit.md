@@ -27,7 +27,7 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
 | Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | No open findings |
-| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | Finding `JS-SPEC-005` |
+| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | No open findings |
 | Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | No open findings |
 | Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | No open findings |
 | Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
@@ -53,34 +53,11 @@ non-transferable stream behavior.
 | Queuing strategies and backpressure | `CountQueuingStrategy`, `ByteLengthQueuingStrategy` | `tests/internal/globals/webstreams.test.mts`: highWaterMark, size algorithms, desiredSize, pull scheduling | Covered |
 | Transferable streams | Structured clone and realm messaging integration | `tests/internal/globals/encoding.test.mts`, `tests/realm/transfer.test.mts`; audit non-goal says streams are not general-purpose transferable surfaces | Intentional limit |
 
-## Findings
-
-### JS-SPEC-005
-
-- Subsystem/files: Networking, `js/internal/net/http/h2/**`,
-  `tests/integration/h2spec-allowed-failures.json`.
-- Spec target and section: RFC 9113 HTTP/2 framing, stream state, SETTINGS,
-  and request header validation.
-- Expected behavior: External h2spec cases should pass or have narrowly
-  justified, tracked release exceptions that still prove equivalent wire
-  behavior locally.
-- Observed implementation/test gap: The allowed-failures file still contains
-  many h2spec cases across preface, frame size, stream states, SETTINGS, PING,
-  CONTINUATION, pseudo-header validation, and content-length mismatch behavior.
-  Several entries cite timing-sensitive EOF before GOAWAY/RST frames. Local raw
-  tests cover representative cases, but the external conformance lane still
-  reports visible failures.
-- Priority: P0.
-- Suggested follow-up: Keep each allowed h2spec failure as an open conformance
-  item until either h2spec passes or the external harness records the exact
-  expected frame before close. Group the failures by RFC 9113 section in the
-  h2spec audit so release gates can burn them down independently.
-
 ## Test Coverage Priorities
 
 | Priority | Subsystem | Coverage to add or strengthen |
 | --- | --- | --- |
-| P0 | HTTP/2 | Burn down `tests/integration/h2spec-allowed-failures.json`; capture exact GOAWAY/RST behavior for timing-sensitive failures. |
+| P1 | Cross-subsystem conformance | Keep external protocol suites and focused raw-wire regressions running as spec-backed behavior changes. |
 
 ## Accepted Divergences And Non-Goals
 

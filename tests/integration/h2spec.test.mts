@@ -5,18 +5,11 @@
  * ALPN h2). h2spec is skipped if libnghttp2 or the h2spec binary is not
  * present on the machine.
  *
- * ## Allowlist-based pass/fail
+ * ## Pass/fail
  *
- * Rather than asserting `exit code == 0` (which almost no implementation
- * achieves), the test diffs h2spec's JUnit XML output against a checked-in
- * allowlist of case IDs we accept as failing today
- * (`tests/integration/h2spec-allowed-failures.json`). The test fails on:
- *
- *   - any case that fails but is NOT in the allowlist (regression / new gap)
- *   - any case that passes but IS in the allowlist (stale entry; must be removed)
- *
- * This makes the allowlist a live baseline: every entry is a TODO, and the
- * test enforces that it stays current.
+ * The test parses h2spec's JUnit XML output and fails when any runnable case
+ * fails. Sections that h2spec v2.6 cannot report reliably are listed
+ * explicitly below and covered by local raw-wire regression tests.
  *
  * ## Per-section invocation
  *
@@ -60,7 +53,6 @@ const decodeUtf8 = (b: Uint8Array) => new TextDecoder().decode(b);
 
 const CERT_PATH = new URL('../net/fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH  = new URL('../net/fixtures/test.key',  import.meta.url).pathname;
-const ALLOWLIST_PATH = new URL('./h2spec-allowed-failures.json', import.meta.url).pathname;
 
 // ---------------------------------------------------------------------------
 // Find the h2spec binary (candidate-path probe, no PATH expansion)
@@ -151,32 +143,11 @@ function _mergeH2specResults(aggregate: H2specAggregate, results: H2specResults)
   }
 }
 
-// ---------------------------------------------------------------------------
-// Allowlist loader
-// ---------------------------------------------------------------------------
-
-interface AllowlistEntry {
-  id: string;
-  reason: string;
-}
-
 interface OmittedSection {
   section: string;
   reason: string;
   releaseAcceptableBecause: string;
   localCoverage: string;
-}
-
-async function _loadAllowlist(): Promise<Map<string, string>> {
-  const fs = new DiskFileSystem('/');
-  let raw = '[]';
-  try {
-    const file = await fs.open(ALLOWLIST_PATH);
-    raw = decodeUtf8(await file.bytes());
-    await file.close();
-  } catch { /* file unreadable → empty allowlist */ }
-  const entries: AllowlistEntry[] = JSON.parse(raw);
-  return new Map(entries.map(e => [e.id, e.reason]));
 }
 
 // ---------------------------------------------------------------------------
@@ -205,22 +176,31 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 // before writing JUnit. Running the 5.1 leaf cases and child subsections as
 // separate h2spec processes gives each invocation a clean report boundary.
 //
+// Section 4.2 is split into leaf cases because h2spec v2.6 can leave reset
+// teardown from the accepted max-size DATA case in flight and report EOF on the
+// following oversized-DATA case when the whole subsection runs in one process.
+//
 // Section 6 is further split into subsections: h2spec v2.6 also panics when
 // running `http2/6` as a unit (same inter-section bug across its subsections).
 // Omitted subsections are kept in _OMITTED_SECTIONS below so the release
 // baseline is explicit and test-covered instead of hidden in comments.
+// Section 6.10 is split into leaf cases for the same reason as 4.2: case 1 can
+// leave response teardown in flight and make case 2 report EOF despite passing
+// when invoked independently.
 //
 // Section 8 is split into 8.1 and 8.2 for the same inter-section panic reason:
 // running `http2/8` as a unit panics at the 8.1→8.2 transition, producing no
 // JUnit output and no stderr. Running each top-level child separately avoids it.
 const _SECTIONS = [
-  'http2/3', 'http2/4',
+  'http2/3', 'http2/4.1', 'http2/4.2/1', 'http2/4.2/2', 'http2/4.2/3',
   'http2/5.1/1', 'http2/5.1/2', 'http2/5.1/3', 'http2/5.1/4', 'http2/5.1/5',
   'http2/5.1/6', 'http2/5.1/7', 'http2/5.1/8', 'http2/5.1/9', 'http2/5.1/10',
   'http2/5.1/11', 'http2/5.1/12', 'http2/5.1/13',
   'http2/5.1.1', 'http2/5.1.2', 'http2/5.3', 'http2/5.4', 'http2/5.5',
   'http2/6.1', 'http2/6.2', 'http2/6.3', 'http2/6.4', 'http2/6.5',
-  'http2/6.7', 'http2/6.8', 'http2/6.10',
+  'http2/6.7', 'http2/6.8',
+  'http2/6.10/1', 'http2/6.10/2', 'http2/6.10/3',
+  'http2/6.10/4', 'http2/6.10/5', 'http2/6.10/6',
   'http2/7', 'http2/8.1', 'http2/8.2',
 ];
 
@@ -367,7 +347,7 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     t.deepEqual([...aggregate.failing], [], 'the duplicate case is not counted as failing');
   });
 
-  it('matches the allowlisted compliance baseline', { skip }, async (t) => {
+  it('passes every runnable h2spec case', { skip }, async (t) => {
     const aggregate: H2specAggregate = { passing: new Set(), failing: new Set() };
     const missingSections: string[] = [];
     const sectionFailures = new Map<string, Set<string>>();
@@ -401,13 +381,10 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
       return;
     }
 
-    const allowlist = await _loadAllowlist();
-
-    let regressions  = [...aggregate.failing].filter(id => !allowlist.has(id));
-    if (regressions.length > 0) {
+    if (aggregate.failing.size > 0) {
       const retrySections = _SECTIONS.filter(section => {
         const failing = sectionFailures.get(section);
-        return failing !== undefined && regressions.some(id => failing.has(id));
+        return failing !== undefined && [...aggregate.failing].some(id => failing.has(id));
       });
       for (const section of retrySections) {
         await new Promise<void>(r => setTimeout(r, 2000));
@@ -424,34 +401,16 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
         );
         return;
       }
-      regressions = [...aggregate.failing].filter(id => !allowlist.has(id));
     }
-    const staleEntries = [...allowlist.keys()].filter(
-      id => !aggregate.failing.has(id) && aggregate.passing.has(id),
-    );
 
-    if (regressions.length > 0) {
-      const lines = regressions.map(id => `  ${id}`).join('\n');
+    if (aggregate.failing.size > 0) {
+      const lines = [...aggregate.failing].map(id => `  ${id}`).join('\n');
       t.fail(
-        `${regressions.length} h2spec case(s) failing but not in allowlist (regressions):\n${lines}`,
+        `${aggregate.failing.size} h2spec case(s) failed:\n${lines}`,
       );
       return;
     }
 
-    const totalAllowed = allowlist.size;
-    if (staleEntries.length > 0) {
-      // Soft warning: some allowlisted cases passed this run (timing-sensitive
-      // cases may flip between runs). Only actionable if consistently passing.
-      const lines = staleEntries.map(id => `  ${id}  (was: ${allowlist.get(id)})`).join('\n');
-      console.warn(
-        `[h2spec] ${staleEntries.length} allowlisted case(s) passed this run — ` +
-        `consider removing from h2spec-allowed-failures.json if consistently passing:\n${lines}`,
-      );
-    }
-    t.ok(
-      true,
-      `${aggregate.passing.size} pass, ${totalAllowed} allowlisted (${aggregate.failing.size} failing as expected)` +
-      (staleEntries.length > 0 ? `, ${staleEntries.length} stale (see warning)` : ''),
-    );
+    t.ok(true, `${aggregate.passing.size} h2spec case(s) passed`);
   });
 });

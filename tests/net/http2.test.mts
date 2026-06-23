@@ -90,22 +90,28 @@ function rstStreamFrame(streamId: number, errorCode: number): Uint8Array {
 async function readRawFrames(reader: any, limit = 16): Promise<RawFrame[]> {
   const frames: RawFrame[] = [];
   for (let i = 0; i < limit; i++) {
-    let header: Uint8Array | null = null;
-    try { header = await reader.readExactly(9); } catch { break; }
-    if (!header || header.byteLength < 9) break;
-    const length = (header[0] << 16) | (header[1] << 8) | header[2];
-    const payload = length > 0 ? await reader.readExactly(length) : new Uint8Array(0);
-    if (!payload || payload.byteLength < length) break;
-    frames.push({
-      length,
-      type: header[3],
-      flags: header[4],
-      streamId: ((header[5] & 0x7f) << 24) | (header[6] << 16) | (header[7] << 8) | header[8],
-      payload,
-    });
-    if (header[3] === 0x07) break;
+    const frame = await readRawFrame(reader);
+    if (!frame) break;
+    frames.push(frame);
+    if (frame.type === 0x07) break;
   }
   return frames;
+}
+
+async function readRawFrame(reader: any): Promise<RawFrame | null> {
+  let header: Uint8Array | null = null;
+  try { header = await reader.readExactly(9); } catch { return null; }
+  if (!header || header.byteLength < 9) return null;
+  const length = (header[0] << 16) | (header[1] << 8) | header[2];
+  const payload = length > 0 ? await reader.readExactly(length) : new Uint8Array(0);
+  if (!payload || payload.byteLength < length) return null;
+  return {
+    length,
+    type: header[3],
+    flags: header[4],
+    streamId: ((header[5] & 0x7f) << 24) | (header[6] << 16) | (header[7] << 8) | header[8],
+    payload,
+  };
 }
 
 function frameErrorCode(f: RawFrame): number {
@@ -1078,6 +1084,126 @@ describe('H2 server — robustness', () => {
     t.equal(frameErrorCode(findFrame(dataThenContinuation, 0x07)!), 0x01, 'DATA followed by CONTINUATION gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(onHalfClosed, 0x07)!), 0x01, 'half-closed CONTINUATION without an active header block gets PROTOCOL_ERROR');
     t.equal(frameErrorCode(findFrame(afterRstStream, 0x07)!), 0x01, 'closed-stream CONTINUATION after RST_STREAM gets PROTOCOL_ERROR');
+  });
+
+  it('TLS sends GOAWAY before response HEADERS for extra CONTINUATION after END_HEADERS', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const headerBlock = H2_GET_ROOT_LOCALHOST.subarray(9);
+      const frames = await rawTlsH2Exchange(server.port, new Uint8Array([
+        ...frame(0x01, 0x01, 1, headerBlock.subarray(0, 3)),
+        ...frame(0x09, 0x04, 1, headerBlock.subarray(3)),
+        ...frame(0x09, 0x04, 1),
+      ]));
+
+      const goawayIndex = frames.findIndex(f => f.type === 0x07);
+      const responseHeadersIndex = frames.findIndex(f => f.type === 0x01 && f.streamId === 1);
+      t.ok(goawayIndex >= 0, 'extra CONTINUATION gets GOAWAY');
+      t.equal(frameErrorCode(frames[goawayIndex]!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+      t.ok(
+        responseHeadersIndex === -1 || goawayIndex < responseHeadersIndex,
+        'GOAWAY is visible before application response HEADERS',
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('TLS sends GOAWAY before response HEADERS when DATA interrupts a header block', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const headerBlock = H2_GET_ROOT_LOCALHOST.subarray(9);
+      const frames = await rawTlsH2Exchange(server.port, new Uint8Array([
+        ...frame(0x01, 0x01, 1, headerBlock.subarray(0, 3)),
+        ...dataFrameFor(1, _enc.encode('x'), 0x01),
+      ]));
+
+      const goawayIndex = frames.findIndex(f => f.type === 0x07);
+      const responseHeadersIndex = frames.findIndex(f => f.type === 0x01 && f.streamId === 1);
+      t.ok(goawayIndex >= 0, 'interrupted header block gets GOAWAY');
+      t.equal(frameErrorCode(frames[goawayIndex]!), 0x01, 'GOAWAY uses PROTOCOL_ERROR');
+      t.ok(
+        responseHeadersIndex === -1 || goawayIndex < responseHeadersIndex,
+        'GOAWAY is visible before application response HEADERS',
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('TLS sends RST_STREAM before response HEADERS for HEADERS after client RST_STREAM', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const frames = await rawTlsH2ExchangeReadFrames(server.port, new Uint8Array([
+        ...H2_GET_ROOT_LOCALHOST,
+        ...rstStreamFrame(1, 0),
+        ...frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST.subarray(9)),
+      ]), 2);
+
+      const rstIndex = frames.findIndex(f => f.type === 0x03 && f.streamId === 1);
+      const responseHeadersIndex = frames.findIndex(f => f.type === 0x01 && f.streamId === 1);
+      t.ok(rstIndex >= 0, 'HEADERS after client RST_STREAM gets RST_STREAM');
+      t.equal(frameErrorCode(frames[rstIndex]!), 0x05, 'reset uses STREAM_CLOSED');
+      t.ok(
+        responseHeadersIndex === -1 || rstIndex < responseHeadersIndex,
+        'RST_STREAM is visible before application response HEADERS',
+      );
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('TLS sends GOAWAY for HEADERS after a stream is fully closed', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp(
+      { port: 0, tls: { cert: CERT_PATH, key: KEY_PATH } },
+      async () => new Response('ok'),
+    );
+    try {
+      const sock = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false, alpn: ['h2'] },
+      );
+      if (sock.negotiatedProtocol !== 'h2') {
+        sock.close();
+        throw new Error(`expected ALPN h2, got ${sock.negotiatedProtocol}`);
+      }
+      const [reader, writer] = sock.split();
+      await writer.write(new Uint8Array([...H2_PREFACE, ...SETTINGS_EMPTY, ...H2_GET_ROOT_LOCALHOST]));
+      await writer.flush();
+
+      for (;;) {
+        const received = await readRawFrame(reader);
+        t.ok(received !== null, 'server sent response frames before close');
+        if (
+          received!.streamId === 1 &&
+          (received!.type === 0x00 || received!.type === 0x01) &&
+          (received!.flags & 0x01) !== 0
+        ) {
+          break;
+        }
+      }
+
+      await writer.write(frame(0x01, 0x05, 1, H2_GET_ROOT_LOCALHOST.subarray(9)));
+      await writer.flush();
+      const frames = await readRawFrames(reader, 4);
+
+      const goaway = findFrame(frames, 0x07);
+      t.ok(goaway !== null, 'HEADERS on closed stream gets GOAWAY');
+      t.equal(frameErrorCode(goaway!), 0x05, 'GOAWAY uses STREAM_CLOSED');
+      try { await reader.close(); } catch {}
+      try { await writer.close(); } catch {}
+    } finally {
+      await server.close();
+    }
   });
 
   it('ACKs peer SETTINGS frames after the initial SETTINGS exchange', async (t) => {

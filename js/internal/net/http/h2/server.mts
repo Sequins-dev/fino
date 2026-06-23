@@ -278,6 +278,7 @@ class H2ServerFrameValidator {
   #continuationStream = 0;
   #heldHeaderBlock: Uint8Array[] = [];
   #streams = new Map<number, H2RawStream>();
+  #halfClosedInCurrentPush = new Set<number>();
   #openStreams = 0;
 
   constructor(
@@ -303,6 +304,7 @@ class H2ServerFrameValidator {
     const feedParts: Uint8Array[] = [];
     const actions: H2RawAction[] = [];
     let pos = 0;
+    this.#halfClosedInCurrentPush.clear();
 
     if (this.#expectPreface) {
       const needed = Math.min(this.#buffer.byteLength, _H2_PREFACE.byteLength);
@@ -355,6 +357,7 @@ class H2ServerFrameValidator {
 
       if (action === 'ignore') continue;
       if (action !== null) {
+        feedParts.length = 0;
         this.#heldHeaderBlock = [];
         actions.push(action);
         this.#buffer = this.#buffer.subarray(pos);
@@ -441,6 +444,9 @@ class H2ServerFrameValidator {
     if (streamId === 0) return { kind: 'goaway', errorCode: NGHTTP2_PROTOCOL_ERROR };
     const existing = this.#streams.get(streamId);
     if (existing && existing.state !== 'open') {
+      if (existing.state === 'halfClosedRemote' && !this.#halfClosedInCurrentPush.has(streamId)) {
+        return { kind: 'goaway', errorCode: NGHTTP2_STREAM_CLOSED };
+      }
       return { kind: 'rst', streamId, errorCode: NGHTTP2_STREAM_CLOSED };
     }
     if (!existing) {
@@ -460,6 +466,7 @@ class H2ServerFrameValidator {
       const s = this.#streams.get(streamId);
       if (s && s.state === 'open') {
         s.state = 'halfClosedRemote';
+        this.#halfClosedInCurrentPush.add(streamId);
         this.#openStreams = Math.max(0, this.#openStreams - 1);
       }
     }
