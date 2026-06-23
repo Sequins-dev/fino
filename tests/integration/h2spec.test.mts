@@ -96,11 +96,17 @@ interface H2specAggregate {
 interface DryrunSection {
   indent: number;
   number: string;
+  path: string;
 }
 
 interface H2specUnitGroup {
   children: Map<string, H2specUnitGroup>;
   leaves: string[];
+}
+
+interface H2specDryrunInfo {
+  units: string[];
+  labels: Map<string, string>;
 }
 
 interface H2specTestContext {
@@ -159,45 +165,55 @@ function _mergeH2specResults(aggregate: H2specAggregate, results: H2specResults)
   }
 }
 
-function _parseH2specDryrun(stdout: string): string[] {
+function _parseH2specDryrun(stdout: string): H2specDryrunInfo {
   const units: string[] = [];
+  const labels = new Map<string, string>();
   const stack: DryrunSection[] = [];
   let suite = '';
 
   for (const line of stdout.split(/\r?\n/)) {
     if (line.startsWith('Generic tests for HTTP/2 server')) {
       suite = 'generic';
+      labels.set(suite, line.trim());
       stack.length = 0;
       continue;
     }
     if (line.startsWith('Hypertext Transfer Protocol Version 2')) {
       suite = 'http2';
+      labels.set(suite, line.trim());
       stack.length = 0;
       continue;
     }
     if (line.startsWith('HPACK: Header Compression for HTTP/2')) {
       suite = 'hpack';
+      labels.set(suite, line.trim());
       stack.length = 0;
       continue;
     }
 
-    const section = /^(\s*)(\d+(?:\.\d+)*)\. /.exec(line);
+    const section = /^(\s*)(\d+(?:\.\d+)*)\. (.+)$/.exec(line);
     if (section) {
       const indent = section[1].length;
       while (stack.length > 0 && stack[stack.length - 1].indent >= indent) stack.pop();
-      stack.push({ indent, number: section[2] });
+      const path = `${suite}/${section[2]}`;
+      stack.push({ indent, number: section[2], path });
+      labels.set(path, section[3].trim());
       continue;
     }
 
-    const leaf = /^(\s*)(\d+): /.exec(line);
+    const leaf = /^(\s*)(\d+): (.+)$/.exec(line);
     if (!leaf || !suite) continue;
 
     const indent = leaf[1].length;
-    const parent = [...stack].reverse().find(entry => entry.indent < indent)?.number;
-    if (parent) units.push(`${suite}/${parent}/${leaf[2]}`);
+    const parent = [...stack].reverse().find(entry => entry.indent < indent);
+    if (parent) {
+      const unit = `${parent.path}/${leaf[2]}`;
+      units.push(unit);
+      labels.set(unit, leaf[3].trim());
+    }
   }
 
-  return units;
+  return { units, labels };
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +318,16 @@ function _groupH2specUnits(units: string[]): H2specUnitGroup {
   }
 
   return root;
+}
+
+function _h2specLabel(
+  kind: 'suite' | 'section' | 'case',
+  number: string,
+  path: string,
+  labels: Map<string, string>,
+): string {
+  const title = labels.get(path);
+  return title ? `${kind} ${number} - ${title}` : `${kind} ${number}`;
 }
 
 async function _runSection(
@@ -419,17 +445,22 @@ function _defineH2specUnitTests(
   group: H2specUnitGroup,
   prefix: string[],
   getPort: () => number,
+  labels: Map<string, string>,
 ): void {
   for (const [name, child] of group.children) {
-    const label = prefix.length === 0 ? `suite ${name}` : `section ${name}`;
+    const path = [...prefix, name].join('/');
+    const label = prefix.length === 0
+      ? _h2specLabel('suite', name, path, labels)
+      : _h2specLabel('section', name, path, labels);
     describe(label, () => {
-      _defineH2specUnitTests(child, [...prefix, name], getPort);
+      _defineH2specUnitTests(child, [...prefix, name], getPort, labels);
     });
   }
 
   for (const leaf of group.leaves) {
-    it(`case ${leaf}`, { skip }, async (t) => {
-      await _assertH2specUnitPasses(t, [...prefix, leaf].join('/'), getPort());
+    const path = [...prefix, leaf].join('/');
+    it(_h2specLabel('case', leaf, path, labels), { skip }, async (t) => {
+      await _assertH2specUnitPasses(t, path, getPort());
     });
   }
 }
@@ -443,6 +474,10 @@ const tlsAvailable = (globalThis as any).tlsAvailable as boolean | undefined;
 
 const skip = (!h2Available || !tlsAvailable || !h2specPath)
   && `requires libnghttp2, OpenSSL, and h2spec (${_H2SPEC_CANDIDATES[0]})`;
+
+const h2specDryrunInfo = !skip
+  ? _parseH2specDryrun(await _runDryrun(h2specPath!))
+  : { units: [], labels: new Map<string, string>() };
 
 describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
   let server: ReturnType<typeof serve>;
@@ -485,7 +520,7 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
   });
 
   it('schedules every h2spec dryrun leaf', { skip }, async (t) => {
-    const actual = _parseH2specDryrun(await _runDryrun(h2specPath!));
+    const actual = h2specDryrunInfo.units;
     const scheduled = [..._H2SPEC_UNITS];
     const missing = actual.filter(unit => !scheduled.includes(unit));
     const extra = scheduled.filter(unit => !actual.includes(unit));
@@ -497,5 +532,5 @@ describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
     );
   });
 
-  _defineH2specUnitTests(_groupH2specUnits(_H2SPEC_UNITS), [], () => port);
+  _defineH2specUnitTests(_groupH2specUnits(_H2SPEC_UNITS), [], () => port, h2specDryrunInfo.labels);
 });
