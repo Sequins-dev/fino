@@ -22,6 +22,7 @@ import type { Event, EventTarget } from 'internal:globals/eventtarget';
 import type { WebSocketAcceptOptions } from 'fino:net/http/websocket';
 import { digest } from '../../js/internal/openssl.mts';
 import { btoa } from '../../js/globals/encoding.mts';
+import { zlibDeflateRawMessage, zlibInflateRawMessage } from '../../js/internal/compress/zlib.mts';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -152,8 +153,9 @@ class RawByteReader {
     }
   }
 
-  async readFrame(): Promise<{ opcode: number; masked: boolean; payload: Uint8Array }> {
+  async readFrame(): Promise<{ opcode: number; masked: boolean; rsv: number; payload: Uint8Array }> {
     const header = await this.readExactly(2);
+    const rsv = header[0]! & 0x70;
     const opcode = header[0]! & 0x0f;
     const masked = (header[1]! & 0x80) !== 0;
     let len = header[1]! & 0x7f;
@@ -173,7 +175,7 @@ class RawByteReader {
     if (key !== null) {
       for (let i = 0; i < payload.byteLength; i++) payload[i] = payload[i]! ^ key[i & 3]!;
     }
-    return { opcode, masked, payload };
+    return { opcode, masked, rsv, payload };
   }
 }
 
@@ -349,8 +351,10 @@ describe('WebSocketConnection.accept() validation', () => {
     ok(threw);
   });
 
-  it('does not negotiate extensions even when the client offers permessage-deflate', async () => {
-    const server = serveWebSocket(() => {});
+  it('negotiates permessage-deflate and echoes compressed messages', async () => {
+    const server = serveWebSocket((ws) => {
+      ws.addEventListener('message', (event) => ws.send(event.data as string));
+    });
 
     try {
       const sock = await Socket.connect({ family: 'ipv4', ip: '127.0.0.1', port: server.port });
@@ -371,7 +375,15 @@ describe('WebSocketConnection.accept() validation', () => {
       const raw = new RawByteReader(reader);
       const response = await raw.readUntilHeaders();
       ok(response.includes('101 Switching Protocols'), 'server accepted the WebSocket upgrade');
-      ok(!/sec-websocket-extensions:/i.test(response), 'server omitted Sec-WebSocket-Extensions');
+      ok(/sec-websocket-extensions:\s*permessage-deflate/i.test(response), 'server negotiated permessage-deflate');
+
+      await writer.write(rawFrame(0x1, zlibDeflateRawMessage(enc('compressed hello')), { mask: true, rsv: 0x40 }));
+      await writer.flush();
+
+      const echoed = await raw.readFrame();
+      equal(echoed.opcode, 0x1, 'server echoed a text frame');
+      equal(echoed.rsv, 0, 'server may echo without compressing the message');
+      equal(dec(echoed.payload), 'compressed hello', 'echoed payload matches the original text');
       sock.close();
     } finally {
       await server.close();
@@ -1027,7 +1039,7 @@ describe('WHATWG WebSocket facade', () => {
     }
   });
 
-  it('exposes negotiated protocol, empty extensions, and numeric bufferedAmount', async () => {
+  it('exposes negotiated protocol, client extensions, and numeric bufferedAmount', async () => {
     const server = serveWebSocket(() => {}, { protocol: 'chat.v1' });
 
     try {

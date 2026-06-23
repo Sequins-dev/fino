@@ -75,6 +75,7 @@ const zlibSymbols = {
   deflateEnd:    { parameters: ['buffer'], result: 'i32' },
   inflateInit2_: { parameters: ['buffer', 'i32', 'buffer', 'i32'], result: 'i32' },
   inflate:       { parameters: ['buffer', 'i32'], result: 'i32' },
+  inflateReset:  { parameters: ['buffer'], result: 'i32' },
   inflateEnd:    { parameters: ['buffer'], result: 'i32' },
   compressBound: { parameters: ['usize'], result: 'usize' },
 } satisfies NativeSymbolMap;
@@ -93,6 +94,7 @@ const Z_OK          = 0;
 const Z_STREAM_END  = 1;
 const Z_BUF_ERROR   = -5;
 const Z_NO_FLUSH    = 0;
+const Z_SYNC_FLUSH  = 2;
 const Z_FINISH      = 4;
 const Z_DEFLATED    = 8;
 const Z_DEFAULT_STRATEGY = 0;
@@ -209,6 +211,172 @@ export function zlibCompress(data: ByteInput, format: ZlibCompressionFormat, opt
  */
 export function zlibDecompress(data: ByteInput, format: ZlibCompressionFormat): Uint8Array {
   return inflateOneShot(data, windowBitsForDecompress(format));
+}
+
+/**
+ * Compress one WebSocket permessage-deflate message.
+ *
+ * RFC 7692 §7.2.1 uses raw DEFLATE with `Z_SYNC_FLUSH`, then removes the
+ * trailing `00 00 ff ff` empty stored block marker before putting bytes on the
+ * wire. This helper resets the compression context for each call.
+ *
+ * ```typescript no_run
+ * import { zlibDeflateRawMessage } from 'internal:compress/zlib';
+ * const framePayload = zlibDeflateRawMessage(new Uint8Array([1, 2, 3]));
+ * ```
+ *
+ * @internal
+ */
+export function zlibDeflateRawMessage(data: ByteInput, level = Z_DEFAULT_COMPRESSION): Uint8Array {
+  const z = requireZlib();
+  const u8 = toU8(data);
+  const zs = new ZStream();
+  const r0 = z.symbols.deflateInit2_(zs.buffer, level, Z_DEFLATED, W_RAW, 8, Z_DEFAULT_STRATEGY, ZLIB_VERSION_BUF, Z_STREAM_SIZE);
+  if (r0 !== Z_OK) throw new Error(`zlib deflateInit2_ failed (${r0})`);
+
+  zs.setInput(u8);
+  const outBuf = new ArrayBuffer(CHUNK);
+  const parts: Uint8Array[] = [];
+
+  try {
+    let r;
+    do {
+      zs.setOutput(outBuf);
+      r = z.symbols.deflate(zs.buffer, Z_SYNC_FLUSH);
+      const produced = CHUNK - zs.availOut;
+      if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
+      if (r !== Z_OK && r !== Z_BUF_ERROR) throw new Error(`zlib deflate error (${r})`);
+    } while (zs.availIn > 0 || zs.availOut === 0);
+  } finally {
+    z.symbols.deflateEnd(zs.buffer);
+  }
+
+  const out = concat(parts);
+  if (
+    out.byteLength >= 4 &&
+    out[out.byteLength - 4] === 0x00 &&
+    out[out.byteLength - 3] === 0x00 &&
+    out[out.byteLength - 2] === 0xff &&
+    out[out.byteLength - 1] === 0xff
+  ) {
+    return out.subarray(0, out.byteLength - 4);
+  }
+  return out;
+}
+
+/**
+ * Decompress one WebSocket permessage-deflate message.
+ *
+ * RFC 7692 §7.2.2 restores the stripped `00 00 ff ff` tail before raw inflate.
+ * This helper resets the decompression context for each call.
+ *
+ * ```typescript no_run
+ * import { zlibInflateRawMessage } from 'internal:compress/zlib';
+ * const message = zlibInflateRawMessage(framePayload);
+ * ```
+ *
+ * @internal
+ */
+export function zlibInflateRawMessage(data: ByteInput): Uint8Array {
+  const z = requireZlib();
+  const u8 = toU8(data);
+  const input = new Uint8Array(u8.byteLength + 4);
+  input.set(u8, 0);
+  input.set([0x00, 0x00, 0xff, 0xff], u8.byteLength);
+
+  const zs = new ZStream();
+  const r0 = z.symbols.inflateInit2_(zs.buffer, W_RAW, ZLIB_VERSION_BUF, Z_STREAM_SIZE);
+  if (r0 !== Z_OK) throw new Error(`zlib inflateInit2_ failed (${r0})`);
+
+  zs.setInput(input);
+  const outBuf = new ArrayBuffer(CHUNK);
+  const parts: Uint8Array[] = [];
+
+  try {
+    let r;
+    do {
+      zs.setOutput(outBuf);
+      r = z.symbols.inflate(zs.buffer, Z_SYNC_FLUSH);
+      const produced = CHUNK - zs.availOut;
+      if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
+      if (r !== Z_OK && r !== Z_BUF_ERROR && r !== Z_STREAM_END) throw new Error(`zlib inflate error (${r})`);
+      if (r === Z_STREAM_END) break;
+    } while (zs.availIn > 0 || zs.availOut === 0);
+  } finally {
+    z.symbols.inflateEnd(zs.buffer);
+  }
+
+  return concat(parts);
+}
+
+/**
+ * Reusable inflater for WebSocket permessage-deflate messages.
+ *
+ * Each `inflateMessage()` call appends RFC 7692's stripped sync-flush tail,
+ * inflates one message, then resets native zlib state for the next message.
+ * This preserves no-context-takeover semantics without paying init/teardown
+ * cost for every frame.
+ *
+ * ```typescript no_run
+ * import { ZlibRawMessageInflater } from 'internal:compress/zlib';
+ * const inflater = new ZlibRawMessageInflater();
+ * const message = inflater.inflateMessage(framePayload);
+ * inflater.close();
+ * ```
+ *
+ * @internal
+ */
+export class ZlibRawMessageInflater {
+  #zlib = requireZlib();
+  #zs = new ZStream();
+  #outBuf = new ArrayBuffer(CHUNK);
+  #closed = false;
+
+  constructor() {
+    const r0 = this.#zlib.symbols.inflateInit2_(this.#zs.buffer, W_RAW, ZLIB_VERSION_BUF, Z_STREAM_SIZE);
+    if (r0 !== Z_OK) throw new Error(`zlib inflateInit2_ failed (${r0})`);
+  }
+
+  inflateMessage(data: ByteInput): Uint8Array {
+    this.#assertOpen();
+    const u8 = toU8(data);
+    const input = new Uint8Array(u8.byteLength + 4);
+    input.set(u8, 0);
+    input.set([0x00, 0x00, 0xff, 0xff], u8.byteLength);
+
+    this.#zs.setInput(input);
+    const parts: Uint8Array[] = [];
+
+    try {
+      let r;
+      do {
+        this.#zs.setOutput(this.#outBuf);
+        r = this.#zlib.symbols.inflate(this.#zs.buffer, Z_SYNC_FLUSH);
+        const produced = CHUNK - this.#zs.availOut;
+        if (produced > 0) parts.push(new Uint8Array(this.#outBuf, 0, produced).slice());
+        if (r !== Z_OK && r !== Z_BUF_ERROR && r !== Z_STREAM_END) throw new Error(`zlib inflate error (${r})`);
+        if (r === Z_STREAM_END) break;
+      } while (this.#zs.availIn > 0 || this.#zs.availOut === 0);
+
+      return concat(parts);
+    } finally {
+      const reset = this.#zlib.symbols.inflateReset(this.#zs.buffer);
+      if (reset !== Z_OK) {
+        this.close();
+        throw new Error(`zlib inflateReset failed (${reset})`);
+      }
+    }
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#zlib.symbols.inflateEnd(this.#zs.buffer);
+    this.#closed = true;
+  }
+
+  #assertOpen(): void {
+    if (this.#closed) throw new Error('compression stream is closed');
+  }
 }
 
 class ZlibCodec implements CompressionTransform {

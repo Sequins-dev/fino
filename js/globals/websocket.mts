@@ -6,6 +6,7 @@
  * Learn more:
  * - WebSocket API: https://websockets.spec.whatwg.org/
  * - WebSocket Protocol: https://www.rfc-editor.org/rfc/rfc6455
+ * - WebSocket Compression Extensions: https://www.rfc-editor.org/rfc/rfc7692
  *
  *
  * ## WebSocketConnection (lower-level engine)
@@ -60,8 +61,8 @@
  * | Sending | `send()` accepts strings, binary buffers, typed arrays, and blobs once open; pre-open sends throw because this release does not buffer before `OPEN`. | `tests/net/websocket.test.mts` |
  * | Binary receive | `binaryType` defaults to `blob`; `arraybuffer` switches binary messages to copied ArrayBuffers; invalid assignments throw `TypeError` without changing the previous value. | `tests/net/websocket.test.mts` |
  * | Close | `close()` validates application close codes and the 123-byte UTF-8 reason limit synchronously before starting the close handshake. | `tests/net/websocket.test.mts` |
- * | Negotiation properties | `protocol` reflects the accepted subprotocol, `extensions` is an empty string, and `bufferedAmount` is numeric. | `tests/net/websocket.test.mts` |
- * | Extensions | Intentional limit: extension negotiation is unsupported, so `Sec-WebSocket-Extensions` responses are rejected and RSV bits fail protocol validation. | `tests/net/websocket.test.mts` |
+ * | Negotiation properties | `protocol` reflects the accepted subprotocol, `extensions` reflects accepted server-side permessage-deflate, and `bufferedAmount` is numeric. | `tests/net/websocket.test.mts` |
+ * | Extensions | Server-side `permessage-deflate` is negotiated when offered. Unsupported RSV bits still fail protocol validation. | `tests/net/websocket.test.mts` |
  * | HTTP/2 and HTTP/3 | Intentional limit: WebSocket over HTTP/2 (RFC 8441) and HTTP/3 are deferred; this release uses HTTP/1.1 Upgrade only. | `tests/net/http2.test.mts` and research docs |
  *
  *
@@ -75,18 +76,17 @@
  *
  * ## Spec compliance (RFC 6455)
  *
- * Extension negotiation is intentionally unsupported in this release. The
- * client rejects any `Sec-WebSocket-Extensions` response, the server does not
- * advertise extensions, and all RSV bits are rejected because no extension has
- * negotiated ownership of them. This means `permessage-deflate` and other
- * extensions are outside the release baseline.
+ * Server-side `permessage-deflate` follows RFC 7692 with no context takeover
+ * in either direction. The client path does not offer extensions by default
+ * and still rejects unsolicited `Sec-WebSocket-Extensions` responses.
  *
  * RFC 8441 WebSocket over HTTP/2 and WebSocket over HTTP/3 are also deferred.
  * `WebSocketConnection` is an HTTP/1.1 Upgrade takeover today; HTTP/2 and
  * HTTP/3 requests that try to hand over a non-H2/H3-compatible takeover are
  * rejected by those protocol drivers.
  *
- * - RSV bits must be 0 because no extensions are negotiated → 1002
+ * - RSV1 is accepted only for data messages when `permessage-deflate` was
+ *   negotiated; all other unexpected RSV bits fail with 1002
  * - Unknown/reserved opcodes → 1002
  * - Control frames must not be fragmented, payload ≤ 125 → 1002
  * - Client→server frames must be masked; server→client must not → 1002
@@ -109,6 +109,7 @@ import { MessageEvent } from './messaging.mts';
 import { URL }                from './url.mts';
 import { Blob }               from './blob.mts';
 import { crypto }             from './crypto.mts';
+import { ZlibRawMessageInflater } from '../internal/compress/zlib.mts';
 import type { BytesReader, BytesWriter } from '../internal/stream.mts';
 import type { IPv4Address, IPv6Address } from '../net/socket.mts';
 import type { ConnectionTakeover } from 'internal:net/http/driver';
@@ -444,6 +445,7 @@ function _encodeFrame(
   payload: Uint8Array,
   mask:    boolean,
   fin:     boolean = true,
+  rsv:     number = 0,
 ): Uint8Array {
   const len = payload.byteLength;
   let headerLen = 2;
@@ -452,7 +454,7 @@ function _encodeFrame(
   if (mask)             headerLen += 4;
 
   const frame = new Uint8Array(headerLen + len);
-  frame[0] = (fin ? 0x80 : 0x00) | (opcode & 0x0F);
+  frame[0] = (fin ? 0x80 : 0x00) | (rsv & 0x70) | (opcode & 0x0F);
 
   let pos = 2;
   if (len <= 125) {
@@ -518,6 +520,20 @@ function _acceptHash(key: string): string {
   let binary = '';
   for (let i = 0; i < hash.byteLength; i++) binary += String.fromCharCode(hash[i]!);
   return btoa(binary);
+}
+
+function _hasPerMessageDeflateOffer(header: string | null): boolean {
+  if (!header) return false;
+  for (const offer of header.split(',')) {
+    const name = offer.split(';', 1)[0]!.trim().toLowerCase();
+    if (name === 'permessage-deflate') return true;
+  }
+  return false;
+}
+
+function _perMessageDeflateResponse(header: string | null): string {
+  if (!_hasPerMessageDeflateOffer(header)) return '';
+  return 'permessage-deflate; server_no_context_takeover; client_no_context_takeover';
 }
 
 /**
@@ -831,6 +847,8 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * @internal
    */
   #extensions:     string              = '';
+  #perMessageDeflate: boolean          = false;
+  #perMessageInflater: ZlibRawMessageInflater | null = null;
   /**
    * Private property `#maxPayloadSize` used by `WebSocketConnection`.
    *
@@ -1317,7 +1335,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    * ```
    */
   get protocol():       string              { return this.#protocol; }
-  /** Negotiated extension string, currently always empty.
+  /** Negotiated extension string.
    *
    * ```ts no_run
    * console.log(conn.extensions);
@@ -1447,9 +1465,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
       return this.#enqueue(async () => {
         const ab  = await data.arrayBuffer();
         const pl  = new Uint8Array(ab);
-        const frame = _encodeFrame(OP_BINARY, pl, this.#role === 'client');
-        await this.#rawWriter!.write(frame);
-        await this.#rawWriter!.flush();
+        await this.#writeFrame(OP_BINARY, pl);
       }, data.size);
     } else if (data instanceof ArrayBuffer) {
       payload = new Uint8Array(data);
@@ -1647,6 +1663,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 
     // Compute accept hash
     const acceptHash = _acceptHash(clientKey);
+    const negotiatedExtensions = _perMessageDeflateResponse(req.headers.get('sec-websocket-extensions'));
 
     // Build 101 response bytes
     let resp = 'HTTP/1.1 101 Switching Protocols\r\n'
@@ -1654,6 +1671,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
              + 'Connection: Upgrade\r\n'
              + 'Sec-WebSocket-Accept: ' + acceptHash + '\r\n';
     if (negotiated) resp += 'Sec-WebSocket-Protocol: ' + negotiated + '\r\n';
+    if (negotiatedExtensions) resp += 'Sec-WebSocket-Extensions: ' + negotiatedExtensions + '\r\n';
     resp += '\r\n';
 
     const conn = new WebSocketConnection();
@@ -1661,7 +1679,9 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
     conn.#readyState     = CONNECTING;
     conn.#url            = req.url;
     conn.#protocol       = negotiated ?? '';
-    conn.#extensions     = '';
+    conn.#extensions     = negotiatedExtensions;
+    conn.#perMessageDeflate = negotiatedExtensions !== '';
+    conn.#perMessageInflater = conn.#perMessageDeflate ? new ZlibRawMessageInflater() : null;
     conn.#maxPayloadSize = opts.maxPayloadSize ?? DEFAULT_MAX_PAYLOAD;
     conn.#ownsSocket     = false;
     conn.#handshakeBytes = encodeUtf8(resp);
@@ -2051,6 +2071,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
     let fragOpcode = -1;           // -1 = not in fragment
     let fragParts: Uint8Array[] = [];
     let fragSize   = 0;
+    let fragCompressed = false;
 
     try {
       while (true) {
@@ -2064,9 +2085,11 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
         const masked  = (header[1]! & 0x80) !== 0;
         const lenCode =  header[1]! & 0x7F;
 
-        // Validate RSV bits (no extensions negotiated)
-        if (rsv !== 0) {
-          await this.#failProtocol(1002, 'RSV bits must be 0 when no extensions are negotiated');
+        const rsv1 = (rsv & 0x40) !== 0;
+        const unexpectedRsv = rsv & 0x30;
+
+        if (unexpectedRsv !== 0) {
+          await this.#failProtocol(1002, 'Unexpected RSV bits');
           break;
         }
 
@@ -2079,6 +2102,10 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 
         // Control frame constraints (RFC 6455 §5.5)
         if (isControl) {
+          if (rsv1) {
+            await this.#failProtocol(1002, 'Control frames must not set RSV bits');
+            break;
+          }
           if (!fin) {
             await this.#failProtocol(1002, 'Control frames must not be fragmented');
             break;
@@ -2087,6 +2114,15 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
             await this.#failProtocol(1002, 'Control frame payload exceeds 125 bytes');
             break;
           }
+        }
+
+        if (opcode === OP_CONTINUATION && rsv1) {
+          await this.#failProtocol(1002, 'CONTINUATION frames must not set RSV1');
+          break;
+        }
+        if ((opcode === OP_TEXT || opcode === OP_BINARY) && rsv1 && !this.#perMessageDeflate) {
+          await this.#failProtocol(1002, 'RSV1 requires negotiated permessage-deflate');
+          break;
         }
 
         // Masking enforcement
@@ -2205,6 +2241,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
             break;
           }
           fragOpcode = opcode;
+          fragCompressed = rsv1;
           fragParts.push(payload);
           fragSize   += payload.byteLength;
         }
@@ -2222,9 +2259,24 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 
           // Reset fragment state before delivery (in case deliver throws)
           const msgOpcode = fragOpcode;
+          const compressed = fragCompressed;
           fragOpcode      = -1;
+          fragCompressed   = false;
           fragParts       = [];
           fragSize        = 0;
+
+          if (compressed) {
+            try {
+              assembled = this.#perMessageInflater!.inflateMessage(assembled);
+            } catch {
+              await this.#failProtocol(1003, 'Invalid permessage-deflate payload');
+              break;
+            }
+            if (assembled.byteLength > this.#maxPayloadSize) {
+              await this.#failProtocol(1009, 'Inflated payload exceeds maxPayloadSize (' + this.#maxPayloadSize + ' bytes)');
+              break;
+            }
+          }
 
           if (msgOpcode === OP_TEXT) {
             let text: string;
@@ -2427,6 +2479,8 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 
     try { this.#rawReader?.close(); } catch (_) {}
     try { this.#rawWriter?.close(); } catch (_) {}
+    try { this.#perMessageInflater?.close(); } catch (_) {}
+    this.#perMessageInflater = null;
 
     if (this.#closeResolve) {
       this.#closeResolve();
@@ -2440,12 +2494,13 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
 // ---------------------------------------------------------------------------
 
 /**
- * WHATWG-compatible WebSocket facade with no runtime extensions.
+ * WHATWG-compatible WebSocket facade.
  *
  * For server-side or lower-level control, use `WebSocketConnection` directly.
- * This facade intentionally does not buffer `send()` calls before `OPEN`, does
- * not negotiate extensions, and uses the HTTP/1.1 Upgrade path provided by
- * `WebSocketConnection`; HTTP/2 and HTTP/3 WebSocket transports are deferred.
+ * This facade intentionally does not buffer `send()` calls before `OPEN`.
+ * Client connections do not offer extensions by default, and use the HTTP/1.1
+ * Upgrade path provided by `WebSocketConnection`; HTTP/2 and HTTP/3 WebSocket
+ * transports are deferred.
  *
  * ```ts no_run
  * const ws = new WebSocket('wss://example.com/ws', ['chat.v1']);

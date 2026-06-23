@@ -19,6 +19,20 @@ test(() => {
   const url = new URL('../b?x=1#f', 'https://example.test/a/c');
   assert_equals(url.href, 'https://example.test/b?x=1#f');
 }, 'URL resolves relative path dot segments');
+
+test(() => {
+  assert_true(URL.canParse('/path', 'https://example.test'));
+  assert_false(URL.canParse('/path', 'not-a-url'));
+  assert_equals(URL.parse('/path', 'https://example.test/base').href, 'https://example.test/path');
+  assert_equals(URL.parse('not a url'), null);
+}, 'URL static parse helpers accept valid input and reject invalid input');
+
+test(() => {
+  const params = new URLSearchParams('a=1&b=2');
+  assert_array_equals([...params.keys()], ['a', 'b']);
+  assert_array_equals([...params.values()], ['1', '2']);
+  assert_array_equals([...params.entries()].map(([name, value]) => name + '=' + value), ['a=1', 'b=2']);
+}, 'URLSearchParams iterates keys values and entries in insertion order');
 `,
   },
   {
@@ -139,6 +153,31 @@ promise_test(async () => {
   assert_equals(response.headers.get('x-test'), 'yes');
   assert_equals((await response.json()).ok, true);
 }, 'Response.json creates a JSON response body');
+
+promise_test(async () => {
+  const request = new Request('https://example.test/', { method: 'POST', body: 'request-body' });
+  const copy = request.clone();
+  assert_false(request.bodyUsed);
+  assert_equals(await request.text(), 'request-body');
+  assert_true(request.bodyUsed);
+  assert_equals(await copy.text(), 'request-body');
+}, 'Request clone preserves body before consumption');
+
+promise_test(async () => {
+  const response = new Response('response-body', { headers: { 'content-type': 'text/plain' } });
+  const copy = response.clone();
+  assert_false(response.bodyUsed);
+  assert_equals(await response.text(), 'response-body');
+  assert_true(response.bodyUsed);
+  assert_equals(await copy.text(), 'response-body');
+}, 'Response clone preserves body before consumption');
+
+test(() => {
+  const redirected = Response.redirect('https://example.test/login', 303);
+  assert_equals(redirected.status, 303);
+  assert_equals(redirected.headers.get('location'), 'https://example.test/login');
+  assert_throws_js(RangeError, () => Response.redirect('https://example.test/', 200));
+}, 'Response.redirect validates redirect status values');
 `,
   },
   {
@@ -247,6 +286,56 @@ test(() => {
 `,
   },
   {
+    path: 'dom/events/Event-constructor.any.js',
+    area: 'Event/CustomEvent',
+    source: `
+test(() => {
+  const event = new Event('submit', { bubbles: true, cancelable: true, composed: true });
+  assert_equals(event.type, 'submit');
+  assert_true(event.bubbles);
+  assert_true(event.cancelable);
+  assert_true(event.composed);
+  assert_false(event.defaultPrevented);
+  event.preventDefault();
+  assert_true(event.defaultPrevented);
+}, 'Event constructor initializes flags and preventDefault state');
+
+test(() => {
+  assert_equals(Event.NONE, 0);
+  assert_equals(Event.CAPTURING_PHASE, 1);
+  assert_equals(Event.AT_TARGET, 2);
+  assert_equals(Event.BUBBLING_PHASE, 3);
+}, 'Event exposes phase constants');
+
+test(() => {
+  const event = new CustomEvent('update', { detail: { id: 5 } });
+  assert_true(event instanceof Event);
+  assert_true(event instanceof CustomEvent);
+  assert_equals(event.type, 'update');
+  assert_equals(event.detail.id, 5);
+}, 'CustomEvent stores detail and inherits from Event');
+
+test(() => {
+  const target = new EventTarget();
+  const event = new Event('x');
+  let observedTarget = null;
+  let observedCurrentTarget = null;
+  let observedPhase = 0;
+  target.addEventListener('x', (ev) => {
+    observedTarget = ev.target;
+    observedCurrentTarget = ev.currentTarget;
+    observedPhase = ev.eventPhase;
+    assert_array_equals(ev.composedPath(), [target]);
+  });
+  assert_true(target.dispatchEvent(event));
+  assert_equals(observedTarget, target);
+  assert_equals(observedCurrentTarget, target);
+  assert_equals(observedPhase, Event.AT_TARGET);
+  assert_equals(event.currentTarget, null);
+}, 'EventTarget dispatch sets target currentTarget eventPhase and composedPath');
+`,
+  },
+  {
     path: 'html/webappapis/timers/timers-and-microtasks.any.js',
     area: 'Timers/queueMicrotask/performance',
     source: `
@@ -279,6 +368,50 @@ test(() => {
 `,
   },
   {
+    path: 'streams/readable-byte-streams/byob-reader.any.js',
+    area: 'Readable byte streams/BYOB',
+    source: `
+promise_test(async () => {
+  let controller;
+  const stream = new ReadableStream({
+    type: 'bytes',
+    start(ctrl) {
+      controller = ctrl;
+      ctrl.enqueue(new Uint8Array([1, 2, 3]));
+      ctrl.close();
+    },
+  });
+  assert_true(controller instanceof ReadableByteStreamController);
+  const reader = stream.getReader({ mode: 'byob' });
+  assert_true(reader instanceof ReadableStreamBYOBReader);
+  const result = await reader.read(new Uint8Array(3));
+  assert_false(result.done);
+  assert_array_equals(Array.from(result.value), [1, 2, 3]);
+  reader.releaseLock();
+}, 'ReadableStreamBYOBReader reads queued byte stream data');
+
+promise_test(async () => {
+  let request = null;
+  const stream = new ReadableStream({
+    type: 'bytes',
+    pull(controller) {
+      request = controller.byobRequest;
+      assert_true(request instanceof ReadableStreamBYOBRequest);
+      new Uint8Array(request.view.buffer, request.view.byteOffset, 2).set([8, 9]);
+      request.respond(2);
+      controller.close();
+    },
+  });
+  const reader = stream.getReader({ mode: 'byob' });
+  const result = await reader.read(new Uint8Array(2));
+  assert_false(result.done);
+  assert_array_equals(Array.from(result.value), [8, 9]);
+  assert_true(request instanceof ReadableStreamBYOBRequest);
+  reader.releaseLock();
+}, 'ReadableStreamBYOBRequest responds to pending BYOB reads');
+`,
+  },
+  {
     path: 'FileAPI/blob/Blob-text.any.js',
     area: 'Blob/File/FormData',
     source: `
@@ -302,6 +435,97 @@ test(() => {
   form.append('a', '2');
   assert_array_equals(form.getAll('a'), ['1', '2']);
 }, 'FormData preserves duplicate names');
+
+promise_test(async () => {
+  const blob = new Blob(['abcdef'], { type: 'TEXT/PLAIN' });
+  const slice = blob.slice(1, 4, 'text/custom');
+  assert_equals(slice.size, 3);
+  assert_equals(slice.type, 'text/custom');
+  assert_equals(await slice.text(), 'bcd');
+  const bytes = await blob.bytes();
+  bytes[0] = 0xff;
+  assert_equals(new Uint8Array(await blob.arrayBuffer())[0], 97);
+}, 'Blob slice returns bytes and Blob reads return copies');
+
+promise_test(async () => {
+  const chunks = [];
+  for await (const chunk of new Blob(['abc']).stream()) {
+    chunks.push(...Array.from(chunk));
+  }
+  assert_array_equals(chunks, [97, 98, 99]);
+}, 'Blob stream yields blob bytes');
+
+test(() => {
+  const file = new File(['x'], 'data.txt', { type: 'Text/Plain', lastModified: 1234 });
+  assert_true(file instanceof Blob);
+  assert_equals(file.name, 'data.txt');
+  assert_equals(file.type, 'text/plain');
+  assert_equals(file.lastModified, 1234);
+}, 'File inherits Blob and exposes file metadata');
+
+test(() => {
+  const form = new FormData();
+  const blob = new Blob(['data'], { type: 'text/plain' });
+  form.append('file', blob, 'upload.txt');
+  form.append('field', 'value');
+  const file = form.get('file');
+  assert_true(file instanceof File);
+  assert_equals(file.name, 'upload.txt');
+  assert_array_equals([...form.keys()], ['file', 'field']);
+  assert_array_equals([...form.entries()].map(([name]) => name), ['file', 'field']);
+}, 'FormData wraps Blob values as File and iterates entries');
+`,
+  },
+  {
+    path: 'WebCryptoAPI/crypto-basic.any.js',
+    area: 'crypto',
+    source: `
+test(() => {
+  assert_equals(typeof crypto, 'object');
+  assert_equals(typeof crypto.subtle, 'object');
+  assert_equals(typeof cryptoAvailable, 'boolean');
+}, 'crypto global and availability flag are exposed');
+
+promise_test(async () => {
+  if (!cryptoAvailable) {
+    assert_throws_js(Error, () => crypto.getRandomValues(new Uint8Array(1)));
+    return;
+  }
+  const bytes = new Uint8Array(16);
+  const returned = crypto.getRandomValues(bytes);
+  assert_equals(returned, bytes);
+  assert_true(bytes.some((byte) => byte !== 0));
+  assert_true(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(crypto.randomUUID()));
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('abc'));
+  const hex = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+  assert_equals(hex, 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+}, 'crypto random values UUID and SHA-256 digest work when OpenSSL is available');
+`,
+  },
+  {
+    path: 'html/webappapis/global-object.any.js',
+    area: 'self/navigator',
+    source: `
+test(() => {
+  assert_equals(self, globalThis);
+}, 'self aliases globalThis');
+
+test(() => {
+  assert_equals(typeof navigator, 'object');
+  assert_equals(navigator.userAgent, 'Fino/0.1');
+}, 'navigator exposes the runtime userAgent');
+
+test(() => {
+  assert_equals(typeof console, 'object');
+  assert_equals(typeof console.log, 'function');
+  assert_equals(typeof console.error, 'function');
+  console.log('wpt-subset console smoke');
+  console.error('wpt-subset console smoke');
+}, 'console exposes logging functions');
+
+test(() => {
+  assert_equals(typeof tlsAvailable, 'boolean');
+}, 'tlsAvailable exposes TLS backend availability');
 `,
   },
   {
@@ -367,6 +591,25 @@ promise_test(async () => {
   const decompressed = await __wpt.collect(new Response(compressed).body.pipeThrough(new DecompressionStream('gzip')));
   assert_equals(new TextDecoder().decode(decompressed), 'gzip data');
 }, 'CompressionStream gzip roundtrips through DecompressionStream');
+
+promise_test(async () => {
+  const encoded = new TextEncoder().encode('deflate data');
+  const compressed = await __wpt.collect(new Response(encoded).body.pipeThrough(new CompressionStream('deflate')));
+  const decompressed = await __wpt.collect(new Response(compressed).body.pipeThrough(new DecompressionStream('deflate')));
+  assert_equals(new TextDecoder().decode(decompressed), 'deflate data');
+}, 'CompressionStream deflate roundtrips through DecompressionStream');
+
+promise_test(async () => {
+  const encoded = new TextEncoder().encode('raw deflate data');
+  const compressed = await __wpt.collect(new Response(encoded).body.pipeThrough(new CompressionStream('deflate-raw')));
+  const decompressed = await __wpt.collect(new Response(compressed).body.pipeThrough(new DecompressionStream('deflate-raw')));
+  assert_equals(new TextDecoder().decode(decompressed), 'raw deflate data');
+}, 'CompressionStream deflate-raw roundtrips through DecompressionStream');
+
+test(() => {
+  assert_throws_js(TypeError, () => new CompressionStream('brotli'));
+  assert_throws_js(TypeError, () => new DecompressionStream('brotli'));
+}, 'CompressionStream and DecompressionStream reject unsupported formats');
 `,
   },
   {
@@ -400,6 +643,30 @@ promise_test(async () => {
     path: 'websockets/interfaces/WebSocket/events.any.js',
     area: 'WebSocket client/API',
     source: `
+test(() => {
+  const close = new CloseEvent('close', { code: 1000, reason: 'done', wasClean: true });
+  assert_true(close instanceof Event);
+  assert_equals(close.type, 'close');
+  assert_equals(close.code, 1000);
+  assert_equals(close.reason, 'done');
+  assert_true(close.wasClean);
+}, 'CloseEvent exposes close code reason and cleanliness');
+
+test(() => {
+  const err = new Error('boom');
+  const event = new ErrorEvent('error', { error: err });
+  assert_true(event instanceof Event);
+  assert_equals(event.type, 'error');
+  assert_equals(event.error, err);
+}, 'ErrorEvent exposes the underlying error');
+
+test(() => {
+  assert_equals(WebSocket.CONNECTING, 0);
+  assert_equals(WebSocket.OPEN, 1);
+  assert_equals(WebSocket.CLOSING, 2);
+  assert_equals(WebSocket.CLOSED, 3);
+}, 'WebSocket exposes readyState constants');
+
 promise_test(async () => {
   const ws = new WebSocket(__wpt.wsUrl);
   assert_equals(ws.readyState, WebSocket.CONNECTING);

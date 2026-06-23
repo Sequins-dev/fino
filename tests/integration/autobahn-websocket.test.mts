@@ -7,14 +7,13 @@
  * existing image so this test never pulls network dependencies implicitly.
  * Missing harness dependencies are hard failures, not skips.
  *
- * Default coverage is limited to non-extension, non-mass/performance server
- * cases. Fino documents extension negotiation, including permessage-deflate,
- * as out of scope for this release.
+ * Coverage runs the complete emitted Autobahn WebSocket server suite when
+ * `FINO_FULL_SPEC_TESTS=1` is set.
  */
 
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Process } from 'fino:process';
+import { Process, env } from 'fino:process';
 import { serve } from 'fino:net/http/server';
 import { WebSocketConnection } from 'fino:net/http/websocket';
 
@@ -25,7 +24,7 @@ const fs = new DiskFileSystem('/');
 const WSTEST_CANDIDATES = [
   '/opt/homebrew/bin/wstest',
   '/usr/local/bin/wstest',
-  `${(globalThis as any).process?.env?.HOME ?? ''}/.local/bin/wstest`,
+  `${env.HOME ?? ''}/.local/bin/wstest`,
   '/usr/bin/wstest',
 ];
 
@@ -36,32 +35,45 @@ const DOCKER_CANDIDATES = [
 ];
 
 const AUTOBahn_IMAGE = 'crossbario/autobahn-testsuite';
-const CASES = [
-  '1.1.1', '1.1.2', '1.2.1', '1.2.2',
-  '2.1', '2.2', '2.3', '2.4',
-  '3.1', '3.2', '3.3',
-  '4.1.1', '4.1.2', '4.2.1', '4.2.2',
-  '5.1', '5.2', '5.3',
-  '6.1.1', '6.2.1', '6.3.1',
-  '7.1.1', '7.3.1', '7.5.1', '7.7.1', '7.9.1',
-  '9.1.1', '9.2.1', '9.3.1', '9.4.1',
+const AUTOBahn_IMAGE_CANDIDATES = [
+  `${AUTOBahn_IMAGE}:local`,
+  `${AUTOBahn_IMAGE}:latest`,
+  AUTOBahn_IMAGE,
 ];
-const DISCOVERY_CASE_PATTERNS = [
-  '10.*',
+const AUTOBahn_SUITES = [
+  { name: 'group 1 baseline cases', patterns: ['1.*'], requiredGroups: ['1'] },
+  { name: 'group 2 baseline cases', patterns: ['2.*'], requiredGroups: ['2'] },
+  { name: 'group 3 baseline cases', patterns: ['3.*'], requiredGroups: ['3'] },
+  { name: 'group 4 baseline cases', patterns: ['4.*'], requiredGroups: ['4'] },
+  { name: 'group 5 baseline cases', patterns: ['5.*'], requiredGroups: ['5'] },
+  { name: 'group 6 baseline cases', patterns: ['6.*'], requiredGroups: ['6'] },
+  { name: 'group 7 baseline cases', patterns: ['7.*'], requiredGroups: ['7'] },
+  { name: 'group 9 baseline cases', patterns: ['9.*'], requiredGroups: ['9'] },
+  // Autobahn's wildcard emits the baseline suite but not these optional group
+  // patterns, so collect them explicitly to avoid silently skipping coverage.
+  { name: 'group 10 optional cases', patterns: ['10.*'], requiredGroups: ['10'] },
+  { name: 'group 12.1 permessage-deflate cases', patterns: ['12.1.*'], requiredGroups: ['12'] },
+  { name: 'group 12.2 permessage-deflate cases', patterns: ['12.2.*'], requiredGroups: ['12'] },
+  { name: 'group 12.3 permessage-deflate cases', patterns: ['12.3.*'], requiredGroups: ['12'] },
+  { name: 'group 12.4 permessage-deflate cases', patterns: ['12.4.*'], requiredGroups: ['12'] },
+  { name: 'group 12.5 permessage-deflate cases', patterns: ['12.5.*'], requiredGroups: ['12'] },
+  { name: 'group 13.1 permessage-deflate cases', patterns: ['13.1.*'], requiredGroups: ['13'] },
+  { name: 'group 13.2 permessage-deflate cases', patterns: ['13.2.*'], requiredGroups: ['13'] },
+  { name: 'group 13.3 permessage-deflate cases', patterns: ['13.3.*'], requiredGroups: ['13'] },
+  { name: 'group 13.4 permessage-deflate cases', patterns: ['13.4.*'], requiredGroups: ['13'] },
+  { name: 'group 13.5 permessage-deflate cases', patterns: ['13.5.*'], requiredGroups: ['13'] },
+  { name: 'group 13.6 permessage-deflate cases', patterns: ['13.6.*'], requiredGroups: ['13'] },
+  { name: 'group 13.7 permessage-deflate cases', patterns: ['13.7.*'], requiredGroups: ['13'] },
 ];
-// Autobahn 25.10.1's WebSocket registry emits only this group 10 case.
-// It has no WebSocket 1.3.* cases and no 10.2.1 case.
-const EXPECTED_DISCOVERY_CASES = [
-  '10.1.1',
-];
-const EXCLUDED_CASES = [
-  '8.*',
-  '11.*',
-  // These are permessage-deflate extension cases, which are outside the
-  // current WebSocket release scope.
-  '12.*',
-  '13.*',
-];
+const AUTOBahn_SUITE_FILTER = env.FINO_AUTOBAHN_SUITE;
+const AUTOBahn_ACTIVE_SUITES =
+  typeof AUTOBahn_SUITE_FILTER === 'string' && AUTOBahn_SUITE_FILTER.trim() !== ''
+    ? AUTOBahn_SUITES.filter(suite =>
+      suite.name.includes(AUTOBahn_SUITE_FILTER.trim()) ||
+      suite.patterns.some(pattern => pattern.includes(AUTOBahn_SUITE_FILTER.trim())))
+    : AUTOBahn_SUITES;
+const skipAutobahn = env.FINO_FULL_SPEC_TESTS !== '1' &&
+  'set FINO_FULL_SPEC_TESTS=1 to run full Autobahn WebSocket conformance';
 
 interface AutobahnCase {
   id: string;
@@ -72,19 +84,10 @@ interface AutobahnCase {
   reportFile: string;
 }
 
-interface AutobahnGroup {
-  children: Map<string, AutobahnGroup>;
-  leaves: string[];
-}
-
 interface AutobahnTool {
   kind: 'wstest' | 'docker';
   path: string;
-}
-
-interface AutobahnTestContext {
-  ok(value: unknown, message?: string): void;
-  fail(message?: string): void;
+  image?: string;
 }
 
 function concat(chunks: Uint8Array[]): Uint8Array {
@@ -154,9 +157,39 @@ async function findAutobahnTool(): Promise<AutobahnTool | null> {
   const docker = await findCandidate(DOCKER_CANDIDATES);
   if (docker === null) return null;
 
-  const image = await runProcess(docker, ['image', 'inspect', AUTOBahn_IMAGE]);
-  if (image.code !== 0) return null;
-  return { kind: 'docker', path: docker };
+  const image = await findAutobahnImage(docker);
+  if (image === null) return null;
+  return { kind: 'docker', path: docker, image };
+}
+
+async function dockerServerArch(docker: string): Promise<string> {
+  const result = await runProcess(docker, ['version', '--format', '{{.Server.Arch}}']);
+  return result.code === 0 ? result.stdout.trim() : '';
+}
+
+async function dockerImageArch(docker: string, image: string): Promise<string | null> {
+  const result = await runProcess(docker, ['image', 'inspect', image, '--format', '{{.Architecture}}']);
+  if (result.code !== 0) return null;
+  return result.stdout.trim();
+}
+
+async function findAutobahnImage(docker: string): Promise<string | null> {
+  const envImage = env.FINO_AUTOBAHN_IMAGE;
+  if (typeof envImage === 'string' && envImage.trim() !== '') {
+    const arch = await dockerImageArch(docker, envImage.trim());
+    if (arch !== null) return envImage.trim();
+    return null;
+  }
+
+  const serverArch = await dockerServerArch(docker);
+  let fallback: string | null = null;
+  for (const image of AUTOBahn_IMAGE_CANDIDATES) {
+    const arch = await dockerImageArch(docker, image);
+    if (arch === null) continue;
+    if (fallback === null) fallback = image;
+    if (serverArch !== '' && arch === serverArch) return image;
+  }
+  return fallback;
 }
 
 function normalizeBehavior(value: unknown): string {
@@ -205,62 +238,6 @@ function passingCase(c: AutobahnCase): boolean {
   return behaviorOk && closeOk;
 }
 
-function newGroup(): AutobahnGroup {
-  return { children: new Map(), leaves: [] };
-}
-
-function groupCases(cases: string[]): AutobahnGroup {
-  const root = newGroup();
-  for (const id of cases) {
-    const parts = id.split('.');
-    const leaf = parts.pop();
-    if (!leaf) continue;
-    let group = root;
-    for (const part of parts) {
-      let child = group.children.get(part);
-      if (!child) {
-        child = newGroup();
-        group.children.set(part, child);
-      }
-      group = child;
-    }
-    group.leaves.push(leaf);
-  }
-  return root;
-}
-
-function defineCaseTests(
-  group: AutobahnGroup,
-  prefix: string[],
-  getCase: (id: string) => AutobahnCase | undefined,
-): void {
-  for (const [part, child] of group.children) {
-    const path = [...prefix, part];
-    describe(`case group ${path.join('.')}`, () => {
-      defineCaseTests(child, path, getCase);
-    });
-  }
-
-  for (const leaf of group.leaves) {
-    const id = [...prefix, leaf].join('.');
-    it(`case ${id}`, (t: AutobahnTestContext) => {
-      const result = getCase(id);
-      if (result === undefined) {
-        t.fail(`Autobahn case ${id} was not present in report`);
-        return;
-      }
-      if (!passingCase(result)) {
-        t.fail(
-          `Autobahn case ${id} failed: behavior=${result.behavior || '<empty>'}, ` +
-          `behaviorClose=${result.behaviorClose || '<empty>'}, report=${result.reportFile || '<none>'}`,
-        );
-        return;
-      }
-      t.ok(true, `Autobahn case ${id} passed`);
-    });
-  }
-}
-
 async function startEchoServer(): Promise<ReturnType<typeof serve>> {
   return serve({ port: 0 }, async (incoming) => {
     if (incoming.kind !== 'websocket') {
@@ -288,7 +265,7 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string, 
       options: { version: 18 },
     }],
     cases: casePatterns,
-    excludeCases: EXCLUDED_CASES,
+    excludeCases: [],
     excludeAgentCases: {},
   };
   await fs.mkdir(reportDir);
@@ -300,7 +277,7 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string, 
       'run', '--rm',
       '--network', 'host',
       '-v', `${reportDir}:${reportDir}`,
-      AUTOBahn_IMAGE,
+      tool.image!,
       'wstest', '-m', 'fuzzingclient', '-s', configPath,
     ]);
 
@@ -309,16 +286,24 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string, 
   }
 }
 
-const tool = await findAutobahnTool();
 let server: ReturnType<typeof serve> | undefined;
-let cases = new Map<string, AutobahnCase>();
-let discoveredCaseIds: string[] = [];
+let tool: AutobahnTool | null | undefined;
+
+async function getAutobahnTool(): Promise<AutobahnTool | null> {
+  if (tool === undefined) tool = await findAutobahnTool();
+  return tool;
+}
 
 async function collectAutobahnCases(casePatterns: string[]): Promise<Map<string, AutobahnCase>> {
+  const autobahnTool = await getAutobahnTool();
+  if (autobahnTool === null) {
+    throw new Error('Autobahn harness unavailable: install wstest or pre-load the crossbario/autobahn-testsuite Docker image');
+  }
+
   const reportDir = `/tmp/fino-autobahn-${Date.now()}`;
   server = await startEchoServer();
   try {
-    await runAutobahn(tool!, server.port, reportDir, casePatterns);
+    await runAutobahn(autobahnTool, server.port, reportDir, casePatterns);
     return new Map(parseAutobahnIndex(await readText(`${reportDir}/index.json`)).map(c => [c.id, c]));
   } finally {
     await server.close();
@@ -326,19 +311,7 @@ async function collectAutobahnCases(casePatterns: string[]): Promise<Map<string,
   }
 }
 
-describe('Autobahn — RFC 6455 WebSocket conformance', () => {
-  before(async () => {
-    if (tool === null) {
-      throw new Error('Autobahn harness unavailable: install wstest or pre-load the crossbario/autobahn-testsuite Docker image');
-    }
-    cases = await collectAutobahnCases(CASES);
-    const discoveredCases = await collectAutobahnCases(DISCOVERY_CASE_PATTERNS);
-    discoveredCaseIds = [...discoveredCases.keys()].sort(compareCaseIds);
-    for (const [id, result] of discoveredCases) {
-      cases.set(id, result);
-    }
-  });
-
+describe('Autobahn — RFC 6455 WebSocket conformance', { skip: skipAutobahn }, () => {
   after(async () => {
     if (server) await server.close();
   });
@@ -355,16 +328,38 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
     t.equal(passingCase(parsed[1]!), true, 'OK behavior passes the case');
   });
 
-  it('records at least one Autobahn case result', (t) => {
-    t.ok(cases.size > 0, 'Autobahn report contains scheduled cases');
-  });
+  for (const suite of AUTOBahn_ACTIVE_SUITES) {
+    describe(suite.name, () => {
+      let suiteCases = new Map<string, AutobahnCase>();
+      let emittedCaseIds: string[] = [];
 
-  it('discovers the expected Autobahn case IDs', (t) => {
-    t.deepEqual(discoveredCaseIds, EXPECTED_DISCOVERY_CASES, 'Autobahn discovery case IDs match the asserted follow-up set');
-  });
+      before(async () => {
+        suiteCases = await collectAutobahnCases(suite.patterns);
+        emittedCaseIds = [...suiteCases.keys()].sort(compareCaseIds);
+      });
 
-  defineCaseTests(groupCases([
-    ...CASES,
-    ...EXPECTED_DISCOVERY_CASES,
-  ]), [], id => cases.get(id));
+      it('records Autobahn case results', (t) => {
+        if (suite.requiredGroups.length === 0 && suiteCases.size === 0) {
+          t.ok(true, 'Autobahn emitted no cases for this optional group');
+          return;
+        }
+        t.ok(suiteCases.size > 0, 'Autobahn report contains scheduled cases');
+      });
+
+      it('records expected Autobahn groups', (t) => {
+        for (const group of suite.requiredGroups) {
+          t.ok(emittedCaseIds.some(id => id.startsWith(`${group}.`)), `Autobahn group ${group} was emitted`);
+        }
+      });
+
+      it('passes every emitted Autobahn case', (t) => {
+        const failed = [...suiteCases.values()].filter(c => !passingCase(c));
+        t.deepEqual(
+          failed.map(c => `${c.id}: behavior=${c.behavior || '<empty>'}, behaviorClose=${c.behaviorClose || '<empty>'}, report=${c.reportFile || '<none>'}`),
+          [],
+          'all emitted Autobahn cases pass',
+        );
+      });
+    });
+  }
 });
