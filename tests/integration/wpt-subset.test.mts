@@ -9,6 +9,9 @@
  * Browser-only policy and lifecycle areas are intentionally outside this lane:
  * cookies, BFCache, mixed content, navigation, DOM document integration,
  * service workers, XHR, and browser CORS policy.
+ *
+ * Harness setup failures such as loopback bind errors are hard failures, not
+ * skips. Skips are reserved for explicitly unsupported feature fixtures.
  */
 
 import { describe, it, after } from 'fino:test/test';
@@ -33,29 +36,21 @@ interface WptContext {
   event(target: EventTarget, name: string): Promise<any>;
 }
 
-const websocketFixturePath = 'websockets/';
-let wsServer: ReturnType<typeof serve> | null = null;
-let wsSkip: string | false = false;
-
-try {
-  wsServer = serve({ port: 0 }, async (incoming) => {
-    if (incoming.kind !== 'websocket') {
-      await incoming.reject(new Response('', { status: 404 }));
-      return;
+const wsServer = serve({ port: 0 }, async (incoming) => {
+  if (incoming.kind !== 'websocket') {
+    await incoming.reject(new Response('', { status: 404 }));
+    return;
+  }
+  const ws = await incoming.accept();
+  (async () => {
+    for await (const message of ws) {
+      if (message.type === 'text' || message.type === 'binary') ws.send(message.data as any);
     }
-    const ws = await incoming.accept();
-    (async () => {
-      for await (const message of ws) {
-        if (message.type === 'text' || message.type === 'binary') ws.send(message.data as any);
-      }
-    })().catch(() => {});
-  });
-} catch (err) {
-  wsSkip = `requires loopback WebSocket server (${err instanceof Error ? err.message : String(err)})`;
-}
+  })().catch(() => {});
+});
 
 const wptContext: WptContext = {
-  wsUrl: wsServer ? `ws://127.0.0.1:${wsServer.port}/` : 'ws://127.0.0.1:0/',
+  wsUrl: `ws://127.0.0.1:${wsServer.port}/`,
   async collect(readable: ReadableStream<Uint8Array>): Promise<Uint8Array> {
     const reader = readable.getReader();
     const chunks: Uint8Array[] = [];
@@ -183,20 +178,15 @@ const throwingAssert: HarnessAssert = {
   },
 };
 
-function subtestSkip(fixture: WptFixture): string | false {
-  if (fixture.path.startsWith(websocketFixturePath)) return wsSkip;
-  return false;
-}
-
 describe('WPT subset — web globals', () => {
   after(async () => {
-    if (wsServer !== null) await wsServer.close();
+    await wsServer.close();
   });
 
   for (const fixture of WPT_SUBSET) {
     describe(`${fixture.area} — ${fixture.path}`, () => {
       for (const subtest of discoverSubtests(fixture)) {
-        it(subtest.name, { skip: subtestSkip(fixture) }, async (t) => {
+        it(subtest.name, async (t) => {
           await runSubtest(fixture, subtest.name, {
             equal: (actual, expected, message) => t.equal(actual, expected, message),
             deepEqual: (actual, expected, message) => t.deepEqual(actual, expected, message),

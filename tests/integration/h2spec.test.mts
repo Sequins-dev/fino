@@ -2,8 +2,8 @@
  * h2spec — RFC 7540/7541 conformance suite.
  *
  * Runs the external `h2spec` binary against a live fino HTTPS server (TLS +
- * ALPN h2). h2spec is skipped if libnghttp2 or the h2spec binary is not
- * present on the machine.
+ * ALPN h2). h2spec is skipped if HTTP/2 or TLS support is unavailable in the
+ * runtime. Missing `h2spec` harness binaries are hard failures, not skips.
  *
  * ## Pass/fail
  *
@@ -472,8 +472,12 @@ function _defineH2specUnitTests(
 const h2specPath = await _findH2spec();
 const tlsAvailable = (globalThis as any).tlsAvailable as boolean | undefined;
 
-const skip = (!h2Available || !tlsAvailable || !h2specPath)
-  && `requires libnghttp2, OpenSSL, and h2spec (${_H2SPEC_CANDIDATES[0]})`;
+const skip = (!h2Available || !tlsAvailable)
+  && 'requires libnghttp2 and OpenSSL support';
+
+if (!skip && !h2specPath) {
+  throw new Error(`h2spec harness unavailable: install h2spec (${_H2SPEC_CANDIDATES[0]})`);
+}
 
 const h2specDryrunInfo = !skip
   ? _parseH2specDryrun(await _runDryrun(h2specPath!))

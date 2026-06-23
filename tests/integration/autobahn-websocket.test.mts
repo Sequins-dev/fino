@@ -2,9 +2,10 @@
  * Autobahn Testsuite — RFC 6455 WebSocket server conformance.
  *
  * Runs Autobahn `wstest` in fuzzing-client mode against a live Fino echo
- * server when either `wstest` is installed or the Autobahn Docker image is
- * already available locally. Docker is deliberately used only with an existing
- * image so this test never pulls network dependencies implicitly.
+ * server. Either `wstest` must be installed or the Autobahn Docker image must
+ * already be available locally. Docker is deliberately used only with an
+ * existing image so this test never pulls network dependencies implicitly.
+ * Missing harness dependencies are hard failures, not skips.
  *
  * Default coverage is limited to non-extension, non-mass/performance server
  * cases. Fino documents extension negotiation, including permessage-deflate,
@@ -210,18 +211,17 @@ function defineCaseTests(
   group: AutobahnGroup,
   prefix: string[],
   getCase: (id: string) => AutobahnCase | undefined,
-  skip: string | false,
 ): void {
   for (const [part, child] of group.children) {
     const path = [...prefix, part];
     describe(`case group ${path.join('.')}`, () => {
-      defineCaseTests(child, path, getCase, skip);
+      defineCaseTests(child, path, getCase);
     });
   }
 
   for (const leaf of group.leaves) {
     const id = [...prefix, leaf].join('.');
-    it(`case ${id}`, { skip }, (t: AutobahnTestContext) => {
+    it(`case ${id}`, (t: AutobahnTestContext) => {
       const result = getCase(id);
       if (result === undefined) {
         t.fail(`Autobahn case ${id} was not present in report`);
@@ -292,16 +292,17 @@ async function runAutobahn(tool: AutobahnTool, port: number, reportDir: string):
 }
 
 const tool = await findAutobahnTool();
-const skip = !tool && 'requires Autobahn wstest or a locally available crossbario/autobahn-testsuite Docker image';
 let server: ReturnType<typeof serve>;
 let cases = new Map<string, AutobahnCase>();
 
 describe('Autobahn — RFC 6455 WebSocket conformance', () => {
   before(async () => {
-    if (skip) return;
+    if (tool === null) {
+      throw new Error('Autobahn harness unavailable: install wstest or pre-load the crossbario/autobahn-testsuite Docker image');
+    }
     const reportDir = `/tmp/fino-autobahn-${Date.now()}`;
     server = await startEchoServer();
-    await runAutobahn(tool!, server.port, reportDir);
+    await runAutobahn(tool, server.port, reportDir);
     cases = new Map(parseAutobahnIndex(await readText(`${reportDir}/index.json`)).map(c => [c.id, c]));
   });
 
@@ -321,7 +322,7 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
     t.equal(passingCase(parsed[1]!), true, 'OK behavior passes the case');
   });
 
-  it('records at least one Autobahn case result', { skip }, (t) => {
+  it('records at least one Autobahn case result', (t) => {
     t.ok(cases.size > 0, 'Autobahn report contains scheduled cases');
   });
 
@@ -337,5 +338,5 @@ describe('Autobahn — RFC 6455 WebSocket conformance', () => {
     '10.1.1', '10.2.1',
     '12.1.1', '12.1.2',
     '13.1.1', '13.2.1', '13.3.1',
-  ]), [], id => cases.get(id), skip);
+  ]), [], id => cases.get(id));
 });
