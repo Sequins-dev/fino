@@ -173,6 +173,10 @@ function _concat(chunks: Uint8Array[]): Uint8Array {
 // teardown from the accepted max-size DATA case in flight and report EOF on the
 // following oversized-DATA case when the whole subsection runs in one process.
 //
+// Section 6.1 is split into leaf cases for the same reason: reset-heavy DATA
+// cases can make the invalid-padding case report EOF when the subsection runs
+// in one h2spec process.
+//
 // Section 6 is further split into subsections: h2spec v2.6 also panics when
 // running `http2/6` as a unit (same inter-section bug across its subsections).
 // h2spec v2.6 exposes no runnable server-side `http2/6.6` cases in dry-run.
@@ -189,7 +193,8 @@ const _SECTIONS = [
   'http2/5.1/6', 'http2/5.1/7', 'http2/5.1/8', 'http2/5.1/9', 'http2/5.1/10',
   'http2/5.1/11', 'http2/5.1/12', 'http2/5.1/13',
   'http2/5.1.1', 'http2/5.1.2', 'http2/5.3', 'http2/5.4', 'http2/5.5',
-  'http2/6.1', 'http2/6.2', 'http2/6.3', 'http2/6.4', 'http2/6.5',
+  'http2/6.1/1', 'http2/6.1/2', 'http2/6.1/3',
+  'http2/6.2', 'http2/6.3', 'http2/6.4', 'http2/6.5',
   'http2/6.7', 'http2/6.8',
   'http2/6.9/1', 'http2/6.9/2', 'http2/6.9/3',
   'http2/6.9.1/1', 'http2/6.9.1/2', 'http2/6.9.1/3',
