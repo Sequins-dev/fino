@@ -215,7 +215,36 @@ function _singleChunkBody(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   };
 }
 
-function _fetchBlobURL(url: string, method: string, capturedBlob: ReturnType<Request['_getBlobURLObject']> = null): Response {
+function _parseBlobRange(range: string, size: number): { start: number; end: number } {
+  const match = /^bytes[ \t]*=[ \t]*(?:(\d+)[ \t]*-[ \t]*(\d*)|-[ \t]*(\d+))[ \t]*$/.exec(range);
+  if (match === null) throw new TypeError('fetch: invalid blob URL Range header');
+
+  if (match[3] !== undefined) {
+    const suffixLength = Number(match[3]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0 || size === 0) {
+      throw new TypeError('fetch: unsatisfiable blob URL Range header');
+    }
+    return {
+      start: Math.max(size - suffixLength, 0),
+      end: size - 1,
+    };
+  }
+
+  const start = Number(match[1]);
+  if (!Number.isSafeInteger(start) || start >= size) {
+    throw new TypeError('fetch: unsatisfiable blob URL Range header');
+  }
+  const end = match[2] === '' ? size - 1 : Number(match[2]);
+  if (!Number.isSafeInteger(end) || end < start) {
+    throw new TypeError('fetch: invalid blob URL Range header');
+  }
+  return {
+    start,
+    end: Math.min(end, size - 1),
+  };
+}
+
+function _fetchBlobURL(url: string, method: string, headers: Headers, capturedBlob: ReturnType<Request['_getBlobURLObject']> = null): Response {
   if (method !== 'GET') {
     throw new TypeError(`fetch: blob URL requests only support GET, got ${method}`);
   }
@@ -223,15 +252,34 @@ function _fetchBlobURL(url: string, method: string, capturedBlob: ReturnType<Req
   if (blob === null) {
     throw new TypeError(`fetch: failed to resolve blob URL '${url}'`);
   }
-  const headers = new Headers();
-  if (blob.type !== '') headers.set('content-type', blob.type);
+  const bytes = new Uint8Array(_getBlobBytes(blob));
+  const responseHeaders = new Headers();
+  responseHeaders.set('content-type', blob.type);
+  const range = headers.get('range');
+  if (range !== null) {
+    const { start, end } = _parseBlobRange(range, bytes.byteLength);
+    const body = bytes.slice(start, end + 1);
+    responseHeaders.set('content-length', String(body.byteLength));
+    responseHeaders.set('content-range', `bytes ${start}-${end}/${bytes.byteLength}`);
+    return buildWireResponse({
+      version: '',
+      status: 206,
+      statusText: '',
+      headers: responseHeaders,
+      body: _singleChunkBody(body),
+      url,
+      type: 'basic',
+      redirected: false,
+    });
+  }
   return buildWireResponse({
     version: '',
     status: 200,
     statusText: '',
-    headers,
-    body: _singleChunkBody(new Uint8Array(_getBlobBytes(blob))),
+    headers: responseHeaders,
+    body: _singleChunkBody(bytes),
     url,
+    type: 'basic',
     redirected: false,
   });
 }
@@ -1272,7 +1320,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   }
 
   if (new URL(baseUrl).protocol === 'blob:') {
-    return _fetchBlobURL(baseUrl, currentMethod, baseBlobUrlObject);
+    return _fetchBlobURL(baseUrl, currentMethod, currentHeaders, baseBlobUrlObject);
   }
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {

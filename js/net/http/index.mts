@@ -277,18 +277,36 @@ function _multipartHeaderParameter(value: string, name: string): string | null {
   return null;
 }
 
-function _formDataFromMultipart(bytes: Uint8Array, boundary: string): FormData {
+function _formDataFromMultipart(bytes: Uint8Array, boundary: string, allowEmpty = false): FormData {
   if (boundary === '') throw new TypeError('formData(): multipart boundary is empty');
-  if (bytes.byteLength === 0) throw new TypeError('formData(): empty multipart body');
+  if (bytes.byteLength === 0) {
+    if (allowEmpty) return new FormData();
+    throw new TypeError('formData(): empty multipart body');
+  }
   const body = decodeUtf8(bytes, false, false);
   const delimiter = '--' + boundary;
-  if (!body.includes(delimiter)) throw new TypeError('formData(): multipart boundary not found');
+  const closing = delimiter + '--';
+  const closingIndex = body.lastIndexOf(closing);
+  if (closingIndex < 0) throw new TypeError('formData(): multipart closing boundary not found');
+  const trailing = body.slice(closingIndex + closing.length);
+  if (trailing !== '' && trailing !== '\r\n') {
+    throw new TypeError('formData(): malformed multipart closing boundary');
+  }
+  if (closingIndex > 0 && body.slice(closingIndex - 2, closingIndex) !== '\r\n') {
+    throw new TypeError('formData(): malformed multipart closing boundary');
+  }
+
   const form = new FormData();
-  const sections = body.split(delimiter);
+  const partsBody = body.slice(0, closingIndex);
+  if (partsBody === '') return form;
+  if (!partsBody.startsWith(delimiter + '\r\n')) {
+    throw new TypeError('formData(): multipart boundary not found');
+  }
+  const sections = partsBody.split(delimiter);
   for (let i = 1; i < sections.length; i++) {
     let section = sections[i]!;
-    if (section.startsWith('--')) break;
-    if (section.startsWith('\r\n')) section = section.slice(2);
+    if (!section.startsWith('\r\n')) throw new TypeError('formData(): malformed multipart boundary');
+    section = section.slice(2);
     if (section.endsWith('\r\n')) section = section.slice(0, -2);
     if (section === '') continue;
     const headerEnd = section.indexOf('\r\n\r\n');
@@ -2357,7 +2375,8 @@ export class Request {
     if (type === 'multipart/form-data') {
       const boundary = _contentTypeParameter(this.#headers, 'boundary');
       if (boundary === null) throw new TypeError('formData(): missing multipart boundary');
-      return _formDataFromMultipart(await this.#consumeBody(), boundary);
+      const hadBody = this.#rawBody !== null;
+      return _formDataFromMultipart(await this.#consumeBody(), boundary, hadBody);
     }
     await this.#consumeBody();
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
@@ -3083,7 +3102,8 @@ export class Response {
     if (type === 'multipart/form-data') {
       const boundary = _contentTypeParameter(this.#headers, 'boundary');
       if (boundary === null) throw new TypeError('formData(): missing multipart boundary');
-      return _formDataFromMultipart(await this.#consumeBody(), boundary);
+      const hadBody = this.#rawBody !== null;
+      return _formDataFromMultipart(await this.#consumeBody(), boundary, hadBody);
     }
     await this.#consumeBody();
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);

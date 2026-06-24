@@ -147,6 +147,15 @@ describe('Body formData', () => {
   });
 
   it('round-trips empty FormData bodies as empty FormData', async (t) => {
+    const requestText = await new Request('about:blank', {
+      method: 'POST',
+      body: new FormData(),
+    }).text();
+    t.equal(requestText, '', 'empty FormData request text is empty');
+
+    const responseText = await new Response(new FormData()).text();
+    t.equal(responseText, '', 'empty FormData response text is empty');
+
     const request = new Request('about:blank', {
       method: 'POST',
       body: new FormData(),
@@ -159,6 +168,27 @@ describe('Body formData', () => {
     const responseForm = await response.formData();
     t.ok(responseForm instanceof FormData, 'response parses as FormData');
     t.equal(Array.from(responseForm).length, 0, 'response form has no entries');
+  });
+
+  it('rejects malformed multipart closing boundaries', async (t) => {
+    const body =
+      '--Boundary_with_capital_letters\r\n' +
+      'Content-Type: application/json\r\n' +
+      'Content-Disposition: form-data; name="does_this_work"\r\n' +
+      '\r\n' +
+      'YES\r\n' +
+      '--Boundary_with_capital_letters-Random junk';
+    const response = new Response(new Blob([body]), {
+      headers: {
+        'content-type': 'multipart/form-data; boundary=Boundary_with_capital_letters',
+      },
+    });
+
+    await t.rejects(
+      () => response.formData(),
+      TypeError,
+      'malformed closing boundary rejects',
+    );
   });
 });
 
@@ -565,10 +595,41 @@ describe('Misc', () => {
     const url = URL.createObjectURL(blob);
     const res = await fetch(url);
     t.equal(await res.text(), 'blob body', 'blob URL body is returned');
+    t.equal(res.type, 'basic', 'blob URL response type is basic');
     t.equal(res.headers.get('content-type'), 'text/plain', 'Blob type becomes Content-Type');
 
     URL.revokeObjectURL(url);
     await t.rejects(() => fetch(url), TypeError, 'revoked blob URL rejects');
+  });
+
+  it('supports single byte ranges for Blob object URLs', async (t) => {
+    const url = URL.createObjectURL(new Blob(['A simple Hello, World! example'], { type: 'text/plain' }));
+    try {
+      const res = await fetch(url, { headers: { range: 'bytes=9-21' } });
+      t.equal(res.status, 206, 'range response is partial content');
+      t.equal(res.type, 'basic', 'range response type is basic');
+      t.equal(res.headers.get('content-type'), 'text/plain', 'Blob type is preserved');
+      t.equal(res.headers.get('content-length'), '13', 'content length is range size');
+      t.equal(res.headers.get('content-range'), 'bytes 9-21/30', 'content range is reported');
+      t.equal(await res.text(), 'Hello, World!', 'body is sliced to the requested range');
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  });
+
+  it('rejects malformed Blob object URL ranges', async (t) => {
+    for (const range of ['bytes=10-5', 'bytes=0-5,15-', 'bytes=-', 'bytes=100-']) {
+      const url = URL.createObjectURL(new Blob(['Not much here'], { type: 'text/plain' }));
+      try {
+        await t.rejects(
+          () => fetch(url, { headers: { range } }),
+          TypeError,
+          `invalid range ${range} rejects`,
+        );
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
   });
 
   it('fetches a Request created before its Blob object URL is revoked', async (t) => {
