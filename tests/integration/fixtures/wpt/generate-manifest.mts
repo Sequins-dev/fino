@@ -151,9 +151,6 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
   }
-  if (path === 'fetch/api/body/textstream.any.js') {
-    return { runnable: false, reason: 'deferred: requires Body.textStream UTF-8 streaming decoder support' };
-  }
   if (path === 'WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js') {
     return { runnable: false, reason: 'requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests' };
   }

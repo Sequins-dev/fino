@@ -15933,9 +15933,66 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "deferred: requires Body.textStream UTF-8 streaming decoder support",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "textStream method existence"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Response.textStream() basic functionality"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Request.textStream() basic functionality"
+        },
+        {
+          "kind": "promise_test",
+          "name": "textStream() handles chunked byte stream input"
+        },
+        {
+          "kind": "test",
+          "name": "Response.textStream() on consumed body throws TypeError"
+        },
+        {
+          "kind": "test",
+          "name": "Request.textStream() on consumed body throws TypeError"
+        },
+        {
+          "kind": "test",
+          "name": "Response.textStream() on locked body throws TypeError"
+        },
+        {
+          "kind": "test",
+          "name": "Request.textStream() on locked body throws TypeError"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Response.textStream() with null body"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Request.textStream() with null body"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Response.textStream() with empty body"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Response.textStream() ignores Content-Type charset (UTF-16LE)"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Request.textStream() ignores Content-Type charset (UTF-16LE)"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Response.textStream() ignores invalid Content-Type charset (invalid-charset)"
+        }
+      ]
     },
     {
       "path": "fetch/api/cors/cors-basic.any.js",

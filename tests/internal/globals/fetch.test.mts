@@ -1210,6 +1210,82 @@ describe('Response constructor validation', () => {
   });
 });
 
+async function readStringChunks(stream: ReadableStream<string>): Promise<string[]> {
+  const reader = stream.getReader();
+  const chunks: string[] = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return chunks;
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+describe('Body textStream', () => {
+  it('streams Request and Response bodies as UTF-8 strings', async (t) => {
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('hello '));
+        controller.enqueue(new TextEncoder().encode('world'));
+        controller.close();
+      },
+    }));
+    t.equal(typeof response.textStream, 'function', 'Response exposes textStream');
+    t.equal(response.bodyUsed, false, 'response starts unused');
+    const responseStream = response.textStream();
+    t.ok(responseStream instanceof ReadableStream, 'Response.textStream returns a ReadableStream');
+    t.equal(response.bodyUsed, true, 'Response.textStream disturbs body immediately');
+    t.equal((await readStringChunks(responseStream)).join(''), 'hello world', 'response chunks decode as text');
+
+    const request = new Request('https://example.com/', { method: 'POST', body: 'hello world' });
+    t.equal(typeof request.textStream, 'function', 'Request exposes textStream');
+    const requestStream = request.textStream();
+    t.equal(request.bodyUsed, true, 'Request.textStream disturbs body immediately');
+    t.equal((await readStringChunks(requestStream)).join(''), 'hello world', 'request chunks decode as text');
+  });
+
+  it('returns fresh empty streams for null bodies without disturbing them', async (t) => {
+    const response = new Response();
+    const first = response.textStream();
+    const second = response.textStream();
+    t.notEqual(first, second, 'response null body returns fresh streams');
+    t.equal(response.bodyUsed, false, 'response null body stays unused');
+    t.deepEqual(await readStringChunks(first), [], 'first response stream is empty');
+    t.deepEqual(await readStringChunks(second), [], 'second response stream is empty');
+
+    const request = new Request('https://example.com/');
+    const requestFirst = request.textStream();
+    const requestSecond = request.textStream();
+    t.notEqual(requestFirst, requestSecond, 'request null body returns fresh streams');
+    t.equal(request.bodyUsed, false, 'request null body stays unused');
+    t.deepEqual(await readStringChunks(requestFirst), [], 'first request stream is empty');
+    t.deepEqual(await readStringChunks(requestSecond), [], 'second request stream is empty');
+  });
+
+  it('rejects consumed or locked bodies and always decodes as UTF-8', async (t) => {
+    const consumedResponse = new Response('hello');
+    await consumedResponse.text();
+    t.throws(() => consumedResponse.textStream(), TypeError, 'consumed response rejects');
+
+    const lockedResponse = new Response('hello');
+    const reader = lockedResponse.body!.getReader();
+    try {
+      t.throws(() => lockedResponse.textStream(), TypeError, 'locked response rejects');
+    } finally {
+      reader.releaseLock();
+    }
+
+    const bytes = new Uint8Array([0x68, 0x00, 0x69, 0x00]);
+    const response = new Response(bytes, {
+      headers: { 'content-type': 'text/plain; charset=utf-16le' },
+    });
+    t.equal((await readStringChunks(response.textStream())).join(''), 'h\0i\0', 'charset is ignored for UTF-8 body text stream');
+  });
+});
+
 describe('fetch() method normalization', () => {
   it('standard methods are uppercased', (t) => {
     const req = new Request('https://example.com/', { method: 'post' });

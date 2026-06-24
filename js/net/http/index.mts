@@ -127,7 +127,7 @@
  * @internal
  */
 
-import { decodeUtf8, encodeUtf8 } from '../../globals/encoding.mts';
+import { decodeUtf8, encodeUtf8, TextDecoder } from '../../globals/encoding.mts';
 import { ReadableStream, isReadableStreamDisturbed } from '../../globals/webstreams.mts';
 import { Blob } from '../../globals/blob.mts';
 import { FormData, _createMultipartBoundary, _serializeFormData } from '../../globals/formdata.mts';
@@ -932,6 +932,44 @@ function _readableByteStreamFromIterable(source: AsyncIterable<Uint8Array>): Rea
       if (typeof iterator.return === 'function') await iterator.return(reason);
     },
   } as any);
+}
+
+function _emptyTextStream(): ReadableStream<string> {
+  return new ReadableStream({
+    start(controller: ReadableStreamDefaultController<string>) {
+      controller.close();
+    },
+  });
+}
+
+function _textStreamFromByteStream(source: ReadableStream): ReadableStream<string> {
+  const iterator = source[Symbol.asyncIterator]();
+  const decoder = new TextDecoder();
+  return new ReadableStream({
+    async pull(controller: ReadableStreamDefaultController<string>) {
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) {
+          const final = decoder.decode();
+          if (final.length > 0) controller.enqueue(final);
+          controller.close();
+          return;
+        }
+        const chunk = next.value;
+        if (!(chunk instanceof Uint8Array)) {
+          throw new TypeError('Body textStream chunks must be Uint8Array');
+        }
+        const text = decoder.decode(chunk, { stream: true });
+        if (text.length > 0) {
+          controller.enqueue(text);
+          return;
+        }
+      }
+    },
+    async cancel(reason: unknown) {
+      if (typeof iterator.return === 'function') await iterator.return(reason);
+    },
+  });
 }
 
 /**
@@ -2313,6 +2351,26 @@ export class Request {
    */
   async text() { return decodeUtf8(await this.#consumeBody()); }
 
+  /** Consume body as a ReadableStream of UTF-8 string chunks.
+   *
+   * The body is marked used immediately. A null body returns a fresh empty
+   * stream each time and does not disturb the request. `Content-Type` charset
+   * parameters are ignored; bytes are always decoded as UTF-8.
+   *
+   * ```ts no_run
+   * for await (const chunk of req.textStream()) console.log(chunk);
+   * ```
+   */
+  textStream(): ReadableStream<string> {
+    if (this.#rawBody === null) return _emptyTextStream();
+    if (this.bodyUsed) throw new TypeError('body already consumed');
+    const body = this.body;
+    if (body === null) return _emptyTextStream();
+    if (body.locked) throw new TypeError('body stream is locked');
+    this.#bodyUsed = true;
+    return _textStreamFromByteStream(body);
+  }
+
   /** Consume body and parse as JSON.
    *
    * Throws `TypeError` if consumed already and propagates `JSON.parse` errors.
@@ -3039,6 +3097,26 @@ export class Response {
    * ```
    */
   async text() { return decodeUtf8(await this.#consumeBody()); }
+
+  /** Consume body as a ReadableStream of UTF-8 string chunks.
+   *
+   * The body is marked used immediately. A null body returns a fresh empty
+   * stream each time and does not disturb the response. `Content-Type` charset
+   * parameters are ignored; bytes are always decoded as UTF-8.
+   *
+   * ```ts no_run
+   * for await (const chunk of res.textStream()) console.log(chunk);
+   * ```
+   */
+  textStream(): ReadableStream<string> {
+    if (this.#rawBody === null) return _emptyTextStream();
+    if (this.bodyUsed) throw new TypeError('body already consumed');
+    const body = this.body;
+    if (body === null) return _emptyTextStream();
+    if (body.locked) throw new TypeError('body stream is locked');
+    this.#bodyUsed = true;
+    return _textStreamFromByteStream(body);
+  }
 
   /** Consume body and parse as JSON.
    *
