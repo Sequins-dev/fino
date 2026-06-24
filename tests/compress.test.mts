@@ -109,6 +109,27 @@ describe('one-shot compression', () => {
     t.throws(() => decompress(new Uint8Array([0, 1, 2, 3]), { format: 'deflate' }), /inflate error/, 'throws on corrupt deflate');
   });
 
+  it('rejects trailing junk after zlib-wrapped compressed data', (t) => {
+    for (const format of ['gzip', 'deflate'] as const) {
+      const compressed = compress(HELLO, { format });
+      const extended = new Uint8Array(compressed.byteLength + 1);
+      extended.set(compressed);
+      t.throws(() => decompress(extended, { format }), /trailing/i, `${format} rejects trailing input`);
+    }
+  });
+
+  it('rejects trailing junk after brotli compressed data', (t) => {
+    if (!brotliAvailable) {
+      t.ok(true, 'brotli not available');
+      return;
+    }
+
+    const compressed = compress(HELLO, { format: 'brotli' });
+    const extended = new Uint8Array(compressed.byteLength + 1);
+    extended.set(compressed);
+    t.throws(() => decompress(extended, { format: 'brotli' }), /trailing/i, 'brotli rejects trailing input');
+  });
+
   it('validates format', (t) => {
     t.throws(() => compress(HELLO, { format: 'zip' as CompressionFormat }), /unsupported compression format/i, 'compress rejects invalid format');
     t.throws(() => decompress(HELLO, { format: 'zip' as CompressionFormat }), /unsupported compression format/i, 'decompress rejects invalid format');
@@ -168,6 +189,31 @@ describe('iterative compression', () => {
       );
     });
   }
+
+  it('zlib streaming decompression rejects trailing junk', (t) => {
+    for (const format of ['gzip', 'deflate'] as const) {
+      const compressed = compress(HELLO, { format });
+      const extended = new Uint8Array(compressed.byteLength + 1);
+      extended.set(compressed);
+      const decompressor = createDecompressor({ format });
+      decompressor.write(extended);
+      t.throws(() => decompressor.finish(), /trailing/i, `${format} streaming rejects trailing input`);
+    }
+  });
+
+  it('brotli streaming decompression rejects trailing junk', (t) => {
+    if (!brotliAvailable) {
+      t.ok(true, 'brotli not available');
+      return;
+    }
+
+    const compressed = compress(HELLO, { format: 'brotli' });
+    const extended = new Uint8Array(compressed.byteLength + 1);
+    extended.set(compressed);
+    const decompressor = createDecompressor({ format: 'brotli' });
+    decompressor.write(extended);
+    t.throws(() => decompressor.finish(), /trailing/i, 'brotli streaming rejects trailing input');
+  });
 });
 
 describe('async iterable transforms', () => {

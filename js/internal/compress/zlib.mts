@@ -168,13 +168,14 @@ function inflateOneShot(data: ByteInput, windowBits: number): Uint8Array {
       const produced = CHUNK - zs.availOut;
       if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
       if (r === Z_STREAM_END) { done = true; break; }
-      if (r !== Z_OK && r !== Z_BUF_ERROR) throw new Error(`zlib inflate error (${r})`);
+      if (r !== Z_OK && r !== Z_BUF_ERROR) throw new TypeError(`zlib inflate error (${r})`);
     } while (zs.availIn > 0 || zs.availOut === 0);
   } finally {
     z.symbols.inflateEnd(zs.buffer);
   }
 
-  if (!done) throw new Error('zlib inflate: unexpected end of compressed data');
+  if (done && zs.availIn > 0) throw new TypeError('zlib inflate: trailing data after compressed stream');
+  if (!done) throw new TypeError('zlib inflate: unexpected end of compressed data');
   return concat(parts);
 }
 
@@ -386,6 +387,7 @@ class ZlibCodec implements CompressionTransform {
   #isDeflate: boolean;
   #closed = false;
   #finished = false;
+  #pendingError: Error | null = null;
 
   constructor(windowBits: number, level: number, isDeflate: boolean) {
     this.#isDeflate = isDeflate;
@@ -397,6 +399,7 @@ class ZlibCodec implements CompressionTransform {
 
   write(chunk: ByteInput): Uint8Array[] {
     this.#assertOpen();
+    if (this.#pendingError !== null) throw this.#pendingError;
     if (this.#finished) throw new Error('compression stream already finished');
 
     const u8 = toU8(chunk);
@@ -413,8 +416,16 @@ class ZlibCodec implements CompressionTransform {
       const produced = CHUNK - this.#zs.availOut;
       if (produced > 0) parts.push(new Uint8Array(this.#outBuf, 0, produced).slice());
 
-      if (r === Z_STREAM_END) { this.#finished = true; break; }
-      if (r !== Z_OK && r !== Z_BUF_ERROR) throw new Error(`zlib error (${r})`);
+      if (r === Z_STREAM_END) {
+        if (!this.#isDeflate && this.#zs.availIn > 0) {
+          this.#pendingError = new TypeError('zlib inflate: trailing data after compressed stream');
+        }
+        this.#finished = true;
+        break;
+      }
+      if (r !== Z_OK && r !== Z_BUF_ERROR) {
+        throw this.#isDeflate ? new Error(`zlib error (${r})`) : new TypeError(`zlib inflate error (${r})`);
+      }
     } while (this.#zs.availIn > 0 || this.#zs.availOut === 0);
 
     return parts;
@@ -422,6 +433,11 @@ class ZlibCodec implements CompressionTransform {
 
   finish(): Uint8Array[] {
     this.#assertOpen();
+    if (this.#pendingError !== null) {
+      const error = this.#pendingError;
+      this.close();
+      throw error;
+    }
     if (this.#finished) return [];
 
     const parts: Uint8Array[] = [];
@@ -439,7 +455,7 @@ class ZlibCodec implements CompressionTransform {
           }
         } while (r !== Z_STREAM_END);
       } else {
-        throw new Error('zlib inflate: unexpected end of compressed data');
+        throw new TypeError('zlib inflate: unexpected end of compressed data');
       }
       this.#finished = true;
       return parts;

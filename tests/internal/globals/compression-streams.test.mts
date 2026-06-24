@@ -10,7 +10,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { compress, decompress } from 'fino:compress';
+import { brotliAvailable, compress, decompress } from 'fino:compress';
 
 /** Encode a string to Uint8Array. */
 function enc(str: string): Uint8Array {
@@ -61,13 +61,11 @@ describe('basic shape', () => {
   });
 
   it('CompressionStream: throws TypeError for unknown format', (t) => {
-    t.throws(() => new CompressionStream('brotli' as any),   /unsupported format/i, 'brotli rejected');
     t.throws(() => new CompressionStream('lz4' as any),      /unsupported format/i, 'lz4 rejected');
     t.throws(() => new CompressionStream('' as any),         /unsupported format/i, 'empty rejected');
   });
 
   it('DecompressionStream: throws TypeError for unknown format', (t) => {
-    t.throws(() => new DecompressionStream('brotli' as any), /unsupported format/i, 'brotli rejected');
     t.throws(() => new DecompressionStream('' as any),       /unsupported format/i, 'empty rejected');
   });
 });
@@ -98,6 +96,19 @@ describe('roundtrips', () => {
     const decompressed = await pipe(new DecompressionStream('deflate-raw'), compressed);
 
     t.equal(dec(decompressed), dec(original), 'deflate-raw roundtrip');
+  });
+
+  it('CompressionStream / DecompressionStream: brotli roundtrip when available', async (t) => {
+    if (!brotliAvailable) {
+      t.throws(() => new CompressionStream('brotli' as any), /brotli library not available/i, 'brotli construction reports missing backend');
+      return;
+    }
+
+    const original = enc('brotli stream '.repeat(50));
+    const compressed   = await pipe(new CompressionStream('brotli' as any), original);
+    const decompressed = await pipe(new DecompressionStream('brotli' as any), compressed);
+
+    t.equal(dec(decompressed), dec(original), 'brotli roundtrip');
   });
 });
 

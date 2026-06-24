@@ -128,6 +128,7 @@ function needsWptServer(source: string): boolean {
       || /\{\{host\}\}/.test(source)
       || /\bweb-platform\.test\b/.test(source)
       || /['"`]\.\.\/resources\//.test(source)
+      || /['"`]\/media\//.test(source)
       || /\bfetch\s*\(\s*location\.href\b/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
       || /\/fetch\/api\/resources\//.test(source);

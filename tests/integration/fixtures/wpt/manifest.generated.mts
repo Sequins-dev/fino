@@ -5909,8 +5909,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/formats.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -5929,14 +5929,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/decompress.js",
         "resources/formats.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "CompressionStream constructor should throw on invalid format"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "compression/compression-with-detach.any.js",

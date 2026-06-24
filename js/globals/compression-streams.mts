@@ -6,8 +6,8 @@
  * Wraps the streaming compression API from fino:compress in the
  * standard Web Streams interface (ReadableStream / WritableStream pair).
  *
- * Supported formats: 'gzip', 'deflate', 'deflate-raw'
- * (Brotli is not part of the WHATWG spec.)
+ * Supported formats: 'gzip', 'deflate', 'deflate-raw', and 'brotli' when the
+ * platform Brotli backend is available.
  *
  * DecompressionStream mirrors the web API and does not expose a maximum output
  * size option. Consumers that handle untrusted compressed input should read the
@@ -50,10 +50,7 @@ import { createCompressor, createDecompressor } from 'fino:compress';
 // ---------------------------------------------------------------------------
 
 /**
- * Compression formats supported by WHATWG CompressionStream.
- *
- * Brotli is intentionally excluded because it is not part of the standard
- * Compression Streams constructor format set.
+ * Compression formats supported by Fino's CompressionStream.
  *
  * ```typescript no_run
  * const format: CompressionFormat = 'gzip';
@@ -62,18 +59,20 @@ import { createCompressor, createDecompressor } from 'fino:compress';
  *
  * @internal
  */
-type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw';
+type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli';
 
 const COMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> }> = {
   'gzip':        () => createCompressor({ format: 'gzip' }),
   'deflate':     () => createCompressor({ format: 'deflate' }),
   'deflate-raw': () => createCompressor({ format: 'deflate-raw' }),
+  'brotli':      () => createCompressor({ format: 'brotli' }),
 };
 
 const DECOMPRESS_FORMATS: Record<string, () => { transform(input: AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> }> = {
   'gzip':        () => createDecompressor({ format: 'gzip' }),
   'deflate':     () => createDecompressor({ format: 'deflate' }),
   'deflate-raw': () => createDecompressor({ format: 'deflate-raw' }),
+  'brotli':      () => createDecompressor({ format: 'brotli' }),
 };
 
 // ---------------------------------------------------------------------------
@@ -176,8 +175,8 @@ function _makeStreams(factory: () => { transform(input: AsyncIterable<Uint8Array
 // ---------------------------------------------------------------------------
 
 /**
- * Transforms a stream of bytes by compressing it using gzip, deflate, or
- * deflate-raw (raw DEFLATE without a wrapper).
+ * Transforms a stream of bytes by compressing it using gzip, deflate,
+ * deflate-raw (raw DEFLATE without a wrapper), or Brotli.
  *
  * ```ts no_run
  * const cs = new CompressionStream('gzip');
@@ -298,8 +297,8 @@ export class CompressionStream {
 }
 
 /**
- * Transforms a stream of compressed bytes (gzip, deflate, or deflate-raw)
- * into the original uncompressed data.
+ * Transforms a stream of compressed bytes (gzip, deflate, deflate-raw, or
+ * Brotli) into the original uncompressed data.
  *
  * ```ts no_run
  * const ds = new DecompressionStream('gzip');

@@ -182,33 +182,15 @@ export function brotliCompress(data: ByteInput, opts?: BrotliCompressionOptions)
  * @internal
  */
 export function brotliDecompress(data: ByteInput): Uint8Array {
-  const brotli = requireBrotliDecoder();
-  const u8 = toU8(data);
-
-  let outSize = Math.max(u8.byteLength * 256, 65536);
-  const maxOut = 256 * 1024 * 1024;
-  while (outSize <= maxOut) {
-    const outBuf = new ArrayBuffer(outSize);
-    const sizeBuf = new ArrayBuffer(8);
-    new DataView(sizeBuf).setBigUint64(0, BigInt(outSize), true);
-
-    const result = brotli.symbols.BrotliDecoderDecompress(
-      u8.byteLength, u8, sizeBuf, outBuf,
-    );
-
-    if (result === BROTLI_DECODER_RESULT_SUCCESS) {
-      const actual = Number(new DataView(sizeBuf).getBigUint64(0, true));
-      return new Uint8Array(outBuf, 0, actual).slice();
-    }
-    outSize *= 4;
-  }
-  throw new Error('brotliDecompress failed');
+  const decoder = new BrotliDecompressor();
+  return collectBrotliTransform(decoder, [data]);
 }
 
 class BrotliCodec implements CompressionTransform {
   #state: Pointer | null;
   #closed = false;
   #finished = false;
+  #pendingError: Error | null = null;
   #outBuf = new ArrayBuffer(CHUNK);
   #outBufAddr = Pointer.addr(this.#outBuf);
   #availInBuf = new ArrayBuffer(8);
@@ -254,6 +236,14 @@ class BrotliCodec implements CompressionTransform {
 
   protected get finished(): boolean { return this.#finished; }
   protected set finished(value: boolean) { this.#finished = value; }
+  protected takePendingError(): Error | null {
+    const error = this.#pendingError;
+    this.#pendingError = null;
+    return error;
+  }
+  protected setPendingError(error: Error): void {
+    this.#pendingError = error;
+  }
   protected get buffers() {
     return {
       outBuf: this.#outBuf,
@@ -511,6 +501,8 @@ export class BrotliDecompressor extends BrotliCodec {
    */
   write(chunk: ByteInput): Uint8Array[] {
     this.assertOpen();
+    const pendingError = this.takePendingError();
+    if (pendingError !== null) throw pendingError;
     if (this.finished) return [];
     const { outBuf, availInBuf, nextInBuf, availOutBuf, nextOutBuf, dvAI, dvNI, dvAO, dvNO, outBufAddr } = this.buffers;
     const u8 = toU8(chunk);
@@ -532,10 +524,17 @@ export class BrotliDecompressor extends BrotliCodec {
       const produced = CHUNK - Number(dvAO.getBigUint64(0, true));
       if (produced > 0) parts.push(new Uint8Array(outBuf, 0, produced).slice());
 
-      if (result === BROTLI_DECODER_RESULT_SUCCESS) { this.finished = true; break; }
+      if (result === BROTLI_DECODER_RESULT_SUCCESS) {
+        remaining = Number(dvAI.getBigUint64(0, true));
+        if (remaining > 0) {
+          this.setPendingError(new TypeError('BrotliDecoderDecompressStream failed: trailing data after compressed stream'));
+        }
+        this.finished = true;
+        break;
+      }
       if (result !== BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT &&
           result !== BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT) {
-        throw new Error(`BrotliDecoderDecompressStream failed (result=${result})`);
+        throw new TypeError(`BrotliDecoderDecompressStream failed (result=${result})`);
       }
 
       remaining = Number(dvAI.getBigUint64(0, true));
@@ -559,8 +558,10 @@ export class BrotliDecompressor extends BrotliCodec {
   finish(): Uint8Array[] {
     this.assertOpen();
     try {
+      const pendingError = this.takePendingError();
+      if (pendingError !== null) throw pendingError;
       if (!this.finished) {
-        throw new Error('BrotliDecoderDecompressStream failed: unexpected end of compressed data');
+        throw new TypeError('BrotliDecoderDecompressStream failed: unexpected end of compressed data');
       }
       this.finished = true;
       return [];
