@@ -994,6 +994,81 @@ describe('fetch() method normalization', () => {
   });
 });
 
+describe('Request structure', () => {
+  it('exposes read-only metadata defaults', (t) => {
+    const req = new Request('https://example.com/');
+    const defaults = {
+      destination: '',
+      referrer: 'about:client',
+      referrerPolicy: '',
+      mode: 'cors',
+      credentials: 'same-origin',
+      cache: 'default',
+      redirect: 'follow',
+      integrity: '',
+      isReloadNavigation: false,
+      isHistoryNavigation: false,
+      duplex: 'half',
+    };
+
+    for (const [name, value] of Object.entries(defaults)) {
+      t.equal((req as any)[name], value, `${name} default`);
+      try {
+        (req as any)[name] = 'changed';
+      } catch (_) {
+        // Getter-only properties throw on assignment in module strict mode.
+      }
+      t.equal((req as any)[name], value, `${name} is read-only`);
+    }
+
+    t.equal('priority' in req, false, 'priority remains internal');
+    t.equal('internalpriority' in req, false, 'internalpriority remains internal');
+    t.equal('blocking' in req, false, 'blocking remains internal');
+  });
+});
+
+describe('Request disturbed state', () => {
+  it('rejects constructing from a consumed request body', async (t) => {
+    const consumed = new Request('https://example.com/', { method: 'POST', body: 'body' });
+    await consumed.text();
+
+    t.throws(
+      () => new Request(consumed),
+      TypeError,
+      'consumed input body cannot be reused',
+    );
+  });
+
+  it('transfers input request body to the constructed request', async (t) => {
+    const input = new Request('https://example.com/', { method: 'POST', body: 'body' });
+    const originalBody = input.body;
+    const copy = new Request(input);
+
+    t.equal(input.bodyUsed, true, 'input request is disturbed');
+    t.equal(input.body, originalBody, 'input body object stays stable');
+    t.notEqual(copy.body, originalBody, 'constructed request gets a distinct body');
+    t.equal(await copy.text(), 'body', 'constructed request receives input body bytes');
+  });
+
+  it('does not disturb input request when construction fails', (t) => {
+    const input = new Request('https://example.com/', { method: 'POST', body: 'body' });
+
+    t.throws(
+      () => new Request(input, { method: 'GET' }),
+      TypeError,
+      'GET cannot inherit a body',
+    );
+    t.equal(input.bodyUsed, false, 'failed method validation leaves body unused');
+
+    t.throws(
+      () => new Request(input, { method: 'CONNECT' }),
+      TypeError,
+      'forbidden method fails before body transfer',
+    );
+    t.equal(input.bodyUsed, false, 'forbidden method leaves body unused');
+  });
+});
+
 describe('Integrity + referrerPolicy', () => {
   it('integrity check passes for matching SHA-256 hash', async (t) => {
     const body = 'hello integrity';

@@ -1616,17 +1616,24 @@ export class Request {
     }
 
     // Spec-style construction.
-    this.#url     = input instanceof Request ? input.#url : String(input);
-    this.#blobUrlObject = input instanceof Request ? input.#blobUrlObject : _resolveObjectURL(this.#url);
-    const rawMethod = (init && init.method) ? String(init.method) : 'GET';
-    this.#method  = _normalizeRequestMethod(rawMethod);
-    this.#headers = (init && init.headers) ? new Headers(init.headers) : new Headers();
+    const inputRequest = input instanceof Request ? input : null;
+    this.#url = inputRequest !== null ? inputRequest.#url : String(input);
+    this.#blobUrlObject = inputRequest !== null ? inputRequest.#blobUrlObject : _resolveObjectURL(this.#url);
+    const rawMethod = (init && init.method) ? String(init.method) : (inputRequest !== null ? inputRequest.#method : 'GET');
+    this.#method = _normalizeRequestMethod(rawMethod);
+    this.#headers = (init && init.headers)
+      ? new Headers(init.headers)
+      : (inputRequest !== null ? new Headers(inputRequest.#headers) : new Headers());
     this.#version = '';
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
-    if (init && init.body != null) {
-      if (this.#method === 'GET' || this.#method === 'HEAD') {
-        throw new TypeError(`Request with ${this.#method} method cannot have a body`);
-      }
+
+    const initHasBody = init && init.body != null;
+    const inheritedBody = inputRequest !== null && inputRequest.#rawBody !== null;
+    if ((this.#method === 'GET' || this.#method === 'HEAD') && (initHasBody || inheritedBody)) {
+      throw new TypeError(`Request with ${this.#method} method cannot have a body`);
+    }
+
+    if (initHasBody) {
       if (init.body instanceof FormData) {
         const fd = init.body;
         const boundary = _createMultipartBoundary();
@@ -1652,6 +1659,16 @@ export class Request {
         this.#rawBody = init.body as unknown as AsyncIterable<Uint8Array>;
       } else {
         this.#rawBody = _iterableFromBytes(_toBytes(init.body));
+      }
+      if (inputRequest !== null && inheritedBody) inputRequest.#bodyUsed = true;
+    } else if (inputRequest !== null && inheritedBody) {
+      if (inputRequest.bodyUsed) throw new TypeError('Cannot construct a Request from a disturbed Request');
+      inputRequest.#bodyUsed = true;
+      if (inputRequest.#rawBody instanceof ReadableStream) {
+        const [, body] = inputRequest.#rawBody.tee();
+        this.#rawBody = body;
+      } else {
+        this.#rawBody = inputRequest.#rawBody;
       }
     } else {
       this.#rawBody = null;
@@ -1759,6 +1776,125 @@ export class Request {
    * ```
    */
   get headers() { return this.#headers; }
+
+  /** Request destination.
+   *
+   * Fino does not currently attach requests to browser fetch destinations, so
+   * constructed and parsed requests expose the Fetch default empty string.
+   *
+   * ```ts no_run
+   * console.log(req.destination);
+   * ```
+   */
+  get destination() { return ''; }
+
+  /** Referrer URL metadata.
+   *
+   * Requests default to `about:client`, matching Fetch's client referrer
+   * sentinel. Network requests may still suppress or derive the actual
+   * `Referer` header from fetch options.
+   *
+   * ```ts no_run
+   * console.log(req.referrer);
+   * ```
+   */
+  get referrer() { return 'about:client'; }
+
+  /** Referrer policy metadata.
+   *
+   * The Request object exposes the default empty policy string. Fetch options
+   * can still influence the outgoing `Referer` header for a request.
+   *
+   * ```ts no_run
+   * console.log(req.referrerPolicy || 'default policy');
+   * ```
+   */
+  get referrerPolicy() { return ''; }
+
+  /** Fetch mode metadata.
+   *
+   * Fino exposes the default `cors` mode for Request objects while treating
+   * browser-only CORS enforcement modes as compatibility metadata.
+   *
+   * ```ts no_run
+   * console.log(req.mode);
+   * ```
+   */
+  get mode() { return 'cors'; }
+
+  /** Credential mode metadata.
+   *
+   * Requests expose the Fetch default `same-origin` credential mode. Fino does
+   * not maintain a browser cookie jar for this value.
+   *
+   * ```ts no_run
+   * console.log(req.credentials);
+   * ```
+   */
+  get credentials() { return 'same-origin'; }
+
+  /** Cache mode metadata.
+   *
+   * Fino does not maintain a browser HTTP cache, so Request objects expose the
+   * default `default` cache mode as compatibility metadata.
+   *
+   * ```ts no_run
+   * console.log(req.cache);
+   * ```
+   */
+  get cache() { return 'default'; }
+
+  /** Redirect mode metadata.
+   *
+   * Requests expose Fetch's default `follow` redirect mode. Redirect behavior
+   * for `fetch()` is still controlled by the fetch options passed to the call.
+   *
+   * ```ts no_run
+   * console.log(req.redirect);
+   * ```
+   */
+  get redirect() { return 'follow'; }
+
+  /** Subresource integrity metadata.
+   *
+   * Constructed Request objects expose the default empty integrity string.
+   * Fino validates integrity when the value is supplied to `fetch()`.
+   *
+   * ```ts no_run
+   * console.log(req.integrity);
+   * ```
+   */
+  get integrity() { return ''; }
+
+  /** Reload navigation flag.
+   *
+   * Fino has no browser navigation context, so requests always expose `false`.
+   *
+   * ```ts no_run
+   * console.log(req.isReloadNavigation);
+   * ```
+   */
+  get isReloadNavigation() { return false; }
+
+  /** History navigation flag.
+   *
+   * Fino has no browser navigation context, so requests always expose `false`.
+   *
+   * ```ts no_run
+   * console.log(req.isHistoryNavigation);
+   * ```
+   */
+  get isHistoryNavigation() { return false; }
+
+  /** Streaming request duplex mode.
+   *
+   * Fetch currently defines `half` as the exposed duplex value for requests.
+   *
+   * ```ts no_run
+   * console.log(req.duplex);
+   * ```
+   */
+  get duplex() { return 'half'; }
 
   /**
    * The body as a ReadableStream, or null if no body.
