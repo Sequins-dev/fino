@@ -144,7 +144,7 @@ type HeadersInit =
   | null
   | undefined;
 
-type BodyInit = string | Uint8Array | ArrayBuffer | FormData | null;
+type BodyInit = string | Uint8Array | ArrayBuffer | Blob | FormData | URLSearchParams | null;
 
 type OutTrailers = Headers | (() => Headers | Promise<Headers>);
 
@@ -691,10 +691,11 @@ function _iterableFromBytes(bytes: Uint8Array): AsyncByteIterable {
  * Accepts: string, ArrayBuffer, Uint8Array.
  */
 function _toBytes(body: Exclude<BodyInit, null>): Uint8Array {
+  if (body instanceof URLSearchParams) return encodeUtf8(String(body));
   if (body instanceof Uint8Array) return body;
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
   if (typeof body === 'string') return encodeUtf8(body);
-  throw new TypeError('Body must be a string, ArrayBuffer, or Uint8Array');
+  throw new TypeError('Body must be a string, ArrayBuffer, Uint8Array, Blob, FormData, or URLSearchParams');
 }
 
 function _nonThenableBytes<T extends object>(value: T): T {
@@ -1557,6 +1558,16 @@ export class Request {
           const { body } = await _serializeFormData(fd, boundary);
           yield body;
         } };
+      } else if (init.body instanceof URLSearchParams) {
+        if (!this.#headers.has('content-type')) {
+          this.#headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
+        }
+        this.#rawBody = _iterableFromBytes(_toBytes(init.body));
+      } else if (init.body instanceof Blob) {
+        if (init.body.type !== '' && !this.#headers.has('content-type')) {
+          this.#headers.set('content-type', init.body.type);
+        }
+        this.#rawBody = init.body.stream() as unknown as AsyncIterable<Uint8Array>;
       } else if (typeof (init.body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function' ||
                  (typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream)) {
         this.#rawBody = init.body as unknown as AsyncIterable<Uint8Array>;
@@ -1841,7 +1852,7 @@ export class Request {
     if (this.#rawBody === null) {
       return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject });
     }
-    const stream = this.#bodyStream ?? ReadableStream.from(this.#rawBody);
+    const stream = this.#bodyStream ?? (this.#rawBody instanceof ReadableStream ? this.#rawBody : ReadableStream.from(this.#rawBody));
     const [a, b] = stream.tee();
     this.#bodyStream = a;
     this.#rawBody = a as any;
@@ -2195,6 +2206,16 @@ export class Response {
           const { body: bytes } = await _serializeFormData(fd, boundary);
           yield bytes;
         } };
+      } else if (body instanceof URLSearchParams) {
+        if (!this.#headers.has('content-type')) {
+          this.#headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
+        }
+        this.#rawBody = _toBytes(body);
+      } else if (body instanceof Blob) {
+        if (body.type !== '' && !this.#headers.has('content-type')) {
+          this.#headers.set('content-type', body.type);
+        }
+        this.#rawBody = body.stream() as unknown as AsyncIterable<Uint8Array>;
       } else if (typeof (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function' ||
                  (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream)) {
         // Accept async iterables and ReadableStreams as streaming bodies.
@@ -2555,7 +2576,7 @@ export class Response {
       cloned.#type = this.#type;
       return cloned;
     }
-    const stream = this.#bodyStream ?? ReadableStream.from(this.#rawBody);
+    const stream = this.#bodyStream ?? (this.#rawBody instanceof ReadableStream ? this.#rawBody : ReadableStream.from(this.#rawBody));
     const [a, b] = stream.tee();
     this.#bodyStream = a;
     this.#rawBody = a;

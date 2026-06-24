@@ -443,7 +443,7 @@ export class Blob {
     return new ReadableStream({
       type: 'bytes',
       pull(controller: ReadableByteStreamController) {
-        controller.enqueue(new Uint8Array(bytes));
+        if (bytes.byteLength > 0) controller.enqueue(new Uint8Array(bytes));
         controller.close();
       },
     }, undefined);
