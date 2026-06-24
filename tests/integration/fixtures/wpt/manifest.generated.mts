@@ -483,9 +483,14 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader in document or worker environment",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "CR/LF in adjacent input strings"
+        }
+      ]
     },
     {
       "path": "FileAPI/blob/Blob-constructor.any.js",
@@ -942,9 +947,14 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader in document or worker environment",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "CR/LF in adjacent input strings"
+        }
+      ]
     },
     {
       "path": "FileAPI/file/File-constructor.any.js",
@@ -1415,7 +1425,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires worker importScripts dependency loading for FileReaderSync coverage",
+      "reason": "requires DedicatedWorker/SharedWorker exposure modeling for FileReaderSync IDL",
       "subtests": []
     },
     {
@@ -1858,7 +1868,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires worker importScripts dependency loading for FileReaderSync coverage",
+      "reason": "requires ServiceWorker exposure modeling for FileReaderSync historical coverage",
       "subtests": []
     },
     {

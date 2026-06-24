@@ -22,6 +22,7 @@ const wptRoot = join(cwd(), 'third_party/wpt').toString();
 const testPath = argv[2] ?? '';
 const subtest = argv[3] === undefined || argv[3] === '' ? null : argv[3];
 const isWorkerTest = testPath.endsWith('.worker.js');
+const workerImportScriptSources = new Map<string, { path: string; source: string }>();
 
 function print(result: ChildResult): never {
   console.log(JSON.stringify(result));
@@ -58,7 +59,9 @@ function installWorkerImportScripts(g: any): void {
   g.importScripts = (...specifiers: string[]) => {
     for (const specifier of specifiers) {
       if (specifier === '/resources/testharness.js') continue;
-      throw new Error(`unsupported worker importScripts specifier: ${specifier}`);
+      const loaded = workerImportScriptSources.get(specifier);
+      if (loaded === undefined) throw new Error(`unsupported worker importScripts specifier: ${specifier}`);
+      (0, eval)(loaded.source + `\n//# sourceURL=${loaded.path}`);
     }
   };
 }
@@ -98,6 +101,8 @@ function installBaseGlobals(): void {
       valueOf() { return this.href; },
     };
   }
+  if (g.navigator === undefined) g.navigator = {};
+  if (g.navigator.platform === undefined) g.navigator.platform = '';
 
   const nativeFetch = g.fetch.bind(g);
   g.fetch = async function fetch(input: unknown, init?: RequestInit) {
@@ -125,6 +130,33 @@ function discoverMetaScripts(source: string): string[] {
   return scripts;
 }
 
+function discoverWorkerImportScripts(source: string): string[] {
+  const scripts: string[] = [];
+  const callPattern = /\bimportScripts\s*\(([^)]*)\)/g;
+  let callMatch: RegExpExecArray | null;
+  while ((callMatch = callPattern.exec(source)) !== null) {
+    const args = callMatch[1]!;
+    const stringPattern = /(['"])((?:\\.|(?!\1)[\s\S])*)\1/g;
+    let stringMatch: RegExpExecArray | null;
+    while ((stringMatch = stringPattern.exec(args)) !== null) {
+      scripts.push(stringMatch[2]!.replace(/\\(['"\\])/g, '$1'));
+    }
+  }
+  return scripts;
+}
+
+async function preloadWorkerImportScripts(basePath: string, source: string): Promise<void> {
+  if (!isWorkerTest) return;
+  for (const specifier of discoverWorkerImportScripts(source)) {
+    if (specifier === '/resources/testharness.js' || workerImportScriptSources.has(specifier)) continue;
+    const path = scriptPath(basePath, specifier);
+    workerImportScriptSources.set(specifier, {
+      path,
+      source: await fs.readFile(path),
+    });
+  }
+}
+
 async function evalFile(path: string): Promise<void> {
   const source = await fs.readFile(path);
   (0, eval)(source + `\n//# sourceURL=${path}`);
@@ -137,9 +169,23 @@ async function evalTestWithMetaScripts(basePath: string, source: string): Promis
     combined += await fs.readFile(path);
     combined += `\n//# sourceURL=${path}\n`;
   }
-  combined += source;
+  combined += sourceForEval(basePath, source);
   const testAbsolutePath = join(wptRoot, basePath).toString();
   (0, eval)(combined + `\n//# sourceURL=${testAbsolutePath}`);
+}
+
+function sourceForEval(basePath: string, source: string): string {
+  if (!/\.html$/.test(basePath)) return source;
+  const scripts: string[] = [];
+  const pattern = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(source)) !== null) {
+    const attrs = match[1]!;
+    if (/\bsrc\s*=/.test(attrs)) continue;
+    scripts.push(match[2]!);
+  }
+  if (scripts.length === 0) throw new Error(`WPT HTML file has no inline scripts: ${basePath}`);
+  return scripts.join('\n');
 }
 
 function requiresWptServer(source: string): boolean {
@@ -172,6 +218,7 @@ async function main(): Promise<void> {
   const harnessPath = join(wptRoot, 'resources/testharness.js').toString();
   const testAbsolutePath = join(wptRoot, testPath).toString();
   const source = await fs.readFile(testAbsolutePath);
+  await preloadWorkerImportScripts(testPath, source);
   let runnableSource = source;
   for (const script of discoverMetaScripts(source)) {
     runnableSource += '\n' + await fs.readFile(scriptPath(testPath, script));

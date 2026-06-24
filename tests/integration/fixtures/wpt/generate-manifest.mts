@@ -167,7 +167,9 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
     path === 'fetch/fetch-later/basic.https.worker.js' ||
     path === 'FileAPI/blob/Blob-in-worker.worker.js' ||
     path === 'FileAPI/file/Worker-read-file-constructor.worker.js' ||
-    path === 'FileAPI/FileReaderSync.worker.js'
+    path === 'FileAPI/FileReaderSync.worker.js' ||
+    path === 'FileAPI/blob/Blob-constructor-endings.html' ||
+    path === 'FileAPI/file/File-constructor-endings.html'
   ) {
     return { runnable: true, reason: null };
   }
@@ -179,6 +181,12 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   }
   if (/\bcaches\b|\bCacheStorage\b|\bCache\b/.test(source)) {
     return { runnable: false, reason: 'requires Cache API globals, which Fino does not install' };
+  }
+  if (path === 'FileAPI/idlharness.worker.js') {
+    return { runnable: false, reason: 'requires DedicatedWorker/SharedWorker exposure modeling for FileReaderSync IDL' };
+  }
+  if (path === 'FileAPI/support/historical-serviceworker.js') {
+    return { runnable: false, reason: 'requires ServiceWorker exposure modeling for FileReaderSync historical coverage' };
   }
   if (/\bFileReaderSync\b/.test(source)) return { runnable: false, reason: 'requires worker importScripts dependency loading for FileReaderSync coverage' };
   if (/\bFileReader\b/.test(source) && type !== '.any.js') {
