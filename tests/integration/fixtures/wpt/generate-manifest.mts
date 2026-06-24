@@ -119,6 +119,7 @@ function decodeStringLiteral(raw: string): string {
 function needsWptServer(source: string): boolean {
   return /\bfetch\s*\(\s*['"`]\//.test(source)
       || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source)
+      || /\bfetch\s*\(\s*['"`](?![A-Za-z][A-Za-z0-9+.-]*:)/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
       || /\/fetch\/api\/resources\//.test(source);
 }
@@ -130,13 +131,13 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
   }
   if (/\bFileReader(?:Sync)?\b/.test(source)) return { runnable: false, reason: 'requires FileReader/FileReaderSync globals, which Fino does not install' };
-  if (needsWptServer(source)) return { runnable: false, reason: 'requires upstream WPT server and host setup' };
-  if (type === '.any.js') return { runnable: true, reason: null };
   if (type === '.js') return { runnable: false, reason: 'standalone helper script, not a WPT test entry' };
   if (type === '.worker.js') return { runnable: false, reason: 'requires Worker test environment' };
   if (type === '.window.js' || type === '.html' || type === '.https.html') {
     return { runnable: false, reason: 'requires document/window navigation' };
   }
+  if (needsWptServer(source)) return { runnable: false, reason: 'requires upstream WPT server and host setup' };
+  if (type === '.any.js') return { runnable: true, reason: null };
   if (/\bdocument\b|\bwindow\b/.test(source)) return { runnable: false, reason: 'requires document/window navigation' };
   return { runnable: false, reason: `unsupported WPT file type ${type}` };
 }

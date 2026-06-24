@@ -404,7 +404,7 @@ describe('Redirects — Authorization header security', () => {
     }
   });
 
-  it('Cookie and Cookie2 headers are preserved on same-origin redirect', async (t) => {
+  it('Cookie and Cookie2 headers are filtered on same-origin redirect', async (t) => {
     let secondRequestCookie: string | null = null;
     let secondRequestCookie2: string | null = null;
     const server = serveHttp({ port: 0 }, (req) => {
@@ -427,8 +427,8 @@ describe('Redirects — Authorization header security', () => {
           cookie2: '$Version="1"',
         },
       });
-      t.equal(secondRequestCookie, 'sid=secret', 'Cookie header preserved on same-origin redirect');
-      t.equal(secondRequestCookie2, '$Version="1"', 'Cookie2 header preserved on same-origin redirect');
+      t.equal(secondRequestCookie, null, 'Cookie header filtered before same-origin redirect');
+      t.equal(secondRequestCookie2, null, 'Cookie2 header filtered before same-origin redirect');
     } finally {
       await server.close();
     }
@@ -687,7 +687,7 @@ describe('Misc', () => {
           credentials: 'omit',
         });
         t.equal(await explicit.text(), 'response-3', 'explicit caller-provided cookie request succeeds');
-        t.equal(cookies[2], 'sid=caller-provided', 'explicit Cookie header remains caller controlled');
+        t.equal(cookies[2], null, 'forbidden caller-provided Cookie header is filtered');
       },
     );
   });
@@ -872,7 +872,7 @@ describe('Compression', () => {
     );
   });
 
-  it('user-set Accept-Encoding is preserved', async (t) => {
+  it('user-set Accept-Encoding is filtered', async (t) => {
     let received: string | null = null;
     await withServer(19822,
       (req) => {
@@ -881,7 +881,10 @@ describe('Compression', () => {
       },
       async (url) => {
         await fetch(url, { headers: { 'accept-encoding': 'identity' } });
-        t.equal(received, 'identity', 'user Accept-Encoding not overwritten');
+        t.ok(received, 'default Accept-Encoding is still sent');
+        if (received === null) throw new Error('Accept-Encoding should be present');
+        t.notEqual(received, 'identity', 'forbidden user Accept-Encoding is filtered');
+        t.ok(received.includes('gzip'), 'default includes gzip');
       },
     );
   });
@@ -1043,6 +1046,129 @@ describe('fetch() method normalization', () => {
         `${method} is forbidden`,
       );
     }
+  });
+
+  it('invalid method tokens throw', (t) => {
+    for (const method of ['', 'IN VALID', 'GET\nX', 'POST()']) {
+      t.throws(
+        () => new Request('https://example.com/', { method }),
+        TypeError,
+        `${JSON.stringify(method)} is not an HTTP token`,
+      );
+    }
+  });
+});
+
+describe('Request init validation', () => {
+  it('rejects invalid and credentialed input URLs', (t) => {
+    t.throws(
+      () => new Request('http://:not a valid URL'),
+      TypeError,
+      'invalid input URL throws',
+    );
+    t.throws(
+      () => new Request('http://user:pass@example.com/'),
+      TypeError,
+      'credentials in input URL throw',
+    );
+  });
+
+  it('rejects invalid RequestInit enum values', (t) => {
+    for (const option of ['referrerPolicy', 'mode', 'credentials', 'cache', 'redirect', 'priority']) {
+      t.throws(
+        () => new Request('https://example.com/', { [option]: 'BAD' } as any),
+        TypeError,
+        `${option} rejects invalid values`,
+      );
+    }
+  });
+
+  it('accepts valid priority metadata and rejects invalid fetch priority before network', async (t) => {
+    for (const priority of ['high', 'low', 'auto']) {
+      new Request('https://example.com/', { priority } as any);
+    }
+    await t.rejects(
+      () => fetch('http://127.0.0.1:19824/', { priority: 'invalid' as any }),
+      TypeError,
+      'invalid fetch priority rejects before connecting',
+    );
+  });
+
+  it('rejects invalid RequestInit combinations', (t) => {
+    t.throws(
+      () => new Request('https://example.com/', { window: 'https://example.com/' } as any),
+      TypeError,
+      'window must be null when provided',
+    );
+    t.throws(
+      () => new Request('https://example.com/', { mode: 'navigate' } as any),
+      TypeError,
+      'navigate mode is not allowed for constructed Requests',
+    );
+    t.throws(
+      () => new Request('https://example.com/', { mode: 'no-cors', method: 'PUT' } as any),
+      TypeError,
+      'no-cors accepts only simple methods',
+    );
+    t.throws(
+      () => new Request('https://example.com/', { mode: 'cors', cache: 'only-if-cached' } as any),
+      TypeError,
+      'only-if-cached requires same-origin mode',
+    );
+    new Request('test', { cache: 'only-if-cached', mode: 'same-origin' } as any);
+  });
+
+  it('rejects invalid referrer URLs', (t) => {
+    t.throws(
+      () => new Request('https://example.com/', { referrer: 'http://:not a valid URL' } as any),
+      TypeError,
+      'invalid referrer throws',
+    );
+  });
+});
+
+describe('Request header guards', () => {
+  it('filters forbidden request headers from init and later mutations', (t) => {
+    const request = new Request('https://example.com/', {
+      headers: {
+        Cookie: 'sid=1',
+        'Content-Length': '4',
+        'X-Allowed': 'yes',
+      },
+    });
+
+    t.equal(request.headers.get('cookie'), null, 'Cookie is filtered from init headers');
+    t.equal(request.headers.get('content-length'), null, 'Content-Length is filtered from init headers');
+    t.equal(request.headers.get('x-allowed'), 'yes', 'ordinary headers remain');
+
+    request.headers.set('Host', 'example.com');
+    request.headers.set('Proxy-Test', 'value');
+    request.headers.set('X-Other', 'ok');
+
+    t.equal(request.headers.get('host'), null, 'Host mutation is ignored');
+    t.equal(request.headers.get('proxy-test'), null, 'Proxy-* mutation is ignored');
+    t.equal(request.headers.get('x-other'), 'ok', 'ordinary mutation remains');
+  });
+
+  it('filters no-cors request headers to the safelist', (t) => {
+    const request = new Request('https://example.com/', {
+      mode: 'no-cors',
+      headers: {
+        'Content-Type': 'potato',
+        Potato: 'value',
+        Accept: 'text/html',
+      },
+    } as any);
+
+    t.equal(request.headers.get('content-type'), null, 'unsafe Content-Type is filtered from init');
+    t.equal(request.headers.get('potato'), null, 'non-safelisted init header is filtered');
+    t.equal(request.headers.get('accept'), 'text/html', 'safelisted init header remains');
+
+    request.headers.set('Content-Type', 'text/plain;charset=UTF-8');
+    request.headers.set('X-Other', 'blocked');
+
+    t.equal(request.headers.get('content-type'), 'text/plain;charset=UTF-8', 'safelisted Content-Type mutation remains');
+    t.equal(request.headers.get('x-other'), null, 'non-safelisted mutation is ignored');
   });
 });
 

@@ -135,6 +135,7 @@ interface FetchInit {
   credentials?: 'omit' | 'same-origin' | 'include';
   cache?: 'default' | 'no-store' | 'reload' | 'no-cache' | 'force-cache' | 'only-if-cached';
   keepalive?: boolean;
+  priority?: 'high' | 'low' | 'auto';
   trailers?: Headers | (() => Headers | Promise<Headers>);
   tls?: {
     ca?: string;
@@ -664,6 +665,7 @@ async function _singleFetch(
   trailers?: Headers | (() => Headers | Promise<Headers>),
   tls?: FetchInit['tls'],
   protocol: FetchProtocol = 'auto',
+  trustedHeaders?: Record<string, string>,
 ): Promise<{ response: Response; sock: Socket | TlsSocket | null }> {
   const parsed   = _parseHttpUrl(url);
   const isHttps  = parsed.protocol === 'https:';
@@ -705,6 +707,7 @@ async function _singleFetch(
         body: body !== null ? body as any : undefined,
         trailers: trailers ?? undefined,
       } as any);
+      _appendTrustedHeaders(outReq, trustedHeaders);
       const response = await poolEntry.send(outReq);
       return { response, sock: null };
     }
@@ -870,6 +873,7 @@ async function _singleFetch(
         body: body !== null ? body as any : undefined,
         trailers: trailers ?? undefined,
       } as any);
+      _appendTrustedHeaders(outReq, trustedHeaders);
       const response = await entry.send(outReq);
       return { response, sock: null };
     }
@@ -903,6 +907,7 @@ async function _singleFetch(
       body: body !== null ? body as any : undefined,
       trailers: trailers ?? undefined,
     } as any);
+    _appendTrustedHeaders(outReq, trustedHeaders);
 
     // ---- Send + parse via H1 driver -----------------------------------------
 
@@ -917,6 +922,13 @@ async function _singleFetch(
 
 const _h1Driver = new H1ClientDriver();
 const _h2Pool = new H2ConnectionPool();
+
+function _appendTrustedHeaders(request: Request, headers?: Record<string, string>): void {
+  if (headers === undefined) return;
+  for (const [name, value] of Object.entries(headers)) {
+    request._appendTrustedHeader(name, value);
+  }
+}
 
 /**
  * Build the final Response object returned to the caller.
@@ -1161,6 +1173,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   let baseHeaders: Headers;
   let baseBody: FetchBody | null;
   let baseBlobUrlObject: ReturnType<Request['_getBlobURLObject']> = null;
+  let computedReferer: string | null = null;
 
   if (input instanceof Request) {
     baseUrl     = input.url;
@@ -1182,7 +1195,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   // Apply init overrides
   if (init) {
     if (init.method  !== undefined) baseMethod  = _normalizeFetchMethod(String(init.method));
-    if (init.headers !== undefined) baseHeaders = new Headers(init.headers);
+    if (init.headers !== undefined) baseHeaders = new Headers(init.headers)._setGuard('request');
     if (init.body    !== undefined) baseBody    = init.body;
   }
 
@@ -1192,6 +1205,9 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
 
   if (redirect !== 'follow' && redirect !== 'error' && redirect !== 'manual') {
     throw new TypeError(`fetch: invalid redirect mode '${redirect}'`);
+  }
+  if (init?.priority !== undefined && init.priority !== 'high' && init.priority !== 'low' && init.priority !== 'auto') {
+    throw new TypeError(`fetch: invalid priority '${init.priority}'`);
   }
   if (protocol !== 'auto' && protocol !== 'http/1.1' && protocol !== 'h2' && protocol !== 'h3') {
     throw new TypeError(`fetch: invalid protocol '${protocol}'`);
@@ -1233,7 +1249,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
         } else if (policy === 'no-referrer-when-downgrade' || policy === 'strict-origin-when-cross-origin') {
           if (!isHttps || refIsHttps) refValue = sameOrigin ? referrer : refUrl.origin + '/';
         }
-        if (refValue !== null) baseHeaders.set('referer', refValue);
+        if (refValue !== null) computedReferer = refValue;
       } catch { /* invalid URL — skip referrer */ }
     }
   }
@@ -1277,7 +1293,8 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     let sock: Socket | TlsSocket | null;
     try {
       ({ response, sock } = await _singleFetch(
-        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers, init?.tls, protocol
+        currentUrl, currentMethod, currentHeaders, currentBody, signal, { requestId, hop }, currentTrailers, init?.tls, protocol,
+        computedReferer === null ? undefined : { referer: computedReferer }
       ));
     } catch (error) {
       topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(otelRuntimeEvent('fetch', 'request', 'error', {

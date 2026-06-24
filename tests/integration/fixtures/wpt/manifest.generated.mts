@@ -161,7 +161,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -643,7 +643,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -1623,7 +1623,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -2078,7 +2078,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -6626,7 +6626,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -8137,7 +8137,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -9140,7 +9140,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -12926,7 +12926,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -13138,7 +13138,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/encodings.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -14919,7 +14919,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -14959,7 +14959,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -15363,14 +15363,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Fetch with HEAD with body"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/basic/request-headers-case.any.js",
@@ -15443,7 +15438,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -17496,8 +17491,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17681,8 +17676,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -18361,7 +18356,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -18818,18 +18813,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "new Request() throws a TypeError if any of RequestInit's members' values are invalid"
-        },
-        {
-          "kind": "promise_test",
-          "name": "fetch() with an invalid priority returns a rejected promise with a TypeError"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/request/request-init-stream.any.js",
@@ -19087,7 +19073,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -19105,7 +19091,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -19123,7 +19109,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -19141,7 +19127,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -19398,7 +19384,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -20116,7 +20102,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -20337,7 +20323,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -20355,7 +20341,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -20811,7 +20797,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -20829,7 +20815,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -20888,7 +20874,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -20906,7 +20892,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -21792,7 +21778,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -21994,7 +21980,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22016,7 +22002,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22058,7 +22044,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/permissions-policy/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22082,7 +22068,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/permissions-policy/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22106,7 +22092,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/permissions-policy/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22130,7 +22116,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/permissions-policy/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22206,7 +22192,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22228,7 +22214,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22250,7 +22236,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22273,7 +22259,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22296,7 +22282,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22318,7 +22304,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22341,7 +22327,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22364,7 +22350,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22387,7 +22373,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22410,7 +22396,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22432,7 +22418,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22454,7 +22440,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22477,7 +22463,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22500,7 +22486,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22523,7 +22509,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22564,7 +22550,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22586,7 +22572,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22609,7 +22595,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22632,7 +22618,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22655,7 +22641,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22678,7 +22664,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/quota/resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22700,7 +22686,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22722,7 +22708,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22740,7 +22726,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -22803,7 +22789,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22828,7 +22814,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22849,7 +22835,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22870,7 +22856,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22891,7 +22877,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22927,7 +22913,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -22965,7 +22951,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -23150,7 +23136,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -23372,7 +23358,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -25436,7 +25422,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -26410,7 +26396,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -27266,7 +27252,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -27320,7 +27306,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -27554,7 +27540,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -34700,7 +34686,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/create-wasm-module.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -34768,7 +34754,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -36838,7 +36824,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -36938,7 +36924,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -36954,7 +36940,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -36970,7 +36956,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -36986,7 +36972,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -37073,7 +37059,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests-by-key.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -37653,7 +37639,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -37683,7 +37669,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "standalone helper script, not a WPT test entry",
       "subtests": []
     },
     {
@@ -42360,7 +42346,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -44094,7 +44080,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {

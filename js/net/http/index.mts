@@ -156,6 +156,14 @@ interface RequestInit {
   trailers?: OutTrailers;
   duplex?:   string;
   keepalive?: boolean;
+  window?: unknown;
+  referrer?: string;
+  referrerPolicy?: string;
+  mode?: string;
+  credentials?: string;
+  cache?: string;
+  redirect?: string;
+  priority?: string;
 }
 
 interface ResponseInit {
@@ -166,7 +174,7 @@ interface ResponseInit {
 }
 
 type HeadersIteratorKind = 'entries' | 'keys' | 'values';
-type HeadersGuard = 'none' | 'response' | 'immutable';
+type HeadersGuard = 'none' | 'request' | 'request-no-cors' | 'response' | 'immutable';
 
 interface WireResponseInit {
   version?:     string;
@@ -309,10 +317,103 @@ function _formDataFromMultipart(bytes: Uint8Array, boundary: string): FormData {
 }
 
 function _normalizeRequestMethod(method: string): string {
+  if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(method)) {
+    throw new TypeError(`Request method ${method} is invalid`);
+  }
   if (/^(connect|trace|track)$/i.test(method)) {
     throw new TypeError(`Request method ${method} is forbidden`);
   }
   return /^(delete|get|head|options|post|put)$/i.test(method) ? method.toUpperCase() : method;
+}
+
+function _requestBaseLocation(): string {
+  const location = (globalThis as { location?: unknown }).location;
+  if (location !== undefined && location !== null) return String(location);
+  return 'http://web-platform.test/';
+}
+
+function _normalizeRequestUrl(input: string): string {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch (_) {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(input)) {
+      throw new TypeError(`Invalid URL: ${input}`);
+    }
+    try {
+      url = new URL(input, _requestBaseLocation());
+    } catch {
+      throw new TypeError(`Invalid URL: ${input}`);
+    }
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new TypeError('Request URL cannot include credentials');
+  }
+  return url.href;
+}
+
+function _validateRequestEnum(value: unknown, name: string, allowed: readonly string[]): string {
+  const stringValue = String(value);
+  if (!allowed.includes(stringValue)) {
+    throw new TypeError(`Invalid RequestInit ${name}: ${stringValue}`);
+  }
+  return stringValue;
+}
+
+function _validateRequestReferrer(value: unknown): void {
+  const referrer = String(value);
+  if (referrer === '' || referrer === 'about:client') return;
+  try {
+    new URL(referrer);
+  } catch {
+    throw new TypeError(`Invalid RequestInit referrer: ${referrer}`);
+  }
+}
+
+function _validateRequestInit(init: RequestInit | any | undefined, method: string): void {
+  if (!init) return;
+  if ('window' in init && init.window !== null) {
+    throw new TypeError('RequestInit window must be null');
+  }
+  if ('referrer' in init) _validateRequestReferrer(init.referrer);
+
+  const mode = ('mode' in init)
+    ? _validateRequestEnum(init.mode, 'mode', ['same-origin', 'no-cors', 'cors', 'navigate'])
+    : undefined;
+  if (mode === 'navigate') {
+    throw new TypeError('RequestInit mode cannot be navigate');
+  }
+  if ('referrerPolicy' in init) {
+    _validateRequestEnum(init.referrerPolicy, 'referrerPolicy', [
+      '',
+      'no-referrer',
+      'no-referrer-when-downgrade',
+      'same-origin',
+      'origin',
+      'strict-origin',
+      'origin-when-cross-origin',
+      'strict-origin-when-cross-origin',
+      'unsafe-url',
+    ]);
+  }
+  if ('credentials' in init) {
+    _validateRequestEnum(init.credentials, 'credentials', ['omit', 'same-origin', 'include']);
+  }
+  const cache = ('cache' in init)
+    ? _validateRequestEnum(init.cache, 'cache', ['default', 'no-store', 'reload', 'no-cache', 'force-cache', 'only-if-cached'])
+    : undefined;
+  if ('redirect' in init) {
+    _validateRequestEnum(init.redirect, 'redirect', ['follow', 'error', 'manual']);
+  }
+  if ('priority' in init) {
+    _validateRequestEnum(init.priority, 'priority', ['high', 'low', 'auto']);
+  }
+  if (mode === 'no-cors' && !/^(GET|HEAD|POST)$/i.test(method)) {
+    throw new TypeError('RequestInit mode no-cors requires a simple method');
+  }
+  if (cache === 'only-if-cached' && mode !== 'same-origin') {
+    throw new TypeError('RequestInit cache only-if-cached requires mode same-origin');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -909,7 +1010,7 @@ export class Headers {
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
     this.#ensureMutable();
-    if (this.#isForbiddenResponseHeader(name)) return;
+    if (this.#isBlockedByGuard(name, value)) return;
     this.#list.push([name, value]);
     this.#sortedCache = null;
   }
@@ -944,7 +1045,7 @@ export class Headers {
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
     this.#ensureMutable();
-    if (this.#isForbiddenResponseHeader(name)) return;
+    if (this.#isBlockedByGuard(name, value)) return;
     // Mutate in place: find the first occurrence and replace it, then remove
     // any duplicates. Avoids allocating a `next` array on every call.
     let firstIdx = -1;
@@ -1012,13 +1113,17 @@ export class Headers {
   delete(name: string): void {
     name = name.toLowerCase().trim();
     this.#ensureMutable();
-    if (this.#isForbiddenResponseHeader(name)) return;
+    if (this.#isBlockedByGuard(name, '')) return;
     this.#list = this.#list.filter(function keepNonMatching(entry) { return entry[0] !== name; });
     this.#sortedCache = null;
   }
 
   _setGuard(guard: HeadersGuard): this {
     this.#guard = guard;
+    if (guard === 'request' || guard === 'request-no-cors') {
+      this.#list = this.#list.filter((entry) => !this.#isBlockedByGuard(entry[0], entry[1]));
+      this.#sortedCache = null;
+    }
     return this;
   }
 
@@ -1151,8 +1256,13 @@ export class Headers {
     if (this.#guard === 'immutable') throw new TypeError('Headers are immutable');
   }
 
-  #isForbiddenResponseHeader(name: string): boolean {
-    return this.#guard === 'response' && name === 'set-cookie';
+  #isBlockedByGuard(name: string, value: string): boolean {
+    if (this.#guard === 'response') return name === 'set-cookie';
+    if (this.#guard === 'request') return _isForbiddenRequestHeaderName(name);
+    if (this.#guard === 'request-no-cors') {
+      return _isForbiddenRequestHeaderName(name) || !_isNoCorsSafelistedRequestHeader(name, value);
+    }
+    return false;
   }
 }
 
@@ -1171,6 +1281,55 @@ function _normalizeHeaderValue(value: string): string {
   value = value.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
   if (/[\x00\r\n]/.test(value)) throw new TypeError('Header value contains invalid characters');
   return value;
+}
+
+function _isForbiddenRequestHeaderName(name: string): boolean {
+  return name.startsWith('proxy-') ||
+    name.startsWith('sec-') ||
+    [
+      'accept-charset',
+      'accept-encoding',
+      'access-control-request-headers',
+      'access-control-request-method',
+      'connection',
+      'content-length',
+      'cookie',
+      'cookie2',
+      'date',
+      'dnt',
+      'expect',
+      'host',
+      'keep-alive',
+      'origin',
+      'referer',
+      'set-cookie',
+      'te',
+      'trailer',
+      'transfer-encoding',
+      'upgrade',
+      'via',
+    ].includes(name);
+}
+
+function _isNoCorsSafelistedRequestHeader(name: string, value: string): boolean {
+  if (value.length > 128) return false;
+  switch (name) {
+    case 'accept':
+    case 'accept-language':
+    case 'content-language':
+      return value !== '';
+    case 'content-type':
+      return _isNoCorsSafelistedContentType(value);
+    default:
+      return false;
+  }
+}
+
+function _isNoCorsSafelistedContentType(value: string): boolean {
+  const essence = value.split(';', 1)[0]!.trim().toLowerCase();
+  return essence === 'application/x-www-form-urlencoded' ||
+    essence === 'multipart/form-data' ||
+    essence === 'text/plain';
 }
 
 // ---------------------------------------------------------------------------
@@ -1639,13 +1798,15 @@ export class Request {
 
     // Spec-style construction.
     const inputRequest = input instanceof Request ? input : null;
-    this.#url = inputRequest !== null ? inputRequest.#url : String(input);
+    this.#url = inputRequest !== null ? inputRequest.#url : _normalizeRequestUrl(String(input));
     this.#blobUrlObject = inputRequest !== null ? inputRequest.#blobUrlObject : _resolveObjectURL(this.#url);
-    const rawMethod = (init && init.method) ? String(init.method) : (inputRequest !== null ? inputRequest.#method : 'GET');
+    const rawMethod = (init && 'method' in init) ? String(init.method) : (inputRequest !== null ? inputRequest.#method : 'GET');
     this.#method = _normalizeRequestMethod(rawMethod);
+    _validateRequestInit(init, this.#method);
     this.#headers = (init && init.headers)
       ? new Headers(init.headers)
       : (inputRequest !== null ? new Headers(inputRequest.#headers) : new Headers());
+    this.#headers._setGuard((init && 'mode' in init && String(init.mode) === 'no-cors') ? 'request-no-cors' : 'request');
     this.#version = '';
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
     this.#keepalive = (init && 'keepalive' in init)
@@ -1787,6 +1948,18 @@ export class Request {
    * @internal
    */
   _getBlobURLObject(): Blob | null { return this.#blobUrlObject; }
+
+  /**
+   * Append a transport-generated header after public request-header guards run.
+   *
+   * This is for fetch internals such as computed `Referer` metadata. User
+   * supplied headers must go through the normal guarded `headers` object.
+   *
+   * @internal
+   */
+  _appendTrustedHeader(name: string, value: string): void {
+    this.#headers._appendTrusted(_normalizeHeaderName(name), _normalizeHeaderValue(value));
+  }
 
   /** The full URL string.
    *
@@ -3106,6 +3279,12 @@ function _buildRequestHead(req: Request, chunked: boolean): string {
   const host = _hostFromUrl(req.url);
   if (host && !req.headers.has('host')) {
     head += 'host: ' + host + '\r\n';
+  }
+  if (!req.headers.has('connection')) {
+    head += 'connection: close\r\n';
+  }
+  if (!req.headers.has('accept-encoding')) {
+    head += 'accept-encoding: gzip, deflate\r\n';
   }
   if (chunked) {
     head += 'transfer-encoding: chunked\r\n';
