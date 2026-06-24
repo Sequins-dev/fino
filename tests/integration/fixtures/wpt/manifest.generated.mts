@@ -18686,9 +18686,14 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "Consume FormData request's body as FormData"
+        }
+      ]
     },
     {
       "path": "fetch/api/request/request-disturbed.any.js",
@@ -18706,9 +18711,46 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "Request's body: initial state"
+        },
+        {
+          "kind": "test",
+          "name": "Request without body cannot be disturbed"
+        },
+        {
+          "kind": "test",
+          "name": "Check cloning a disturbed request"
+        },
+        {
+          "kind": "test",
+          "name": "Check creating a new request from a disturbed request"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Check creating a new request with a new body from a disturbed request"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Input request used for creating new request became disturbed"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Input request used for creating new request became disturbed even if body is not used"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Check consuming a disturbed request"
+        },
+        {
+          "kind": "test",
+          "name": "Request construction failure should not set \"bodyUsed\""
+        }
+      ]
     },
     {
       "path": "fetch/api/request/request-error.any.js",
@@ -19572,9 +19614,38 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "Cancelling a starting blob Response stream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Cancelling a loading blob Response stream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Cancelling a closed blob Response stream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Cancelling a starting Response stream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Cancelling a loading Response stream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Cancelling a closed Response stream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Accessing .body after canceling it"
+        }
+      ]
     },
     {
       "path": "fetch/api/response/response-clone-iframe.window.js",
@@ -19821,9 +19892,26 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "Initialize Response with headers values"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Read Response's body as readableStream"
+        },
+        {
+          "kind": "promise_test",
+          "name": "Testing empty Response Content-Type header"
+        },
+        {
+          "kind": "test",
+          "name": "Testing null Response body"
+        }
+      ]
     },
     {
       "path": "fetch/api/response/response-init-contenttype.any.js",
@@ -20223,9 +20311,30 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "Attempt to inject value: undefined via Object.prototype.then."
+        },
+        {
+          "kind": "promise_test",
+          "name": "Attempt to inject undefined via Object.prototype.then."
+        },
+        {
+          "kind": "promise_test",
+          "name": "Attempt to inject 8.2 via Object.prototype.then."
+        },
+        {
+          "kind": "promise_test",
+          "name": "intercepting arraybuffer to text conversion via Object.prototype.then should not be possible"
+        },
+        {
+          "kind": "promise_test",
+          "name": "intercepting arraybuffer to body readable stream conversion via Object.prototype.then should not be possible"
+        }
+      ]
     },
     {
       "path": "fetch/compression-dictionary/dictionary-clear-site-data-cache.tentative.https.html",
