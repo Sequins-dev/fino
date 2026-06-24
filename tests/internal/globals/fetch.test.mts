@@ -1128,6 +1128,17 @@ describe('Request init validation', () => {
 });
 
 describe('Request header guards', () => {
+  it('validates Headers constructor and lookup names', (t) => {
+    t.throws(() => new Headers(1 as any), TypeError, 'primitive init throws');
+
+    const headers = new Headers();
+    for (const name of ['invalid\u0100', {} as any]) {
+      t.throws(() => headers.get(name as any), TypeError, 'get validates header name');
+      t.throws(() => headers.has(name as any), TypeError, 'has validates header name');
+      t.throws(() => headers.delete(name as any), TypeError, 'delete validates header name');
+    }
+  });
+
   it('filters forbidden request headers from init and later mutations', (t) => {
     const request = new Request('https://example.com/', {
       headers: {
@@ -1169,6 +1180,18 @@ describe('Request header guards', () => {
 
     t.equal(request.headers.get('content-type'), 'text/plain;charset=UTF-8', 'safelisted Content-Type mutation remains');
     t.equal(request.headers.get('x-other'), null, 'non-safelisted mutation is ignored');
+  });
+
+  it('filters forbidden method override request headers', (t) => {
+    const forbiddenNames = ['x-http-method-override', 'x-http-method', 'x-method-override'];
+    for (const name of forbiddenNames) {
+      const request = new Request('https://example.com/');
+      request.headers.append(name, 'GET, track');
+      t.equal(request.headers.get(name), null, `${name} with forbidden override is filtered`);
+
+      request.headers.append(name, '"TRACE"');
+      t.equal(request.headers.get(name), '"TRACE"', `${name} with quoted token remains`);
+    }
   });
 });
 

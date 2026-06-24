@@ -979,6 +979,7 @@ export class Headers {
     this.#list = []; // [[name, value], ...]
     if (init === undefined) return;
     if (init === null) throw new TypeError('Headers init must not be null');
+    if (typeof init !== 'object') throw new TypeError('Headers init must be an object');
     const iterator = (init as { [Symbol.iterator]?: unknown })[Symbol.iterator];
     if (typeof iterator === 'function') {
       for (const pair of iterator.call(init) as Iterable<unknown>) {
@@ -1077,7 +1078,7 @@ export class Headers {
    * ```
    */
   get(name: string): string | null {
-    name = name.toLowerCase().trim();
+    name = _normalizeHeaderName(name);
     // Avoid allocating an array for the common single-value case.
     let result: string | null = null;
     const list = this.#list;
@@ -1097,7 +1098,7 @@ export class Headers {
    * ```
    */
   has(name: string): boolean {
-    name = name.toLowerCase().trim();
+    name = _normalizeHeaderName(name);
     for (const entry of this.#list) {
       if (entry[0] === name) return true;
     }
@@ -1111,7 +1112,7 @@ export class Headers {
    * ```
    */
   delete(name: string): void {
-    name = name.toLowerCase().trim();
+    name = _normalizeHeaderName(name);
     this.#ensureMutable();
     if (this.#isBlockedByGuard(name, '')) return;
     this.#list = this.#list.filter(function keepNonMatching(entry) { return entry[0] !== name; });
@@ -1258,9 +1259,9 @@ export class Headers {
 
   #isBlockedByGuard(name: string, value: string): boolean {
     if (this.#guard === 'response') return name === 'set-cookie';
-    if (this.#guard === 'request') return _isForbiddenRequestHeaderName(name);
+    if (this.#guard === 'request') return _isForbiddenRequestHeader(name, value);
     if (this.#guard === 'request-no-cors') {
-      return _isForbiddenRequestHeaderName(name) || !_isNoCorsSafelistedRequestHeader(name, value);
+      return _isForbiddenRequestHeader(name, value) || !_isNoCorsSafelistedRequestHeader(name, value);
     }
     return false;
   }
@@ -1309,6 +1310,14 @@ function _isForbiddenRequestHeaderName(name: string): boolean {
       'upgrade',
       'via',
     ].includes(name);
+}
+
+function _isForbiddenRequestHeader(name: string, value: string): boolean {
+  if (_isForbiddenRequestHeaderName(name)) return true;
+  if (name !== 'x-http-method-override' && name !== 'x-http-method' && name !== 'x-method-override') {
+    return false;
+  }
+  return _headerTokenList(value).some((method) => /^(connect|trace|track)$/i.test(method));
 }
 
 function _isNoCorsSafelistedRequestHeader(name: string, value: string): boolean {
