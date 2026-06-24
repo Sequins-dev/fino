@@ -135,6 +135,15 @@ function needsWptServer(source: string): boolean {
       || /\/fetch\/api\/resources\//.test(source);
 }
 
+function resolveMetaScriptPath(basePath: string, specifier: string): string {
+  if (specifier === '/resources/WebIDLParser.js') {
+    return join(root, 'resources/webidl2/lib/webidl2.js').toString();
+  }
+  return specifier.startsWith('/')
+    ? join(root, specifier.slice(1)).toString()
+    : join(dirname(basePath).toString(), specifier).toString();
+}
+
 function runnableStatus(path: string, type: string, source: string, missingScripts: string[], metaGlobals: string[]): { runnable: boolean; reason: string | null } {
   if (path.includes('.sub.')) return { runnable: false, reason: 'requires WPT server .sub preprocessing' };
   if (missingScripts.length > 0) return { runnable: false, reason: `requires missing WPT META script ${missingScripts[0]}` };
@@ -150,6 +159,12 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   }
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
+  }
+  if (path === 'fetch/api/idlharness.https.any.js') {
+    return { runnable: false, reason: 'requires WebIDL descriptor conformance plus FetchLaterResult/fetchLater globals' };
+  }
+  if (path === 'FileAPI/idlharness.any.js') {
+    return { runnable: false, reason: 'requires WebIDL descriptor conformance plus FileList global' };
   }
   if (path === 'WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js') {
     return { runnable: false, reason: 'requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests' };
@@ -203,9 +218,7 @@ async function main(): Promise<void> {
       let runnableSource = source;
       const missingScripts: string[] = [];
       for (const script of meta.scripts) {
-        const scriptPath = script.startsWith('/')
-          ? join(root, script.slice(1)).toString()
-          : join(dirname(absolutePath).toString(), script).toString();
+        const scriptPath = resolveMetaScriptPath(absolutePath, script);
         if (await exists(scriptPath)) runnableSource += '\n' + await fs.readFile(scriptPath);
         else missingScripts.push(script);
       }

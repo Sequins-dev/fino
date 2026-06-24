@@ -28,14 +28,36 @@ function print(result: ChildResult): never {
 }
 
 function scriptPath(basePath: string, specifier: string): string {
+  if (specifier === '/resources/WebIDLParser.js') {
+    return join(wptRoot, 'resources/webidl2/lib/webidl2.js').toString();
+  }
   if (specifier.startsWith('/')) return join(wptRoot, specifier.slice(1)).toString();
   return join(dirname(join(wptRoot, basePath).toString()).toString(), specifier).toString();
+}
+
+function interfacePathFromFetchInput(input: unknown): string | null {
+  const href = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.href
+      : input instanceof Request
+        ? input.url
+        : null;
+  if (href === null) return null;
+  const pathname = href.startsWith('/')
+    ? href
+    : (() => {
+        try { return new URL(href).pathname; } catch (_) { return null; }
+      })();
+  if (pathname === null || !/^\/interfaces\/[^/]+\.idl$/.test(pathname)) return null;
+  return join(wptRoot, pathname.slice(1)).toString();
 }
 
 function installBaseGlobals(): void {
   const g = globalThis as any;
   if (g.self === undefined) g.self = globalThis;
   if (g.window === undefined) g.window = globalThis;
+  if (g.Window === undefined) g.Window = function Window() {};
   if (g.GLOBAL === undefined) {
     g.GLOBAL = {
       isWindow: () => false,
@@ -60,6 +82,18 @@ function installBaseGlobals(): void {
       valueOf() { return this.href; },
     };
   }
+
+  const nativeFetch = g.fetch.bind(g);
+  g.fetch = async (input: unknown, init?: RequestInit) => {
+    const localInterfacePath = interfacePathFromFetchInput(input);
+    if (localInterfacePath !== null) {
+      return new Response(await fs.readFile(localInterfacePath), {
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      });
+    }
+    return nativeFetch(input as any, init);
+  };
 }
 
 function discoverMetaScripts(source: string): string[] {

@@ -1275,7 +1275,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/idlharness.js"
       ],
       "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "reason": "requires WebIDL descriptor conformance plus FileList global",
       "subtests": []
     },
     {
@@ -4276,8 +4276,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -4296,8 +4296,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -6334,8 +6334,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -6684,8 +6684,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -10510,8 +10510,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -17176,7 +17176,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/idlharness.js"
       ],
       "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "reason": "requires WebIDL descriptor conformance plus FetchLaterResult/fetchLater globals",
       "subtests": []
     },
     {
@@ -27643,8 +27643,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -31347,8 +31347,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -36786,8 +36786,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -42270,8 +42270,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires missing WPT META script /resources/WebIDLParser.js",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
