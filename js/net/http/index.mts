@@ -172,6 +172,7 @@ interface WireResponseInit {
   headers:      Headers;
   body:         AsyncIterable<Uint8Array> | null;
   url?:         string;
+  type?:        string;
   redirected?:  boolean;
   outTrailers?: OutTrailers | null;
   inTrailers?:  Promise<Headers> | null;
@@ -2183,6 +2184,7 @@ export class Response {
       this.#rawBody     = init.body === _emptyBody ? null : init.body;
       this.#outTrailers = init.outTrailers ?? null;
       this.#inTrailers  = init.inTrailers  ?? null;
+      if (init.type !== undefined) this.#type = init.type;
       if (init.url !== undefined) this.#url = init.url;
       if (init.redirected !== undefined) this.#redirected = init.redirected;
       return;
@@ -3033,7 +3035,7 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): { parseNext
  * const wire = buildWireResponse({ headers: new Headers(), body: null, status: 204 });
  * ```
  */
-export function buildWireResponse({ version, status, statusText, headers, body, url, redirected, outTrailers, inTrailers }: WireResponseInit): Response {
+export function buildWireResponse({ version, status, statusText, headers, body, url, type, redirected, outTrailers, inTrailers }: WireResponseInit): Response {
   return new Response(INTERNAL, {
     version:     version    || 'HTTP/1.1',
     status:      status     ?? 200,
@@ -3041,6 +3043,7 @@ export function buildWireResponse({ version, status, statusText, headers, body, 
     headers,
     body:        body ?? _emptyBody,
     url,
+    type,
     redirected,
     outTrailers: outTrailers ?? null,
     inTrailers:  inTrailers  ?? null,

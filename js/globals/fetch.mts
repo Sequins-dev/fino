@@ -99,6 +99,7 @@ import { otelRuntimeEvent, otelRuntimeTopic } from '../internal/opentelemetry/co
 import * as openssl from '../internal/openssl.mts';
 import { _resolveObjectURL } from './url.mts';
 import { _getBlobBytes } from './blob.mts';
+import { atob, encodeUtf8 } from './encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -205,6 +206,58 @@ function _fetchBlobURL(url: string, method: string, capturedBlob: ReturnType<Req
     headers,
     body: _singleChunkBody(new Uint8Array(_getBlobBytes(blob))),
     url,
+    redirected: false,
+  });
+}
+
+function _percentDecodeDataBytes(input: string): Uint8Array {
+  const bytes: number[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    if (ch === 0x25) {
+      const hex = input.slice(i + 1, i + 3);
+      if (/^[0-9A-Fa-f]{2}$/.test(hex)) {
+        bytes.push(parseInt(hex, 16));
+        i += 2;
+        continue;
+      }
+    }
+    if (ch <= 0x7f) bytes.push(ch);
+    else bytes.push(...encodeUtf8(input[i]!));
+  }
+  return new Uint8Array(bytes);
+}
+
+function _base64DataBytes(input: string): Uint8Array {
+  const binary = atob(input.replace(/[\t\n\f\r ]+/g, ''));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function _fetchDataURL(url: string, method: string): Response {
+  const comma = url.indexOf(',');
+  if (comma < 0) throw new TypeError(`fetch: invalid data URL '${url}'`);
+  const metadata = url.slice(5, comma);
+  const data = url.slice(comma + 1);
+  const parts = metadata.split(';');
+  let mime = parts[0] || 'text/plain;charset=US-ASCII';
+  let base64 = false;
+  for (let i = 1; i < parts.length; i++) {
+    if (parts[i]!.toLowerCase() === 'base64') base64 = true;
+    else mime += ';' + parts[i];
+  }
+  const body = method === 'HEAD'
+    ? new Uint8Array(0)
+    : (base64 ? _base64DataBytes(data) : _percentDecodeDataBytes(data));
+  return buildWireResponse({
+    version: '',
+    status: 200,
+    statusText: 'OK',
+    headers: new Headers({ 'content-type': mime }),
+    body: _singleChunkBody(body),
+    url,
+    type: 'basic',
     redirected: false,
   });
 }
@@ -1171,6 +1224,10 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   let currentOrigin: string | null = null;
   const requestId = 'fetch-' + (++_fetchRequestSeq);
   try { currentOrigin = new URL(baseUrl).origin; } catch (_) {}
+
+  if (new URL(baseUrl).protocol === 'data:') {
+    return _fetchDataURL(baseUrl, currentMethod);
+  }
 
   if (new URL(baseUrl).protocol === 'blob:') {
     return _fetchBlobURL(baseUrl, currentMethod, baseBlobUrlObject);

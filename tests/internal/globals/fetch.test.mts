@@ -471,10 +471,15 @@ describe('AbortSignal', () => {
 });
 
 describe('Misc', () => {
-  it('rejects direct non-HTTP/S URL schemes', async (t) => {
+  it('supports data URLs and rejects other direct non-HTTP/S URL schemes', async (t) => {
+    const data = await fetch('data:text/plain,hello');
+    t.equal(data.status, 200, 'data URL status is OK');
+    t.equal(data.type, 'basic', 'data URL response is basic');
+    t.equal(data.headers.get('content-type'), 'text/plain', 'data URL MIME type is exposed');
+    t.equal(await data.text(), 'hello', 'data URL body is decoded');
+
     for (const url of [
       'file:///tmp/fino-fetch.txt',
-      'data:text/plain,hello',
       'javascript:alert(1)',
     ]) {
       await t.rejects(
