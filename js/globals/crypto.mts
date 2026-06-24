@@ -1369,15 +1369,20 @@ const subtle = {
     if (alg.name === 'HMAC') {
       const hashName   = _hashName(alg.hash ?? 'SHA-256');
       const digestName = _digestAlgorithm(hashName);
-      // Key length defaults to the digest output size if not specified
-      const keyLen = alg.length ? alg.length / 8 : ({ 'sha-1': 20, 'sha-256': 32, 'sha-384': 48, 'sha-512': 64 })[digestName];
-      if (keyLen === undefined) throw _webCryptoError('NotSupportedError', `Unsupported HMAC digest: ${digestName}`);
+      const allowedUsages = new Set<KeyUsage>(['sign', 'verify']);
+      if (keyUsages.length === 0 || keyUsages.some(usage => !allowedUsages.has(usage))) {
+        throw _webCryptoError('SyntaxError', 'HMAC: invalid key usages');
+      }
+      const defaultLength = ({ 'sha-1': 512, 'sha-256': 512, 'sha-384': 1024, 'sha-512': 1024 })[digestName];
+      if (defaultLength === undefined) throw _webCryptoError('NotSupportedError', `Unsupported HMAC digest: ${digestName}`);
+      const keyLength = alg.length ?? defaultLength;
+      const keyLen = Math.ceil(keyLength / 8);
       const buf = new ArrayBuffer(keyLen);
       openssl.randBytes(buf, keyLen);
       return new CryptoKey(
         'secret',
         extractable,
-        { name: 'HMAC', hash: { name: hashName } },
+        { name: 'HMAC', hash: { name: hashName }, length: keyLength },
         [...keyUsages],
         new Uint8Array(buf),
       );

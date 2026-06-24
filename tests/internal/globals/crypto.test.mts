@@ -8,6 +8,7 @@
 import { describe, it } from 'fino:test/test';
 
 type AesKeyAlgorithm = KeyAlgorithm & { length: number };
+type HmacKeyAlgorithm = KeyAlgorithm & { hash: { name: string }; length: number };
 type SymbolRecord = Record<symbol, unknown>;
 
 const { crypto } = globalThis;
@@ -335,6 +336,30 @@ describe('Key management', { skip }, () => {
     const data = new TextEncoder().encode('test');
     const sig  = await crypto.subtle.sign({ name: 'HMAC' }, key, data);
     t.ok(sig instanceof ArrayBuffer, 'sign works');
+  });
+
+  it('generateKey HMAC records explicit and default key lengths', async (t) => {
+    const explicit = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256', length: 160 }, false, ['sign']) as CryptoKey;
+    const defaultSha256 = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) as CryptoKey;
+    const defaultSha512 = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-512' }, false, ['sign']) as CryptoKey;
+
+    t.equal((explicit.algorithm as HmacKeyAlgorithm).length, 160, 'explicit HMAC length is preserved');
+    t.equal((defaultSha256.algorithm as HmacKeyAlgorithm).length, 512, 'SHA-256 HMAC defaults to block size');
+    t.equal((defaultSha512.algorithm as HmacKeyAlgorithm).length, 1024, 'SHA-512 HMAC defaults to block size');
+  });
+
+  it('generateKey HMAC rejects invalid usages with SyntaxError', async (t) => {
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, true, ['encrypt'] as KeyUsage[]),
+      rejectsWithDomException('SyntaxError'),
+      'HMAC rejects non-HMAC key usages',
+    );
+
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, true, []),
+      rejectsWithDomException('SyntaxError'),
+      'HMAC rejects empty usages for secret keys',
+    );
   });
 
   it('structuredClone copies symmetric CryptoKey material and metadata', async (t) => {
