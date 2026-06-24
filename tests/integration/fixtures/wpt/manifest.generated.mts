@@ -554,9 +554,14 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires Worker test environment",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "Create Blob in Worker"
+        }
+      ]
     },
     {
       "path": "FileAPI/blob/Blob-newobject.any.js",
@@ -21818,9 +21823,14 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires Worker test environment",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "fetchLater() is not supported in worker."
+        }
+      ]
     },
     {
       "path": "fetch/fetch-later/headers/header-referrer-no-referrer-when-downgrade.https.html",

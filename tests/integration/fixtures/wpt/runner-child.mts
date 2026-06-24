@@ -21,6 +21,7 @@ const fs = new DiskFileSystem();
 const wptRoot = join(cwd(), 'third_party/wpt').toString();
 const testPath = argv[2] ?? '';
 const subtest = argv[3] === undefined || argv[3] === '' ? null : argv[3];
+const isWorkerTest = testPath.endsWith('.worker.js');
 
 function print(result: ChildResult): never {
   console.log(JSON.stringify(result));
@@ -53,17 +54,31 @@ function interfacePathFromFetchInput(input: unknown): string | null {
   return join(wptRoot, pathname.slice(1)).toString();
 }
 
+function installWorkerImportScripts(g: any): void {
+  g.importScripts = (...specifiers: string[]) => {
+    for (const specifier of specifiers) {
+      if (specifier === '/resources/testharness.js') continue;
+      throw new Error(`unsupported worker importScripts specifier: ${specifier}`);
+    }
+  };
+}
+
 function installBaseGlobals(): void {
   const g = globalThis as any;
   if (g.self === undefined) g.self = globalThis;
-  if (g.window === undefined) g.window = globalThis;
+  if (!isWorkerTest && g.window === undefined) g.window = globalThis;
   if (g.Window === undefined) g.Window = function Window() {};
   if (g.GLOBAL === undefined) {
     g.GLOBAL = {
-      isWindow: () => false,
-      isWorker: () => false,
+      isWindow: () => !isWorkerTest,
+      isWorker: () => isWorkerTest,
       isShadowRealm: () => false,
     };
+  }
+  if (isWorkerTest) {
+    installWorkerImportScripts(g);
+    delete g.fetchLater;
+    delete g.FetchLaterResult;
   }
   if (g.location === undefined) {
     const scheme = /\.https(?:\.|$)/.test(testPath) ? 'https' : 'http';
