@@ -14088,8 +14088,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14213,8 +14213,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14228,14 +14228,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "EventSource message events are trusted"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "eventsource/eventsource-onmessage.any.js",
@@ -14248,8 +14243,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14263,8 +14258,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14278,8 +14273,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14338,8 +14333,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14353,8 +14348,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14368,8 +14363,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14383,8 +14378,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14398,8 +14393,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14413,8 +14408,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14428,8 +14423,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14443,8 +14438,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14488,8 +14483,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14503,8 +14498,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14518,8 +14513,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14533,8 +14528,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14548,8 +14543,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14563,8 +14558,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14578,8 +14573,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14593,8 +14588,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14608,8 +14603,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14623,8 +14618,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14638,8 +14633,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14653,8 +14648,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14668,8 +14663,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -14683,8 +14678,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {

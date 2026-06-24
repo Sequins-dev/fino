@@ -135,6 +135,7 @@ import * as loop from '../internal/runtime/loop.mts';
 import { EventTarget, Event } from './eventtarget.mts';
 import { MessageEvent } from './messaging.mts';
 import { URL } from './url.mts';
+import { DOMException } from './encoding.mts';
 import type { Address, IPv4Address, IPv6Address } from '../net/socket.mts';
 
 /**
@@ -572,6 +573,23 @@ const MAX_REDIRECTS = 20;
  *  Default reconnection interval per W3C spec (3 seconds). */
 const DEFAULT_RETRY_MS = 3000;
 
+function eventSourceBaseUrl(): string | undefined {
+  const location = (globalThis as { location?: unknown }).location;
+  if (location === undefined || location === null) return undefined;
+  return String(location);
+}
+
+function resolveEventSourceUrl(url: string): string {
+  try {
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*[\u0000-\u0020]/.test(url)) {
+      throw new Error('invalid URL authority');
+    }
+    return new URL(url, eventSourceBaseUrl()).href;
+  } catch {
+    throw new DOMException(`EventSource URL is invalid: ${url}`, 'SyntaxError');
+  }
+}
+
 /**
  * W3C EventSource — a spec-compliant SSE client.
  *
@@ -829,7 +847,7 @@ export class EventSource extends EventTarget {
    */
   constructor(url: string, init?: EventSourceInit) {
     super();
-    this.#url           = String(url);
+    this.#url           = resolveEventSourceUrl(String(url));
     this.#readyState    = CONNECTING;
     this.#lastEventId   = null;
     this.#retryInterval = DEFAULT_RETRY_MS;

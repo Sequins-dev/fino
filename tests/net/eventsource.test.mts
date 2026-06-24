@@ -337,6 +337,31 @@ describe('EventSource integration', () => {
     }
   });
 
+  it('resolves an empty URL against global location', (t) => {
+    const oldLocation = (globalThis as any).location;
+    (globalThis as any).location = {
+      href: 'https://web-platform.test/eventsource/eventsource-constructor-empty-url.any.js',
+      toString() { return this.href; },
+    };
+    const source = new EventSource('');
+
+    try {
+      t.equal(source.url, 'https://web-platform.test/eventsource/eventsource-constructor-empty-url.any.js');
+    } finally {
+      source.close();
+      if (oldLocation === undefined) delete (globalThis as any).location;
+      else (globalThis as any).location = oldLocation;
+    }
+  });
+
+  it('throws SyntaxError DOMException for invalid URLs', (t) => {
+    t.throws(
+      () => new EventSource('http://this is invalid/'),
+      (err) => err instanceof DOMException && err.name === 'SyntaxError',
+      'invalid URL throws SyntaxError DOMException',
+    );
+  });
+
   it('receives message events via onmessage', async (t) => {
     const received: string[] = [];
 
