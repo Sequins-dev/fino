@@ -153,6 +153,7 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
     return { runnable: false, reason: 'requires Cache API globals, which Fino does not install' };
   }
   if (/\bFileReader(?:Sync)?\b/.test(source)) return { runnable: false, reason: 'requires FileReader/FileReaderSync globals, which Fino does not install' };
+  if (/\bnew\s+Worker\s*\(|\bWorker\s*\(/.test(source)) return { runnable: false, reason: 'requires Worker global, which Fino does not install' };
   if (type === '.js') return { runnable: false, reason: 'standalone helper script, not a WPT test entry' };
   if (type === '.worker.js') return { runnable: false, reason: 'requires Worker test environment' };
   if (type === '.window.js' || type === '.html' || type === '.https.html') {

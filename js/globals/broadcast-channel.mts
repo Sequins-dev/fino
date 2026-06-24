@@ -32,7 +32,7 @@
  *
  */
 
-import { Event, EventTarget } from './eventtarget.mts';
+import { Event, EventTarget, _markEventTrusted } from './eventtarget.mts';
 import { DOMException } from './encoding.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { subscribe, publish, receive, unsubscribe, wakeSubscriber } from 'internal:broadcast';
@@ -42,6 +42,40 @@ import { MessageEvent } from './messaging.mts';
 // ---------------------------------------------------------------------------
 // BroadcastChannel
 // ---------------------------------------------------------------------------
+
+function broadcastDataCloneError(message: string): DOMException {
+  return new DOMException(message, 'DataCloneError');
+}
+
+function currentOrigin(): string {
+  const location = (globalThis as { location?: { origin?: unknown } }).location;
+  return location?.origin === undefined ? '' : String(location.origin);
+}
+
+const BROADCAST_ENVELOPE = '__finoBroadcastChannel';
+const REALM_ID = `${Date.now()}-${Math.random()}`;
+const localChannels = new Map<string, Set<BroadcastChannel>>();
+const pendingLocalTasks: Array<{ target: BroadcastChannel; bytes: Uint8Array }> = [];
+let localFlushScheduled = false;
+
+function enqueueLocalBroadcast(target: BroadcastChannel, bytes: Uint8Array): void {
+  pendingLocalTasks.push({ target, bytes });
+  if (localFlushScheduled) return;
+  localFlushScheduled = true;
+  setTimeout(flushLocalBroadcasts, 0);
+}
+
+function flushLocalBroadcasts(): void {
+  localFlushScheduled = false;
+  const tasks = pendingLocalTasks.splice(0);
+  for (const task of tasks) {
+    task.target._deliverSerialized(task.bytes);
+  }
+  if (pendingLocalTasks.length > 0) {
+    localFlushScheduled = true;
+    setTimeout(flushLocalBroadcasts, 0);
+  }
+}
 
 /**
  * One-to-many channel scoped by name across Fino realms and isolates.
@@ -196,11 +230,20 @@ export class BroadcastChannel extends EventTarget {
    * ```
    */
   constructor(name: string) {
+    if (arguments.length < 1) {
+      throw new TypeError("Failed to construct 'BroadcastChannel': 1 argument required, but only 0 present.");
+    }
     super();
     this.#name = String(name);
     const info = subscribe(this.#name) as { handle: number; wakeReadFd: number };
     this.#handle = info.handle;
     this.#wakeReadFd = info.wakeReadFd;
+    let channels = localChannels.get(this.#name);
+    if (channels === undefined) {
+      channels = new Set();
+      localChannels.set(this.#name, channels);
+    }
+    channels.add(this);
     this.#startListening();
   }
 
@@ -230,11 +273,30 @@ export class BroadcastChannel extends EventTarget {
    * ```
    */
   postMessage(message: unknown): void {
+    if (arguments.length < 1) {
+      throw new TypeError("Failed to execute 'postMessage' on 'BroadcastChannel': 1 argument required, but only 0 present.");
+    }
     if (this.#closed) throw new DOMException('BroadcastChannel is closed', 'InvalidStateError');
     // serialize() returns [mainBytes, ...transferStores]; BroadcastChannel
     // does not support transfer, so we only need the main bytes.
-    const serResult = (serialize as (v: unknown) => Uint8Array[])(message);
-    publish(this.#name, serResult[0]!, this.#handle);
+    let serResult: Uint8Array[];
+    try {
+      serResult = (serialize as (v: unknown) => Uint8Array[])({
+        [BROADCAST_ENVELOPE]: true,
+        senderRealmId: REALM_ID,
+        data: message,
+      });
+    } catch (err) {
+      throw broadcastDataCloneError(err instanceof Error ? err.message : String(err));
+    }
+    const bytes = serResult[0]!;
+    const channels = localChannels.get(this.#name);
+    if (channels !== undefined) {
+      for (const channel of channels) {
+        if (channel !== this) enqueueLocalBroadcast(channel, bytes);
+      }
+    }
+    publish(this.#name, bytes, this.#handle);
   }
 
   /**
@@ -252,6 +314,11 @@ export class BroadcastChannel extends EventTarget {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    const channels = localChannels.get(this.#name);
+    if (channels !== undefined) {
+      channels.delete(this);
+      if (channels.size === 0) localChannels.delete(this.#name);
+    }
     // Write a byte to our own wake pipe so that any pending readable() call
     // in #receiveLoop resolves immediately.  The loop checks #closed after
     // waking and exits, then calls unsubscribe() to clean up the Rust side.
@@ -328,26 +395,54 @@ export class BroadcastChannel extends EventTarget {
 
       const blobs = receive(this.#handle) as Uint8Array[];
       for (const bytes of blobs) {
-        let data: unknown;
-        let deserError = false;
-        try {
-          data = deserialize(bytes);
-        } catch {
-          deserError = true;
-        }
-
-        if (deserError) {
-          const ev = new MessageEvent('messageerror', { data: null });
-          this.dispatchEvent(ev);
-          continue;
-        }
-
-        const ev = new MessageEvent('message', { data });
-        this.dispatchEvent(ev);
+        this.#deliverSerializedFromNative(bytes);
       }
     }
     // Loop exited — clean up the Rust subscription and any residual watcher.
     removeRead(this.#wakeReadFd);
     unsubscribe(this.#handle);
+  }
+
+  /**
+   * Deliver serialized local broadcast bytes.
+   *
+   * @internal
+   */
+  _deliverSerialized(bytes: Uint8Array): void {
+    if (this.#closed) return;
+    const data = this.#deserializeEnvelope(bytes, true);
+    if (data === undefined) return;
+    const ev = new MessageEvent('message', { data, origin: currentOrigin() });
+    _markEventTrusted(ev);
+    this.dispatchEvent(ev);
+  }
+
+  #deliverSerializedFromNative(bytes: Uint8Array): void {
+    if (this.#closed) return;
+    const data = this.#deserializeEnvelope(bytes, false);
+    if (data === undefined) return;
+    const ev = new MessageEvent('message', { data, origin: currentOrigin() });
+    _markEventTrusted(ev);
+    this.dispatchEvent(ev);
+  }
+
+  #deserializeEnvelope(bytes: Uint8Array, local: boolean): unknown | undefined {
+    let value: unknown;
+    try {
+      value = deserialize(bytes);
+    } catch {
+      const ev = new MessageEvent('messageerror', { data: null, origin: currentOrigin() });
+      _markEventTrusted(ev);
+      this.dispatchEvent(ev);
+      return undefined;
+    }
+    if (value !== null && typeof value === 'object') {
+      const envelope = value as Record<string, unknown>;
+      if (envelope[BROADCAST_ENVELOPE] === true) {
+        if (!local && envelope.senderRealmId === REALM_ID) return undefined;
+        return envelope.data;
+      }
+    }
+    return value;
   }
 }

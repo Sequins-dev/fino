@@ -93,7 +93,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -110,7 +110,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -127,7 +127,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -1937,7 +1937,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -13473,7 +13473,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -15402,7 +15402,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -16250,7 +16250,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -16966,7 +16966,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -17056,7 +17056,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -17146,7 +17146,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -17200,7 +17200,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -17272,7 +17272,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -17711,7 +17711,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -20174,7 +20174,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -21462,7 +21462,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -22473,7 +22473,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -22498,7 +22498,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -23194,7 +23194,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -26044,7 +26044,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -26134,7 +26134,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -26973,7 +26973,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -27500,7 +27500,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "standalone helper script, not a WPT test entry",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -27635,7 +27635,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -30019,8 +30019,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -30695,7 +30695,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -33425,7 +33425,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -34710,7 +34710,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -37702,18 +37702,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "With a MessageChannel and its MessagePorts"
-        },
-        {
-          "kind": "async_test",
-          "name": "With a BroadcastChannel"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires Worker global, which Fino does not install",
+      "subtests": []
     },
     {
       "path": "webmessaging/MessageEvent-trusted.window.js",
@@ -37899,7 +37890,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -38003,7 +37994,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -38190,7 +38181,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -38230,7 +38221,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -38254,7 +38245,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/html/browsers/browsing-the-web/back-forward-cache/resources/rc-helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -38277,7 +38268,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -38515,14 +38506,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "MessageChannel/MessagePort should not work after a worker self.close()"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires Worker global, which Fino does not install",
+      "subtests": []
     },
     {
       "path": "webmessaging/message-channels/worker.any.js",
@@ -38537,14 +38523,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "MessageChannel/MessagePort created and used after a worker self.close()"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires Worker global, which Fino does not install",
+      "subtests": []
     },
     {
       "path": "webmessaging/messageerror.html",
@@ -39803,7 +39784,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -39905,7 +39886,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -40418,14 +40399,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "WebSocket created after a worker self.close()"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires Worker global, which Fino does not install",
+      "subtests": []
     },
     {
       "path": "websockets/Create-protocol-with-space.any.js",
@@ -41156,7 +41132,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/websockets-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -41204,7 +41180,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/websockets-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -41228,7 +41204,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/websockets-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -41276,7 +41252,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/websockets-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -44146,7 +44122,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {
@@ -44190,7 +44166,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Worker global, which Fino does not install",
       "subtests": []
     },
     {

@@ -385,6 +385,18 @@ export function _createTrustedEvent(type: string, eventInitDict?: { bubbles?: bo
   return event;
 }
 
+/**
+ * Mark a platform-created event object as trusted before dispatch.
+ *
+ * Use this for built-in event subclasses, such as `MessageEvent`, that are
+ * created internally by a web API rather than by user code.
+ *
+ * @internal
+ */
+export function _markEventTrusted(event: Event): void {
+  _eventState.get(event)!.trusted = true;
+}
+
 // Phase constants on prototype (spec requires instance access via event.NONE etc.)
 const eventPrototype = Event.prototype as Event & {
   NONE: number;
@@ -675,14 +687,6 @@ export class EventTarget {
 
     const listenersMap = _listeners.get(this)!;
     const list = listenersMap.get(s.type);
-    const eventHandler = (this as Record<string, unknown>)[`on${s.type}`];
-
-    if (typeof eventHandler === 'function') {
-      try {
-        (eventHandler as (event: Event) => void).call(this, event);
-      } catch (_) {}
-    }
-
     if (list != null && list.length > 0) {
       // Snapshot before iteration so mutations during dispatch don't affect order.
       const snapshot = list.slice();

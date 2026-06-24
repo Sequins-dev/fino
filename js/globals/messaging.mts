@@ -51,7 +51,7 @@
  *
  */
 
-import { Event, EventTarget } from './eventtarget.mts';
+import { Event, EventTarget, _markEventTrusted } from './eventtarget.mts';
 import { DOMException, _structuredCloneWithTransferMap } from './encoding.mts';
 import { serialize, deserialize } from 'internal:serializer';
 import { nativeSend, nativeRecv, getWakeReadFd } from 'internal:thread-port';
@@ -744,6 +744,7 @@ export class MessagePort extends EventTarget {
         if (item instanceof MessagePort) {
           if (item.#closed) throw messagePortDataCloneError('Closed MessagePort cannot be transferred');
           if (item.#neutered) throw messagePortDataCloneError('Neutered MessagePort cannot be transferred');
+          if (item === this) throw messagePortDataCloneError('MessagePort cannot transfer itself');
           transferPorts.push(item);
         } else if (item instanceof ArrayBuffer) {
           abTransfer.push(item);
@@ -915,7 +916,9 @@ export class MessagePort extends EventTarget {
     if (this.#transitHandle !== null) return; // handled by #watchTransit
     const pending = this.#queue.splice(0);
     for (const item of pending) {
-      this.dispatchEvent(new MessageEvent('message', { data: item.data, ports: item.transferredPorts }));
+      const event = new MessageEvent('message', { data: item.data, ports: item.transferredPorts });
+      _markEventTrusted(event);
+      this.dispatchEvent(event);
     }
   }
 
@@ -966,9 +969,13 @@ export class MessagePort extends EventTarget {
             const ports = (portArr as [number, number][]).map(
               ([h, wfd]) => MessagePort._fromTransit(h, wfd),
             );
-            self.dispatchEvent(new MessageEvent('message', { data: value, ports }));
+            const event = new MessageEvent('message', { data: value, ports });
+            _markEventTrusted(event);
+            self.dispatchEvent(event);
           } catch (err) {
-            self.dispatchEvent(new MessageEvent('messageerror', { data: err }));
+            const event = new MessageEvent('messageerror', { data: err });
+            _markEventTrusted(event);
+            self.dispatchEvent(event);
           }
         }
       }
@@ -1180,7 +1187,9 @@ export abstract class BaseTransportPort extends EventTarget {
         buf, stores && stores.length > 0 ? stores : undefined,
       );
     } catch (err) {
-      this.dispatchEvent(new MessageEvent('messageerror', { data: err }));
+      const event = new MessageEvent('messageerror', { data: err });
+      _markEventTrusted(event);
+      this.dispatchEvent(event);
       return;
     }
     if (value !== null && typeof value === 'object') {
@@ -1210,7 +1219,9 @@ export abstract class BaseTransportPort extends EventTarget {
         return;
       }
     }
-    this.dispatchEvent(new MessageEvent('message', { data: value, ports }));
+    const event = new MessageEvent('message', { data: value, ports });
+    _markEventTrusted(event);
+    this.dispatchEvent(event);
   }
 
   /**

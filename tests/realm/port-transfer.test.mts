@@ -173,6 +173,32 @@ describe('MessagePort transfer', () => {
     }
   });
 
+  it('same-Isolate: transferring the source port throws DataCloneError', (t) => {
+    const channel = new MessageChannel();
+    try {
+      t.throws(
+        () => channel.port1.postMessage('ports', [channel.port1]),
+        isDataCloneError,
+        'source port transfer throws DataCloneError',
+      );
+    } finally {
+      channel.port1.close();
+      channel.port2.close();
+    }
+  });
+
+  it('same-Isolate: delivered MessagePort events are trusted', async (t) => {
+    const channel = new MessageChannel();
+    try {
+      channel.port1.postMessage('ping');
+      const event = await nextMessage(channel.port2);
+      t.equal(event.isTrusted, true, 'message event is trusted');
+    } finally {
+      channel.port1.close();
+      channel.port2.close();
+    }
+  });
+
   it('cross-Isolate: port transferred to thread realm receives message', async (t) => {
     const realm = new Realm({
       thread: true,

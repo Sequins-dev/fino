@@ -25,6 +25,10 @@ describe('BroadcastChannel', () => {
     t.ok(typeof BroadcastChannel === 'function', 'BroadcastChannel is a constructor');
   });
 
+  it('requires a channel name argument', (t) => {
+    t.throws(() => new (BroadcastChannel as any)(), TypeError, 'missing name throws TypeError');
+  });
+
   it('name property reflects constructor argument', (t) => {
     const bc = new BroadcastChannel('test-name');
     t.equal(bc.name, 'test-name', 'name matches constructor arg');
@@ -58,6 +62,32 @@ describe('BroadcastChannel', () => {
 
     ch1.close();
     ch2.close();
+  });
+
+  it('delivered events are trusted and use location.origin', async (t) => {
+    const oldLocation = (globalThis as any).location;
+    (globalThis as any).location = { origin: 'https://web-platform.test' };
+    const sender = new BroadcastChannel(uniqueName('broadcast-origin'));
+    const receiver = new BroadcastChannel(sender.name);
+
+    try {
+      const event = await new Promise<MessageEvent>((resolve, reject) => {
+        const tid = setTimeout(() => reject(new Error('timeout waiting for message')), 2000);
+        receiver.onmessage = (ev) => {
+          clearTimeout(tid);
+          resolve(ev);
+        };
+        sender.postMessage('origin');
+      });
+
+      t.equal(event.isTrusted, true, 'message event is trusted');
+      t.equal(event.origin, 'https://web-platform.test', 'origin reflects global location origin');
+    } finally {
+      sender.close();
+      receiver.close();
+      if (oldLocation === undefined) delete (globalThis as any).location;
+      else (globalThis as any).location = oldLocation;
+    }
   });
 
   it('messages can be received via addEventListener', async (t) => {
@@ -157,6 +187,28 @@ describe('BroadcastChannel', () => {
       (err) => err instanceof DOMException && err.name === 'InvalidStateError' && /closed/.test(err.message),
       'throws InvalidStateError on closed channel',
     );
+  });
+
+  it('postMessage requires an argument', (t) => {
+    const bc = new BroadcastChannel(uniqueName('broadcast-missing-message'));
+    try {
+      t.throws(() => (bc.postMessage as any)(), TypeError, 'missing message throws TypeError');
+    } finally {
+      bc.close();
+    }
+  });
+
+  it('postMessage wraps clone failures in DataCloneError', (t) => {
+    const bc = new BroadcastChannel(uniqueName('broadcast-clone-fail'));
+    try {
+      t.throws(
+        () => bc.postMessage(Symbol()),
+        (err) => err instanceof DOMException && err.name === 'DataCloneError',
+        'uncloneable payload throws DataCloneError',
+      );
+    } finally {
+      bc.close();
+    }
   });
 
   it('channels on different names are isolated', async (t) => {
