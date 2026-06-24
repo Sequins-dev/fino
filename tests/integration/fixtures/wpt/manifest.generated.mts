@@ -34,7 +34,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -51,7 +52,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".https.html",
       "variants": [
@@ -68,7 +70,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".https.html",
       "variants": [
@@ -85,7 +88,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".https.html",
       "variants": [
@@ -102,7 +106,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".https.html",
       "variants": [
@@ -119,7 +124,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -136,7 +142,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -153,7 +160,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -170,7 +178,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -178,7 +187,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -187,7 +196,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -195,7 +205,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -204,7 +214,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -212,7 +223,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -221,7 +232,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -229,7 +241,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -238,7 +250,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -246,7 +259,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -255,7 +268,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".worker.js",
       "variants": [
@@ -263,7 +277,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReaderSync global, which Fino does not install",
       "subtests": []
     },
     {
@@ -272,7 +286,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -312,7 +327,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -352,7 +368,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".window.js",
       "variants": [
@@ -371,7 +388,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -397,7 +415,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -405,7 +424,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -414,7 +433,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -526,7 +546,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".worker.js",
       "variants": [
@@ -543,7 +564,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -560,7 +582,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -594,7 +617,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -618,7 +642,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -635,7 +660,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -652,7 +678,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -697,7 +724,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -749,7 +777,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -801,7 +830,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -827,7 +857,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -835,7 +866,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -844,7 +875,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -890,7 +922,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".worker.js",
       "variants": [
@@ -898,7 +931,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -907,7 +940,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -924,7 +958,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -941,7 +976,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -958,7 +994,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -975,7 +1012,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -992,7 +1030,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1009,7 +1048,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1026,7 +1066,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1045,7 +1086,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1064,7 +1106,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1083,7 +1126,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1102,16 +1146,26 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "FileReader interface object"
+        },
+        {
+          "kind": "test",
+          "name": "no-argument FileReader constructor"
+        }
+      ]
     },
     {
       "path": "FileAPI/filelist-section/filelist.html",
@@ -1119,7 +1173,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1136,7 +1191,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1153,7 +1209,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1170,7 +1227,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".https.html",
       "variants": [
@@ -1187,7 +1245,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1204,7 +1263,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1224,7 +1284,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1241,7 +1302,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".worker.js",
       "variants": [
@@ -1249,7 +1311,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReaderSync global, which Fino does not install",
       "subtests": []
     },
     {
@@ -1258,7 +1320,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1266,7 +1329,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -1275,15 +1338,16 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -1292,15 +1356,16 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -1309,16 +1374,42 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "test FileReader InvalidStateError exception for readAsText"
+        },
+        {
+          "kind": "test",
+          "name": "test FileReader InvalidStateError exception for readAsDataURL"
+        },
+        {
+          "kind": "test",
+          "name": "test FileReader InvalidStateError exception for readAsArrayBuffer"
+        },
+        {
+          "kind": "async_test",
+          "name": "test FileReader InvalidStateError exception in onloadstart event for readAsArrayBuffer"
+        },
+        {
+          "kind": "async_test",
+          "name": "test FileReader no InvalidStateError exception in loadend event handler for readAsArrayBuffer"
+        },
+        {
+          "kind": "async_test",
+          "name": "test abort and restart in onloadstart event for readAsText"
+        }
+      ]
     },
     {
       "path": "FileAPI/reading-data-section/filereader_abort.any.js",
@@ -1326,16 +1417,22 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "Aborting before read"
+        }
+      ]
     },
     {
       "path": "FileAPI/reading-data-section/filereader_error.any.js",
@@ -1343,15 +1440,16 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -1360,16 +1458,26 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "events are dispatched in the correct order for an empty blob"
+        },
+        {
+          "kind": "promise_test",
+          "name": "events are dispatched in the correct order for a non-empty blob"
+        }
+      ]
     },
     {
       "path": "FileAPI/reading-data-section/filereader_file-manual.html",
@@ -1377,7 +1485,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1385,7 +1494,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -1394,7 +1503,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1402,7 +1512,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -1411,15 +1521,16 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -1428,15 +1539,16 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -1445,16 +1557,34 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "async_test",
+          "name": "FileReader readyState during readAsDataURL"
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsDataURL result for Blob with specified MIME type"
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsDataURL result for Blob with unspecified MIME type"
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsDataURL result for empty Blob"
+        }
+      ]
     },
     {
       "path": "FileAPI/reading-data-section/filereader_readAsText.any.js",
@@ -1462,16 +1592,26 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "async_test",
+          "name": "readAsText should correctly read UTF-8."
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsText should correctly read UTF-16."
+        }
+      ]
     },
     {
       "path": "FileAPI/reading-data-section/filereader_readystate.any.js",
@@ -1479,15 +1619,16 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -1496,16 +1637,34 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "async_test",
+          "name": "readAsText"
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsDataURL"
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsArrayBuffer"
+        },
+        {
+          "kind": "async_test",
+          "name": "readAsBinaryString"
+        }
+      ]
     },
     {
       "path": "FileAPI/support/Blob.js",
@@ -1513,7 +1672,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1530,7 +1690,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1547,7 +1708,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1564,7 +1726,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1572,7 +1735,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReaderSync global, which Fino does not install",
       "subtests": []
     },
     {
@@ -1581,7 +1744,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1598,7 +1762,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1615,7 +1780,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1632,7 +1798,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1649,7 +1816,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1683,7 +1851,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1700,7 +1869,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1717,7 +1887,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1734,7 +1905,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1751,7 +1923,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1768,7 +1941,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1785,7 +1959,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".js",
       "variants": [
@@ -1802,7 +1977,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1819,7 +1995,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1836,7 +2013,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".window.js",
       "variants": [
@@ -1853,7 +2031,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -1895,7 +2074,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".window.js",
       "variants": [
@@ -1912,7 +2092,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".window.js",
       "variants": [
@@ -1929,7 +2110,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -1946,7 +2128,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".window.js",
       "variants": [
@@ -1963,7 +2146,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -2000,7 +2184,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".any.js",
       "variants": [
@@ -2019,7 +2204,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -2036,7 +2222,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -2053,7 +2240,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -2070,7 +2258,8 @@ export const WPT_MANIFEST: WptManifest = {
       "globals": [
         "Blob",
         "File",
-        "FormData"
+        "FormData",
+        "FileReader"
       ],
       "type": ".html",
       "variants": [
@@ -19257,7 +19446,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {
@@ -37475,8 +37664,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "/common/gc.js"
       ],
-      "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -37838,7 +38027,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReader/FileReaderSync globals, which Fino does not install",
+      "reason": "requires FileReader in document or worker environment",
       "subtests": []
     },
     {

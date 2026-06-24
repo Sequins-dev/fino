@@ -76,7 +76,8 @@
  *
  */
 
-import { encodeUtf8, decodeUtf8, _registerBlobCloneHelper } from './encoding.mts';
+import { btoa, DOMException, encodeUtf8, decodeUtf8, TextDecoder, _registerBlobCloneHelper } from './encoding.mts';
+import { Event, EventTarget } from './eventtarget.mts';
 import { ReadableStream } from './webstreams.mts';
 
 // ---------------------------------------------------------------------------
@@ -565,6 +566,208 @@ export class File extends Blob {
    * ```
    */
   get lastModified() { return this.#lastModified; }
+}
+
+type FileReaderResult = string | ArrayBuffer | null;
+type FileReaderReadKind = 'arrayBuffer' | 'binaryString' | 'dataURL' | 'text';
+type FileReaderHandler = ((event: Event) => void) | null;
+
+function _bytesToBinaryString(bytes: Uint8Array): string {
+  let out = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.byteLength; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    out += String.fromCharCode(...chunk);
+  }
+  return out;
+}
+
+function _decodeFileReaderText(bytes: Uint8Array, blob: Blob, label?: string): string {
+  let encoding = label;
+  if (encoding === undefined) {
+    const charset = /(?:^|;)\s*charset\s*=\s*([^;]+)/i.exec(blob.type)?.[1];
+    encoding = charset?.trim().replace(/^"|"$/g, '');
+  }
+  if (encoding === undefined) {
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) encoding = 'utf-16be';
+    else if (bytes[0] === 0xff && bytes[1] === 0xfe) encoding = 'utf-16le';
+    else encoding = 'utf-8';
+  }
+  return new TextDecoder(encoding).decode(bytes);
+}
+
+function _readBlobResult(blob: Blob, kind: FileReaderReadKind, label?: string): FileReaderResult {
+  const bytes = _getBlobBytes(blob);
+  if (kind === 'arrayBuffer') {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  }
+  if (kind === 'binaryString') return _bytesToBinaryString(bytes);
+  if (kind === 'dataURL') {
+    const type = blob.type.length === 0 ? 'application/octet-stream' : blob.type;
+    return `data:${type};base64,${btoa(_bytesToBinaryString(bytes))}`;
+  }
+  return _decodeFileReaderText(bytes, blob, label);
+}
+
+/**
+ * Asynchronous Blob reader from the File API.
+ *
+ * `FileReader` reads an in-memory `Blob` or `File` as text, an `ArrayBuffer`,
+ * a binary string, or a data URL. Reads transition through `EMPTY`, `LOADING`,
+ * and `DONE`, dispatching the standard `loadstart`, `progress`, `load`,
+ * `abort`, `error`, and `loadend` events. Fino supports Blob-backed reads; it
+ * does not install `FileReaderSync` or filesystem-backed browser file handles.
+ *
+ * ```typescript no_run
+ * const reader = new FileReader();
+ * reader.onload = () => console.log(reader.result);
+ * reader.readAsText(new Blob(['hello']));
+ * ```
+ */
+export class FileReader extends EventTarget {
+  /**
+   * No read has started.
+   *
+   * ```typescript no_run
+   * new FileReader().readyState === FileReader.EMPTY; // true
+   * ```
+   */
+  static EMPTY = 0;
+  /**
+   * A read is currently in progress.
+   *
+   * ```typescript no_run
+   * FileReader.LOADING; // 1
+   * ```
+   */
+  static LOADING = 1;
+  /**
+   * The read completed, failed, or was aborted.
+   *
+   * ```typescript no_run
+   * FileReader.DONE; // 2
+   * ```
+   */
+  static DONE = 2;
+
+  onloadstart: FileReaderHandler = null;
+  onprogress: FileReaderHandler = null;
+  onload: FileReaderHandler = null;
+  onabort: FileReaderHandler = null;
+  onerror: FileReaderHandler = null;
+  onloadend: FileReaderHandler = null;
+
+  #readyState = FileReader.EMPTY;
+  #result: FileReaderResult = null;
+  #error: DOMException | null = null;
+  #readToken = 0;
+
+  get [Symbol.toStringTag]() { return 'FileReader'; }
+  get EMPTY() { return FileReader.EMPTY; }
+  get LOADING() { return FileReader.LOADING; }
+  get DONE() { return FileReader.DONE; }
+  get readyState() { return this.#readyState; }
+  get result() { return this.#result; }
+  get error() { return this.#error; }
+
+  dispatchEvent(event: Event): boolean {
+    const ok = super.dispatchEvent(event);
+    const handler = this[`on${event.type}` as keyof FileReader] as FileReaderHandler | undefined;
+    if (typeof handler === 'function') {
+      try { handler.call(this, event); } catch (_) {}
+    }
+    return ok;
+  }
+
+  readAsArrayBuffer(blob: Blob): void {
+    this.#read(blob, 'arrayBuffer');
+  }
+
+  readAsBinaryString(blob: Blob): void {
+    this.#read(blob, 'binaryString');
+  }
+
+  readAsDataURL(blob: Blob): void {
+    this.#read(blob, 'dataURL');
+  }
+
+  readAsText(blob: Blob, encoding?: string): void {
+    this.#read(blob, 'text', encoding);
+  }
+
+  abort(): void {
+    if (this.#readyState === FileReader.EMPTY) {
+      this.#result = null;
+      return;
+    }
+    if (this.#readyState === FileReader.DONE) {
+      this.#result = null;
+      return;
+    }
+
+    this.#readToken++;
+    this.#result = null;
+    this.#error = null;
+    this.#readyState = FileReader.DONE;
+    this.dispatchEvent(new Event('abort'));
+    this.dispatchEvent(new Event('loadend'));
+  }
+
+  #read(blob: Blob, kind: FileReaderReadKind, encoding?: string): void {
+    if (!(blob instanceof Blob) || !_blobBytes.has(blob)) {
+      throw new TypeError('FileReader: argument must be a Blob');
+    }
+    if (this.#readyState === FileReader.LOADING) {
+      throw new DOMException('FileReader is already loading', 'InvalidStateError');
+    }
+
+    const token = ++this.#readToken;
+    this.#readyState = FileReader.LOADING;
+    this.#result = null;
+    this.#error = null;
+
+    queueMicrotask(() => {
+      if (token !== this.#readToken || this.#readyState !== FileReader.LOADING) return;
+      this.dispatchEvent(new Event('loadstart'));
+      if (token !== this.#readToken || this.#readyState !== FileReader.LOADING) return;
+
+      setTimeout(() => {
+        this.#finishRead(blob, kind, token, encoding);
+      }, 0);
+    });
+  }
+
+  #finishRead(blob: Blob, kind: FileReaderReadKind, token: number, encoding?: string): void {
+    if (token !== this.#readToken || this.#readyState !== FileReader.LOADING) return;
+    const bytes = _getBlobBytes(blob);
+    if (bytes.byteLength > 0) {
+      this.dispatchEvent(new Event('progress'));
+      if (token !== this.#readToken || this.#readyState !== FileReader.LOADING) return;
+    }
+
+    setTimeout(() => {
+      this.#completeRead(blob, kind, token, encoding);
+    }, 0);
+  }
+
+  #completeRead(blob: Blob, kind: FileReaderReadKind, token: number, encoding?: string): void {
+    if (token !== this.#readToken || this.#readyState !== FileReader.LOADING) return;
+    try {
+      this.#result = _readBlobResult(blob, kind, encoding);
+      this.#readyState = FileReader.DONE;
+      this.dispatchEvent(new Event('load'));
+    } catch (err) {
+      this.#result = null;
+      this.#error = err instanceof DOMException ? err : new DOMException(err instanceof Error ? err.message : String(err), 'NotReadableError');
+      this.#readyState = FileReader.DONE;
+      this.dispatchEvent(new Event('error'));
+    }
+    setTimeout(() => {
+      if (token === this.#readToken && this.#readyState === FileReader.DONE) {
+        this.dispatchEvent(new Event('loadend'));
+      }
+    }, 0);
+  }
 }
 
 // Register the Blob clone helper with encoding.mts so structuredClone can

@@ -4,6 +4,12 @@
 
 import { describe, it } from 'fino:test/test';
 
+function waitFor(target: EventTarget, type: string): Promise<Event> {
+  return new Promise((resolve) => {
+    target.addEventListener(type, resolve, { once: true });
+  });
+}
+
 describe('Blob construction', () => {
   it('empty constructor', (t) => {
     const b = new Blob();
@@ -491,5 +497,88 @@ describe('File.lastModified — integer truncation', () => {
   it('lastModified defaults to an integer', (t) => {
     const f = new File(['data'], 'f.txt');
     t.equal(f.lastModified, Math.trunc(f.lastModified), 'default lastModified is integer');
+  });
+});
+
+describe('FileReader', () => {
+  it('is exposed as a global EventTarget with handler attributes', (t) => {
+    const reader = new FileReader();
+    t.ok(reader instanceof FileReader, 'constructs FileReader');
+    t.ok(reader instanceof EventTarget, 'inherits EventTarget');
+    t.equal(reader.readyState, FileReader.EMPTY, 'initial state');
+    t.equal(reader.result, null, 'initial result');
+    t.equal(reader.error, null, 'initial error');
+    t.equal(reader.onloadstart, null, 'onloadstart starts null');
+    t.equal(reader.onprogress, null, 'onprogress starts null');
+    t.equal(reader.onload, null, 'onload starts null');
+    t.equal(reader.onabort, null, 'onabort starts null');
+    t.equal(reader.onerror, null, 'onerror starts null');
+    t.equal(reader.onloadend, null, 'onloadend starts null');
+  });
+
+  it('reads Blob data as ArrayBuffer, text, binary string, and data URL', async (t) => {
+    const arrayReader = new FileReader();
+    const arrayDone = waitFor(arrayReader, 'loadend');
+    arrayReader.readAsArrayBuffer(new Blob(['TEST']));
+    await arrayDone;
+    t.deepEqual(Array.from(new Uint8Array(arrayReader.result as ArrayBuffer)), [84, 69, 83, 84], 'ArrayBuffer bytes');
+
+    const textReader = new FileReader();
+    const textDone = waitFor(textReader, 'loadend');
+    textReader.readAsText(new Blob(['TEST']));
+    await textDone;
+    t.equal(textReader.result, 'TEST', 'text result');
+
+    const binaryReader = new FileReader();
+    const binaryDone = waitFor(binaryReader, 'loadend');
+    binaryReader.readAsBinaryString(new Blob([new Uint8Array([0, 65, 255])]));
+    await binaryDone;
+    t.equal(binaryReader.result, '\x00A\xff', 'binary string result');
+
+    const urlReader = new FileReader();
+    const urlDone = waitFor(urlReader, 'loadend');
+    urlReader.readAsDataURL(new Blob(['TEST'], { type: 'text/plain' }));
+    await urlDone;
+    t.equal(urlReader.result, 'data:text/plain;base64,VEVTVA==', 'data URL result');
+  });
+
+  it('rejects concurrent reads with InvalidStateError', (t) => {
+    const reader = new FileReader();
+    reader.readAsText(new Blob(['one']));
+    t.throws(
+      () => reader.readAsText(new Blob(['two'])),
+      (err: unknown) => err instanceof DOMException && err.name === 'InvalidStateError',
+      'concurrent read throws InvalidStateError',
+    );
+  });
+
+  it('aborts active reads and dispatches abort before loadend', async (t) => {
+    const reader = new FileReader();
+    const events: string[] = [];
+    reader.addEventListener('abort', () => events.push('abort'));
+    reader.addEventListener('loadend', () => events.push('loadend'));
+    const done = waitFor(reader, 'loadend');
+    reader.readAsText(new Blob(['abort me']));
+    await waitFor(reader, 'loadstart');
+    reader.abort();
+    await done;
+    t.equal(reader.readyState, FileReader.DONE, 'state after abort');
+    t.equal(reader.result, null, 'result cleared after abort');
+    t.equal(reader.error, null, 'abort does not set error');
+    t.deepEqual(events, ['abort', 'loadend'], 'abort dispatch order');
+  });
+
+  it('detects UTF-16 labels and BOMs for readAsText', async (t) => {
+    const explicit = new FileReader();
+    const explicitDone = waitFor(explicit, 'loadend');
+    explicit.readAsText(new Blob([new Uint8Array([0x00, 0x68, 0x00, 0x69])]), 'UTF-16BE');
+    await explicitDone;
+    t.equal(explicit.result, 'hi', 'explicit UTF-16BE label');
+
+    const bom = new FileReader();
+    const bomDone = waitFor(bom, 'loadend');
+    bom.readAsText(new Blob([new Uint8Array([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00])]));
+    await bomDone;
+    t.equal(bom.result, 'hi', 'UTF-16LE BOM');
   });
 });
