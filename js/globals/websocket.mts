@@ -97,7 +97,7 @@
  * - PING → automatic PONG with echoed payload
  */
 
-import { encodeUtf8, btoa }  from './encoding.mts';
+import { DOMException, encodeUtf8, btoa }  from './encoding.mts';
 import { digest }             from '../internal/openssl.mts';
 import { Headers, _headerTokenList, _parseHeaders, _parseResponseLine } from '../net/http/index.mts';
 import { Socket }             from '../net/socket.mts';
@@ -140,6 +140,46 @@ function _validReceivedCloseCode(code: number): boolean {
   if (code === 1004 || code === 1005 || code === 1006 || code === 1015) return false;
   if (code >= 1016 && code <= 2999) return false;
   return true;
+}
+
+function _validApplicationCloseCode(code: number): boolean {
+  return code === 1000 || (code >= 3000 && code <= 4999);
+}
+
+function _webSocketBaseUrl(): string | undefined {
+  const location = (globalThis as { location?: unknown }).location;
+  if (location === undefined || location === null) return undefined;
+  return String(location);
+}
+
+function _webSocketSyntaxError(message: string): DOMException {
+  return new DOMException(message, 'SyntaxError');
+}
+
+function _parseWebSocketUrl(input: string | URL): URL {
+  const raw = String(input);
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*[\u0000-\u0020]/.test(raw)) {
+    throw _webSocketSyntaxError('The WebSocket URL is invalid');
+  }
+  if (raw.includes('#')) {
+    throw _webSocketSyntaxError('The URL contains a fragment identifier');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(raw, _webSocketBaseUrl());
+  } catch {
+    throw _webSocketSyntaxError('The WebSocket URL is invalid');
+  }
+
+  if (parsed.protocol === 'http:') parsed = new URL(parsed.href.replace(/^http:/, 'ws:'));
+  else if (parsed.protocol === 'https:') parsed = new URL(parsed.href.replace(/^https:/, 'wss:'));
+
+  if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+    throw _webSocketSyntaxError('The URL\'s scheme must be either \'ws\' or \'wss\'');
+  }
+
+  return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +374,62 @@ export class ErrorEvent extends Event {
    * ```
    */
   get error() { return this.#error; }
+}
+
+interface WebSocketErrorInit {
+  closeCode?: number | null;
+  reason?:    string;
+}
+
+/**
+ * Error object used by the tentative WebSocket stream API.
+ *
+ * The class follows the WebSocket close-code validation rules: close codes are
+ * either absent, `1000`, or in the application range `3000` through `4999`.
+ * A non-empty reason without an explicit close code defaults to `1000`.
+ *
+ * ```ts no_run
+ * const error = new WebSocketError('closed', { closeCode: 3000, reason: 'done' });
+ * console.log(error.name, error.closeCode, error.reason);
+ * ```
+ */
+export class WebSocketError extends DOMException {
+  #closeCode: number | null;
+  #reason:    string;
+
+  /**
+   * Create a WebSocket stream error.
+   *
+   * Invalid close codes throw `InvalidAccessError`. Reasons longer than 123
+   * UTF-8 bytes throw `SyntaxError`, matching WebSocket close frames.
+   *
+   * ```ts no_run
+   * new WebSocketError('closed', { reason: 'done' });
+   * ```
+   */
+  constructor(message = '', init: WebSocketErrorInit = {}) {
+    const reason = init.reason === undefined ? '' : String(init.reason);
+    const closeCode = init.closeCode === undefined || init.closeCode === null
+      ? (reason === '' ? null : 1000)
+      : Number(init.closeCode);
+
+    if (closeCode !== null && !_validApplicationCloseCode(closeCode)) {
+      throw new DOMException('Invalid WebSocket close code: ' + closeCode, 'InvalidAccessError');
+    }
+    if (encodeUtf8(reason).byteLength > 123) {
+      throw _webSocketSyntaxError('WebSocket close reason exceeds 123 UTF-8 bytes');
+    }
+
+    super(String(message), 'WebSocketError');
+    this.#closeCode = closeCode;
+    this.#reason = reason;
+  }
+
+  /** WebSocket close code, or `null` when no code is attached. */
+  get closeCode(): number | null { return this.#closeCode; }
+
+  /** UTF-8 close reason. */
+  get reason(): string { return this.#reason; }
 }
 
 // ---------------------------------------------------------------------------
@@ -2676,9 +2772,9 @@ export class WebSocket extends EventTarget {
   /**
    * Create a WebSocket and immediately start connecting.
    *
-   * `url` must use `ws:` or `wss:` and must not include a fragment. Duplicate
-   * requested protocols throw synchronously through the underlying connection
-   * factory.
+   * `http:` and `https:` inputs are converted to `ws:` and `wss:`. Relative URLs
+   * resolve against `globalThis.location`. URL parse failures, unsupported
+   * schemes, fragments, and duplicate requested protocols throw synchronously.
    *
    * ```ts no_run
    * const ws = new WebSocket('wss://example.com/chat', 'chat.v1');
@@ -2686,22 +2782,8 @@ export class WebSocket extends EventTarget {
   constructor(url: string | URL, protocols?: string | string[]) {
     super();
 
-    // Validate URL before creating the connection (synchronous, per spec)
-    const parsed = new URL(String(url));
-    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
-      throw Object.assign(
-        new Error('The URL\'s scheme must be either \'ws\' or \'wss\''),
-        { name: 'SyntaxError' },
-      );
-    }
-    if (parsed.hash !== '') {
-      throw Object.assign(
-        new Error('The URL contains a fragment identifier'),
-        { name: 'SyntaxError' },
-      );
-    }
-
-    this.#conn = WebSocketConnection.connect(url, protocols !== undefined ? { protocols } : {});
+    const parsed = _parseWebSocketUrl(url);
+    this.#conn = WebSocketConnection.connect(parsed, protocols !== undefined ? { protocols } : {});
 
     // Forward events from the underlying connection
     const self = this;
@@ -2924,18 +3006,12 @@ export class WebSocket extends EventTarget {
     if (state === CLOSING || state === CLOSED) return;
 
     // Validate synchronously (spec requires throw before state change)
-    if (code !== 1000 && !(code >= 3000 && code <= 4999)) {
-      throw Object.assign(
-        new Error('Invalid WebSocket close code: ' + code),
-        { name: 'InvalidAccessError' },
-      );
+    if (!_validApplicationCloseCode(code)) {
+      throw new DOMException('Invalid WebSocket close code: ' + code, 'InvalidAccessError');
     }
-    const reasonBytes = new TextEncoder().encode(reason);
+    const reasonBytes = encodeUtf8(reason);
     if (reasonBytes.byteLength > 123) {
-      throw Object.assign(
-        new Error('WebSocket close reason exceeds 123 UTF-8 bytes'),
-        { name: 'SyntaxError' },
-      );
+      throw _webSocketSyntaxError('WebSocket close reason exceeds 123 UTF-8 bytes');
     }
 
     // Fire and forget — close event will fire through the forwarded listener

@@ -14,7 +14,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { ok, equal, deepEqual } from 'fino:test/assert';
-import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
+import { WebSocket, WebSocketConnection, MessageEvent, CloseEvent, WebSocketError } from 'fino:net/http/websocket';
 import { serve } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
@@ -900,19 +900,58 @@ describe('WHATWG WebSocket facade', () => {
     }
   });
 
-  it('constructor throws SyntaxError for non-ws URL', async () => {
+  it('constructor converts http and https URLs to WebSocket schemes', () => {
+    const http = new WebSocket('http://example.invalid/socket');
+    equal(http.url, 'ws://example.invalid/socket');
+    http.close();
+
+    const https = new WebSocket('https://example.invalid/socket');
+    equal(https.url, 'wss://example.invalid/socket');
+    https.close();
+  });
+
+  it('constructor resolves relative URLs against global location', () => {
+    const oldLocation = (globalThis as any).location;
+    (globalThis as any).location = {
+      href: 'http://example.invalid/base/page.html?old=1',
+      toString() { return this.href; },
+    };
+
+    const ws = new WebSocket('?next=1');
+    try {
+      equal(ws.url, 'ws://example.invalid/base/page.html?next=1');
+    } finally {
+      ws.close();
+      if (oldLocation === undefined) delete (globalThis as any).location;
+      else (globalThis as any).location = oldLocation;
+    }
+  });
+
+  it('constructor throws DOMException SyntaxError for invalid URL schemes', async () => {
     let threw = false;
-    try { new WebSocket('http://example.com'); } catch (e: any) {
+    try { new WebSocket('ftp://example.com'); } catch (e: any) {
       threw = true;
+      ok(e instanceof DOMException);
       equal(e.name, 'SyntaxError');
     }
     ok(threw);
   });
 
-  it('constructor throws SyntaxError for URL with fragment', async () => {
+  it('constructor throws DOMException SyntaxError for URL with fragment', async () => {
     let threw = false;
     try { new WebSocket('ws://example.com/#frag'); } catch (e: any) {
       threw = true;
+      ok(e instanceof DOMException);
+      equal(e.name, 'SyntaxError');
+    }
+    ok(threw);
+  });
+
+  it('constructor throws DOMException SyntaxError for URL with empty fragment', async () => {
+    let threw = false;
+    try { new WebSocket('http://example.com/#'); } catch (e: any) {
+      threw = true;
+      ok(e instanceof DOMException);
       equal(e.name, 'SyntaxError');
     }
     ok(threw);
@@ -1114,6 +1153,48 @@ describe('WHATWG WebSocket facade', () => {
     } finally {
       await server.close();
     }
+  });
+});
+
+describe('WebSocketError', () => {
+  it('defaults to a WebSocketError DOMException without close metadata', (t) => {
+    const err = new WebSocketError();
+    t.ok(err instanceof DOMException);
+    t.equal(err.name, 'WebSocketError');
+    t.equal(err.message, '');
+    t.equal(err.code, 0);
+    t.equal(err.closeCode, null);
+    t.equal(err.reason, '');
+  });
+
+  it('stores close code and reason', (t) => {
+    const err = new WebSocketError('closed', { closeCode: 3456, reason: 'done' });
+    t.equal(err.message, 'closed');
+    t.equal(err.closeCode, 3456);
+    t.equal(err.reason, 'done');
+  });
+
+  it('defaults close code to 1000 when a reason is supplied', (t) => {
+    const err = new WebSocketError('', { reason: 'done' });
+    t.equal(err.closeCode, 1000);
+    t.equal(err.reason, 'done');
+  });
+
+  it('throws DOMException InvalidAccessError for invalid close codes', (t) => {
+    for (const code of [999, 1001, 2999, 5000]) {
+      t.throws(
+        () => new WebSocketError('', { closeCode: code }),
+        (err) => err instanceof DOMException && err.name === 'InvalidAccessError',
+        `invalid close code ${code} throws`,
+      );
+    }
+  });
+
+  it('throws DOMException SyntaxError for overlong reasons', (t) => {
+    t.throws(
+      () => new WebSocketError('', { closeCode: 1000, reason: 'x'.repeat(124) }),
+      (err) => err instanceof DOMException && err.name === 'SyntaxError',
+    );
   });
 });
 

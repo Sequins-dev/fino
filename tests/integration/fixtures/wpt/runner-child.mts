@@ -44,7 +44,8 @@ function installBaseGlobals(): void {
     };
   }
   if (g.location === undefined) {
-    const url = new URL(`https://web-platform.test/${testPath}`);
+    const scheme = /\.https(?:\.|$)/.test(testPath) ? 'https' : 'http';
+    const url = new URL(`${scheme}://web-platform.test/${testPath}`);
     g.location = {
       href: url.href,
       origin: url.origin,
