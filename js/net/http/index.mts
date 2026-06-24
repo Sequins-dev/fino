@@ -162,6 +162,9 @@ interface ResponseInit {
   trailers?:   OutTrailers;
 }
 
+type HeadersIteratorKind = 'entries' | 'keys' | 'values';
+type HeadersGuard = 'none' | 'response' | 'immutable';
+
 interface WireResponseInit {
   version?:     string;
   status?:      number;
@@ -197,6 +200,18 @@ const LAST_CHUNK_BYTES = new Uint8Array([0x30, CR, LF, CR, LF]); // "0\r\n\r\n"
 // Maximum header section size (prevents malicious clients from sending
 // unbounded headers).  64 KiB should be plenty.
 const MAX_HEADER_SIZE = 64 * 1024;
+
+const _arrayIteratorPrototype = Object.getPrototypeOf(Object.getPrototypeOf([][Symbol.iterator]()));
+const _headersIteratorPrototype = Object.create(_arrayIteratorPrototype);
+Object.defineProperty(_headersIteratorPrototype, 'next', {
+  value: function headersIteratorNext(this: { _next?: () => IteratorResult<string | [string, string]> }) {
+    if (!this || typeof this._next !== 'function') throw new TypeError('Headers iterator receiver expected');
+    return this._next();
+  },
+  enumerable: true,
+  configurable: true,
+  writable: true,
+});
 
 function _makeTrailersDeferred(): { resolve: (h: Headers) => void; reject: (e: Error) => void; promise: Promise<Headers> } {
   let resolve!: (h: Headers) => void;
@@ -721,6 +736,7 @@ export class Headers {
    * @internal
    */
   #list: [string, string][];
+  #guard: HeadersGuard = 'none';
   /**
    * Private property `#sortedCache` used by `Headers`.
    *
@@ -756,20 +772,23 @@ export class Headers {
    */
   constructor(init?: HeadersInit) {
     this.#list = []; // [[name, value], ...]
-    if (init == null) return;
-    if (init instanceof Headers) {
-      this.#list = init.#list.map(function copyHeaderPair(entry) { return [entry[0], entry[1]]; });
-    } else if (Array.isArray(init)) {
-      for (const pair of init) {
-        if (pair.length < 2 || pair[0] === undefined || pair[1] === undefined) {
-          throw new TypeError('Header pair must contain exactly two items');
-        }
-        this.append(pair[0], pair[1]);
+    if (init === undefined) return;
+    if (init === null) throw new TypeError('Headers init must not be null');
+    const iterator = (init as { [Symbol.iterator]?: unknown })[Symbol.iterator];
+    if (typeof iterator === 'function') {
+      for (const pair of iterator.call(init) as Iterable<unknown>) {
+        const header = Array.from(pair as Iterable<unknown>);
+        if (header.length !== 2) throw new TypeError('Header pair must contain exactly two items');
+        this.append(header[0] as string, header[1] as string);
       }
     } else if (typeof init === 'object') {
-      for (const name of Object.keys(init)) {
-        const value = init[name];
-        if (value !== undefined) this.append(name, value);
+      for (const key of Reflect.ownKeys(init)) {
+        const descriptor = Object.getOwnPropertyDescriptor(init, key);
+        if (descriptor === undefined || !descriptor.enumerable) continue;
+        if (typeof key === 'symbol') throw new TypeError('Header name must be a string');
+        const name = _normalizeHeaderName(key);
+        const value = init[key];
+        this.#appendNormalized(name, _normalizeHeaderValue(value));
       }
     }
   }
@@ -785,6 +804,8 @@ export class Headers {
   append(name: string, value: string): void {
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
+    this.#ensureMutable();
+    if (this.#isForbiddenResponseHeader(name)) return;
     this.#list.push([name, value]);
     this.#sortedCache = null;
   }
@@ -803,6 +824,11 @@ export class Headers {
     this.#sortedCache = null;
   }
 
+  #appendNormalized(name: string, value: string): void {
+    this.#list.push([name, value]);
+    this.#sortedCache = null;
+  }
+
   /**
    * Set the value for a header name, replacing any existing values.
    *
@@ -813,6 +839,8 @@ export class Headers {
   set(name: string, value: string): void {
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
+    this.#ensureMutable();
+    if (this.#isForbiddenResponseHeader(name)) return;
     // Mutate in place: find the first occurrence and replace it, then remove
     // any duplicates. Avoids allocating a `next` array on every call.
     let firstIdx = -1;
@@ -879,8 +907,15 @@ export class Headers {
    */
   delete(name: string): void {
     name = name.toLowerCase().trim();
+    this.#ensureMutable();
+    if (this.#isForbiddenResponseHeader(name)) return;
     this.#list = this.#list.filter(function keepNonMatching(entry) { return entry[0] !== name; });
     this.#sortedCache = null;
+  }
+
+  _setGuard(guard: HeadersGuard): this {
+    this.#guard = guard;
+    return this;
   }
 
   /**
@@ -904,7 +939,7 @@ export class Headers {
    * ```
    */
   entries() {
-    return this.#sorted()[Symbol.iterator]();
+    return this.#makeIterator('entries');
   }
 
   /** Return an iterator over header names, sorted.
@@ -914,7 +949,7 @@ export class Headers {
    * ```
    */
   keys() {
-    return this.#sorted().map(function extractName(e) { return e[0]; })[Symbol.iterator]();
+    return this.#makeIterator('keys');
   }
 
   /** Return an iterator over header values, sorted by name.
@@ -924,7 +959,7 @@ export class Headers {
    * ```
    */
   values() {
-    return this.#sorted().map(function extractValue(e) { return e[1]; })[Symbol.iterator]();
+    return this.#makeIterator('values');
   }
 
   /** Iterate over [name, value] pairs, sorted by name.
@@ -968,21 +1003,68 @@ export class Headers {
    */
   #sorted(): [string, string][] {
     if (this.#sortedCache !== null) return this.#sortedCache;
-    this.#sortedCache = this.#list.slice().sort(function compareHeaderNames(a, b) {
-      return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+    const combined = new Map<string, { name: string; value: string; index: number }>();
+    const entries: { name: string; value: string; index: number }[] = [];
+    for (let index = 0; index < this.#list.length; index++) {
+      const entry = this.#list[index]!;
+      if (entry[0] === 'set-cookie') {
+        entries.push({ name: entry[0], value: entry[1], index });
+        continue;
+      }
+      const current = combined.get(entry[0]);
+      if (current === undefined) {
+        combined.set(entry[0], { name: entry[0], value: entry[1], index });
+      } else {
+        current.value += ', ' + entry[1];
+      }
+    }
+    entries.push(...combined.values());
+    entries.sort(function compareHeaderEntries(a, b) {
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : a.index - b.index;
     });
+    this.#sortedCache = entries.map(function toHeaderPair(entry) { return [entry.name, entry.value]; });
     return this.#sortedCache;
+  }
+
+  #makeIterator(kind: HeadersIteratorKind): Iterator<string | [string, string]> {
+    let index = 0;
+    const headers = this;
+    const iterator = Object.create(_headersIteratorPrototype) as Iterator<string | [string, string]> & { _next: () => IteratorResult<string | [string, string]> };
+    Object.defineProperty(iterator, '_next', {
+      value() {
+        const entry = headers.#sorted()[index++];
+        if (entry === undefined) return { done: true, value: undefined };
+        if (kind === 'keys') return { done: false, value: entry[0] };
+        if (kind === 'values') return { done: false, value: entry[1] };
+        return { done: false, value: [entry[0], entry[1]] };
+      },
+      configurable: true,
+    });
+    return iterator;
+  }
+
+  #ensureMutable(): void {
+    if (this.#guard === 'immutable') throw new TypeError('Headers are immutable');
+  }
+
+  #isForbiddenResponseHeader(name: string): boolean {
+    return this.#guard === 'response' && name === 'set-cookie';
   }
 }
 
 function _normalizeHeaderName(name: string): string {
   name = String(name).toLowerCase().trim();
   if (!name) throw new TypeError('Header name must not be empty');
+  if (!/^[!#$%&'*+\-.^_`|~0-9a-z]+$/.test(name)) throw new TypeError('Header name contains invalid characters');
   return name;
 }
 
 function _normalizeHeaderValue(value: string): string {
-  value = String(value).trim();
+  value = String(value);
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 0xff) throw new TypeError('Header value contains invalid characters');
+  }
+  value = value.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
   if (/[\x00\r\n]/.test(value)) throw new TypeError('Header value contains invalid characters');
   return value;
 }
@@ -2088,6 +2170,7 @@ export class Response {
     this.#status     = (init && init.status != null) ? Number(init.status) : 200;
     this.#statusText = (init && init.statusText != null) ? String(init.statusText) : '';
     this.#headers    = (init && init.headers) ? new Headers(init.headers) : new Headers();
+    this.#headers._setGuard('response');
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
     if (body != null) {
       if (body instanceof FormData) {
@@ -2504,6 +2587,7 @@ export class Response {
   static error() {
     const res = new Response(null, { status: 0, statusText: '' });
     res.#type = 'error';
+    res.#headers._setGuard('immutable');
     return res;
   }
 
@@ -2600,6 +2684,7 @@ export async function parseResponse(
     body = _emptyBody;
   }
 
+  headers._setGuard('immutable');
   return new Response(INTERNAL, { version, status, statusText, headers, body, inTrailers });
 }
 
