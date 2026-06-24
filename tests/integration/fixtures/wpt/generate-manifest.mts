@@ -123,6 +123,12 @@ function needsWptServer(source: string): boolean {
       || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source)
       || /\bfetch\s*\(\s*['"`](?![A-Za-z][A-Za-z0-9+.-]*:)/.test(source)
       || /\bfetch\s*\(\s*RESOURCES_DIR\b/.test(source)
+      || /\bRESOURCES_DIR\b/.test(source)
+      || /\bget_host_info\s*\(/.test(source)
+      || /\{\{host\}\}/.test(source)
+      || /\bweb-platform\.test\b/.test(source)
+      || /['"`]\.\.\/resources\//.test(source)
+      || /\bfetch\s*\(\s*location\.href\b/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
       || /\/fetch\/api\/resources\//.test(source);
 }

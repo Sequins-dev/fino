@@ -14967,8 +14967,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15043,8 +15043,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15299,8 +15299,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15319,8 +15319,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15393,8 +15393,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15431,8 +15431,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15495,18 +15495,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Response.body is null for responses with method=HEAD"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Null body status with subresource integrity should abort"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/basic/response-url.sub.any.js",
@@ -15542,14 +15533,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Fetching about:blank with range header does not affect behavior"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/basic/scheme-blob.sub.any.js",
@@ -15587,8 +15573,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15663,8 +15649,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15807,8 +15793,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -15829,18 +15815,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Set cookies"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Clean cookies"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/cors/cors-cookies.any.js",
@@ -15859,8 +15836,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16008,18 +15985,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "CORS preflight cache reuses explicit header entries"
-        },
-        {
-          "kind": "promise_test",
-          "name": "CORS preflight cache does not reuse wildcard header entries for Authorization"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/cors/cors-preflight-not-cors-safelisted.any.js",
@@ -16127,8 +16095,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16193,8 +16161,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17410,18 +17378,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "redirect response with empty Location, follow mode"
-        },
-        {
-          "kind": "promise_test",
-          "name": "redirect response with empty Location, manual mode"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/redirect/redirect-keepalive.any.js",
@@ -17483,8 +17442,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17503,8 +17462,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17543,14 +17502,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "manual redirect with a CORS error should be rejected"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/redirect/redirect-origin.any.js",
@@ -17592,8 +17546,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17614,8 +17568,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17634,8 +17588,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17676,14 +17630,9 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Fetch upload streaming should be accepted on 303"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/request/destination/fetch-destination-frame.https.html",
@@ -18355,14 +18304,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Consume FormData request's body as FormData"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/request/request-disturbed.any.js",
@@ -18380,46 +18324,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Request's body: initial state"
-        },
-        {
-          "kind": "test",
-          "name": "Request without body cannot be disturbed"
-        },
-        {
-          "kind": "test",
-          "name": "Check cloning a disturbed request"
-        },
-        {
-          "kind": "test",
-          "name": "Check creating a new request from a disturbed request"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Check creating a new request with a new body from a disturbed request"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Input request used for creating new request became disturbed"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Input request used for creating new request became disturbed even if body is not used"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Check consuming a disturbed request"
-        },
-        {
-          "kind": "test",
-          "name": "Request construction failure should not set \"bodyUsed\""
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/request/request-error.any.js",
@@ -18849,18 +18756,9 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "keepalive flag"
-        },
-        {
-          "kind": "test",
-          "name": "keepalive flag with stream body"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/request/request-reset-attributes.https.html",
@@ -19368,30 +19266,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Read empty text response's body as readableStream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Read empty blob response's body as readableStream"
-        },
-        {
-          "kind": "test",
-          "name": "Getting an error Response stream"
-        },
-        {
-          "kind": "test",
-          "name": "Getting a redirect Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Reading with offset from Response stream"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/response/response-consume.html",
@@ -19562,26 +19439,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Initialize Response with headers values"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Read Response's body as readableStream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Testing empty Response Content-Type header"
-        },
-        {
-          "kind": "test",
-          "name": "Testing null Response body"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/response/response-init-contenttype.any.js",
@@ -19981,30 +19841,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Attempt to inject value: undefined via Object.prototype.then."
-        },
-        {
-          "kind": "promise_test",
-          "name": "Attempt to inject undefined via Object.prototype.then."
-        },
-        {
-          "kind": "promise_test",
-          "name": "Attempt to inject 8.2 via Object.prototype.then."
-        },
-        {
-          "kind": "promise_test",
-          "name": "intercepting arraybuffer to text conversion via Object.prototype.then should not be possible"
-        },
-        {
-          "kind": "promise_test",
-          "name": "intercepting arraybuffer to body readable stream conversion via Object.prototype.then should not be possible"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/compression-dictionary/dictionary-clear-site-data-cache.tentative.https.html",
@@ -21495,14 +21334,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Cross-Origin-Resource-Policy: same-site blocks retrieving HTTPS from HTTP"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/cross-origin-resource-policy/scheme-restriction.https.window.js",
@@ -21558,8 +21392,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -26842,26 +26676,9 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/get-host-info.sub.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Privileged header not allowed for guard type: request-no-cors"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Fetch with range header will be sent with Accept-Encoding: identity"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cross Origin Fetch with non safe range header"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cross Origin Fetch with safe range header"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/range/general.window.js",
@@ -40118,8 +39935,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40139,8 +39956,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40160,8 +39977,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40181,8 +39998,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40202,8 +40019,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40223,8 +40040,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40244,8 +40061,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40265,8 +40082,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40286,8 +40103,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40307,8 +40124,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40328,8 +40145,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40349,8 +40166,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40370,8 +40187,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40391,8 +40208,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40412,8 +40229,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40433,8 +40250,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40454,8 +40271,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40475,14 +40292,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - Pass a valid URL and a protocol string with an ascii separator character - SYNTAX_ERR is thrown"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-blocked-port.any.js",
@@ -40501,14 +40313,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "Basic check"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-extensions-empty.any.js",
@@ -40527,8 +40334,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40604,14 +40411,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - Pass a valid URL and a protocol string with non-ascii values - SYNTAX_ERR is thrown"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-on-worker-shutdown.any.js",
@@ -40652,14 +40454,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - Pass a valid URL and a protocol string with a space in it - SYNTAX_ERR is thrown"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-protocols-repeated-case-insensitive.any.js",
@@ -40678,14 +40475,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - Pass a valid URL and an array of protocol strings with repeated values but different case - SYNTAX_ERR is thrown"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-protocols-repeated.any.js",
@@ -40704,14 +40496,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - Pass a valid URL and an array of protocol strings with repeated values - SYNTAX_ERR is thrown"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-url-with-space.any.js",
@@ -40730,14 +40517,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - Pass a URL with a space - SYNTAX_ERR should be thrown"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-url-with-windows-1252-encoding.html",
@@ -40773,8 +40555,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40794,8 +40576,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40815,14 +40597,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Create WebSocket - wsocket.protocol should be empty before connection is established"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Create-valid-url-protocol-setCorrectly.any.js",
@@ -40841,8 +40618,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40862,8 +40639,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40883,8 +40660,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40904,8 +40681,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40925,8 +40702,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40946,8 +40723,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -40967,14 +40744,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Send data on a WebSocket before connection is opened - INVALID_STATE_ERR is returned"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/Send-binary-65K-arraybuffer.any.js",
@@ -40993,8 +40765,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41014,8 +40786,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41035,8 +40807,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41056,8 +40828,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41077,8 +40849,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41098,8 +40870,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41119,8 +40891,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41140,8 +40912,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41161,8 +40933,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41182,8 +40954,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41203,8 +40975,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41224,8 +40996,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41245,8 +41017,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41266,8 +41038,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41306,8 +41078,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41327,8 +41099,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41348,8 +41120,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41369,8 +41141,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41533,14 +41305,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "HTTP basic authentication should work with WebSockets"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/binary/001.html",
@@ -41627,8 +41394,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41669,8 +41436,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -41758,14 +41525,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Calling the WebSocket constructor with too many arguments should not throw."
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/constructor/001.html",
@@ -42277,8 +42039,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -42573,14 +42335,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../../../constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "close event should be fired asynchronously when WebSocket is connecting"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/interfaces/WebSocket/close/close-connecting.html",
@@ -43617,14 +43374,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "opening an insecure WebSocket in a secure context should fail"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/multi-globals/message-received.html",
@@ -43862,14 +43614,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "async_test",
-          "name": "Ensure no Referer header is included"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/remove-own-iframe-during-onerror.window.js",
@@ -43960,8 +43707,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "constants.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -44003,14 +43750,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../../constants.sub.js",
         "resources/url-constants.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "backpressure should be applied to received messages"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/stream/tentative/backpressure-send.any.js",
@@ -44029,14 +43771,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../../constants.sub.js",
         "resources/url-constants.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "backpressure should be applied to sent messages"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/stream/tentative/close.any.js",
@@ -44056,54 +43793,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../../constants.sub.js",
         "resources/url-constants.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "close code should be sent to server and reflected back"
-        },
-        {
-          "kind": "promise_test",
-          "name": "no close argument should send empty Close frame"
-        },
-        {
-          "kind": "promise_test",
-          "name": "unspecified close code should send empty Close frame"
-        },
-        {
-          "kind": "promise_test",
-          "name": "unspecified close code with empty reason should send empty Close frame"
-        },
-        {
-          "kind": "promise_test",
-          "name": "unspecified close code with non-empty reason should set code to 1000"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close(true) should throw a TypeError"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close() with an overlong reason should throw"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close during handshake should work"
-        },
-        {
-          "kind": "promise_test",
-          "name": "closing the writable should result in a clean close"
-        },
-        {
-          "kind": "promise_test",
-          "name": "writer close() promise should not resolve until handshake completes"
-        },
-        {
-          "kind": "promise_test",
-          "name": "incomplete closing handshake should be considered unclean close"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/stream/tentative/constructor.any.js",
@@ -44122,42 +43814,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../../constants.sub.js",
         "resources/url-constants.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "constructing with no URL should throw"
-        },
-        {
-          "kind": "test",
-          "name": "constructing with an invalid URL should throw"
-        },
-        {
-          "kind": "test",
-          "name": "constructing with invalid options should throw"
-        },
-        {
-          "kind": "test",
-          "name": "protocols should be required to be a list"
-        },
-        {
-          "kind": "promise_test",
-          "name": "constructing with a valid URL should work"
-        },
-        {
-          "kind": "promise_test",
-          "name": "setting a protocol in the constructor should work"
-        },
-        {
-          "kind": "promise_test",
-          "name": "connection failure should reject the promises"
-        },
-        {
-          "kind": "promise_test",
-          "name": "wss.opened should resolve to the right types"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/stream/tentative/read.any.js",
@@ -44178,14 +43837,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/url-constants.js",
         "/common/gc.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "read type for binary messages is Uint8Array"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/stream/tentative/remote-close.any.js",
@@ -44205,38 +43859,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../../constants.sub.js",
         "resources/url-constants.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "clean close should be clean"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close frame with no body should result in status code 1005"
-        },
-        {
-          "kind": "promise_test",
-          "name": "reason should be passed through"
-        },
-        {
-          "kind": "promise_test",
-          "name": "UTF-8 reason should work"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close with unwritten data should not be considered clean"
-        },
-        {
-          "kind": "promise_test",
-          "name": "remote code and reason should be used"
-        },
-        {
-          "kind": "promise_test",
-          "name": "abrupt close should give an error"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/stream/tentative/resources/url-constants.js",
@@ -44316,34 +43941,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/url-constants.js",
         "/common/gc.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "a write that was incomplete at close time should reject"
-        },
-        {
-          "kind": "promise_test",
-          "name": "garbage collection after close with a pending write promise should not crash"
-        },
-        {
-          "kind": "promise_test",
-          "name": "writing a value that cannot be stringified should cause a rejection"
-        },
-        {
-          "kind": "promise_test",
-          "name": "writing a resizable ArrayBuffer should be rejected"
-        },
-        {
-          "kind": "promise_test",
-          "name": "writing a view on a shared buffer should be rejected"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Garbage collecting a WebSocket stream doesn't crash while write promise is pending"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "websockets/unload-a-document/001-1.html",
@@ -44632,58 +44232,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "close"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close without waiting for ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close with code and reason"
-        },
-        {
-          "kind": "promise_test",
-          "name": "close with code and long reason"
-        },
-        {
-          "kind": "promise_test",
-          "name": "server initiated closure without code and reason"
-        },
-        {
-          "kind": "promise_test",
-          "name": "server initiated closure with code and reason"
-        },
-        {
-          "kind": "promise_test",
-          "name": "server initiated connection closure"
-        },
-        {
-          "kind": "promise_test",
-          "name": "opening unidirectional stream before ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "opening bidirectional stream before ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "server initiated closure while opening unidirectional stream before ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "server initiated closure while opening bidirectional stream before ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "reading closed property after close should work"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/congestion-control.https.any.js",
@@ -44699,14 +44250,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "WebTransport session without congestionControl option defaults to \"default\""
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/connect.https.any.js",
@@ -44721,62 +44267,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "WebTransport session is established with status code 200"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport session is established with status code 204"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport session establishment fails with status code 301"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport session establishment with status code 401"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport session establishment fails with status code 404"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Echo back request headers"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Validate subprotocol headers sent"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Validate subprotocol response header received"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Validate subprotocol response header received with parameters handled correctly"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Validate subprotocol response header with non-offered protocol gets ignored"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Validate subprotocol response header when no protocols were offered gets ignored"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Validate malformed subprotocol response header gets ignored"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cookie header is not echoed back"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/constructor.https.sub.any.js",
@@ -44844,14 +44337,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Datagram should reject when non-buffer-source data is written"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/datagram-cancel-crash.https.sub.window.js",
@@ -44881,38 +44369,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Datagrams are echoed successfully"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Successfully reading datagrams with BYOB reader."
-        },
-        {
-          "kind": "promise_test",
-          "name": "Reading datagrams with insufficient buffer should be rejected."
-        },
-        {
-          "kind": "promise_test",
-          "name": "Transfer max-size datagram"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Datagrams read is less than or equal to the incomingMaxBufferedDatagrams"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Datagram MaxAge getters/setters work correctly"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Datagram MaxBufferedDatagrams getters/setters work correctly"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/echo-large-bidirectional-streams.https.any.js",
@@ -44927,14 +44386,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Ensure large bidirectional streams does not cause race condition"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/historical.https.sub.any.js",
@@ -45000,18 +44454,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Multiple server-initiated unidirectional streams should all be received"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Multiple server-initiated bidirectional streams should all be received"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/resources/webtransport-test-helpers.sub.js",
@@ -45042,18 +44487,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to create and handle a bidirectional stream with sendOrder"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to modify unset sendOrder after stream creation"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/sendstream-bad-chunk.https.any.js",
@@ -45069,14 +44505,9 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js",
         "/common/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "WebTransportSendStream should reject when non-buffer-source data is written"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/server-certificate-hashes.https.any.js",
@@ -45091,14 +44522,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Connection fails due to certificate hash mismatch"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/stats.https.any.js",
@@ -45113,42 +44539,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to provide stats after connection has been established"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to provide stats after connection has been closed"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to provide stats requested right before connection has been closed"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to provide valid stats when requested before connection established"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should throw an error when stats are requested for a failed connection"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to handle multiple concurrent stats requests"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to handle multiple sequential stats requests"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to provide droppedIncoming values for datagrams"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/streams-close.https.any.js",
@@ -45164,50 +44557,9 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/utils.js",
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Close outgoing stream / bidi-1"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Close outgoing stream / bidi-2"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Close outgoing stream / uni"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Abort client-created bidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Abort server-initiated bidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Abort unidirectional stream with WebTransportError"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Close and abort unidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Abort unidirectional stream with default error code"
-        },
-        {
-          "kind": "promise_test",
-          "name": "STOP_SENDING coming from server"
-        },
-        {
-          "kind": "promise_test",
-          "name": "RESET_STREAM coming from server"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "webtransport/streams-echo.https.any.js",
@@ -45222,50 +44574,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/webtransport-test-helpers.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to create and handle a bidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to create and handle a bidirectional stream without waiting for ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport server should be able to accept and handle a bidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to create, accept, and handle a unidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "WebTransport client should be able to create, accept, and handle a unidirectional stream without waiting for ready"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Can read data from a bidirectional stream with BYOB reader"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Can read data from a unidirectional stream with BYOB reader"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Transfer large chunks of data on a bidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Transfer large chunks of data on a unidirectional stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Closing the stream with no data still resolves the read request"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     }
   ]
 };
