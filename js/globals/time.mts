@@ -45,15 +45,16 @@
  *   - macOS: `mach_continuous_time()` (advances during sleep)
  *   - Linux: `clock_gettime(CLOCK_MONOTONIC)`
  *
- * This is intentionally a small Performance subset. Fino exposes `now()`,
- * `timeOrigin`, and `toJSON()` only; it does not implement PerformanceEntry,
- * mark(), measure(), observers, or a performance timeline.
+ * This is intentionally a small Performance subset. Fino exposes EventTarget
+ * dispatch plus `now()`, `timeOrigin`, and `toJSON()`; it does not implement
+ * PerformanceEntry, mark(), measure(), observers, or a performance timeline.
  *
  */
 
 import * as loop from 'internal:runtime/loop';
 import { os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
+import { EventTarget } from './eventtarget.mts';
 
 // ---------------------------------------------------------------------------
 // High-resolution monotonic timer (nanoseconds) — mirrors bench.mjs
@@ -99,6 +100,7 @@ const _startMs = Date.now();
  * Subset of the web Performance API.
  * - `performance.now()` — milliseconds elapsed since module load (monotonic, float)
  * - `performance.timeOrigin` — Unix timestamp (ms) of module load
+ * - EventTarget methods for spec-compatible event dispatch
  * - `performance.toJSON()` — serializable snapshot
  *
  * PerformanceEntry, mark(), measure(), observers, and timeline APIs are not
@@ -110,7 +112,7 @@ const _startMs = Date.now();
  * console.log(documentedMember);
  * ```
  */
-export const performance = {
+class Performance extends EventTarget {
   /**
    * Unix timestamp in milliseconds captured when this module loaded.
    *
@@ -118,7 +120,7 @@ export const performance = {
    * performance.timeOrigin <= Date.now(); // true
    * ```
    */
-  timeOrigin: _startMs,
+  timeOrigin = _startMs;
 
   /**
    * Return monotonic milliseconds elapsed since module load.
@@ -133,7 +135,7 @@ export const performance = {
    */
   now() {
     return (_getNanos() - _startNs) / 1e6;
-  },
+  }
 
   /**
    * Return a JSON-serializable performance snapshot.
@@ -146,8 +148,10 @@ export const performance = {
    */
   toJSON() {
     return { timeOrigin: this.timeOrigin };
-  },
-};
+  }
+}
+
+export const performance = new Performance();
 
 // ---------------------------------------------------------------------------
 // Timer state
@@ -302,5 +306,5 @@ export function clearInterval(id: number): void {
  */
 export function queueMicrotask(fn: () => void): void {
   if (typeof fn !== 'function') throw new TypeError('queueMicrotask: argument must be a function');
-  Promise.resolve().then(fn);
+  Promise.resolve().then(() => fn());
 }

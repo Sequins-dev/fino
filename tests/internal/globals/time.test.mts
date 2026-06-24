@@ -105,6 +105,15 @@ describe('queueMicrotask', () => {
     });
     t.deepEqual(order, [1, 2, 3], 'ran in registration order');
   });
+
+  it('does not pass arguments to the callback', async (t) => {
+    const args = await new Promise<unknown[]>((resolve) => {
+      queueMicrotask(function(this: unknown) {
+        resolve(Array.from(arguments));
+      });
+    });
+    t.deepEqual(args, [], 'callback receives no arguments');
+  });
 });
 
 describe('queueMicrotask — validation', () => {
@@ -165,6 +174,17 @@ describe('performance.toJSON', () => {
     t.ok(typeof json === 'object' && json !== null, 'returns object');
     t.ok('timeOrigin' in json, 'has timeOrigin key');
     t.equal(json.timeOrigin, performance.timeOrigin, 'timeOrigin matches');
+  });
+});
+
+describe('performance EventTarget behavior', () => {
+  it('dispatches events through EventTarget methods', (t) => {
+    let called = false;
+    performance.addEventListener('fino-test', () => {
+      called = true;
+    }, { once: true });
+    performance.dispatchEvent(new Event('fino-test'));
+    t.equal(called, true, 'listener ran');
   });
 });
 
