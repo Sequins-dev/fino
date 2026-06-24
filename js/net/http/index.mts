@@ -1930,6 +1930,8 @@ export class Request {
       if (inputRequest !== null && inheritedBody) inputRequest.#bodyUsed = true;
     } else if (inputRequest !== null && inheritedBody) {
       if (inputRequest.bodyUsed) throw new TypeError('Cannot construct a Request from a disturbed Request');
+      const inputBody = inputRequest.body;
+      if (inputBody !== null && inputBody.locked) throw new TypeError('Cannot construct a Request from a locked Request body');
       inputRequest.#bodyUsed = true;
       if (inputRequest.#rawBody instanceof ReadableStream) {
         const [, body] = inputRequest.#rawBody.tee();

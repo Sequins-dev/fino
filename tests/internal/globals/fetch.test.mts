@@ -1421,6 +1421,18 @@ describe('Request disturbed state', () => {
       'released reader leaves request body disturbed',
     );
   });
+
+  it('rejects constructing from a request whose body stream is locked', (t) => {
+    const input = new Request('https://example.com/', { method: 'POST', body: 'body' });
+    input.body!.getReader();
+
+    t.throws(
+      () => new Request(input),
+      TypeError,
+      'locked input body cannot be transferred',
+    );
+    t.equal(input.bodyUsed, false, 'lock-only failure does not mark the input body used');
+  });
 });
 
 describe('Integrity + referrerPolicy', () => {
