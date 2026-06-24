@@ -133,6 +133,36 @@ describe('Body formData', () => {
   });
 });
 
+describe('Request BodyInit', () => {
+  it('sets the default content type for string bodies', async (t) => {
+    const request = new Request('https://example.com/', { method: 'POST', body: 'hello' });
+    t.equal(request.headers.get('content-type'), 'text/plain;charset=UTF-8');
+    t.equal(await request.text(), 'hello');
+  });
+
+  it('stringifies plain object bodies', async (t) => {
+    const request = new Request('https://example.com/', {
+      method: 'POST',
+      body: { toString: () => 'hello' } as any,
+    });
+    t.equal(request.headers.get('content-type'), 'text/plain;charset=UTF-8');
+    t.equal(await request.text(), 'hello');
+  });
+
+  it('accepts ArrayBufferView bodies using their view byte range', async (t) => {
+    const bytes = new Uint8Array([0, 34, 104, 105, 34, 0]);
+    const int8 = new Int8Array(bytes.buffer, 1, 4);
+    const dataView = new DataView(bytes.buffer, 1, 4);
+
+    t.equal(await new Request('https://example.com/', { method: 'POST', body: int8 as any }).text(), '"hi"');
+    t.equal(await new Request('https://example.com/', { method: 'POST', body: dataView as any }).text(), '"hi"');
+
+    const requestBytes = await new Request('https://example.com/', { method: 'POST', body: int8 as any }).bytes();
+    t.equal(requestBytes.byteLength, 4, 'bytes() returns the view length');
+    t.equal(requestBytes.buffer.byteLength, 4, 'bytes() returns a tightly sized buffer');
+  });
+});
+
 describe('Redirects', () => {
   it('301 redirect is followed and method becomes GET', async (t) => {
     let requestCount = 0;

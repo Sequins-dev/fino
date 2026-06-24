@@ -145,7 +145,7 @@ type HeadersInit =
   | null
   | undefined;
 
-type BodyInit = string | Uint8Array | ArrayBuffer | Blob | FormData | URLSearchParams | null;
+type BodyInit = string | ArrayBufferView | ArrayBuffer | Blob | FormData | URLSearchParams | null;
 
 type OutTrailers = Headers | (() => Headers | Promise<Headers>);
 
@@ -772,10 +772,15 @@ function _iterableFromBytes(bytes: Uint8Array): AsyncByteIterable {
  */
 function _toBytes(body: Exclude<BodyInit, null>): Uint8Array {
   if (body instanceof URLSearchParams) return encodeUtf8(String(body));
-  if (body instanceof Uint8Array) return body;
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
-  if (typeof body === 'string') return encodeUtf8(body);
-  throw new TypeError('Body must be a string, ArrayBuffer, Uint8Array, Blob, FormData, or URLSearchParams');
+  if (ArrayBuffer.isView(body)) {
+    return new Uint8Array(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+  }
+  return encodeUtf8(String(body));
+}
+
+function _isBufferSourceBody(body: unknown): boolean {
+  return body instanceof ArrayBuffer || ArrayBuffer.isView(body);
 }
 
 function _nonThenableBytes<T extends object>(value: T): T {
@@ -1658,6 +1663,9 @@ export class Request {
                  (typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream)) {
         this.#rawBody = init.body as unknown as AsyncIterable<Uint8Array>;
       } else {
+        if (!_isBufferSourceBody(init.body) && !this.#headers.has('content-type')) {
+          this.#headers.set('content-type', 'text/plain;charset=UTF-8');
+        }
         this.#rawBody = _iterableFromBytes(_toBytes(init.body));
       }
       if (inputRequest !== null && inheritedBody) inputRequest.#bodyUsed = true;
