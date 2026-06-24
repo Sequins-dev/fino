@@ -269,8 +269,10 @@ function _multipartHeaderParameter(value: string, name: string): string | null {
 
 function _formDataFromMultipart(bytes: Uint8Array, boundary: string): FormData {
   if (boundary === '') throw new TypeError('formData(): multipart boundary is empty');
+  if (bytes.byteLength === 0) throw new TypeError('formData(): empty multipart body');
   const body = decodeUtf8(bytes, false, false);
   const delimiter = '--' + boundary;
+  if (!body.includes(delimiter)) throw new TypeError('formData(): multipart boundary not found');
   const form = new FormData();
   const sections = body.split(delimiter);
   for (let i = 1; i < sections.length; i++) {

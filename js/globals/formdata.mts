@@ -134,8 +134,10 @@ function _escapeParameter(s: string): string {
 export async function _serializeFormData(fd: FormData, boundary?: string): Promise<{ contentType: string; body: Uint8Array }> {
   if (!boundary) boundary = _createMultipartBoundary();
   const parts: Uint8Array[] = [];
+  let hasEntries = false;
 
   for (const [name, value] of fd) {
+    hasEntries = true;
     parts.push(encodeUtf8(`--${boundary}\r\n`));
     if (typeof value === 'string') {
       parts.push(encodeUtf8(`Content-Disposition: form-data; name="${_escapeParameter(name)}"\r\n\r\n`));
@@ -146,6 +148,9 @@ export async function _serializeFormData(fd: FormData, boundary?: string): Promi
       parts.push(new Uint8Array(await value.arrayBuffer()));
     }
     parts.push(encodeUtf8('\r\n'));
+  }
+  if (!hasEntries) {
+    return { contentType: `multipart/form-data; boundary=${boundary}`, body: new Uint8Array(0) };
   }
   parts.push(encodeUtf8(`--${boundary}--\r\n`));
 

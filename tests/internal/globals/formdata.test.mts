@@ -472,4 +472,9 @@ describe('multipart serialization', () => {
     t.notEqual(first.contentType, second.contentType, 'generated boundaries are unique');
     t.equal(/Math|random|undefined/.test(first.contentType), false, 'boundary does not expose weak generator details');
   });
+
+  it('serializes empty FormData to an empty body', async (t) => {
+    const { body } = await _serializeFormData(new FormData(), 'fixed-boundary');
+    t.equal(body.byteLength, 0, 'empty FormData body has no multipart boundary bytes');
+  });
 });

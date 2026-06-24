@@ -131,6 +131,20 @@ describe('Body formData', () => {
     const responseForm = await response.formData();
     t.equal(responseForm.get('\uFEFFtest'), '\uFEFF');
   });
+
+  it('rejects empty multipart bodies without marking them used', async (t) => {
+    const request = new Request('about:blank', {
+      method: 'POST',
+      headers: { 'content-type': 'multipart/form-data; boundary="boundary"' },
+    });
+
+    await t.rejects(
+      () => request.formData(),
+      TypeError,
+      'empty multipart body rejects',
+    );
+    t.equal(request.bodyUsed, false, 'bodyless request remains unused');
+  });
 });
 
 describe('Request BodyInit', () => {
