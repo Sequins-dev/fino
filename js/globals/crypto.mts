@@ -28,9 +28,10 @@
  * Supported digest names are SHA-1, SHA-256, SHA-384, and SHA-512. Symmetric
  * key import supports raw and JWK AES-GCM, AES-CBC, HMAC, PBKDF2, and HKDF
  * keys; asymmetric import/export supports the RSA, ECDSA, ECDH, and Ed25519
- * formats covered by the focused crypto tests. AES-CTR, AES-KW, full WPT
- * coverage, and full WebCrypto algorithm parity are outside this release
- * baseline. Unsupported algorithms and key formats reject with
+ * formats covered by the focused crypto tests. AES-CTR key generation is
+ * exposed for WebCrypto metadata compatibility; AES-CTR encryption, AES-KW,
+ * full WPT coverage, and full WebCrypto algorithm parity are outside this
+ * release baseline. Unsupported algorithms and key formats reject with
  * `NotSupportedError`, malformed key material rejects with `DataError`,
  * key/type/usage mismatches reject with `InvalidAccessError`, and backend
  * operation failures such as AES-GCM authentication failure reject with
@@ -131,7 +132,7 @@ class CryptoKey {
   #type:        KeyType;
   #extractable: boolean;
   #algorithm:   CryptoKeyAlgorithm;
-  #usages:      KeyUsage[];
+  #usages:      readonly KeyUsage[];
 
   /**
    * String tag used by Object.prototype.toString.
@@ -166,7 +167,7 @@ class CryptoKey {
     this.#type        = type;
     this.#extractable = extractable;
     this.#algorithm   = algorithm;
-    this.#usages      = usages;
+    this.#usages      = Object.freeze([...usages]);
     if (keyData !== null) _keyStore.set(this, keyData);
     if (pkeyPtr !== null) {
       _pkeyStore.set(this, pkeyPtr);
@@ -210,16 +211,16 @@ class CryptoKey {
   get algorithm():   CryptoKeyAlgorithm { return this.#algorithm; }
 
   /**
-   * Frozen copy of allowed key usages.
+   * Frozen allowed key usages.
    *
-   * Mutating the returned array is not possible and does not affect the key.
+   * Mutating the returned array is not possible.
    *
    * ```typescript no_run
    * const key = await crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', true, ['encrypt']);
    * key.usages.includes('encrypt'); // true
    * ```
    */
-  get usages():      readonly KeyUsage[] { return Object.freeze([...this.#usages]); }
+  get usages():      readonly KeyUsage[] { return this.#usages; }
 }
 
 function _keyData(key: CryptoKey): Uint8Array {
@@ -1369,10 +1370,10 @@ const subtle = {
       );
     }
 
-    if (alg.name === 'AES-GCM' || alg.name === 'AES-CBC') {
+    if (alg.name === 'AES-GCM' || alg.name === 'AES-CBC' || alg.name === 'AES-CTR') {
       const length = alg.length ?? 256;
-      if (length !== 128 && length !== 256) {
-        throw _webCryptoError('DataError', `${alg.name}: key length must be 128 or 256`);
+      if (length !== 128 && length !== 192 && length !== 256) {
+        throw _webCryptoError('DataError', `${alg.name}: key length must be 128, 192, or 256`);
       }
       const keyLen = length / 8;
       const buf = new ArrayBuffer(keyLen);

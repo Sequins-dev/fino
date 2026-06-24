@@ -282,6 +282,17 @@ describe('Key management', { skip }, () => {
     t.equal((key128.algorithm as AesKeyAlgorithm).length, 128, '128-bit key');
   });
 
+  it('generateKey AES-CTR exposes cached CryptoKey metadata', async (t) => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-CTR', length: 256 }, true, ['encrypt']);
+    t.equal(key.type, 'secret', 'AES-CTR key is secret');
+    t.equal(key.algorithm.name, 'AES-CTR', 'algorithm name');
+    t.equal((key.algorithm as AesKeyAlgorithm).length, 256, 'key length');
+    t.ok(key.algorithm === key.algorithm, 'algorithm getter returns cached object');
+    t.ok(key.usages === key.usages, 'usages getter returns cached object');
+    t.deepEqual([...key.usages], ['encrypt'], 'usages are preserved');
+    t.throws(() => (key.usages as KeyUsage[]).push('decrypt'), TypeError, 'usages array is frozen');
+  });
+
   it('generateKey HMAC produces usable key', async (t) => {
     const key = await crypto.subtle.generateKey({ name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
     t.equal(key.algorithm.name, 'HMAC', 'HMAC key');
@@ -761,11 +772,11 @@ describe('Key management — additional', { skip }, () => {
     t.ok(Array.isArray(usages), 'usages is an array');
   });
 
-  it('CryptoKey.usages returns a copy each time', async (t) => {
+  it('CryptoKey.usages returns the cached frozen array', async (t) => {
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt']);
     const u1 = key.usages;
     const u2 = key.usages;
-    t.ok(u1 !== u2, 'each call returns a different array reference');
+    t.ok(u1 === u2, 'each call returns the same array reference');
   });
 
   it('structuredClone duplicates asymmetric CryptoKey native handles', async (t) => {
@@ -968,10 +979,12 @@ describe('WebCrypto release error names', { skip }, () => {
       rejectsWithName('NotSupportedError'),
       'unsupported key format uses NotSupportedError',
     );
+    const aesCtrKey = await crypto.subtle.generateKey({ name: 'AES-CTR', length: 128 } as any, false, ['encrypt']);
+    t.equal(aesCtrKey.algorithm.name, 'AES-CTR', 'AES-CTR key generation is supported for metadata compatibility');
     await t.rejects(
-      () => crypto.subtle.generateKey({ name: 'AES-CTR', length: 128 } as any, false, ['encrypt']),
+      () => crypto.subtle.encrypt({ name: 'AES-CTR', counter: new Uint8Array(16), length: 64 } as any, aesCtrKey, new Uint8Array(1)),
       rejectsWithName('NotSupportedError'),
-      'AES-CTR remains outside the release baseline',
+      'AES-CTR encryption remains outside the release baseline',
     );
     await t.rejects(
       () => crypto.subtle.generateKey({ name: 'AES-KW', length: 128 } as any, false, ['wrapKey']),
