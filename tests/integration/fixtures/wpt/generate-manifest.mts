@@ -136,6 +136,9 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
   }
+  if (path === 'fetch/api/body/textstream.any.js') {
+    return { runnable: false, reason: 'deferred: requires Body.textStream UTF-8 streaming decoder support' };
+  }
   if (/\bFileReader(?:Sync)?\b/.test(source)) return { runnable: false, reason: 'requires FileReader/FileReaderSync globals, which Fino does not install' };
   if (type === '.js') return { runnable: false, reason: 'standalone helper script, not a WPT test entry' };
   if (type === '.worker.js') return { runnable: false, reason: 'requires Worker test environment' };

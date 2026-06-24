@@ -145,6 +145,21 @@ describe('Body formData', () => {
     );
     t.equal(request.bodyUsed, false, 'bodyless request remains unused');
   });
+
+  it('round-trips empty FormData bodies as empty FormData', async (t) => {
+    const request = new Request('about:blank', {
+      method: 'POST',
+      body: new FormData(),
+    });
+    const requestForm = await request.formData();
+    t.ok(requestForm instanceof FormData, 'request parses as FormData');
+    t.equal(Array.from(requestForm).length, 0, 'request form has no entries');
+
+    const response = new Response(new FormData());
+    const responseForm = await response.formData();
+    t.ok(responseForm instanceof FormData, 'response parses as FormData');
+    t.equal(Array.from(responseForm).length, 0, 'response form has no entries');
+  });
 });
 
 describe('Request BodyInit', () => {

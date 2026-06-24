@@ -150,7 +150,10 @@ export async function _serializeFormData(fd: FormData, boundary?: string): Promi
     parts.push(encodeUtf8('\r\n'));
   }
   if (!hasEntries) {
-    return { contentType: `multipart/form-data; boundary=${boundary}`, body: new Uint8Array(0) };
+    return {
+      contentType: `multipart/form-data; boundary=${boundary}`,
+      body: encodeUtf8(`--${boundary}--\r\n`),
+    };
   }
   parts.push(encodeUtf8(`--${boundary}--\r\n`));
 
