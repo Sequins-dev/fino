@@ -154,6 +154,8 @@ interface RequestInit {
   headers?:  HeadersInit;
   body?:     BodyInit;
   trailers?: OutTrailers;
+  duplex?:   string;
+  keepalive?: boolean;
 }
 
 interface ResponseInit {
@@ -783,6 +785,10 @@ function _toBytes(body: Exclude<BodyInit, null>): Uint8Array {
 
 function _isBufferSourceBody(body: unknown): boolean {
   return body instanceof ArrayBuffer || ArrayBuffer.isView(body);
+}
+
+function _isReadableStreamBody(body: unknown): body is ReadableStream {
+  return typeof ReadableStream !== 'undefined' && body instanceof ReadableStream;
 }
 
 function _nonThenableBytes<T extends object>(value: T): T {
@@ -1594,6 +1600,14 @@ export class Request {
    * @internal
    */
   #blobUrlObject: Blob | null = null;
+  /**
+   * Private property `#keepalive` used by `Request`.
+   *
+   * Tracks Fetch `Request.keepalive` metadata for constructed requests.
+   *
+   * @internal
+   */
+  #keepalive: boolean = false;
 
   /**
    * Create a Request from a URL string, another Request, or the internal parser
@@ -1619,6 +1633,7 @@ export class Request {
       this.#rawBody    = init.body === _emptyBody ? null : init.body;
       this.#inTrailers = init.inTrailers ?? null;
       this.#blobUrlObject = init.blobUrlObject ?? null;
+      this.#keepalive = Boolean(init.keepalive);
       return;
     }
 
@@ -1633,9 +1648,23 @@ export class Request {
       : (inputRequest !== null ? new Headers(inputRequest.#headers) : new Headers());
     this.#version = '';
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
+    this.#keepalive = (init && 'keepalive' in init)
+      ? Boolean(init.keepalive)
+      : (inputRequest !== null ? inputRequest.#keepalive : false);
 
     const initHasBody = init && init.body != null;
+    const initBodyIsStream = initHasBody && _isReadableStreamBody(init.body);
     const inheritedBody = inputRequest !== null && inputRequest.#rawBody !== null;
+    if (init && init.duplex !== undefined && init.duplex !== 'half') {
+      throw new TypeError('Request duplex must be "half"');
+    }
+    if (initBodyIsStream) {
+      if (!init || init.duplex !== 'half') throw new TypeError('Request with ReadableStream body requires duplex: "half"');
+      if (this.#keepalive) throw new TypeError('Request with keepalive cannot have a ReadableStream body');
+      if (init.body.locked || isReadableStreamDisturbed(init.body)) {
+        throw new TypeError('Request body stream is disturbed or locked');
+      }
+    }
     if ((this.#method === 'GET' || this.#method === 'HEAD') && (initHasBody || inheritedBody)) {
       throw new TypeError(`Request with ${this.#method} method cannot have a body`);
     }
@@ -1662,7 +1691,7 @@ export class Request {
         }
         this.#rawBody = init.body.stream() as unknown as AsyncIterable<Uint8Array>;
       } else if (typeof (init.body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function' ||
-                 (typeof ReadableStream !== 'undefined' && init.body instanceof ReadableStream)) {
+                 _isReadableStreamBody(init.body)) {
         this.#rawBody = init.body as unknown as AsyncIterable<Uint8Array>;
       } else {
         if (!_isBufferSourceBody(init.body) && !this.#headers.has('content-type')) {
@@ -1853,6 +1882,18 @@ export class Request {
    * ```
    */
   get cache() { return 'default'; }
+
+  /** Keepalive request metadata.
+   *
+   * The value reflects the `keepalive` member passed to the Request
+   * constructor, defaulting to `false`. Fino records the metadata for
+   * compatibility but does not keep process-lifetime browser beacons alive.
+   *
+   * ```ts no_run
+   * console.log(req.keepalive);
+   * ```
+   */
+  get keepalive() { return this.#keepalive; }
 
   /** Redirect mode metadata.
    *
@@ -2079,13 +2120,13 @@ export class Request {
   clone(): Request {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Request');
     if (this.#rawBody === null) {
-      return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject });
+      return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive });
     }
     const stream = this.#bodyStream ?? (this.#rawBody instanceof ReadableStream ? this.#rawBody : ReadableStream.from(this.#rawBody));
     const [a, b] = stream.tee();
     this.#bodyStream = a;
     this.#rawBody = a as any;
-    const cloned = new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: b, blobUrlObject: this.#blobUrlObject });
+    const cloned = new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: b, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive });
     return cloned;
   }
 

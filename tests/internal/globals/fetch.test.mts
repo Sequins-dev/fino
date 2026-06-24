@@ -1061,6 +1061,7 @@ describe('Request structure', () => {
       isReloadNavigation: false,
       isHistoryNavigation: false,
       duplex: 'half',
+      keepalive: false,
     };
 
     for (const [name, value] of Object.entries(defaults)) {
@@ -1118,6 +1119,46 @@ describe('Request disturbed state', () => {
       'forbidden method fails before body transfer',
     );
     t.equal(input.bodyUsed, false, 'forbidden method leaves body unused');
+  });
+
+  it('validates streaming request body init options', (t) => {
+    t.throws(
+      () => new Request('https://example.com/', { method: 'POST', body: new ReadableStream() as any }),
+      TypeError,
+      'stream body requires duplex half',
+    );
+
+    t.throws(
+      () => new Request('https://example.com/', {
+        method: 'POST',
+        body: new ReadableStream() as any,
+        duplex: 'half',
+        keepalive: true,
+      } as any),
+      TypeError,
+      'keepalive cannot use stream body',
+    );
+
+    const locked = new ReadableStream();
+    locked.getReader();
+    t.throws(
+      () => new Request('https://example.com/', { method: 'POST', body: locked as any, duplex: 'half' } as any),
+      TypeError,
+      'locked stream body is rejected',
+    );
+  });
+
+  it('rejects constructing from a request whose body stream was read and released', async (t) => {
+    const input = new Request('https://example.com/', { method: 'POST', body: 'body' });
+    const reader = input.body!.getReader();
+    await reader.read();
+    reader.releaseLock();
+
+    t.throws(
+      () => new Request(input),
+      TypeError,
+      'released reader leaves request body disturbed',
+    );
   });
 });
 

@@ -668,7 +668,7 @@ function _rsNextChunk(s: ReadableStreamState): Promise<{ done: boolean; value: a
 export function isReadableStreamDisturbed(stream: ReadableStream): boolean {
   const state = _rs.get(stream);
   if (!state) throw new TypeError('ReadableStream receiver expected');
-  return state.disturbed;
+  return state.disturbed || state.locked;
 }
 
 // Fill a BYOB view from queued Uint8Array chunks. Returns filled Uint8Array slice or null.
@@ -1873,6 +1873,7 @@ export class ReadableStreamDefaultReader {
     const rr = _rr.get(this);
     if (!rr) return Promise.reject(new TypeError('Reader is released'));
     const s    = rr.rsState;
+    if (rr.iter) s.disturbed = true;
     const read = rr.iter ? rr.iter.next() : _rsNextChunk(s);
     return read.then(function rrReadNext(r) {
       if (r.done) { _rsMarkClosed(s); rr.closedResolve?.(); }
