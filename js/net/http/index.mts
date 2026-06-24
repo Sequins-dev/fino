@@ -2550,10 +2550,14 @@ export class Response {
    */
   static json(data: unknown, init?: ResponseInit) {
     const body = JSON.stringify(data);
+    if (body === undefined) throw new TypeError('Response.json: data is not JSON serializable');
     const headers = new Headers((init && init.headers) ? init.headers : {});
-    headers.set('content-type', 'application/json');
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
     const status     = (init && init.status     != null) ? init.status     : 200;
     const statusText = (init && init.statusText != null) ? init.statusText : '';
+    if (status === 204 || status === 205 || status === 304) {
+      throw new TypeError('Response.json: status must allow a body');
+    }
     return new Response(body, { status, statusText, headers });
   }
 
@@ -2572,7 +2576,8 @@ export class Response {
     if (![301, 302, 303, 307, 308].includes(status)) {
       throw new RangeError(`Response.redirect: invalid redirect status ${status}`);
     }
-    const headers = new Headers({ location: String(url) });
+    const location = new URL(String(url)).href;
+    const headers = new Headers({ location });
     return new Response(null, { status, headers });
   }
 
