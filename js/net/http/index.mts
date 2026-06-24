@@ -304,6 +304,13 @@ function _formDataFromMultipart(bytes: Uint8Array, boundary: string): FormData {
   return form;
 }
 
+function _normalizeRequestMethod(method: string): string {
+  if (/^(connect|trace|track)$/i.test(method)) {
+    throw new TypeError(`Request method ${method} is forbidden`);
+  }
+  return /^(delete|get|head|options|post|put)$/i.test(method) ? method.toUpperCase() : method;
+}
+
 // ---------------------------------------------------------------------------
 // Arena: per-connection bump allocator
 // ---------------------------------------------------------------------------
@@ -1612,8 +1619,7 @@ export class Request {
     this.#url     = input instanceof Request ? input.#url : String(input);
     this.#blobUrlObject = input instanceof Request ? input.#blobUrlObject : _resolveObjectURL(this.#url);
     const rawMethod = (init && init.method) ? String(init.method) : 'GET';
-    // Per Fetch spec, only these six methods are normalized to uppercase.
-    this.#method  = /^(delete|get|head|options|post|put)$/i.test(rawMethod) ? rawMethod.toUpperCase() : rawMethod;
+    this.#method  = _normalizeRequestMethod(rawMethod);
     this.#headers = (init && init.headers) ? new Headers(init.headers) : new Headers();
     this.#version = '';
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;

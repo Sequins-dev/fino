@@ -982,6 +982,16 @@ describe('fetch() method normalization', () => {
     const req = new Request('https://example.com/', { method: 'CUSTOM' });
     t.equal(req.method, 'CUSTOM', 'custom method preserved');
   });
+
+  it('forbidden methods throw', (t) => {
+    for (const method of ['CONNECT', 'TRACE', 'TRACK', 'connect', 'trace', 'track']) {
+      t.throws(
+        () => new Request('https://example.com/', { method }),
+        TypeError,
+        `${method} is forbidden`,
+      );
+    }
+  });
 });
 
 describe('Integrity + referrerPolicy', () => {

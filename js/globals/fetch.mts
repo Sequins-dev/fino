@@ -174,6 +174,13 @@ function _normalizeFetchUrl(input: string): string {
   }
 }
 
+function _normalizeFetchMethod(method: string): string {
+  if (/^(connect|trace|track)$/i.test(method)) {
+    throw new TypeError(`fetch: method ${method} is forbidden`);
+  }
+  return /^(delete|get|head|options|post|put)$/i.test(method) ? method.toUpperCase() : method;
+}
+
 function _singleChunkBody(bytes: Uint8Array): AsyncIterable<Uint8Array> {
   return {
     [Symbol.asyncIterator]() {
@@ -1156,7 +1163,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
 
   // Apply init overrides
   if (init) {
-    if (init.method  !== undefined) baseMethod  = String(init.method).toUpperCase();
+    if (init.method  !== undefined) baseMethod  = _normalizeFetchMethod(String(init.method));
     if (init.headers !== undefined) baseHeaders = new Headers(init.headers);
     if (init.body    !== undefined) baseBody    = init.body;
   }
