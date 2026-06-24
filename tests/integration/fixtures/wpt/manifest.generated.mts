@@ -15292,8 +15292,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -15858,9 +15858,14 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "Fetching about:blank with range header does not affect behavior"
+        }
+      ]
     },
     {
       "path": "fetch/api/basic/scheme-blob.sub.any.js",
@@ -15898,8 +15903,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -19180,9 +19185,18 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "keepalive flag"
+        },
+        {
+          "kind": "test",
+          "name": "keepalive flag with stream body"
+        }
+      ]
     },
     {
       "path": "fetch/api/request/request-reset-attributes.https.html",

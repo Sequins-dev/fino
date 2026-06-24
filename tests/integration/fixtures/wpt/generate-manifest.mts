@@ -171,8 +171,12 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
     path === 'FileAPI/blob/Blob-constructor-endings.html' ||
     path === 'FileAPI/file/File-constructor-endings.html' ||
     path === 'FileAPI/FileReader/progress_event_bubbles_cancelable.html' ||
+    path === 'fetch/api/abort/request.any.js' ||
+    path === 'fetch/api/basic/scheme-about.any.js' ||
+    path === 'fetch/api/basic/scheme-data.any.js' ||
     path === 'fetch/api/request/request-consume.any.js' ||
     path === 'fetch/api/request/request-disturbed.any.js' ||
+    path === 'fetch/api/request/request-keepalive.any.js' ||
     path === 'fetch/api/response/response-cancel-stream.any.js' ||
     path === 'fetch/api/response/response-consume.html' ||
     path === 'fetch/api/response/response-init-002.any.js' ||
