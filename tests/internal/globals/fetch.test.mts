@@ -1069,6 +1069,69 @@ describe('Response constructor validation', () => {
     t.equal(response.status, 0, 'network error status remains 0');
     t.throws(() => response.headers.set('x-test', 'value'), TypeError, 'headers are immutable');
   });
+
+  it('rejects locked or disturbed ReadableStream bodies', async (t) => {
+    const locked = new ReadableStream();
+    locked.getReader();
+    t.throws(() => new Response(locked as any), TypeError, 'locked response body stream is rejected');
+
+    const disturbed = new ReadableStream({ pull: (controller) => controller.enqueue(new Uint8Array()) });
+    const reader = disturbed.getReader();
+    await reader.read();
+    reader.releaseLock();
+    t.throws(() => new Response(disturbed as any), TypeError, 'disturbed response body stream is rejected');
+  });
+
+  it('does not mark response bodyUsed merely by locking the stream', (t) => {
+    const stream = new ReadableStream();
+    const response = new Response(stream);
+    const reader = stream.getReader();
+
+    t.equal(response.bodyUsed, false, 'locking the stream is not disturbance');
+    reader.cancel();
+    t.equal(response.bodyUsed, true, 'canceling through the reader disturbs the stream');
+  });
+
+  it('marks response bodyUsed synchronously when piping starts', (t) => {
+    const response = new Response(new ReadableStream());
+    response.body!.pipeTo(new WritableStream({}, { highWaterMark: 0 })).catch(() => {});
+    t.equal(response.bodyUsed, true, 'pipeTo disturbs the body synchronously');
+  });
+
+  it('does not observe Object.prototype.then while piping byte bodies', async (t) => {
+    const originalThen = Object.prototype.then;
+    const expected = new Uint8Array([1, 2, 3]);
+    const injected = new Uint8Array([4, 5, 6]);
+    const written: number[] = [];
+    const writable = new WritableStream({
+      write(chunk) {
+        written.push(...Array.from(chunk));
+      },
+    });
+
+    try {
+      Object.prototype.then = function interceptedThen(resolve: (value: unknown) => void) {
+        delete Object.prototype.then;
+        resolve({ done: false, value: injected });
+      };
+      await new Response(expected).body!.pipeTo(writable);
+      t.deepEqual(written, Array.from(expected), 'byte body stream result is not thenable-intercepted');
+    } finally {
+      if (originalThen === undefined) delete Object.prototype.then;
+      else Object.prototype.then = originalThen;
+    }
+  });
+
+  it('propagates response stream errors through formData before content-type rejection', async (t) => {
+    const error = new Error('stream failed');
+    const response = new Response(new ReadableStream({
+      start(controller) {
+        controller.error(error);
+      },
+    }));
+
+    await t.rejects(() => response.formData(), error, 'stream error wins over unsupported content type');
+  });
 });
 
 describe('fetch() method normalization', () => {

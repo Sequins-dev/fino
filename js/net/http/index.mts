@@ -882,12 +882,38 @@ function _iterableFromBytes(bytes: Uint8Array): AsyncByteIterable {
       let sent = false;
       return {
         next() {
-          if (!sent) { sent = true; return Promise.resolve({ done: false, value: bytes }); }
-          return Promise.resolve({ done: true, value: undefined });
+          if (!sent) { sent = true; return Promise.resolve(_nonThenableIteratorResult(false, bytes)); }
+          return Promise.resolve(_nonThenableIteratorResult(true, undefined));
         },
       };
     },
   };
+}
+
+function _readableByteStreamFromIterable(source: AsyncIterable<Uint8Array>): ReadableStream {
+  const iterator = source[Symbol.asyncIterator]();
+  return new ReadableStream({
+    type: 'bytes',
+    async pull(controller: any) {
+      while (true) {
+        const next = await iterator.next();
+        if (next.done) {
+          controller.close();
+          return;
+        }
+        const chunk = next.value instanceof Uint8Array ? new Uint8Array(next.value) : new Uint8Array(next.value);
+        if (chunk.byteLength === 0) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+        return;
+      }
+    },
+    async cancel(reason: unknown) {
+      if (typeof iterator.return === 'function') await iterator.return(reason);
+    },
+  } as any);
 }
 
 /**
@@ -919,6 +945,19 @@ function _nonThenableBytes<T extends object>(value: T): T {
     writable: true,
   });
   return value;
+}
+
+function _nonThenableIteratorResult(done: boolean, value: Uint8Array | undefined): IteratorResult<Uint8Array> {
+  const result = Object.create(null) as IteratorResult<Uint8Array> & { then?: undefined };
+  if (done) {
+    (result as IteratorReturnResult<Uint8Array>).done = true;
+    (result as IteratorReturnResult<Uint8Array>).value = value as Uint8Array;
+  } else {
+    (result as IteratorYieldResult<Uint8Array>).done = false;
+    (result as IteratorYieldResult<Uint8Array>).value = value!;
+  }
+  result.then = undefined;
+  return result;
 }
 
 
@@ -2165,7 +2204,7 @@ export class Request {
     return this.#bodyStream ??= ReadableStream.from(this.#rawBody);
   }
 
-  /** True if the body has been read or the stream is locked.
+  /** True if the body has been read from or canceled.
    *
    * ```ts no_run
    * if (!req.bodyUsed) console.log(await req.text());
@@ -2306,6 +2345,7 @@ export class Request {
       if (boundary === null) throw new TypeError('formData(): missing multipart boundary');
       return _formDataFromMultipart(await this.#consumeBody(), boundary);
     }
+    await this.#consumeBody();
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }
 
@@ -2320,6 +2360,7 @@ export class Request {
    */
   clone(): Request {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Request');
+    if (this.body !== null && this.body.locked) throw new TypeError('Cannot clone a locked Request body');
     if (this.#rawBody === null) {
       return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive });
     }
@@ -2696,6 +2737,9 @@ export class Response {
       } else if (typeof (body as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function' ||
                  (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream)) {
         // Accept async iterables and ReadableStreams as streaming bodies.
+        if (_isReadableStreamBody(body) && (body.locked || isReadableStreamDisturbed(body))) {
+          throw new TypeError('Response body stream is disturbed or locked');
+        }
         this.#rawBody = body as unknown as AsyncIterable<Uint8Array>;
       } else {
         // Store bytes directly — avoids _iterableFromBytes wrapper allocation.
@@ -2756,21 +2800,12 @@ export class Response {
     if (this.#rawBody === null) return null;
     if (this.#rawBody instanceof ReadableStream) return this.#bodyStream ??= this.#rawBody;
     if (this.#rawBody instanceof Uint8Array) {
-      const bytes = this.#rawBody;
-      return this.#bodyStream ??= new ReadableStream({
-        start(controller) {
-          controller.enqueue(bytes);
-          controller.close();
-        },
-      });
+      return this.#bodyStream ??= _readableByteStreamFromIterable(_iterableFromBytes(this.#rawBody));
     }
-    const iterable = this.#rawBody instanceof Uint8Array
-      ? _iterableFromBytes(this.#rawBody)
-      : this.#rawBody;
-    return this.#bodyStream ??= ReadableStream.from(iterable);
+    return this.#bodyStream ??= _readableByteStreamFromIterable(this.#rawBody);
   }
 
-  /** True if the body has been read or the stream is locked.
+  /** True if the body has been read from or canceled.
    *
    * ```ts no_run
    * if (!res.bodyUsed) console.log(await res.text());
@@ -3036,6 +3071,7 @@ export class Response {
       if (boundary === null) throw new TypeError('formData(): missing multipart boundary');
       return _formDataFromMultipart(await this.#consumeBody(), boundary);
     }
+    await this.#consumeBody();
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }
 
@@ -3050,6 +3086,7 @@ export class Response {
    */
   clone(): Response {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Response');
+    if (this.body !== null && this.body.locked) throw new TypeError('Cannot clone a locked Response body');
     if (this.#rawBody === null) {
       const cloned = new Response(INTERNAL, { version: this.#version, status: this.#status, statusText: this.#statusText, headers: new Headers(this.#headers), body: _emptyBody, url: this.#url, redirected: this.#redirected });
       cloned.#type = this.#type;
@@ -3106,7 +3143,7 @@ export class Response {
     if (![301, 302, 303, 307, 308].includes(status)) {
       throw new RangeError(`Response.redirect: invalid redirect status ${status}`);
     }
-    const location = new URL(String(url)).href;
+    const location = _normalizeRequestUrl(String(url));
     const headers = new Headers({ location });
     return new Response(null, { status, headers });
   }

@@ -668,7 +668,7 @@ function _rsNextChunk(s: ReadableStreamState): Promise<{ done: boolean; value: a
 export function isReadableStreamDisturbed(stream: ReadableStream): boolean {
   const state = _rs.get(stream);
   if (!state) throw new TypeError('ReadableStream receiver expected');
-  return state.disturbed || state.locked;
+  return state.disturbed;
 }
 
 // Fill a BYOB view from queued Uint8Array chunks. Returns filled Uint8Array slice or null.
@@ -958,7 +958,7 @@ export class ReadableByteStreamController {
     if (offset < bytes.length && s.pendingReads!.length > 0) {
       const remaining = bytes.slice(offset);
       offset = bytes.length;
-      s.pendingReads!.shift()!.resolve({ done: false, value: remaining });
+      s.pendingReads!.shift()!.resolve(_streamReadResult(false, remaining));
     }
 
     // Any leftover bytes go into the queue
@@ -1487,6 +1487,7 @@ export class ReadableStream {
       throw signal.reason;
     }
 
+    src.disturbed = true;
     src.locked = true;
     dst.locked = true;
 

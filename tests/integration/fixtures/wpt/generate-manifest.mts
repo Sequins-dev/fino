@@ -18,9 +18,10 @@ function classify(path: string): string {
   return 'unknown';
 }
 
-function discoverMeta(source: string): { variants: string[]; scripts: string[] } {
+function discoverMeta(source: string): { variants: string[]; scripts: string[]; globals: string[] } {
   const variants: string[] = [];
   const scripts: string[] = [];
+  const globals: string[] = [];
   for (const line of source.split(/\r?\n/)) {
     const match = /^\/\/\s*META:\s*([^=]+)=(.*)$/.exec(line.trim());
     if (match === null) continue;
@@ -28,8 +29,9 @@ function discoverMeta(source: string): { variants: string[]; scripts: string[] }
     const value = match[2]!.trim();
     if (key === 'variant') variants.push(value);
     if (key === 'script') scripts.push(value);
+    if (key === 'global') globals.push(...value.split(',').map((part) => part.trim()).filter((part) => part.length > 0));
   }
-  return { variants, scripts };
+  return { variants, scripts, globals };
 }
 
 function discoverSubtests(source: string): WptManifestSubtest[] {
@@ -120,13 +122,17 @@ function needsWptServer(source: string): boolean {
   return /\bfetch\s*\(\s*['"`]\//.test(source)
       || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source)
       || /\bfetch\s*\(\s*['"`](?![A-Za-z][A-Za-z0-9+.-]*:)/.test(source)
+      || /\bfetch\s*\(\s*RESOURCES_DIR\b/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
       || /\/fetch\/api\/resources\//.test(source);
 }
 
-function runnableStatus(path: string, type: string, source: string, missingScripts: string[]): { runnable: boolean; reason: string | null } {
+function runnableStatus(path: string, type: string, source: string, missingScripts: string[], metaGlobals: string[]): { runnable: boolean; reason: string | null } {
   if (path.includes('.sub.')) return { runnable: false, reason: 'requires WPT server .sub preprocessing' };
   if (missingScripts.length > 0) return { runnable: false, reason: `requires missing WPT META script ${missingScripts[0]}` };
+  if (metaGlobals.length > 0 && metaGlobals.every((global) => global === 'window')) {
+    return { runnable: false, reason: 'requires document/window navigation' };
+  }
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
   }
@@ -175,7 +181,7 @@ async function main(): Promise<void> {
         if (await exists(scriptPath)) runnableSource += '\n' + await fs.readFile(scriptPath);
         else missingScripts.push(script);
       }
-      const status = runnableStatus(relPath, type, runnableSource, missingScripts);
+      const status = runnableStatus(relPath, type, runnableSource, missingScripts, meta.globals);
       entries.push({
         path: relPath,
         category: category.path,

@@ -15014,26 +15014,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Request through fetch should have 'accept' header with value '*/*'"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Request through fetch should have 'accept' header with value 'custom/*'"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Request through fetch should have a 'accept-language' header"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Request through fetch should have 'accept-language' header with value 'bzh'"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/basic/block-mime-as-script.html",
@@ -15246,7 +15229,7 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/keepalive-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -15671,18 +15654,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Stream response's body when content-type is present"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Stream response's body when content-type is not present"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/basic/stream-safe-creation.any.js",
@@ -16015,7 +15989,7 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -16056,8 +16030,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16078,8 +16052,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16154,8 +16128,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16176,8 +16150,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16198,8 +16172,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16241,8 +16215,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16264,18 +16238,9 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/get-host-info.sub.js",
         "resources/corspreflight.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "\"authorization\" should not be covered by the wildcard symbol"
-        },
-        {
-          "kind": "promise_test",
-          "name": "\"authorization\" should be covered by \"authorization\""
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/cors/cors-redirect-credentials.any.js",
@@ -16316,8 +16281,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16338,8 +16303,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/utils.js",
         "/common/get-host-info.sub.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -16558,8 +16523,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
       "subtests": []
     },
     {
@@ -17543,7 +17508,7 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/keepalive-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -17565,7 +17530,7 @@ export const WPT_MANIFEST: WptManifest = {
         "../resources/keepalive-helper.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -17624,14 +17589,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Response.redirected should be false on not-redirected responses"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/redirect/redirect-mode.any.js",
@@ -19360,14 +19320,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "realm of the Uint8Array from Response bytes()"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires document/window navigation",
+      "subtests": []
     },
     {
       "path": "fetch/api/response/response-body-read-task-handling.html",
@@ -19403,38 +19358,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../resources/utils.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Cancelling a starting blob Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cancelling a loading blob Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cancelling a closed blob Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cancelling a starting Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cancelling a loading Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Cancelling a closed Response stream"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Accessing .body after canceling it"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires upstream WPT server and host setup",
+      "subtests": []
     },
     {
       "path": "fetch/api/response/response-clone-iframe.window.js",
@@ -20521,7 +20447,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -36744,7 +36670,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
@@ -36760,7 +36686,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires document/window navigation",
       "subtests": []
     },
     {
