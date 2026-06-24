@@ -1825,3 +1825,11 @@ export class URL {
     }
   }
 }
+
+for (const name of ['createObjectURL', 'revokeObjectURL'] as const) {
+  const descriptor = Object.getOwnPropertyDescriptor(URL, name);
+  if (descriptor !== undefined) {
+    descriptor.enumerable = true;
+    Object.defineProperty(URL, name, descriptor);
+  }
+}

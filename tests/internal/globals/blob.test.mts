@@ -3,12 +3,104 @@
  */
 
 import { describe, it } from 'fino:test/test';
+import { _createFileList } from '../../../js/globals/blob.mts';
+
+function descriptor(target: object, key: PropertyKey): PropertyDescriptor {
+  const desc = Object.getOwnPropertyDescriptor(target, key);
+  if (desc === undefined) throw new Error(`missing descriptor for ${String(key)}`);
+  return desc;
+}
 
 function waitFor(target: EventTarget, type: string): Promise<Event> {
   return new Promise((resolve) => {
     target.addEventListener(type, resolve, { once: true });
   });
 }
+
+describe('File API WebIDL descriptors', () => {
+  it('installs File API globals as non-enumerable global properties', (t) => {
+    for (const name of ['Blob', 'File', 'FileList', 'FileReader']) {
+      const desc = descriptor(globalThis, name);
+      t.equal(desc.enumerable, false, `${name} global is non-enumerable`);
+      t.equal(desc.writable, true, `${name} global is writable`);
+      t.equal(desc.configurable, true, `${name} global is configurable`);
+    }
+  });
+
+  it('sets constructor lengths and string tags', (t) => {
+    t.equal(Blob.length, 0, 'Blob.length');
+    t.equal(File.length, 2, 'File.length');
+    t.equal(FileList.length, 0, 'FileList.length');
+    t.equal(FileReader.length, 0, 'FileReader.length');
+    t.equal(Blob.prototype.slice.length, 0, 'Blob.prototype.slice.length');
+    t.equal(FileReader.prototype.readAsText.length, 1, 'FileReader.prototype.readAsText.length');
+    t.equal(Object.prototype.toString.call(new Blob()), '[object Blob]', 'Blob toStringTag');
+    t.equal(Object.prototype.toString.call(new File([], 'x')), '[object File]', 'File toStringTag');
+    t.equal(Object.prototype.toString.call(_createFileList()), '[object FileList]', 'FileList toStringTag');
+    t.equal(Object.prototype.toString.call(new FileReader()), '[object FileReader]', 'FileReader toStringTag');
+  });
+
+  it('exposes WebIDL prototype members as enumerable', (t) => {
+    for (const [proto, name] of [
+      [Blob.prototype, 'size'],
+      [Blob.prototype, 'slice'],
+      [Blob.prototype, 'bytes'],
+      [File.prototype, 'name'],
+      [FileList.prototype, 'length'],
+      [FileList.prototype, 'item'],
+      [FileReader.prototype, 'readyState'],
+      [FileReader.prototype, 'readAsText'],
+      [FileReader.prototype, 'onload'],
+    ] as const) {
+      t.equal(descriptor(proto, name).enumerable, true, `${proto.constructor.name}.${String(name)} is enumerable`);
+    }
+  });
+
+  it('defines FileReader constants as readonly enumerable properties', (t) => {
+    for (const target of [FileReader, FileReader.prototype]) {
+      for (const [name, value] of [['EMPTY', 0], ['LOADING', 1], ['DONE', 2]] as const) {
+        const desc = descriptor(target, name);
+        t.equal(desc.value, value, `${name} value`);
+        t.equal(desc.writable, false, `${name} is readonly`);
+        t.equal(desc.enumerable, true, `${name} is enumerable`);
+      }
+    }
+  });
+
+  it('keeps FileReader event handlers on the prototype', (t) => {
+    const reader = new FileReader();
+    t.equal(Object.prototype.hasOwnProperty.call(reader, 'onload'), false, 'onload is inherited');
+    t.equal(reader.onload, null, 'onload defaults to null');
+    reader.onload = () => {};
+    t.equal(typeof reader.onload, 'function', 'onload stores function handlers');
+    reader.onload = 'not a function' as any;
+    t.equal(reader.onload, null, 'onload coerces non-functions to null');
+  });
+
+  it('exposes FileList as an illegal-constructor File API interface', (t) => {
+    t.throws(() => new FileList(), TypeError, 'FileList constructor throws');
+    const file = new File(['x'], 'x.txt');
+    const list = _createFileList([file]);
+    t.equal(list.length, 1, 'length');
+    t.equal(list.item(0), file, 'item returns file');
+    t.equal(list.item(1), null, 'missing item returns null');
+    t.equal((list as any)[0], file, 'indexed property');
+    t.equal(descriptor(FileList, 'prototype').writable, false, 'prototype is readonly');
+    t.equal(FileList.prototype.item.name, 'item', 'item function name');
+    t.equal(descriptor(FileList.prototype, 'length').get?.name, 'get length', 'length getter name');
+    t.throws(() => list.item(), TypeError, 'item requires index');
+    t.throws(
+      () => Reflect.get(FileList.prototype, 'length', FileList.prototype),
+      TypeError,
+      'length getter requires FileList receiver',
+    );
+  });
+
+  it('exposes FileAPI URL static operations as enumerable', (t) => {
+    t.equal(descriptor(URL, 'createObjectURL').enumerable, true, 'URL.createObjectURL is enumerable');
+    t.equal(descriptor(URL, 'revokeObjectURL').enumerable, true, 'URL.revokeObjectURL is enumerable');
+  });
+});
 
 describe('Blob construction', () => {
   it('empty constructor', (t) => {

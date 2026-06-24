@@ -12,6 +12,12 @@ import { compress, brotliAvailable } from 'fino:compress';
 type Server = ReturnType<typeof serve>;
 type Handler = (req: Request) => Response | Promise<Response>;
 
+function descriptor(target: object, key: PropertyKey): PropertyDescriptor {
+  const desc = Object.getOwnPropertyDescriptor(target, key);
+  if (desc === undefined) throw new Error(`missing descriptor for ${String(key)}`);
+  return desc;
+}
+
 async function withServer<T>(port: number, handler: Handler, fn: (url: string, srv: Server) => Promise<T>): Promise<T> {
   const srv = serveHttp({ port, hostname: '127.0.0.1' }, handler);
   const url = `http://127.0.0.1:${port}`;
@@ -21,6 +27,78 @@ async function withServer<T>(port: number, handler: Handler, fn: (url: string, s
     await srv.close();
   }
 }
+
+describe('Fetch API WebIDL descriptors', () => {
+  it('installs Fetch API globals as non-enumerable global properties', (t) => {
+    for (const name of ['Headers', 'Request', 'Response']) {
+      const desc = descriptor(globalThis, name);
+      t.equal(desc.enumerable, false, `${name} global is non-enumerable`);
+      t.equal(desc.writable, true, `${name} global is writable`);
+      t.equal(desc.configurable, true, `${name} global is configurable`);
+    }
+    t.equal(descriptor(globalThis, 'fetch').enumerable, true, 'fetch global operation is enumerable');
+  });
+
+  it('sets function and constructor lengths', (t) => {
+    t.equal(fetch.length, 1, 'fetch.length');
+    t.equal(Headers.length, 0, 'Headers.length');
+    t.equal(Request.length, 1, 'Request.length');
+    t.equal(Response.length, 0, 'Response.length');
+  });
+
+  it('sets string tags for Fetch API objects', (t) => {
+    t.equal(Object.prototype.toString.call(new Headers()), '[object Headers]', 'Headers toStringTag');
+    t.equal(Object.prototype.toString.call(new Request('about:blank')), '[object Request]', 'Request toStringTag');
+    t.equal(Object.prototype.toString.call(new Response()), '[object Response]', 'Response toStringTag');
+  });
+
+  it('exposes Fetch API prototype members as enumerable', (t) => {
+    for (const [target, name] of [
+      [Headers.prototype, 'append'],
+      [Headers.prototype, 'getSetCookie'],
+      [Request.prototype, 'url'],
+      [Request.prototype, 'signal'],
+      [Request.prototype, 'bodyUsed'],
+      [Request.prototype, 'arrayBuffer'],
+      [Request.prototype, 'textStream'],
+      [Response.prototype, 'status'],
+      [Response.prototype, 'bodyUsed'],
+      [Response.prototype, 'arrayBuffer'],
+      [Response.prototype, 'textStream'],
+      [Response, 'json'],
+    ] as const) {
+      t.equal(descriptor(target, name).enumerable, true, `${String(name)} is enumerable`);
+    }
+    t.equal(Headers.prototype[Symbol.iterator], Headers.prototype.entries, 'Headers iterator is entries');
+    t.equal(descriptor(Headers.prototype, Symbol.iterator).enumerable, false, 'Headers iterator is non-enumerable');
+  });
+
+  it('throws for required WebIDL arguments and exposes expected operation lengths', (t) => {
+    const headers = new Headers();
+    t.throws(() => headers.append(), TypeError, 'Headers.append requires arguments');
+    t.throws(() => headers.delete(), TypeError, 'Headers.delete requires arguments');
+    t.throws(() => headers.get(), TypeError, 'Headers.get requires arguments');
+    t.throws(() => headers.has(), TypeError, 'Headers.has requires arguments');
+    t.throws(() => headers.set(), TypeError, 'Headers.set requires arguments');
+    t.equal(headers.forEach.length, 1, 'Headers.forEach.length');
+    t.equal(Response.json.length, 1, 'Response.json.length');
+    t.equal(Response.redirect.length, 1, 'Response.redirect.length');
+    t.throws(() => Response.json(), TypeError, 'Response.json requires data');
+    t.throws(() => Response.redirect(), TypeError, 'Response.redirect requires url');
+  });
+
+  it('exposes a Request signal and brands constant getters', (t) => {
+    const request = new Request('about:blank');
+    t.ok(request.signal instanceof AbortSignal, 'Request.signal is an AbortSignal');
+    for (const name of ['destination', 'referrer', 'referrerPolicy', 'mode', 'credentials', 'cache', 'redirect', 'integrity', 'isReloadNavigation', 'isHistoryNavigation', 'duplex'] as const) {
+      t.throws(
+        () => Reflect.get(Request.prototype, name, Request.prototype),
+        TypeError,
+        `${name} getter requires a Request receiver`,
+      );
+    }
+  });
+});
 
 describe('Basic GET / POST', () => {
   it('basic GET returns 200', async (t) => {

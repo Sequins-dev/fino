@@ -1274,8 +1274,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires WebIDL descriptor conformance plus FileList global",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -17176,7 +17176,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/idlharness.js"
       ],
       "runnable": false,
-      "reason": "requires WebIDL descriptor conformance plus FetchLaterResult/fetchLater globals",
+      "reason": "requires FetchLaterResult/fetchLater globals",
       "subtests": []
     },
     {

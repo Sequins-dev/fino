@@ -1485,6 +1485,11 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   throw new TypeError('fetch: internal error');
 }
 
+Object.defineProperty(fetch, 'length', {
+  value: 1,
+  configurable: true,
+});
+
 /**
  * Return whether the internal global fetch HTTP/2 pool has a live entry.
  *

@@ -568,9 +568,103 @@ export class File extends Blob {
   get lastModified() { return this.#lastModified; }
 }
 
+// ---------------------------------------------------------------------------
+// FileList
+// ---------------------------------------------------------------------------
+
+/**
+ * Array-like list of File objects.
+ *
+ * FileList objects are produced by web APIs such as file inputs and drag/drop.
+ * Fino exposes the interface for File API compatibility; there is no public
+ * constructor, matching browsers.
+ *
+ * ```typescript no_run
+ * try { new FileList(); } catch (err) { console.log(err instanceof TypeError); }
+ * ```
+ */
+export interface FileList {
+  readonly length: number;
+  item(index: number): File | null;
+}
+
+type FileListConstructor = {
+  readonly prototype: FileList;
+  new(): FileList;
+};
+
+const _fileListItems = new WeakMap<FileList, File[]>();
+
+export const FileList = (function FileList(): never {
+  throw new TypeError('Illegal constructor');
+}) as unknown as FileListConstructor;
+
+function item(this: FileList, index: number): File | null {
+  if (arguments.length < 1) throw new TypeError('FileList.item requires 1 argument');
+  const items = _fileListItems.get(this);
+  if (items === undefined) throw new TypeError('FileList receiver expected');
+  return items[Number(index) >>> 0] ?? null;
+}
+
+const fileListLengthGetter = function(this: FileList): number {
+  const items = _fileListItems.get(this);
+  if (items === undefined) throw new TypeError('FileList receiver expected');
+  return items.length;
+};
+Object.defineProperty(fileListLengthGetter, 'name', {
+  value: 'get length',
+  configurable: true,
+});
+
+Object.defineProperties(FileList.prototype, {
+  item: {
+    value: item,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  },
+  length: {
+    get: fileListLengthGetter,
+    enumerable: true,
+    configurable: true,
+  },
+  [Symbol.toStringTag]: {
+    value: 'FileList',
+    configurable: true,
+  },
+});
+
+Object.defineProperty(FileList, 'length', {
+  value: 0,
+  configurable: true,
+});
+Object.defineProperty(FileList, 'prototype', {
+  writable: false,
+});
+
+/**
+ * Create a FileList for internal web API integrations.
+ *
+ * @internal
+ */
+export function _createFileList(files: Iterable<File> = []): FileList {
+  const list = Object.create(FileList.prototype) as FileList;
+  const items = Array.from(files);
+  _fileListItems.set(list, items);
+  for (let i = 0; i < items.length; i++) {
+    Object.defineProperty(list, i, {
+      value: items[i],
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return list;
+}
+
 type FileReaderResult = string | ArrayBuffer | null;
 type FileReaderReadKind = 'arrayBuffer' | 'binaryString' | 'dataURL' | 'text';
 type FileReaderHandler = ((event: Event) => void) | null;
+type FileReaderHandlerName = 'loadstart' | 'progress' | 'load' | 'abort' | 'error' | 'loadend';
 
 function _bytesToBinaryString(bytes: Uint8Array): string {
   let out = '';
@@ -650,19 +744,32 @@ export class FileReader extends EventTarget {
    */
   static DONE = 2;
 
-  onloadstart: FileReaderHandler = null;
-  onprogress: FileReaderHandler = null;
-  onload: FileReaderHandler = null;
-  onabort: FileReaderHandler = null;
-  onerror: FileReaderHandler = null;
-  onloadend: FileReaderHandler = null;
-
+  #eventHandlers: Record<FileReaderHandlerName, FileReaderHandler> = {
+    loadstart: null,
+    progress: null,
+    load: null,
+    abort: null,
+    error: null,
+    loadend: null,
+  };
   #readyState = FileReader.EMPTY;
   #result: FileReaderResult = null;
   #error: DOMException | null = null;
   #readToken = 0;
 
   get [Symbol.toStringTag]() { return 'FileReader'; }
+  get onloadstart() { return this.#eventHandlers.loadstart; }
+  set onloadstart(value: FileReaderHandler) { this.#eventHandlers.loadstart = typeof value === 'function' ? value : null; }
+  get onprogress() { return this.#eventHandlers.progress; }
+  set onprogress(value: FileReaderHandler) { this.#eventHandlers.progress = typeof value === 'function' ? value : null; }
+  get onload() { return this.#eventHandlers.load; }
+  set onload(value: FileReaderHandler) { this.#eventHandlers.load = typeof value === 'function' ? value : null; }
+  get onabort() { return this.#eventHandlers.abort; }
+  set onabort(value: FileReaderHandler) { this.#eventHandlers.abort = typeof value === 'function' ? value : null; }
+  get onerror() { return this.#eventHandlers.error; }
+  set onerror(value: FileReaderHandler) { this.#eventHandlers.error = typeof value === 'function' ? value : null; }
+  get onloadend() { return this.#eventHandlers.loadend; }
+  set onloadend(value: FileReaderHandler) { this.#eventHandlers.loadend = typeof value === 'function' ? value : null; }
   get EMPTY() { return FileReader.EMPTY; }
   get LOADING() { return FileReader.LOADING; }
   get DONE() { return FileReader.DONE; }
@@ -672,7 +779,7 @@ export class FileReader extends EventTarget {
 
   dispatchEvent(event: Event): boolean {
     const ok = super.dispatchEvent(event);
-    const handler = this[`on${event.type}` as keyof FileReader] as FileReaderHandler | undefined;
+    const handler = this.#eventHandlers[event.type as FileReaderHandlerName];
     if (typeof handler === 'function') {
       try { handler.call(this, event); } catch (_) {}
     }
@@ -769,6 +876,92 @@ export class FileReader extends EventTarget {
     }, 0);
   }
 }
+
+function _setConstructorLength(ctor: Function, length: number): void {
+  Object.defineProperty(ctor, 'length', {
+    value: length,
+    configurable: true,
+  });
+}
+
+function _setPrototypeToStringTag(proto: object, tag: string): void {
+  Object.defineProperty(proto, Symbol.toStringTag, {
+    value: tag,
+    configurable: true,
+  });
+}
+
+function _makePrototypeMembersEnumerable(proto: object, names: PropertyKey[]): void {
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+    if (descriptor === undefined) continue;
+    descriptor.enumerable = true;
+    Object.defineProperty(proto, name, descriptor);
+  }
+}
+
+function _setPrototypeMemberLength(proto: object, name: PropertyKey, length: number): void {
+  const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+  if (descriptor === undefined || typeof descriptor.value !== 'function') return;
+  Object.defineProperty(descriptor.value, 'length', {
+    value: length,
+    configurable: true,
+  });
+}
+
+function _defineReadonlyConstant(target: object, name: string, value: number): void {
+  Object.defineProperty(target, name, {
+    value,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+}
+
+_setConstructorLength(Blob, 0);
+_setPrototypeToStringTag(Blob.prototype, 'Blob');
+_makePrototypeMembersEnumerable(Blob.prototype, [
+  'size',
+  'type',
+  'slice',
+  'stream',
+  'text',
+  'arrayBuffer',
+  'textStream',
+  'bytes',
+]);
+_setPrototypeMemberLength(Blob.prototype, 'slice', 0);
+
+_setConstructorLength(File, 2);
+_setPrototypeToStringTag(File.prototype, 'File');
+_makePrototypeMembersEnumerable(File.prototype, [
+  'name',
+  'lastModified',
+]);
+
+_setConstructorLength(FileReader, 0);
+_setPrototypeToStringTag(FileReader.prototype, 'FileReader');
+for (const [name, value] of [['EMPTY', 0], ['LOADING', 1], ['DONE', 2]] as const) {
+  _defineReadonlyConstant(FileReader, name, value);
+  _defineReadonlyConstant(FileReader.prototype, name, value);
+}
+_makePrototypeMembersEnumerable(FileReader.prototype, [
+  'onloadstart',
+  'onprogress',
+  'onload',
+  'onabort',
+  'onerror',
+  'onloadend',
+  'readyState',
+  'result',
+  'error',
+  'readAsArrayBuffer',
+  'readAsBinaryString',
+  'readAsDataURL',
+  'readAsText',
+  'abort',
+]);
+_setPrototypeMemberLength(FileReader.prototype, 'readAsText', 1);
 
 // Register the Blob clone helper with encoding.mts so structuredClone can
 // clone Blob/File instances synchronously without a circular import.

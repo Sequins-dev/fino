@@ -73,6 +73,7 @@ import {
   AbortSignal,
   Blob,
   File,
+  FileList,
   FileReader,
   DOMException,
   QuotaExceededError,
@@ -161,7 +162,16 @@ if (typeof Atomics !== 'undefined' && typeof Atomics.waitAsync === 'function') {
 
 const globalEventTarget = new EventTarget();
 
-Object.assign(globalThis, {
+function defineGlobal(name: string, value: unknown, enumerable = false): void {
+  Object.defineProperty(globalThis, name, {
+    value,
+    writable: true,
+    enumerable,
+    configurable: true,
+  });
+}
+
+for (const [name, value] of Object.entries({
   Event,
   CustomEvent,
   EventTarget,
@@ -185,6 +195,7 @@ Object.assign(globalThis, {
   AbortSignal,
   Blob,
   File,
+  FileList,
   FileReader,
   DOMException,
   QuotaExceededError,
@@ -224,13 +235,15 @@ Object.assign(globalThis, {
   clearInterval,
   queueMicrotask,
   performance,
-});
+})) {
+  defineGlobal(name, value, name === 'fetch');
+}
 
 Object.defineProperty(globalThis, 'self', { value: globalThis, writable: true, configurable: true });
 Object.defineProperty(globalThis, 'navigator', { value: { userAgent: 'Fino/0.1' }, writable: true, configurable: true });
-runtimeGlobalThis.reportError = function reportError(err: unknown) {
+defineGlobal('reportError', function reportError(err: unknown) {
   runtimeGlobalThis.console?.error('Unhandled error:', err);
-};
+});
 
 function formatCallSite(callSite: StackFrame): string {
   let source = callSite.getFileName?.() ?? callSite.getScriptNameOrSourceURL?.() ?? null;

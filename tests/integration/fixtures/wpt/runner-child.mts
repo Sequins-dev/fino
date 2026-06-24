@@ -84,7 +84,7 @@ function installBaseGlobals(): void {
   }
 
   const nativeFetch = g.fetch.bind(g);
-  g.fetch = async (input: unknown, init?: RequestInit) => {
+  g.fetch = async function fetch(input: unknown, init?: RequestInit) {
     const localInterfacePath = interfacePathFromFetchInput(input);
     if (localInterfacePath !== null) {
       return new Response(await fs.readFile(localInterfacePath), {
@@ -94,6 +94,10 @@ function installBaseGlobals(): void {
     }
     return nativeFetch(input as any, init);
   };
+  Object.defineProperty(g.fetch, 'length', {
+    value: 1,
+    configurable: true,
+  });
 }
 
 function discoverMetaScripts(source: string): string[] {

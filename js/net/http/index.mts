@@ -128,6 +128,7 @@
  */
 
 import { decodeUtf8, encodeUtf8, TextDecoder } from '../../globals/encoding.mts';
+import { AbortController, AbortSignal } from '../../globals/abort.mts';
 import { ReadableStream, isReadableStreamDisturbed } from '../../globals/webstreams.mts';
 import { Blob } from '../../globals/blob.mts';
 import { FormData, _createMultipartBoundary, _serializeFormData } from '../../globals/formdata.mts';
@@ -1122,6 +1123,7 @@ export class Headers {
    * ```
    */
   append(name: string, value: string): void {
+    if (arguments.length < 2) throw new TypeError('Headers.append requires 2 arguments');
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
     this.#ensureMutable();
@@ -1157,6 +1159,7 @@ export class Headers {
    * ```
    */
   set(name: string, value: string): void {
+    if (arguments.length < 2) throw new TypeError('Headers.set requires 2 arguments');
     name = _normalizeHeaderName(name);
     value = _normalizeHeaderValue(value);
     this.#ensureMutable();
@@ -1192,6 +1195,7 @@ export class Headers {
    * ```
    */
   get(name: string): string | null {
+    if (arguments.length < 1) throw new TypeError('Headers.get requires 1 argument');
     name = _normalizeHeaderName(name);
     // Avoid allocating an array for the common single-value case.
     let result: string | null = null;
@@ -1212,6 +1216,7 @@ export class Headers {
    * ```
    */
   has(name: string): boolean {
+    if (arguments.length < 1) throw new TypeError('Headers.has requires 1 argument');
     name = _normalizeHeaderName(name);
     for (const entry of this.#list) {
       if (entry[0] === name) return true;
@@ -1226,6 +1231,7 @@ export class Headers {
    * ```
    */
   delete(name: string): void {
+    if (arguments.length < 1) throw new TypeError('Headers.delete requires 1 argument');
     name = _normalizeHeaderName(name);
     this.#ensureMutable();
     if (this.#isBlockedByGuard(name, '')) return;
@@ -1293,6 +1299,7 @@ export class Headers {
    * ```
    */
   forEach(callback: (value: string, name: string, headers: Headers) => void, thisArg?: unknown): void {
+    if (arguments.length < 1) throw new TypeError('Headers.forEach requires 1 argument');
     for (const entry of this.#sorted()) {
       callback.call(thisArg, entry[1], entry[0], this);
     }
@@ -1890,6 +1897,7 @@ export class Request {
    * @internal
    */
   #keepalive: boolean = false;
+  #signal: AbortSignal;
 
   /**
    * Create a Request from a URL string, another Request, or the internal parser
@@ -1916,6 +1924,7 @@ export class Request {
       this.#inTrailers = init.inTrailers ?? null;
       this.#blobUrlObject = init.blobUrlObject ?? null;
       this.#keepalive = Boolean(init.keepalive);
+      this.#signal = init.signal instanceof AbortSignal ? init.signal : new AbortController().signal;
       return;
     }
 
@@ -1935,6 +1944,9 @@ export class Request {
     this.#keepalive = (init && 'keepalive' in init)
       ? Boolean(init.keepalive)
       : (inputRequest !== null ? inputRequest.#keepalive : false);
+    this.#signal = (init && init.signal instanceof AbortSignal)
+      ? init.signal
+      : (inputRequest !== null ? inputRequest.#signal : new AbortController().signal);
 
     const initHasBody = init && init.body != null;
     const initBodyIsStream = initHasBody && _isReadableStreamBody(init.body);
@@ -2135,7 +2147,7 @@ export class Request {
    * console.log(req.destination);
    * ```
    */
-  get destination() { return ''; }
+  get destination() { this.#method; return ''; }
 
   /** Referrer URL metadata.
    *
@@ -2147,7 +2159,7 @@ export class Request {
    * console.log(req.referrer);
    * ```
    */
-  get referrer() { return 'about:client'; }
+  get referrer() { this.#method; return 'about:client'; }
 
   /** Referrer policy metadata.
    *
@@ -2158,7 +2170,7 @@ export class Request {
    * console.log(req.referrerPolicy || 'default policy');
    * ```
    */
-  get referrerPolicy() { return ''; }
+  get referrerPolicy() { this.#method; return ''; }
 
   /** Fetch mode metadata.
    *
@@ -2169,7 +2181,7 @@ export class Request {
    * console.log(req.mode);
    * ```
    */
-  get mode() { return 'cors'; }
+  get mode() { this.#method; return 'cors'; }
 
   /** Credential mode metadata.
    *
@@ -2180,7 +2192,7 @@ export class Request {
    * console.log(req.credentials);
    * ```
    */
-  get credentials() { return 'same-origin'; }
+  get credentials() { this.#method; return 'same-origin'; }
 
   /** Cache mode metadata.
    *
@@ -2191,7 +2203,7 @@ export class Request {
    * console.log(req.cache);
    * ```
    */
-  get cache() { return 'default'; }
+  get cache() { this.#method; return 'default'; }
 
   /** Keepalive request metadata.
    *
@@ -2214,7 +2226,7 @@ export class Request {
    * console.log(req.redirect);
    * ```
    */
-  get redirect() { return 'follow'; }
+  get redirect() { this.#method; return 'follow'; }
 
   /** Subresource integrity metadata.
    *
@@ -2225,7 +2237,7 @@ export class Request {
    * console.log(req.integrity);
    * ```
    */
-  get integrity() { return ''; }
+  get integrity() { this.#method; return ''; }
 
   /** Reload navigation flag.
    *
@@ -2235,7 +2247,7 @@ export class Request {
    * console.log(req.isReloadNavigation);
    * ```
    */
-  get isReloadNavigation() { return false; }
+  get isReloadNavigation() { this.#method; return false; }
 
   /** History navigation flag.
    *
@@ -2245,7 +2257,10 @@ export class Request {
    * console.log(req.isHistoryNavigation);
    * ```
    */
-  get isHistoryNavigation() { return false; }
+  get isHistoryNavigation() { this.#method; return false; }
+
+  /** AbortSignal associated with this request. */
+  get signal() { return this.#signal; }
 
   /** Streaming request duplex mode.
    *
@@ -2255,7 +2270,7 @@ export class Request {
    * console.log(req.duplex);
    * ```
    */
-  get duplex() { return 'half'; }
+  get duplex() { this.#method; return 'half'; }
 
   /**
    * The body as a ReadableStream, or null if no body.
@@ -2453,13 +2468,13 @@ export class Request {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Request');
     if (this.body !== null && this.body.locked) throw new TypeError('Cannot clone a locked Request body');
     if (this.#rawBody === null) {
-      return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive });
+      return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive, signal: this.#signal });
     }
     const stream = this.#bodyStream ?? (this.#rawBody instanceof ReadableStream ? this.#rawBody : ReadableStream.from(this.#rawBody));
     const [a, b] = stream.tee();
     this.#bodyStream = a;
     this.#rawBody = a as any;
-    const cloned = new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: b, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive });
+    const cloned = new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: b, blobUrlObject: this.#blobUrlObject, keepalive: this.#keepalive, signal: this.#signal });
     return cloned;
   }
 
@@ -3228,6 +3243,7 @@ export class Response {
    * ```
    */
   static json(data: unknown, init?: ResponseInit) {
+    if (arguments.length < 1) throw new TypeError('Response.json requires 1 argument');
     const body = JSON.stringify(data);
     if (body === undefined) throw new TypeError('Response.json: data is not JSON serializable');
     const headers = new Headers((init && init.headers) ? init.headers : {});
@@ -3251,6 +3267,7 @@ export class Response {
    * ```
    */
   static redirect(url: string, status?: number) {
+    if (arguments.length < 1) throw new TypeError('Response.redirect requires 1 argument');
     status = (status != null) ? Number(status) : 302;
     if (![301, 302, 303, 307, 308].includes(status)) {
       throw new RangeError(`Response.redirect: invalid redirect status ${status}`);
@@ -3291,6 +3308,119 @@ export class Response {
    */
   static from(source: AsyncByteSource) { return parseResponse(source); }
 }
+
+function _setConstructorLength(ctor: Function, length: number): void {
+  Object.defineProperty(ctor, 'length', {
+    value: length,
+    configurable: true,
+  });
+}
+
+function _setPrototypeToStringTag(proto: object, tag: string): void {
+  Object.defineProperty(proto, Symbol.toStringTag, {
+    value: tag,
+    configurable: true,
+  });
+}
+
+function _makeMembersEnumerable(target: object, names: PropertyKey[]): void {
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(target, name);
+    if (descriptor === undefined) continue;
+    descriptor.enumerable = true;
+    Object.defineProperty(target, name, descriptor);
+  }
+}
+
+function _setMemberLength(target: object, name: PropertyKey, length: number): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, name);
+  if (descriptor === undefined || typeof descriptor.value !== 'function') return;
+  Object.defineProperty(descriptor.value, 'length', {
+    value: length,
+    configurable: true,
+  });
+}
+
+_setConstructorLength(Headers, 0);
+_setPrototypeToStringTag(Headers.prototype, 'Headers');
+_makeMembersEnumerable(Headers.prototype, [
+  'append',
+  'delete',
+  'get',
+  'getSetCookie',
+  'has',
+  'set',
+  'entries',
+  'forEach',
+  'keys',
+  'values',
+]);
+Object.defineProperty(Headers.prototype, Symbol.iterator, {
+  value: Headers.prototype.entries,
+  writable: true,
+  configurable: true,
+});
+_setMemberLength(Headers.prototype, 'forEach', 1);
+
+_setConstructorLength(Request, 1);
+_setPrototypeToStringTag(Request.prototype, 'Request');
+_makeMembersEnumerable(Request.prototype, [
+  'method',
+  'url',
+  'headers',
+  'destination',
+  'referrer',
+  'referrerPolicy',
+  'mode',
+  'credentials',
+  'cache',
+  'redirect',
+  'integrity',
+  'keepalive',
+  'isReloadNavigation',
+  'isHistoryNavigation',
+  'signal',
+  'duplex',
+  'body',
+  'bodyUsed',
+  'arrayBuffer',
+  'blob',
+  'bytes',
+  'formData',
+  'json',
+  'text',
+  'textStream',
+  'clone',
+]);
+
+_setConstructorLength(Response, 0);
+_setPrototypeToStringTag(Response.prototype, 'Response');
+_makeMembersEnumerable(Response, [
+  'error',
+  'json',
+  'redirect',
+]);
+_setMemberLength(Response, 'json', 1);
+_setMemberLength(Response, 'redirect', 1);
+_makeMembersEnumerable(Response.prototype, [
+  'type',
+  'url',
+  'redirected',
+  'status',
+  'ok',
+  'statusText',
+  'headers',
+  'body',
+  'bodyUsed',
+  'arrayBuffer',
+  'blob',
+  'bytes',
+  'formData',
+  'json',
+  'text',
+  'textStream',
+  'clone',
+]);
 
 // ---------------------------------------------------------------------------
 // Public API
