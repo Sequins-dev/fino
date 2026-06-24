@@ -28,8 +28,9 @@
  * streams with async iteration while preserving Fetch-style `bodyUsed`
  * semantics. `formData()` parses `application/x-www-form-urlencoded` bodies
  * into `FormData`; constructed `FormData` bodies serialize as outbound
- * `multipart/form-data`. Parsing incoming multipart bodies is intentionally
- * outside this release baseline.
+ * `multipart/form-data`. Multipart parsing supports standard form-data parts
+ * with `Content-Disposition` names, optional filenames, and per-part
+ * `Content-Type` headers.
  *
  *
  * ## How parsing works: _createReader
@@ -225,10 +226,81 @@ function _contentTypeEssence(headers: Headers): string {
   return (headers.get('content-type') ?? '').split(';', 1)[0]!.trim().toLowerCase();
 }
 
+function _contentTypeParameter(headers: Headers, name: string): string | null {
+  const parts = (headers.get('content-type') ?? '').split(';');
+  name = name.toLowerCase();
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i]!;
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const key = part.slice(0, eq).trim().toLowerCase();
+    if (key !== name) continue;
+    let value = part.slice(eq + 1).trim();
+    if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+      value = value.slice(1, -1);
+    }
+    return value;
+  }
+  return null;
+}
+
 function _formDataFromUrlEncoded(body: string): FormData {
   const params = new URLSearchParams(body);
   const form = new FormData();
   for (const [name, value] of params) form.append(name, value);
+  return form;
+}
+
+function _multipartHeaderParameter(value: string, name: string): string | null {
+  name = name.toLowerCase();
+  for (const raw of value.split(';').slice(1)) {
+    const eq = raw.indexOf('=');
+    if (eq < 0) continue;
+    const key = raw.slice(0, eq).trim().toLowerCase();
+    if (key !== name) continue;
+    let parameter = raw.slice(eq + 1).trim();
+    if (parameter.length >= 2 && parameter[0] === '"' && parameter[parameter.length - 1] === '"') {
+      parameter = parameter.slice(1, -1);
+    }
+    try { return decodeURIComponent(parameter); } catch (_) { return parameter; }
+  }
+  return null;
+}
+
+function _formDataFromMultipart(bytes: Uint8Array, boundary: string): FormData {
+  if (boundary === '') throw new TypeError('formData(): multipart boundary is empty');
+  const body = decodeUtf8(bytes, false, false);
+  const delimiter = '--' + boundary;
+  const form = new FormData();
+  const sections = body.split(delimiter);
+  for (let i = 1; i < sections.length; i++) {
+    let section = sections[i]!;
+    if (section.startsWith('--')) break;
+    if (section.startsWith('\r\n')) section = section.slice(2);
+    if (section.endsWith('\r\n')) section = section.slice(0, -2);
+    if (section === '') continue;
+    const headerEnd = section.indexOf('\r\n\r\n');
+    if (headerEnd < 0) continue;
+    const headerText = section.slice(0, headerEnd);
+    const valueText = section.slice(headerEnd + 4);
+    const partHeaders = new Map<string, string>();
+    for (const line of headerText.split('\r\n')) {
+      const colon = line.indexOf(':');
+      if (colon < 0) continue;
+      partHeaders.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+    }
+    const disposition = partHeaders.get('content-disposition') ?? '';
+    if (!/^form-data(?:\s*;|$)/i.test(disposition)) continue;
+    const name = _multipartHeaderParameter(disposition, 'name');
+    if (name === null) continue;
+    const filename = _multipartHeaderParameter(disposition, 'filename');
+    if (filename === null) {
+      form.append(name, valueText);
+    } else {
+      const type = partHeaders.get('content-type') ?? '';
+      form.append(name, new Blob([valueText], { type }), filename);
+    }
+  }
   return form;
 }
 
@@ -1821,11 +1893,10 @@ export class Request {
     return new Blob([buf], { type });
   }
 
-  /** Consume an `application/x-www-form-urlencoded` body as FormData.
+  /** Consume an `application/x-www-form-urlencoded` or `multipart/form-data` body as FormData.
    *
-   * Incoming multipart/form-data parsing is not implemented by this HTTP core;
-   * constructed FormData bodies are still serialized as multipart for outbound
-   * requests.
+   * Multipart parsing supports standard form-data parts with names, optional
+   * filenames, and part content types.
    *
    * ```ts no_run
    * const form = await req.formData();
@@ -1835,6 +1906,11 @@ export class Request {
     const type = _contentTypeEssence(this.#headers);
     if (type === 'application/x-www-form-urlencoded') {
       return _formDataFromUrlEncoded(decodeUtf8(await this.#consumeBody(), false, false));
+    }
+    if (type === 'multipart/form-data') {
+      const boundary = _contentTypeParameter(this.#headers, 'boundary');
+      if (boundary === null) throw new TypeError('formData(): missing multipart boundary');
+      return _formDataFromMultipart(await this.#consumeBody(), boundary);
     }
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }
@@ -2539,10 +2615,10 @@ export class Response {
     return new Blob([buf], { type });
   }
 
-  /** Consume an `application/x-www-form-urlencoded` body as FormData.
+  /** Consume an `application/x-www-form-urlencoded` or `multipart/form-data` body as FormData.
    *
-   * Incoming multipart/form-data parsing is intentionally unsupported here.
-   * Outbound `FormData` construction still serializes multipart bodies.
+   * Multipart parsing supports standard form-data parts with names, optional
+   * filenames, and part content types.
    *
    * ```ts no_run
    * const form = await res.formData();
@@ -2552,6 +2628,11 @@ export class Response {
     const type = _contentTypeEssence(this.#headers);
     if (type === 'application/x-www-form-urlencoded') {
       return _formDataFromUrlEncoded(decodeUtf8(await this.#consumeBody(), false, false));
+    }
+    if (type === 'multipart/form-data') {
+      const boundary = _contentTypeParameter(this.#headers, 'boundary');
+      if (boundary === null) throw new TypeError('formData(): missing multipart boundary');
+      return _formDataFromMultipart(await this.#consumeBody(), boundary);
     }
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }
