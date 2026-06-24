@@ -65,7 +65,7 @@ export { URL, URLSearchParams } from './url.mts';
 export { URLPattern } from './urlpattern.mts';
 export { default as console } from './console.mts';
 export { crypto, cryptoAvailable, tlsAvailable } from './crypto.mts';
-export { fetch } from './fetch.mts';
+export { fetch, FetchLaterResult, fetchLater } from './fetch.mts';
 export { Headers, Request, Response } from 'internal:net/http/wire';
 export { CompressionStream, DecompressionStream } from './compression-streams.mts';
 export { EventSource } from './eventsource.mts';

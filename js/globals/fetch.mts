@@ -99,7 +99,7 @@ import { otelRuntimeEvent, otelRuntimeTopic } from '../internal/opentelemetry/co
 import * as openssl from '../internal/openssl.mts';
 import { _resolveObjectURL } from './url.mts';
 import { _getBlobBytes } from './blob.mts';
-import { atob, encodeUtf8 } from './encoding.mts';
+import { atob, DOMException, encodeUtf8 } from './encoding.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -111,6 +111,7 @@ const MAX_REDIRECTS = 20;
  *  HTTP status codes that the fetch spec treats as redirects. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 let _fetchRequestSeq = 0;
+const _fetchLaterResultState = new WeakMap<FetchLaterResult, { activated: boolean }>();
 
 type HeadersInput = Headers | string[][] | Record<string, string> | null | undefined;
 type FetchBody = unknown;
@@ -142,6 +143,10 @@ interface FetchInit {
     rejectUnauthorized?: boolean;
   };
   protocol?: 'auto' | 'http/1.1' | 'h2' | 'h3';
+}
+
+interface DeferredRequestInit extends FetchInit {
+  activateAfter?: number;
 }
 
 interface TraceRuntime {
@@ -191,6 +196,110 @@ function _normalizeFetchUrl(input: string): string {
     } catch { /* fall through to standard invalid URL error */ }
     throw new TypeError(`Invalid URL: ${input}`);
   }
+}
+
+/**
+ * Result object returned by `fetchLater()`.
+ *
+ * Fino currently exposes the Fetch Standard IDL surface and validation
+ * behavior for deferred fetch requests. The returned result starts inactive;
+ * deferred page-lifecycle delivery is browser-document behavior and is not
+ * performed by this server-side runtime.
+ *
+ * ```ts no_run
+ * const result = fetchLater('https://example.com/analytics');
+ * result.activated; // false
+ * ```
+ */
+export interface FetchLaterResult {
+  readonly activated: boolean;
+}
+
+type FetchLaterResultConstructor = {
+  readonly prototype: FetchLaterResult;
+  new(): FetchLaterResult;
+};
+
+export const FetchLaterResult = (function FetchLaterResult(): never {
+  throw new TypeError('Illegal constructor');
+}) as unknown as FetchLaterResultConstructor;
+
+const fetchLaterResultActivatedGetter = function(this: FetchLaterResult): boolean {
+  const state = _fetchLaterResultState.get(this);
+  if (state === undefined) throw new TypeError('FetchLaterResult receiver expected');
+  return state.activated;
+};
+Object.defineProperty(fetchLaterResultActivatedGetter, 'name', {
+  value: 'get activated',
+  configurable: true,
+});
+
+Object.defineProperties(FetchLaterResult.prototype, {
+  activated: {
+    get: fetchLaterResultActivatedGetter,
+    enumerable: true,
+    configurable: true,
+  },
+  [Symbol.toStringTag]: {
+    value: 'FetchLaterResult',
+    configurable: true,
+  },
+});
+Object.defineProperty(FetchLaterResult, 'length', {
+  value: 0,
+  configurable: true,
+});
+Object.defineProperty(FetchLaterResult, 'prototype', {
+  writable: false,
+});
+
+function _createFetchLaterResult(): FetchLaterResult {
+  const result = Object.create(FetchLaterResult.prototype) as FetchLaterResult;
+  _fetchLaterResultState.set(result, { activated: false });
+  return result;
+}
+
+function _isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '[::1]' ||
+    normalized === '::1';
+}
+
+function _normalizeFetchLaterUrl(input: string | Request): string {
+  const href = input instanceof Request ? input.url : _normalizeFetchUrl(String(input));
+  const url = new URL(href);
+  if (url.protocol === 'https:') return url.href;
+  if (url.protocol === 'http:' && _isLoopbackHostname(url.hostname)) return url.href;
+  throw new TypeError(`fetchLater: URL is not potentially trustworthy: ${url.href}`);
+}
+
+/**
+ * Queue a deferred fetch request.
+ *
+ * The Fetch Standard defines `fetchLater()` for Window secure contexts. Fino
+ * validates the request and exposes an inactive `FetchLaterResult`, but it
+ * does not implement browser document lifecycle delivery. Aborted initial
+ * signals reject immediately and later aborts keep the inactive result inert.
+ *
+ * ```ts no_run
+ * const result = fetchLater('/analytics', { activateAfter: 0 });
+ * result.activated; // false
+ * ```
+ */
+export function fetchLater(this: unknown, input: string | Request, init: DeferredRequestInit = {}): FetchLaterResult {
+  if (this !== undefined && this !== globalThis) throw new TypeError('fetchLater receiver expected');
+  if (arguments.length < 1) throw new TypeError('fetchLater requires 1 argument');
+  _normalizeFetchLaterUrl(input);
+  if (init != null && init.activateAfter !== undefined && Number(init.activateAfter) < 0) {
+    throw new RangeError('fetchLater activateAfter must be non-negative');
+  }
+  const signal = init != null ? init.signal : null;
+  if (signal != null && signal.aborted) {
+    throw signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
+  }
+  return _createFetchLaterResult();
 }
 
 function _normalizeFetchMethod(method: string): string {

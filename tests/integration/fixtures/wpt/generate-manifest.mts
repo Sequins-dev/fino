@@ -160,8 +160,8 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
   }
-  if (path === 'fetch/api/idlharness.https.any.js') {
-    return { runnable: false, reason: 'requires FetchLaterResult/fetchLater globals' };
+  if (path === 'fetch/fetch-later/basic.https.window.js') {
+    return { runnable: true, reason: null };
   }
   if (path === 'WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js') {
     return { runnable: false, reason: 'requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests' };

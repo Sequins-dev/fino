@@ -17175,8 +17175,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": false,
-      "reason": "requires FetchLaterResult/fetchLater globals",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -21707,9 +21707,102 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires document/window navigation",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "fetchLater() cannot be called without request."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with same-origin (https) URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with http://localhost URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with https://localhost URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with http://127.0.0.1 URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with https://127.0.0.1 URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with http://[::1] URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with https://[::1] URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() with https://example.com URL does not throw."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on non-trustworthy http URL."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on file:// scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on ftp:// scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on ssh:// scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on wss:// scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on about: scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on javascript: scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on data: scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError on blob: scheme."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws RangeError on negative activateAfter."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater()'s return tells the deferred request is not yet sent."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws TypeError when mutating its returned state."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() throws AbortError when its initial abort signal is aborted."
+        },
+        {
+          "kind": "test",
+          "name": "fetchLater() does not throw error when it is aborted before sending."
+        }
+      ]
     },
     {
       "path": "fetch/fetch-later/basic.https.worker.js",

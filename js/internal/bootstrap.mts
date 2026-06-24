@@ -91,6 +91,8 @@ import {
   cryptoAvailable,
   tlsAvailable,
   fetch,
+  FetchLaterResult,
+  fetchLater,
   Headers,
   Request,
   Response,
@@ -213,6 +215,8 @@ for (const [name, value] of Object.entries({
   cryptoAvailable,
   tlsAvailable,
   fetch,
+  FetchLaterResult,
+  fetchLater,
   Headers,
   Request,
   Response,
@@ -236,7 +240,7 @@ for (const [name, value] of Object.entries({
   queueMicrotask,
   performance,
 })) {
-  defineGlobal(name, value, name === 'fetch');
+  defineGlobal(name, value, name === 'fetch' || name === 'fetchLater');
 }
 
 Object.defineProperty(globalThis, 'self', { value: globalThis, writable: true, configurable: true });
