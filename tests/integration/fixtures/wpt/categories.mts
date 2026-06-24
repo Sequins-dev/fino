@@ -11,7 +11,7 @@ export const WPT_CATEGORIES: WptCategory[] = [
   { path: 'dom/events', globals: ['Event', 'CustomEvent', 'EventTarget'] },
   { path: 'streams', globals: ['ReadableStream', 'WritableStream', 'TransformStream'] },
   { path: 'fetch', globals: ['fetch', 'Headers', 'Request', 'Response'] },
-  { path: 'FileAPI', globals: ['Blob', 'File', 'FormData', 'FileReader'] },
+  { path: 'FileAPI', globals: ['Blob', 'File', 'FormData', 'FileReader', 'FileReaderSync'] },
   { path: 'WebCryptoAPI', globals: ['crypto', 'crypto.subtle', 'CryptoKey'] },
   { path: 'console', globals: ['console'] },
   { path: 'hr-time', globals: ['performance'] },

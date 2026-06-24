@@ -77,6 +77,7 @@ function installBaseGlobals(): void {
   }
   if (isWorkerTest) {
     installWorkerImportScripts(g);
+    if (g.FileReaderSync === undefined) g.FileReaderSync = g[Symbol.for('fino.internal.FileReaderSync')];
     delete g.fetchLater;
     delete g.FetchLaterResult;
   }
@@ -206,6 +207,9 @@ async function main(): Promise<void> {
   await completed;
 
   const selected = subtest === null ? results : results.filter((result) => result.name === subtest);
+  if (subtest === null && selected.length === 0) {
+    print({ path: testPath, subtest, status: 'fail', results, message: 'WPT file completed without reporting any subtests' });
+  }
   if (subtest !== null && selected.length === 0) {
     print({ path: testPath, subtest, status: 'fail', results, message: `WPT subtest not reported: ${subtest}` });
   }

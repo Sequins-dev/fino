@@ -3,8 +3,8 @@
  *
  * `Blob` is an immutable byte sequence with an associated MIME type. It is
  * the standard way to carry binary data in web APIs: fetch Request/Response
- * bodies, FormData values, and FileReader all work in terms of Blobs. `File`
- * extends `Blob` with a `name` and `lastModified` timestamp.
+ * bodies, FormData values, FileReader, and FileReaderSync all work in terms of
+ * Blobs. `File` extends `Blob` with a `name` and `lastModified` timestamp.
  *
  * WHATWG File API: https://w3c.github.io/FileAPI/
  *
@@ -72,6 +72,9 @@
  * const file = new File([blob], 'hello.txt', { type: 'text/plain' });
  * file.name;                // 'hello.txt'
  * file.lastModified;        // number (ms since epoch)
+ *
+ * const syncReader = new FileReaderSync();
+ * syncReader.readAsText(blob); // 'hello, world'
  * ```
  *
  */
@@ -709,8 +712,8 @@ function _readBlobResult(blob: Blob, kind: FileReaderReadKind, label?: string): 
  * `FileReader` reads an in-memory `Blob` or `File` as text, an `ArrayBuffer`,
  * a binary string, or a data URL. Reads transition through `EMPTY`, `LOADING`,
  * and `DONE`, dispatching the standard `loadstart`, `progress`, `load`,
- * `abort`, `error`, and `loadend` events. Fino supports Blob-backed reads; it
- * does not install `FileReaderSync` or filesystem-backed browser file handles.
+ * `abort`, `error`, and `loadend` events. Fino supports Blob-backed reads and
+ * does not install filesystem-backed browser file handles.
  *
  * ```typescript no_run
  * const reader = new FileReader();
@@ -877,6 +880,74 @@ export class FileReader extends EventTarget {
   }
 }
 
+/**
+ * Synchronous Blob reader from the File API.
+ *
+ * `FileReaderSync` exposes the worker-only synchronous read methods for
+ * Blob-backed data. Fino does not install it on the normal global object; the
+ * WPT worker harness installs it only for worker tests. Like `FileReader`,
+ * reads are limited to in-memory `Blob` and `File` objects.
+ *
+ * ```typescript no_run
+ * const reader = new FileReaderSync();
+ * reader.readAsText(new Blob(['hello'])); // "hello"
+ * ```
+ */
+export class FileReaderSync {
+  /**
+   * String tag used by Object.prototype.toString.
+   *
+   * ```typescript no_run
+   * Object.prototype.toString.call(new FileReaderSync()); // "[object FileReaderSync]"
+   * ```
+   */
+  get [Symbol.toStringTag]() { return 'FileReaderSync'; }
+
+  /**
+   * Read Blob bytes into a new ArrayBuffer.
+   *
+   * The returned buffer is detached from Blob storage.
+   */
+  readAsArrayBuffer(blob: Blob): ArrayBuffer {
+    return this.#read(blob, 'arrayBuffer') as ArrayBuffer;
+  }
+
+  /**
+   * Read Blob bytes as a binary string.
+   *
+   * Each byte becomes one code unit with the same numeric value.
+   */
+  readAsBinaryString(blob: Blob): string {
+    return this.#read(blob, 'binaryString') as string;
+  }
+
+  /**
+   * Read Blob bytes as a data URL.
+   *
+   * Empty Blob types use `application/octet-stream`, matching FileReader.
+   */
+  readAsDataURL(blob: Blob): string {
+    return this.#read(blob, 'dataURL') as string;
+  }
+
+  /**
+   * Read Blob bytes as text.
+   *
+   * The optional encoding label follows the same decoding rules as
+   * `FileReader.readAsText`.
+   */
+  readAsText(blob: Blob, encoding?: string): string {
+    return this.#read(blob, 'text', encoding) as string;
+  }
+
+  #read(blob: Blob, kind: FileReaderReadKind, encoding?: string): Exclude<FileReaderResult, null> {
+    if (!(blob instanceof Blob) || !_blobBytes.has(blob)) {
+      throw new TypeError('FileReaderSync: argument must be a Blob');
+    }
+    return _readBlobResult(blob, kind, encoding) as Exclude<FileReaderResult, null>;
+  }
+}
+
 function _setConstructorLength(ctor: Function, length: number): void {
   Object.defineProperty(ctor, 'length', {
     value: length,
@@ -962,6 +1033,16 @@ _makePrototypeMembersEnumerable(FileReader.prototype, [
   'abort',
 ]);
 _setPrototypeMemberLength(FileReader.prototype, 'readAsText', 1);
+
+_setConstructorLength(FileReaderSync, 0);
+_setPrototypeToStringTag(FileReaderSync.prototype, 'FileReaderSync');
+_makePrototypeMembersEnumerable(FileReaderSync.prototype, [
+  'readAsArrayBuffer',
+  'readAsBinaryString',
+  'readAsDataURL',
+  'readAsText',
+]);
+_setPrototypeMemberLength(FileReaderSync.prototype, 'readAsText', 1);
 
 // Register the Blob clone helper with encoding.mts so structuredClone can
 // clone Blob/File instances synchronously without a circular import.

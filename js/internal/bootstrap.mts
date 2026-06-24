@@ -75,6 +75,7 @@ import {
   File,
   FileList,
   FileReader,
+  FileReaderSync,
   DOMException,
   QuotaExceededError,
   TextEncoder,
@@ -199,6 +200,7 @@ for (const [name, value] of Object.entries({
   File,
   FileList,
   FileReader,
+  FileReaderSync,
   DOMException,
   QuotaExceededError,
   TextEncoder,
@@ -240,8 +242,16 @@ for (const [name, value] of Object.entries({
   queueMicrotask,
   performance,
 })) {
+  if (name === 'FileReaderSync') continue;
   defineGlobal(name, value, name === 'fetch' || name === 'fetchLater');
 }
+
+Object.defineProperty(globalThis, Symbol.for('fino.internal.FileReaderSync'), {
+  value: FileReaderSync,
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
 
 Object.defineProperty(globalThis, 'self', { value: globalThis, writable: true, configurable: true });
 Object.defineProperty(globalThis, 'navigator', { value: { userAgent: 'Fino/0.1' }, writable: true, configurable: true });

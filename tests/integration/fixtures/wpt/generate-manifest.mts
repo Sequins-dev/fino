@@ -163,7 +163,12 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (path === 'fetch/fetch-later/basic.https.window.js') {
     return { runnable: true, reason: null };
   }
-  if (path === 'fetch/fetch-later/basic.https.worker.js' || path === 'FileAPI/blob/Blob-in-worker.worker.js') {
+  if (
+    path === 'fetch/fetch-later/basic.https.worker.js' ||
+    path === 'FileAPI/blob/Blob-in-worker.worker.js' ||
+    path === 'FileAPI/file/Worker-read-file-constructor.worker.js' ||
+    path === 'FileAPI/FileReaderSync.worker.js'
+  ) {
     return { runnable: true, reason: null };
   }
   if (path === 'WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js') {
@@ -175,7 +180,7 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (/\bcaches\b|\bCacheStorage\b|\bCache\b/.test(source)) {
     return { runnable: false, reason: 'requires Cache API globals, which Fino does not install' };
   }
-  if (/\bFileReaderSync\b/.test(source)) return { runnable: false, reason: 'requires FileReaderSync global, which Fino does not install' };
+  if (/\bFileReaderSync\b/.test(source)) return { runnable: false, reason: 'requires worker importScripts dependency loading for FileReaderSync coverage' };
   if (/\bFileReader\b/.test(source) && type !== '.any.js') {
     return { runnable: false, reason: 'requires FileReader in document or worker environment' };
   }

@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { _createFileList } from '../../../js/globals/blob.mts';
+import { Blob as ModuleBlob, FileReaderSync, _createFileList } from '../../../js/globals/blob.mts';
 
 function descriptor(target: object, key: PropertyKey): PropertyDescriptor {
   const desc = Object.getOwnPropertyDescriptor(target, key);
@@ -32,12 +32,14 @@ describe('File API WebIDL descriptors', () => {
     t.equal(File.length, 2, 'File.length');
     t.equal(FileList.length, 0, 'FileList.length');
     t.equal(FileReader.length, 0, 'FileReader.length');
+    t.equal(FileReaderSync.length, 0, 'FileReaderSync.length');
     t.equal(Blob.prototype.slice.length, 0, 'Blob.prototype.slice.length');
     t.equal(FileReader.prototype.readAsText.length, 1, 'FileReader.prototype.readAsText.length');
     t.equal(Object.prototype.toString.call(new Blob()), '[object Blob]', 'Blob toStringTag');
     t.equal(Object.prototype.toString.call(new File([], 'x')), '[object File]', 'File toStringTag');
     t.equal(Object.prototype.toString.call(_createFileList()), '[object FileList]', 'FileList toStringTag');
     t.equal(Object.prototype.toString.call(new FileReader()), '[object FileReader]', 'FileReader toStringTag');
+    t.equal(Object.prototype.toString.call(new FileReaderSync()), '[object FileReaderSync]', 'FileReaderSync toStringTag');
   });
 
   it('exposes WebIDL prototype members as enumerable', (t) => {
@@ -51,6 +53,7 @@ describe('File API WebIDL descriptors', () => {
       [FileReader.prototype, 'readyState'],
       [FileReader.prototype, 'readAsText'],
       [FileReader.prototype, 'onload'],
+      [FileReaderSync.prototype, 'readAsText'],
     ] as const) {
       t.equal(descriptor(proto, name).enumerable, true, `${proto.constructor.name}.${String(name)} is enumerable`);
     }
@@ -99,6 +102,33 @@ describe('File API WebIDL descriptors', () => {
   it('exposes FileAPI URL static operations as enumerable', (t) => {
     t.equal(descriptor(URL, 'createObjectURL').enumerable, true, 'URL.createObjectURL is enumerable');
     t.equal(descriptor(URL, 'revokeObjectURL').enumerable, true, 'URL.revokeObjectURL is enumerable');
+  });
+
+  it('does not install worker-only FileReaderSync on the normal global', (t) => {
+    t.equal('FileReaderSync' in globalThis, false, 'normal global omits FileReaderSync');
+  });
+});
+
+describe('FileReaderSync', () => {
+  it('reads Blob data synchronously as ArrayBuffer, text, binary string, and data URL', (t) => {
+    const reader = new FileReaderSync();
+
+    t.equal(reader.readAsText(new ModuleBlob(['TEST'])), 'TEST', 'text result');
+    t.deepEqual(
+      Array.from(new Uint8Array(reader.readAsArrayBuffer(new ModuleBlob(['TEST'])))),
+      [84, 69, 83, 84],
+      'ArrayBuffer bytes',
+    );
+    t.equal(
+      reader.readAsBinaryString(new ModuleBlob([new Uint8Array([0, 65, 255])])),
+      '\x00A\xff',
+      'binary string result',
+    );
+    t.equal(
+      reader.readAsDataURL(new ModuleBlob(['TEST'], { type: 'text/plain' })),
+      'data:text/plain;base64,VEVTVA==',
+      'data URL result',
+    );
   });
 });
 

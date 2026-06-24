@@ -35,7 +35,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -53,7 +54,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".https.html",
       "variants": [
@@ -71,7 +73,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".https.html",
       "variants": [
@@ -89,7 +92,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".https.html",
       "variants": [
@@ -107,7 +111,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".https.html",
       "variants": [
@@ -125,7 +130,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -143,7 +149,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -161,7 +168,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -179,7 +187,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -197,7 +206,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -215,7 +225,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -233,7 +244,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -251,7 +263,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -269,16 +282,58 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".worker.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReaderSync global, which Fino does not install",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "Interface"
+        },
+        {
+          "kind": "test",
+          "name": "readAsText"
+        },
+        {
+          "kind": "test",
+          "name": "readAsText with empty blob"
+        },
+        {
+          "kind": "test",
+          "name": "readAsDataURL"
+        },
+        {
+          "kind": "test",
+          "name": "readAsDataURL with empty blob"
+        },
+        {
+          "kind": "test",
+          "name": "readAsBinaryString"
+        },
+        {
+          "kind": "test",
+          "name": "readAsBinaryString with empty blob"
+        },
+        {
+          "kind": "test",
+          "name": "readAsBinaryString with multi-byte UTF-8 char"
+        },
+        {
+          "kind": "test",
+          "name": "readAsArrayBuffer"
+        },
+        {
+          "kind": "test",
+          "name": "readAsArrayBuffer with empty blob"
+        }
+      ]
     },
     {
       "path": "FileAPI/blob/Blob-array-buffer.any.js",
@@ -287,7 +342,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -328,7 +384,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -369,7 +426,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".window.js",
       "variants": [
@@ -389,7 +447,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -416,7 +475,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -434,7 +494,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -547,7 +608,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".worker.js",
       "variants": [
@@ -570,7 +632,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -588,7 +651,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -623,7 +687,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -648,7 +713,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -666,7 +732,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -684,7 +751,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -730,7 +798,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -783,7 +852,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -836,7 +906,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -863,7 +934,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -881,7 +953,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -928,16 +1001,22 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".worker.js",
       "variants": [
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader in document or worker environment",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "async_test",
+          "name": "FileReader in Worker"
+        }
+      ]
     },
     {
       "path": "FileAPI/file/send-file-form-controls.html",
@@ -946,7 +1025,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -964,7 +1044,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -982,7 +1063,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1000,7 +1082,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1018,7 +1101,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1036,7 +1120,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1054,7 +1139,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1072,7 +1158,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1092,7 +1179,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1112,7 +1200,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1132,7 +1221,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1152,7 +1242,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1179,7 +1270,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1197,7 +1289,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1215,7 +1308,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1233,7 +1327,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".https.html",
       "variants": [
@@ -1251,7 +1346,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1269,7 +1365,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1290,7 +1387,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1308,7 +1406,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".worker.js",
       "variants": [
@@ -1316,7 +1415,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReaderSync global, which Fino does not install",
+      "reason": "requires worker importScripts dependency loading for FileReaderSync coverage",
       "subtests": []
     },
     {
@@ -1326,7 +1425,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1344,7 +1444,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1362,7 +1463,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1380,7 +1482,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1423,7 +1526,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1446,7 +1550,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1464,7 +1569,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1491,7 +1597,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1509,7 +1616,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1527,7 +1635,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1545,7 +1654,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1563,7 +1673,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1598,7 +1709,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1625,7 +1737,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1643,7 +1756,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1678,7 +1792,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1696,7 +1811,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1714,7 +1830,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1732,7 +1849,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1740,7 +1858,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires FileReaderSync global, which Fino does not install",
+      "reason": "requires worker importScripts dependency loading for FileReaderSync coverage",
       "subtests": []
     },
     {
@@ -1750,7 +1868,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1768,7 +1887,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1786,7 +1906,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1804,7 +1925,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1822,7 +1944,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -1857,7 +1980,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1875,7 +1999,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1893,7 +2018,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1911,7 +2037,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1929,7 +2056,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1947,7 +2075,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -1965,7 +2094,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".js",
       "variants": [
@@ -1983,7 +2113,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -2001,7 +2132,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -2019,7 +2151,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".window.js",
       "variants": [
@@ -2037,7 +2170,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -2080,7 +2214,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".window.js",
       "variants": [
@@ -2098,7 +2233,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".window.js",
       "variants": [
@@ -2116,7 +2252,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -2134,7 +2271,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".window.js",
       "variants": [
@@ -2152,7 +2290,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -2190,7 +2329,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".any.js",
       "variants": [
@@ -2210,7 +2350,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -2228,7 +2369,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -2246,7 +2388,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
@@ -2264,7 +2407,8 @@ export const WPT_MANIFEST: WptManifest = {
         "Blob",
         "File",
         "FormData",
-        "FileReader"
+        "FileReader",
+        "FileReaderSync"
       ],
       "type": ".html",
       "variants": [
