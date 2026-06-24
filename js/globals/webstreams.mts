@@ -174,6 +174,13 @@ interface WritableStreamState {
   controller?: WritableStreamDefaultController | null;
 }
 
+interface WritableSinkAlgorithms {
+  start?: (controller: WritableStreamDefaultController) => unknown;
+  write?: (chunk: any, controller: WritableStreamDefaultController | null) => unknown;
+  close?: () => unknown;
+  abort?: (reason: unknown) => unknown;
+}
+
 interface Channel {
   enqueue(value: any): void;
   dequeue?(): { done: boolean; value: any } | null;
@@ -440,6 +447,13 @@ function _extractStrategy(strategy: QueuingStrategyLike | null | undefined, defa
   const hwm = (strategy.highWaterMark !== undefined) ? Number(strategy.highWaterMark) : defaultHWM;
   if (Number.isNaN(hwm) || hwm < 0) throw new RangeError('highWaterMark must be a non-negative number');
   return { highWaterMark: hwm, sizeAlgorithm: size };
+}
+
+function _extractSinkMethod(sink: any, name: 'start' | 'write' | 'close' | 'abort'): Function | undefined {
+  const method = sink[name];
+  if (method === undefined) return undefined;
+  if (typeof method !== 'function') throw new TypeError(`${name} must be a function or undefined`);
+  return method;
 }
 
 // ---------------------------------------------------------------------------
@@ -1547,7 +1561,7 @@ export class ReadableStream {
         throw reason;
       }
       _rsMarkErrored(src, e);
-      if (!preventAbort)  await _wsAbort(dst, e).catch(function swallowAbortErr() {});
+      if (!preventAbort)  await _wsAbort(dst, e);
       if (!preventCancel) await _rsCancel(src, e).catch(function swallowCancelErr() {});
       throw e;
     } finally {
@@ -2118,11 +2132,14 @@ function _wsError(s: WritableStreamState, reason: unknown): void {
   if (s.errorWaiters) {
     while (s.errorWaiters.length > 0) s.errorWaiters.shift()!(reason);
   }
-  s.readyReject?.(reason);
-  s.readyResolve = null;
-  s.readyReject = null;
-  s.readyPromise = Promise.reject(reason);
-  s.readyPromise.catch(function observeErroredReady() {});
+  if (s.readyReject) {
+    s.readyReject(reason);
+    s.readyResolve = null;
+    s.readyReject = null;
+  } else {
+    s.readyPromise = Promise.reject(reason);
+    s.readyPromise.catch(function observeErroredReady() {});
+  }
 }
 
 function _wsErrorPromise(s: WritableStreamState): Promise<never> {
@@ -2138,12 +2155,14 @@ function _wsAbort(s: WritableStreamState, reason: unknown): Promise<void> {
   s.controller?._abort(reason);
   _wsError(s, reason);
   if (s.kind === 'sink' && s.underlyingSink?.abort) {
-    return Promise.resolve(s.underlyingSink.abort(reason));
+    return Promise.resolve()
+      .then(function wsCallAbort() { return s.underlyingSink.abort(reason); })
+      .catch(function wsAbortFailed(e) { throw e; });
   }
   return Promise.resolve();
 }
 
-function _wsWriteInternal(s: WritableStreamState, chunk: any): Promise<void> {
+function _wsWriteInternal(s: WritableStreamState, chunk: any, writer?: WritableStreamDefaultWriter): Promise<void> {
   if (s.state === 'errored')  return Promise.reject(s.storedError);
   if (s.state !== 'writable') return Promise.reject(new TypeError('WritableStream is not writable'));
   if (s.kind === 'writer')    return Promise.resolve(s.sink.write(chunk));
@@ -2156,6 +2175,11 @@ function _wsWriteInternal(s: WritableStreamState, chunk: any): Promise<void> {
     _wsError(s, e);
     return Promise.reject(e);
   }
+  if (writer && s.writer !== writer) {
+    return Promise.reject(new TypeError('Writer was released before write() completed'));
+  }
+  if (s.state === 'errored') return Promise.reject(s.storedError);
+  if (s.state !== 'writable') return Promise.reject(new TypeError('WritableStream is not writable'));
   s.queueTotalSize! += size;
   if (s.queueTotalSize! >= s.highWaterMark!) {
     _wsMakeReadyPending(s);
@@ -2171,11 +2195,18 @@ function _wsWriteInternal(s: WritableStreamState, chunk: any): Promise<void> {
   });
 }
 
-function _wsDoSinkWrite(s: WritableStreamState, chunk: any, size: number): Promise<void> {
-  const p = s.underlyingSink.write
-    ? Promise.resolve(s.underlyingSink.write(chunk, s.controller))
-    : Promise.resolve();
-  return p.then(function wsAfterWrite() {
+function _wsDoSinkWrite(s: WritableStreamState, chunk: any, size: number, deferAfterWrite = false): Promise<void> {
+  let writeResult: unknown;
+  try {
+    writeResult = s.underlyingSink.write
+      ? s.underlyingSink.write(chunk, s.controller)
+      : undefined;
+  } catch (e) {
+    writeResult = Promise.reject(e);
+  }
+  const p = Promise.resolve(writeResult);
+  const settled = deferAfterWrite ? Promise.resolve().then(function wsDeferAfterWrite() { return p; }) : p;
+  return settled.then(function wsAfterWrite() {
     s.queueTotalSize! -= size;
     if (s.queueTotalSize! < 0) s.queueTotalSize = 0;
 
@@ -2188,7 +2219,7 @@ function _wsDoSinkWrite(s: WritableStreamState, chunk: any, size: number): Promi
         s.writing = false;
         entry.resolve();
       } else {
-        _wsDoSinkWrite(s, entry.chunk, entry.size).then(entry.resolve).catch(entry.reject);
+        _wsDoSinkWrite(s, entry.chunk, entry.size, true).then(entry.resolve).catch(entry.reject);
       }
     } else {
       s.writing = false;
@@ -2218,7 +2249,12 @@ async function _wsCloseInternal(s: WritableStreamState): Promise<void> {
   if (s.kind === 'writer') {
     s.sink.close();
   } else if (s.underlyingSink?.close) {
-    await Promise.resolve(s.underlyingSink.close());
+    try {
+      await Promise.resolve().then(function wsCallClose() { return s.underlyingSink.close(); });
+    } catch (e) {
+      _wsError(s, e);
+      throw e;
+    }
   }
   _wsMarkClosed(s);
 }
@@ -2371,9 +2407,20 @@ export class WritableStream {
       return;
     }
 
+    const sink = underlyingSink ?? {};
+    const startMethod = _extractSinkMethod(sink, 'start');
+    const writeMethod = _extractSinkMethod(sink, 'write');
+    const closeMethod = _extractSinkMethod(sink, 'close');
+    const abortMethod = _extractSinkMethod(sink, 'abort');
+    const sinkAlgorithms: WritableSinkAlgorithms = {
+      ...(startMethod ? { start: (controller) => startMethod.call(sink, controller) } : {}),
+      ...(writeMethod ? { write: (chunk, controller) => writeMethod.call(sink, chunk, controller) } : {}),
+      ...(closeMethod ? { close: () => closeMethod.call(sink) } : {}),
+      ...(abortMethod ? { abort: (reason) => abortMethod.call(sink, reason) } : {}),
+    };
     const { highWaterMark, sizeAlgorithm } = _extractStrategy(queuingStrategy, 1);
     const s = _wsMakeState('sink', {
-      underlyingSink: underlyingSink ?? {},
+      underlyingSink: sinkAlgorithms,
       pendingWrites: [],
       writing: false,
       highWaterMark,
@@ -2565,7 +2612,7 @@ export class WritableStreamDefaultWriter {
   write(chunk: any) {
     const ww = _ww.get(this);
     if (!ww) return Promise.reject(new TypeError('Writer is released'));
-    return _wsWriteInternal(ww.wsState, chunk);
+    return _wsWriteInternal(ww.wsState, chunk, this);
   }
 
   /**
