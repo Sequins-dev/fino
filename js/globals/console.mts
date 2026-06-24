@@ -230,6 +230,10 @@ let _groupDepth = 0;
 const _timers = new Map<string, number>();
 const _counts = new Map<string, number>();
 
+function labelToString(label: unknown): string {
+  return label === undefined ? 'default' : String(label);
+}
+
 // Use a monotonic clock when available (performance.now()), fall back to Date.now().
 function _now(): number {
   return typeof (globalThis as any).performance?.now === 'function'
@@ -485,7 +489,8 @@ const console: ConsoleShape & {
    * console.time('load');
    * ```
    */
-  time(label = 'default') {
+  time(label?: unknown) {
+    label = labelToString(label);
     _timers.set(label, _now());
   },
 
@@ -499,7 +504,8 @@ const console: ConsoleShape & {
    * console.timeEnd('load');
    * ```
    */
-  timeEnd(label = 'default') {
+  timeEnd(label?: unknown) {
+    label = labelToString(label);
     const start = _timers.get(label);
     if (start === undefined) {
       out(2, '[warn]', [`Timer '${label}' does not exist`]);
@@ -520,7 +526,8 @@ const console: ConsoleShape & {
    * console.timeLog('load', 'halfway');
    * ```
    */
-  timeLog(label = 'default', ...args) {
+  timeLog(label?: unknown, ...args) {
+    label = labelToString(label);
     const start = _timers.get(label);
     if (start === undefined) {
       out(2, '[warn]', [`Timer '${label}' does not exist`]);
@@ -539,7 +546,8 @@ const console: ConsoleShape & {
    * console.count('requests');
    * ```
    */
-  count(label = 'default') {
+  count(label?: unknown) {
+    label = labelToString(label);
     const n = (_counts.get(label) ?? 0) + 1;
     _counts.set(label, n);
     out(1, '', [`${label}: ${n}`]);
@@ -555,7 +563,8 @@ const console: ConsoleShape & {
    * console.countReset('requests');
    * ```
    */
-  countReset(label = 'default') {
+  countReset(label?: unknown) {
+    label = labelToString(label);
     if (!_counts.has(label)) {
       out(2, '[warn]', [`Count for '${label}' does not exist`]);
       return;
@@ -622,6 +631,14 @@ const console: ConsoleShape & {
     // Performance marker — no-op in non-DevTools environment.
   },
 };
+
+Object.setPrototypeOf(console, Object.create(Object.prototype));
+Object.defineProperty(console, Symbol.toStringTag, {
+  value: 'console',
+  writable: false,
+  enumerable: false,
+  configurable: true,
+});
 
 export default console;
 export { console };

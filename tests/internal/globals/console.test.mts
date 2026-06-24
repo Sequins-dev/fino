@@ -37,6 +37,20 @@ describe('console exists and has expected methods', () => {
   it('[Symbol.toStringTag] is "console"', (t) => {
     t.equal(consoleRecord[Symbol.toStringTag], 'console');
   });
+
+  it('has namespace-object prototype and toStringTag descriptors', (t) => {
+    const prototype = Object.getPrototypeOf(console);
+    t.deepEqual(Object.getOwnPropertyNames(prototype), [], 'console prototype has no own properties');
+    t.equal(Object.getPrototypeOf(prototype), Object.prototype, 'console prototype inherits from Object.prototype');
+
+    const descriptor = Object.getOwnPropertyDescriptor(console, Symbol.toStringTag);
+    t.ok(descriptor, 'toStringTag descriptor exists');
+    if (descriptor === undefined) throw new Error('descriptor should exist');
+    t.equal(descriptor.value, 'console', 'toStringTag value');
+    t.equal(descriptor.writable, false, 'toStringTag is not writable');
+    t.equal(descriptor.enumerable, false, 'toStringTag is not enumerable');
+    t.equal(descriptor.configurable, true, 'toStringTag is configurable');
+  });
 });
 
 describe('console output methods do not throw', () => {
@@ -166,6 +180,38 @@ describe('console.time / timeEnd / timeLog', () => {
       console.timeEnd();
     } catch (_) { threw = true; }
     t.equal(threw, false, 'no throw with default label');
+  });
+});
+
+describe('console label conversion', () => {
+  it('converts object labels to strings', (t) => {
+    for (const method of ['count', 'countReset', 'time', 'timeLog', 'timeEnd']) {
+      let called = false;
+      const label = {
+        toString() {
+          called = true;
+          return `label-${method}`;
+        },
+      };
+      captureConsole(() => {
+        (consoleRecord[method] as (label: unknown) => void)(label);
+      });
+      t.equal(called, true, `${method} converted label`);
+    }
+  });
+
+  it('rethrows label conversion errors', (t) => {
+    for (const method of ['count', 'countReset', 'time', 'timeLog', 'timeEnd']) {
+      t.throws(
+        () => (consoleRecord[method] as (label: unknown) => void)({
+          toString() {
+            throw new Error('conversion error');
+          },
+        }),
+        /conversion error/,
+        `${method} rethrows conversion error`,
+      );
+    }
   });
 });
 
