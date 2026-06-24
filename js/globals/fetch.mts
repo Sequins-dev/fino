@@ -1185,6 +1185,7 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     // use that instead.
     baseBody    = (init && init.body !== undefined) ? init.body
                 : (input.hasBody ? input.body : null);
+    if (init?.body === undefined && input.hasBody) input._markBodyUsed();
   } else {
     baseUrl     = _normalizeFetchUrl(String(input));
     baseMethod  = 'GET';

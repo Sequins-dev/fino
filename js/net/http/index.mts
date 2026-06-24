@@ -2019,6 +2019,18 @@ export class Request {
   _getBlobURLObject(): Blob | null { return this.#blobUrlObject; }
 
   /**
+   * Mark this request body as consumed by fetch's request-body extraction.
+   *
+   * Fetch consumes a non-empty `Request` body synchronously when a request is
+   * passed to `fetch()`, even before network I/O completes.
+   *
+   * @internal
+   */
+  _markBodyUsed(): void {
+    if (this.#rawBody !== null) this.#bodyUsed = true;
+  }
+
+  /**
    * Append a transport-generated header after public request-header guards run.
    *
    * This is for fetch internals such as computed `Referer` metadata. User

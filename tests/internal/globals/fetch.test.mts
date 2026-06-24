@@ -1448,6 +1448,14 @@ describe('Request disturbed state', () => {
     );
     t.equal(input.bodyUsed, false, 'lock-only failure does not mark the input body used');
   });
+
+  it('fetching a Request synchronously consumes its non-empty body', async (t) => {
+    const input = new Request('http://127.0.0.1:9/', { method: 'POST', body: 'body' });
+    fetch(input).catch(() => {});
+
+    t.equal(input.bodyUsed, true, 'fetch marks the request body used before network completion');
+    await t.rejects(() => input.text(), TypeError, 'body reader rejects after fetch consumes the request');
+  });
 });
 
 describe('Integrity + referrerPolicy', () => {

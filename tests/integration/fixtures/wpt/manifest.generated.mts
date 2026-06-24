@@ -14708,8 +14708,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -14891,18 +14891,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Signals are not stored in the cache API"
-        },
-        {
-          "kind": "promise_test",
-          "name": "Signals are not stored in the cache API, even if they're already aborted"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires Cache API globals, which Fino does not install",
+      "subtests": []
     },
     {
       "path": "fetch/api/abort/destroyed-context.html",
@@ -16355,7 +16346,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -17745,7 +17736,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18109,7 +18100,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18131,7 +18122,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18153,7 +18144,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18175,7 +18166,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18197,7 +18188,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18219,7 +18210,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18241,7 +18232,7 @@ export const WPT_MANIFEST: WptManifest = {
         "request-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -18259,7 +18250,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "standalone helper script, not a WPT test entry",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22725,7 +22716,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22746,7 +22737,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/fetch/fetch-later/resources/fetch-later-helper.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22842,7 +22833,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22900,7 +22891,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22922,7 +22913,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22943,7 +22934,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22965,7 +22956,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -22987,7 +22978,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23027,7 +23018,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23049,7 +23040,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23071,7 +23062,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23093,7 +23084,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23111,7 +23102,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23129,7 +23120,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23147,7 +23138,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23165,7 +23156,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23187,7 +23178,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -23209,7 +23200,7 @@ export const WPT_MANIFEST: WptManifest = {
         "http-cache.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -27465,7 +27456,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -27483,7 +27474,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -27501,7 +27492,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -27882,7 +27873,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -41427,7 +41418,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/websockets-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -41499,7 +41490,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/websockets-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -44543,7 +44534,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
@@ -44587,7 +44578,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/webtransport-test-helpers.sub.js"
       ],
       "runnable": false,
-      "reason": "requires document/window navigation",
+      "reason": "requires Cache API globals, which Fino does not install",
       "subtests": []
     },
     {
