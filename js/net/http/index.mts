@@ -416,6 +416,25 @@ function _validateRequestInit(init: RequestInit | any | undefined, method: strin
   }
 }
 
+function _validateResponseStatus(status: number): void {
+  if (!Number.isInteger(status) || status < 200 || status > 599) {
+    throw new RangeError(`Response status must be an integer from 200 to 599`);
+  }
+}
+
+function _validateResponseStatusText(statusText: string): void {
+  for (let i = 0; i < statusText.length; i++) {
+    const code = statusText.charCodeAt(i);
+    if ((code < 0x20 && code !== 0x09) || code > 0xff) {
+      throw new TypeError('Response statusText contains invalid characters');
+    }
+  }
+}
+
+function _isNullBodyStatus(status: number): boolean {
+  return status === 204 || status === 205 || status === 304;
+}
+
 // ---------------------------------------------------------------------------
 // Arena: per-connection bump allocator
 // ---------------------------------------------------------------------------
@@ -2645,9 +2664,14 @@ export class Response {
     this.#version    = '';
     this.#status     = (init && init.status != null) ? Number(init.status) : 200;
     this.#statusText = (init && init.statusText != null) ? String(init.statusText) : '';
+    _validateResponseStatus(this.#status);
+    _validateResponseStatusText(this.#statusText);
     this.#headers    = (init && init.headers) ? new Headers(init.headers) : new Headers();
     this.#headers._setGuard('response');
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
+    if (body != null && _isNullBodyStatus(this.#status)) {
+      throw new TypeError(`Response with status ${this.#status} cannot have a body`);
+    }
     if (body != null) {
       if (body instanceof FormData) {
         const fd = body;
@@ -2676,6 +2700,9 @@ export class Response {
       } else {
         // Store bytes directly — avoids _iterableFromBytes wrapper allocation.
         // body getter wraps lazily in ReadableStream only when accessed.
+        if (!_isBufferSourceBody(body) && !this.#headers.has('content-type')) {
+          this.#headers.set('content-type', 'text/plain;charset=UTF-8');
+        }
         this.#rawBody = _toBytes(body as Exclude<BodyInit, null>);
       }
     } else {
@@ -3093,8 +3120,14 @@ export class Response {
    * ```
    */
   static error() {
-    const res = new Response(null, { status: 0, statusText: '' });
-    res.#type = 'error';
+    const res = new Response(INTERNAL, {
+      version: '',
+      status: 0,
+      statusText: '',
+      headers: new Headers(),
+      body: _emptyBody,
+      type: 'error',
+    });
     res.#headers._setGuard('immutable');
     return res;
   }

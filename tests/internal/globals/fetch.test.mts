@@ -1022,6 +1022,55 @@ describe('Response.redirect() status validation', () => {
   });
 });
 
+describe('Response constructor validation', () => {
+  it('validates status range and statusText bytes', (t) => {
+    for (const status of [0, 100, 199, 600, 1000]) {
+      t.throws(
+        () => new Response('', { status }),
+        RangeError,
+        `status ${status} is outside the Response constructor range`,
+      );
+    }
+
+    for (const statusText of ['\n', '\u0100']) {
+      t.throws(
+        () => new Response('', { statusText }),
+        TypeError,
+        `statusText ${JSON.stringify(statusText)} is invalid`,
+      );
+    }
+  });
+
+  it('rejects bodies for null-body statuses', (t) => {
+    for (const status of [204, 205, 304]) {
+      t.throws(
+        () => new Response('body', { status }),
+        TypeError,
+        `status ${status} cannot have a body`,
+      );
+      t.equal(new Response(null, { status }).body, null, `status ${status} accepts null body`);
+    }
+  });
+
+  it('assigns default Content-Type for string bodies only when absent', (t) => {
+    const response = new Response('body');
+    t.equal(response.headers.get('content-type'), 'text/plain;charset=UTF-8', 'string body gets text/plain');
+
+    const overridden = new Response('body', { headers: { 'content-type': 'custom/type' } });
+    t.equal(overridden.headers.get('content-type'), 'custom/type', 'explicit Content-Type is preserved');
+
+    const bytes = new Response(new Uint8Array());
+    t.equal(bytes.headers.get('content-type'), null, 'buffer body does not get a default Content-Type');
+  });
+
+  it('keeps Response.error() as the status 0 network error special case', (t) => {
+    const response = Response.error();
+    t.equal(response.type, 'error', 'type is error');
+    t.equal(response.status, 0, 'network error status remains 0');
+    t.throws(() => response.headers.set('x-test', 'value'), TypeError, 'headers are immutable');
+  });
+});
+
 describe('fetch() method normalization', () => {
   it('standard methods are uppercased', (t) => {
     const req = new Request('https://example.com/', { method: 'post' });
