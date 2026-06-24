@@ -53,7 +53,7 @@
  */
 
 import * as openssl from '../internal/openssl.mts';
-import { _registerCryptoKeyCloneHelper } from './encoding.mts';
+import { DOMException, QuotaExceededError, _registerCryptoKeyCloneHelper } from './encoding.mts';
 import { v4 as _uuidV4 } from 'fino:uuid';
 
 // ---------------------------------------------------------------------------
@@ -97,7 +97,10 @@ interface CryptoKeyAlgorithm {
   publicExponent?: Uint8Array;    // RSA: typically [0x01,0x00,0x01] = 65537
 }
 
-function _webCryptoError(name: 'DataError' | 'InvalidAccessError' | 'NotSupportedError' | 'OperationError', message: string): Error {
+function _webCryptoError(
+  name: 'DataError' | 'InvalidAccessError' | 'NotSupportedError' | 'OperationError' | 'QuotaExceededError' | 'TypeMismatchError',
+  message: string,
+): DOMException {
   return new DOMException(message, name);
 }
 
@@ -1693,10 +1696,10 @@ export const crypto = {
           typedArray instanceof Uint32Array ||
           typedArray instanceof BigInt64Array ||
           typedArray instanceof BigUint64Array)) {
-      throw new TypeError('getRandomValues: argument must be an integer typed array');
+      throw _webCryptoError('TypeMismatchError', 'getRandomValues: argument must be an integer typed array');
     }
     if (typedArray.byteLength > 65536) {
-      throw new Error('getRandomValues: quota exceeded (max 65536 bytes)');
+      throw new QuotaExceededError('getRandomValues: quota exceeded (max 65536 bytes)');
     }
     // Fill only the portion of the backing buffer the view covers,
     // respecting byteOffset for sub-array views.

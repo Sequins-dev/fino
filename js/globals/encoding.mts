@@ -594,6 +594,38 @@ export class DOMException extends Error {
   get code() { return _DOM_EXCEPTION_CODES[this.#name] ?? 0; }
 }
 
+/**
+ * Web quota exceeded error.
+ *
+ * Some web APIs throw this specialized DOMException subclass so tests and
+ * userland code can check the constructor as well as the `QuotaExceededError`
+ * name and legacy code.
+ *
+ * ```ts no_run
+ * throw new QuotaExceededError('storage quota exceeded');
+ * ```
+ */
+export class QuotaExceededError extends DOMException {
+  readonly requested: number | null;
+  readonly quota: number | null;
+
+  /**
+   * Create a quota exceeded error.
+   *
+   * `requested` and `quota` default to `null`, matching APIs that expose no
+   * numeric quota details.
+   *
+   * ```ts no_run
+   * const err = new QuotaExceededError('too much data', { requested: null, quota: null });
+   * ```
+   */
+  constructor(message = '', options: { requested?: number | null; quota?: number | null } = {}) {
+    super(message, 'QuotaExceededError');
+    this.requested = options.requested ?? null;
+    this.quota = options.quota ?? null;
+  }
+}
+
 const _DOM_EXCEPTION_LEGACY_CONSTANTS: Record<string, number> = {
   INDEX_SIZE_ERR: 1,
   DOMSTRING_SIZE_ERR: 2,

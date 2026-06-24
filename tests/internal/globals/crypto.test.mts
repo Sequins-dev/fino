@@ -848,6 +848,29 @@ describe('getRandomValues — additional coverage', { skip }, () => {
     const prefix = new Uint8Array(buf, 0, 4);
     t.deepEqual(Array.from(prefix), [0, 0, 0, 0], 'bytes before view unchanged');
   });
+
+  it('throws TypeMismatchError DOMException for non-integer views', (t) => {
+    t.throws(
+      () => crypto.getRandomValues(new Float32Array(4)),
+      (err) => err instanceof DOMException && err.name === 'TypeMismatchError' && err.code === DOMException.TYPE_MISMATCH_ERR,
+    );
+    t.throws(
+      () => crypto.getRandomValues(new DataView(new ArrayBuffer(4)) as unknown as Uint8Array),
+      (err) => err instanceof DOMException && err.name === 'TypeMismatchError' && err.code === DOMException.TYPE_MISMATCH_ERR,
+    );
+  });
+
+  it('throws QuotaExceededError DOMException above 65536 bytes', (t) => {
+    t.throws(
+      () => crypto.getRandomValues(new Uint8Array(65537)),
+      (err) => err instanceof DOMException
+        && err instanceof QuotaExceededError
+        && err.name === 'QuotaExceededError'
+        && err.code === DOMException.QUOTA_EXCEEDED_ERR
+        && (err as { requested?: unknown }).requested === null
+        && (err as { quota?: unknown }).quota === null,
+    );
+  });
 });
 
 

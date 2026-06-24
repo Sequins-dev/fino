@@ -4067,22 +4067,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "Non-secure context window does not have access to crypto.subtle"
-        },
-        {
-          "kind": "test",
-          "name": "Non-secure context window does not have access to SubtleCrypto"
-        },
-        {
-          "kind": "test",
-          "name": "Non-secure context window does not have access to CryptoKey"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires non-secure context WebCrypto global filtering",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/idlharness.https.any.js",

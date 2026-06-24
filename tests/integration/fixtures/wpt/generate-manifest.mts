@@ -157,6 +157,9 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (path === 'WebCryptoAPI/derive_bits_keys/derived_bits_length.https.any.js') {
     return { runnable: false, reason: 'requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests' };
   }
+  if (path === 'WebCryptoAPI/historical.any.js') {
+    return { runnable: false, reason: 'requires non-secure context WebCrypto global filtering' };
+  }
   if (/\bcaches\b|\bCacheStorage\b|\bCache\b/.test(source)) {
     return { runnable: false, reason: 'requires Cache API globals, which Fino does not install' };
   }
