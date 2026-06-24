@@ -137,6 +137,13 @@ function needsWptServer(source: string): boolean {
 function runnableStatus(path: string, type: string, source: string, missingScripts: string[], metaGlobals: string[]): { runnable: boolean; reason: string | null } {
   if (path.includes('.sub.')) return { runnable: false, reason: 'requires WPT server .sub preprocessing' };
   if (missingScripts.length > 0) return { runnable: false, reason: `requires missing WPT META script ${missingScripts[0]}` };
+  if (
+    metaGlobals.length > 0 &&
+    metaGlobals.every((global) => global !== 'window') &&
+    metaGlobals.some((global) => /worker/i.test(global))
+  ) {
+    return { runnable: false, reason: 'requires Worker test environment' };
+  }
   if (metaGlobals.length > 0 && metaGlobals.every((global) => global === 'window')) {
     return { runnable: false, reason: 'requires document/window navigation' };
   }

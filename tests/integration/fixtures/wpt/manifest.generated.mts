@@ -30049,8 +30049,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires Worker test environment",
       "subtests": []
     },
     {
