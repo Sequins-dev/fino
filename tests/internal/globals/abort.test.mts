@@ -103,9 +103,15 @@ describe('AbortSignal', () => {
   it('onabort property fires on abort', (t) => {
     const ctrl = new AbortController();
     let fired = false;
-    ctrl.signal.onabort = () => { fired = true; };
+    let targetDuringHandler: EventTarget | null = null;
+    ctrl.signal.onabort = (event) => {
+      fired = true;
+      targetDuringHandler = event.target;
+      t.equal(event.isTrusted, true, 'abort-generated event is trusted');
+    };
     ctrl.abort();
     t.equal(fired, true, 'onabort fired');
+    t.equal(targetDuringHandler, ctrl.signal, 'event.target is the signal during onabort');
   });
 
   it('onabort null does nothing', (t) => {
@@ -241,6 +247,25 @@ describe('AbortSignal.any() — additional cases', () => {
     const combined = AbortSignal.any([sig, sig]);
     t.equal(combined.aborted, true, 'combined is aborted');
     t.equal(combined.reason.message, 'dup', 'reason comes from the pre-aborted signal');
+  });
+
+  it('fires source abort event before dependent AbortSignal.any() events', (t) => {
+    const controller = new AbortController();
+    const signals = [
+      controller.signal,
+      AbortSignal.any([controller.signal]),
+      AbortSignal.any([controller.signal]),
+      AbortSignal.any([controller.signal]),
+    ];
+    signals.push(AbortSignal.any([signals[1]!]));
+
+    let order = '';
+    for (let i = 0; i < signals.length; i++) {
+      signals[i]!.addEventListener('abort', () => { order += i; });
+    }
+
+    controller.abort();
+    t.equal(order, '01234', 'source event fires before dependents in creation order');
   });
 });
 

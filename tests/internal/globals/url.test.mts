@@ -45,6 +45,40 @@ describe('URLSearchParams construction', () => {
     t.equal(a.get('x'), '1', 'original unchanged');
     t.equal(b.get('x'), '2');
   });
+
+  it('constructs from iterable objects', (t) => {
+    const form = new FormData();
+    form.append('a', 'b');
+    const p = new URLSearchParams(form as any);
+    t.equal(p.get('a'), 'b');
+
+    const source = new URLSearchParams();
+    (source as any)[Symbol.iterator] = function* customURLSearchParamsIterator() {
+      yield ['custom', 'value'];
+    };
+    const copy = new URLSearchParams(source);
+    t.equal(copy.get('custom'), 'value');
+  });
+
+  it('requires constructor sequence entries to contain exactly two items', (t) => {
+    t.throws(() => new URLSearchParams([[1] as any]), TypeError);
+    t.throws(() => new URLSearchParams([[1, 2, 3] as any]), TypeError);
+  });
+
+  it('record constructor uses USVString keys and overwrites duplicate converted names', (t) => {
+    const params = new URLSearchParams({ '\uD835x': '1', xx: '2', '\uD83Dx': '3' } as any);
+    const entries = [...params.entries()];
+    t.deepEqual(entries[0], ['\uFFFDx', '3']);
+    t.deepEqual(entries[1], ['xx', '2']);
+    t.equal(entries.length, 2);
+  });
+
+  it('constructs from DOMException legacy constants', (t) => {
+    const params = new URLSearchParams(DOMException as any);
+    t.equal(params.get('INDEX_SIZE_ERR'), '1');
+    t.equal(params.get('DATA_CLONE_ERR'), '25');
+    t.throws(() => new URLSearchParams(DOMException.prototype as any), TypeError);
+  });
 });
 
 describe('URLSearchParams methods', () => {
@@ -93,10 +127,33 @@ describe('URLSearchParams methods', () => {
     t.equal(p.get('q'), 'hello world');
   });
 
+  it('decodes percent bytes with UTF-8 replacement', (t) => {
+    t.equal(new URLSearchParams('%C2').get('\uFFFD'), '');
+    t.equal(new URLSearchParams('%C2x').get('\uFFFDx'), '');
+    t.equal(new URLSearchParams('b=%2sf%2a').get('b'), '%2sf*');
+  });
+
   it('percent encoding round-trip', (t) => {
     const p = new URLSearchParams({ emoji: 'café' });
     const p2 = new URLSearchParams(p.toString());
     t.equal(p2.get('emoji'), 'café');
+  });
+
+  it('toString percent-encodes surrogate pairs as UTF-8', (t) => {
+    const p = new URLSearchParams();
+    p.append('a', 'b\uD83D\uDCA9c');
+    t.equal(p.toString(), 'a=b%F0%9F%92%A9c');
+
+    p.delete('a');
+    p.append('a\uD83D\uDCA9b', 'c');
+    t.equal(p.toString(), 'a%F0%9F%92%A9b=c');
+  });
+
+  it('sort syncs emoji search params back to URL', (t) => {
+    const url = new URL('?a\uD83C\uDF08&a\uD83D\uDCA9', 'https://example.test/');
+    url.searchParams.sort();
+    t.deepEqual([...url.searchParams], [['a\uD83C\uDF08', ''], ['a\uD83D\uDCA9', '']]);
+    t.equal(url.search, '?a%F0%9F%8C%88=&a%F0%9F%92%A9=');
   });
 
   it('getAll', (t) => {
@@ -187,6 +244,41 @@ describe('URL construction', () => {
     t.throws(() => new URL('not a url'), null, 'no scheme throws');
     t.throws(() => new URL(''), null, 'empty string throws');
   });
+
+  it('throws on non-numeric parse-time ports', (t) => {
+    t.throws(() => new URL('https://test:test/'), TypeError);
+  });
+});
+
+describe('Blob object URLs', () => {
+  it('createObjectURL returns unique blob: URLs with the current origin', (t) => {
+    const previousLocation = (globalThis as any).location;
+    (globalThis as any).location = new URL('https://example.test/path');
+    const first = URL.createObjectURL(new Blob(['a']));
+    const second = URL.createObjectURL(new Blob(['b']));
+    try {
+      t.notEqual(first, second, 'object URLs are unique');
+      t.ok(first.startsWith('blob:https://example.test/'), 'blob URL embeds current origin');
+      const parsed = new URL(first);
+      t.equal(parsed.protocol, 'blob:');
+      t.equal(parsed.origin, 'https://example.test');
+      t.equal(parsed.host, '');
+      t.ok(/\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(parsed.pathname), 'path ends with UUID');
+    } finally {
+      URL.revokeObjectURL(first);
+      URL.revokeObjectURL(second);
+      (globalThis as any).location = previousLocation;
+    }
+  });
+
+  it('revokeObjectURL accepts unknown URLs without throwing', (t) => {
+    URL.revokeObjectURL('blob:https://example.test/not-present');
+    t.ok(true, 'unknown blob URL revocation is a no-op');
+  });
+
+  it('createObjectURL rejects non-Blob values', (t) => {
+    t.throws(() => URL.createObjectURL('not a blob' as any), TypeError);
+  });
 });
 
 describe('URL relative resolution', () => {
@@ -219,6 +311,20 @@ describe('URL relative resolution', () => {
     const base = new URL('http://example.com/a/');
     const u = new URL('b', base);
     t.equal(u.href, 'http://example.com/a/b');
+  });
+
+  it('URL constructor stringifies URL object arguments', (t) => {
+    const input = new URL('http://example.com/a/');
+    input.toString = () => { throw 1; };
+    t.throws(() => new URL(input), (err) => err === 1, 'input URL toString error propagates');
+
+    const base = new URL('http://example.com/a/');
+    base.toString = () => { throw 2; };
+    t.throws(() => new URL('b', base), (err) => err === 2, 'base URL toString error propagates');
+  });
+
+  it('URL constructor treats an undefined base as omitted', (t) => {
+    t.equal(new URL('aaa:b', undefined).href, 'aaa:b');
   });
 
   it('throws with relative input and no base', (t) => {
@@ -282,6 +388,44 @@ describe('URL setters', () => {
     u.hash = '';
     t.equal(u.hash, '');
   });
+
+  it('URL setters strip ASCII tab and newline before parsing', (t) => {
+    const u = new URL('https://host:8000/path?query#hash');
+    u.protocol = '\nhttp';
+    t.equal(u.protocol, 'http:');
+    u.host = 'te\tst:9000';
+    t.equal(u.host, 'test:9000');
+    u.pathname = 'te\rst';
+    t.equal(u.pathname, '/test');
+    u.search = 'te\nst';
+    t.equal(u.search, '?test');
+    u.hash = 'te\tst';
+    t.equal(u.hash, '#test');
+  });
+
+  it('port setter consumes leading digits before invalid controls', (t) => {
+    const u = new URL('https://host:8000/');
+    u.port = '90\0' + '00';
+    t.equal(u.port, '90');
+    u.port = '\0' + '9000';
+    t.equal(u.port, '90');
+    u.port = '9000\0';
+    t.equal(u.port, '9000');
+  });
+
+  it('host setters reject or encode C0 controls by scheme', (t) => {
+    const special = new URL('https://host:8000/');
+    special.host = '\0test';
+    t.equal(special.host, 'host:8000');
+    special.hostname = 'te\x1fst';
+    t.equal(special.hostname, 'host');
+
+    const nonSpecial = new URL('wpt++://host:8000/');
+    nonSpecial.host = 'te\x1fst';
+    t.equal(nonSpecial.host, 'te%1Fst:8000');
+    nonSpecial.hostname = '\x1ftest';
+    t.equal(nonSpecial.hostname, '%1Ftest');
+  });
 });
 
 describe('URL searchParams sync', () => {
@@ -303,6 +447,16 @@ describe('URL searchParams sync', () => {
     u.search = 'x=42';
     t.equal(u.searchParams.get('x'), '42');
     t.equal(u.searchParams.has('a'), false);
+  });
+
+  it('URL searchParams preserves query data that starts with ?', (t) => {
+    const u = new URL('http://example.com/file??a=b&c=d');
+    t.equal(u.search, '??a=b&c=d');
+    t.equal(u.searchParams.toString(), '%3Fa=b&c=d');
+
+    u.href = 'http://example.com/file??a=b';
+    t.equal(u.search, '??a=b');
+    t.equal(u.searchParams.toString(), '%3Fa=b');
   });
 
   it('searchParams mutation reflected in href', (t) => {
@@ -327,6 +481,12 @@ describe('URL static methods', () => {
     t.equal(URL.canParse('/path', 'not-a-url'), false);
   });
 
+  it('URL.canParse treats an undefined base as omitted', (t) => {
+    t.equal(URL.canParse('https://test:test', undefined), false);
+    t.equal(URL.canParse(undefined as any, 'https://test:test/'), false);
+    t.equal(URL.canParse('aaa:b', undefined), true);
+  });
+
   it('URL.parse — returns URL on success', (t) => {
     const u = URL.parse('http://example.com/');
     t.ok(u instanceof URL);
@@ -337,6 +497,11 @@ describe('URL static methods', () => {
   it('URL.parse — returns null on failure', (t) => {
     t.equal(URL.parse('not a url'), null);
     t.equal(URL.parse(''), null);
+  });
+
+  it('URL.parse treats an undefined base as omitted', (t) => {
+    t.equal(URL.parse('https://test:test', undefined), null);
+    t.equal(URL.parse('aaa:b', undefined)?.href, 'aaa:b');
   });
 });
 
@@ -571,23 +736,21 @@ describe('URLSearchParams two-arg delete and has', () => {
 });
 
 describe('URLSearchParams — consecutive ampersands', () => {
-  it('consecutive && produces empty-string entry', (t) => {
-    // Per WHATWG spec, 'a=1&&b=2' produces 3 entries, the middle being ["",""]
+  it('consecutive && skips empty entries', (t) => {
     const p = new URLSearchParams('a=1&&b=2');
     t.equal(p.getAll('a').length, 1, 'a has one entry');
-    t.equal(p.get(''), '', 'empty key has empty value');
+    t.equal(p.has(''), false, 'empty field is skipped');
     t.equal(p.get('b'), '2', 'b=2 is present');
     const entries = [...p.entries()];
-    t.equal(entries.length, 3, 'three entries total');
-    t.deepEqual(entries[1], ['', ''], 'middle entry is ["",""]');
+    t.equal(entries.length, 2, 'two entries total');
+    t.deepEqual(entries[1], ['b', '2'], 'second entry is b=2');
   });
 
-  it('leading & produces empty-string entry at start', (t) => {
+  it('leading & skips the empty entry', (t) => {
     const p = new URLSearchParams('&a=1');
     const entries = [...p.entries()];
-    t.equal(entries.length, 2, 'two entries');
-    t.deepEqual(entries[0], ['', ''], 'first entry is ["",""]');
-    t.deepEqual(entries[1], ['a', '1'], 'second entry is a=1');
+    t.equal(entries.length, 1, 'one entry');
+    t.deepEqual(entries[0], ['a', '1'], 'first entry is a=1');
   });
 });
 
@@ -720,6 +883,14 @@ describe('URL release corpus', () => {
     t.equal(special.pathname, '/a/c', 'special path normalizes dot segments');
   });
 
+  it('opaque path query removal preserves trailing-space encoding boundary', (t) => {
+    const url = new URL('data:space    ?test');
+    url.searchParams.delete('test');
+    t.equal(url.search, '');
+    t.equal(url.pathname, 'space   %20');
+    t.equal(url.href, 'data:space   %20');
+  });
+
   it('relative resolution rejects opaque bases and resolves non-special slash bases', (t) => {
     t.throws(() => new URL('child', 'custom:opaque/path'), null, 'relative path cannot resolve against opaque base');
     t.equal(new URL('child', 'custom:/base/path').href, 'custom:/base/child', 'relative path resolves against slash-path non-special base');
@@ -782,6 +953,45 @@ describe('URLSearchParams mutation and iteration corpus', () => {
     }
 
     t.deepEqual(seen, ['a=1', 'b=2', 'c=3'], 'iterator sees appended pairs');
+  });
+
+  it('iterator observes URL search replacement without rewinding', (t) => {
+    const url = new URL('http://a.test/path?a=1&b=2&c=3&d=4');
+    const seen: [string, string][] = [];
+    for (const entry of url.searchParams) {
+      url.search = 'x=1&y=2&z=3';
+      seen.push(entry);
+    }
+
+    t.deepEqual(seen[0], ['a', '1']);
+    t.deepEqual(seen[1], ['y', '2']);
+    t.deepEqual(seen[2], ['z', '3']);
+    t.equal(seen.length, 3);
+  });
+
+  it('iterator skips entries deleted before their turn', (t) => {
+    const params = new URLSearchParams('param0=0&param1=1&param2=2');
+    const seen: [string, string][] = [];
+    for (const entry of params) {
+      if (entry[0] === 'param0') params.delete('param1');
+      seen.push(entry);
+    }
+
+    t.deepEqual(seen[0], ['param0', '0']);
+    t.deepEqual(seen[1], ['param2', '2']);
+    t.equal(seen.length, 2);
+  });
+
+  it('deleting current entry during iteration advances over shifted entry', (t) => {
+    const params = new URLSearchParams('param0=0&param1=1&param2=2');
+    const seen: [string, string][] = [];
+    for (const entry of params) {
+      if (entry[0] === 'param0') params.delete('param0');
+      else seen.push(entry);
+    }
+
+    t.deepEqual(seen[0], ['param2', '2']);
+    t.equal(seen.length, 1);
   });
 
   it('set keeps the first position and removes later duplicates', (t) => {

@@ -62,7 +62,7 @@
  *
  */
 
-import { EventTarget, Event } from './eventtarget.mts';
+import { EventTarget, Event, _createTrustedEvent } from './eventtarget.mts';
 import { DOMException } from './encoding.mts';
 
 // ---------------------------------------------------------------------------
@@ -72,6 +72,17 @@ import { DOMException } from './encoding.mts';
 // Maps each AbortSignal to its internal abort trigger function.
 // Created inside the constructor so the closure has private-field access.
 const _signalAbort = new WeakMap<AbortSignal, (reason: unknown) => void>();
+const _signalMarkAbort = new WeakMap<AbortSignal, (reason: unknown, queue: AbortSignal[]) => void>();
+const _signalDependents = new WeakMap<AbortSignal, AbortSignal[]>();
+const _signalSources = new WeakMap<AbortSignal, AbortSignal[]>();
+
+function _markSignalAborted(signal: AbortSignal, reason: unknown, queue: AbortSignal[]): void {
+  _signalMarkAbort.get(signal)?.(reason, queue);
+}
+
+function _sourceSignals(signal: AbortSignal): AbortSignal[] {
+  return _signalSources.get(signal) ?? [signal];
+}
 
 function defaultAbortError(message: string, name: string): DOMException {
   return new DOMException(message, name);
@@ -199,11 +210,24 @@ export class AbortSignal extends EventTarget {
     _allowConstruct = false;
     super();
     const signal = this;
-    _signalAbort.set(this, function (reason: unknown) {
+    _signalMarkAbort.set(this, function (reason: unknown, queue: AbortSignal[]) {
       if (signal.#aborted) return;
       signal.#aborted = true;
       signal.#reason = reason;
-      signal.dispatchEvent(new Event('abort'));
+      queue.push(signal);
+      const dependents = _signalDependents.get(signal);
+      if (dependents != null) {
+        for (let i = 0; i < dependents.length; i++) {
+          _markSignalAborted(dependents[i]!, reason, queue);
+        }
+      }
+    });
+    _signalAbort.set(this, function (reason: unknown) {
+      const queue: AbortSignal[] = [];
+      _markSignalAborted(signal, reason, queue);
+      for (let i = 0; i < queue.length; i++) {
+        queue[i]!.dispatchEvent(_createTrustedEvent('abort'));
+      }
     });
   }
 
@@ -276,12 +300,11 @@ export class AbortSignal extends EventTarget {
     if (this.#aborted) throw this.#reason;
   }
 
-  // Fire the onabort IDL event handler before registered EventTarget listeners.
   /**
    * Dispatch an event on the signal.
    *
-   * The abort event receives special handling so the onabort property handler
-   * runs before registered EventTarget listeners. The return value follows
+   * The inherited EventTarget path invokes the onabort property handler before
+   * registered EventTarget listeners. The return value follows
    * EventTarget.dispatchEvent(): false only when the event was cancelable and
    * preventDefault() was called.
    *
@@ -291,9 +314,6 @@ export class AbortSignal extends EventTarget {
    * ```
    */
   dispatchEvent(event: Event): boolean {
-    if (event.type === 'abort' && typeof this.#onabort === 'function') {
-      try { this.#onabort(event); } catch (_) {}
-    }
     return super.dispatchEvent(event);
   }
 
@@ -356,7 +376,8 @@ export class AbortSignal extends EventTarget {
    *
    * The input must be iterable and every element must be an AbortSignal. If an
    * input is already aborted, the returned signal is aborted immediately with
-   * that reason. Otherwise listeners are removed after the first abort wins.
+   * that reason. Otherwise the signal is linked to the original source signals
+   * so dependents are marked aborted before abort events are dispatched.
    *
    * ```typescript no_run
    * const a = new AbortController();
@@ -386,19 +407,22 @@ export class AbortSignal extends EventTarget {
         return out;
       }
     }
-    const listeners: Array<[AbortSignal, () => void]> = [];
-    function onAbort(sig: AbortSignal): void {
-      doAbort?.(sig.reason);
-      for (let j = 0; j < listeners.length; j++) {
-        listeners[j]![0].removeEventListener('abort', listeners[j]![1]);
-      }
-    }
+    const sources: AbortSignal[] = [];
     for (let i = 0; i < arr.length; i++) {
       const sig = arr[i] as AbortSignal;
-      const fn = function () { onAbort(sig); };
-      listeners.push([sig, fn]);
-      sig.addEventListener('abort', fn);
+      const sigSources = _sourceSignals(sig);
+      for (let j = 0; j < sigSources.length; j++) {
+        const source = sigSources[j]!;
+        sources.push(source);
+        let dependents = _signalDependents.get(source);
+        if (dependents == null) {
+          dependents = [];
+          _signalDependents.set(source, dependents);
+        }
+        dependents.push(out);
+      }
     }
+    _signalSources.set(out, sources);
     return out;
   }
 }

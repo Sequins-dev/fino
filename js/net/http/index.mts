@@ -130,7 +130,7 @@ import { decodeUtf8, encodeUtf8 } from '../../globals/encoding.mts';
 import { ReadableStream } from '../../globals/webstreams.mts';
 import { Blob } from '../../globals/blob.mts';
 import { FormData, _createMultipartBoundary, _serializeFormData } from '../../globals/formdata.mts';
-import { URLSearchParams } from '../../globals/url.mts';
+import { URLSearchParams, _resolveObjectURL } from '../../globals/url.mts';
 import { Scanner } from '../../parsing/scanner.mts';
 
 // ---------------------------------------------------------------------------
@@ -1405,6 +1405,15 @@ export class Request {
    * @internal
    */
   #outTrailers: OutTrailers | null = null;
+  /**
+   * Private property `#blobUrlObject` used by `Request`.
+   *
+   * This captures the Blob resolved from a `blob:` request URL at construction
+   * time so fetch can still use a Request after the object URL is revoked.
+   *
+   * @internal
+   */
+  #blobUrlObject: Blob | null = null;
 
   /**
    * Create a Request from a URL string, another Request, or the internal parser
@@ -1429,11 +1438,13 @@ export class Request {
       this.#headers    = init.headers;
       this.#rawBody    = init.body === _emptyBody ? null : init.body;
       this.#inTrailers = init.inTrailers ?? null;
+      this.#blobUrlObject = init.blobUrlObject ?? null;
       return;
     }
 
     // Spec-style construction.
     this.#url     = input instanceof Request ? input.#url : String(input);
+    this.#blobUrlObject = input instanceof Request ? input.#blobUrlObject : _resolveObjectURL(this.#url);
     const rawMethod = (init && init.method) ? String(init.method) : 'GET';
     // Per Fetch spec, only these six methods are normalized to uppercase.
     this.#method  = /^(delete|get|head|options|post|put)$/i.test(rawMethod) ? rawMethod.toUpperCase() : rawMethod;
@@ -1524,6 +1535,20 @@ export class Request {
    * @internal
    */
   _getRawOutTrailers(): OutTrailers | null { return this.#outTrailers; }
+
+  /**
+   * Captured Blob for a `blob:` URL request, if construction resolved one.
+   *
+   * Fetch uses this to preserve the Blob reference even if the object URL is
+   * revoked after `new Request(url)` but before `fetch(request)`.
+   *
+   * ```ts no_run
+   * const blob = req._getBlobURLObject();
+   * ```
+   *
+   * @internal
+   */
+  _getBlobURLObject(): Blob | null { return this.#blobUrlObject; }
 
   /** The full URL string.
    *
@@ -1703,7 +1728,7 @@ export class Request {
   async formData() {
     const type = _contentTypeEssence(this.#headers);
     if (type === 'application/x-www-form-urlencoded') {
-      return _formDataFromUrlEncoded(await this.text());
+      return _formDataFromUrlEncoded(decodeUtf8(await this.#consumeBody(), false, false));
     }
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }
@@ -1720,13 +1745,13 @@ export class Request {
   clone(): Request {
     if (this.bodyUsed) throw new TypeError('Cannot clone a disturbed Request');
     if (this.#rawBody === null) {
-      return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody });
+      return new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: _emptyBody, blobUrlObject: this.#blobUrlObject });
     }
     const stream = this.#bodyStream ?? ReadableStream.from(this.#rawBody);
     const [a, b] = stream.tee();
     this.#bodyStream = a;
     this.#rawBody = a as any;
-    const cloned = new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: b });
+    const cloned = new Request(INTERNAL, { method: this.#method, url: this.#url, version: this.#version, headers: new Headers(this.#headers), body: b, blobUrlObject: this.#blobUrlObject });
     return cloned;
   }
 
@@ -2396,7 +2421,7 @@ export class Response {
   async formData() {
     const type = _contentTypeEssence(this.#headers);
     if (type === 'application/x-www-form-urlencoded') {
-      return _formDataFromUrlEncoded(await this.text());
+      return _formDataFromUrlEncoded(decodeUtf8(await this.#consumeBody(), false, false));
     }
     throw new TypeError(`formData(): unsupported content-type: ${type || '<none>'}`);
   }

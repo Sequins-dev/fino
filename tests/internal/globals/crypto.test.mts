@@ -24,6 +24,10 @@ function rejectsWithName(name: string): (err: unknown) => boolean {
   return (err: unknown) => err instanceof Error && err.name === name;
 }
 
+function rejectsWithDomException(name: string): (err: unknown) => boolean {
+  return (err: unknown) => err instanceof DOMException && err.name === name;
+}
+
 describe('getRandomValues', { skip }, () => {
   it('fills array with bytes', (t) => {
     const arr = new Uint8Array(32);
@@ -1087,8 +1091,8 @@ describe('WebCrypto release error names', { skip }, () => {
 
     await t.rejects(
       () => crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext),
-      rejectsWithName('OperationError'),
-      'AES-GCM authentication failure uses OperationError',
+      rejectsWithDomException('OperationError'),
+      'AES-GCM authentication failure uses a DOMException OperationError',
     );
   });
 });

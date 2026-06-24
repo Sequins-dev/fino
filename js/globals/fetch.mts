@@ -97,6 +97,8 @@ import {
 import { topic } from 'fino:context/topic';
 import { otelRuntimeEvent, otelRuntimeTopic } from '../internal/opentelemetry/common.mts';
 import * as openssl from '../internal/openssl.mts';
+import { _resolveObjectURL } from './url.mts';
+import { _getBlobBytes } from './blob.mts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -151,6 +153,61 @@ interface ClosableSocket {
 }
 
 type FetchProtocol = NonNullable<FetchInit['protocol']>;
+
+function _fetchBaseLocation(): string | undefined {
+  const location = (globalThis as { location?: unknown }).location;
+  if (location === undefined || location === null) return undefined;
+  return String(location);
+}
+
+function _normalizeFetchUrl(input: string): string {
+  try {
+    new URL(input);
+    return input;
+  } catch (_) {
+    const base = _fetchBaseLocation();
+    try {
+      if (base !== undefined) return new URL(input, base).href;
+    } catch { /* fall through to standard invalid URL error */ }
+    throw new TypeError(`Invalid URL: ${input}`);
+  }
+}
+
+function _singleChunkBody(bytes: Uint8Array): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator]() {
+      let sent = false;
+      return {
+        next() {
+          if (sent) return Promise.resolve({ done: true, value: undefined });
+          sent = true;
+          return Promise.resolve({ done: false, value: bytes });
+        },
+      };
+    },
+  };
+}
+
+function _fetchBlobURL(url: string, method: string, capturedBlob: ReturnType<Request['_getBlobURLObject']> = null): Response {
+  if (method !== 'GET') {
+    throw new TypeError(`fetch: blob URL requests only support GET, got ${method}`);
+  }
+  const blob = capturedBlob ?? _resolveObjectURL(url);
+  if (blob === null) {
+    throw new TypeError(`fetch: failed to resolve blob URL '${url}'`);
+  }
+  const headers = new Headers();
+  if (blob.type !== '') headers.set('content-type', blob.type);
+  return buildWireResponse({
+    version: '',
+    status: 200,
+    statusText: '',
+    headers,
+    body: _singleChunkBody(new Uint8Array(_getBlobBytes(blob))),
+    url,
+    redirected: false,
+  });
+}
 
 interface AltSvcEntry {
   host: string;
@@ -1025,18 +1082,20 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   let baseMethod: string;
   let baseHeaders: Headers;
   let baseBody: FetchBody | null;
+  let baseBlobUrlObject: ReturnType<Request['_getBlobURLObject']> = null;
 
   if (input instanceof Request) {
     baseUrl     = input.url;
     baseMethod  = input.method;
     baseHeaders = new Headers(input.headers);
+    baseBlobUrlObject = input._getBlobURLObject();
     // If input is a Request with an unread body, use it. But since the body
     // is a one-shot iterable, this only works once. If init.body overrides it,
     // use that instead.
     baseBody    = (init && init.body !== undefined) ? init.body
                 : (input.hasBody ? input.body : null);
   } else {
-    baseUrl     = String(input);
+    baseUrl     = _normalizeFetchUrl(String(input));
     baseMethod  = 'GET';
     baseHeaders = new Headers();
     baseBody    = null;
@@ -1112,6 +1171,10 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
   let currentOrigin: string | null = null;
   const requestId = 'fetch-' + (++_fetchRequestSeq);
   try { currentOrigin = new URL(baseUrl).origin; } catch (_) {}
+
+  if (new URL(baseUrl).protocol === 'blob:') {
+    return _fetchBlobURL(baseUrl, currentMethod, baseBlobUrlObject);
+  }
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     if (hop === MAX_REDIRECTS) {

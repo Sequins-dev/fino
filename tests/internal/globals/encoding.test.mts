@@ -77,6 +77,14 @@ describe('TextEncoder', () => {
     t.equal(result.written, 6, 'wrote 6 bytes (3 × 2-byte chars)');
     t.equal(result.read, 3, 'read 3 code points');
   });
+
+  it('encodeInto() requires a Uint8Array destination', (t) => {
+    const enc = new TextEncoder();
+    t.throws(() => enc.encodeInto('', new Int8Array(1) as unknown as Uint8Array), undefined, 'Int8Array rejected');
+    t.throws(() => enc.encodeInto('', new Uint8ClampedArray(1) as unknown as Uint8Array), undefined, 'Uint8ClampedArray rejected');
+    t.throws(() => enc.encodeInto('', new DataView(new ArrayBuffer(1)) as unknown as Uint8Array), undefined, 'DataView rejected');
+    t.throws(() => enc.encodeInto('', new ArrayBuffer(1) as unknown as Uint8Array), undefined, 'ArrayBuffer rejected');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -88,10 +96,13 @@ describe('TextDecoder', () => {
     t.equal((new TextDecoder() as unknown as Record<symbol, unknown>)[Symbol.toStringTag], 'TextDecoder');
   });
 
-  it('encoding property is "utf-8"', (t) => {
+  it('encoding property exposes the normalized decoder label', (t) => {
     t.equal(new TextDecoder().encoding, 'utf-8');
     t.equal(new TextDecoder('utf-8').encoding, 'utf-8');
     t.equal(new TextDecoder('UTF-8').encoding, 'utf-8');
+    t.equal(new TextDecoder('utf-16').encoding, 'utf-16le');
+    t.equal(new TextDecoder('UTF-16LE').encoding, 'utf-16le');
+    t.equal(new TextDecoder('UTF-16BE').encoding, 'utf-16be');
   });
 
   it('fatal property', (t) => {
@@ -118,6 +129,21 @@ describe('TextDecoder', () => {
     // 'é' is 0xC3 0xA9
     const bytes = new Uint8Array([0xC3, 0xA9]);
     t.equal(new TextDecoder().decode(bytes), 'é');
+  });
+
+  it('decode() UTF-16 little and big endian samples', (t) => {
+    const sample = 'z\xA2\u6C34\uD834\uDD1E\uF8FF\uDBFF\uDFFD\uFFFE';
+    const le = new Uint8Array([
+      0x7A, 0x00, 0xA2, 0x00, 0x34, 0x6C, 0x34, 0xD8, 0x1E, 0xDD,
+      0xFF, 0xF8, 0xFF, 0xDB, 0xFD, 0xDF, 0xFE, 0xFF,
+    ]);
+    const be = new Uint8Array([
+      0x00, 0x7A, 0x00, 0xA2, 0x6C, 0x34, 0xD8, 0x34, 0xDD, 0x1E,
+      0xF8, 0xFF, 0xDB, 0xFF, 0xDF, 0xFD, 0xFF, 0xFE,
+    ]);
+    t.equal(new TextDecoder('utf-16le').decode(le), sample);
+    t.equal(new TextDecoder('utf-16be').decode(be), sample);
+    t.equal(new TextDecoder('utf-16').decode(le), sample);
   });
 
   it('decode() from ArrayBuffer', (t) => {
@@ -160,6 +186,41 @@ describe('TextDecoder', () => {
     const s1 = dec.decode(part1, { stream: true });
     const s2 = dec.decode(part2);
     t.equal(s1 + s2, 'é', 'multi-byte char split across chunks');
+  });
+
+  it('streaming UTF-8 emits invalid leading bytes immediately', (t) => {
+    const dec = new TextDecoder();
+    t.equal(dec.decode(new Uint8Array([0xC1]), { stream: true }), '\uFFFD');
+    t.equal(dec.decode(), '');
+    t.equal(dec.decode(new Uint8Array([0xE0, 0x80]), { stream: true }), '\uFFFD\uFFFD');
+    t.equal(dec.decode(new Uint8Array([0x80])), '\uFFFD');
+    t.equal(dec.decode(new Uint8Array([0xF0, 0x90, 0x41]), { stream: true }), '\uFFFDA');
+    t.equal(dec.decode(new Uint8Array([0x42])), 'B');
+    t.equal(dec.decode(new Uint8Array([0xF0, 0x9F, 0x92]), { stream: true }), '');
+    t.equal(dec.decode(new Uint8Array([0xA9])), '\uD83D\uDCA9');
+  });
+
+  it('streaming UTF-16 preserves split bytes and surrogate pairs', (t) => {
+    const le = new TextDecoder('utf-16le');
+    t.equal(le.decode(new Uint8Array([0x41]), { stream: true }), '');
+    t.equal(le.decode(new Uint8Array([0x00])), 'A');
+    t.equal(le.decode(new Uint8Array([0x00, 0xD8]), { stream: true }), '');
+    t.equal(le.decode(new Uint8Array([0x00, 0xDC])), '\uD800\uDC00');
+
+    const be = new TextDecoder('utf-16be');
+    t.equal(be.decode(new Uint8Array([0x00]), { stream: true }), '');
+    t.equal(be.decode(new Uint8Array([0x41])), 'A');
+    t.equal(be.decode(new Uint8Array([0xD8, 0x00]), { stream: true }), '');
+    t.equal(be.decode(new Uint8Array([0xDC, 0x00])), '\uD800\uDC00');
+  });
+
+  it('UTF-16 truncation and fatal UTF-8 stream state follow replacement rules', (t) => {
+    t.equal(new TextDecoder('utf-16le').decode(new Uint8Array([0x00, 0xD8, 0x00])), '\uFFFD');
+    t.equal(new TextDecoder('utf-16be').decode(new Uint8Array([0xD8, 0x00, 0xD8])), '\uFFFD');
+
+    const fatal = new TextDecoder('utf-8', { fatal: true });
+    t.throws(() => fatal.decode(new Uint8Array([0xFD, 0xEF]), { stream: true }));
+    t.equal(fatal.decode(), '');
   });
 
   it('streaming BOM: only stripped from first non-empty chunk', (t) => {
@@ -255,24 +316,35 @@ describe('atob', () => {
 // ---------------------------------------------------------------------------
 
 describe('TextDecoder — invalid label', () => {
-  it('TextDecoder with non-UTF-8 label throws RangeError', (t) => {
+  it('TextDecoder with unsupported legacy labels throws RangeError', (t) => {
     t.throws(() => new TextDecoder('latin1'), undefined, 'latin1 throws RangeError');
     t.throws(() => new TextDecoder('windows-1252'), undefined, 'windows-1252 throws RangeError');
     t.throws(() => new TextDecoder('shift-jis'), undefined, 'shift-jis throws RangeError');
     t.throws(() => new TextDecoder('iso-8859-1'), undefined, 'iso-8859-1 throws RangeError');
   });
 
-  it('TextDecoder accepts UTF-8 aliases', (t) => {
+  it('TextDecoder accepts UTF-8 and UTF-16 aliases', (t) => {
     let threw = false;
     try {
       new TextDecoder('utf-8');
       new TextDecoder('UTF-8');
       new TextDecoder('utf8');
       new TextDecoder('unicode-1-1-utf-8');
+      new TextDecoder('utf-16');
+      new TextDecoder('utf-16le');
+      new TextDecoder('utf-16be');
     } catch (_) {
       threw = true;
     }
-    t.equal(threw, false, 'UTF-8 aliases are accepted');
+    t.equal(threw, false, 'UTF-8 and UTF-16 aliases are accepted');
+  });
+
+  it('TextDecoder trims only ASCII whitespace around labels', (t) => {
+    t.equal(new TextDecoder('\t utf-8 \r\n').encoding, 'utf-8');
+    t.throws(() => new TextDecoder('\vutf-8'), undefined, 'vertical tab is not trimmed');
+    t.throws(() => new TextDecoder('\u00A0utf-8'), undefined, 'non-breaking space is not trimmed');
+    t.throws(() => new TextDecoder('\u2028utf-8'), undefined, 'line separator is not trimmed');
+    t.throws(() => new TextDecoder('utf-16le\u2029'), undefined, 'paragraph separator is not trimmed');
   });
 });
 
@@ -493,18 +565,17 @@ describe('structuredClone', () => {
     t.deepEqual(clone.errors[1], { detail: 'bad input' }, 'nested object cloned');
   });
 
-  it('clones URL and URLSearchParams', (t) => {
-    const url = new URL('https://example.test/path?q=1#frag');
-    const clonedUrl = structuredClone(url);
-    t.ok(clonedUrl instanceof URL, 'URL clone is a URL');
-    t.equal(clonedUrl.href, url.href, 'URL href preserved');
-    t.ok(clonedUrl !== url, 'URL clone is a new object');
-
-    const params = new URLSearchParams('a=1&a=2&b=space+value');
-    const clonedParams = structuredClone(params);
-    t.ok(clonedParams instanceof URLSearchParams, 'URLSearchParams clone is URLSearchParams');
-    t.equal(clonedParams.toString(), params.toString(), 'params preserved');
-    t.ok(clonedParams !== params, 'URLSearchParams clone is a new object');
+  it('throws DataCloneError for URL and URLSearchParams', (t) => {
+    t.throws(
+      () => structuredClone(new URL('https://example.test/path?q=1#frag')),
+      isDataCloneError,
+      'URL is not serializable',
+    );
+    t.throws(
+      () => structuredClone(new URLSearchParams('a=1&a=2&b=space+value')),
+      isDataCloneError,
+      'URLSearchParams is not serializable',
+    );
   });
 
   it('clones DOMException name, message, and code', (t) => {

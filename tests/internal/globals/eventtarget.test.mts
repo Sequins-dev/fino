@@ -62,6 +62,15 @@ describe('Event', () => {
     const e = new Event('click');
     t.deepEqual(e.composedPath(), [], 'empty outside dispatch');
   });
+
+  it('isTrusted is an own accessor with a shared getter', (t) => {
+    const first = Object.getOwnPropertyDescriptor(new Event('x'), 'isTrusted');
+    const second = Object.getOwnPropertyDescriptor(new Event('y'), 'isTrusted');
+    t.ok(first !== undefined, 'first descriptor exists');
+    t.ok(second !== undefined, 'second descriptor exists');
+    t.equal(typeof first?.get, 'function', 'getter exists');
+    t.equal(first?.get, second?.get, 'getter function is shared');
+  });
 });
 
 describe('CustomEvent', () => {
@@ -194,6 +203,44 @@ describe('once / stopImmediatePropagation / signal / passive options', () => {
     const result = target.dispatchEvent(new Event('test', { cancelable: true }));
     t.equal(result, true, 'event not cancelled inside passive listener');
   });
+
+  it('addEventListener reads passive option even when callback is null', (t) => {
+    const target = new EventTarget();
+    let read = false;
+    target.addEventListener('test', null, {
+      get passive() {
+        read = true;
+        return false;
+      },
+    });
+    t.equal(read, true, 'passive getter was read');
+  });
+
+  it('removeEventListener does not read passive option', (t) => {
+    const target = new EventTarget();
+    let read = false;
+    target.removeEventListener('test', null as unknown as EventListener, {
+      get passive() {
+        read = true;
+        return false;
+      },
+    } as AddEventListenerOptions);
+    t.equal(read, false, 'passive getter was not read');
+  });
+
+  it('addEventListener throws when signal option is null', (t) => {
+    const target = new EventTarget();
+    t.throws(
+      () => target.addEventListener('test', () => {}, { signal: null as unknown as AbortSignal }),
+      (error) => error instanceof TypeError,
+      'null signal throws TypeError',
+    );
+    t.throws(
+      () => target.addEventListener('test', null, { signal: null as unknown as AbortSignal }),
+      (error) => error instanceof TypeError,
+      'null signal throws even when callback is null',
+    );
+  });
 });
 
 describe('event properties during dispatch', () => {
@@ -219,6 +266,7 @@ describe('event properties during dispatch', () => {
     target.dispatchEvent(e);
     t.ok(e.target === target, 'target preserved after dispatch');
     t.equal(e.currentTarget, null, 'currentTarget null after dispatch');
+    t.deepEqual(e.composedPath(), [], 'composedPath is empty after dispatch');
   });
 
   it('composedPath returns [target] during dispatch', (t) => {
@@ -406,6 +454,18 @@ describe('removeEventListener — never-added callback is a no-op', () => {
       threw = true;
     }
     t.equal(threw, false, 'no throw for never-added callback');
+  });
+});
+
+describe('globalThis EventTarget methods', () => {
+  it('removeEventListener accepts a null callback on globalThis', (t) => {
+    const globalObject = globalThis as typeof globalThis & {
+      removeEventListener(type: string, callback: EventListener | null, options?: boolean): void;
+    };
+    t.equal(typeof globalObject.removeEventListener, 'function', 'global removeEventListener exists');
+    t.equal(globalObject.removeEventListener('x', null, false), undefined, 'false capture succeeds');
+    t.equal(globalObject.removeEventListener('x', null, true), undefined, 'true capture succeeds');
+    t.equal(globalObject.removeEventListener('x', null), undefined, 'omitted capture succeeds');
   });
 });
 

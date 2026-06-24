@@ -941,21 +941,24 @@ export class URLPattern {
   get [Symbol.toStringTag]() { return 'URLPattern'; }
 
   /**
-   * Create a URLPattern from string or component-object input.
+   * Create a URLPattern from string, component-object, or omitted input.
    *
    * String input is split into URL components while respecting pattern groups.
-   * baseURL supplies defaults for relative string patterns. Object input uses
-   * the provided component patterns directly.
+   * `baseURL` supplies defaults for relative string patterns. Object input uses
+   * the provided component patterns directly. Missing or `undefined` input
+   * creates an all-wildcard pattern.
    *
    * ```typescript no_run
    * const pattern = new URLPattern('/files/:name', 'https://example.com');
    * pattern.hostname; // "example.com"
    * ```
    */
-  constructor(input: string | URLPatternInit, baseURL?: string) {
+  constructor(input?: string | URLPatternInit, baseURL?: string) {
     let init: ParsedURLPatternInit | URLPatternInit;
 
-    if (typeof input === 'string') {
+    if (input === undefined) {
+      init = {};
+    } else if (typeof input === 'string') {
       init = _parsePatternInitString(input);
       // Apply baseURL for relative patterns (only pathname present)
       if (baseURL != null && init.protocol === undefined) {

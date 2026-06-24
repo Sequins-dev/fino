@@ -120,6 +120,9 @@
  *
  */
 
+import { v4 as _uuidV4 } from 'fino:uuid';
+import { Blob } from './blob.mts';
+
 // ---------------------------------------------------------------------------
 // Internal types
 // ---------------------------------------------------------------------------
@@ -133,6 +136,45 @@ interface URLState {
   pathname: string;
   search: string;
   hash: string;
+}
+
+const _blobUrlStore = new Map<string, Blob>();
+
+function _currentObjectUrlOrigin(): string {
+  const location = (globalThis as { location?: unknown }).location;
+  if (location === undefined || location === null) return 'null';
+  const state = _parseURL(String(location), null);
+  return state === null ? 'null' : _origin(state);
+}
+
+function _objectUrlWithoutFragment(url: string): string {
+  const hashIndex = url.indexOf('#');
+  return hashIndex < 0 ? url : url.slice(0, hashIndex);
+}
+
+function _stripURLTabsAndNewlines(value: string): string {
+  return value.replace(/[\x09\x0a\x0d]/g, '');
+}
+
+/**
+ * Resolve a `blob:` object URL to the Blob it was created for.
+ *
+ * Fragment identifiers are ignored during resolution, matching the File API
+ * dereferencing model. Query strings and extra path segments remain part of
+ * the lookup key and therefore do not resolve unless they were present in the
+ * original object URL.
+ *
+ * ```typescript no_run
+ * const url = URL.createObjectURL(new Blob(['data']));
+ * const blob = _resolveObjectURL(url);
+ * ```
+ *
+ * @internal
+ */
+export function _resolveObjectURL(url: string): Blob | null {
+  const parsed = _parseURL(String(url), null);
+  if (parsed === null || parsed.scheme !== 'blob') return null;
+  return _blobUrlStore.get(_objectUrlWithoutFragment(_serialize(parsed))) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,12 +253,19 @@ const _QUERY_ENCODE_SET    = ' "#\'<>';
 const _PATH_ENCODE_SET     = ' "#<>?`{}';
 const _USERINFO_ENCODE_SET = ' "\'#/:;<=>?@[\\]^`{|}~';
 
+function _encodeOpaquePath(path: string, hadSuffix: boolean): string {
+  if (!hadSuffix) return _percentEncode(path, _PATH_ENCODE_SET);
+  let encoded = _percentEncode(path, _PATH_ENCODE_SET.replace(' ', ''));
+  if (encoded.endsWith(' ')) encoded = encoded.slice(0, -1) + '%20';
+  return encoded;
+}
+
 /**
  * Encode a string using application/x-www-form-urlencoded percent-encoding.
  * Spaces → '+'; other non-safe chars → %XX.
  */
 function _formEncode(str: string): string {
-  str = String(str);
+  str = _toUSVString(str);
   let result = '';
   for (let i = 0; i < str.length; i++) {
     const c = str[i];
@@ -227,36 +276,149 @@ function _formEncode(str: string): string {
         (code >= 0x30 && code <= 0x39) ||  // 0-9
         c === '*' || c === '-' || c === '.' || c === '_') {
       result += c;
-    } else if (c === ' ') {
+    } else if (code === 0x20) {
       result += '+';
-    } else if (code <= 0x7F) {
-      result += '%' + _toHex2(code);
     } else {
-      // Multi-byte UTF-8: encode each byte
-      const encoded = encodeURIComponent(c!); // gives %XX or %XX%XX etc.
-      result += encoded;
+      let cp = code;
+      if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+        const lo = str.charCodeAt(i + 1);
+        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+          cp = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+          i++;
+        }
+      }
+
+      const bytes: number[] = [];
+      _pushUTF8Bytes(bytes, cp);
+      for (const byte of bytes) result += '%' + _toHex2(byte);
     }
   }
   return result;
 }
 
-/**
- *  Decode an application/x-www-form-urlencoded string. */
-function _formDecode(str: string): string {
-  try {
-    return decodeURIComponent(String(str).replace(/\+/g, '%20'));
-  } catch (_e) {
-    return String(str).replace(/\+/g, ' ');
+function _pushUTF8Bytes(bytes: number[], cp: number): void {
+  if (cp < 0x80) {
+    bytes.push(cp);
+  } else if (cp < 0x800) {
+    bytes.push(0xC0 | (cp >> 6), 0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    bytes.push(0xE0 | (cp >> 12), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+  } else {
+    bytes.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
   }
 }
 
+function _utf8DecodeReplacement(bytes: number[]): string {
+  let out = '';
+  for (let i = 0; i < bytes.length;) {
+    const b0 = bytes[i++]!;
+    if (b0 < 0x80) {
+      out += String.fromCharCode(b0);
+      continue;
+    }
+
+    let needed = 0;
+    let cp = 0;
+    let min = 0;
+    let max = 0x10FFFF;
+    if (b0 >= 0xC2 && b0 <= 0xDF) {
+      needed = 1; cp = b0 & 0x1F; min = 0x80;
+    } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+      needed = 2; cp = b0 & 0x0F; min = 0x800;
+    } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+      needed = 3; cp = b0 & 0x07; min = 0x10000; max = 0x10FFFF;
+    } else {
+      out += '\uFFFD';
+      continue;
+    }
+
+    const start = i;
+    let valid = true;
+    for (let j = 0; j < needed; j++) {
+      const b = bytes[i];
+      if (b === undefined || b < 0x80 || b > 0xBF) {
+        valid = false;
+        break;
+      }
+      cp = (cp << 6) | (b & 0x3F);
+      i++;
+    }
+    if (!valid || cp < min || cp > max || (cp >= 0xD800 && cp <= 0xDFFF)) {
+      i = start;
+      out += '\uFFFD';
+      continue;
+    }
+    out += String.fromCodePoint(cp);
+  }
+  return out;
+}
+
+function _toUSVString(value: unknown): string {
+  const input = String(value);
+  let out = '';
+  for (let i = 0; i < input.length; i++) {
+    const code = input.charCodeAt(i);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+      if (i + 1 < input.length) {
+        const lo = input.charCodeAt(i + 1);
+        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+          out += input[i]! + input[i + 1]!;
+          i++;
+          continue;
+        }
+      }
+      out += '\uFFFD';
+    } else if (code >= 0xDC00 && code <= 0xDFFF) {
+      out += '\uFFFD';
+    } else {
+      out += input[i]!;
+    }
+  }
+  return out;
+}
+
 /**
- *  Parse a query string into [[name, value], ...] pairs. Leading '?' is stripped. */
-function _parseQueryString(qs: string): [string, string][] {
+ *  Decode an application/x-www-form-urlencoded string. */
+function _formDecode(str: string): string {
+  const input = String(str);
+  const bytes: number[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const c = input[i]!;
+    if (c === '+') {
+      bytes.push(0x20);
+      continue;
+    }
+    if (c === '%' && i + 2 < input.length && /^[0-9A-Fa-f]{2}$/.test(input.slice(i + 1, i + 3))) {
+      bytes.push(parseInt(input.slice(i + 1, i + 3), 16));
+      i += 2;
+      continue;
+    }
+
+    let cp = input.charCodeAt(i);
+    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < input.length) {
+      const lo = input.charCodeAt(i + 1);
+      if (lo >= 0xDC00 && lo <= 0xDFFF) {
+        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+        i++;
+      } else {
+        cp = 0xFFFD;
+      }
+    } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+      cp = 0xFFFD;
+    }
+    _pushUTF8Bytes(bytes, cp);
+  }
+  return _utf8DecodeReplacement(bytes);
+}
+
+/**
+ *  Parse a query string into [[name, value], ...] pairs. */
+function _parseQueryString(qs: string, stripLeadingQuestion = true): [string, string][] {
   const list: [string, string][] = [];
   if (!qs) return list;
-  if (qs.startsWith('?')) qs = qs.slice(1);
+  if (stripLeadingQuestion && qs.startsWith('?')) qs = qs.slice(1);
   for (const part of qs.split('&')) {
+    if (part === '') continue;
     const eqIdx = part.indexOf('=');
     if (eqIdx >= 0) {
       list.push([_formDecode(part.slice(0, eqIdx)), _formDecode(part.slice(eqIdx + 1))]);
@@ -357,16 +519,28 @@ export class URLSearchParams {
 
     if (init == null) return;
 
-    if (init instanceof URLSearchParams) {
-      this.#list = init.#list.slice();
-    } else if (Array.isArray(init)) {
-      for (const pair of init) {
-        if (pair.length < 2) throw new TypeError('URLSearchParams: each entry must have two elements');
-        this.#list.push([String(pair[0]), String(pair[1])]);
+    if (typeof init === 'object' && init !== null && Symbol.iterator in init) {
+      for (const pair of init as Iterable<unknown>) {
+        if (typeof pair === 'string' || pair === null || typeof pair !== 'object' || !(Symbol.iterator in pair)) {
+          throw new TypeError('URLSearchParams: each entry must be iterable');
+        }
+        const values = Array.from(pair as Iterable<unknown>);
+        if (values.length !== 2) throw new TypeError('URLSearchParams: each entry must have exactly two elements');
+        this.#list.push([_toUSVString(values[0]), _toUSVString(values[1])]);
       }
-    } else if (typeof init === 'object') {
-      for (const key of Object.keys(init)) {
-        this.#list.push([String(key), String(init[key])]);
+    } else if ((typeof init === 'object' && init !== null) || typeof init === 'function') {
+      const seen = new Map<string, number>();
+      const record = init as Record<string, unknown>;
+      for (const key of Object.keys(record)) {
+        const name = _toUSVString(key);
+        const value = _toUSVString(record[key]);
+        const existingIndex = seen.get(name);
+        if (existingIndex === undefined) {
+          seen.set(name, this.#list.length);
+          this.#list.push([name, value]);
+        } else {
+          this.#list[existingIndex]![1] = value;
+        }
       }
     } else {
       this.#list = _parseQueryString(String(init));
@@ -414,11 +588,14 @@ export class URLSearchParams {
    */
   delete(name: string, value?: string): void {
     name = String(name);
-    if (value !== undefined) {
-      const val = String(value);
-      this.#list = this.#list.filter(function(e) { return !(e[0] === name && e[1] === val); });
-    } else {
-      this.#list = this.#list.filter(function(e) { return e[0] !== name; });
+    const val = value === undefined ? undefined : String(value);
+    for (let i = 0; i < this.#list.length;) {
+      const entry = this.#list[i]!;
+      if (entry[0] === name && (val === undefined || entry[1] === val)) {
+        this.#list.splice(i, 1);
+      } else {
+        i++;
+      }
     }
     this.#notifyURL();
   }
@@ -541,12 +718,12 @@ export class URLSearchParams {
    * ```
    */
   entries() {
-    const list = this.#list;
+    const params = this;
     let index = 0;
     return {
       next(): IteratorResult<[string, string]> {
-        if (index >= list.length) return { done: true, value: undefined as any };
-        return { done: false, value: list[index++]! };
+        if (index >= params.#list.length) return { done: true, value: undefined as any };
+        return { done: false, value: params.#list[index++]! };
       },
       [Symbol.iterator]() { return this; },
     };
@@ -630,7 +807,7 @@ export class URLSearchParams {
    * @internal
    */
   setQuery(str: string): void {
-    this.#list = _parseQueryString(str);
+    this.#list = _parseQueryString(str, false);
   }
 
   /**
@@ -803,6 +980,15 @@ function _normalizeHost(host: string, scheme: string): string {
   return _normalizeDomain(host);
 }
 
+function _normalizeHostSetterValue(host: string, scheme: string): string | null {
+  if (host.includes('\x00')) return null;
+  if (_isSpecialScheme(scheme)) {
+    if (/[\x01-\x20\x7f]/.test(host)) return null;
+    return _normalizeHost(host, scheme);
+  }
+  return _percentEncode(host.toLowerCase(), '');
+}
+
 function _normalizeIPv6(host: string): string | null {
   const inner = host.slice(1, -1).toLowerCase();
   if (!inner) return null;
@@ -932,6 +1118,8 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
       else          { host = _normalizeHost(authority, scheme); }
     }
 
+    if (port && (!/^\d+$/.test(port) || Number(port) > 65535)) return null;
+
     // Strip default port
     if (port && _DEFAULT_PORTS[scheme] === port) port = '';
 
@@ -951,9 +1139,13 @@ function _parseURL(input: string, base: URLState | null): URLState | null {
 
   const normalizedPath = opaquePath ? pathname : _normalizePath(pathname, hasAuthority);
 
+  const encodedPath = opaquePath
+    ? _encodeOpaquePath(normalizedPath, search.length > 0 || hash.length > 0)
+    : _percentEncode(normalizedPath, _PATH_ENCODE_SET);
+
   return {
     scheme, username, password, host, port,
-    pathname: _percentEncode(normalizedPath, _PATH_ENCODE_SET),
+    pathname: encodedPath,
     search: _percentEncode(search, _QUERY_ENCODE_SET),
     hash: _percentEncode(hash, _FRAGMENT_ENCODE_SET),
   };
@@ -1079,6 +1271,10 @@ function _origin(s: URLState): string {
       scheme === 'ftp') {
     return scheme + '://' + host + (port ? ':' + port : '');
   }
+  if (scheme === 'blob') {
+    const inner = _parseURL(s.pathname, null);
+    return inner === null ? 'null' : _origin(inner);
+  }
   return 'null';
 }
 
@@ -1174,17 +1370,55 @@ export class URL {
    */
   constructor(input: string | URL, base?: string | URL) {
     let baseState = null;
-    if (base != null) {
-      baseState = base instanceof URL ? base.#state : _parseURL(String(base), null);
+    if (base !== undefined) {
+      const baseString = String(base);
+      baseState = _parseURL(baseString, null);
       if (!baseState) throw new TypeError('Invalid base URL: ' + base);
     }
 
-    const state = _parseURL(String(input), baseState);
-    if (!state) throw new TypeError('Invalid URL: ' + input);
+    const inputString = String(input);
+    const state = _parseURL(inputString, baseState);
+    if (!state) throw new TypeError('Invalid URL: ' + inputString);
 
     this.#state  = state;
     const url = this;
-    this.#params = new URLSearchParams(state.search, function syncSearch(search) { url.#state.search = search; });
+    this.#params = new URLSearchParams(null, function syncSearch(search) { url.#state.search = search; });
+    this.#params.setQuery(state.search);
+  }
+
+  /**
+   * Create a `blob:` URL for a Blob or File.
+   *
+   * The returned URL embeds the current `globalThis.location` origin when one
+   * is available and stores a reference to the Blob until revoked. Each call
+   * returns a fresh URL, even for the same Blob.
+   *
+   * ```typescript no_run
+   * const url = URL.createObjectURL(new Blob(['hello']));
+   * URL.revokeObjectURL(url);
+   * ```
+   */
+  static createObjectURL(object: Blob): string {
+    if (!(object instanceof Blob)) {
+      throw new TypeError('URL.createObjectURL: object must be a Blob.');
+    }
+    const url = `blob:${_currentObjectUrlOrigin()}/${_uuidV4().toString()}`;
+    _blobUrlStore.set(url, object);
+    return url;
+  }
+
+  /**
+   * Revoke a `blob:` URL created by `URL.createObjectURL()`.
+   *
+   * Revocation is an exact string match. Unknown URLs and non-blob strings are
+   * accepted as no-ops, matching browser behavior.
+   *
+   * ```typescript no_run
+   * URL.revokeObjectURL('blob:https://example.test/id');
+   * ```
+   */
+  static revokeObjectURL(url: string): void {
+    _blobUrlStore.delete(String(url));
   }
 
   // --- Serialization ---
@@ -1272,7 +1506,7 @@ export class URL {
    * ```
    */
   set protocol(value) {
-    value = String(value).replace(/:$/, '').toLowerCase();
+    value = _stripURLTabsAndNewlines(String(value)).replace(/:$/, '').toLowerCase();
     if (/^[a-z][a-z0-9+\-.]*$/.test(value)) {
       // Per WHATWG: cannot switch between special and non-special schemes
       const currentIsSpecial = this.#state.scheme in _DEFAULT_PORTS;
@@ -1355,7 +1589,7 @@ export class URL {
    * ```
    */
   set host(value) {
-    value = String(value);
+    value = _stripURLTabsAndNewlines(String(value));
     if (value.startsWith('[')) {
       const cb = value.indexOf(']');
       if (cb < 0) return;
@@ -1368,11 +1602,15 @@ export class URL {
     } else {
       const ci = value.lastIndexOf(':');
       if (ci >= 0) {
-        this.#state.host = value.slice(0, ci).toLowerCase();
+        const host = _normalizeHostSetterValue(value.slice(0, ci), this.#state.scheme);
+        if (host === null) return;
+        this.#state.host = host;
         const p = value.slice(ci + 1);
         this.#state.port = _DEFAULT_PORTS[this.#state.scheme] === p ? '' : p;
       } else {
-        this.#state.host = value.toLowerCase();
+        const host = _normalizeHostSetterValue(value, this.#state.scheme);
+        if (host === null) return;
+        this.#state.host = host;
       }
     }
   }
@@ -1399,10 +1637,12 @@ export class URL {
    * ```
    */
   set hostname(value) {
-    const str = String(value);
+    const str = _stripURLTabsAndNewlines(String(value));
     // Per WHATWG: reject if value contains forbidden host code points
     if (/[\x00\x09\x0a\x0d #/?@\\]/.test(str)) return;
-    this.#state.host = str.toLowerCase();
+    const host = _normalizeHostSetterValue(str, this.#state.scheme);
+    if (host === null) return;
+    this.#state.host = host;
   }
 
   /**
@@ -1430,13 +1670,14 @@ export class URL {
    * ```
    */
   set port(value) {
-    value = String(value).trim();
+    value = _stripURLTabsAndNewlines(String(value)).trim();
     if (!value) {
       this.#state.port = '';
       return;
     }
-    if (!/^\d+$/.test(value)) return; // non-numeric, ignore
-    const num = parseInt(value, 10);
+    const match = /^\d+/.exec(value);
+    if (match === null) return; // no leading digits, ignore
+    const num = parseInt(match[0]!, 10);
     if (num > 65535) return; // out of range, ignore
     const normalized = String(num);
     this.#state.port = _DEFAULT_PORTS[this.#state.scheme] === normalized ? '' : normalized;
@@ -1464,7 +1705,7 @@ export class URL {
    * url.pathname = '/b/../c';
    * ```
    */
-  set pathname(value) { this.#state.pathname = _percentEncode(_normalizePath(String(value), !!this.#state.host), _PATH_ENCODE_SET); }
+  set pathname(value) { this.#state.pathname = _percentEncode(_normalizePath(_stripURLTabsAndNewlines(String(value)), !!this.#state.host), _PATH_ENCODE_SET); }
 
   // --- Query ---
 
@@ -1494,7 +1735,7 @@ export class URL {
    * ```
    */
   set search(value) {
-    value = String(value);
+    value = _stripURLTabsAndNewlines(String(value));
     if (value.startsWith('?')) value = value.slice(1);
     // Re-encode the raw query (preserve existing %XX sequences)
     this.#state.search = _percentEncode(value, _QUERY_ENCODE_SET);
@@ -1540,7 +1781,7 @@ export class URL {
    * ```
    */
   set hash(value) {
-    value = String(value);
+    value = _stripURLTabsAndNewlines(String(value));
     if (value.startsWith('#')) value = value.slice(1);
     this.#state.hash = _percentEncode(value, _FRAGMENT_ENCODE_SET);
   }
@@ -1557,7 +1798,13 @@ export class URL {
    * ```
    */
   static canParse(input: string | URL, base?: string | URL): boolean {
-    try { new URL(input, base); return true; } catch (_e) { return false; }
+    try {
+      if (base === undefined) new URL(input);
+      else new URL(input, base);
+      return true;
+    } catch (_e) {
+      return false;
+    }
   }
 
   /**
@@ -1571,6 +1818,10 @@ export class URL {
    * ```
    */
   static parse(input: string | URL, base?: string | URL): URL | null {
-    try { return new URL(input, base); } catch (_e) { return null; }
+    try {
+      return base === undefined ? new URL(input) : new URL(input, base);
+    } catch (_e) {
+      return null;
+    }
   }
 }

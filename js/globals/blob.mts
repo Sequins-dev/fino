@@ -128,6 +128,37 @@ function _normalizeLineEndings(value: string, endings: EndingType): string {
   return value.replace(/\r\n|\r|\n/g, '\n');
 }
 
+function _normalizeOptions(options: BlobOptions | null | undefined): BlobOptions | null | undefined {
+  if (options == null) return options;
+  const kind = typeof options;
+  if (kind !== 'object' && kind !== 'function') {
+    throw new TypeError('Blob options must be an object or null.');
+  }
+  return options;
+}
+
+function _normalizeEndings(options: BlobOptions | null | undefined): EndingType {
+  if (options == null) return 'transparent';
+  const value = options.endings;
+  if (value === undefined) return 'transparent';
+  const endings = String(value);
+  if (endings === 'transparent' || endings === 'native') return endings;
+  throw new TypeError(`Invalid Blob endings value: ${endings}`);
+}
+
+function _toWebIdlLongLong(value: unknown): number {
+  const number = Number(value);
+  if (Number.isNaN(number)) return 0;
+  if (!Number.isFinite(number)) return number;
+  const sign = number < 0 ? -1 : 1;
+  const abs = Math.abs(number);
+  const floor = Math.floor(abs);
+  const fraction = abs - floor;
+  if (fraction < 0.5) return sign * floor;
+  if (fraction > 0.5) return sign * (floor + 1);
+  return sign * (floor % 2 === 0 ? floor : floor + 1);
+}
+
 function _normalizePart(part: BlobPart, endings: EndingType): Uint8Array {
   if (typeof part === 'string') {
     return encodeUtf8(_normalizeLineEndings(part, endings));
@@ -253,18 +284,19 @@ export class Blob {
       return;
     }
 
+    options = _normalizeOptions(options);
     const rawType = options != null && options.type != null ? String(options.type) : '';
     const lowered = rawType.toLowerCase();
     // Per WHATWG: if any char is outside U+0020–U+007E, set type to empty string
     this.#type = /[^\x20-\x7e]/.test(lowered) ? '' : lowered;
-    const endings = options != null && options.endings === 'native' ? 'native' : 'transparent';
+    const endings = _normalizeEndings(options);
 
     if (parts === undefined) {
       this.#bytes = new Uint8Array(0);
       _blobBytes.set(this, this.#bytes);
       return;
     }
-    if (parts === null || typeof (parts as any)[Symbol.iterator] !== 'function') {
+    if (typeof parts === 'string' || parts === null || typeof (parts as any)[Symbol.iterator] !== 'function') {
       throw new TypeError('Failed to construct Blob: The provided value cannot be converted to a sequence.');
     }
 
@@ -313,13 +345,13 @@ export class Blob {
    */
   slice(start?: number, end?: number, contentType?: string): Blob {
     const size = this.#bytes.byteLength;
-    let s = start === undefined ? 0 : Math.trunc(Number(start));
-    let e = end   === undefined ? size : Math.trunc(Number(end));
+    let s = start === undefined ? 0 : _toWebIdlLongLong(start);
+    let e = end   === undefined ? size : _toWebIdlLongLong(end);
     if (s < 0) s = Math.max(size + s, 0); else s = Math.min(s, size);
     if (e < 0) e = Math.max(size + e, 0); else e = Math.min(e, size);
     const len = Math.max(e - s, 0);
     const sliced = this.#bytes.slice(s, s + len);
-    const rawType = contentType != null ? String(contentType).toLowerCase() : '';
+    const rawType = contentType !== undefined ? String(contentType).toLowerCase() : '';
     // Per spec: if contentType contains chars outside 0x20–0x7E, use empty string
     const type = /[^\x20-\x7E]/.test(rawType) ? '' : rawType;
     return new Blob(BYTES_INIT, { bytes: sliced, type });
@@ -337,6 +369,27 @@ export class Blob {
    */
   async text(): Promise<string> {
     return decodeUtf8(this.#bytes);
+  }
+
+  /**
+   * Create a ReadableStream that emits the Blob contents as UTF-8 text.
+   *
+   * The MIME type charset parameter is ignored, matching the File API text
+   * decoding rules used by text(). Empty blobs close without emitting chunks.
+   *
+   * ```typescript no_run
+   * const chunks = [];
+   * for await (const chunk of new Blob(['hi']).textStream()) chunks.push(chunk);
+   * ```
+   */
+  textStream(): ReadableStream<string> {
+    const text = decodeUtf8(this.#bytes);
+    return new ReadableStream({
+      pull(controller: ReadableStreamDefaultController<string>) {
+        if (text.length > 0) controller.enqueue(text);
+        controller.close();
+      },
+    }, undefined);
   }
 
   /**
@@ -480,6 +533,9 @@ export class File extends Blob {
    * ```
    */
   constructor(parts: Iterable<BlobPart> | null, name: string, options?: FileOptions | null) {
+    if (arguments.length < 2) {
+      throw new TypeError('Failed to construct File: 2 arguments required.');
+    }
     super(parts, options);
     this.#name = String(name);
     this.#lastModified = options != null && options.lastModified != null

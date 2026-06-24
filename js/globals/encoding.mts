@@ -229,10 +229,35 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
       continue;
     }
 
+    if (seqLen >= 3 && i + 1 < bytes.length) {
+      const b1 = bytes[i + 1]!;
+      const invalidSecond =
+        (b1 & 0xC0) === 0x80 && (
+          (b0 === 0xE0 && b1 < 0xA0) ||
+          (b0 === 0xED && b1 > 0x9F) ||
+          (b0 === 0xF0 && b1 < 0x90) ||
+          (b0 === 0xF4 && b1 > 0x8F)
+        );
+      if (invalidSecond) {
+        if (fatal) throw new TypeError(`TextDecoder: invalid byte 0x${b1.toString(16)} at index ${i + 1}`);
+        str += '\uFFFD';
+        i++;
+        continue;
+      }
+    }
+
     // Validate and accumulate continuation bytes.
     let valid = true;
+    let missingContinuation = false;
+    let invalidContinuationOffset = 1;
     for (let j = 1; j < seqLen; j++) {
-      if (i + j >= bytes.length || (bytes[i + j]! & 0xC0) !== 0x80) {
+      if (i + j >= bytes.length) {
+        missingContinuation = true;
+        valid = false;
+        break;
+      }
+      if ((bytes[i + j]! & 0xC0) !== 0x80) {
+        invalidContinuationOffset = j;
         valid = false;
         break;
       }
@@ -242,7 +267,7 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
     if (!valid) {
       if (fatal) throw new TypeError(`TextDecoder: incomplete sequence at index ${i}`);
       str += '\uFFFD';
-      i++;
+      i += missingContinuation ? bytes.length - i : invalidContinuationOffset;
       continue;
     }
 
@@ -280,6 +305,89 @@ export function decodeUtf8(bytes: Uint8Array, fatal: boolean = false, skipBom: b
   }
 
   return str;
+}
+
+function decodeUtf16(
+  bytes: Uint8Array,
+  littleEndian: boolean,
+  fatal: boolean = false,
+  skipBom: boolean = true,
+  streaming: boolean = false,
+  pendingLead: number | null = null,
+): { text: string; pendingLead: number | null } {
+  let out = '';
+  let i = 0;
+  let first = true;
+
+  const readUnit = (offset: number): number => {
+    return littleEndian
+      ? bytes[offset]! | (bytes[offset + 1]! << 8)
+      : (bytes[offset]! << 8) | bytes[offset + 1]!;
+  };
+
+  if (pendingLead !== null) {
+    if (bytes.length < 2) {
+      if (streaming) return { text: out, pendingLead };
+      if (fatal) throw new TypeError('TextDecoder: incomplete UTF-16 surrogate pair at end of stream');
+      return { text: '\uFFFD', pendingLead: null };
+    }
+
+    const trail = readUnit(0);
+    if (trail >= 0xDC00 && trail <= 0xDFFF) {
+      out += String.fromCharCode(pendingLead, trail);
+      i = 2;
+    } else {
+      if (fatal) throw new TypeError('TextDecoder: invalid UTF-16 surrogate at start of stream');
+      out += '\uFFFD';
+    }
+    pendingLead = null;
+  }
+
+  while (i < bytes.length) {
+    if (i + 1 >= bytes.length) {
+      if (fatal) throw new TypeError(`TextDecoder: incomplete UTF-16 code unit at index ${i}`);
+      out += '\uFFFD';
+      return { text: out, pendingLead: null };
+    }
+
+    const unit = readUnit(i);
+    i += 2;
+
+    if (first && skipBom && unit === 0xFEFF) {
+      first = false;
+      continue;
+    }
+    first = false;
+
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      if (i + 1 >= bytes.length) {
+        if (streaming) return { text: out, pendingLead: unit };
+        if (fatal) throw new TypeError(`TextDecoder: incomplete UTF-16 surrogate pair at index ${i - 2}`);
+        out += '\uFFFD';
+        return { text: out, pendingLead: null };
+      }
+
+      const trail = readUnit(i);
+      if (trail >= 0xDC00 && trail <= 0xDFFF) {
+        i += 2;
+        out += String.fromCharCode(unit, trail);
+      } else {
+        if (fatal) throw new TypeError(`TextDecoder: invalid UTF-16 surrogate at index ${i - 2}`);
+        out += '\uFFFD';
+      }
+      continue;
+    }
+
+    if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      if (fatal) throw new TypeError(`TextDecoder: invalid UTF-16 surrogate at index ${i - 2}`);
+      out += '\uFFFD';
+      continue;
+    }
+
+    out += String.fromCharCode(unit);
+  }
+
+  return { text: out, pendingLead };
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +594,53 @@ export class DOMException extends Error {
   get code() { return _DOM_EXCEPTION_CODES[this.#name] ?? 0; }
 }
 
+const _DOM_EXCEPTION_LEGACY_CONSTANTS: Record<string, number> = {
+  INDEX_SIZE_ERR: 1,
+  DOMSTRING_SIZE_ERR: 2,
+  HIERARCHY_REQUEST_ERR: 3,
+  WRONG_DOCUMENT_ERR: 4,
+  INVALID_CHARACTER_ERR: 5,
+  NO_DATA_ALLOWED_ERR: 6,
+  NO_MODIFICATION_ALLOWED_ERR: 7,
+  NOT_FOUND_ERR: 8,
+  NOT_SUPPORTED_ERR: 9,
+  INUSE_ATTRIBUTE_ERR: 10,
+  INVALID_STATE_ERR: 11,
+  SYNTAX_ERR: 12,
+  INVALID_MODIFICATION_ERR: 13,
+  NAMESPACE_ERR: 14,
+  INVALID_ACCESS_ERR: 15,
+  VALIDATION_ERR: 16,
+  TYPE_MISMATCH_ERR: 17,
+  SECURITY_ERR: 18,
+  NETWORK_ERR: 19,
+  ABORT_ERR: 20,
+  URL_MISMATCH_ERR: 21,
+  QUOTA_EXCEEDED_ERR: 22,
+  TIMEOUT_ERR: 23,
+  INVALID_NODE_TYPE_ERR: 24,
+  DATA_CLONE_ERR: 25,
+};
+
+for (const [name, value] of Object.entries(_DOM_EXCEPTION_LEGACY_CONSTANTS)) {
+  Object.defineProperty(DOMException, name, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: false,
+  });
+  Object.defineProperty(DOMException.prototype, name, {
+    enumerable: true,
+    configurable: true,
+    get() {
+      if (!(this instanceof DOMException)) {
+        throw new TypeError('DOMException legacy constant getter called on incompatible receiver');
+      }
+      return value;
+    },
+  });
+}
+
 function _dataCloneError(message: string): DOMException {
   return new DOMException(message, 'DataCloneError');
 }
@@ -512,7 +667,7 @@ function _dataCloneError(message: string): DOMException {
  * | Wrapper objects | `Boolean`, `Number`, and `String` wrapper objects clone with their primitive value. |
  * | Maps and sets | `Map` and `Set` clone entries recursively, including cyclic references. |
  * | Errors | `Error`, `AggregateError`, and `DOMException` clone their supported name/message/cause/error details. |
- * | URL types | `URL` and `URLSearchParams` clone from their serialized form. |
+ * | URL types | `URL` and `URLSearchParams` throw `DataCloneError`. |
  * | File API | `Blob` and `File` clone by byte-copying their internal storage. |
  * | Crypto | `CryptoKey` clones through the WebCrypto module's internal key-material helper. |
  * | Binary data | `ArrayBuffer`, typed arrays, `BigInt64Array`, `BigUint64Array`, and `DataView` clone with copied backing bytes. |
@@ -632,15 +787,11 @@ function _clone(
   }
 
   if (value instanceof URL) {
-    const clone = new URL(value.href);
-    seen.set(value, clone);
-    return clone;
+    throw _dataCloneError('structuredClone: URL values cannot be cloned.');
   }
 
   if (value instanceof URLSearchParams) {
-    const clone = new URLSearchParams(value.toString());
-    seen.set(value, clone);
-    return clone;
+    throw _dataCloneError('structuredClone: URLSearchParams values cannot be cloned.');
   }
 
   if (value instanceof DOMException) {
@@ -833,6 +984,10 @@ export class TextEncoder {
    * @returns {{ read: number, written: number }}
    */
   encodeInto(input: string, destination: Uint8Array): { read: number; written: number } {
+    if (!(destination instanceof Uint8Array)) {
+      throw new TypeError('TextEncoder.encodeInto: destination must be a Uint8Array');
+    }
+
     let read = 0;    // JS code units consumed
     let written = 0; // bytes written
 
@@ -898,6 +1053,38 @@ const UTF8_LABELS = new Set([
   'utf-8', 'utf8', 'x-unicode20utf8',
 ]);
 
+const UTF16LE_LABELS = new Set(['utf-16', 'utf-16le']);
+const UTF16BE_LABELS = new Set(['utf-16be']);
+
+type TextDecoderEncoding = 'utf-8' | 'utf-16le' | 'utf-16be';
+
+function _trimAsciiWhitespace(label: string): string {
+  let start = 0;
+  let end = label.length;
+
+  while (start < end) {
+    const c = label.charCodeAt(start);
+    if (c !== 0x09 && c !== 0x0A && c !== 0x0C && c !== 0x0D && c !== 0x20) break;
+    start++;
+  }
+
+  while (end > start) {
+    const c = label.charCodeAt(end - 1);
+    if (c !== 0x09 && c !== 0x0A && c !== 0x0C && c !== 0x0D && c !== 0x20) break;
+    end--;
+  }
+
+  return label.slice(start, end);
+}
+
+function _normaliseDecoderLabel(label: string): TextDecoderEncoding | null {
+  const normalised = _trimAsciiWhitespace(String(label)).toLowerCase();
+  if (UTF8_LABELS.has(normalised)) return 'utf-8';
+  if (UTF16LE_LABELS.has(normalised)) return 'utf-16le';
+  if (UTF16BE_LABELS.has(normalised)) return 'utf-16be';
+  return null;
+}
+
 /**
  * WHATWG TextDecoder — UTF-8 only.
  * https://encoding.spec.whatwg.org/#interface-textdecoder
@@ -912,21 +1099,34 @@ const UTF8_LABELS = new Set([
 // or bytes.length if all sequences are complete.
 function _findIncompleteEnd(bytes: Uint8Array): number {
   const len = bytes.length;
-  // Check last 1-3 bytes for an incomplete leading byte
-  for (let back = 1; back <= 3 && back <= len; back++) {
-    const b = bytes[len - back]!;
+  // Check possible sequence starts near the end. Only buffer prefixes that can
+  // still become valid UTF-8; invalid leading bytes must be emitted now.
+  for (let start = Math.max(0, len - 3); start < len; start++) {
+    const b = bytes[start]!;
     let seqLen = 0;
-    if ((b & 0xE0) === 0xC0) seqLen = 2;
-    else if ((b & 0xF0) === 0xE0) seqLen = 3;
-    else if ((b & 0xF8) === 0xF0) seqLen = 4;
-    if (seqLen > 0 && back < seqLen) {
-      // Found a leading byte that needs more continuation bytes
-      return len - back;
+    if (b >= 0xC2 && b <= 0xDF) seqLen = 2;
+    else if (b >= 0xE0 && b <= 0xEF) seqLen = 3;
+    else if (b >= 0xF0 && b <= 0xF4) seqLen = 4;
+    else continue;
+
+    const available = len - start;
+    if (available >= seqLen) continue;
+
+    let validPrefix = true;
+    for (let offset = 1; offset < available; offset++) {
+      const cont = bytes[start + offset]!;
+      if ((cont & 0xC0) !== 0x80) {
+        validPrefix = false;
+        break;
+      }
+      if (offset === 1) {
+        if (b === 0xE0 && cont < 0xA0) validPrefix = false;
+        else if (b === 0xED && cont > 0x9F) validPrefix = false;
+        else if (b === 0xF0 && cont < 0x90) validPrefix = false;
+        else if (b === 0xF4 && cont > 0x8F) validPrefix = false;
+      }
     }
-    // If it's a continuation byte (10xxxxxx), keep scanning
-    if ((b & 0xC0) === 0x80) continue;
-    // ASCII or a complete leading byte — stop
-    break;
+    if (validPrefix) return start;
   }
   return len;
 }
@@ -965,7 +1165,7 @@ export class TextDecoder {
    *
    * @internal
    */
-  #encoding: string;
+  #encoding: TextDecoderEncoding;
   /**
    * Private property `#fatal` used by `TextDecoder`.
    *
@@ -1032,6 +1232,7 @@ export class TextDecoder {
    * @internal
    */
   #pending: Uint8Array | null = null;
+  #pendingUtf16Lead: number | null = null;
   // Tracks whether the BOM at the stream start has been seen/consumed. Resets
   // after each non-streaming decode() call per WHATWG spec.
   /**
@@ -1081,11 +1282,11 @@ export class TextDecoder {
    * @param {{ fatal?: boolean, ignoreBOM?: boolean }} [options]
    */
   constructor(label: string = 'utf-8', options: { fatal?: boolean; ignoreBOM?: boolean } = {}) {
-    const normalised = String(label).trim().toLowerCase();
-    if (!UTF8_LABELS.has(normalised)) {
+    const encoding = _normaliseDecoderLabel(label);
+    if (encoding === null) {
       throw new RangeError(`TextDecoder: unsupported encoding '${label}'`);
     }
-    this.#encoding  = 'utf-8';
+    this.#encoding  = encoding;
     this.#fatal     = Boolean(options.fatal);
     this.#ignoreBOM = Boolean(options.ignoreBOM);
   }
@@ -1171,7 +1372,12 @@ export class TextDecoder {
 
     if (streaming) {
       // Buffer any incomplete multi-byte sequence at the end.
-      const completeEnd = _findIncompleteEnd(bytes);
+      let completeEnd = bytes.byteLength;
+      if (this.#encoding === 'utf-8') {
+        completeEnd = _findIncompleteEnd(bytes);
+      } else if (bytes.byteLength % 2 === 1) {
+        completeEnd = bytes.byteLength - 1;
+      }
       if (completeEnd < bytes.byteLength) {
         this.#pending = bytes.slice(completeEnd);
         bytes = bytes.slice(0, completeEnd);
@@ -1179,7 +1385,15 @@ export class TextDecoder {
     }
 
     if (bytes.byteLength === 0) {
-      if (!streaming) this.#bomHandled = false;
+      if (!streaming) {
+        if (this.#pendingUtf16Lead !== null) {
+          if (this.#fatal) throw new TypeError('TextDecoder: incomplete UTF-16 surrogate pair at end of stream');
+          this.#pendingUtf16Lead = null;
+          this.#bomHandled = false;
+          return '\uFFFD';
+        }
+        this.#bomHandled = false;
+      }
       return '';
     }
 
@@ -1193,6 +1407,29 @@ export class TextDecoder {
       this.#bomHandled = false;
     }
 
-    return decodeUtf8(bytes, this.#fatal, shouldStripBom);
+    if (this.#encoding === 'utf-16le' || this.#encoding === 'utf-16be') {
+      try {
+        const result = decodeUtf16(
+          bytes,
+          this.#encoding === 'utf-16le',
+          this.#fatal,
+          shouldStripBom,
+          streaming,
+          this.#pendingUtf16Lead,
+        );
+        this.#pendingUtf16Lead = result.pendingLead;
+        return result.text;
+      } catch (err) {
+        this.#pending = null;
+        this.#pendingUtf16Lead = null;
+        throw err;
+      }
+    }
+    try {
+      return decodeUtf8(bytes, this.#fatal, shouldStripBom);
+    } catch (err) {
+      this.#pending = null;
+      throw err;
+    }
   }
 }

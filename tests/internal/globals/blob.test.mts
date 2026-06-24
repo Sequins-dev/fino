@@ -73,6 +73,35 @@ describe('Blob construction', () => {
     const b = new Blob([bytes], { endings: 'native' } as BlobPropertyBag);
     t.deepEqual(Array.from(await b.bytes()), Array.from(bytes), 'binary parts are byte-preserving');
   });
+
+  it('throws TypeError for invalid endings option values', (t) => {
+    for (const endings of [null, '', 'invalidEnumValue', 'Transparent', 'NATIVE', 0, {}]) {
+      t.throws(
+        () => new Blob([], { endings } as any),
+        TypeError,
+        `invalid endings value ${String(endings)} throws`,
+      );
+    }
+  });
+
+  it('throws TypeError for primitive property bags', (t) => {
+    for (const options of [123, 123.4, true, 'abc']) {
+      t.throws(
+        () => new Blob([], options as any),
+        TypeError,
+        `primitive property bag ${String(options)} throws`,
+      );
+    }
+  });
+
+  it('propagates exceptions from the endings option getter', (t) => {
+    const thrown = { name: 'test' };
+    t.throws(
+      () => new Blob([], { get endings() { throw thrown; } } as any),
+      (err) => err === thrown,
+      'endings getter exception is propagated',
+    );
+  });
 });
 
 describe('text() / arrayBuffer() / bytes()', () => {
@@ -198,6 +227,25 @@ describe('File', () => {
     t.ok(f instanceof File, 'File instanceof File');
   });
 
+  it('requires fileBits and fileName arguments', (t) => {
+    t.throws(() => new (File as any)(), TypeError, 'missing fileBits throws');
+    t.throws(() => new (File as any)([]), TypeError, 'missing fileName throws');
+  });
+
+  it('throws TypeError for primitive fileBits strings', (t) => {
+    t.throws(() => new File('hello' as any, 'hello.txt'), TypeError, 'string fileBits throws');
+  });
+
+  it('throws TypeError for primitive property bags', (t) => {
+    for (const options of [123, 123.4, true, 'abc']) {
+      t.throws(
+        () => new File(['bits'], 'name.txt', options as any),
+        TypeError,
+        `primitive property bag ${String(options)} throws`,
+      );
+    }
+  });
+
   it('normalizes string part line endings when endings is native', async (t) => {
     const f = new File(['a\rb\nc'], 'lines.txt', { endings: 'native' } as FilePropertyBag);
     t.equal(await f.text(), ['a', 'b', 'c'].join('\n'), 'File passes endings through Blob construction');
@@ -276,6 +324,45 @@ describe('stream() returns ReadableStream', () => {
   });
 });
 
+describe('textStream()', () => {
+  async function readAll(stream: ReadableStream<string>): Promise<string[]> {
+    const reader = stream.getReader();
+    const chunks: string[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+    return chunks;
+  }
+
+  it('returns a ReadableStream of UTF-8 text chunks', async (t) => {
+    const stream = new Blob(['hello ', new TextEncoder().encode('world')]).textStream();
+    t.ok(stream instanceof ReadableStream, 'textStream() returns ReadableStream');
+    t.deepEqual(await readAll(stream), ['hello world'], 'decoded text is emitted as a string chunk');
+  });
+
+  it('empty Blob produces no text chunks', async (t) => {
+    const chunks = await readAll(new Blob().textStream());
+    t.equal(chunks.length, 0, 'empty blob produces no chunks');
+  });
+
+  it('ignores the type charset and always decodes as UTF-8', async (t) => {
+    const bytes = new Uint8Array([0x68, 0x00, 0x69, 0x00]);
+    const blob = new Blob([bytes], { type: 'text/plain; charset=utf-16le' });
+    t.deepEqual(await readAll(blob.textStream()), ['h\0i\0']);
+  });
+
+  it('returns a fresh stream for each call', async (t) => {
+    const blob = new Blob(['again']);
+    const first = blob.textStream();
+    const second = blob.textStream();
+    t.ok(first !== second, 'streams are distinct');
+    t.deepEqual(await readAll(first), ['again']);
+    t.deepEqual(await readAll(second), ['again']);
+  });
+});
+
 describe('File — name coercion for null/undefined', () => {
   it('File with null name is coerced to string "null"', (t) => {
     const f = new File(['x'], null as any);
@@ -333,6 +420,12 @@ describe('Blob.slice() contentType casing', () => {
     const s = b.slice(0, 5, 'text/\x01plain');
     t.equal(s.type, '', 'invalid contentType becomes empty string');
   });
+
+  it('slice() stringifies null contentType', (t) => {
+    const b = new Blob(['hello']);
+    const s = b.slice(0, 0, null as any);
+    t.equal(s.type, 'null', 'null contentType stringifies to "null"');
+  });
 });
 
 describe('Blob.slice() with NaN and Infinity', () => {
@@ -355,6 +448,14 @@ describe('Blob.slice() with NaN and Infinity', () => {
     const b = new Blob(['hello']);
     const s = b.slice(0, -Infinity);
     t.equal(s.size, 0, 'empty blob for -Infinity end');
+  });
+
+  it('slice() applies WebIDL long long conversion to fractional indexes', async (t) => {
+    const b = new Blob(['abcd']);
+    t.equal(await b.slice(1.5).text(), 'cd', '1.5 rounds to 2');
+    t.equal(await b.slice(2.5).text(), 'cd', '2.5 rounds to 2');
+    t.equal(await b.slice(0, 1.5).text(), 'ab', 'end 1.5 rounds to 2');
+    t.equal(await b.slice(1.5, 3.5).text(), 'cd', '1.5 and 3.5 round to even bounds');
   });
 });
 

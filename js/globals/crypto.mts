@@ -97,9 +97,7 @@ interface CryptoKeyAlgorithm {
 }
 
 function _webCryptoError(name: 'DataError' | 'InvalidAccessError' | 'NotSupportedError' | 'OperationError', message: string): Error {
-  const err = new Error(message);
-  err.name = name;
-  return err;
+  return new DOMException(message, name);
 }
 
 // ---------------------------------------------------------------------------

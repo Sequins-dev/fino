@@ -46,6 +46,23 @@ describe('Basic GET / POST', () => {
     );
   });
 
+  it('resolves relative string URLs against globalThis.location', async (t) => {
+    await withServer(19824,
+      (req) => new Response(new URL(req.url).pathname),
+      async (url) => {
+        const previousLocation = (globalThis as any).location;
+        (globalThis as any).location = new URL(url + '/base/page.html');
+        try {
+          const res = await fetch('/relative/path');
+          t.equal(await res.text(), '/relative/path', 'relative path is requested');
+          t.equal(res.url, url + '/relative/path', 'response URL is absolute');
+        } finally {
+          (globalThis as any).location = previousLocation;
+        }
+      },
+    );
+  });
+
   it('response headers are accessible', async (t) => {
     await withServer(19803,
       () => new Response('body', { headers: { 'x-custom': 'fino' } }),
@@ -94,6 +111,25 @@ describe('Basic GET / POST', () => {
         t.equal(res.body, null, 'body is null');
       },
     );
+  });
+});
+
+describe('Body formData', () => {
+  it('preserves a literal UTF-8 BOM in urlencoded field names', async (t) => {
+    const body = '\uFEFFtest=\uFEFF';
+    const request = new Request('about:blank', {
+      method: 'POST',
+      body,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    const requestForm = await request.formData();
+    t.equal(requestForm.get('\uFEFFtest'), '\uFEFF');
+
+    const response = new Response(body, {
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    const responseForm = await response.formData();
+    t.equal(responseForm.get('\uFEFFtest'), '\uFEFF');
   });
 });
 
@@ -458,6 +494,25 @@ describe('Misc', () => {
         t.equal(text, 'PATCH:/path', 'Request object used');
       },
     );
+  });
+
+  it('fetches Blob object URLs and fails after revocation', async (t) => {
+    const blob = new Blob(['blob body'], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const res = await fetch(url);
+    t.equal(await res.text(), 'blob body', 'blob URL body is returned');
+    t.equal(res.headers.get('content-type'), 'text/plain', 'Blob type becomes Content-Type');
+
+    URL.revokeObjectURL(url);
+    await t.rejects(() => fetch(url), TypeError, 'revoked blob URL rejects');
+  });
+
+  it('fetches a Request created before its Blob object URL is revoked', async (t) => {
+    const url = URL.createObjectURL(new Blob(['captured']));
+    const request = new Request(url);
+    URL.revokeObjectURL(url);
+    t.equal(await (await fetch(request)).text(), 'captured', 'Request captured the Blob reference');
+    t.equal(await (await fetch(request.clone())).text(), 'captured', 'cloned Request keeps the Blob reference');
   });
 
   it('Host header is automatically set', async (t) => {

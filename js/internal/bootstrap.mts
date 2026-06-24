@@ -156,10 +156,15 @@ if (typeof Atomics !== 'undefined' && typeof Atomics.waitAsync === 'function') {
   });
 }
 
+const globalEventTarget = new EventTarget();
+
 Object.assign(globalThis, {
   Event,
   CustomEvent,
   EventTarget,
+  addEventListener: globalEventTarget.addEventListener.bind(globalEventTarget),
+  removeEventListener: globalEventTarget.removeEventListener.bind(globalEventTarget),
+  dispatchEvent: globalEventTarget.dispatchEvent.bind(globalEventTarget),
   CountQueuingStrategy,
   ByteLengthQueuingStrategy,
   ReadableStreamDefaultController,

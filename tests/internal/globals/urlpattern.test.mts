@@ -168,6 +168,18 @@ describe('advanced patterns', () => {
   it('URLPattern -- throws on null input', (t) => {
     t.throws(() => new URLPattern(null as never), null, 'throws on null');
   });
+
+  it('URLPattern -- undefined input creates an all-wildcard pattern', (t) => {
+    const p = new URLPattern(undefined as never, undefined);
+    t.equal(p.protocol, '*');
+    t.equal(p.username, '*');
+    t.equal(p.password, '*');
+    t.equal(p.hostname, '*');
+    t.equal(p.port, '*');
+    t.equal(p.pathname, '*');
+    t.equal(p.search, '*');
+    t.equal(p.hash, '*');
+  });
 });
 
 describe('exec() and test() with baseURL', () => {
