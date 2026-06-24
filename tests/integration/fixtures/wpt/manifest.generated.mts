@@ -195,9 +195,14 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader in document or worker environment",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "async_test",
+          "name": "Check the values of bubbles and cancelable are false when the progress event is dispatched"
+        }
+      ]
     },
     {
       "path": "FileAPI/FileReader/test_errors-manual.html",
