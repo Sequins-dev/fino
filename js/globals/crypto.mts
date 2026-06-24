@@ -344,6 +344,13 @@ function _toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
+function _deriveBitsByteLength(length: number | null | undefined): number {
+  if (!Number.isInteger(length) || length === null || length < 0 || length % 8 !== 0) {
+    throw _webCryptoError('OperationError', 'deriveBits: length must be a non-negative multiple of 8');
+  }
+  return length / 8;
+}
+
 function _base64urlEncode(bytes: Uint8Array): string {
   let b64 = '';
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -1410,7 +1417,7 @@ const subtle = {
    * bits.byteLength; // 16
    * ```
    */
-  async deriveBits(algorithm: string | { name: string; [key: string]: unknown }, baseKey: CryptoKey, length: number): Promise<ArrayBuffer> {
+  async deriveBits(algorithm: string | { name: string; [key: string]: unknown }, baseKey: CryptoKey, length?: number | null): Promise<ArrayBuffer> {
     _checkCryptoAvailable();
     const alg = _normalizeAlgorithm(algorithm);
     if (alg.name === 'ECDH') {
@@ -1429,15 +1436,24 @@ const subtle = {
         throw _webCryptoError('InvalidAccessError', `ECDH deriveBits: key curves do not match (${privCurve} vs ${pubCurve})`);
       }
       const secret = openssl.evpPkeyDeriveEcdh(_pkeyPtr(baseKey), _pkeyPtr(publicKeyParam));
-      const requestedBytes = Math.ceil(length / 8);
-      if (requestedBytes > secret.byteLength) {
-        throw _webCryptoError('DataError', `ECDH deriveBits: requested ${requestedBytes} bytes but shared secret is only ${secret.byteLength}`);
+      const requestedBits = length == null ? secret.byteLength * 8 : length;
+      if (!Number.isInteger(requestedBits) || requestedBits < 0) {
+        throw _webCryptoError('OperationError', 'ECDH deriveBits: length must be a non-negative integer');
       }
-      return _toArrayBuffer(secret.subarray(0, requestedBytes));
+      const requestedBytes = Math.ceil(requestedBits / 8);
+      if (requestedBytes > secret.byteLength) {
+        throw _webCryptoError('OperationError', `ECDH deriveBits: requested ${requestedBytes} bytes but shared secret is only ${secret.byteLength}`);
+      }
+      const out = secret.slice(0, requestedBytes);
+      const remainder = requestedBits % 8;
+      if (remainder !== 0 && out.byteLength !== 0) {
+        out[out.byteLength - 1] = out[out.byteLength - 1]! & (0xff << (8 - remainder));
+      }
+      return _toArrayBuffer(out);
     }
 
     const keyBytes = _keyData(baseKey);
-    const keyLen = length / 8;
+    const keyLen = _deriveBitsByteLength(length);
 
     if (alg.name === 'PBKDF2') {
       if (!baseKey.usages.includes('deriveBits') && !baseKey.usages.includes('deriveKey')) {

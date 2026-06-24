@@ -458,6 +458,20 @@ describe('HKDF', { skip }, () => {
       t.ok((err as Error).message.toLowerCase().includes('large') || (err as Error).message.includes('255'), 'error mentions the limit');
     }
   });
+
+  it('deriveBits rejects non-byte-aligned and missing HKDF lengths', async (t) => {
+    const ikm = new TextEncoder().encode('input');
+    const key = await crypto.subtle.importKey('raw', ikm, { name: 'HKDF' }, false, ['deriveBits']);
+    const algorithm = { name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new Uint8Array(0) };
+
+    for (const length of [230, null, undefined]) {
+      await t.rejects(
+        () => crypto.subtle.deriveBits(algorithm, key, length as number),
+        rejectsWithDomException('OperationError'),
+        `HKDF length ${length} rejects with OperationError`,
+      );
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

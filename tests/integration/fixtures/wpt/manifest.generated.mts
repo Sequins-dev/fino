@@ -2400,14 +2400,9 @@ export const WPT_MANIFEST: WptManifest = {
         "derived_bits_length_vectors.js",
         "derived_bits_length_testcases.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires X25519 WebCrypto algorithm support for mixed deriveBits length subtests",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/derived_bits_length.js",

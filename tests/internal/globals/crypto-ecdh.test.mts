@@ -89,6 +89,23 @@ describe('ECDH — deriveBits', { skip }, () => {
     t.equal(short.byteLength, 16, 'truncated to 128 bits = 16 bytes');
   });
 
+  it('deriveBits masks non-byte-aligned output and defaults to full secret', async (t) => {
+    const kpA = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair;
+    const kpB = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair;
+    const full = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: kpB.publicKey }, kpA.privateKey, undefined as unknown as number));
+    const partial = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: kpB.publicKey }, kpA.privateKey, 230));
+
+    t.equal(full.byteLength, 32, 'undefined length returns full P-256 shared secret');
+    t.equal(partial.byteLength, 29, '230 bits requires 29 bytes');
+    t.equal(partial[28] & 0x03, 0, 'unused low bits in final byte are zeroed');
+
+    await t.rejects(
+      () => crypto.subtle.deriveBits({ name: 'ECDH', public: kpB.publicKey }, kpA.privateKey, 384),
+      (err: unknown) => err instanceof DOMException && err.name === 'OperationError',
+      'oversized ECDH length rejects with OperationError',
+    );
+  });
+
   it('cross-curve derivation rejects', async (t) => {
     const kpA = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits']) as CryptoKeyPair;
     const kpB = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-384' }, true, ['deriveBits']) as CryptoKeyPair;
