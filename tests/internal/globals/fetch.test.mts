@@ -809,6 +809,14 @@ describe('fetch — invalid URL', () => {
       'fetch with invalid URL rejects',
     );
   });
+
+  it('fetch with a blocked port throws TypeError before connecting', async (t) => {
+    await t.rejects(
+      () => fetch('http://127.0.0.1:25/'),
+      TypeError,
+      'blocked port rejects with TypeError',
+    );
+  });
 });
 
 describe('Compression', () => {
