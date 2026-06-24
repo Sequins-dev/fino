@@ -282,6 +282,28 @@ describe('Key management', { skip }, () => {
     t.equal((key128.algorithm as AesKeyAlgorithm).length, 128, '128-bit key');
   });
 
+  it('generateKey AES rejects invalid usages with SyntaxError', async (t) => {
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'AES-CTR', length: 128 }, true, ['sign'] as KeyUsage[]),
+      rejectsWithDomException('SyntaxError'),
+      'AES-CTR rejects non-AES key usages',
+    );
+
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, true, []),
+      rejectsWithDomException('SyntaxError'),
+      'AES-GCM rejects empty usages for secret keys',
+    );
+  });
+
+  it('generateKey AES rejects invalid lengths with OperationError', async (t) => {
+    await t.rejects(
+      () => crypto.subtle.generateKey({ name: 'AES-CTR', length: 255 }, true, []),
+      rejectsWithDomException('OperationError'),
+      'AES-CTR invalid generated-key length is checked before empty usages',
+    );
+  });
+
   it('generateKey AES-CTR exposes cached CryptoKey metadata', async (t) => {
     const key = await crypto.subtle.generateKey({ name: 'AES-CTR', length: 256 }, true, ['encrypt']);
     t.equal(key.type, 'secret', 'AES-CTR key is secret');
@@ -291,6 +313,18 @@ describe('Key management', { skip }, () => {
     t.ok(key.usages === key.usages, 'usages getter returns cached object');
     t.deepEqual([...key.usages], ['encrypt'], 'usages are preserved');
     t.throws(() => (key.usages as KeyUsage[]).push('decrypt'), TypeError, 'usages array is frozen');
+  });
+
+  it('generated AES-CTR keys export as raw and JWK', async (t) => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-CTR', length: 192 }, true, ['encrypt']) as CryptoKey;
+    const raw = await crypto.subtle.exportKey('raw', key) as ArrayBuffer;
+    const jwk = await crypto.subtle.exportKey('jwk', key) as JsonWebKey;
+
+    t.equal(raw.byteLength, 24, 'raw export preserves 192-bit key length');
+    t.equal(jwk.kty, 'oct', 'JWK key type');
+    t.equal(jwk.alg, 'A192CTR', 'JWK algorithm');
+    t.deepEqual(jwk.key_ops, ['encrypt'], 'JWK key_ops');
+    t.equal(jwk.ext, true, 'JWK extractable flag');
   });
 
   it('generateKey HMAC produces usable key', async (t) => {

@@ -27,9 +27,9 @@
  *
  * Supported digest names are SHA-1, SHA-256, SHA-384, and SHA-512. Symmetric
  * key import supports raw and JWK AES-GCM, AES-CBC, HMAC, PBKDF2, and HKDF
- * keys; asymmetric import/export supports the RSA, ECDSA, ECDH, and Ed25519
- * formats covered by the focused crypto tests. AES-CTR key generation is
- * exposed for WebCrypto metadata compatibility; AES-CTR encryption, AES-KW,
+ * keys; generated AES-CTR keys can be exported as raw or JWK metadata.
+ * Asymmetric import/export supports the RSA, ECDSA, ECDH, and Ed25519
+ * formats covered by the focused crypto tests. AES-CTR encryption, AES-KW,
  * full WPT coverage, and full WebCrypto algorithm parity are outside this
  * release baseline. Unsupported algorithms and key formats reject with
  * `NotSupportedError`, malformed key material rejects with `DataError`,
@@ -98,7 +98,7 @@ interface CryptoKeyAlgorithm {
 }
 
 function _webCryptoError(
-  name: 'DataError' | 'InvalidAccessError' | 'NotSupportedError' | 'OperationError' | 'QuotaExceededError' | 'TypeMismatchError',
+  name: 'DataError' | 'InvalidAccessError' | 'NotSupportedError' | 'OperationError' | 'QuotaExceededError' | 'SyntaxError' | 'TypeMismatchError',
   message: string,
 ): DOMException {
   return new DOMException(message, name);
@@ -481,6 +481,7 @@ function _symmetricJwkAlg(algName: string, keyBytes: number, hash?: string | { n
   const bits = keyBytes * 8;
   if (algName === 'AES-GCM') return bits === 128 ? 'A128GCM' : 'A256GCM';
   if (algName === 'AES-CBC') return bits === 128 ? 'A128CBC' : 'A256CBC';
+  if (algName === 'AES-CTR') return bits === 128 ? 'A128CTR' : bits === 192 ? 'A192CTR' : 'A256CTR';
   throw _webCryptoError('NotSupportedError', `JWK not supported for algorithm ${algName}`);
 }
 
@@ -901,7 +902,7 @@ const subtle = {
         n?: string; e?: string; p?: string; q?: string; dp?: string; dq?: string; qi?: string;
         key_ops?: unknown;
       };
-      if ((alg.name === 'AES-GCM' || alg.name === 'AES-CBC' || alg.name === 'HMAC') && jwk.kty !== 'oct') {
+      if ((alg.name === 'AES-GCM' || alg.name === 'AES-CBC' || alg.name === 'AES-CTR' || alg.name === 'HMAC') && jwk.kty !== 'oct') {
         throw _webCryptoError('DataError', `importKey: ${alg.name} JWK requires kty "oct"`);
       }
       if ((alg.name === 'ECDSA' || alg.name === 'ECDH') && jwk.kty !== 'EC') {
@@ -1211,6 +1212,8 @@ const subtle = {
         jwkAlg = algLen === 128 ? 'A128GCM' : 'A256GCM';
       } else if (algName === 'AES-CBC') {
         jwkAlg = algLen === 128 ? 'A128CBC' : 'A256CBC';
+      } else if (algName === 'AES-CTR') {
+        jwkAlg = algLen === 128 ? 'A128CTR' : algLen === 192 ? 'A192CTR' : 'A256CTR';
       } else {
         throw _webCryptoError('NotSupportedError', `exportKey: JWK not supported for algorithm ${algName}`);
       }
@@ -1383,7 +1386,11 @@ const subtle = {
     if (alg.name === 'AES-GCM' || alg.name === 'AES-CBC' || alg.name === 'AES-CTR') {
       const length = alg.length ?? 256;
       if (length !== 128 && length !== 192 && length !== 256) {
-        throw _webCryptoError('DataError', `${alg.name}: key length must be 128, 192, or 256`);
+        throw _webCryptoError('OperationError', `${alg.name}: key length must be 128, 192, or 256`);
+      }
+      const allowedUsages = new Set<KeyUsage>(['encrypt', 'decrypt', 'wrapKey', 'unwrapKey']);
+      if (keyUsages.length === 0 || keyUsages.some(usage => !allowedUsages.has(usage))) {
+        throw _webCryptoError('SyntaxError', `${alg.name}: invalid key usages`);
       }
       const keyLen = length / 8;
       const buf = new ArrayBuffer(keyLen);
