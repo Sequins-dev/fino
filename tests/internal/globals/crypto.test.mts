@@ -362,6 +362,24 @@ describe('Key management', { skip }, () => {
     );
   });
 
+  it('generateKey Ed25519 validates usages and keeps public keys extractable', async (t) => {
+    await t.rejects(
+      () => crypto.subtle.generateKey('Ed25519', true, ['encrypt'] as KeyUsage[]),
+      rejectsWithDomException('SyntaxError'),
+      'Ed25519 rejects non-signature key usages',
+    );
+
+    await t.rejects(
+      () => crypto.subtle.generateKey('Ed25519', true, []),
+      rejectsWithDomException('SyntaxError'),
+      'Ed25519 rejects empty usages for key pairs',
+    );
+
+    const pair = await crypto.subtle.generateKey('Ed25519', false, ['sign']) as CryptoKeyPair;
+    t.equal(pair.privateKey.extractable, false, 'private key follows requested extractability');
+    t.equal(pair.publicKey.extractable, true, 'public key is always extractable');
+  });
+
   it('structuredClone copies symmetric CryptoKey material and metadata', async (t) => {
     const keyBytes = new Uint8Array(32).fill(0x33);
     const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);

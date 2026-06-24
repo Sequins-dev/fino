@@ -1281,6 +1281,10 @@ const subtle = {
     const alg = _normalizeAlgorithm(algorithm);
 
     if (_isEd25519Algorithm(alg.name)) {
+      const allowedUsages = new Set<KeyUsage>(['sign', 'verify']);
+      if (keyUsages.length === 0 || keyUsages.some(usage => !allowedUsages.has(usage))) {
+        throw _webCryptoError('SyntaxError', 'Ed25519: invalid key usages');
+      }
       const pkeyFull = openssl.evpPkeyGenerateEd25519();
       let pkeyPub: object;
       try {
@@ -1293,9 +1297,9 @@ const subtle = {
       const privateUsages = keyUsages.filter(u => u === 'sign');
       const publicUsages  = keyUsages.filter(u => u === 'verify');
       const privateKey = new CryptoKey('private', extractable, algoDescriptor,
-        keyUsages.length === 0 ? ['sign'] : privateUsages, null, pkeyFull);
-      const publicKey  = new CryptoKey('public',  extractable, algoDescriptor,
-        keyUsages.length === 0 ? ['verify'] : publicUsages, null, pkeyPub);
+        privateUsages, null, pkeyFull);
+      const publicKey  = new CryptoKey('public',  true, algoDescriptor,
+        publicUsages, null, pkeyPub);
       return { privateKey, publicKey };
     }
 
