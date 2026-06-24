@@ -123,6 +123,7 @@ interface ReadableStreamState {
   state: 'readable' | 'closed' | 'errored';
   storedError: unknown;
   locked: boolean;
+  disturbed: boolean;
   reader: ReadableStreamDefaultReader | ReadableStreamBYOBReader | null;
   closedResolve: (() => void) | undefined;
   closedReject:  ((e: unknown) => void) | undefined;
@@ -469,6 +470,7 @@ function _rsMakeState(kind: ReadableStreamState['kind'], extra: Partial<Readable
     state: 'readable',
     storedError: null,
     locked: false,
+    disturbed: false,
     reader: null,
     closedResolve, closedReject, closedPromise,
     ...extra,
@@ -527,6 +529,7 @@ function _rsErrorPromise(s: ReadableStreamState): Promise<never> {
 }
 
 function _rsCancel(s: ReadableStreamState, reason: unknown): Promise<void> {
+  s.disturbed = true;
   if (s.state === 'closed') return Promise.resolve();
   if (s.state === 'errored') return Promise.reject(s.storedError);
   // Clear any queued data
@@ -603,6 +606,7 @@ function _rsIterableIterator(s: ReadableStreamState): AsyncIterator<any> {
 }
 
 function _rsNextChunk(s: ReadableStreamState): Promise<{ done: boolean; value: any }> {
+  s.disturbed = true;
   if (s.kind === 'iterable') {
     const iter = _rsIterableIterator(s);
     return iter.next().then(function rsIterNext(r): { done: boolean; value: any } {
@@ -648,6 +652,23 @@ function _rsNextChunk(s: ReadableStreamState): Promise<{ done: boolean; value: a
     s.pendingReads!.push({ resolve, reject });
     _rsPullIfNeeded(s);
   });
+}
+
+/**
+ * Return whether a readable stream has been read from or canceled.
+ *
+ * This is an internal hook for Fetch body `bodyUsed` semantics.
+ *
+ * ```typescript no_run
+ * const disturbed = isReadableStreamDisturbed(new ReadableStream());
+ * ```
+ *
+ * @internal
+ */
+export function isReadableStreamDisturbed(stream: ReadableStream): boolean {
+  const state = _rs.get(stream);
+  if (!state) throw new TypeError('ReadableStream receiver expected');
+  return state.disturbed;
 }
 
 // Fill a BYOB view from queued Uint8Array chunks. Returns filled Uint8Array slice or null.

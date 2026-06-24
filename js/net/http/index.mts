@@ -127,7 +127,7 @@
  */
 
 import { decodeUtf8, encodeUtf8 } from '../../globals/encoding.mts';
-import { ReadableStream } from '../../globals/webstreams.mts';
+import { ReadableStream, isReadableStreamDisturbed } from '../../globals/webstreams.mts';
 import { Blob } from '../../globals/blob.mts';
 import { FormData, _createMultipartBoundary, _serializeFormData } from '../../globals/formdata.mts';
 import { URLSearchParams, _resolveObjectURL } from '../../globals/url.mts';
@@ -695,6 +695,16 @@ function _toBytes(body: Exclude<BodyInit, null>): Uint8Array {
   if (body instanceof ArrayBuffer) return new Uint8Array(body);
   if (typeof body === 'string') return encodeUtf8(body);
   throw new TypeError('Body must be a string, ArrayBuffer, or Uint8Array');
+}
+
+function _nonThenableBytes<T extends object>(value: T): T {
+  Object.defineProperty(value, 'then', {
+    value: undefined,
+    enumerable: false,
+    configurable: true,
+    writable: true,
+  });
+  return value;
 }
 
 
@@ -1673,6 +1683,7 @@ export class Request {
    */
   get body(): ReadableStream | null {
     if (this.#rawBody === null) return null;
+    if (this.#rawBody instanceof ReadableStream) return this.#bodyStream ??= this.#rawBody;
     return this.#bodyStream ??= ReadableStream.from(this.#rawBody);
   }
 
@@ -1683,7 +1694,8 @@ export class Request {
    * ```
    */
   get bodyUsed() {
-    return this.#bodyUsed || (this.#bodyStream !== null && this.#bodyStream.locked);
+    const stream = this.#bodyStream ?? (this.#rawBody instanceof ReadableStream ? this.#rawBody : null);
+    return this.#bodyUsed || (stream !== null && isReadableStreamDisturbed(stream));
   }
 
   /** HTTP version string, a Fino extension for parsed wire requests.
@@ -1738,8 +1750,8 @@ export class Request {
       parts.push(chunk);
       total += chunk.byteLength;
     }
-    if (parts.length === 0) return new Uint8Array(0);
-    return _concat(parts, total);
+    if (parts.length === 0) return _nonThenableBytes(new Uint8Array(0));
+    return _nonThenableBytes(_concat(parts, total));
   }
 
   /** Consume body and return as a UTF-8 string.
@@ -1772,7 +1784,7 @@ export class Request {
     const bytes = await this.#consumeBody();
     const copy = new Uint8Array(bytes.byteLength);
     copy.set(bytes);
-    return copy.buffer;
+    return _nonThenableBytes(copy.buffer);
   }
 
   /** Consume body and return as Uint8Array.
@@ -2241,6 +2253,16 @@ export class Response {
    */
   get body(): ReadableStream | null {
     if (this.#rawBody === null) return null;
+    if (this.#rawBody instanceof ReadableStream) return this.#bodyStream ??= this.#rawBody;
+    if (this.#rawBody instanceof Uint8Array) {
+      const bytes = this.#rawBody;
+      return this.#bodyStream ??= new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          controller.close();
+        },
+      });
+    }
     const iterable = this.#rawBody instanceof Uint8Array
       ? _iterableFromBytes(this.#rawBody)
       : this.#rawBody;
@@ -2254,7 +2276,8 @@ export class Response {
    * ```
    */
   get bodyUsed() {
-    return this.#bodyUsed || (this.#bodyStream !== null && this.#bodyStream.locked);
+    const stream = this.#bodyStream ?? (this.#rawBody instanceof ReadableStream ? this.#rawBody : null);
+    return this.#bodyUsed || (stream !== null && isReadableStreamDisturbed(stream));
   }
 
   /** Final URL, empty for constructed responses and set by fetch clients.
@@ -2424,19 +2447,20 @@ export class Response {
    */
   async #consumeBody() {
     if (this.#bodyUsed) throw new TypeError('body already consumed');
-    if (this.#rawBody === null) return new Uint8Array(0);
+    if (this.#rawBody === null) return _nonThenableBytes(new Uint8Array(0));
     this.#bodyUsed = true;
     // Fast path: avoid ReadableStream wrapping when body is already bytes.
-    if (this.#rawBody instanceof Uint8Array) return this.#rawBody;
+    if (this.#rawBody instanceof Uint8Array) return _nonThenableBytes(this.#rawBody);
     const source: AsyncIterable<Uint8Array> = this.#bodyStream ?? this.#rawBody;
     const parts = [];
     let total = 0;
     for await (const chunk of source) {
+      if (!(chunk instanceof Uint8Array)) throw new TypeError('Response body stream chunks must be Uint8Array');
       parts.push(chunk);
       total += chunk.byteLength;
     }
-    if (parts.length === 0) return new Uint8Array(0);
-    return _concat(parts, total);
+    if (parts.length === 0) return _nonThenableBytes(new Uint8Array(0));
+    return _nonThenableBytes(_concat(parts, total));
   }
 
   /** Consume body and return as a UTF-8 string.
@@ -2467,7 +2491,7 @@ export class Response {
     const bytes = await this.#consumeBody();
     const copy = new Uint8Array(bytes.byteLength);
     copy.set(bytes);
-    return copy.buffer;
+    return _nonThenableBytes(copy.buffer);
   }
 
   /** Consume body and return as Uint8Array.
