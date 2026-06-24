@@ -170,7 +170,8 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
     path === 'FileAPI/FileReaderSync.worker.js' ||
     path === 'FileAPI/blob/Blob-constructor-endings.html' ||
     path === 'FileAPI/file/File-constructor-endings.html' ||
-    path === 'FileAPI/FileReader/progress_event_bubbles_cancelable.html'
+    path === 'FileAPI/FileReader/progress_event_bubbles_cancelable.html' ||
+    path === 'fetch/api/response/response-consume.html'
   ) {
     return { runnable: true, reason: null };
   }

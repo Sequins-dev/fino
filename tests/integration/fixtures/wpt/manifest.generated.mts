@@ -19666,8 +19666,8 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires FileReader in document or worker environment",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {

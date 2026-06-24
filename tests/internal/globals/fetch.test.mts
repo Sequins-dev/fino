@@ -326,6 +326,34 @@ describe('Body formData', () => {
       'malformed closing boundary rejects',
     );
   });
+
+  it('defaults multipart file parts without Content-Type to text/plain', async (t) => {
+    const encoder = new TextEncoder();
+    const prefix = encoder.encode(
+      '--boundary\r\n' +
+      'Content-Disposition: form-data; name="file"; filename="file.txt"\r\n' +
+      '\r\n',
+    );
+    const content = new Uint8Array([5, 0, 255]);
+    const suffix = encoder.encode('\r\n--boundary--\r\n');
+    const body = new Uint8Array(prefix.byteLength + content.byteLength + suffix.byteLength);
+    body.set(prefix, 0);
+    body.set(content, prefix.byteLength);
+    body.set(suffix, prefix.byteLength + content.byteLength);
+    const response = new Response(new Blob([body]), {
+      headers: { 'content-type': 'multipart/form-data; boundary="boundary"' },
+    });
+
+    const form = await response.formData();
+    const file = form.get('file') as File;
+    t.ok(file instanceof File, 'multipart filename part parses as File');
+    t.equal(file.type, 'text/plain', 'missing file Content-Type defaults to text/plain');
+    t.deepEqual(
+      Array.from(new Uint8Array(await file.arrayBuffer())),
+      Array.from(content),
+      'multipart file bytes are preserved',
+    );
+  });
 });
 
 describe('Request BodyInit', () => {

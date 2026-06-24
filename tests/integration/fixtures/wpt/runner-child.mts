@@ -55,6 +55,24 @@ function interfacePathFromFetchInput(input: unknown): string | null {
   return join(wptRoot, pathname.slice(1)).toString();
 }
 
+function localWptResourcePathFromFetchInput(input: unknown): string | null {
+  const href = typeof input === 'string'
+    ? input
+    : input instanceof URL
+      ? input.href
+      : input instanceof Request
+        ? input.url
+        : null;
+  if (href === null || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(href)) return null;
+  try {
+    const base = new URL(`http://web-platform.test/${testPath}`);
+    const pathname = new URL(href, base).pathname;
+    return join(wptRoot, pathname.slice(1)).toString();
+  } catch (_) {
+    return null;
+  }
+}
+
 function installWorkerImportScripts(g: any): void {
   g.importScripts = (...specifiers: string[]) => {
     for (const specifier of specifiers) {
@@ -109,6 +127,13 @@ function installBaseGlobals(): void {
     const localInterfacePath = interfacePathFromFetchInput(input);
     if (localInterfacePath !== null) {
       return new Response(await fs.readFile(localInterfacePath), {
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      });
+    }
+    const localResourcePath = localWptResourcePathFromFetchInput(input);
+    if (localResourcePath !== null) {
+      return new Response(await fs.readFile(localResourcePath), {
         status: 200,
         headers: { 'content-type': 'text/plain' },
       });
@@ -169,26 +194,34 @@ async function evalTestWithMetaScripts(basePath: string, source: string): Promis
     combined += await fs.readFile(path);
     combined += `\n//# sourceURL=${path}\n`;
   }
-  combined += sourceForEval(basePath, source);
+  combined += await sourceForEval(basePath, source);
   const testAbsolutePath = join(wptRoot, basePath).toString();
   (0, eval)(combined + `\n//# sourceURL=${testAbsolutePath}`);
 }
 
-function sourceForEval(basePath: string, source: string): string {
+async function sourceForEval(basePath: string, source: string): Promise<string> {
   if (!/\.html$/.test(basePath)) return source;
   const scripts: string[] = [];
   const pattern = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source)) !== null) {
     const attrs = match[1]!;
-    if (/\bsrc\s*=/.test(attrs)) continue;
+    const srcMatch = /\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/.exec(attrs);
+    if (srcMatch !== null) {
+      const specifier = srcMatch[1] ?? srcMatch[2] ?? srcMatch[3]!;
+      if (specifier === '/resources/testharness.js' || specifier === '/resources/testharnessreport.js') continue;
+      const path = scriptPath(basePath, specifier);
+      scripts.push(await fs.readFile(path));
+      continue;
+    }
     scripts.push(match[2]!);
   }
   if (scripts.length === 0) throw new Error(`WPT HTML file has no inline scripts: ${basePath}`);
   return scripts.join('\n');
 }
 
-function requiresWptServer(source: string): boolean {
+function requiresWptServer(basePath: string, source: string): boolean {
+  if (basePath === 'fetch/api/response/response-consume.html') return false;
   return /\bfetch\s*\(\s*['"`]\//.test(source)
       || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
@@ -225,7 +258,7 @@ async function main(): Promise<void> {
   }
   const results: HarnessResult[] = [];
 
-  if (requiresWptServer(runnableSource)) {
+  if (requiresWptServer(testPath, runnableSource)) {
     await assertWptServerReady();
   }
 

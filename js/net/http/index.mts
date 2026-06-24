@@ -208,6 +208,7 @@ const SPACE = 0x20; // ' '
 
 // Constant byte sequences used in framing — allocated once, never modified.
 const CRLF_BYTES = new Uint8Array([CR, LF]);
+const DOUBLE_CRLF_BYTES = new Uint8Array([CR, LF, CR, LF]);
 const LAST_CHUNK_BYTES = new Uint8Array([0x30, CR, LF, CR, LF]); // "0\r\n\r\n"
 
 // Maximum header section size (prevents malicious clients from sending
@@ -278,58 +279,94 @@ function _multipartHeaderParameter(value: string, name: string): string | null {
   return null;
 }
 
+function _startsWithBytes(bytes: Uint8Array, needle: Uint8Array, offset: number): boolean {
+  if (offset < 0 || offset + needle.byteLength > bytes.byteLength) return false;
+  for (let i = 0; i < needle.byteLength; i++) {
+    if (bytes[offset + i] !== needle[i]) return false;
+  }
+  return true;
+}
+
+function _indexOfBytes(bytes: Uint8Array, needle: Uint8Array, from = 0): number {
+  if (needle.byteLength === 0) return from <= bytes.byteLength ? from : -1;
+  for (let i = Math.max(0, from); i + needle.byteLength <= bytes.byteLength; i++) {
+    if (_startsWithBytes(bytes, needle, i)) return i;
+  }
+  return -1;
+}
+
+function _lastIndexOfBytes(bytes: Uint8Array, needle: Uint8Array): number {
+  if (needle.byteLength === 0) return bytes.byteLength;
+  for (let i = bytes.byteLength - needle.byteLength; i >= 0; i--) {
+    if (_startsWithBytes(bytes, needle, i)) return i;
+  }
+  return -1;
+}
+
+function _parseMultipartPart(form: FormData, partBytes: Uint8Array): void {
+  if (partBytes.byteLength === 0) return;
+  const headerEnd = _indexOfBytes(partBytes, DOUBLE_CRLF_BYTES);
+  if (headerEnd < 0) return;
+  const headerText = decodeUtf8(partBytes.subarray(0, headerEnd), false, false);
+  const valueBytes = partBytes.subarray(headerEnd + 4);
+  const partHeaders = new Map<string, string>();
+  for (const line of headerText.split('\r\n')) {
+    const colon = line.indexOf(':');
+    if (colon < 0) continue;
+    partHeaders.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+  }
+  const disposition = partHeaders.get('content-disposition') ?? '';
+  if (!/^form-data(?:\s*;|$)/i.test(disposition)) return;
+  const name = _multipartHeaderParameter(disposition, 'name');
+  if (name === null) return;
+  const filename = _multipartHeaderParameter(disposition, 'filename');
+  if (filename === null) {
+    form.append(name, decodeUtf8(valueBytes, false, false));
+  } else {
+    const type = partHeaders.get('content-type') ?? 'text/plain';
+    form.append(name, new Blob([valueBytes], { type }), filename);
+  }
+}
+
 function _formDataFromMultipart(bytes: Uint8Array, boundary: string, allowEmpty = false): FormData {
   if (boundary === '') throw new TypeError('formData(): multipart boundary is empty');
   if (bytes.byteLength === 0) {
     if (allowEmpty) return new FormData();
     throw new TypeError('formData(): empty multipart body');
   }
-  const body = decodeUtf8(bytes, false, false);
-  const delimiter = '--' + boundary;
-  const closing = delimiter + '--';
-  const closingIndex = body.lastIndexOf(closing);
+  const delimiterBytes = encodeUtf8('--' + boundary);
+  const boundaryMarkerBytes = encodeUtf8('\r\n--' + boundary);
+  const closingBytes = encodeUtf8('--' + boundary + '--');
+  const closingIndex = _lastIndexOfBytes(bytes, closingBytes);
   if (closingIndex < 0) throw new TypeError('formData(): multipart closing boundary not found');
-  const trailing = body.slice(closingIndex + closing.length);
-  if (trailing !== '' && trailing !== '\r\n') {
+  const trailingStart = closingIndex + closingBytes.byteLength;
+  if (trailingStart !== bytes.byteLength && !_startsWithBytes(bytes, CRLF_BYTES, trailingStart)) {
     throw new TypeError('formData(): malformed multipart closing boundary');
   }
-  if (closingIndex > 0 && body.slice(closingIndex - 2, closingIndex) !== '\r\n') {
+  if (trailingStart + CRLF_BYTES.byteLength < bytes.byteLength) {
+    throw new TypeError('formData(): malformed multipart closing boundary');
+  }
+  if (closingIndex > 0 && !_startsWithBytes(bytes, CRLF_BYTES, closingIndex - CRLF_BYTES.byteLength)) {
     throw new TypeError('formData(): malformed multipart closing boundary');
   }
 
   const form = new FormData();
-  const partsBody = body.slice(0, closingIndex);
-  if (partsBody === '') return form;
-  if (!partsBody.startsWith(delimiter + '\r\n')) {
+  if (closingIndex === 0) return form;
+  if (!_startsWithBytes(bytes, delimiterBytes, 0) || !_startsWithBytes(bytes, CRLF_BYTES, delimiterBytes.byteLength)) {
     throw new TypeError('formData(): multipart boundary not found');
   }
-  const sections = partsBody.split(delimiter);
-  for (let i = 1; i < sections.length; i++) {
-    let section = sections[i]!;
-    if (!section.startsWith('\r\n')) throw new TypeError('formData(): malformed multipart boundary');
-    section = section.slice(2);
-    if (section.endsWith('\r\n')) section = section.slice(0, -2);
-    if (section === '') continue;
-    const headerEnd = section.indexOf('\r\n\r\n');
-    if (headerEnd < 0) continue;
-    const headerText = section.slice(0, headerEnd);
-    const valueText = section.slice(headerEnd + 4);
-    const partHeaders = new Map<string, string>();
-    for (const line of headerText.split('\r\n')) {
-      const colon = line.indexOf(':');
-      if (colon < 0) continue;
-      partHeaders.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
-    }
-    const disposition = partHeaders.get('content-disposition') ?? '';
-    if (!/^form-data(?:\s*;|$)/i.test(disposition)) continue;
-    const name = _multipartHeaderParameter(disposition, 'name');
-    if (name === null) continue;
-    const filename = _multipartHeaderParameter(disposition, 'filename');
-    if (filename === null) {
-      form.append(name, valueText);
-    } else {
-      const type = partHeaders.get('content-type') ?? '';
-      form.append(name, new Blob([valueText], { type }), filename);
+  let cursor = delimiterBytes.byteLength + CRLF_BYTES.byteLength;
+  while (cursor < closingIndex) {
+    const nextMarker = _indexOfBytes(bytes, boundaryMarkerBytes, cursor);
+    if (nextMarker < 0) throw new TypeError('formData(): multipart boundary not found');
+    _parseMultipartPart(form, bytes.subarray(cursor, nextMarker));
+    const nextDelimiterStart = nextMarker + CRLF_BYTES.byteLength;
+    cursor = nextDelimiterStart + delimiterBytes.byteLength;
+    if (cursor < closingIndex) {
+      if (!_startsWithBytes(bytes, CRLF_BYTES, cursor)) {
+        throw new TypeError('formData(): malformed multipart boundary');
+      }
+      cursor += CRLF_BYTES.byteLength;
     }
   }
   return form;
