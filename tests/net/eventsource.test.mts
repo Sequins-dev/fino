@@ -4,6 +4,7 @@
 
 import { describe, it } from 'fino:test/test';
 import { EventSourceReader, EventSourceWriter, EventSource } from 'fino:net/http/eventsource';
+import { BytesWriter } from 'fino:stream';
 import { serveHttp } from 'fino:net/http/server';
 import * as loop from 'internal:runtime/loop';
 type EventSourceMessage = { type: string; data: string; lastEventId: string };
@@ -37,20 +38,19 @@ async function collect<T>(reader: AsyncIterable<T>) {
 
 function mockWriter() {
   const parts: Uint8Array[] = [];
-  return {
-    write(bytes: ArrayBuffer | Uint8Array) {
-      parts.push(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
-      return Promise.resolve(bytes.byteLength);
-    },
-    output() {
+  return new class extends BytesWriter {
+    protected async doWrite(buf: Uint8Array): Promise<void> {
+      parts.push(buf.slice());
+    }
+    output(): string {
       let total = 0;
       for (const p of parts) total += p.byteLength;
       const out = new Uint8Array(total);
       let pos = 0;
       for (const p of parts) { out.set(p, pos); pos += p.byteLength; }
       return decodeUtf8(out);
-    },
-  };
+    }
+  }();
 }
 
 function sseBody(...items: Array<string | { retry?: number; event?: string; id?: string; data: string }>) {

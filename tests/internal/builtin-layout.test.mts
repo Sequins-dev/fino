@@ -24,6 +24,7 @@ import 'fino:net/http';
 import 'fino:net/http/server';
 import 'fino:net/http/client';
 import 'fino:net/http/app';
+import 'fino:net/http/eventstream';
 import 'fino:net/http/eventsource';
 import 'fino:net/http/websocket';
 import 'fino:net/http/webtransport';
@@ -60,6 +61,7 @@ describe('builtin module layout', () => {
       'Router',
       'WebSocket',
       'WebSocketConnection',
+      'WebSocketError',
       'WebTransport',
       'WebTransportDatagramDuplexStream',
       'body',
