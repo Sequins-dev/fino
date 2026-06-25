@@ -18,6 +18,17 @@ describe('fino:validate', () => {
     t.equal(json.additionalProperties, false, 'additionalProperties is preserved');
   });
 
+  it('describe() adds description to JSON Schema output', (t) => {
+    const schema = v.object({
+      query: v.string().describe('The search query string'),
+      limit: v.integer().min(1).max(100).default(10).describe('Max results to return'),
+    });
+    const json = JSON.parse(JSON.stringify(schema));
+    t.equal(json.properties.query.description, 'The search query string', 'field description emitted');
+    t.equal(json.properties.limit.description, 'Max results to return', 'field description alongside other constraints');
+    t.equal(json.properties.limit.default, 10, 'default preserved alongside description');
+  });
+
   it('accepts raw JSON Schema objects in all validation APIs', (t) => {
     const schema = {
       type: 'object',

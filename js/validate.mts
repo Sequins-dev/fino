@@ -794,6 +794,24 @@ export class SchemaBuilder<T = unknown> {
   }
 
   /**
+   * Attach a human-readable description to the schema.
+   *
+   * The description surfaces in generated JSON Schema, OpenAPI 3.1 output,
+   * and LLM tool parameter specs, so it doubles as documentation for both
+   * machines and humans.
+   *
+   * ```ts no_run
+   * import { v } from 'fino:validate';
+   *
+   * const schema = v.string().describe('The user's display name');
+   * ```
+   */
+  describe(text: string): this {
+    this.schema.description = text;
+    return this;
+  }
+
+  /**
    * Attach a custom in-process refinement.
    *
    * Refinements cannot be represented in JSON Schema. They are preserved on the
