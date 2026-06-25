@@ -128,10 +128,8 @@
 
 import { encodeUtf8 } from './encoding.mts';
 import { Headers, parseResponse } from '../net/http/index.mts';
-import type { SseEvent, SseEventOptions } from '../net/http/eventstream.mts';
-import { EventSourceReader, EventSourceWriter } from '../net/http/eventstream.mts';
-export type { SseEvent, SseEventOptions };
-export { EventSourceReader, EventSourceWriter };
+import type { SseEvent } from '../net/http/eventstream.mts';
+import { EventSourceReader } from '../net/http/eventstream.mts';
 import { Socket } from '../net/socket.mts';
 import { TlsSocket } from '../net/tls.mts';
 import { lookup } from '../net/dns.mts';

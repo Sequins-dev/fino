@@ -5,7 +5,8 @@
 import { describe, it } from 'fino:test/test';
 import { serve, serveHttp } from 'fino:net/http/server';
 import { HttpClient } from 'fino:net/http/client';
-import { EventSourceWriter } from 'fino:net/http/eventsource';
+import { EventSourceWriter } from 'fino:net/http/eventstream';
+import { BytesWriter } from 'fino:stream';
 import { MessageEvent } from 'fino:net/http/websocket';
 import { h2Available } from '../../js/net/http/h2.mts';
 import { h3Available, serve as h3Serve } from 'internal:net/http/h3';
@@ -227,12 +228,11 @@ describe('HttpClient realtime helpers', () => {
     let sawHeader = false;
     const server = serveHttp({ port: 0 }, async (request) => {
       sawHeader = request.headers.get('authorization') === 'Bearer test';
-      const writer = new EventSourceWriter({
-        async write(chunk) {
-          chunks.push(chunk);
-        },
-      });
       const chunks: Uint8Array[] = [];
+      const sink = new class extends BytesWriter {
+        protected async doWrite(buf: Uint8Array): Promise<void> { chunks.push(buf.slice()); }
+      }();
+      const writer = new EventSourceWriter(sink);
       await writer.event({ data: 'hello', id: '1' });
       return new Response({
         [Symbol.asyncIterator]: async function* () {

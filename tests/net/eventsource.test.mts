@@ -1,9 +1,10 @@
 /**
- * Tests for fino:net/http/eventsource — EventSourceReader, EventSourceWriter, and EventSource.
+ * Tests for EventSourceReader/Writer (fino:net/http/eventstream) and EventSource (fino:net/http/eventsource).
  */
 
 import { describe, it } from 'fino:test/test';
-import { EventSourceReader, EventSourceWriter, EventSource } from 'fino:net/http/eventsource';
+import { EventSource } from 'fino:net/http/eventsource';
+import { EventSourceReader, EventSourceWriter } from 'fino:net/http/eventstream';
 import { BytesWriter } from 'fino:stream';
 import { serveHttp } from 'fino:net/http/server';
 import * as loop from 'internal:runtime/loop';

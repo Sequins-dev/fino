@@ -50,8 +50,6 @@ describe('builtin module layout', () => {
       'CookieJar',
       'ErrorEvent',
       'EventSource',
-      'EventSourceReader',
-      'EventSourceWriter',
       'HttpClient',
       'HttpResponse',
       'HttpSession',
