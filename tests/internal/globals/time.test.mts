@@ -177,6 +177,33 @@ describe('performance.toJSON', () => {
   });
 });
 
+describe('Performance interface shape', () => {
+  it('exposes a WebIDL-compatible Performance interface object', (t) => {
+    const PerformanceCtor = (globalThis as any).Performance;
+    t.equal(typeof PerformanceCtor, 'function', 'Performance constructor is exposed');
+    t.equal(PerformanceCtor.length, 0, 'Performance.length');
+    t.equal(PerformanceCtor.name, 'Performance', 'Performance.name');
+    t.ok(performance instanceof PerformanceCtor, 'performance is a Performance instance');
+    t.equal(Object.prototype.toString.call(performance), '[object Performance]', 'class string');
+    t.equal(typeof PerformanceCtor.prototype.now, 'function', 'now is on prototype');
+    t.equal(typeof PerformanceCtor.prototype.toJSON, 'function', 'toJSON is on prototype');
+    t.equal(Object.hasOwn(performance, 'timeOrigin'), false, 'timeOrigin is inherited');
+    t.ok('timeOrigin' in performance, 'timeOrigin exists');
+    const globalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance');
+    t.equal(typeof globalDescriptor?.get, 'function', 'global performance is exposed by getter');
+    t.equal(typeof globalDescriptor?.set, 'function', 'global performance has replaceable setter');
+    t.equal(globalDescriptor?.get?.name, 'get performance', 'global performance getter name');
+    t.equal(globalDescriptor?.set?.name, 'set performance', 'global performance setter name');
+    t.equal(globalDescriptor?.set?.length, 1, 'global performance setter length');
+    t.equal(globalDescriptor?.enumerable, true, 'global performance is enumerable');
+    t.equal(globalDescriptor!.get!.call(undefined), performance, 'global performance getter allows unbound reads');
+    t.throws(() => globalDescriptor!.get!.call({}), TypeError, 'global performance getter brands this');
+    t.throws(() => globalDescriptor!.set!.call({}, performance), TypeError, 'global performance setter brands this');
+    t.throws(() => PerformanceCtor.prototype.now.call(null), TypeError, 'now brands this');
+    t.throws(() => PerformanceCtor.prototype.toJSON.call({}), TypeError, 'toJSON brands this');
+  });
+});
+
 describe('performance EventTarget behavior', () => {
   it('dispatches events through EventTarget methods', (t) => {
     let called = false;

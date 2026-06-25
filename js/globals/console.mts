@@ -640,5 +640,14 @@ Object.defineProperty(console, Symbol.toStringTag, {
   configurable: true,
 });
 
+for (const method of ['assert', 'table', 'dir', 'count', 'countReset', 'time', 'timeLog', 'timeEnd'] as const) {
+  Object.defineProperty(console[method], 'length', {
+    value: 0,
+    writable: false,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
 export default console;
 export { console };

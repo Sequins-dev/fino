@@ -12,7 +12,8 @@
  * port, pathname, search, hash) so you can match any combination of URL parts.
  * Coverage locks object and string constructors, baseURL resolution, named
  * parameters, wildcard and regexp groups, repeat modifiers, escaped literals,
- * `hasRegExpGroups`, and percent-encoding boundaries used by routing code.
+ * `hasRegExpGroups`, `ignoreCase`, and percent-encoding boundaries used by
+ * routing code.
  *
  *
  * ## Architecture: tokenize → compile → match
@@ -136,6 +137,11 @@ interface URLPatternInit {
   pathname?: string;
   search?: string;
   hash?: string;
+  baseURL?: string;
+}
+
+interface URLPatternOptions {
+  ignoreCase?: boolean;
 }
 
 interface ParsedURLPatternInit {
@@ -154,6 +160,13 @@ interface URLPatternComponentResult {
   groups: Record<string, string | undefined>;
 }
 
+interface URLPatternComparePart {
+  kind: 'text' | 'name' | 'regexp' | 'wildcard' | 'group';
+  value?: string;
+  modifier?: string;
+  parts?: URLPatternComparePart[];
+}
+
 interface URLComponentDict {
   protocol: string;
   username: string;
@@ -164,6 +177,16 @@ interface URLComponentDict {
   search: string;
   hash: string;
 }
+
+type URLPatternComponentName =
+  | 'protocol'
+  | 'username'
+  | 'password'
+  | 'hostname'
+  | 'port'
+  | 'pathname'
+  | 'search'
+  | 'hash';
 
 // ---------------------------------------------------------------------------
 // Pattern tokenizer
@@ -178,6 +201,32 @@ const T_ASTERISK = 5;
 const T_OPEN     = 6;
 const T_CLOSE    = 7;
 const T_MODIFIER = 8;
+
+const NAME_START_RE = /[\w$\p{ID_Start}]/u;
+const NAME_CONTINUE_RE = /[\w$\u200C\u200D\p{ID_Continue}]/u;
+
+function _readCodePoint(str: string, index: number): { value: string; next: number } | null {
+  if (index >= str.length) return null;
+  const cp = str.codePointAt(index);
+  if (cp === undefined) return null;
+  const value = String.fromCodePoint(cp);
+  return { value, next: index + value.length };
+}
+
+function _consumeName(str: string, index: number): { name: string; next: number } | null {
+  const first = _readCodePoint(str, index);
+  if (!first || !NAME_START_RE.test(first.value)) return null;
+
+  let name = first.value;
+  let next = first.next;
+  while (next < str.length) {
+    const current = _readCodePoint(str, next);
+    if (!current || !NAME_CONTINUE_RE.test(current.value)) break;
+    name += current.value;
+    next = current.next;
+  }
+  return { name, next };
+}
 
 function _tokenize(pattern: string): Token[] {
   const tokens: Token[] = [];
@@ -202,16 +251,14 @@ function _tokenize(pattern: string): Token[] {
     }
 
     if (ch === ':') {
-      let name = '';
-      i++;
-      while (i < pattern.length && /[\w]/.test(pattern[i]!)) {
-        name += pattern[i++]!;
-      }
+      const consumed = _consumeName(pattern, i + 1);
+      const name = consumed?.name ?? '';
       if (name) {
         flushText();
         tokens.push({ type: T_NAME, value: name });
+        i = consumed!.next;
       } else {
-        textBuf += ':';
+        throw new TypeError('Invalid URLPattern parameter name');
       }
       continue;
     }
@@ -240,6 +287,7 @@ function _tokenize(pattern: string): Token[] {
         i++;
       }
       if (depth !== 0) throw new TypeError('Unmatched ( in URLPattern');
+      if (regex === '') throw new TypeError('Empty regexp group in URLPattern');
       tokens.push({ type: T_PATTERN, value: regex });
       continue;
     }
@@ -269,6 +317,103 @@ function _tokenize(pattern: string): Token[] {
 
 function _escapeRe(str: string): string {
   return str.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+function _toHex2(byte: number): string {
+  return byte.toString(16).toUpperCase().padStart(2, '0');
+}
+
+function _pctEncodeCP(cp: number): string {
+  if (cp < 0x80) return '%' + _toHex2(cp);
+  if (cp < 0x800) {
+    return '%' + _toHex2(0xC0 | (cp >> 6)) + '%' + _toHex2(0x80 | (cp & 0x3F));
+  }
+  if (cp < 0x10000) {
+    return '%' + _toHex2(0xE0 | (cp >> 12)) + '%' + _toHex2(0x80 | ((cp >> 6) & 0x3F)) + '%' + _toHex2(0x80 | (cp & 0x3F));
+  }
+  return '%' + _toHex2(0xF0 | (cp >> 18)) + '%' + _toHex2(0x80 | ((cp >> 12) & 0x3F)) + '%' + _toHex2(0x80 | ((cp >> 6) & 0x3F)) + '%' + _toHex2(0x80 | (cp & 0x3F));
+}
+
+function _percentEncode(str: string, encodeSet: string): string {
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i]!;
+    const code = str.charCodeAt(i);
+    if (c === '%' && i + 2 < str.length && /^[0-9A-Fa-f]{2}$/.test(str.slice(i + 1, i + 3))) {
+      result += str.slice(i, i + 3);
+      i += 2;
+      continue;
+    }
+    if (code <= 0x1F || code === 0x7F || code > 0x7E) {
+      let cp = code;
+      if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
+        const lo = str.charCodeAt(i + 1);
+        if (lo >= 0xDC00 && lo <= 0xDFFF) {
+          cp = 0x10000 + ((code - 0xD800) << 10) + (lo - 0xDC00);
+          i++;
+        } else {
+          cp = 0xFFFD;
+        }
+      } else if (code >= 0xDC00 && code <= 0xDFFF) {
+        cp = 0xFFFD;
+      }
+      result += _pctEncodeCP(cp);
+      continue;
+    }
+    if (encodeSet.indexOf(c) >= 0) {
+      result += _pctEncodeCP(code);
+      continue;
+    }
+    result += c;
+  }
+  return result;
+}
+
+function _componentEncodeSet(component: URLPatternComponentName): string {
+  if (component === 'username' || component === 'password') return ' "\'#/:;<=>?@[\\]^`{|}~';
+  if (component === 'pathname') return ' "#<>?`{}';
+  if (component === 'search') return ' "#\'<>';
+  if (component === 'hash') return ' "\'<>`';
+  return '';
+}
+
+function _canonicalizeComponentText(component: URLPatternComponentName, value: string): string {
+  if (component === 'hostname') return _canonicalizeHostnameText(value);
+  if (component === 'protocol' || component === 'port') return value;
+  return _percentEncode(value, _componentEncodeSet(component));
+}
+
+function _canonicalizeHostnameText(value: string): string {
+  if (value === '' || value === '*') return value;
+  try {
+    return new URL(`http://${value}/`).hostname;
+  } catch (_) {
+    return value;
+  }
+}
+
+function _canonicalizeLiteralHostname(value: string): string {
+  if (value === '' || value === '*') return value;
+  if (/[ %<>?@[\]^|]/.test(value)) {
+    throw new TypeError('URLPattern: invalid hostname pattern');
+  }
+  try {
+    return new URL(`http://${value}/`).hostname;
+  } catch (_) {
+    throw new TypeError('URLPattern: invalid hostname pattern');
+  }
+}
+
+function _escapePatternLiteral(value: string): string {
+  return value.replace(/[\\:*+?{}()]/g, '\\$&');
+}
+
+function _isLiteralPattern(tokens: Token[]): boolean {
+  for (const token of tokens) {
+    if (token.type === T_END || token.type === T_TEXT) continue;
+    return false;
+  }
+  return true;
 }
 
 function _peekModifier(tokens: Token[], i: number): string {
@@ -303,7 +448,81 @@ function _applyModifier(pat: string, mod: string, escapedDelim: string): string 
   return '(' + pat + ')';
 }
 
-function _compileTokens(tokens: Token[], options: { delimiter?: string } | null): { regexp: RegExp; keys: Array<{ name: string }>; hasRegExpGroups: boolean } {
+function _consumeModifier(tokens: Token[], i: number): { modifier: string; next: number } {
+  const modifier = _peekModifier(tokens, i);
+  return { modifier, next: modifier ? i + 1 : i };
+}
+
+function _appendWildcardPattern(src: string, mod: string, escapedDelim: string): string {
+  if ((mod === '?' || mod === '*') && escapedDelim && src.endsWith(escapedDelim)) {
+    return src.slice(0, -escapedDelim.length) + '(?:' + escapedDelim + '(.*))?';
+  }
+  return src + '(.*)';
+}
+
+function _canonicalPatternString(tokens: Token[], component: URLPatternComponentName, start = 0): { value: string; index: number } {
+  let out = '';
+  let i = start;
+  while (tokens[i]!.type !== T_END && tokens[i]!.type !== T_CLOSE) {
+    const tok = tokens[i]!;
+    if (tok.type === T_TEXT) {
+      out += _canonicalizeComponentText(component, tok.value ?? '');
+      i++;
+      continue;
+    }
+    if (tok.type === T_ESCAPED) {
+      const value = tok.value ?? '';
+      const encoded = _canonicalizeComponentText(component, value);
+      out += encoded === value ? '\\' + value : encoded;
+      i++;
+      continue;
+    }
+    if (tok.type === T_ASTERISK) {
+      const mod = _peekModifier(tokens, i + 1);
+      out += '*' + mod;
+      i += mod ? 2 : 1;
+      continue;
+    }
+    if (tok.type === T_PATTERN) {
+      const mod = _peekModifier(tokens, i + 1);
+      out += tok.value === '.*' ? '*' + mod : '(' + (tok.value ?? '') + ')' + mod;
+      i += mod ? 2 : 1;
+      continue;
+    }
+    if (tok.type === T_NAME) {
+      out += ':' + (tok.value ?? '');
+      i++;
+      if (tokens[i]!.type === T_PATTERN) {
+        out += '(' + (tokens[i]!.value ?? '') + ')';
+        i++;
+      }
+      const mod = _peekModifier(tokens, i);
+      if (mod) {
+        out += mod;
+        i++;
+      }
+      continue;
+    }
+    if (tok.type === T_OPEN) {
+      const group = _canonicalPatternString(tokens, component, i + 1);
+      i = group.index;
+      if (tokens[i]!.type === T_CLOSE) i++;
+      const mod = _peekModifier(tokens, i);
+      if (mod) {
+        out += '{' + group.value + '}' + mod;
+        i++;
+      } else {
+        out += group.value;
+      }
+      continue;
+    }
+    if (tok.type === T_MODIFIER) { out += tok.value ?? ''; i++; continue; }
+    i++;
+  }
+  return { value: out, index: i };
+}
+
+function _compileTokens(tokens: Token[], options: { delimiter?: string } | null, ignoreCase = false): { regexp: RegExp; keys: Array<{ name: string }>; hasRegExpGroups: boolean } {
   const delimiter = (options && options.delimiter) ? options.delimiter : '';
   const defaultPat = delimiter ? '[^' + _escapeRe(delimiter) + ']+?' : '.+?';
   const escapedDelim = delimiter ? _escapeRe(delimiter) : '';
@@ -333,8 +552,9 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
       // Wildcards get numeric string keys per spec (unnamed groups), but do NOT
       // count as regexp groups for hasRegExpGroups.
       keys.push({ name: String(groupIndex++) });
-      src += '(.*)';
-      i++;
+      const modifier = _consumeModifier(tokens, i + 1);
+      src = _appendWildcardPattern(src, modifier.modifier, escapedDelim);
+      i = modifier.next;
       continue;
     }
 
@@ -358,13 +578,17 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
     }
 
     if (tok.type === T_PATTERN) {
-      // Explicit unnamed regexp group — always counts as a regexp group.
-      hasRegExpGroups = true;
       keys.push({ name: String(groupIndex++) });
       i++;
-      const mod = _peekModifier(tokens, i);
-      if (mod) i++;
-      src += _applyModifier(tok.value!, mod, escapedDelim);
+      const modifier = _consumeModifier(tokens, i);
+      i = modifier.next;
+      if (tok.value === '.*') {
+        src = _appendWildcardPattern(src, modifier.modifier, escapedDelim);
+      } else {
+        // Explicit unnamed regexp group — always counts as a regexp group.
+        hasRegExpGroups = true;
+        src += _applyModifier(tok.value!, modifier.modifier, escapedDelim);
+      }
       continue;
     }
 
@@ -421,13 +645,20 @@ function _compileTokens(tokens: Token[], options: { delimiter?: string } | null)
     i++;
   }
 
-  return { regexp: new RegExp('^' + src + '$'), keys, hasRegExpGroups };
+  return { regexp: new RegExp('^' + src + '$', ignoreCase ? 'i' : ''), keys, hasRegExpGroups };
 }
 
-function _compilePattern(pattern: string, options: { delimiter?: string } | null): CompiledPattern {
+function _compilePattern(pattern: string, options: { delimiter?: string } | null, component: URLPatternComponentName, ignoreCase = false): CompiledPattern {
   const tokens = _tokenize(pattern);
-  const compiled = _compileTokens(tokens, options);
-  return { pattern, regexp: compiled.regexp, keys: compiled.keys, hasRegExpGroups: compiled.hasRegExpGroups };
+  if (component === 'hostname' && _isLiteralPattern(tokens)) {
+    const canonicalHostname = _canonicalizeLiteralHostname(pattern);
+    const compiled = _compileTokens(_tokenize(canonicalHostname), options, ignoreCase);
+    return { pattern: canonicalHostname, regexp: compiled.regexp, keys: compiled.keys, hasRegExpGroups: compiled.hasRegExpGroups };
+  }
+  const compiled = _compileTokens(tokens, options, ignoreCase);
+  const canonical = _canonicalPatternString(tokens, component).value;
+  const canonicalCompiled = canonical === pattern ? compiled : _compileTokens(_tokenize(canonical), options, ignoreCase);
+  return { pattern: canonical, regexp: canonicalCompiled.regexp, keys: canonicalCompiled.keys, hasRegExpGroups: canonicalCompiled.hasRegExpGroups };
 }
 
 // ---------------------------------------------------------------------------
@@ -496,14 +727,14 @@ function _splitPathnameSearchHash(str: string): { pathname: string; search: stri
     }
 
     if (ch === ':') {
-      let name = ch;
-      i++;
-      while (i < str.length && /\w/.test(str[i]!)) name += str[i++]!;
-      if (name.length > 1) {
-        pathname += name;
+      const consumed = _consumeName(str, i + 1);
+      if (consumed) {
+        pathname += ':' + consumed.name;
+        i = consumed.next;
         lastWasParam = true;
       } else {
         pathname += ':';
+        i++;
         lastWasParam = false;
       }
       continue;
@@ -676,9 +907,326 @@ const COMPONENT_OPTIONS: Record<string, { delimiter: string }> = {
   hash:     { delimiter: '' },
 };
 
-function _compileComponent(patternStr: string | undefined, options: { delimiter: string }): CompiledPattern {
+const URL_PATTERN_COMPONENT_NAMES = new Set<string>([
+  'protocol',
+  'username',
+  'password',
+  'hostname',
+  'port',
+  'pathname',
+  'search',
+  'hash',
+]);
+
+const SPECIAL_PROTOCOLS = new Set(['ftp', 'file', 'http', 'https', 'ws', 'wss']);
+
+function _compileComponent(patternStr: string | undefined, options: { delimiter: string }, component: URLPatternComponentName, ignoreCase = false): CompiledPattern {
   const p = patternStr != null ? String(patternStr) : '*';
-  return _compilePattern(p, options);
+  return _compilePattern(p, options, component, ignoreCase);
+}
+
+const BASE_URL_EARLIER_COMPONENTS: Record<URLPatternComponentName, URLPatternComponentName[]> = {
+  protocol: [],
+  username: [],
+  password: [],
+  hostname: ['protocol'],
+  port: ['protocol', 'hostname'],
+  pathname: ['protocol', 'hostname', 'port'],
+  search: ['protocol', 'hostname', 'port', 'pathname'],
+  hash: ['protocol', 'hostname', 'port', 'pathname', 'search'],
+};
+
+function _urlComponentValue(url: URL, component: URLPatternComponentName): string {
+  if (component === 'protocol') return url.protocol.replace(/:$/, '');
+  if (component === 'username') return url.username;
+  if (component === 'password') return url.password;
+  if (component === 'hostname') return _escapePatternLiteral(url.hostname);
+  if (component === 'port') return url.port;
+  if (component === 'pathname') return _escapePatternLiteral(url.pathname);
+  if (component === 'search') return _escapePatternLiteral(url.search.replace(/^\?/, ''));
+  return _escapePatternLiteral(url.hash.replace(/^#/, ''));
+}
+
+function _initHasComponent(init: URLPatternInit, component: URLPatternComponentName): boolean {
+  return _hasOwn(init, component) && init[component] !== undefined;
+}
+
+function _resolveURLPatternInitBaseURL(init: URLPatternInit): URLPatternInit {
+  if (init.baseURL == null) return init;
+
+  const base = new URL(String(init.baseURL));
+  const result: URLPatternInit = { ...init };
+  for (const component of URL_PATTERN_COMPONENT_NAMES) {
+    const name = component as URLPatternComponentName;
+    if (name === 'username' || name === 'password' || _initHasComponent(result, name)) {
+      continue;
+    }
+    if (BASE_URL_EARLIER_COMPONENTS[name].some((earlier) => _initHasComponent(init, earlier))) {
+      continue;
+    }
+    result[name] = _urlComponentValue(base, name);
+  }
+  return result;
+}
+
+function _extractInitComponents(init: URLPatternInit): URLComponentDict | null {
+  let resolved = init;
+  if (init.baseURL != null) {
+    try {
+      const base = new URL(String(init.baseURL));
+      resolved = {
+        protocol: base.protocol.replace(/:$/, ''),
+        username: base.username,
+        password: base.password,
+        hostname: base.hostname,
+        port: base.port,
+        pathname: base.pathname,
+        search: base.search.replace(/^\?/, ''),
+        hash: base.hash.replace(/^#/, ''),
+        ...init,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  return {
+    protocol: resolved.protocol != null ? String(resolved.protocol).replace(/:$/, '') : '',
+    username: resolved.username != null ? _canonicalizeComponentText('username', String(resolved.username)) : '',
+    password: resolved.password != null ? _canonicalizeComponentText('password', String(resolved.password)) : '',
+    hostname: resolved.hostname != null ? _canonicalizeHostnameText(String(resolved.hostname)) : '',
+    port:     resolved.port     != null ? String(resolved.port)     : '',
+    pathname: resolved.pathname != null ? _canonicalizeComponentText('pathname', String(resolved.pathname)) : '',
+    search:   resolved.search   != null ? _canonicalizeComponentText('search', String(resolved.search).replace(/^\?/, '')) : '',
+    hash:     resolved.hash     != null ? _canonicalizeComponentText('hash', String(resolved.hash).replace(/^#/, ''))    : '',
+  };
+}
+
+function _ignoreCaseFromOptions(options: URLPatternOptions | undefined): boolean {
+  return options?.ignoreCase === true;
+}
+
+function _hasOwn(obj: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+
+function _encodeGeneratedGroup(component: URLPatternComponentName, value: string, protocolPattern: string): string {
+  if (component === 'pathname') {
+    if (value.includes('/')) {
+      throw new TypeError('URLPattern.generate: pathname groups cannot contain "/"');
+    }
+    if (protocolPattern !== '*' && !SPECIAL_PROTOCOLS.has(protocolPattern.toLowerCase())) {
+      return value;
+    }
+    return encodeURIComponent(value);
+  }
+  return value;
+}
+
+function _canonicalizeGeneratedComponent(component: URLPatternComponentName, value: string): string {
+  if (component !== 'hostname' || value === '*') return value;
+  try {
+    return new URL(`http://${value}/`).hostname;
+  } catch (_) {
+    throw new TypeError('URLPattern.generate: generated hostname is invalid');
+  }
+}
+
+function _compareModifier(modifierA = '', modifierB = ''): number {
+  const ranks: Record<string, number> = { '*': 0, '?': 1, '+': 2, '': 3 };
+  return Math.sign((ranks[modifierA] ?? 3) - (ranks[modifierB] ?? 3));
+}
+
+function _compareText(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function _comparePartRank(part: URLPatternComparePart): number {
+  if (part.kind === 'wildcard') return 0;
+  if (part.kind === 'name') return 1;
+  if (part.kind === 'regexp') return 2;
+  if (part.kind === 'text') return 3;
+  return 3;
+}
+
+function _comparePartLists(left: URLPatternComparePart[], right: URLPatternComparePart[]): number {
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i++) {
+    const compared = _compareParts(left[i]!, right[i]!);
+    if (compared !== 0) return compared;
+  }
+  if (left.length < right.length && right[left.length]!.kind !== 'text') return 1;
+  if (right.length < left.length && left[right.length]!.kind !== 'text') return -1;
+  return Math.sign(left.length - right.length);
+}
+
+function _compareParts(left: URLPatternComparePart, right: URLPatternComparePart): number {
+  if (left.kind === 'group' || right.kind === 'group') {
+    const leftParts = left.kind === 'group' ? left.parts ?? [] : [left];
+    const rightParts = right.kind === 'group' ? right.parts ?? [] : [right];
+    const compared = _comparePartLists(leftParts, rightParts);
+    if (compared !== 0) return compared;
+    return _compareModifier(left.kind === 'group' ? left.modifier : '', right.kind === 'group' ? right.modifier : '');
+  }
+
+  const rankCompared = Math.sign(_comparePartRank(left) - _comparePartRank(right));
+  if (rankCompared !== 0) return rankCompared;
+
+  if (left.kind === 'text') {
+    const compared = _compareText(left.value ?? '', right.value ?? '');
+    if (compared !== 0) return compared;
+  } else if (left.kind === 'regexp') {
+    const compared = _compareText(left.value ?? '', right.value ?? '');
+    if (compared !== 0) return compared;
+  }
+
+  return _compareModifier(left.modifier, right.modifier);
+}
+
+function _parseCompareParts(tokens: Token[], start = 0): { parts: URLPatternComparePart[]; index: number } {
+  const parts: URLPatternComparePart[] = [];
+  let i = start;
+
+  while (tokens[i]!.type !== T_END && tokens[i]!.type !== T_CLOSE) {
+    const token = tokens[i]!;
+    if (token.type === T_TEXT || token.type === T_ESCAPED) {
+      parts.push({ kind: 'text', value: token.value ?? '' });
+      i++;
+      continue;
+    }
+    if (token.type === T_NAME) {
+      i++;
+      if (tokens[i]!.type === T_PATTERN) {
+        const value = tokens[i]!.value ?? '';
+        i++;
+        const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+        if (modifier) i++;
+        parts.push({ kind: 'regexp', value, modifier });
+        continue;
+      }
+      const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+      if (modifier) i++;
+      parts.push({ kind: 'name', modifier });
+      continue;
+    }
+    if (token.type === T_PATTERN) {
+      i++;
+      const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+      if (modifier) i++;
+      parts.push({ kind: 'regexp', value: token.value ?? '', modifier });
+      continue;
+    }
+    if (token.type === T_ASTERISK) {
+      parts.push({ kind: 'wildcard' });
+      i++;
+      continue;
+    }
+    if (token.type === T_OPEN) {
+      const group = _parseCompareParts(tokens, i + 1);
+      i = group.index;
+      if (tokens[i]!.type === T_CLOSE) i++;
+      const modifier = tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK ? tokens[i]!.value ?? '*' : '';
+      if (modifier) {
+        i++;
+        parts.push({ kind: 'group', modifier, parts: group.parts });
+      } else {
+        parts.push(...group.parts);
+      }
+      continue;
+    }
+    i++;
+  }
+
+  return { parts: _normalizeCompareParts(parts), index: i };
+}
+
+function _normalizeCompareParts(parts: URLPatternComparePart[]): URLPatternComparePart[] {
+  const normalized: URLPatternComparePart[] = [];
+  for (const part of parts) {
+    if (
+      part.kind === 'name' &&
+      part.modifier === '?' &&
+      normalized.length > 0
+    ) {
+      const previous = normalized[normalized.length - 1]!;
+      if (previous.kind === 'text' && previous.value !== undefined && previous.value.length > 0) {
+        const delimiter = previous.value[previous.value.length - 1]!;
+        previous.value = previous.value.slice(0, -1);
+        if (previous.value === '') normalized.pop();
+        normalized.push({
+          kind: 'group',
+          modifier: '?',
+          parts: [{ kind: 'text', value: delimiter }, { kind: 'name' }],
+        });
+        continue;
+      }
+    }
+    const previous = normalized[normalized.length - 1];
+    if (previous?.kind === 'text' && part.kind === 'text') {
+      previous.value = (previous.value ?? '') + (part.value ?? '');
+    } else {
+      normalized.push(part);
+    }
+  }
+  return normalized;
+}
+
+function _generateComponent(
+  compiled: CompiledPattern,
+  component: URLPatternComponentName,
+  groups: Record<string, unknown>,
+  protocolPattern: string,
+): string {
+  const tokens = _tokenize(compiled.pattern);
+  let output = '';
+  let i = 0;
+
+  function appendUntilClose(): boolean {
+    while (tokens[i]!.type !== T_END) {
+      const tok = tokens[i]!;
+      if (tok.type === T_CLOSE) {
+        i++;
+        return true;
+      }
+      if (tok.type === T_TEXT || tok.type === T_ESCAPED) {
+        output += tok.value ?? '';
+        i++;
+        continue;
+      }
+      if (tok.type === T_NAME) {
+        const name = tok.value!;
+        if (!_hasOwn(groups, name)) {
+          throw new TypeError(`URLPattern.generate: missing group "${name}"`);
+        }
+        i++;
+        if (tokens[i]!.type === T_PATTERN) {
+          throw new TypeError('URLPattern.generate: regexp groups are not supported');
+        }
+        output += _encodeGeneratedGroup(component, String(groups[name]), protocolPattern);
+        continue;
+      }
+      if (tok.type === T_OPEN) {
+        i++;
+        appendUntilClose();
+        if (tokens[i]!.type === T_MODIFIER || tokens[i]!.type === T_ASTERISK) {
+          throw new TypeError('URLPattern.generate: group modifiers are not supported');
+        }
+        continue;
+      }
+      throw new TypeError('URLPattern.generate: unsupported pattern syntax');
+    }
+    return false;
+  }
+
+  appendUntilClose();
+  return _canonicalizeGeneratedComponent(component, output);
+}
+
+function _compareComponentPattern(left: CompiledPattern, right: CompiledPattern): number {
+  const leftParts = _parseCompareParts(_tokenize(left.pattern)).parts;
+  const rightParts = _parseCompareParts(_tokenize(right.pattern)).parts;
+  return _comparePartLists(leftParts, rightParts);
 }
 
 // ---------------------------------------------------------------------------
@@ -725,17 +1273,7 @@ function _extractComponents(input: string | { href: string } | URLPatternInit, b
     }
   }
   // URLPatternInit object
-  const init = input as URLPatternInit;
-  return {
-    protocol: init.protocol != null ? String(init.protocol).replace(/:$/, '') : '',
-    username: init.username != null ? String(init.username) : '',
-    password: init.password != null ? String(init.password) : '',
-    hostname: init.hostname != null ? String(init.hostname) : '',
-    port:     init.port     != null ? String(init.port)     : '',
-    pathname: init.pathname != null ? String(init.pathname) : '',
-    search:   init.search   != null ? String(init.search).replace(/^\?/, '') : '',
-    hash:     init.hash     != null ? String(init.hash).replace(/^#/, '')    : '',
-  };
+  return _extractInitComponents(input as URLPatternInit);
 }
 
 // ---------------------------------------------------------------------------
@@ -931,6 +1469,17 @@ export class URLPattern {
    */
   #hash:     CompiledPattern;
 
+  #componentPattern(component: URLPatternComponentName): CompiledPattern {
+    if (component === 'protocol') return this.#protocol;
+    if (component === 'username') return this.#username;
+    if (component === 'password') return this.#password;
+    if (component === 'hostname') return this.#hostname;
+    if (component === 'port') return this.#port;
+    if (component === 'pathname') return this.#pathname;
+    if (component === 'search') return this.#search;
+    return this.#hash;
+  }
+
   /**
    * String tag used by Object.prototype.toString.
    *
@@ -944,17 +1493,31 @@ export class URLPattern {
    * Create a URLPattern from string, component-object, or omitted input.
    *
    * String input is split into URL components while respecting pattern groups.
-   * `baseURL` supplies defaults for relative string patterns. Object input uses
-   * the provided component patterns directly. Missing or `undefined` input
-   * creates an all-wildcard pattern.
+   * `baseURL` supplies defaults for relative string patterns and component
+   * dictionaries. Object input uses the provided component patterns directly.
+   * Missing or `undefined` input creates an all-wildcard pattern. Pass
+   * `{ ignoreCase: true }` as the options object to match ASCII and Unicode
+   * letters without case sensitivity.
    *
    * ```typescript no_run
-   * const pattern = new URLPattern('/files/:name', 'https://example.com');
+   * const pattern = new URLPattern('/files/:name', 'https://example.com', {
+   *   ignoreCase: true,
+   * });
    * pattern.hostname; // "example.com"
    * ```
    */
-  constructor(input?: string | URLPatternInit, baseURL?: string) {
+  constructor(input?: string | URLPatternInit, baseURLOrOptions?: string | URLPatternOptions, options?: URLPatternOptions) {
     let init: ParsedURLPatternInit | URLPatternInit;
+    let baseURL: string | undefined;
+    let constructorOptions: URLPatternOptions | undefined;
+
+    if (typeof baseURLOrOptions === 'string') {
+      baseURL = baseURLOrOptions;
+      constructorOptions = options;
+    } else {
+      constructorOptions = baseURLOrOptions;
+    }
+    const ignoreCase = _ignoreCaseFromOptions(constructorOptions);
 
     if (input === undefined) {
       init = {};
@@ -972,19 +1535,19 @@ export class URLPattern {
         } catch (_) {}
       }
     } else if (input != null && typeof input === 'object') {
-      init = input;
+      init = _resolveURLPatternInitBaseURL(input);
     } else {
       throw new TypeError('URLPattern: first argument must be a string or object');
     }
 
-    this.#protocol = _compileComponent(init.protocol, COMPONENT_OPTIONS.protocol!);
-    this.#username = _compileComponent(init.username, COMPONENT_OPTIONS.username!);
-    this.#password = _compileComponent(init.password, COMPONENT_OPTIONS.password!);
-    this.#hostname = _compileComponent(init.hostname, COMPONENT_OPTIONS.hostname!);
-    this.#port     = _compileComponent(init.port,     COMPONENT_OPTIONS.port!);
-    this.#pathname = _compileComponent(init.pathname, COMPONENT_OPTIONS.pathname!);
-    this.#search   = _compileComponent(init.search,   COMPONENT_OPTIONS.search!);
-    this.#hash     = _compileComponent(init.hash,     COMPONENT_OPTIONS.hash!);
+    this.#protocol = _compileComponent(init.protocol, COMPONENT_OPTIONS.protocol!, 'protocol', ignoreCase);
+    this.#username = _compileComponent(init.username, COMPONENT_OPTIONS.username!, 'username', ignoreCase);
+    this.#password = _compileComponent(init.password, COMPONENT_OPTIONS.password!, 'password', ignoreCase);
+    this.#hostname = _compileComponent(init.hostname, COMPONENT_OPTIONS.hostname!, 'hostname', ignoreCase);
+    this.#port     = _compileComponent(init.port,     COMPONENT_OPTIONS.port!,     'port',     ignoreCase);
+    this.#pathname = _compileComponent(init.pathname, COMPONENT_OPTIONS.pathname!, 'pathname', ignoreCase);
+    this.#search   = _compileComponent(init.search,   COMPONENT_OPTIONS.search!,   'search',   ignoreCase);
+    this.#hash     = _compileComponent(init.hash,     COMPONENT_OPTIONS.hash!,     'hash',     ignoreCase);
   }
 
   // Pattern string accessors
@@ -1107,6 +1670,55 @@ export class URLPattern {
       this.#search.regexp.test(components.search)     &&
       this.#hash.regexp.test(components.hash)
     );
+  }
+
+  /**
+   * Generate one URL component from literal text and simple named groups.
+   *
+   * The current support covers the common routing subset used by the WPT
+   * generation fixture: text tokens, escaped literals, and `:name` groups.
+   * Wildcards, regexp groups, and optional or repeated groups throw `TypeError`.
+   *
+   * ```typescript no_run
+   * new URLPattern({ pathname: '/users/:id' }).generate('pathname', { id: '42' });
+   * // "/users/42"
+   * ```
+   */
+  generate(component: string, groups: Record<string, unknown> = {}): string {
+    if (!URL_PATTERN_COMPONENT_NAMES.has(component)) {
+      throw new TypeError('URLPattern.generate: invalid component');
+    }
+    if (groups === null || typeof groups !== 'object') {
+      throw new TypeError('URLPattern.generate: groups must be an object');
+    }
+    const name = component as URLPatternComponentName;
+    return _generateComponent(this.#componentPattern(name), name, groups, this.#protocol.pattern);
+  }
+
+  /**
+   * Compare two URLPattern component patterns for routing precedence.
+   *
+   * Parameter names do not affect ordering. Literal text sorts above regexp
+   * groups, named groups, and wildcards; group modifiers sort as `*`, `?`, `+`,
+   * then no modifier.
+   *
+   * ```typescript no_run
+   * URLPattern.compareComponent(
+   *   'pathname',
+   *   new URLPattern({ pathname: '/users/:id' }),
+   *   new URLPattern({ pathname: '/users/*' }),
+   * ); // 1
+   * ```
+   */
+  static compareComponent(component: string, left: URLPattern, right: URLPattern): number {
+    if (!URL_PATTERN_COMPONENT_NAMES.has(component)) {
+      throw new TypeError('URLPattern.compareComponent: invalid component');
+    }
+    if (!(left instanceof URLPattern) || !(right instanceof URLPattern)) {
+      throw new TypeError('URLPattern.compareComponent: arguments must be URLPattern instances');
+    }
+    const name = component as URLPatternComponentName;
+    return _compareComponentPattern(left.#componentPattern(name), right.#componentPattern(name));
   }
 
   /**

@@ -44,11 +44,12 @@ function timeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> 
   ]);
 }
 
-async function runWpt(entry: WptManifestEntry, subtest: string | null): Promise<void> {
+async function runWpt(entry: WptManifestEntry, subtest: string | null, variant: string): Promise<void> {
   const proc = new Process(execPath, [
     'tests/integration/fixtures/wpt/runner-child.mts',
     entry.path,
     subtest ?? '',
+    variant,
   ], { cwd: cwd() });
   proc.stdin.close();
   const stdout = collect(proc.stdout);
@@ -117,14 +118,14 @@ describe('upstream WPT web globals', () => {
         if (fileLevel || entry.subtests.length === 0) {
           for (const variant of variants) {
             it(`file${variantSuffix(variant)}`, async () => {
-              await runWpt(entry, null);
+              await runWpt(entry, null, variant);
             });
           }
         } else {
           for (const subtest of entry.subtests) {
             for (const variant of variants) {
               it(`${subtest.name}${variantSuffix(variant)}`, async () => {
-                await runWpt(entry, subtest.name);
+                await runWpt(entry, subtest.name, variant);
               });
             }
           }

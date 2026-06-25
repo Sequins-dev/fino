@@ -38,6 +38,13 @@ describe('console exists and has expected methods', () => {
     t.equal(consoleRecord[Symbol.toStringTag], 'console');
   });
 
+  it('matches WebIDL operation lengths', (t) => {
+    for (const method of ['assert', 'table', 'dir', 'count', 'countReset', 'time', 'timeLog', 'timeEnd']) {
+      const fn = consoleRecord[method] as Function;
+      t.equal(fn.length, 0, `console.${method}.length`);
+    }
+  });
+
   it('has namespace-object prototype and toStringTag descriptors', (t) => {
     const prototype = Object.getPrototypeOf(console);
     t.deepEqual(Object.getOwnPropertyNames(prototype), [], 'console prototype has no own properties');

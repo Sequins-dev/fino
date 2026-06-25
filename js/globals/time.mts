@@ -112,7 +112,10 @@ const _startMs = Date.now();
  * console.log(documentedMember);
  * ```
  */
-class Performance extends EventTarget {
+const PERFORMANCE_CONSTRUCTOR_TOKEN = {};
+const _performanceInstances = new WeakSet<Performance>();
+
+export class Performance extends EventTarget {
   /**
    * Unix timestamp in milliseconds captured when this module loaded.
    *
@@ -120,7 +123,18 @@ class Performance extends EventTarget {
    * performance.timeOrigin <= Date.now(); // true
    * ```
    */
-  timeOrigin = _startMs;
+  get timeOrigin() {
+    if (!_performanceInstances.has(this)) throw new TypeError('Illegal invocation');
+    return _startMs;
+  }
+
+  get [Symbol.toStringTag]() { return 'Performance'; }
+
+  constructor(token?: object) {
+    if (token !== PERFORMANCE_CONSTRUCTOR_TOKEN) throw new TypeError('Illegal constructor');
+    super();
+    _performanceInstances.add(this);
+  }
 
   /**
    * Return monotonic milliseconds elapsed since module load.
@@ -134,6 +148,7 @@ class Performance extends EventTarget {
    * ```
    */
   now() {
+    if (!_performanceInstances.has(this)) throw new TypeError('Illegal invocation');
     return (_getNanos() - _startNs) / 1e6;
   }
 
@@ -147,11 +162,25 @@ class Performance extends EventTarget {
    * ```
    */
   toJSON() {
+    if (!_performanceInstances.has(this)) throw new TypeError('Illegal invocation');
     return { timeOrigin: this.timeOrigin };
   }
 }
 
-export const performance = new Performance();
+Object.defineProperty(Performance, 'length', { value: 0, configurable: true });
+for (const method of ['now', 'toJSON'] as const) {
+  Object.defineProperty(Performance.prototype[method], 'length', { value: 0, configurable: true });
+  Object.defineProperty(Performance.prototype, method, {
+    ...Object.getOwnPropertyDescriptor(Performance.prototype, method)!,
+    enumerable: true,
+  });
+}
+Object.defineProperty(Performance.prototype, 'timeOrigin', {
+  ...Object.getOwnPropertyDescriptor(Performance.prototype, 'timeOrigin')!,
+  enumerable: true,
+});
+
+export const performance = new Performance(PERFORMANCE_CONSTRUCTOR_TOKEN);
 
 // ---------------------------------------------------------------------------
 // Timer state

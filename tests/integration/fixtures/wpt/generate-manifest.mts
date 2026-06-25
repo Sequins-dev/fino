@@ -118,8 +118,50 @@ function decodeStringLiteral(raw: string): string {
     .replace(/\\(['"`\\])/g, '$1');
 }
 
-function needsWptServer(source: string): boolean {
-  return /\bfetch\s*\(\s*['"`]\//.test(source)
+function usesOnlyLocalFetchFixtures(path: string): boolean {
+  return path.startsWith('urlpattern/') ||
+    path === 'url/url-constructor.any.js' ||
+    path === 'url/url-origin.any.js' ||
+    path === 'url/url-setters.any.js';
+}
+
+const WEBCRYPTO_RUNNABLE_PATHS = new Set([
+  'WebCryptoAPI/crypto_key_cached_slots.https.any.js',
+  'WebCryptoAPI/derive_bits_keys/derive_key_and_encrypt.https.any.js',
+  'WebCryptoAPI/digest/digest.https.any.js',
+  'WebCryptoAPI/generateKey/failures_AES-CBC.https.any.js',
+  'WebCryptoAPI/generateKey/failures_AES-CTR.https.any.js',
+  'WebCryptoAPI/generateKey/failures_AES-GCM.https.any.js',
+  'WebCryptoAPI/generateKey/failures_Ed25519.https.any.js',
+  'WebCryptoAPI/generateKey/failures_HMAC.https.any.js',
+  'WebCryptoAPI/generateKey/successes_AES-CBC.https.any.js',
+  'WebCryptoAPI/generateKey/successes_AES-CTR.https.any.js',
+  'WebCryptoAPI/generateKey/successes_AES-GCM.https.any.js',
+  'WebCryptoAPI/generateKey/successes_Ed25519.https.any.js',
+  'WebCryptoAPI/generateKey/successes_HMAC.https.any.js',
+  'WebCryptoAPI/getRandomValues.any.js',
+  'WebCryptoAPI/import_export/crashtests/importKey-unsettled-promise.https.any.js',
+  'WebCryptoAPI/normalize-algorithm-name.https.any.js',
+  'WebCryptoAPI/randomUUID.https.any.js',
+  'WebCryptoAPI/serialization/aes-cbc.https.any.js',
+  'WebCryptoAPI/serialization/aes-ctr.https.any.js',
+  'WebCryptoAPI/serialization/aes-gcm.https.any.js',
+  'WebCryptoAPI/serialization/ed25519.https.any.js',
+  'WebCryptoAPI/serialization/hmac.https.any.js',
+  'WebCryptoAPI/serialization/rsa-oaep.https.any.js',
+  'WebCryptoAPI/serialization/rsa-pss.https.any.js',
+  'WebCryptoAPI/serialization/rsassa-pkcs1-v1_5.https.any.js',
+]);
+
+function unsupportedWebCryptoWpt(path: string, type: string): boolean {
+  return path.startsWith('WebCryptoAPI/') &&
+    type === '.any.js' &&
+    !WEBCRYPTO_RUNNABLE_PATHS.has(path);
+}
+
+function needsWptServer(path: string, source: string): boolean {
+  if (usesOnlyLocalFetchFixtures(path)) return false;
+  return /\bfetch\s*\(\s*['"`]\/(?!media\/)/.test(source)
       || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source)
       || /\bfetch\s*\(\s*['"`](?![A-Za-z][A-Za-z0-9+.-]*:)/.test(source)
       || /\bfetch\s*\(\s*RESOURCES_DIR\b/.test(source)
@@ -129,7 +171,6 @@ function needsWptServer(source: string): boolean {
       || /\{\{host\}\}/.test(source)
       || /\bweb-platform\.test\b/.test(source)
       || /['"`]\.\.\/resources\//.test(source)
-      || /['"`]\/media\//.test(source)
       || /\bfetch\s*\(\s*location\.href\b/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
       || /\/fetch\/api\/resources\//.test(source);
@@ -159,6 +200,9 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   }
   if (/\/owning-type(?:-[^/]+)?\.tentative\.any\.js$/.test(path)) {
     return { runnable: false, reason: 'requires tentative ReadableStream type: "owning" transfer semantics' };
+  }
+  if (path === 'streams/idlharness.any.js') {
+    return { runnable: false, reason: 'requires Web Streams WebIDL descriptor and brand-check conformance' };
   }
   if (path === 'fetch/fetch-later/basic.https.window.js') {
     return { runnable: true, reason: null };
@@ -190,6 +234,30 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (path === 'WebCryptoAPI/historical.any.js') {
     return { runnable: false, reason: 'requires non-secure context WebCrypto global filtering' };
   }
+  if (unsupportedWebCryptoWpt(path, type)) {
+    return { runnable: false, reason: 'requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset' };
+  }
+  if (
+    path === 'urlpattern/urlpattern.any.js' ||
+    path === 'urlpattern/urlpattern.https.any.js'
+  ) {
+    return { runnable: false, reason: 'requires URLPattern tokenizer, canonicalization, and full data-driven conformance' };
+  }
+  if (path === 'url/historical.any.js') {
+    return { runnable: false, reason: 'requires document/window navigation' };
+  }
+  if (path === 'url/idlharness.any.js') {
+    return { runnable: false, reason: 'requires URL and URLSearchParams WebIDL shape conformance' };
+  }
+  if (path === 'url/url-constructor.any.js') {
+    return { runnable: false, reason: 'requires WHATWG URL parser conformance for data-driven constructor cases' };
+  }
+  if (path === 'url/url-origin.any.js') {
+    return { runnable: false, reason: 'requires WHATWG URL origin serialization conformance' };
+  }
+  if (path === 'url/url-setters.any.js') {
+    return { runnable: false, reason: 'requires WHATWG URL setter conformance for data-driven setter cases' };
+  }
   if (/\bcaches\b|\bCacheStorage\b|\bCache\b/.test(source)) {
     return { runnable: false, reason: 'requires Cache API globals, which Fino does not install' };
   }
@@ -209,7 +277,7 @@ function runnableStatus(path: string, type: string, source: string, missingScrip
   if (type === '.window.js' || type === '.html' || type === '.https.html') {
     return { runnable: false, reason: 'requires document/window navigation' };
   }
-  if (needsWptServer(source)) return { runnable: false, reason: 'requires upstream WPT server and host setup' };
+  if (needsWptServer(path, source)) return { runnable: false, reason: 'requires upstream WPT server and host setup' };
   if (type === '.any.js') return { runnable: true, reason: null };
   if (/\bdocument\b|\bwindow\b/.test(source)) return { runnable: false, reason: 'requires document/window navigation' };
   return { runnable: false, reason: `unsupported WPT file type ${type}` };

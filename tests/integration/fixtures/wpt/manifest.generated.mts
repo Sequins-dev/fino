@@ -2512,14 +2512,9 @@ export const WPT_MANIFEST: WptManifest = {
         "argon2_vectors.js",
         "argon2.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/argon2_vectors.js",
@@ -2572,14 +2567,9 @@ export const WPT_MANIFEST: WptManifest = {
         "cfrg_curves_bits_fixtures.js",
         "cfrg_curves_bits.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_curve448.tentative.https.any.js",
@@ -2598,14 +2588,9 @@ export const WPT_MANIFEST: WptManifest = {
         "cfrg_curves_bits_fixtures.js",
         "cfrg_curves_bits.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/cfrg_curves_bits_fixtures.js",
@@ -2658,14 +2643,9 @@ export const WPT_MANIFEST: WptManifest = {
         "cfrg_curves_bits_fixtures.js",
         "cfrg_curves_keys.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/cfrg_curves_keys_curve448.tentative.https.any.js",
@@ -2684,14 +2664,9 @@ export const WPT_MANIFEST: WptManifest = {
         "cfrg_curves_bits_fixtures.js",
         "cfrg_curves_keys.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/derive_key_and_encrypt.https.any.js",
@@ -2824,14 +2799,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "ecdh_bits.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/ecdh_bits.js",
@@ -2866,14 +2836,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "ecdh_keys.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/ecdh_keys.js",
@@ -2913,14 +2878,9 @@ export const WPT_MANIFEST: WptManifest = {
         "hkdf_vectors.js",
         "hkdf.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/hkdf.js",
@@ -2982,14 +2942,9 @@ export const WPT_MANIFEST: WptManifest = {
         "pbkdf2_vectors.js",
         "pbkdf2.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup - define tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/derive_bits_keys/pbkdf2.js",
@@ -3040,8 +2995,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3078,8 +3033,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3097,8 +3052,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3116,8 +3071,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3136,8 +3091,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ml_kem_vectors.js",
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3156,8 +3111,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ml_kem_vectors.js",
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3211,8 +3166,8 @@ export const WPT_MANIFEST: WptManifest = {
         "aes_cbc_vectors.js",
         "aes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3249,8 +3204,8 @@ export const WPT_MANIFEST: WptManifest = {
         "aes_ctr_vectors.js",
         "aes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3288,8 +3243,8 @@ export const WPT_MANIFEST: WptManifest = {
         "aes_gcm_vectors.js",
         "aes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3310,8 +3265,8 @@ export const WPT_MANIFEST: WptManifest = {
         "aes_gcm_vectors.js",
         "aes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3383,8 +3338,8 @@ export const WPT_MANIFEST: WptManifest = {
         "aes_ocb_vectors.js",
         "aes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3436,8 +3391,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3474,8 +3429,8 @@ export const WPT_MANIFEST: WptManifest = {
         "rsa_vectors.js",
         "rsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3588,8 +3543,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3608,8 +3563,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3628,8 +3583,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3648,8 +3603,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3688,8 +3643,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3728,8 +3683,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3748,8 +3703,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3768,8 +3723,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3788,8 +3743,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3808,8 +3763,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3828,8 +3783,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3848,8 +3803,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3868,8 +3823,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3888,8 +3843,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -3989,8 +3944,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4010,8 +3965,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4031,8 +3986,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4052,8 +4007,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4094,8 +4049,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4136,8 +4091,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4157,8 +4112,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4193,8 +4148,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4217,8 +4172,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4241,8 +4196,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4262,8 +4217,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4283,8 +4238,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4304,8 +4259,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4325,8 +4280,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests.js",
         "successes.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4344,38 +4299,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "Derived public key is functionally equivalent to original public key"
-        },
-        {
-          "kind": "promise_test",
-          "name": "getPublicKey rejects with InvalidAccessError when given a public key"
-        },
-        {
-          "kind": "promise_test",
-          "name": "getPublicKey rejects with NotSupportedError for AES-GCM symmetric keys"
-        },
-        {
-          "kind": "promise_test",
-          "name": "getPublicKey rejects with NotSupportedError for HMAC symmetric keys"
-        },
-        {
-          "kind": "promise_test",
-          "name": "getPublicKey rejects with SyntaxError for invalid usages"
-        },
-        {
-          "kind": "promise_test",
-          "name": "getPublicKey rejects with SyntaxError when any usage is invalid for the algorithm"
-        },
-        {
-          "kind": "test",
-          "name": "getPublicKey method is available"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/getRandomValues.any.js",
@@ -4440,8 +4366,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4460,8 +4386,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4480,8 +4406,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "symmetric_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4500,8 +4426,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "symmetric_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4520,8 +4446,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "symmetric_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4540,8 +4466,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "symmetric_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4578,8 +4504,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ML-DSA_importKey_fixtures.js",
         "ML-DSA_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4633,8 +4559,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ML-KEM_importKey_fixtures.js",
         "ML-KEM_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4688,8 +4614,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4709,8 +4635,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ec_importKey_failures_fixtures.js",
         "importKey_failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4730,8 +4656,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ec_importKey_failures_fixtures.js",
         "importKey_failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4802,8 +4728,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_fixtures.js",
         "okp_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4823,8 +4749,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_fixtures.js",
         "okp_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4844,8 +4770,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_fixtures.js",
         "okp_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4865,8 +4791,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_fixtures.js",
         "okp_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4886,8 +4812,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_failures_fixtures.js",
         "importKey_failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4907,8 +4833,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_failures_fixtures.js",
         "importKey_failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4928,8 +4854,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_failures_fixtures.js",
         "importKey_failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -4949,8 +4875,8 @@ export const WPT_MANIFEST: WptManifest = {
         "okp_importKey_failures_fixtures.js",
         "importKey_failures.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5002,8 +4928,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5021,8 +4947,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "../util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5041,8 +4967,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "symmetric_importKey.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5219,8 +5145,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5239,8 +5165,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5259,8 +5185,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5279,8 +5205,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5299,8 +5225,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5339,8 +5265,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5379,8 +5305,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5399,8 +5325,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5419,8 +5345,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5516,8 +5442,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5536,8 +5462,8 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "serialization.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5557,8 +5483,8 @@ export const WPT_MANIFEST: WptManifest = {
         "ecdsa_vectors.js",
         "ecdsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5629,8 +5555,8 @@ export const WPT_MANIFEST: WptManifest = {
         "eddsa_vectors.js",
         "eddsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5650,8 +5576,8 @@ export const WPT_MANIFEST: WptManifest = {
         "eddsa_vectors.js",
         "eddsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5671,8 +5597,8 @@ export const WPT_MANIFEST: WptManifest = {
         "eddsa_vectors.js",
         "eddsa_small_order_points.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5726,8 +5652,8 @@ export const WPT_MANIFEST: WptManifest = {
         "hmac_vectors.js",
         "hmac.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5798,8 +5724,8 @@ export const WPT_MANIFEST: WptManifest = {
         "kmac_vectors.js",
         "kmac.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5853,8 +5779,8 @@ export const WPT_MANIFEST: WptManifest = {
         "mldsa_vectors.js",
         "mldsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5908,8 +5834,8 @@ export const WPT_MANIFEST: WptManifest = {
         "rsa_pkcs_vectors.js",
         "rsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5946,8 +5872,8 @@ export const WPT_MANIFEST: WptManifest = {
         "rsa_pss_vectors.js",
         "rsa.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
       "subtests": []
     },
     {
@@ -5982,22 +5908,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "SubtleCrypto.supports method exists"
-        },
-        {
-          "kind": "test",
-          "name": "supports returns true for algorithm objects with valid parameters"
-        },
-        {
-          "kind": "test",
-          "name": "supports returns false for algorithm objects with invalid parameters"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/supports.tentative.https.any.js",
@@ -6014,42 +5927,9 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "util/helpers.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "SubtleCrypto.supports method exists"
-        },
-        {
-          "kind": "test",
-          "name": "supports returns false for invalid operations"
-        },
-        {
-          "kind": "test",
-          "name": "supports returns false for invalid algorithms"
-        },
-        {
-          "kind": "test",
-          "name": "supports works with algorithm objects"
-        },
-        {
-          "kind": "test",
-          "name": "supports returns false for algorithm objects with invalid parameters"
-        },
-        {
-          "kind": "test",
-          "name": "Common algorithm and operation combinations work"
-        },
-        {
-          "kind": "test",
-          "name": "deriveKey tests"
-        },
-        {
-          "kind": "promise_test",
-          "name": "deriveKey promise tests"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/util/helpers.js",
@@ -6101,14 +5981,9 @@ export const WPT_MANIFEST: WptManifest = {
         "../util/helpers.js",
         "wrapKey_unwrapKey_vectors.js"
       ],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "promise_test",
-          "name": "setup"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires broader WebCrypto algorithm and key-format WPT parity beyond the current release subset",
+      "subtests": []
     },
     {
       "path": "WebCryptoAPI/wrapKey_unwrapKey/wrapKey_unwrapKey_vectors.js",
@@ -6249,8 +6124,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/formats.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -6269,9 +6144,14 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/decompress.js",
         "resources/formats.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "test",
+          "name": "CompressionStream constructor should throw on invalid format"
+        }
+      ]
     },
     {
       "path": "compression/compression-with-detach.any.js",
@@ -31732,8 +31612,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires Web Streams WebIDL descriptor and brand-check conformance",
       "subtests": []
     },
     {
@@ -37119,42 +36999,9 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": true,
-      "reason": null,
-      "subtests": [
-        {
-          "kind": "test",
-          "name": "searchParams on location object"
-        },
-        {
-          "kind": "test",
-          "name": "<a> and <area>.searchParams should be undefined"
-        },
-        {
-          "kind": "test",
-          "name": "Setting URL's href attribute and base URLs"
-        },
-        {
-          "kind": "test",
-          "name": "URL.domainToASCII should be undefined"
-        },
-        {
-          "kind": "test",
-          "name": "URL.domainToUnicode should be undefined"
-        },
-        {
-          "kind": "test",
-          "name": "URL: no structured serialize/deserialize support"
-        },
-        {
-          "kind": "test",
-          "name": "URLSearchParams: no structured serialize/deserialize support"
-        },
-        {
-          "kind": "test",
-          "name": "Constructor only takes strings"
-        }
-      ]
+      "runnable": false,
+      "reason": "requires document/window navigation",
+      "subtests": []
     },
     {
       "path": "url/idlharness.any.js",
@@ -37171,8 +37018,8 @@ export const WPT_MANIFEST: WptManifest = {
         "/resources/WebIDLParser.js",
         "/resources/idlharness.js"
       ],
-      "runnable": true,
-      "reason": null,
+      "runnable": false,
+      "reason": "requires URL and URLSearchParams WebIDL shape conformance",
       "subtests": []
     },
     {
@@ -37273,7 +37120,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests-by-key.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires WHATWG URL parser conformance for data-driven constructor cases",
       "subtests": []
     },
     {
@@ -37289,7 +37136,7 @@ export const WPT_MANIFEST: WptManifest = {
       ],
       "scripts": [],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires WHATWG URL origin serialization conformance",
       "subtests": []
     },
     {
@@ -37376,7 +37223,7 @@ export const WPT_MANIFEST: WptManifest = {
         "/common/subset-tests-by-key.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires WHATWG URL setter conformance for data-driven setter cases",
       "subtests": []
     },
     {
@@ -37965,8 +37812,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/urlpattern-compare-tests.tentative.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -37982,8 +37829,8 @@ export const WPT_MANIFEST: WptManifest = {
       "scripts": [
         "resources/urlpattern-compare-tests.tentative.js"
       ],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "runnable": true,
+      "reason": null,
       "subtests": []
     },
     {
@@ -38036,9 +37883,14 @@ export const WPT_MANIFEST: WptManifest = {
         ""
       ],
       "scripts": [],
-      "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
-      "subtests": []
+      "runnable": true,
+      "reason": null,
+      "subtests": [
+        {
+          "kind": "promise_test",
+          "name": "Loading data..."
+        }
+      ]
     },
     {
       "path": "urlpattern/urlpattern-hasregexpgroups.any.js",
@@ -38071,7 +37923,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/urlpatterntests.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires URLPattern tokenizer, canonicalization, and full data-driven conformance",
       "subtests": []
     },
     {
@@ -38088,7 +37940,7 @@ export const WPT_MANIFEST: WptManifest = {
         "resources/urlpatterntests.js"
       ],
       "runnable": false,
-      "reason": "requires upstream WPT server and host setup",
+      "reason": "requires URLPattern tokenizer, canonicalization, and full data-driven conformance",
       "subtests": []
     },
     {

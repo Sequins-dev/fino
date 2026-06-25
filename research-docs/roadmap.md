@@ -40,6 +40,12 @@ Long-term, strategic investments. High value but very large effort.
 - **Depends on**: TLS (done, ALPN negotiation for `h2`).
 - **Complexity**: Very large. HTTP/2 framing, HPACK header compression, stream multiplexing, and flow control are each substantial projects.
 
+### 4.1a fino:ai — Agent & Harness Framework
+
+- **Why**: First-class AI agent support makes fino a viable runtime for building production AI applications and agents — a fast-growing category where the existing fino primitives (realms-as-sandboxes, sqlite+vec for RAG, OTel topic-bus, serializer for checkpoints) give fino a structural advantage over frameworks that bolt these on externally.
+- **Approach**: A family of `fino:ai/*` built-in modules: model interface + providers (Anthropic, OpenAI-compatible), typed tools, autonomous agent/harness loop, memory (history + working + semantic recall over sqlite), durable checkpointed sessions resumable across runs, graph workflows, capability-scoped sandboxes via `fino:realm`, on-demand skills, HTTP/WebSocket channels, and evals with optional Braintrust integration. Full design in `research-docs/research/fino-ai.md`.
+- **Complexity**: Large, but organized into 13 incremental phases (Milestones A–D). No new Rust required — the framework is JS composition over existing builtins.
+
 ### 4.2 QUIC and HTTP/3
 
 - **Why**: QUIC unlocks UDP-based multiplexed transport, lower connection setup latency, connection migration, and the foundation for HTTP/3, WebTransport, HTTP/3 WebSockets, and DATAGRAM-based real-time protocols.

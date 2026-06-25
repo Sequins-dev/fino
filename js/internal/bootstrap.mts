@@ -50,6 +50,7 @@ import {
   setInterval,
   clearInterval,
   queueMicrotask,
+  Performance,
   performance,
 } from '../globals/time.mts';
 import {
@@ -240,11 +241,32 @@ for (const [name, value] of Object.entries({
   setInterval,
   clearInterval,
   queueMicrotask,
-  performance,
+  Performance,
 })) {
   if (name === 'FileReaderSync') continue;
   defineGlobal(name, value, name === 'fetch' || name === 'fetchLater');
 }
+
+const performanceGlobalDescriptor = Object.getOwnPropertyDescriptor({
+  get performance() {
+    if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
+    return performance;
+  },
+  set performance(value: unknown) {
+    if (this !== globalThis && this !== undefined) throw new TypeError('Illegal invocation');
+    Object.defineProperty(globalThis, 'performance', {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  },
+}, 'performance')!;
+Object.defineProperty(globalThis, 'performance', {
+  ...performanceGlobalDescriptor,
+  enumerable: true,
+  configurable: true,
+});
 
 Object.defineProperty(globalThis, Symbol.for('fino.internal.FileReaderSync'), {
   value: FileReaderSync,

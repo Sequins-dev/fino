@@ -205,6 +205,38 @@ describe('exec() and test() with baseURL', () => {
     t.equal(m.inputs[0], '/users/7');
     t.equal(m.inputs[1], 'https://example.com');
   });
+
+  it('constructor object form inherits from baseURL', (t) => {
+    const p = new URLPattern({ pathname: '/users/:id', baseURL: 'https://example.com:8443/root?query#hash' });
+
+    t.equal(p.protocol, 'https');
+    t.equal(p.hostname, 'example.com');
+    t.equal(p.port, '8443');
+    t.equal(p.pathname, '/users/:id');
+    t.equal(p.search, '*');
+    t.equal(p.hash, '*');
+  });
+
+  it('constructor object form escapes inherited baseURL pathname literals', (t) => {
+    const p = new URLPattern({ search: 'foo', baseURL: 'https://example.com/a/+/b' });
+
+    t.equal(p.pathname, '/a/\\+/b');
+    t.equal(p.test({ search: 'foo', baseURL: 'https://example.com/a/+/b' }), true);
+  });
+
+  it('test() and exec() resolve URLPatternInit input baseURL', (t) => {
+    const p = new URLPattern({ pathname: '/users/:id' });
+    const input = { pathname: '/users/42', baseURL: 'https://example.com' };
+
+    t.equal(p.test(input), true);
+
+    const m = p.exec(input);
+    t.ok(m !== null, 'match is not null');
+    if (m === null) throw new Error('expected match');
+    t.equal(m.protocol.input, 'https');
+    t.equal(m.hostname.input, 'example.com');
+    t.equal(m.pathname.groups.id, '42');
+  });
 });
 
 describe('string form with port pattern', () => {
@@ -228,6 +260,14 @@ describe('{group} non-capturing groups', () => {
     const p = new URLPattern({ pathname: '{/api}/users' });
     t.equal(p.test('https://example.com/api/users'), true);
     t.equal(p.test('https://example.com/users'), false);
+  });
+
+  it('URLPattern -- unmodified brace groups canonicalize to their contents', (t) => {
+    const p = new URLPattern({ pathname: '/foo{/bar}' });
+
+    t.equal(p.pathname, '/foo/bar');
+    t.equal(p.test({ pathname: '/foo/bar' }), true);
+    t.equal(p.test({ pathname: '/foo' }), false);
   });
 });
 
@@ -316,6 +356,27 @@ describe('protocol case sensitivity', () => {
   });
 });
 
+describe('URLPattern ignoreCase option', () => {
+  it('matches components case-insensitively when enabled', (t) => {
+    const p = new URLPattern({ pathname: '/foo/:id', search: 'bar', hash: 'baz' }, { ignoreCase: true });
+
+    t.equal(p.test({ pathname: '/FOO/ABC', search: 'BAR', hash: 'BAZ' }), true);
+    t.equal(p.exec({ pathname: '/FOO/ABC', search: 'BAR', hash: 'BAZ' })?.pathname.groups.id, 'ABC');
+  });
+
+  it('keeps matching case-sensitive by default', (t) => {
+    const p = new URLPattern({ pathname: '/foo/:id' });
+
+    t.equal(p.test({ pathname: '/FOO/ABC' }), false);
+  });
+
+  it('accepts ignoreCase with string patterns and baseURL', (t) => {
+    const p = new URLPattern('/foo?bar#baz', 'https://example.com:8080', { ignoreCase: true });
+
+    t.equal(p.test({ pathname: '/FOO', search: 'BAR', hash: 'BAZ', baseURL: 'https://example.com:8080' }), true);
+  });
+});
+
 describe('URLPattern [Symbol.toStringTag]', () => {
   it('URLPattern [Symbol.toStringTag] is "URLPattern"', (t) => {
     const p = new URLPattern({ pathname: '/test' });
@@ -387,6 +448,39 @@ describe('URLPattern hasRegExpGroups', () => {
   });
 });
 
+describe('URLPattern constructor validation', () => {
+  it('rejects empty regexp groups', (t) => {
+    t.throws(() => new URLPattern({ pathname: '()' }), TypeError);
+    t.throws(() => new URLPattern({ pathname: ':name()' }), TypeError);
+  });
+
+  it('rejects invalid parameter names', (t) => {
+    t.throws(() => new URLPattern({ pathname: ':\uD83D \uDEB2' }), TypeError);
+    t.throws(() => new URLPattern({ pathname: ':🚲' }), TypeError);
+  });
+
+  it('accepts non-empty regexp groups', (t) => {
+    const p = new URLPattern({ pathname: '(a)' });
+
+    t.equal(p.pathname, '(a)');
+    t.equal(p.test({ pathname: 'a' }), true);
+  });
+});
+
+describe('URLPattern Unicode parameter names', () => {
+  it('captures non-ASCII identifier names', (t) => {
+    const latin = new URLPattern({ pathname: '/:café' });
+    const script = new URLPattern({ pathname: '/:℘' });
+    const cjk = new URLPattern({ pathname: '/:㐀' });
+    const nonBmp = new URLPattern({ pathname: '/:𠀀' });
+
+    t.equal(latin.exec({ pathname: '/foo' })?.pathname.groups.café, 'foo');
+    t.equal(script.exec({ pathname: '/foo' })?.pathname.groups['℘'], 'foo');
+    t.equal(cjk.exec({ pathname: '/foo' })?.pathname.groups['㐀'], 'foo');
+    t.equal(nonBmp.exec({ pathname: '/foo' })?.pathname.groups['𠀀'], 'foo');
+  });
+});
+
 describe('URLPattern hash pattern', () => {
   it('matches on hash component', (t) => {
     const p = new URLPattern({ hash: 'section-*' });
@@ -402,6 +496,35 @@ describe('URLPattern exec with object input', () => {
     const r = p.exec(url);
     t.ok(r !== null, 'exec matches URL object');
     t.equal(r?.pathname.groups.id, '42', 'captured id');
+  });
+});
+
+describe('URLPattern hostname canonicalization', () => {
+  it('canonicalizes literal Unicode hostnames to ASCII', (t) => {
+    const p = new URLPattern({ hostname: 'café.com' });
+
+    t.equal(p.hostname, 'xn--caf-dma.com');
+    t.equal(p.test({ hostname: 'café.com' }), true);
+    t.equal(p.exec({ hostname: 'café.com' })?.hostname.input, 'xn--caf-dma.com');
+  });
+
+  it('matches already-canonical hostnames against Unicode inputs', (t) => {
+    const p = new URLPattern({ hostname: 'xn--caf-dma.com' });
+
+    t.equal(p.test({ hostname: 'café.com' }), true);
+    t.equal(p.test({ hostname: 'xn--caf-dma.com' }), true);
+  });
+
+  it('rejects invalid literal hostnames', (t) => {
+    t.throws(() => new URLPattern({ hostname: 'bad hostname' }), TypeError);
+    t.throws(() => new URLPattern({ hostname: 'bad%hostname' }), TypeError);
+    t.throws(() => new URLPattern({ hostname: 'bad<hostname' }), TypeError);
+    t.throws(() => new URLPattern({ hostname: 'bad|hostname' }), TypeError);
+  });
+
+  it('canonicalizes hostname literals with URL delimiters', (t) => {
+    t.equal(new URLPattern({ hostname: 'bad#hostname' }).hostname, 'bad');
+    t.equal(new URLPattern({ hostname: 'bad/hostname' }).hostname, 'bad');
   });
 });
 
@@ -425,6 +548,33 @@ describe('URLPattern wildcard group names', () => {
   it('hasRegExpGroups is false for plain wildcard', (t) => {
     const p = new URLPattern({ pathname: '/files/*' });
     t.equal(p.hasRegExpGroups, false, 'plain wildcard is not a regexp group');
+  });
+
+  it('(.*) regexp groups canonicalize to wildcard patterns', (t) => {
+    const p = new URLPattern({ pathname: '/foo/(.*)' });
+    const r = p.exec({ pathname: '/foo/bar/baz' });
+
+    t.equal(p.pathname, '/foo/*');
+    t.equal(p.hasRegExpGroups, false);
+    t.equal(r?.pathname.groups['0'], 'bar/baz');
+  });
+
+  it('optional and repeated wildcard modifiers include the preceding delimiter', (t) => {
+    const optional = new URLPattern({ pathname: '/foo/*?' });
+    const repeated = new URLPattern({ pathname: '/foo/**' });
+
+    t.equal(optional.test({ pathname: '/foo' }), true);
+    t.equal(optional.exec({ pathname: '/foo' })?.pathname.groups['0'], undefined);
+    t.equal(optional.exec({ pathname: '/foo/' })?.pathname.groups['0'], '');
+    t.equal(repeated.test({ pathname: '/foo' }), true);
+    t.equal(repeated.exec({ pathname: '/foo/bar' })?.pathname.groups['0'], 'bar');
+    t.equal(Object.keys(repeated.exec({ pathname: '/foo/bar' })?.pathname.groups ?? {}).length, 1);
+  });
+
+  it('(.*) modifiers canonicalize to wildcard modifiers', (t) => {
+    t.equal(new URLPattern({ pathname: '/foo/(.*)?' }).pathname, '/foo/*?');
+    t.equal(new URLPattern({ pathname: '/foo/(.*)+' }).pathname, '/foo/*+');
+    t.equal(new URLPattern({ pathname: '/foo/(.*)*' }).pathname, '/foo/**');
   });
 });
 
@@ -460,5 +610,96 @@ describe('URLPattern percent-encoding boundaries', () => {
     t.equal(p.search, '*', 'encoded question mark does not start a search pattern');
     t.equal(p.test('https://example.com/a%3Fb'), true, 'encoded question mark pathname matches');
     t.equal(p.test('https://example.com/a?b'), false, 'decoded question mark is a URL delimiter, not pathname text');
+  });
+
+  it('canonicalizes raw component text to percent-encoded text', (t) => {
+    const p = new URLPattern({
+      username: 'café',
+      password: 'café',
+      pathname: '/café',
+      search: 'q=café',
+      hash: 'café',
+    });
+
+    t.equal(p.username, 'caf%C3%A9');
+    t.equal(p.password, 'caf%C3%A9');
+    t.equal(p.pathname, '/caf%C3%A9');
+    t.equal(p.search, 'q=caf%C3%A9');
+    t.equal(p.hash, 'caf%C3%A9');
+    t.equal(p.test({
+      username: 'café',
+      password: 'café',
+      pathname: '/café',
+      search: 'q=café',
+      hash: 'café',
+    }), true);
+  });
+
+  it('preserves valid percent escapes and encodes escaped literal text', (t) => {
+    t.equal(new URLPattern({ pathname: '/caf%C3%A9' }).pathname, '/caf%C3%A9');
+    t.equal(new URLPattern({ pathname: '/foo\\{' }).pathname, '/foo%7B');
+    t.equal(new URLPattern({ pathname: 'var x = 1;' }).pathname, 'var%20x%20=%201;');
+  });
+});
+
+describe('URLPattern generate()', () => {
+  it('generates literal and named pathname groups', (t) => {
+    t.equal(new URLPattern({ pathname: '/foo' }).generate('pathname', {}), '/foo');
+    t.equal(new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: 'bar' }), '/bar');
+    t.equal(new URLPattern({ pathname: '/foo:bar' }).generate('pathname', { bar: 'baz' }), '/foobaz');
+    t.equal(new URLPattern({ pathname: '/:foo/:bar' }).generate('pathname', { foo: 'baz', bar: 'qux' }), '/baz/qux');
+  });
+
+  it('encodes generated pathname groups for special schemes', (t) => {
+    t.equal(new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: '🍅' }), '/%F0%9F%8D%85');
+    t.equal(new URLPattern('https://example.com/:foo').generate('pathname', { foo: ' ' }), '/%20');
+    t.equal(new URLPattern('original-scheme://example.com/:foo').generate('pathname', { foo: ' ' }), '/ ');
+  });
+
+  it('canonicalizes generated hostnames', (t) => {
+    t.equal(new URLPattern({ hostname: '{:foo}.example.com' }).generate('hostname', { foo: '🍅' }), 'xn--fi8h.example.com');
+  });
+
+  it('rejects unsupported generate inputs', (t) => {
+    t.throws(() => new URLPattern({ pathname: '/foo' }).generate('invalid', {}), TypeError);
+    t.throws(() => new URLPattern({ pathname: '/:foo' }).generate('pathname', {}), TypeError);
+    t.throws(() => new URLPattern({ pathname: '/:foo' }).generate('pathname', { foo: 'bar/baz' }), TypeError);
+    t.throws(() => new URLPattern({ pathname: '*' }).generate('pathname', {}), TypeError);
+    t.throws(() => new URLPattern({ pathname: '/{foo}?' }).generate('pathname', {}), TypeError);
+    t.throws(() => new URLPattern({ pathname: '/(regexp)' }).generate('pathname', {}), TypeError);
+  });
+});
+
+describe('URLPattern.compareComponent()', () => {
+  it('orders literal, named, wildcard, regexp, and modifier patterns', (t) => {
+    t.equal(
+      URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/a' }), new URLPattern({ pathname: '/foo/b' })),
+      -1,
+    );
+    t.equal(
+      URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/bar' }), new URLPattern({ pathname: '/foo/:bar' })),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/:bar' }), new URLPattern({ pathname: '/foo/*' })),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/{bar}+' }), new URLPattern({ pathname: '/foo/{bar}?' })),
+      1,
+    );
+    t.equal(
+      URLPattern.compareComponent('pathname', new URLPattern({ pathname: '/foo/:b' }), new URLPattern({ pathname: '/foo/:a' })),
+      0,
+    );
+  });
+
+  it('compares the requested URL component', (t) => {
+    t.equal(URLPattern.compareComponent('protocol', new URLPattern({ protocol: 'a' }), new URLPattern({ protocol: 'b' })), -1);
+    t.equal(URLPattern.compareComponent('port', new URLPattern({ port: '9' }), new URLPattern({ port: '100' })), 1);
+    t.equal(
+      URLPattern.compareComponent('pathname', new URLPattern('https://a.example.com/b?a'), new URLPattern('https://b.example.com/a?b')),
+      1,
+    );
   });
 });

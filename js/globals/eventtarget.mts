@@ -685,6 +685,11 @@ export class EventTarget {
     s.currentTarget = this;
     s.eventPhase = Event.AT_TARGET;
 
+    const propertyHandler = (this as any)[`on${s.type}`];
+    if (typeof propertyHandler === 'function') {
+      try { propertyHandler.call(this, event); } catch (_) {}
+    }
+
     const listenersMap = _listeners.get(this)!;
     const list = listenersMap.get(s.type);
     if (list != null && list.length > 0) {

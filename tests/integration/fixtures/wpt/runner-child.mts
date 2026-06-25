@@ -21,6 +21,7 @@ const fs = new DiskFileSystem();
 const wptRoot = join(cwd(), 'third_party/wpt').toString();
 const testPath = argv[2] ?? '';
 const subtest = argv[3] === undefined || argv[3] === '' ? null : argv[3];
+const variant = argv[4] ?? '';
 const isWorkerTest = testPath.endsWith('.worker.js');
 const workerImportScriptSources = new Map<string, { path: string; source: string }>();
 
@@ -65,7 +66,7 @@ function localWptResourcePathFromFetchInput(input: unknown): string | null {
         : null;
   if (href === null || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(href)) return null;
   try {
-    const base = new URL(`http://web-platform.test/${testPath}`);
+    const base = new URL(`http://web-platform.test/${testPath}${variant}`);
     const pathname = new URL(href, base).pathname;
     return join(wptRoot, pathname.slice(1)).toString();
   } catch (_) {
@@ -104,7 +105,7 @@ function installBaseGlobals(): void {
   }
   if (g.location === undefined) {
     const scheme = /\.https(?:\.|$)/.test(testPath) ? 'https' : 'http';
-    const url = new URL(`${scheme}://web-platform.test/${testPath}`);
+    const url = new URL(`${scheme}://web-platform.test/${testPath}${variant}`);
     g.location = {
       href: url.href,
       origin: url.origin,
@@ -222,6 +223,12 @@ async function sourceForEval(basePath: string, source: string): Promise<string> 
 
 function requiresWptServer(basePath: string, source: string): boolean {
   if (basePath === 'fetch/api/response/response-consume.html') return false;
+  if (basePath.startsWith('urlpattern/')) return false;
+  if (
+    basePath === 'url/url-constructor.any.js' ||
+    basePath === 'url/url-origin.any.js' ||
+    basePath === 'url/url-setters.any.js'
+  ) return false;
   return /\bfetch\s*\(\s*['"`]\//.test(source)
       || /\bfetch\s*\(\s*['"`](?:resources\/|\.{1,2}\/)/.test(source)
       || /\bnew\s+XMLHttpRequest\b/.test(source)
