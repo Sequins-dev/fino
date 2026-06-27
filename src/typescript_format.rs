@@ -343,8 +343,7 @@ fn parse_estree_json(input: &str) -> Result<serde_json::Value, String> {
             if escaped == input {
                 return Err(format!("failed to serialize AST: {first_err}"));
             }
-            serde_json::from_str(&escaped)
-                .map_err(|err| format!("failed to serialize AST: {err}"))
+            serde_json::from_str(&escaped).map_err(|err| format!("failed to serialize AST: {err}"))
         }
     }
 }
@@ -381,7 +380,9 @@ fn escape_invalid_json_hex_escapes(input: &str) -> String {
             }
             if next == b'u' && i + 5 < bytes.len() {
                 if let Some(code) = hex_escape_code(&bytes[i + 2..i + 6]) {
-                    if (0xD800..=0xDFFF).contains(&code) && !is_valid_surrogate_pair_escape(bytes, i) {
+                    if (0xD800..=0xDFFF).contains(&code)
+                        && !is_valid_surrogate_pair_escape(bytes, i)
+                    {
                         out.push_str("\\\\u");
                         out.push_str(&input[i + 2..i + 6]);
                         i += 6;
@@ -456,7 +457,13 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
                 ok: false,
                 code: String::new(),
                 map: String::new(),
-                errors: vec![diagnostic_result(source, "transform", &message, None, "error")],
+                errors: vec![diagnostic_result(
+                    source,
+                    "transform",
+                    &message,
+                    None,
+                    "error",
+                )],
             };
             return serde_json::to_string(&result)
                 .map_err(|err| format!("failed to serialize transpile result: {err}"));
@@ -464,10 +471,7 @@ fn transpile_source(source: &str, options: &ParseOptions) -> Result<String, Stri
     }
 }
 
-pub(crate) fn strip_typescript_module(
-    path: &Path,
-    source: &str,
-) -> Result<StrippedModule, String> {
+pub(crate) fn strip_typescript_module(path: &Path, source: &str) -> Result<StrippedModule, String> {
     let allocator = Allocator::default();
     let source_type = SourceType::from_path(path).unwrap_or_else(|_| SourceType::ts());
     let ret = Parser::new(&allocator, source, source_type).parse();

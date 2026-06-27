@@ -497,7 +497,13 @@ fn evaluate_cb(
     };
     let msg = format!(
         r#"{{"id":{},"method":"Runtime.evaluate","params":{{"expression":{},"replMode":{},"awaitPromise":{},"returnByValue":{},"url":{}{}}}}}"#,
-        call_id, code_json, repl_mode, await_promise, return_by_value, source_name_json, context_id_field
+        call_id,
+        code_json,
+        repl_mode,
+        await_promise,
+        return_by_value,
+        source_name_json,
+        context_id_field
     );
 
     if let Some(session) = insp.session.as_mut() {

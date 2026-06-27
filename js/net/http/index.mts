@@ -1829,6 +1829,7 @@ export class Request {
    * @internal
    */
   #headers: Headers;
+  #unsafeHeaders: Headers;
   /**
    * Private property `#rawBody` used by `Request`.
    *
@@ -1957,6 +1958,7 @@ export class Request {
       this.#url        = init.url;
       this.#version    = init.version;
       this.#headers    = init.headers;
+      this.#unsafeHeaders = new Headers(init.headers);
       this.#rawBody    = init.body === _emptyBody ? null : init.body;
       this.#inTrailers = init.inTrailers ?? null;
       this.#blobUrlObject = init.blobUrlObject ?? null;
@@ -1972,9 +1974,11 @@ export class Request {
     const rawMethod = (init && 'method' in init) ? String(init.method) : (inputRequest !== null ? inputRequest.#method : 'GET');
     this.#method = _normalizeRequestMethod(rawMethod);
     _validateRequestInit(init, this.#method);
-    this.#headers = (init && init.headers)
+    const initialHeaders = (init && init.headers)
       ? new Headers(init.headers)
       : (inputRequest !== null ? new Headers(inputRequest.#headers) : new Headers());
+    this.#unsafeHeaders = new Headers(initialHeaders);
+    this.#headers = initialHeaders;
     this.#headers._setGuard((init && 'mode' in init && String(init.mode) === 'no-cors') ? 'request-no-cors' : 'request');
     this.#version = '';
     this.#outTrailers = (init && init.trailers != null) ? init.trailers : null;
@@ -2144,7 +2148,15 @@ export class Request {
    * @internal
    */
   _appendTrustedHeader(name: string, value: string): void {
-    this.#headers._appendTrusted(_normalizeHeaderName(name), _normalizeHeaderValue(value));
+    const normalizedName = _normalizeHeaderName(name);
+    const normalizedValue = _normalizeHeaderValue(value);
+    this.#headers._appendTrusted(normalizedName, normalizedValue);
+    this.#unsafeHeaders._appendTrusted(normalizedName, normalizedValue);
+  }
+
+  /** @internal Return an original constructor header hidden by public request guards. */
+  _getUnsafeHeader(name: string): string | null {
+    return this.#unsafeHeaders.get(name);
   }
 
   /** The full URL string.

@@ -10,9 +10,10 @@
  * ## AbortSignal extends EventTarget
  *
  * AbortSignal inherits addEventListener / removeEventListener / dispatchEvent
- * from the EventTarget global implementation. The abort event is dispatched as a proper Event
- * instance. The `onabort` IDL event handler fires before registered listeners
- * (consistent with browsers and the previous ad-hoc implementation).
+ * from the EventTarget global implementation. The abort event is dispatched as
+ * a proper Event instance. The `onabort` IDL attribute is backed by a listener
+ * registered via addEventListener, so it fires in insertion order relative to
+ * other abort listeners.
  *
  *
  * ## The _signalAbort WeakMap pattern
@@ -283,7 +284,11 @@ export class AbortSignal extends EventTarget {
    * controller.signal.onabort = null;
    * ```
    */
-  set onabort(v: ((event: Event) => void) | null) { this.#onabort = typeof v === 'function' ? v : null; }
+  set onabort(v: ((event: Event) => void) | null) {
+    if (this.#onabort !== null) this.removeEventListener('abort', this.#onabort);
+    this.#onabort = typeof v === 'function' ? v : null;
+    if (this.#onabort !== null) this.addEventListener('abort', this.#onabort);
+  }
 
   /**
    * Throw the abort reason if this signal has aborted.
@@ -303,10 +308,8 @@ export class AbortSignal extends EventTarget {
   /**
    * Dispatch an event on the signal.
    *
-   * The inherited EventTarget path invokes the onabort property handler before
-   * registered EventTarget listeners. The return value follows
-   * EventTarget.dispatchEvent(): false only when the event was cancelable and
-   * preventDefault() was called.
+   * The return value follows EventTarget.dispatchEvent(): false only when the
+   * event was cancelable and preventDefault() was called.
    *
    * ```typescript no_run
    * const signal = AbortSignal.abort();

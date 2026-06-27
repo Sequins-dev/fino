@@ -115,10 +115,11 @@ impl v8::ValueDeserializerImpl for FinoDeserializer {
 // ---------------------------------------------------------------------------
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["serialize", "deserialize", "detachArrayBuffer"]
-        .iter()
-        .map(|n| v8::String::new(scope, n).unwrap())
-        .collect();
+    let export_names: Vec<v8::Local<v8::String>> =
+        ["serialize", "deserialize", "detachArrayBuffer"]
+            .iter()
+            .map(|n| v8::String::new(scope, n).unwrap())
+            .collect();
 
     let module_name = v8::String::new(scope, "internal:serializer").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
@@ -152,7 +153,8 @@ fn native_detach_array_buffer(
     mut rv: v8::ReturnValue,
 ) {
     let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(args.get(0)) else {
-        let msg = v8::String::new(scope, "detachArrayBuffer: argument must be an ArrayBuffer").unwrap();
+        let msg =
+            v8::String::new(scope, "detachArrayBuffer: argument must be an ArrayBuffer").unwrap();
         let exc = v8::Exception::type_error(scope, msg);
         scope.throw_exception(exc);
         return;

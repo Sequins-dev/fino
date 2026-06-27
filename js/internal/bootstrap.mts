@@ -76,7 +76,6 @@ import {
   File,
   FileList,
   FileReader,
-  FileReaderSync,
   DOMException,
   QuotaExceededError,
   TextEncoder,
@@ -113,6 +112,7 @@ import {
   _flushPorts,
   BroadcastChannel,
 } from '../globals/global.mts';
+import { FileReaderSync } from '../globals/blob.mts';
 import { getWakeReadFd } from 'internal:thread-port';
 
 interface StackFrame {
@@ -201,7 +201,6 @@ for (const [name, value] of Object.entries({
   File,
   FileList,
   FileReader,
-  FileReaderSync,
   DOMException,
   QuotaExceededError,
   TextEncoder,
@@ -243,7 +242,6 @@ for (const [name, value] of Object.entries({
   queueMicrotask,
   Performance,
 })) {
-  if (name === 'FileReaderSync') continue;
   defineGlobal(name, value, name === 'fetch' || name === 'fetchLater');
 }
 

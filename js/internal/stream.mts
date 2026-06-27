@@ -2272,3 +2272,107 @@ export class FdWriter extends BufferedBytesWriter {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Channel<T> — connected Writer/Reader pair sharing an in-memory buffer
+// ---------------------------------------------------------------------------
+
+// Shared internal state between the two halves — not exported.
+class PipeBuf<T> {
+  buf: T[] = [];
+  idx = 0;
+  done = false;
+  hasErr = false;
+  err: unknown;
+  waiters: Array<{ resolve: (v: T | null) => void; reject: (e: unknown) => void }> = [];
+
+  push(value: T): void {
+    const w = this.waiters.shift();
+    if (w) { w.resolve(value); } else { this.buf.push(value); }
+  }
+
+  end(): void {
+    if (this.done) return;
+    this.done = true;
+    const ws = this.waiters; this.waiters = [];
+    for (const w of ws) w.resolve(null);
+  }
+
+  fail(err: unknown): void {
+    this.hasErr = true; this.err = err;
+    const ws = this.waiters; this.waiters = [];
+    for (const w of ws) w.reject(err);
+  }
+
+  read(): Promise<T | null> {
+    if (this.idx < this.buf.length) return Promise.resolve(this.buf[this.idx++]!);
+    if (this.done) return Promise.resolve(null);
+    if (this.hasErr) return Promise.reject(this.err);
+    return new Promise<T | null>((resolve, reject) => { this.waiters.push({ resolve, reject }); });
+  }
+
+  cancelWaiters(): void {
+    const ws = this.waiters; this.waiters = [];
+    for (const w of ws) w.resolve(null);
+  }
+}
+
+/**
+ * Writer end of a `Channel`. `write()` enqueues a value for the reader;
+ * `close()` signals EOF; `fail(err)` propagates an error to the reader.
+ * Writes after `close()` are silently dropped.
+ *
+ * @internal
+ */
+export class PipeWriter<T> extends Writer<T> {
+  #buf: PipeBuf<T>;
+  constructor(buf: PipeBuf<T>) {
+    super(() => buf.end());
+    this.#buf = buf;
+  }
+  override async write(value: T): Promise<void> { this.#buf.push(value); }
+  /** Signal an error to the connected reader. */
+  fail(err: unknown): void { this.#buf.fail(err); }
+}
+
+/**
+ * Reader end of a `Channel`. Values are pulled in the order they were written.
+ * Closing the reader cancels any waiting reads and releases the shared buffer.
+ *
+ * @internal
+ */
+export class PipeReader<T> extends Reader<T> {
+  #buf: PipeBuf<T>;
+  constructor(buf: PipeBuf<T>) {
+    super(() => buf.cancelWaiters());
+    this.#buf = buf;
+  }
+  override read(): Promise<T | null> { return this.#buf.read(); }
+}
+
+/**
+ * In-memory connected Writer/Reader pair.
+ *
+ * The `writer` and `reader` share a FIFO buffer. Write values with
+ * `writer.write(v)`, signal EOF with `writer.close()`, or propagate
+ * an error with `writer.fail(err)`. The `reader` is a standard
+ * `Reader<T>` — iterate with `for await` or `reader.read()`.
+ *
+ * ```js
+ * import { Channel } from 'fino:stream';
+ * const ch = new Channel();
+ * void ch.writer.write(1); void ch.writer.write(2); void ch.writer.close();
+ * for await (const v of ch.reader) console.log(v); // 1, 2
+ * ```
+ *
+ * @internal
+ */
+export class Channel<T> {
+  readonly writer: PipeWriter<T>;
+  readonly reader: PipeReader<T>;
+  constructor() {
+    const buf = new PipeBuf<T>();
+    this.writer = new PipeWriter(buf);
+    this.reader = new PipeReader(buf);
+  }
+}

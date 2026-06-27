@@ -53,7 +53,12 @@ function bodySourceFromInit(url: string | URL, init?: H3RequestInit): H3BodySour
 function getPseudoHeader(init: H3RequestInit | undefined, name: string): string | null {
   const headers = init?.headers;
   if (headers === undefined) return null;
-  if (headers instanceof Headers) return headers.get(name);
+  if (headers instanceof Headers) {
+    for (const [key, value] of headers) {
+      if (key.toLowerCase() === name) return value;
+    }
+    return null;
+  }
   if (Array.isArray(headers)) {
     for (const [key, value] of headers) {
       if (key.toLowerCase() === name) return value;
@@ -421,7 +426,8 @@ export class H3ClientSession {
       return;
     }
     const headers = new Headers(pending.responseHeaders as HeadersInit);
-    const response = new Response(pending.body as any, {
+    const body = statusNum === 204 || statusNum === 205 || statusNum === 304 ? null : pending.body as any;
+    const response = new Response(body, {
       status: statusNum,
       headers,
       trailers: () => pending.trailers,

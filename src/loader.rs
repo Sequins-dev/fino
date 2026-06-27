@@ -40,10 +40,8 @@ const LOOP_BACKEND_MAP: &str = include_str!(concat!(
     "/js/internal/runtime/kqueue.mjs.map"
 ));
 #[cfg(not(target_os = "macos"))]
-const LOOP_BACKEND_SRC: &str = include_str!(concat!(
-    env!("OUT_DIR"),
-    "/js/internal/runtime/linux.mjs"
-));
+const LOOP_BACKEND_SRC: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/js/internal/runtime/linux.mjs"));
 #[cfg(not(target_os = "macos"))]
 const LOOP_BACKEND_MAP: &str = include_str!(concat!(
     env!("OUT_DIR"),
@@ -147,10 +145,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "globals/encoding"),
     source_builtin!("internal:globals/console", "globals/console"),
-    source_builtin!(
-        "internal:globals/eventtarget",
-        "globals/eventtarget"
-    ),
+    source_builtin!("internal:globals/eventtarget", "globals/eventtarget"),
     source_builtin!("internal:globals/abort", "globals/abort"),
     source_builtin!("internal:globals/blob", "globals/blob"),
     source_builtin!("internal:globals/url", "globals/url"),
@@ -412,6 +407,24 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:process/argv", "process/argv"),
     source_builtin!("fino:tty/prompt", "tty/prompt"),
     source_builtin!("fino:context/topic", "context/topic"),
+    source_builtin!("fino:jsonrpc", "jsonrpc"),
+    // ai
+    source_builtin!("fino:ai/model", "ai/model"),
+    source_builtin!("fino:ai/context", "ai/context"),
+    source_builtin!("fino:ai/tool", "ai/tool"),
+    source_builtin!("fino:ai/runtime", "ai/runtime"),
+    source_builtin!("fino:ai/agent", "ai/agent"),
+    source_builtin!("fino:ai/memory", "ai/memory"),
+    source_builtin!("fino:ai/session", "ai/session"),
+    source_builtin!("fino:ai/workflow", "ai/workflow"),
+    source_builtin!("fino:ai/skill", "ai/skill"),
+    source_builtin!("fino:ai/channel", "ai/channel"),
+    source_builtin!("fino:ai/eval", "ai/eval"),
+    source_builtin!("fino:ai/mcp", "ai/mcp"),
+    source_builtin!("internal:ai/shared", "ai/shared"),
+    source_builtin!("internal:ai/runtime", "ai/runtime-internal"),
+    source_builtin!("internal:ai/anthropic", "ai/anthropic"),
+    source_builtin!("internal:ai/openai", "ai/openai"),
     // profiler
     (
         "fino:profiler",
@@ -545,7 +558,10 @@ fn load_builtin_source_override<'s>(
     let stripped = match typescript_format::strip_typescript_module(&mts_path, &source) {
         Ok(stripped) => stripped,
         Err(message) => {
-            throw_loader_error(scope, &format!("TypeScript error in {}: {message}", mts_path.display()));
+            throw_loader_error(
+                scope,
+                &format!("TypeScript error in {}: {message}", mts_path.display()),
+            );
             return None;
         }
     };

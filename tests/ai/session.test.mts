@@ -1,0 +1,536 @@
+import { describe, it } from 'fino:test/test';
+import { Session, SqliteCheckpointStore, session } from 'fino:ai/session';
+import type { RunState } from 'fino:ai/session';
+import { agent } from 'fino:ai/agent';
+import { tool } from 'fino:ai/tool';
+import { SuspendSignal } from 'fino:ai/runtime';
+import { ModelStreamImpl } from 'internal:ai/shared';
+import type { Model, ModelStream, GenerateRequest, StreamEvent, ModelMessage } from 'fino:ai/model';
+import type { Memory, MemoryMessage, MemoryQuery, RecalledContext } from 'fino:ai/memory';
+import { DiskFileSystem } from 'fino:file';
+import { MessageHistory } from 'fino:ai/context';
+import type { HistoryStrategy } from 'fino:ai/context';
+
+function scriptModel(turns: StreamEvent[][]): Model {
+  let idx = 0;
+  return {
+    name: 'mock',
+    dimensions: 0,
+    stream(_req: GenerateRequest): ModelStream {
+      const turn = turns[idx % turns.length] ?? [];
+      idx++;
+      async function* gen() { yield* turn; }
+      return new ModelStreamImpl(gen());
+    },
+    async generate() { throw new Error('use stream'); },
+    async embed() { return []; },
+  };
+}
+
+function captureModel(): { model: Model; getLastMessages(): ModelMessage[] } {
+  let last: ModelMessage[] = [];
+  const model: Model = {
+    name: 'capture',
+    dimensions: 0,
+    stream(req: GenerateRequest): ModelStream {
+      last = req.messages;
+      async function* gen() {
+        yield { type: 'text_delta' as const, index: 0, text: 'captured response' };
+        yield { type: 'usage' as const, usage: { inputTokens: 3, outputTokens: 2 } };
+        yield { type: 'stop' as const, reason: 'end_turn' as const };
+      }
+      return new ModelStreamImpl(gen());
+    },
+    async generate() { throw new Error('use stream'); },
+    async embed() { return []; },
+  };
+  return { model, getLastMessages: () => last };
+}
+
+function endTurn(text: string): StreamEvent[] {
+  return [
+    { type: 'text_delta', index: 0, text },
+    { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+    { type: 'stop', reason: 'end_turn' },
+  ];
+}
+
+function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[] {
+  return [
+    { type: 'tool_call_start', index: 0, id, name },
+    { type: 'tool_call_delta', index: 0, json: argsJson },
+    { type: 'tool_call_end', index: 0 },
+    { type: 'usage', usage: { inputTokens: 8, outputTokens: 4 } },
+    { type: 'stop', reason: 'tool_use' },
+  ];
+}
+
+function tmpPath(): string {
+  return `/tmp/fino-session-test-${Math.floor(Math.random() * 1_000_000_000)}.db`;
+}
+
+async function assertRevisionOnlyCheckpoint(
+  t: { ok(value: unknown, message?: string): void; equal(actual: unknown, expected: unknown, message?: string): void },
+  store: SqliteCheckpointStore,
+  state: RunState,
+): Promise<void> {
+  t.ok(state.historyRevisionId, 'checkpoint stores a history revision id');
+  t.equal('messages' in state, false, 'checkpoint does not duplicate messages');
+  t.equal('historyJSON' in state, false, 'checkpoint does not store legacy history JSON');
+  const loadedHistory = await MessageHistory.load(store, state.historyRevisionId!);
+  t.ok(loadedHistory.render().length > 0, 'history revision reloads from store');
+}
+
+describe('Session', () => {
+  it('memory recall receives input text and hydrates working/recalled context into the model request', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      let recalledQuery: MemoryQuery | undefined;
+      const appended: Array<{ role: ModelMessage['role']; content: ModelMessage['content'] }> = [];
+      const mem: Memory = {
+        threadId: 'memory-thread',
+        semanticAvailable: true,
+        async append(msg) {
+          appended.push({ role: msg.role, content: msg.content });
+          return {
+            id: `m${appended.length}`,
+            threadId: 'memory-thread',
+            role: msg.role,
+            content: msg.content,
+            createdAt: Date.now(),
+          };
+        },
+        async history(): Promise<MemoryMessage[]> { return []; },
+        async recall(query: MemoryQuery = {}): Promise<RecalledContext> {
+          recalledQuery = query;
+          return {
+            messages: [{ id: 'old', threadId: 'memory-thread', role: 'user', content: 'prior fact', createdAt: 1 }],
+            recalled: [{ text: 'semantic hit', score: 0.9, metadata: { source: 'fixture' } }],
+            workingMemory: { account: 'active' },
+          };
+        },
+        async ingest() {},
+        async getWorkingMemory() { return { account: 'active' }; },
+        async setWorkingMemory() {},
+        thread() { return this; },
+        async close() {},
+        async [Symbol.asyncDispose]() {},
+      };
+
+      const cap = captureModel();
+      const sess = session({ store, agent: agent({ model: cap.model }), memory: mem });
+      const result = await sess.start('new question about account');
+
+      t.equal(result.status, 'done', 'session completed');
+      t.equal(recalledQuery?.text, 'new question about account', 'recall query uses input text');
+      const joined = cap.getLastMessages().map((m) => typeof m.content === 'string' ? m.content : JSON.stringify(m.content)).join('\n');
+      t.ok(joined.includes('prior fact'), 'durable history is included');
+      t.ok(joined.includes('semantic hit'), 'semantic recall is included');
+      t.ok(joined.includes('account'), 'working memory is included');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('happy path: start() drives a tool loop to done and checkpoints', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const callLog: string[] = [];
+      const greet = tool({
+        name: 'greet',
+        description: 'Greet',
+        parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'] },
+        execute: (args: { name: string }) => { callLog.push(args.name); return `Hello ${args.name}!`; },
+      });
+
+      const a = agent({
+        model: scriptModel([toolCallTurn('c1', 'greet', '{"name":"Alice"}'), endTurn('done')]),
+        tools: [greet],
+      });
+
+      const checkpoints: RunState[] = [];
+      const sess = session({ store, agent: a, onCheckpoint: (s) => checkpoints.push(s) });
+      const result = await sess.start('go');
+
+      t.equal(result.status, 'done', 'run completed');
+      t.equal(result.text, 'done', 'text extracted from final assistant message');
+      t.ok(callLog.includes('Alice'), 'tool was called');
+
+      t.ok(checkpoints.length >= 2, 'checkpointed after each step');
+
+      const loaded = await store.load(result.runId);
+      t.equal(loaded?.status, 'done', 'final checkpoint in store');
+      t.equal(loaded?.stepIndex, 2, 'two steps completed');
+      await assertRevisionOnlyCheckpoint(t, store, loaded!);
+
+      const runs = await store.list({ threadId: sess.state!.threadId });
+      t.equal(runs.length, 1, 'one run for this thread');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('crash/restart resume: re-drives from persisted mid-run state', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const toolCallsDuringResume: string[] = [];
+      const echoTool = tool({
+        name: 'echo',
+        description: 'Echo',
+        parameters: { type: 'object', properties: { msg: { type: 'string' } } },
+        execute: (args: { msg: string }) => {
+          toolCallsDuringResume.push(args.msg);
+          return args.msg;
+        },
+      });
+
+      const crashedState: RunState = {
+        runId: 'crash-test',
+        threadId: 'crash-thread',
+        status: 'running',
+        stepIndex: 1,
+        usage: { inputTokens: 10, outputTokens: 5 },
+        scratch: {},
+      };
+      let crashedHistory = new MessageHistory({ store });
+      crashedHistory = await crashedHistory.append({ role: 'user', content: 'start' });
+      crashedHistory = await crashedHistory.append({
+        role: 'assistant',
+        content: [{ type: 'tool_use', id: 'c1', name: 'echo', args: { msg: 'hi' } }],
+      });
+      crashedHistory = await crashedHistory.append({
+        role: 'user',
+        content: [{ type: 'tool_result', toolCallId: 'c1', content: 'hi' }],
+      });
+      crashedState.historyRevisionId = crashedHistory.revisionId;
+      await store.save(crashedState);
+
+      const resumeAgent = agent({ model: scriptModel([endTurn('resumed!')]), tools: [echoTool] });
+      const result = await Session.resume({ store, agent: resumeAgent, runId: 'crash-test' });
+
+      t.equal(result.status, 'done', 'resumed to done');
+      t.equal(result.text, 'resumed!', 'correct final text');
+      t.equal(toolCallsDuringResume.length, 0, 'tool was NOT re-executed during resume');
+
+      const final = await store.load('crash-test');
+      t.equal(final?.status, 'done');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('cross-run conversation continuation: new session on same threadId restores messages', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const threadId = 'convo-thread';
+
+      const sess1 = session({ store, agent: agent({ model: scriptModel([endTurn('first reply')]) }), threadId });
+      const r1 = await sess1.start('first message');
+      t.equal(r1.status, 'done');
+      t.equal(r1.text, 'first reply');
+
+      const { model: spy, getLastMessages } = captureModel();
+      const sess2 = session({ store, agent: agent({ model: spy }), threadId });
+
+      const r1Final = await store.load(r1.runId);
+      t.ok(r1Final, 'first run is persisted');
+
+      const r2 = await sess2.start('follow up');
+      t.equal(r2.status, 'done');
+
+      const seen = getLastMessages();
+      const roles = seen.map((m: ModelMessage) => m.role);
+      t.ok(roles.length >= 3, 'model sees prior conversation + new message');
+      t.equal(roles[roles.length - 1], 'user', 'last message is the new user turn');
+
+      const firstContent = seen[0].content;
+      const contents = seen.map((m: ModelMessage) => {
+        return typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+      });
+      t.ok(
+        contents.some((c: string) => c.includes('first message') || c.includes('first reply')),
+        'prior conversation appears in context',
+      );
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('human-in-the-loop: suspend returns token; resume continues; token is single-use', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const waitForHuman = tool({
+        name: 'await_approval',
+        description: 'Awaits human approval',
+        parameters: { type: 'object', properties: {} },
+        execute: () => { throw new SuspendSignal('awaiting human approval'); },
+      });
+
+      const a = agent({
+        model: scriptModel([
+          toolCallTurn('s1', 'await_approval', '{}'),
+          endTurn('approved and done'),
+        ]),
+        tools: [waitForHuman],
+      });
+
+      const sess = session({ store, agent: a });
+      const r1 = await sess.start('please approve');
+
+      t.equal(r1.status, 'suspended', 'session suspended');
+      t.ok(r1.state.suspendedOn?.token, 'resume token minted');
+      await assertRevisionOnlyCheckpoint(t, store, r1.state);
+      const token = r1.state.suspendedOn!.token;
+
+      const r2 = await sess.resume(token, 'human approved');
+      t.equal(r2.status, 'done', 'resumed and completed');
+      t.equal(r2.text, 'approved and done');
+      await assertRevisionOnlyCheckpoint(t, store, r2.state);
+
+      await t.rejects(
+        () => sess.resume(token, 'try again'),
+        /suspended|token/i,
+        'second resume with same token rejects',
+      );
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('ctx.history: tool receives the conversation history object', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      let capturedHistoryRender: import('fino:ai/model').ModelMessage[] | undefined;
+      const checkHistory = tool({
+        name: 'check_history',
+        description: 'Inspects ctx.history',
+        parameters: { type: 'object', properties: {} },
+        execute: (_args, ctx) => {
+          if (ctx.history) {
+            capturedHistoryRender = ctx.history.render();
+          }
+          return 'checked';
+        },
+      });
+
+      const a = agent({
+        model: scriptModel([toolCallTurn('h1', 'check_history', '{}'), endTurn('done')]),
+        tools: [checkHistory],
+      });
+
+      const sess = session({ store, agent: a });
+      await sess.start('hello');
+
+      t.ok(capturedHistoryRender !== undefined, 'ctx.history was provided');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('ctx.suspend(): tool can suspend via ctx convenience method', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const pauseTool = tool({
+        name: 'pause',
+        description: 'Pauses via ctx.suspend()',
+        parameters: { type: 'object', properties: {} },
+        execute: (_args, ctx) => {
+          ctx.suspend({ reason: 'waiting', payload: { key: 'val' } });
+        },
+      });
+
+      const a = agent({
+        model: scriptModel([toolCallTurn('p1', 'pause', '{}'), endTurn('done')]),
+        tools: [pauseTool],
+      });
+
+      const sess = session({ store, agent: a });
+      const r1 = await sess.start('please pause');
+
+      t.equal(r1.status, 'suspended', 'session suspended via ctx.suspend()');
+      t.equal(r1.state.suspendedOn?.reason, 'waiting', 'suspend reason forwarded');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('store.list({threadId}) enumerates all runs for a thread', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const threadId = 'list-test-thread';
+      const make = () => session({
+        store,
+        agent: agent({ model: scriptModel([endTurn('ok')]) }),
+        threadId,
+      });
+
+      const r1 = await make().start('run 1');
+      const r2 = await make().start('run 2');
+      t.equal(r1.status, 'done');
+      t.equal(r2.status, 'done');
+
+      const all = await store.list({ threadId });
+      t.equal(all.length, 2, 'two runs found');
+      t.ok(
+        all.every((s) => s.threadId === threadId),
+        'all runs belong to the thread',
+      );
+
+      const other = await store.list({ threadId: 'other-thread' });
+      t.equal(other.length, 0, 'other thread has no runs');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+});
+
+describe('Session.fork', () => {
+  it('creates an independent run that inherits the parent conversation', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      const seenMessages: ModelMessage[][] = [];
+      const trackingModel: Model = {
+        name: 'tracking',
+        dimensions: 0,
+        stream(req: GenerateRequest): ModelStream {
+          seenMessages.push([...req.messages]);
+          async function* gen() {
+            yield { type: 'text_delta' as const, index: 0, text: 'response' };
+            yield { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } };
+            yield { type: 'stop' as const, reason: 'end_turn' as const };
+          }
+          return new ModelStreamImpl(gen());
+        },
+        async generate() { throw new Error('unused'); },
+        async embed() { return []; },
+      };
+
+      const parentSess = session({ store, agent: agent({ model: trackingModel }) });
+      const r1 = await parentSess.start('parent context');
+      t.equal(r1.status, 'done');
+
+      const forkResult = await parentSess.fork('fork question');
+      t.equal(forkResult.status, 'done', 'fork ran to completion');
+      t.ok(forkResult.runId !== r1.runId, 'fork has its own runId');
+
+      const forkState = await store.load(forkResult.runId);
+      t.ok(forkState, 'fork persisted to store');
+      t.ok(forkState!.threadId !== r1.state.threadId, 'fork has its own threadId');
+      await assertRevisionOnlyCheckpoint(t, store, forkState!);
+
+      const forkCallMsgs = seenMessages[seenMessages.length - 1]!;
+      const forkContent = forkCallMsgs.map((m) =>
+        typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+      ).join(' ');
+      t.ok(forkContent.includes('parent context'), 'fork sees parent history');
+      t.ok(forkContent.includes('fork question'), 'fork sees the fork input');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('fork preserves history revision from a strategy-driven run', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteCheckpointStore.open(path);
+    try {
+      let compacted = false;
+      const compactStrategy: HistoryStrategy = {
+        history: new MessageHistory(),
+        async onAppend(message) {
+          this.history = await this.history.append(message);
+          const refs = this.history.refs();
+          if (!compacted && refs.length >= 2) {
+            compacted = true;
+            this.history = await this.history.edit({
+              op: 'summary',
+              sourceIds: refs.map((m) => m.id),
+              entry: { message: { role: 'user' as const, content: '[SUMMARY]' } },
+              replace: true,
+            });
+          }
+        },
+        async onRead() {
+          return { history: this.history, messages: this.history.render() };
+        },
+      };
+
+      const forkMsgs: ModelMessage[][] = [];
+      const forkModel: Model = {
+        name: 'fork-model',
+        dimensions: 0,
+        stream(req: GenerateRequest): ModelStream {
+          forkMsgs.push([...req.messages]);
+          async function* gen() {
+            yield { type: 'text_delta' as const, index: 0, text: 'compact-fork response' };
+            yield { type: 'usage' as const, usage: { inputTokens: 5, outputTokens: 3 } };
+            yield { type: 'stop' as const, reason: 'end_turn' as const };
+          }
+          return new ModelStreamImpl(gen());
+        },
+        async generate() { throw new Error('unused'); },
+        async embed() { return []; },
+      };
+
+      const parentSess = session({
+        store,
+        agent: agent({ model: forkModel, history: compactStrategy }),
+      });
+      const r1 = await parentSess.start('compactable context');
+      t.equal(r1.status, 'done');
+      t.ok(compacted, 'strategy compacted the history');
+      t.ok(parentSess.state?.historyRevisionId, 'history revision stored after strategy run');
+      await assertRevisionOnlyCheckpoint(t, store, parentSess.state!);
+
+      const forkResult = await parentSess.fork('fork after compaction');
+      t.equal(forkResult.status, 'done', 'fork completed');
+
+      const lastCall = forkMsgs[forkMsgs.length - 1]!;
+      const allContent = lastCall.map((m) =>
+        typeof m.content === 'string' ? m.content : JSON.stringify(m.content)
+      ).join(' ');
+      t.ok(allContent.includes('[SUMMARY]'), 'fork sees the compacted summary, not raw originals');
+      t.ok(allContent.includes('fork after compaction'), 'fork sees its new input');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+});

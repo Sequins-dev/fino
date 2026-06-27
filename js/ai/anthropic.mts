@@ -1,0 +1,382 @@
+/**
+ * Anthropic model provider adapter.
+ *
+ * `anthropic()` returns a provider-neutral `Model` backed by Anthropic's
+ * Messages API. It adapts Fino message parts, tool calls, streaming events,
+ * embeddings metadata, and native JSON schema response formats.
+ */
+
+import type {
+  GenerateRequest,
+  GenerateResult,
+  StreamEvent,
+  ProviderOptions,
+  Model,
+  ModelStream,
+  TextPart,
+  StopReason,
+  ToolCall,
+} from 'fino:ai/model';
+import type { SseEvent } from 'fino:net/http/eventstream';
+import {
+  resolveApiKey,
+  streamFromResponse,
+  ModelStreamImpl,
+  ModelError,
+  ClientLike,
+  ANTHROPIC_BASE_URL,
+} from 'internal:ai/shared';
+import { HttpClient } from 'fino:net/http/client';
+
+const ANTHROPIC_VERSION = '2023-06-01';
+const DEFAULT_MAX_TOKENS = 4096;
+
+function mapStopReason(raw: string): StopReason {
+  switch (raw) {
+    case 'end_turn': return 'end_turn';
+    case 'tool_use': return 'tool_use';
+    case 'max_tokens': return 'max_tokens';
+    case 'stop_sequence': return 'stop_sequence';
+    case 'refusal': return 'refusal';
+    default: return 'end_turn';
+  }
+}
+
+function convertContentPart(part: { type: string; [k: string]: unknown }): Record<string, unknown> {
+  if (part.type === 'text') {
+    return part.cache
+      ? { type: 'text', text: part.text, cache_control: { type: 'ephemeral' } }
+      : { type: 'text', text: part.text };
+  }
+  if (part.type === 'image') {
+    return { type: 'image', source: { type: 'base64', media_type: part.mediaType, data: part.data } };
+  }
+  if (part.type === 'tool_use') {
+    return { type: 'tool_use', id: part.id, name: part.name, input: part.args };
+  }
+  if (part.type === 'tool_result') {
+    return {
+      type: 'tool_result',
+      tool_use_id: part.toolCallId,
+      content: part.content,
+      ...(part.isError ? { is_error: true } : {}),
+    };
+  }
+  if (part.type === 'document') {
+    return {
+      type: 'document',
+      source: { type: 'base64', media_type: part.mediaType, data: part.data },
+      ...(part.name ? { title: part.name } : {}),
+    };
+  }
+  return part;
+}
+
+function buildAnthropicRequest(
+  req: GenerateRequest,
+  modelName: string,
+  maxTokens: number,
+  temperature: number | undefined,
+): Record<string, unknown> {
+  const messages: Array<Record<string, unknown>> = [];
+  let system: unknown;
+
+  for (const msg of req.messages) {
+    if (msg.role === 'system') {
+      system = typeof msg.content === 'string'
+        ? msg.content
+        : (msg.content as Array<{ type: string; [k: string]: unknown }>).map(convertContentPart);
+      continue;
+    }
+    messages.push({
+      role: msg.role,
+      content: typeof msg.content === 'string'
+        ? msg.content
+        : (msg.content as Array<{ type: string; [k: string]: unknown }>).map(convertContentPart),
+    });
+  }
+
+  if (req.system != null && system == null) {
+    system = typeof req.system === 'string'
+      ? req.system
+      : (req.system as TextPart[]).map((p) =>
+          p.cache
+            ? { type: 'text', text: p.text, cache_control: { type: 'ephemeral' } }
+            : { type: 'text', text: p.text }
+        );
+  }
+
+  const body: Record<string, unknown> = {
+    model: modelName,
+    max_tokens: req.maxTokens ?? maxTokens,
+    messages,
+  };
+
+  if (system != null) body.system = system;
+
+  const temp = req.temperature ?? temperature;
+  if (temp != null) body.temperature = temp;
+
+  if (req.tools?.length) {
+    body.tools = req.tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters,
+    }));
+  }
+
+  if (req.toolChoice != null) {
+    if (req.toolChoice === 'auto') body.tool_choice = { type: 'auto' };
+    else if (req.toolChoice === 'any') body.tool_choice = { type: 'any' };
+    else if (req.toolChoice === 'none') body.tool_choice = { type: 'none' };
+    else body.tool_choice = { type: 'tool', name: (req.toolChoice as { name: string }).name };
+  }
+
+  if (req.stopSequences?.length) body.stop_sequences = req.stopSequences;
+
+  if (req.responseFormat?.type === 'json_schema') {
+    body.output_config = {
+      format: {
+        type: 'json_schema',
+        json_schema: {
+          name: req.responseFormat.name ?? 'response',
+          schema: req.responseFormat.schema,
+          ...(req.responseFormat.strict != null ? { strict: req.responseFormat.strict } : {}),
+        },
+      },
+    };
+  }
+
+  return body;
+}
+
+interface AnthropicStreamState {
+  blocks: Map<number, { type: string; id?: string; name?: string }>;
+  inputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+function mapAnthropicEvent(event: SseEvent, state: AnthropicStreamState): StreamEvent[] {
+  const results: StreamEvent[] = [];
+
+  switch (event.type) {
+    case 'message_start': {
+      const msg = JSON.parse(event.data) as { message?: { usage?: Record<string, number> } };
+      const usage = msg.message?.usage;
+      if (usage) {
+        state.inputTokens = usage.input_tokens ?? 0;
+        state.cacheRead = usage.cache_read_input_tokens ?? 0;
+        state.cacheCreation = usage.cache_creation_input_tokens ?? 0;
+      }
+      break;
+    }
+    case 'content_block_start': {
+      const frame = JSON.parse(event.data) as {
+        index: number;
+        content_block: { type: string; id?: string; name?: string };
+      };
+      state.blocks.set(frame.index, frame.content_block);
+      if (frame.content_block.type === 'tool_use') {
+        results.push({
+          type: 'tool_call_start',
+          index: frame.index,
+          id: frame.content_block.id!,
+          name: frame.content_block.name!,
+        });
+      }
+      break;
+    }
+    case 'content_block_delta': {
+      const frame = JSON.parse(event.data) as {
+        index: number;
+        delta: { type: string; text?: string; partial_json?: string };
+      };
+      if (frame.delta.type === 'text_delta' && frame.delta.text) {
+        results.push({ type: 'text_delta', index: frame.index, text: frame.delta.text });
+      } else if (frame.delta.type === 'input_json_delta' && frame.delta.partial_json != null) {
+        results.push({ type: 'tool_call_delta', index: frame.index, json: frame.delta.partial_json });
+      }
+      break;
+    }
+    case 'content_block_stop': {
+      const frame = JSON.parse(event.data) as { index: number };
+      const block = state.blocks.get(frame.index);
+      if (block?.type === 'tool_use') {
+        results.push({ type: 'tool_call_end', index: frame.index });
+      }
+      break;
+    }
+    case 'message_delta': {
+      const frame = JSON.parse(event.data) as {
+        delta: { stop_reason?: string };
+        usage?: { output_tokens?: number };
+      };
+      results.push({
+        type: 'usage',
+        usage: {
+          inputTokens: state.inputTokens,
+          outputTokens: frame.usage?.output_tokens ?? 0,
+          ...(state.cacheRead ? { cacheReadInputTokens: state.cacheRead } : {}),
+          ...(state.cacheCreation ? { cacheCreationInputTokens: state.cacheCreation } : {}),
+        },
+      });
+      if (frame.delta.stop_reason) {
+        results.push({ type: 'stop', reason: mapStopReason(frame.delta.stop_reason) });
+      }
+      break;
+    }
+  }
+
+  return results;
+}
+
+function normalizeAnthropicResponse(data: Record<string, unknown>): GenerateResult {
+  const content = (data.content as Array<Record<string, unknown>>) ?? [];
+  let text = '';
+  const toolCalls: ToolCall[] = [];
+
+  for (const block of content) {
+    if (block.type === 'text') {
+      text += block.text as string;
+    } else if (block.type === 'tool_use') {
+      toolCalls.push({ id: block.id as string, name: block.name as string, args: block.input });
+    }
+  }
+
+  const usage = (data.usage as Record<string, number>) ?? {};
+  return {
+    text,
+    toolCalls,
+    stopReason: mapStopReason((data.stop_reason as string) ?? 'end_turn'),
+    usage: {
+      inputTokens: usage.input_tokens ?? 0,
+      outputTokens: usage.output_tokens ?? 0,
+      ...(usage.cache_read_input_tokens ? { cacheReadInputTokens: usage.cache_read_input_tokens } : {}),
+      ...(usage.cache_creation_input_tokens ? { cacheCreationInputTokens: usage.cache_creation_input_tokens } : {}),
+    },
+  };
+}
+
+class AnthropicModel implements Model {
+  readonly id: string;
+  readonly name: string;
+  readonly provider = 'anthropic';
+  readonly capabilities = { responseFormat: true };
+  readonly dimensions = 0;
+  #client: ClientLike;
+  #apiKey: string;
+  #baseUrl: string;
+  #headers: Record<string, string>;
+  #maxTokens: number;
+  #temperature: number | undefined;
+
+  constructor(
+    modelName: string,
+    apiKey: string,
+    client: ClientLike,
+    baseUrl: string,
+    headers: Record<string, string>,
+    maxTokens: number,
+    temperature: number | undefined,
+  ) {
+    this.id = modelName;
+    this.name = modelName;
+    this.#client = client;
+    this.#apiKey = apiKey;
+    this.#baseUrl = baseUrl;
+    this.#headers = headers;
+    this.#maxTokens = maxTokens;
+    this.#temperature = temperature;
+  }
+
+  stream(req: GenerateRequest): ModelStream {
+    const client = this.#client;
+    const apiKey = this.#apiKey;
+    const baseUrl = this.#baseUrl;
+    const headers = this.#headers;
+    const maxTokens = this.#maxTokens;
+    const temperature = this.#temperature;
+    const modelName = this.name;
+
+    async function* gen(): AsyncGenerator<StreamEvent> {
+      const body = buildAnthropicRequest(req, modelName, maxTokens, temperature);
+      const res = await client.request(`${baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'accept': 'text/event-stream',
+          'x-api-key': apiKey,
+          'anthropic-version': ANTHROPIC_VERSION,
+          ...headers,
+        },
+        body: JSON.stringify({ ...body, stream: true }),
+        signal: req.signal ?? null,
+      });
+      const reader = await streamFromResponse(res);
+      const state: AnthropicStreamState = {
+        blocks: new Map(),
+        inputTokens: 0,
+        cacheRead: 0,
+        cacheCreation: 0,
+      };
+      for await (const event of reader) {
+        for (const mapped of mapAnthropicEvent(event, state)) {
+          yield mapped;
+        }
+      }
+    }
+
+    return new ModelStreamImpl(gen());
+  }
+
+  async generate(req: GenerateRequest): Promise<GenerateResult> {
+    const body = buildAnthropicRequest(req, this.name, this.#maxTokens, this.#temperature);
+    const res = await this.#client.request(`${this.#baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'accept': 'application/json',
+        'x-api-key': this.#apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+        ...this.#headers,
+      },
+      body: JSON.stringify({ ...body, stream: false }),
+      signal: req.signal ?? null,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      const body = await res.text();
+      throw new ModelError(`Anthropic API error ${res.status}: ${body}`, { status: res.status, body });
+    }
+    return normalizeAnthropicResponse((await res.json()) as Record<string, unknown>);
+  }
+
+  embed(_texts: string[]): Promise<Float32Array[]> {
+    return Promise.reject(new Error(
+      'Anthropic does not provide a native embeddings endpoint. Use an OpenAI-compatible provider for embeddings.'
+    ));
+  }
+}
+
+/**
+ * Create an Anthropic-backed `Model`.
+ *
+ * `apiKey` defaults to `ANTHROPIC_API_KEY`. Override `client` in tests or
+ * custom runtimes that provide their own HTTP transport.
+ */
+export function anthropic(opts: ProviderOptions = {}): Model {
+  const apiKey = resolveApiKey(opts, 'ANTHROPIC_API_KEY');
+  const client = opts.client != null
+    ? opts.client as unknown as ClientLike
+    : new HttpClient() as unknown as ClientLike;
+
+  return new AnthropicModel(
+    opts.model ?? 'claude-opus-4-8',
+    apiKey,
+    client,
+    opts.baseUrl ?? ANTHROPIC_BASE_URL,
+    opts.headers ?? {},
+    opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+    opts.temperature,
+  );
+}

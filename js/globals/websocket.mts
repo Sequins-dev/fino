@@ -2980,6 +2980,7 @@ export class WebSocket extends EventTarget {
    * ```
    */
   send(data: string | ArrayBuffer | ArrayBufferView | Blob): void {
+    if (arguments.length < 1) throw new TypeError('WebSocket.send requires 1 argument');
     if (this.#conn.readyState === CONNECTING) {
       throw Object.assign(
         new Error('WebSocket is not yet open: buffering not supported'),
@@ -3021,4 +3022,73 @@ export class WebSocket extends EventTarget {
   [Symbol.dispose](): void {
     this.close();
   }
+}
+
+function _setConstructorLength(ctor: Function, length: number): void {
+  Object.defineProperty(ctor, 'length', {
+    value: length,
+    writable: false,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+function _setPrototypeToStringTag(proto: object, tag: string): void {
+  Object.defineProperty(proto, Symbol.toStringTag, {
+    value: tag,
+    writable: false,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+function _makePrototypeMembersEnumerable(proto: object, names: PropertyKey[]): void {
+  for (const name of names) {
+    const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+    if (descriptor === undefined) continue;
+    Object.defineProperty(proto, name, { ...descriptor, enumerable: true });
+  }
+}
+
+function _setReadonlyConstant(target: object, name: string, value: number): void {
+  Object.defineProperty(target, name, {
+    value,
+    writable: false,
+    enumerable: true,
+    configurable: false,
+  });
+}
+
+_setConstructorLength(CloseEvent, 1);
+_setPrototypeToStringTag(CloseEvent.prototype, 'CloseEvent');
+_makePrototypeMembersEnumerable(CloseEvent.prototype, ['code', 'reason', 'wasClean']);
+
+_setConstructorLength(ErrorEvent, 1);
+_setPrototypeToStringTag(ErrorEvent.prototype, 'ErrorEvent');
+_makePrototypeMembersEnumerable(ErrorEvent.prototype, ['error']);
+
+_setConstructorLength(WebSocket, 1);
+_setPrototypeToStringTag(WebSocket.prototype, 'WebSocket');
+_makePrototypeMembersEnumerable(WebSocket.prototype, [
+  'url',
+  'readyState',
+  'bufferedAmount',
+  'extensions',
+  'protocol',
+  'binaryType',
+  'onopen',
+  'onmessage',
+  'onerror',
+  'onclose',
+  'send',
+  'close',
+]);
+for (const [name, value] of [
+  ['CONNECTING', CONNECTING],
+  ['OPEN', OPEN],
+  ['CLOSING', CLOSING],
+  ['CLOSED', CLOSED],
+] as const) {
+  _setReadonlyConstant(WebSocket, name, value);
+  _setReadonlyConstant(WebSocket.prototype, name, value);
 }

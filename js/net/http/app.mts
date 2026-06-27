@@ -868,6 +868,22 @@ export class App extends BuilderBase<App> {
    */
   options(path: string, ...stack: Array<Middleware | Handler>): this | MethodBuilder { return this.#direct('OPTIONS', path, stack); }
 
+  /** Mount a JSON-RPC service at `path`. All POST requests to `path` are
+   * dispatched as JSON-RPC 2.0 messages; other methods return 405. App
+   * middleware runs normally before the RPC handler.
+   *
+   * ```ts no_run
+   * import { JsonRpcService } from 'fino:jsonrpc';
+   * const svc = new JsonRpcService();
+   * svc.method('add').handle((p) => (p as { a: number; b: number }).a + (p as { a: number; b: number }).b);
+   * app.rpc('/rpc', svc);
+   * ```
+   */
+  rpc(path: string, service: { httpHandler(): (req: Request) => Promise<Response> }): this {
+    const handler = service.httpHandler();
+    return this.post(path, (ctx) => handler(ctx.request)) as this;
+  }
+
   /** Register a WebSocket route.
    *
    * ```ts no_run
@@ -998,6 +1014,11 @@ export class App extends BuilderBase<App> {
       if (match === null) continue;
       const ctx = makeInitialContext(this, endpoint, req, { ...match.pathname.groups }, info);
       return this.#requestContext.runWithValue(ctx, () => compose(ctx, endpoint.stack, endpoint.handler));
+    }
+    for (const endpoint of this.#webSocketEndpoints) {
+      if (endpoint.pattern.exec({ pathname: path }) !== null) {
+        return new Response('Bad Request', { status: 400 });
+      }
     }
     return defaultNotFound();
   }
@@ -1235,6 +1256,21 @@ export class Router extends BuilderBase<Router> {
    * ```
    */
   options(path: string, ...stack: Array<Middleware | Handler>): this { this.route(path)._method('OPTIONS', stack); return this; }
+
+  /** Mount a JSON-RPC service at `path`. Delegates to `App.rpc()` semantics.
+   *
+   * ```ts no_run
+   * import { JsonRpcService } from 'fino:jsonrpc';
+   * const svc = new JsonRpcService();
+   * svc.method('ping').handle(() => 'pong');
+   * router.rpc('/rpc', svc);
+   * ```
+   */
+  rpc(path: string, service: { httpHandler(): (req: Request) => Promise<Response> }): this {
+    const handler = service.httpHandler();
+    this.route(path)._method('POST', [(ctx: HttpContext) => handler(ctx.request)]);
+    return this;
+  }
 
   /**
    * Internal method `_install` used by `Router`.
@@ -1963,7 +1999,7 @@ export class CookieJar {
    * @internal
    */
   _apply(res: Response): void {
-    for (const value of this.#out) res.headers.append('set-cookie', value);
+    for (const value of this.#out) (res.headers as Headers & { _appendTrusted(name: string, value: string): void })._appendTrusted('set-cookie', value);
   }
 }
 
@@ -1977,7 +2013,10 @@ export class CookieJar {
  * ```
  */
 export function cookies(): Producer {
-  return defineProducer((ctx) => new CookieJar(ctx.request.headers.get('cookie')));
+  return defineProducer((ctx) => {
+    const unsafeCookie = (ctx.request as Request & { _getUnsafeHeader?: (name: string) => string | null })._getUnsafeHeader?.('cookie') ?? null;
+    return new CookieJar(ctx.request.headers.get('cookie') ?? unsafeCookie);
+  });
 }
 
 /** Session data persisted by a `SessionStore`.

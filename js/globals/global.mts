@@ -58,7 +58,7 @@ export {
   TransformStream,
 } from './webstreams.mts';
 export { AbortController, AbortSignal } from './abort.mts';
-export { Blob, File, FileList, FileReader, FileReaderSync } from './blob.mts';
+export { Blob, File, FileList, FileReader } from './blob.mts';
 export { DOMException, QuotaExceededError, TextEncoder, TextDecoder, atob, btoa, structuredClone } from './encoding.mts';
 export { FormData } from './formdata.mts';
 export { URL, URLSearchParams } from './url.mts';

@@ -75,6 +75,21 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:tty/prompt` | `benchmarks/tty/prompt.bench.mts` |
 | `fino:context/topic` | `benchmarks/context/topic.bench.mts` |
 | `fino:profiler` | `benchmarks/profiler.bench.mts` |
+| `fino:net/http/eventstream` | not yet benchmarked |
+| `fino:ai/context` | not yet benchmarked |
+| `fino:ai/model` | not yet benchmarked |
+| `fino:ai/tool` | not yet benchmarked |
+| `fino:ai/harness` | not yet benchmarked |
+| `fino:ai/runtime` | not yet benchmarked |
+| `fino:ai/agent` | not yet benchmarked |
+| `fino:ai/memory` | not yet benchmarked |
+| `fino:ai/session` | not yet benchmarked |
+| `fino:ai/workflow` | not yet benchmarked |
+| `fino:ai/skill` | not yet benchmarked |
+| `fino:ai/channel` | not yet benchmarked |
+| `fino:ai/eval` | not yet benchmarked |
+| `fino:jsonrpc` | not yet benchmarked |
+| `fino:ai/mcp` | not yet benchmarked |
 
 ## Release Stress And Failure Coverage
 

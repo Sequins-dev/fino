@@ -630,7 +630,7 @@ describe('Body consumption', () => {
   });
 
   it('formData() rejects unsupported incoming content types', async (t) => {
-    const res = new Response('raw', { headers: { 'content-type': 'multipart/form-data; boundary=test' } });
+    const res = new Response('raw', { headers: { 'content-type': 'application/json' } });
     await t.rejects(() => res.formData(), /unsupported content-type/i);
   });
 
