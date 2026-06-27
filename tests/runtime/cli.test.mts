@@ -715,6 +715,26 @@ describe('CLI commands', () => {
     });
   });
 
+  it('ignores non-test files passed to the test command', async (t) => {
+    await withTempProject({
+      'tests/alpha.test.mts': [
+        "import { describe, it } from 'fino:test/test';",
+        "describe('alpha direct suite', () => {",
+        "  it('runs direct test', (t) => t.ok(true));",
+        "});",
+        '',
+      ].join('\n'),
+      'tests/helper.mts': "throw new Error('helper file should not be imported by fino test');\n",
+    }, async (dir) => {
+      const { stdout, stderr, result } = await runCli(['test', 'tests/alpha.test.mts', 'tests/helper.mts'], { cwd: dir });
+
+      t.equal(result.code, 0, 'test command exits successfully when non-test helpers are present');
+      t.equal(stderr, '', 'test command does not import helper failures');
+      t.ok(stdout.includes('alpha direct suite'), 'test command imports the .test.mts file');
+      t.equal(stdout.includes('helper file should not be imported'), false, 'helper file is ignored');
+    });
+  });
+
   it('fails when expanded test inputs match no files', async (t) => {
     await withTempProject({}, async (dir) => {
       const { stdout, stderr, result } = await runCli(['test', 'tests'], { cwd: dir });

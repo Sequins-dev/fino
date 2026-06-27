@@ -2,7 +2,7 @@
  * internal/commands/test — internal runtime module.
  *
  * Builds the `fino test` command. Arguments may be direct files, directories,
- * or simple glob patterns. Expanded test modules are imported for registration
+ * or simple glob patterns. Matching test modules are imported for registration
  * side effects before execution is delegated to `fino:test/test`.
  *
  * ```js
@@ -27,6 +27,10 @@ function normalizeModuleSpecifier(path: string): string {
   return `file://${cwd()}/./${path}`;
 }
 
+function isTestModuleFile(path: string): boolean {
+  return path.endsWith('.test.mts');
+}
+
 /**
  * Expand a single CLI argument into a list of absolute file paths to import.
  *
@@ -34,7 +38,7 @@ function normalizeModuleSpecifier(path: string): string {
  *   rooted at cwd.
  * - If the argument ends with `/` or has no file extension it is treated as a
  *   directory and expanded to matching `.test.mts` files within it.
- * - Otherwise it is returned as-is (a direct file path).
+ * - Otherwise it is returned as a direct file path.
  */
 async function expandArg(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
@@ -61,11 +65,12 @@ async function expandArg(arg: string): Promise<string[]> {
  * Create the `test` subcommand used by the root Fino CLI.
  *
  * The returned command requires at least one positional path. Directory inputs
- * expand to matching `.test.mts` files, glob inputs are resolved from the current working
- * directory, and direct files are imported as given. `--filter` is optional and
- * forwards a substring filter to the test runner. `--durations` adds TAP
- * duration metadata to every result line. The command throws when no files are
- * supplied or expansion finds no test files.
+ * expand to matching `.test.mts` files, glob inputs are resolved from the
+ * current working directory, and direct files are imported as given. When an
+ * expanded input set contains `.test.mts` modules, non-test helper modules are
+ * ignored. `--filter` is optional and forwards a substring filter to the test
+ * runner. `--durations` adds TAP duration metadata to every result line. The
+ * command throws when no files are supplied or expansion finds no test files.
  *
  * ```js
  * import { createTestCommand } from 'internal:commands/test';
@@ -94,15 +99,16 @@ export function createTestCommand(): Command {
 
       allowInternalForTests();
 
-      let imported = 0;
+      const expandedFiles: string[] = [];
       for (const raw of testFiles) {
         const expanded = await expandArg(String(raw));
-        for (const file of expanded) {
-          await import(normalizeModuleSpecifier(file));
-          imported++;
-        }
+        expandedFiles.push(...expanded);
       }
-      if (imported === 0) {
+      const importFiles = expandedFiles.some(isTestModuleFile)
+        ? expandedFiles.filter(isTestModuleFile)
+        : expandedFiles;
+      for (const file of importFiles) await import(normalizeModuleSpecifier(file));
+      if (importFiles.length === 0) {
         throw new Error(`fino test: no test files matched ${testFiles.map(String).join(', ')}`);
       }
 

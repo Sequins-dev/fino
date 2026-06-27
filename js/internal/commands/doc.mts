@@ -1095,8 +1095,12 @@ function groupOverloads(exports: DocExport[]): void {
 }
 
 function assignDocIds(moduleDoc: ModuleDoc): void {
+  const exportCounts = new Map<string, number>();
   for (const item of moduleDoc.exports) {
-    item.id = `${moduleDoc.name}.${item.name}`;
+    const exportBase = `${moduleDoc.name}.${item.name}`;
+    const exportCount = exportCounts.get(exportBase) ?? 0;
+    item.id = exportCount === 0 ? exportBase : exportCount === 1 ? `${exportBase}:${item.kind}` : `${exportBase}:${item.kind}-${exportCount}`;
+    exportCounts.set(exportBase, exportCount + 1);
     if ((!item.signatures || item.signatures.length === 0) && item.signature) item.signatures = [item.signature];
     const memberCounts = new Map<string, number>();
     for (const member of item.members) {

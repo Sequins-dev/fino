@@ -851,6 +851,46 @@ export function afterEnum(): string {
     t.equal(hidden.stdout.includes('advanced.ResourceBox.internalOnly'), false, 'sqlite search excludes private members by default');
   });
 
+  it('assigns unique doc ids to same-name type and value exports', async (t) => {
+    const docsDir = appDir + '/docs';
+    const jsonPath = docsDir + '/api.json';
+    await removeTree(fs, docsDir);
+    await fs.writeFile(appDir + '/same-name.mts', `/**
+ * Same-name export fixture.
+ */
+
+/**
+ * Runtime widget shape.
+ */
+export interface Widget {
+  readonly id: string;
+}
+
+/**
+ * Runtime widget constructor.
+ */
+export const Widget = class WidgetImpl {
+  id = 'fixture';
+};
+`);
+
+    const run = await runCli(['doc', 'build', './same-name.mts', '--format', 'both', '--title', 'Same Name API'], appDir);
+
+    t.equal(run.result.code, 0, 'doc build exits successfully');
+    t.equal(run.stderr, '', 'doc build writes no stderr');
+    t.ok(run.stdout.includes('/docs/docs.db'), 'doc build reports sqlite index');
+
+    const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
+    const moduleDoc = json.modules.find((item) => item.name === 'same-name')!;
+    const widgets = moduleDoc.exports.filter((item) => item.name === 'Widget');
+    const ids = widgets.map((item) => item.id);
+
+    t.equal(widgets.length, 2, 'json keeps both same-name exports');
+    t.equal(new Set(ids).size, ids.length, 'same-name exports have distinct symbol ids');
+    t.ok(ids.includes('same-name.Widget'), 'first same-name export keeps the canonical symbol id');
+    t.ok(ids.includes('same-name.Widget:const'), 'second same-name export is disambiguated by kind');
+  });
+
   it('shows and searches fixed project docs artifacts', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
