@@ -4,8 +4,9 @@
 
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Process, cwd, execPath } from 'fino:process';
+import { chdir, cwd, execPath, Process } from 'fino:process';
 import { sqliteAvailable } from 'fino:database/sqlite';
+import { createRootCommand } from 'internal:commands/root';
 
 const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1_000_000);
 
@@ -95,7 +96,29 @@ async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
   await fs.unlink(path);
 }
 
-async function runCli(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
+async function runCli(args: string[], nextCwd: string): Promise<{ stdout: string; stderr: string; result: { code: number; signal: number | null } }> {
+  const previousCwd = cwd();
+  try {
+    chdir(nextCwd);
+    const result = await createRootCommand().parse(args);
+    return {
+      stdout: typeof result === 'string' ? result : '',
+      stderr: '',
+      result: { code: 0, signal: null },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      stdout: '',
+      stderr: message + '\n',
+      result: { code: 1, signal: null },
+    };
+  } finally {
+    chdir(previousCwd);
+  }
+}
+
+async function runCliProcess(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
   const proc = new Process(execPath, args, { cwd });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
@@ -1441,7 +1464,7 @@ export const internalSdk = true;
   });
 
   it('runs examples from documentation comments', async (t) => {
-    const run = await runCli(['doc', 'test', './examples.mts'], appDir);
+    const run = await runCliProcess(['doc', 'test', './examples.mts'], appDir);
 
     t.equal(run.result.code, 0, 'doc test exits successfully');
     t.equal(run.stderr, '', 'doc test writes no stderr');

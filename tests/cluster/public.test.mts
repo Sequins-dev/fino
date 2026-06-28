@@ -3,7 +3,7 @@
  */
 
 import { describe, it } from 'fino:test/test';
-import { Process, cwd, execPath } from 'fino:process';
+import { Process, cwd, env, execPath } from 'fino:process';
 import { Realm } from 'fino:realm';
 import { startCluster, joinCluster, leaveCluster } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
@@ -162,6 +162,10 @@ describe('fino:cluster public WebTransport integration', () => {
 
   it('worker loss rejects an active remote Realm.call', async (t) => {
     if (!quicAvailable || !h3Available) return;
+    const oldInterval = env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS;
+    const oldTimeout = env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
+    env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = '50';
+    env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = '150';
     const port = randomPort();
     await withTimeout(startCluster({ port, nodeId: 'cluster-worker-loss', tls: clusterTls }), 2_000, 'startCluster');
     let worker: Process | null = null;
@@ -175,10 +179,14 @@ describe('fino:cluster public WebTransport integration', () => {
       await loop.timeout(50);
       await killWorker(worker);
       worker = null;
-      await t.rejects(() => pending);
+      await t.rejects(() => pending, /peer .* disconnected/);
     } finally {
       if (worker !== null) await stopWorker(worker);
       leaveCluster();
+      if (oldInterval === undefined) delete env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS;
+      else env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = oldInterval;
+      if (oldTimeout === undefined) delete env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
+      else env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = oldTimeout;
     }
   });
 

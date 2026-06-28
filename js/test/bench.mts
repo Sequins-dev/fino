@@ -128,6 +128,7 @@
  */
 
 import console from '../globals/console.mts';
+import { formatDurationNs } from 'internal:duration';
 import { env, os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
 
@@ -216,8 +217,8 @@ class Stats {
 // Human-readable number formatting — mirrors bench_human_number()
 // ---------------------------------------------------------------------------
 
-function humanNumber(number: number, isTime: boolean): string {
-  const levelCap = isTime ? 3 : 4;
+function humanNumber(number: number): string {
+  const levelCap = 4;
   let level = 0;
   let n = number;
 
@@ -226,19 +227,14 @@ function humanNumber(number: number, isTime: boolean): string {
   }
 
   const fmt = n.toFixed(2);
-  if (isTime) {
-    const suffix = ['ns', 'us', 'ms', 's'];
-    return fmt + (suffix[level] ?? 's');
-  } else {
-    const suffix = ['', 'k', 'm', 'b', 't'];
-    return fmt + (suffix[level] ?? 't');
-  }
+  const suffix = ['', 'k', 'm', 'b', 't'];
+  return fmt + (suffix[level] ?? 't');
 }
 
 function formatStats(stats: Stats): string {
-  const ops  = humanNumber(stats.opsPerSec(), false);
+  const ops  = humanNumber(stats.opsPerSec());
   const pct  = stats.stddev().toFixed(2);
-  const mean = humanNumber(stats.mean, true);
+  const mean = formatDurationNs(stats.mean);
   return `${ops} i/s (±${pct}%) (${mean}/i)`;
 }
 

@@ -544,6 +544,12 @@ export class ClusterClient {
 
       case 'PEER_DOWN': {
         this.#peers.delete(msg.nodeId);
+        const error = `fino:cluster — peer ${msg.nodeId} disconnected`;
+        for (const [realmId, handler] of [...this.#exitHandlers.entries()]) {
+          if (nodeIdFromId(realmId) !== msg.nodeId) continue;
+          this.#exitHandlers.delete(realmId);
+          try { handler(error); } catch { /* ignore */ }
+        }
         break;
       }
 

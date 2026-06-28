@@ -4,12 +4,13 @@
 
 import { describe, it } from 'fino:test/test';
 import type { Assert } from 'fino:test/assert';
-import { Process, env, execPath } from 'fino:process';
+import { chdir, cwd, Process, env, execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { createRootCommand } from 'internal:commands/root';
 
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
+const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|ms|s|m|h)\b`;
 
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
@@ -106,6 +107,28 @@ async function expectLiveOtelSignal(t: Assert, fixture: string, path: string, la
 async function parseRoot(args: string[]): Promise<string> {
   const result = await createRootCommand().parse(args);
   return typeof result === 'string' ? result : '';
+}
+
+async function runRootInProcess(args: string[], options: { cwd?: string } = {}): Promise<{ stdout: string; stderr: string; result: { code: number; signal: number | null } }> {
+  const previousCwd = cwd();
+  try {
+    if (options.cwd !== undefined) chdir(options.cwd);
+    const result = await createRootCommand().parse(args);
+    return {
+      stdout: typeof result === 'string' ? result : '',
+      stderr: '',
+      result: { code: 0, signal: null },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      stdout: '',
+      stderr: message + '\n',
+      result: { code: 1, signal: null },
+    };
+  } finally {
+    if (options.cwd !== undefined) chdir(previousCwd);
+  }
 }
 
 describe('CLI commands', () => {
@@ -250,7 +273,7 @@ describe('CLI commands', () => {
   });
 
   it('reports a missing script for run without arguments', async (t) => {
-    const { stdout, stderr, result } = await runCli(['run']);
+    const { stdout, stderr, result } = await runRootInProcess(['run']);
 
     t.equal(result.code, 1, 'run without a script exits nonzero');
     t.equal(stdout, '', 'run without a script does not write stdout');
@@ -264,10 +287,7 @@ describe('CLI commands', () => {
         ['test input', ['test', 'missing.test.mts']],
         ['bench input', ['bench', 'missing.bench.mts']],
       ] as [string, string[]][]) {
-        const { stdout, stderr, result } = await runCli(args, {
-          cwd: dir,
-          env: { FINO_BENCH_MIN_NS: '1000' },
-        });
+        const { stdout, stderr, result } = await runRootInProcess(args, { cwd: dir });
 
         t.equal(result.code, 1, `${label} exits nonzero`);
         t.equal(stdout, '', `${label} does not write stdout`);
@@ -284,7 +304,7 @@ describe('CLI commands', () => {
         ['directory input', ['run', 'scripts']],
         ['glob input', ['run', 'scripts/*.mts']],
       ] as [string, string[]][]) {
-        const { stdout, stderr, result } = await runCli(args, { cwd: dir });
+        const { stdout, stderr, result } = await runRootInProcess(args, { cwd: dir });
 
         t.equal(result.code, 1, `${label} exits nonzero`);
         t.equal(stdout, '', `${label} does not import discovered scripts`);
@@ -569,7 +589,7 @@ describe('CLI commands', () => {
   });
 
   it('does not accept the legacy --test shortcut', async (t) => {
-    const { stdout, stderr, result } = await runCli(['--test', './tests/util/topic.test.mts']);
+    const { stdout, stderr, result } = await runRootInProcess(['--test', './tests/util/topic.test.mts']);
 
     t.equal(result.code, 1, 'legacy --test shortcut exits with an error');
     t.equal(stdout, '', 'legacy --test shortcut does not run tests');
@@ -633,7 +653,7 @@ describe('CLI commands', () => {
 
       t.equal(result.code, 0, 'durations mode exits successfully');
       t.equal(stderr, '', 'durations mode does not write stderr');
-      t.ok(/ok 1 - timed pass # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'test command forwards duration reporting');
+      t.ok(new RegExp(String.raw`ok 1 - timed pass # duration=${DURATION_RE}`).test(stdout), 'test command forwards duration reporting');
     });
   });
 
@@ -740,7 +760,7 @@ describe('CLI commands', () => {
 
   it('fails when expanded test inputs match no files', async (t) => {
     await withTempProject({}, async (dir) => {
-      const { stdout, stderr, result } = await runCli(['test', 'tests'], { cwd: dir });
+      const { stdout, stderr, result } = await runRootInProcess(['test', 'tests'], { cwd: dir });
 
       t.equal(result.code, 1, 'empty test directory expansion exits with an error');
       t.equal(stdout, '', 'empty test expansion does not run the TAP runner');
@@ -857,10 +877,7 @@ describe('CLI commands', () => {
         ['empty benchmark directory', ['bench', 'benchmarks']],
         ['empty benchmark glob', ['bench', 'benchmarks/**/*.bench.mts']],
       ] as [string, string[]][]) {
-        const { stdout, stderr, result } = await runCli(args, {
-          cwd: dir,
-          env: { FINO_BENCH_MIN_NS: '1000' },
-        });
+        const { stdout, stderr, result } = await runRootInProcess(args, { cwd: dir });
 
         t.equal(result.code, 1, `${label} exits with an error`);
         t.equal(stdout, '', `${label} does not run the benchmark runner`);

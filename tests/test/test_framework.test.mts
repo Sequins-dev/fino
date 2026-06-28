@@ -8,6 +8,7 @@ import { Process, env, execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
+const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|ms|s|m|h)\b`;
 
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
@@ -299,7 +300,7 @@ describe('runner behavior', () => {
       t.ok(stdout.includes('1..1'), 'TAP plan is printed');
       t.ok(stdout.includes('ok 1 - top leaf'), 'passing top-level test is reported');
       t.ok(stdout.includes('# pass  1'), 'summary reports one pass');
-      t.ok(/# time  \d+(?:\.\d+)?ms\b/.test(stdout), 'summary reports total runtime');
+      t.ok(new RegExp(String.raw`# time  ${DURATION_RE}`).test(stdout), 'summary reports total runtime');
     });
   });
 
@@ -562,12 +563,12 @@ describe('runner behavior', () => {
       t.equal(result.code, 1, 'durations fixture exits nonzero');
       t.ok(resultLines.length >= 7, 'fixture emits multiple result lines');
       for (const line of resultLines) {
-        t.ok(/# duration=\d+(?:\.\d+)?ms\b/.test(line), 'result line includes duration metadata: ' + line);
+        t.ok(new RegExp(String.raw`# duration=${DURATION_RE}`).test(line), 'result line includes duration metadata: ' + line);
       }
       t.ok(stdout.includes('ok 1 - leaf pass # duration='), 'runner duration overrides user duration');
-      t.ok(/ok \d+ - leaf skip # SKIP blocked # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'skipped leaf keeps SKIP directive before duration');
-      t.ok(/ok \d+ - skipped group # SKIP blocked # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'skipped group keeps SKIP directive before duration');
-      t.ok(/not ok \d+ - after fail group # duration=\d+(?:\.\d+)?ms\b/.test(stdout), 'hook-generated group failure includes duration');
+      t.ok(new RegExp(String.raw`ok \d+ - leaf skip # SKIP blocked # duration=${DURATION_RE}`).test(stdout), 'skipped leaf keeps SKIP directive before duration');
+      t.ok(new RegExp(String.raw`ok \d+ - skipped group # SKIP blocked # duration=${DURATION_RE}`).test(stdout), 'skipped group keeps SKIP directive before duration');
+      t.ok(new RegExp(String.raw`not ok \d+ - after fail group # duration=${DURATION_RE}`).test(stdout), 'hook-generated group failure includes duration');
     });
   });
 });

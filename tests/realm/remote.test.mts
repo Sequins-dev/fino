@@ -2,7 +2,7 @@
  * Tests for fino:realm remote mode over fino:cluster.
  */
 
-import { describe, it } from 'fino:test/test';
+import { after, describe, it } from 'fino:test/test';
 import { Process, cwd, execPath } from 'fino:process';
 import {
   Facade,
@@ -82,21 +82,44 @@ async function stopWorker(proc: Process): Promise<void> {
   }
 }
 
-async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T | undefined> {
-  if (!quicAvailable || !h3Available) return undefined;
+let sharedWorker: Process | null = null;
+let sharedClusterStarted = false;
+
+async function ensureRemoteWorker(): Promise<boolean> {
+  if (!quicAvailable || !h3Available) return false;
+  if (sharedWorker !== null) return true;
   const port = randomPort();
   await withTimeout(startCluster({ port, nodeId: `realm-remote-seed-${port}`, tls: clusterTls }), 2_000, 'startCluster');
-  let worker: Process | null = null;
+  sharedClusterStarted = true;
   try {
-    worker = await waitForWorker(port);
-    return await fn();
-  } finally {
-    if (worker !== null) await stopWorker(worker);
-    leaveCluster();
+    sharedWorker = await waitForWorker(port);
+    return true;
+  } catch (err) {
+    if (sharedClusterStarted) {
+      leaveCluster();
+      sharedClusterStarted = false;
+    }
+    throw err;
   }
 }
 
+async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  if (!(await ensureRemoteWorker())) return undefined;
+  return await fn();
+}
+
 describe('Realm remote mode', () => {
+  after(async () => {
+    if (sharedWorker !== null) {
+      await stopWorker(sharedWorker);
+      sharedWorker = null;
+    }
+    if (sharedClusterStarted) {
+      leaveCluster();
+      sharedClusterStarted = false;
+    }
+  });
+
   it('remote: true requires an active cluster', async (t) => {
     await t.rejects(
       async () => {

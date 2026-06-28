@@ -33,9 +33,25 @@
 import type { ClusterSeedTransport } from './transport.mts';
 import { type ClusterMessage } from './protocol.mts';
 import { RealmRegistry } from './registry.mts';
+import { env } from 'internal:process';
 
 const HEARTBEAT_INTERVAL_MS = 2500;
 const HEARTBEAT_TIMEOUT_MS  = 7500; // 3x interval - tolerate one missed beat
+
+function envMs(name: string, fallback: number): number {
+  const raw = env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function heartbeatIntervalMs(): number {
+  return envMs('FINO_CLUSTER_HEARTBEAT_INTERVAL_MS', HEARTBEAT_INTERVAL_MS);
+}
+
+function heartbeatTimeoutMs(): number {
+  return envMs('FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS', HEARTBEAT_TIMEOUT_MS);
+}
 
 /**
  * Cluster seed router for membership, spawn, and port-message routing.
@@ -248,7 +264,7 @@ export class SeedServer {
   async start(): Promise<void> {
     this.#transport.on((from, msg) => this.#handle(from, msg));
     await this.#transport.listen();
-    this.#heartbeatTimer = setInterval(() => this.#checkHeartbeats(), HEARTBEAT_INTERVAL_MS);
+    this.#heartbeatTimer = setInterval(() => this.#checkHeartbeats(), heartbeatIntervalMs());
   }
 
   /**
@@ -530,7 +546,7 @@ export class SeedServer {
   #checkHeartbeats(): void {
     const now = Date.now();
     for (const [nodeId, ts] of this.#lastSeen) {
-      if (now - ts > HEARTBEAT_TIMEOUT_MS) {
+      if (now - ts > heartbeatTimeoutMs()) {
         this.#lastSeen.delete(nodeId);
         this.#peers.delete(nodeId);
         this.#transport.broadcastExcept(nodeId, { t: 'PEER_DOWN', nodeId });

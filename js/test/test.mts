@@ -79,6 +79,7 @@
 
 import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../globals/console.mts';
 import { Assert, AssertionError, type AssertCallbacks } from './assert.mts';
+import { formatDurationMs } from 'internal:duration';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
 
 // ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ type MetadataCallback = (values: TestMetadata) => void;
  * run, and `never` keeps captured output hidden. The CLI passes this from
  * `fino test --show-output`.
  *
- * `durations` appends runner-owned `duration=<ms>ms` metadata to every TAP
+ * `durations` appends runner-owned `duration=<time>` metadata to every TAP
  * result line. The CLI passes this from `fino test --durations`.
  */
 export interface RunOptions {
@@ -541,7 +542,7 @@ function _nowMs(): number {
 
 function _durationMeta(ctx: RunContext, startMs: number): TestMetadata {
   if (!ctx.durations) return {};
-  return { duration: (_nowMs() - startMs).toFixed(2) + 'ms' };
+  return { duration: formatDurationMs(_nowMs() - startMs) };
 }
 
 function _formatMetadataValue(value: TestMetadataValue): string {
@@ -908,7 +909,7 @@ export async function run(options: RunOptions = {}): Promise<void> {
   console.log('# tests ' + total);
   console.log('# pass  ' + passed);
   if (skipped > 0) console.log('# skip  ' + skipped);
-  console.log('# time  ' + (_nowMs() - runStartMs).toFixed(2) + 'ms');
+  console.log('# time  ' + formatDurationMs(_nowMs() - runStartMs));
   if (failed > 0) {
     console.log('# fail  ' + failed);
     if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);

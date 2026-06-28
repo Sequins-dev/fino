@@ -28,7 +28,7 @@ async function poll(
       if (await check()) return;
     } catch (_) {}
     if (Date.now() >= deadline) throw new Error(`poll timed out after ${timeoutMs}ms`);
-    await loop.timeout(50);
+    await loop.timeout(10);
   }
 }
 
@@ -97,9 +97,8 @@ describe('Realm watch mode', () => {
     // Wait for the first run.
     await poll(() => readCounter(counterPath).then(n => n >= 1), 2000);
 
-    // Allow the watcher loop to set up (async import of fino:file/watch +
-    // _refreshWatchPaths). The entry file is already in fs_cache by this point.
-    await loop.timeout(300);
+    // Allow the watcher loop to set up after the first import graph is known.
+    await loop.timeout(100);
 
     // Trigger reload by modifying the entry file.
     await fs.writeFile(entryPath, entryCode(counterPath) + '\n// trigger reload');
@@ -134,7 +133,7 @@ describe('Realm watch mode', () => {
     const runP = realm.run();
 
     await poll(() => readCounter(counterPath).then(n => n >= 1), 2000);
-    await loop.timeout(300);
+    await loop.timeout(100);
 
     // Modify the helper — not the entry — to trigger reload.
     await fs.writeFile(helperPath, `export const VERSION = 2;`);
@@ -161,13 +160,13 @@ describe('Realm watch mode', () => {
     const runP = realm.run();
 
     await poll(() => readCounter(counterPath).then(n => n >= 1), 2000);
-    await loop.timeout(300);
+    await loop.timeout(100);
 
     // Modify a file the realm never imported.
     await fs.writeFile(unrelatedPath, 'changed');
 
-    // Wait well past the debounce window (50ms) to confirm no reload fires.
-    await loop.timeout(500);
+    // Wait past the debounce window (50ms) to confirm no reload fires.
+    await loop.timeout(150);
     const countAfter = await readCounter(counterPath);
 
     realm.terminate();
@@ -188,7 +187,7 @@ describe('Realm watch mode', () => {
     const runP = realm.run();
 
     await poll(() => readCounter(counterPath).then(n => n >= 1), 2000);
-    await loop.timeout(300);
+    await loop.timeout(100);
 
     // Write 5 times rapidly; each write resets the 50ms debounce timer.
     for (let i = 0; i < 5; i++) {
@@ -200,7 +199,7 @@ describe('Realm watch mode', () => {
     await poll(() => readCounter(counterPath).then(n => n >= 2), 3000);
 
     // Extra wait to confirm no second reload fires.
-    await loop.timeout(200);
+    await loop.timeout(100);
     const finalCount = await readCounter(counterPath);
 
     realm.terminate();
@@ -221,7 +220,7 @@ describe('Realm watch mode', () => {
     const runP = realm.run();
 
     await poll(() => readCounter(counterPath).then(n => n >= 1), 2000);
-    await loop.timeout(100);
+    await loop.timeout(50);
 
     realm.terminate();
     await runP;
@@ -231,7 +230,7 @@ describe('Realm watch mode', () => {
     // Modifying the entry after terminate must not cause another reload.
     const countBefore = await readCounter(counterPath);
     await fs.writeFile(entryPath, entryCode(counterPath) + '\n// post-terminate');
-    await loop.timeout(300);
+    await loop.timeout(150);
     t.equal(await readCounter(counterPath), countBefore, 'no reload after terminate()');
   });
 
@@ -246,9 +245,8 @@ describe('Realm watch mode', () => {
     const realm = new Realm({ thread: true, entry: entryPath, watch: true });
     const runP = realm.run();
 
-    // Thread realms take longer to start.
     await poll(() => readCounter(counterPath).then(n => n >= 1), 5000);
-    await loop.timeout(500);
+    await loop.timeout(150);
 
     await fs.writeFile(entryPath, entryCode(counterPath) + '\n// trigger reload');
 
@@ -271,9 +269,8 @@ describe('Realm watch mode', () => {
     const realm = new Realm({ process: true, entry: entryPath, watch: true });
     const runP = realm.run();
 
-    // Process realms have startup overhead.
     await poll(() => readCounter(counterPath).then(n => n >= 1), 8000);
-    await loop.timeout(600);
+    await loop.timeout(150);
 
     await fs.writeFile(entryPath, entryCode(counterPath) + '\n// trigger reload');
 

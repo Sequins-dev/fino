@@ -138,6 +138,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tooling/format", "internal/tooling/format"),
     source_builtin!("internal:tooling/lint", "internal/tooling/lint"),
     source_builtin!("internal:tooling/report", "internal/tooling/report"),
+    source_builtin!("internal:duration", "internal/duration"),
     source_builtin!("internal:shutdown", "internal/shutdown"),
     source_builtin!("internal:package_manager", "internal/package_manager"),
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
