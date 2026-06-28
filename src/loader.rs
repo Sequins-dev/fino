@@ -215,7 +215,11 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
     source_builtin!("fino:process", "process"),
     source_builtin!("fino:context", "context/index"),
+    source_builtin!("fino:ui", "ui"),
+    source_builtin!("fino:ui/jsx-runtime", "ui/jsx-runtime"),
     source_builtin!("fino:tty", "tty"),
+    source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
+    source_builtin!("fino:tty/tui", "tty/tui"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(
