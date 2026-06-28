@@ -88,16 +88,6 @@ export interface ThreadState {
 }
 
 /**
- * Store for workflow run checkpoints.
- */
-export interface CheckpointStore {
-  save(s: RunState): Promise<void>;
-  load(runId: string): Promise<RunState | null>;
-  list(filter?: { threadId?: string }): Promise<RunState[]>;
-  delete(runId: string): Promise<void>;
-}
-
-/**
  * Durable session boundary for runs, threads, and immutable history graphs.
  */
 export interface SessionStore {
@@ -235,7 +225,7 @@ function validateCommit(args: {
 /**
  * In-memory session store for tests and simple single-process agents.
  */
-export class InMemorySessionStore implements SessionStore, CheckpointStore {
+export class InMemorySessionStore implements SessionStore {
   #runs = new Map<string, RunState>();
   #threads = new Map<string, ThreadState>();
   #entries = new Map<string, MessageHistoryEntry>();
@@ -323,7 +313,7 @@ export class InMemorySessionStore implements SessionStore, CheckpointStore {
 /**
  * SQLite-backed session store.
  */
-export class SqliteSessionStore implements SessionStore, CheckpointStore {
+export class SqliteSessionStore implements SessionStore {
   #db: Database;
 
   private constructor(db: Database) {

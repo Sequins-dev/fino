@@ -412,6 +412,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:tty/prompt", "tty/prompt"),
     source_builtin!("fino:context/topic", "context/topic"),
     source_builtin!("fino:jsonrpc", "jsonrpc"),
+    source_builtin!("fino:workflow", "workflow"),
     // ai
     source_builtin!("fino:ai/model", "ai/model"),
     source_builtin!("fino:ai/model/anthropic", "ai/model/anthropic"),
@@ -422,7 +423,6 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ai/agent", "ai/agent"),
     source_builtin!("fino:ai/memory", "ai/memory"),
     source_builtin!("fino:ai/session", "ai/session"),
-    source_builtin!("fino:ai/workflow", "ai/workflow"),
     source_builtin!("fino:ai/skill", "ai/skill"),
     source_builtin!("fino:ai/eval", "ai/eval"),
     source_builtin!("fino:ai/mcp", "ai/mcp"),

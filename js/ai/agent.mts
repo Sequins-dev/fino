@@ -20,7 +20,7 @@
  * Tools are ordinary `Tool` values. They receive abort/run context and may
  * throw `SuspendSignal` to pause a durable session. Agents can also be wrapped
  * as tools with `asTool()` for simple composition; more structured branching or
- * checkpointed orchestration belongs in `fino:ai/workflow`.
+ * checkpointed orchestration belongs in `fino:workflow`.
  *
  * ```ts no_run
  * import { agent, streamText } from 'fino:ai/agent';

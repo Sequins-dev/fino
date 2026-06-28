@@ -5,7 +5,7 @@
  * without exposing the internal agent loop implementation. Use it for
  * cross-cutting helpers such as `runContext`, `maxSteps()`, `streamText()`,
  * guardrail error types, and the public state/result types shared by
- * `fino:ai/agent`, `fino:ai/session`, and `fino:ai/workflow`.
+ * `fino:ai/agent` and `fino:ai/session`.
  *
  * ## Boundary
  *
@@ -14,9 +14,9 @@
  * runtime class. This keeps the public integration layer stable while allowing
  * the agent loop internals to evolve.
  *
- * `runContext` is an async context populated while an agent step, session, or
- * workflow is driving work. Tools can read it for run metadata, but should use
- * the explicit `ToolRunContext` when possible.
+ * `runContext` is an async context populated while an agent step or session is
+ * driving work. Tools can read it for run metadata, but should use the explicit
+ * `ToolRunContext` when possible.
  *
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
