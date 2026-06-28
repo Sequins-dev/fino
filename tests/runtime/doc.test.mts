@@ -958,6 +958,157 @@ export const Widget = class WidgetImpl {
     t.ok(ambiguous.stdout.includes('Multiple matches'), 'ambiguous show reports candidates');
   });
 
+  it('refreshes stale search artifacts from new and changed inputs', async (t) => {
+    const docsDir = appDir + '/docs';
+    const jsonPath = docsDir + '/api.json';
+    await removeTree(fs, docsDir);
+
+    const initial = await runCli(['doc', 'build', './advanced.mts', '--format', 'both', '--title', 'Advanced API'], appDir);
+    t.equal(initial.result.code, 0, 'initial doc build exits successfully');
+    t.equal(initial.stderr, '', 'initial doc build writes no stderr');
+
+    await fs.writeFile(appDir + '/incremental-new.mts', `/**
+ * Incremental new module fixture.
+ */
+
+/**
+ * New symbol added after the search database was built.
+ */
+export function staleSearchAdded(): string {
+  return 'added';
+}
+`);
+
+    const foundNew = await runCli(['doc', 'search', 'staleSearchAdded'], appDir);
+    t.equal(foundNew.result.code, 0, 'stale search refresh exits successfully');
+    t.equal(foundNew.stderr, '', 'stale search refresh writes no stderr');
+    t.ok(foundNew.stdout.includes('incremental-new.staleSearchAdded'), 'search finds a symbol from a new source file');
+    t.equal(foundNew.stdout.includes('Wrote '), false, 'search does not surface incremental refresh output');
+
+    let json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
+    t.ok(json.modules.some((item) => item.name === 'incremental-new'), 'incremental search refresh updates api.json');
+
+    await fs.writeFile(appDir + '/incremental-new.mts', `/**
+ * Incremental changed module fixture.
+ */
+
+/**
+ * New symbol added after the search database was built.
+ */
+export function staleSearchAdded(): string {
+  return 'added';
+}
+
+/**
+ * Changed symbol added to an already-cached file.
+ */
+export function staleSearchChanged(): string {
+  return 'changed';
+}
+`);
+
+    const foundChanged = await runCli(['doc', 'search', 'staleSearchChanged'], appDir);
+    t.equal(foundChanged.result.code, 0, 'changed-file stale search refresh exits successfully');
+    t.ok(foundChanged.stdout.includes('incremental-new.staleSearchChanged'), 'search finds a symbol added to an existing source file');
+
+    const shown = await runCli(['doc', 'show', 'staleSearchChanged'], appDir);
+    t.equal(shown.result.code, 0, 'show refreshes stale api json');
+    t.ok(shown.stdout.includes('## staleSearchChanged'), 'show renders the newly added symbol');
+
+    json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
+    const incremental = json.modules.find((item) => item.name === 'incremental-new')!;
+    t.ok(incremental.exports.some((item) => item.name === 'staleSearchChanged'), 'api.json includes changed-file symbol');
+  });
+
+  it('refreshes re-exported symbols and removes deleted cached files', async (t) => {
+    const docsDir = appDir + '/docs';
+    const jsonPath = docsDir + '/api.json';
+    await removeTree(fs, docsDir);
+
+    await fs.writeFile(appDir + '/incremental-source.mts', `/**
+ * Incremental source fixture.
+ */
+
+/**
+ * First re-exported value.
+ */
+export const firstReExported = 'first';
+`);
+    await fs.writeFile(appDir + '/incremental-facade.mts', `/**
+ * Incremental facade fixture.
+ */
+
+export * from './incremental-source.mts';
+`);
+
+    const initial = await runCli(['doc', 'build', './incremental-facade.mts', './incremental-source.mts', '--format', 'both', '--title', 'Incremental API'], appDir);
+    t.equal(initial.result.code, 0, 'initial re-export build exits successfully');
+    t.equal(initial.stderr, '', 'initial re-export build writes no stderr');
+
+    await fs.writeFile(appDir + '/incremental-source.mts', `/**
+ * Incremental source fixture.
+ */
+
+/**
+ * First re-exported value.
+ */
+export const firstReExported = 'first';
+
+/**
+ * Re-exported value added after the facade was cached.
+ */
+export const laterReExported = 'later';
+`);
+
+    const found = await runCli(['doc', 'search', 'laterReExported'], appDir);
+    t.equal(found.result.code, 0, 're-export stale search refresh exits successfully');
+    t.ok(found.stdout.includes('incremental-facade.laterReExported'), 'search finds the newly re-exported facade symbol');
+
+    await fs.unlink(appDir + '/incremental-source.mts');
+    const rebuilt = await runCli(['doc', 'build', './incremental-facade.mts', '--format', 'both', '--title', 'Incremental API'], appDir);
+    t.equal(rebuilt.result.code, 0, 'rebuild after deleting an input exits successfully');
+    t.equal(rebuilt.stderr, '', 'rebuild after deleting an input writes no stderr');
+
+    const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
+    t.equal(json.modules.some((item) => item.name === 'incremental-source'), false, 'api.json drops deleted source files');
+    t.equal(json.modules.some((item) => item.exports.some((exp) => exp.name === 'laterReExported')), false, 'api.json drops symbols from deleted sources');
+    t.equal(await exists(fs, docsDir + '/incremental-source.html'), false, 'doc build prunes generated output for deleted files');
+  });
+
+  it('keeps public and private doc caches separate', async (t) => {
+    const docsDir = appDir + '/docs';
+    await removeTree(fs, docsDir);
+
+    await fs.writeFile(appDir + '/incremental-private.mts', `/**
+ * Incremental private fixture.
+ */
+
+/**
+ * Public value.
+ */
+export const publicCacheValue = true;
+
+/**
+ * Private value.
+ *
+ * @internal
+ */
+export const privateCacheValue = true;
+`);
+
+    const privateRun = await runCli(['doc', 'build', './incremental-private.mts', '--include-private', '--format', 'both', '--title', 'Private API'], appDir);
+    t.equal(privateRun.result.code, 0, 'private doc build exits successfully');
+    t.equal(privateRun.stderr, '', 'private doc build writes no stderr');
+
+    const publicRun = await runCli(['doc', 'build', './incremental-private.mts', '--format', 'both', '--title', 'Public API'], appDir);
+    t.equal(publicRun.result.code, 0, 'public doc build exits successfully');
+    t.equal(publicRun.stderr, '', 'public doc build writes no stderr');
+
+    const hidden = await runCli(['doc', 'search', 'privateCacheValue'], appDir);
+    t.equal(hidden.result.code, 0, 'public search exits successfully');
+    t.equal(hidden.stdout.includes('incremental-private.privateCacheValue'), false, 'public search does not reuse the private cache entry');
+  });
+
   it('writes README-backed root html index and mirrors source paths', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
@@ -1458,6 +1609,7 @@ export const internalSdk = true;
     t.equal(mode.signature!.includes('Internal enum member docs'), false, 'json strips comments from enum signatures');
 
     const found = await runCli(['doc', 'search', 'nested ping'], appDir);
+    t.equal(found.stderr, '', 'doc search writes no stderr');
     t.equal(found.result.code, 0, 'doc search exits successfully');
     t.ok(found.stdout.includes('surface.surface.nested.ping'), 'search finds nested exported object member');
     t.equal(found.stdout.includes('export const'), false, 'search signatures omit export prefix');

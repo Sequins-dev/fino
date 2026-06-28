@@ -214,6 +214,29 @@ interface DocsDatabase {
   close(): Promise<void>;
 }
 
+type DocFileKind = 'source' | 'guide';
+
+interface CachedDocFile {
+  path: string;
+  kind: DocFileKind;
+  includePrivate: boolean;
+  mtimeMs: number;
+  size: number;
+  json: string;
+}
+
+interface CurrentDocFile {
+  path: string;
+  file: string;
+  kind: DocFileKind;
+  mtimeMs: number;
+  size: number;
+}
+
+interface DocCacheOptions {
+  shouldParseChanged?: (file: CurrentDocFile) => Promise<boolean>;
+}
+
 type AstNode = Record<string, any>;
 
 interface HighlightSpan {
@@ -235,6 +258,17 @@ const DOCS_INDEX_SCHEMA = `
 `;
 
 const DOCS_INDEX_SCHEMA_STATEMENTS = DOCS_INDEX_SCHEMA
+  .split(';')
+  .map((statement) => statement.trim())
+  .filter(Boolean);
+
+const DOCS_CACHE_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS doc_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS doc_files (path TEXT NOT NULL, kind TEXT NOT NULL, include_private INTEGER NOT NULL, mtime_ms REAL NOT NULL, size INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (path, kind, include_private));
+  CREATE TABLE IF NOT EXISTS doc_outputs (path TEXT PRIMARY KEY);
+`;
+
+const DOCS_CACHE_SCHEMA_STATEMENTS = DOCS_CACHE_SCHEMA
   .split(';')
   .map((statement) => statement.trim())
   .filter(Boolean);
@@ -521,7 +555,7 @@ function localDeclarations(statement: AstNode, comments: ParseComment[], source:
     const item = collectDeclarationExport(statement, statement, comments, source, includePrivate);
     if (item) out.push(item);
   } else if (statement.type === 'VariableDeclaration') {
-    out.push(...collectVariableExports(statement, statement, comments, source, false));
+    out.push(...collectVariableExports(statement, statement, comments, source, false, includePrivate));
   }
   return out;
 }
@@ -529,7 +563,7 @@ function localDeclarations(statement: AstNode, comments: ParseComment[], source:
 function collectNamedExport(exports: DocExport[], statement: AstNode, comments: ParseComment[], locals: Map<string, DocExport>, source: string, includePrivate: boolean): void {
   if (statement.declaration) {
     if (statement.declaration.type === 'VariableDeclaration') {
-      exports.push(...collectVariableExports(statement.declaration, statement, comments, source, true, locals));
+      exports.push(...collectVariableExports(statement.declaration, statement, comments, source, true, includePrivate, locals));
       return;
     }
     const item = collectDeclarationExport(statement.declaration, statement, comments, source, includePrivate);
@@ -597,13 +631,14 @@ function collectDeclarationExport(declaration: AstNode | undefined, owner: AstNo
   return undefined;
 }
 
-function collectVariableExports(declaration: AstNode, owner: AstNode, comments: ParseComment[], source: string, exported: boolean, locals: Map<string, DocExport> = new Map()): DocExport[] {
+function collectVariableExports(declaration: AstNode, owner: AstNode, comments: ParseComment[], source: string, exported: boolean, includePrivate: boolean, locals: Map<string, DocExport> = new Map()): DocExport[] {
   const out: DocExport[] = [];
   const kind = declaration.kind ?? 'const';
   for (const declarator of declaration.declarations ?? []) {
     const name = bindingName(declarator.id);
     if (!name) continue;
     const doc = docForNode(comments, owner, declarator, source);
+    if (!includePrivate && hasDocTag(doc, 'internal')) continue;
     const start = exported ? owner.start : declaration.start;
     const end = declarator.id?.typeAnnotation?.end ?? declarator.init?.start ?? declarator.id?.end ?? declarator.end;
     const prefix = `${kind} `;
@@ -2127,6 +2162,143 @@ async function extractDocs(sourceFiles: string[], guideFiles: string[], includeP
   return api;
 }
 
+async function extractDocsCached(inputs: DocInputs, includePrivate: boolean = false, options: DocCacheOptions = {}): Promise<ApiDoc> {
+  if (!sqlite.sqliteAvailable) return extractDocs(inputs.sourceFiles, inputs.guideFiles, includePrivate);
+  const db = await openDocsDb();
+  try {
+    await ensureDocsCacheSchema(db);
+    return await extractDocsFromCache(db, inputs, includePrivate, options);
+  } finally {
+    await db.close();
+  }
+}
+
+async function openDocsDb(): Promise<DocsDatabase> {
+  await ensureDir(docsDir());
+  return sqlite.Database.open(docsDbPath()) as Promise<DocsDatabase>;
+}
+
+async function ensureDocsCacheSchema(db: DocsDatabase): Promise<void> {
+  for (const statement of DOCS_CACHE_SCHEMA_STATEMENTS) await db.exec(statement);
+  await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'cache_schema_version', '1');
+}
+
+async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, includePrivate: boolean, options: DocCacheOptions = {}): Promise<ApiDoc> {
+  const current = await currentDocFiles(inputs);
+  const currentKeys = new Set(current.map((file) => file.path));
+  const cached = await readCachedDocFiles(db, includePrivate);
+  const parsedModules: ParsedModuleDoc[] = [];
+  const guides: GuideDoc[] = [];
+
+  for (const [path, cachedFile] of cached) {
+    if (!currentKeys.has(path)) {
+      await deleteCachedDocFile(db, cachedFile.path, cachedFile.kind, includePrivate);
+    }
+  }
+
+  for (const file of current) {
+    const cachedFile = cached.get(file.path);
+    const fresh = cachedFile
+      && cachedFile.kind === file.kind
+      && cachedFile.mtimeMs === file.mtimeMs
+      && cachedFile.size === file.size;
+    let json: string | undefined;
+    if (fresh) {
+      json = cachedFile!.json;
+    } else if (options.shouldParseChanged && !(await options.shouldParseChanged(file))) {
+      json = cachedFile?.json;
+    } else {
+      json = JSON.stringify(await parseCurrentDocFile(file, includePrivate));
+      await writeCachedDocFile(db, file, includePrivate, json);
+    }
+    if (json === undefined) continue;
+    const parsed = JSON.parse(json);
+    if (file.kind === 'source') parsedModules.push(parsed as ParsedModuleDoc);
+    else guides.push(parsed as GuideDoc);
+  }
+
+  disambiguateModules(parsedModules);
+  resolveReExports(parsedModules, includePrivate);
+  const visibleModules = includePrivate ? parsedModules : parsedModules.filter((moduleDoc) => !moduleDoc.internal);
+  return {
+    schemaVersion: 4,
+    modules: visibleModules.map(stripParsedModuleFields),
+    guides: guides.sort((a, b) => compareAscii(a.href, b.href)),
+  };
+}
+
+async function currentDocFiles(inputs: DocInputs): Promise<CurrentDocFile[]> {
+  const files: CurrentDocFile[] = [];
+  for (const file of inputs.sourceFiles) files.push(await currentDocFile(file, 'source'));
+  for (const file of inputs.guideFiles) files.push(await currentDocFile(file, 'guide'));
+  return files.sort((a, b) => compareAscii(a.path, b.path) || compareAscii(a.kind, b.kind));
+}
+
+async function currentDocFile(file: string, kind: DocFileKind): Promise<CurrentDocFile> {
+  const stat = await fs.lstat(file);
+  return {
+    path: normalizeDocPath(file),
+    file,
+    kind,
+    mtimeMs: stat.mtimeMs,
+    size: stat.size,
+  };
+}
+
+async function parseCurrentDocFile(file: CurrentDocFile, includePrivate: boolean): Promise<ParsedModuleDoc | GuideDoc> {
+  if (file.kind === 'source') return extractModuleFromSource(file.file, includePrivate);
+  const parsed = parseGuideMarkdown(file.path, String(await fs.readFile(file.file)));
+  const guide: GuideDoc = {
+    id: guideId(file.path),
+    path: file.path,
+    href: guideHref(parsed.virtualPath ?? file.path),
+    title: guideTitle(file.path, parsed.text),
+    summary: guideSummary(parsed.text),
+    text: parsed.text,
+  };
+  if (parsed.weight !== undefined) guide.weight = parsed.weight;
+  return guide;
+}
+
+async function readCachedDocFiles(db: DocsDatabase, includePrivate: boolean): Promise<Map<string, CachedDocFile>> {
+  const stmt = db.prepare('SELECT path, kind, include_private, mtime_ms, size, json FROM doc_files WHERE include_private = ?');
+  try {
+    const rows = await stmt.all(includePrivate ? 1 : 0);
+    return new Map(rows.map((row) => {
+      const cached: CachedDocFile = {
+        path: String(row.path),
+        kind: String(row.kind) as DocFileKind,
+        includePrivate: Number(row.include_private) === 1,
+        mtimeMs: Number(row.mtime_ms),
+        size: Number(row.size),
+        json: String(row.json),
+      };
+      return [cached.path, cached];
+    }));
+  } finally {
+    stmt.finalize();
+  }
+}
+
+async function writeCachedDocFile(db: DocsDatabase, file: CurrentDocFile, includePrivate: boolean, json: string): Promise<void> {
+  await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_files VALUES (?, ?, ?, ?, ?, ?)',
+    file.path,
+    file.kind,
+    includePrivate ? 1 : 0,
+    file.mtimeMs,
+    file.size,
+    json,
+  );
+}
+
+async function deleteCachedDocFile(db: DocsDatabase, path: string, kind: DocFileKind, includePrivate: boolean): Promise<void> {
+  await runDocsStatement(db, 'DELETE FROM doc_files WHERE path = ? AND kind = ? AND include_private = ?',
+    path,
+    kind,
+    includePrivate ? 1 : 0,
+  );
+}
+
 async function extractGuides(files: string[]): Promise<GuideDoc[]> {
   const guides: GuideDoc[] = [];
   for (const file of files) {
@@ -2439,11 +2611,9 @@ async function discoverProjectDocInputs(): Promise<DocInputs> {
 
 async function ensureApiJson(): Promise<ApiDoc> {
   const path = apiJsonPath();
-  if (await exists(path)) return readApi(path);
-
   const inputs = await discoverProjectDocInputs();
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no source files found to document');
-  const api = await extractDocs(inputs.sourceFiles, inputs.guideFiles);
+  const api = await extractDocsCached(inputs);
   await ensureDir(docsDir());
   await fs.writeFile(path, JSON.stringify(api, null, 2) + '\n');
   return api;
@@ -2451,7 +2621,6 @@ async function ensureApiJson(): Promise<ApiDoc> {
 
 async function ensureDocsDb(): Promise<string> {
   const dbPath = docsDbPath();
-  if (await exists(dbPath)) return dbPath;
   const api = await ensureApiJson();
   await writeSqliteIndex(api, dbPath);
   return dbPath;
@@ -2573,13 +2742,20 @@ function renderCandidates(title: string, candidates: FlatSymbol[]): string {
 async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
   if (!sqlite.sqliteAvailable) throw new Error('fino doc: sqlite unavailable');
   await ensureDir(dirname(dbPath));
-  if (await exists(dbPath)) await fs.unlink(dbPath);
   const db = await sqlite.Database.open(dbPath) as DocsDatabase;
   try {
+    await ensureDocsCacheSchema(db);
+    await resetDocsIndex(db);
     await populateDocsIndex(db, api);
     return `Wrote ${dbPath}`;
   } finally {
     await db.close();
+  }
+}
+
+async function resetDocsIndex(db: DocsDatabase): Promise<void> {
+  for (const table of ['docs_fts', 'doc_blocks', 'aliases', 'symbols', 'guides', 'modules']) {
+    await db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
 }
 
@@ -2668,11 +2844,11 @@ async function runBuildCommand(ctx: CommandContext): Promise<string> {
   const inputs = await expandDocInputs(ctx.args.files);
 
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc: no source files specified');
-  await removeTree(outDir);
   await ensureDir(outDir);
 
-  const api = await extractDocs(inputs.sourceFiles, inputs.guideFiles, includePrivate);
+  const api = await extractDocsCached(inputs, includePrivate);
   validateOutputPaths(api, format);
+  const expectedOutputs = expectedDocOutputs(api, format);
   for (const moduleDoc of api.modules) {
     if (format === 'markdown' || format === 'both') {
       const markdownPath = `${outDir}/${moduleHref(moduleDoc).replace(/\.html$/i, '.md')}`;
@@ -2712,6 +2888,8 @@ async function runBuildCommand(ctx: CommandContext): Promise<string> {
   await fs.writeFile(jsonPath, JSON.stringify(api, null, 2) + '\n');
   written.push(`Wrote ${jsonPath}`);
   written.push(await writeSqliteIndex(api, docsDbPath()));
+  await pruneGeneratedOutputs(expectedOutputs);
+  await writeOutputManifest(expectedOutputs);
 
   return written.join('\n');
 }
@@ -2775,26 +2953,154 @@ function validateOutputPaths(api: ApiDoc, format: string): void {
   }
 }
 
+function expectedDocOutputs(api: ApiDoc, format: string): Set<string> {
+  const outputs = new Set<string>([API_JSON_NAME, DOCS_DB_NAME]);
+  for (const moduleDoc of api.modules) {
+    if (format === 'markdown' || format === 'both') outputs.add(moduleHref(moduleDoc).replace(/\.html$/i, '.md'));
+    if (format === 'html' || format === 'both') outputs.add(moduleHref(moduleDoc));
+  }
+  for (const guide of api.guides ?? []) {
+    if (format === 'markdown' || format === 'both') outputs.add(guide.href.replace(/\.html$/i, '.md'));
+    if (format === 'html' || format === 'both') outputs.add(guide.href);
+  }
+  if (format === 'html' || format === 'both') outputs.add('index.html');
+  return outputs;
+}
+
+async function pruneGeneratedOutputs(expected: Set<string>): Promise<void> {
+  const root = docsDir();
+  if (!(await exists(root))) return;
+  await pruneGeneratedOutputsIn(root, expected);
+}
+
+async function pruneGeneratedOutputsIn(dirPath: string, expected: Set<string>): Promise<void> {
+  const dir = await fs.dir(dirPath);
+  for (const child of await dir.entries()) {
+    const path = child.path.toString();
+    const rel = normalizeDocPath(path).replace(new RegExp(`^${escapeRegExp(normalizeDocPath(docsDir()))}/?`), '');
+    if (child.isDirectory()) {
+      await pruneGeneratedOutputsIn(path, expected);
+      if (await isEmptyDirectory(path)) await fs.rmdir(path);
+      continue;
+    }
+    if (expected.has(rel)) continue;
+    if (isPrunableDocOutput(rel)) await fs.unlink(path);
+  }
+}
+
+async function isEmptyDirectory(path: string): Promise<boolean> {
+  const dir = await fs.dir(path);
+  return (await dir.entries()).length === 0;
+}
+
+function isPrunableDocOutput(path: string): boolean {
+  return /\.(html|md)$/i.test(path) || path === API_JSON_NAME;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+async function writeOutputManifest(outputs: Set<string>): Promise<void> {
+  if (!sqlite.sqliteAvailable || !(await exists(docsDbPath()))) return;
+  const db = await sqlite.Database.open(docsDbPath()) as DocsDatabase;
+  try {
+    await ensureDocsCacheSchema(db);
+    await db.exec('DELETE FROM doc_outputs');
+    for (const output of [...outputs].sort(compareAscii)) await runDocsStatement(db, 'INSERT INTO doc_outputs VALUES (?)', output);
+  } finally {
+    await db.close();
+  }
+}
+
 async function runShowCommand(ctx: CommandContext): Promise<string> {
   const symbol = String(ctx.args.symbol ?? '');
-  const api = await ensureApiJson();
+  const existingApi = await readExistingApiJson();
+  const existing = existingApi ? renderShowResult(existingApi, symbol) : undefined;
+  if (existing !== undefined) return existing;
+  const api = existingApi ? await refreshDocsForQuery(symbol) : await ensureApiJson();
+  return renderShowResult(api, symbol) ?? renderShowMiss(api, symbol);
+}
+
+async function readExistingApiJson(): Promise<ApiDoc | undefined> {
+  const path = apiJsonPath();
+  if (!(await exists(path))) return undefined;
+  return readApi(path);
+}
+
+function renderShowResult(api: ApiDoc, symbol: string): string | undefined {
   const resolved = resolveSymbol(api, symbol);
-  if (resolved === null) {
-    const suggestions = findSymbols(api, symbol).slice(0, 8);
-    return suggestions.length === 0
-      ? `No documentation found for ${symbol}\n`
-      : renderCandidates(`No exact match for ${symbol}. Did you mean:`, suggestions);
-  }
+  if (resolved === null) return undefined;
   if (Array.isArray(resolved)) return renderCandidates('Multiple matches:', resolved);
   const loc = `${basename(resolved.module.path)}:${resolved.location.line}:${resolved.location.column}`;
   return renderFlatSymbol(resolved) + `\n\n_Source: ${loc}_\n`;
 }
 
+function renderShowMiss(api: ApiDoc, symbol: string): string {
+  const suggestions = findSymbols(api, symbol).slice(0, 8);
+  return suggestions.length === 0
+    ? `No documentation found for ${symbol}\n`
+    : renderCandidates(`No exact match for ${symbol}. Did you mean:`, suggestions);
+}
+
 async function runSearchCommand(ctx: CommandContext): Promise<string> {
   const parts = Array.isArray(ctx.args.query) ? ctx.args.query.map(String) : [String(ctx.args.query ?? '')];
   const query = parts.join(' ').trim();
-  const dbPath = await ensureDocsDb();
+  const existingDbPath = docsDbPath();
+  if (await exists(existingDbPath)) {
+    try {
+      const existing = await searchSqlite(existingDbPath, query);
+      if (!isNoResults(existing, query)) return existing;
+    } catch (_) {
+      // Fall through to transparent refresh for legacy or corrupt indexes.
+    }
+  }
+  const dbPath = await exists(existingDbPath) ? await refreshDocsDbForQuery(query) : await ensureDocsDb();
   return searchSqlite(dbPath, query);
+}
+
+function isNoResults(output: string, query: string): boolean {
+  return output === `No results for ${query}\n`;
+}
+
+async function refreshDocsDbForQuery(query: string): Promise<string> {
+  const api = await refreshDocsForQuery(query);
+  await writeSqliteIndex(api, docsDbPath());
+  return docsDbPath();
+}
+
+async function refreshDocsForQuery(query: string): Promise<ApiDoc> {
+  const inputs = await discoverProjectDocInputs();
+  if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc search: no source files found to document');
+  const terms = docQueryTerms(query);
+  const api = await extractDocsCached(inputs, false, {
+    shouldParseChanged: (file) => docFileContainsAnyTerm(file.file, terms),
+  });
+  await ensureDir(docsDir());
+  await fs.writeFile(apiJsonPath(), JSON.stringify(api, null, 2) + '\n');
+  return api;
+}
+
+function docQueryTerms(query: string): string[] {
+  const out = new Set<string>();
+  const add = (value: string) => {
+    const normalized = value.trim().toLowerCase();
+    if (normalized) out.add(normalized);
+  };
+  add(query);
+  for (const token of query.split(/\s+/)) {
+    add(token);
+    const parts = token.split('.').filter(Boolean);
+    for (let index = 0; index < parts.length; index++) add(parts.slice(index).join('.'));
+    if (parts.length > 0) add(parts[parts.length - 1]!);
+  }
+  return [...out].sort((a, b) => b.length - a.length || compareAscii(a, b));
+}
+
+async function docFileContainsAnyTerm(path: string, terms: string[]): Promise<boolean> {
+  if (terms.length === 0) return false;
+  const text = String(await fs.readFile(path)).toLowerCase();
+  return terms.some((term) => text.includes(term));
 }
 
 async function searchSqlite(dbPath: string, query: string): Promise<string> {
