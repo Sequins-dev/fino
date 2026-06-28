@@ -897,6 +897,7 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
 export async function run(options: RunOptions = {}): Promise<void> {
   const showOutput = options.showOutput ?? 'failures';
   const durations = options.durations === true;
+  const runStartMs = _nowMs();
   console.log('TAP version 13');
 
   const entries = options.filter ? _filterEntries(_tests, options.filter) : _tests;
@@ -907,6 +908,7 @@ export async function run(options: RunOptions = {}): Promise<void> {
   console.log('# tests ' + total);
   console.log('# pass  ' + passed);
   if (skipped > 0) console.log('# skip  ' + skipped);
+  console.log('# time  ' + (_nowMs() - runStartMs).toFixed(2) + 'ms');
   if (failed > 0) {
     console.log('# fail  ' + failed);
     if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);

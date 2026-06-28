@@ -16,7 +16,10 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:stream` | `benchmarks/stream.bench.mts` |
 | `fino:process` | `benchmarks/process.bench.mts` |
 | `fino:context` | `benchmarks/context/index.bench.mts` |
+| `fino:ui` | `benchmarks/ui.bench.mts` |
+| `fino:ui/jsx-runtime` | `benchmarks/ui.bench.mts` |
 | `fino:tty` | `benchmarks/tty.bench.mts` |
+| `fino:tty/tui` | `benchmarks/tty/tui.bench.mts` |
 | `fino:net/socket` | `benchmarks/net/socket.bench.mts` |
 | `fino:net/tls` | `benchmarks/net/tls.bench.mts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.mts` |
@@ -78,6 +81,8 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:net/http/eventstream` | not yet benchmarked |
 | `fino:ai/context` | not yet benchmarked |
 | `fino:ai/model` | not yet benchmarked |
+| `fino:ai/model/anthropic` | not yet benchmarked |
+| `fino:ai/model/openai` | not yet benchmarked |
 | `fino:ai/tool` | not yet benchmarked |
 | `fino:ai/harness` | not yet benchmarked |
 | `fino:ai/runtime` | not yet benchmarked |
@@ -89,6 +94,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:ai/eval` | not yet benchmarked |
 | `fino:jsonrpc` | not yet benchmarked |
 | `fino:ai/mcp` | not yet benchmarked |
+| `fino:workflow` | not yet benchmarked |
 
 ## Release Stress And Failure Coverage
 

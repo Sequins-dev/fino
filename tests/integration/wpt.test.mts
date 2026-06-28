@@ -11,6 +11,7 @@ import { DiskFileSystem } from 'fino:file';
 import { Process, cwd, env, execPath } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 import { WPT_MANIFEST } from './fixtures/wpt/manifest.generated.mts';
+import { specSuiteSkipReason, specSuitesEnabled } from './spec-gate.mts';
 import type { WptManifestEntry } from './fixtures/wpt/manifest.mts';
 
 const fs = new DiskFileSystem();
@@ -98,7 +99,9 @@ function selectedEntries(): WptManifestEntry[] {
 }
 
 describe('upstream WPT web globals', () => {
-  if (!hasCheckout || !hasManifest) {
+  if (!specSuitesEnabled) {
+    it('preflight', { skip: specSuiteSkipReason }, () => {});
+  } else if (!hasCheckout || !hasManifest) {
     it('preflight', () => {
       throw new Error(setupMessage);
     });

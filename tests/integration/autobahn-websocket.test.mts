@@ -16,6 +16,7 @@ import { DiskFileSystem } from 'fino:file';
 import { Process, env } from 'fino:process';
 import { serve } from 'fino:net/http/server';
 import { WebSocketConnection } from 'fino:net/http/websocket';
+import { specSuiteSkipReason, specSuitesEnabled } from './spec-gate.mts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -66,14 +67,14 @@ const AUTOBahn_SUITES = [
   { name: 'group 13.7 permessage-deflate cases', patterns: ['13.7.*'], requiredGroups: ['13'] },
 ];
 const AUTOBahn_SUITE_FILTER = env.FINO_AUTOBAHN_SUITE;
+const AUTOBahn_SPEC_ENABLED = specSuitesEnabled || env.FINO_FULL_SPEC_TESTS === '1';
 const AUTOBahn_ACTIVE_SUITES =
   typeof AUTOBahn_SUITE_FILTER === 'string' && AUTOBahn_SUITE_FILTER.trim() !== ''
     ? AUTOBahn_SUITES.filter(suite =>
       suite.name.includes(AUTOBahn_SUITE_FILTER.trim()) ||
       suite.patterns.some(pattern => pattern.includes(AUTOBahn_SUITE_FILTER.trim())))
     : AUTOBahn_SUITES;
-const skipAutobahn = env.FINO_FULL_SPEC_TESTS !== '1' &&
-  'set FINO_FULL_SPEC_TESTS=1 to run full Autobahn WebSocket conformance';
+const skipAutobahn = !AUTOBahn_SPEC_ENABLED && specSuiteSkipReason;
 
 interface AutobahnCase {
   id: string;
@@ -312,6 +313,11 @@ async function collectAutobahnCases(casePatterns: string[]): Promise<Map<string,
 }
 
 describe('Autobahn — RFC 6455 WebSocket conformance', { skip: skipAutobahn }, () => {
+  if (!AUTOBahn_SPEC_ENABLED) {
+    it('preflight', { skip: specSuiteSkipReason }, () => {});
+    return;
+  }
+
   after(async () => {
     if (server) await server.close();
   });

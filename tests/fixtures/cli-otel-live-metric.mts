@@ -14,5 +14,5 @@ const meter = getMeterProvider().getMeter('cli.live.metric', '1.0.0');
 const counter = meter.createCounter('cli.live.metric.counter', { unit: '1' });
 counter.add(1, { source: 'cli-live-metric' });
 
-await new Promise((resolve) => setTimeout(resolve, 1200));
+await new Promise((resolve) => setTimeout(resolve, 80));
 console.log('still-running');

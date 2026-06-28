@@ -41,6 +41,7 @@ import { serveHttp } from 'fino:net/http/server';
 import { DiskFileSystem } from 'fino:file';
 import { Process } from 'fino:process';
 import { h2Available } from '../../js/net/http/h2.mts';
+import { specSuiteSkipReason, specSuitesEnabled } from './spec-gate.mts';
 
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
   throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
@@ -469,21 +470,26 @@ function _defineH2specUnitTests(
 // Suite
 // ---------------------------------------------------------------------------
 
-const h2specPath = await _findH2spec();
+const h2specPath = specSuitesEnabled ? await _findH2spec() : null;
 const tlsAvailable = (globalThis as any).tlsAvailable as boolean | undefined;
 
 const skip = (!h2Available || !tlsAvailable)
   && 'requires libnghttp2 and OpenSSL support';
 
-if (!skip && !h2specPath) {
+if (specSuitesEnabled && !skip && !h2specPath) {
   throw new Error(`h2spec harness unavailable: install h2spec (${_H2SPEC_CANDIDATES[0]})`);
 }
 
-const h2specDryrunInfo = !skip
+const h2specDryrunInfo = specSuitesEnabled && !skip
   ? _parseH2specDryrun(await _runDryrun(h2specPath!))
   : { units: [], labels: new Map<string, string>() };
 
 describe('h2spec — RFC 7540/7541 conformance (TLS)', () => {
+  if (!specSuitesEnabled) {
+    it('preflight', { skip: specSuiteSkipReason }, () => {});
+    return;
+  }
+
   let server: ReturnType<typeof serve>;
   let port: number;
 

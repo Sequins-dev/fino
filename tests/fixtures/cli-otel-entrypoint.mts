@@ -63,5 +63,5 @@ await runWithActiveSpan(span, async () => {
 
 span.end();
 
-await new Promise((resolve) => setTimeout(resolve, 1200));
+await new Promise((resolve) => setTimeout(resolve, 80));
 console.log('entrypoint-finished');

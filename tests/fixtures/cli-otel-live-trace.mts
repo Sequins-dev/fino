@@ -14,5 +14,5 @@ const tracer = getTracerProvider().getTracer('cli.live.trace', '1.0.0');
 const span = tracer.startSpan('live-trace-span');
 span.end();
 
-await new Promise((resolve) => setTimeout(resolve, 1200));
+await new Promise((resolve) => setTimeout(resolve, 80));
 console.log('still-running');

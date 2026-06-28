@@ -299,6 +299,7 @@ describe('runner behavior', () => {
       t.ok(stdout.includes('1..1'), 'TAP plan is printed');
       t.ok(stdout.includes('ok 1 - top leaf'), 'passing top-level test is reported');
       t.ok(stdout.includes('# pass  1'), 'summary reports one pass');
+      t.ok(/# time  \d+(?:\.\d+)?ms\b/.test(stdout), 'summary reports total runtime');
     });
   });
 

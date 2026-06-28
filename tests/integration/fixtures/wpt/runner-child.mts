@@ -235,6 +235,39 @@ function requiresWptServer(basePath: string, source: string): boolean {
       || /\/fetch\/api\/resources\//.test(source);
 }
 
+function decodeManifestName(name: string): string {
+  return name
+    .replace(/\\u\{([0-9a-fA-F]+)\}/g, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/\\0/g, '\0');
+}
+
+function nameTokens(name: string): string[] {
+  return [...name.matchAll(/[\p{L}\p{N}]+/gu)].map((match) => match[0]!.toLowerCase());
+}
+
+function orderedTokenMatch(expected: string, actual: string): boolean {
+  const expectedTokens = nameTokens(expected);
+  if (expectedTokens.length < 2) return false;
+  const actualTokens = nameTokens(actual);
+  let cursor = 0;
+  for (const token of expectedTokens) {
+    const found = actualTokens.indexOf(token, cursor);
+    if (found < 0) return false;
+    cursor = found + 1;
+  }
+  return true;
+}
+
+function selectResults(results: HarnessResult[], requested: string | null): HarnessResult[] {
+  if (requested === null) return results;
+  const decoded = decodeManifestName(requested);
+  let selected = results.filter((result) => result.name === requested || result.name === decoded);
+  if (selected.length > 0) return selected;
+  selected = results.filter((result) => orderedTokenMatch(decoded, result.name));
+  return selected;
+}
+
 async function assertWptServerReady(): Promise<void> {
   try {
     const response = await fetch('http://web-platform.test:8000/');
@@ -293,7 +326,7 @@ async function main(): Promise<void> {
   if (typeof g.done === 'function') g.done();
   await completed;
 
-  const selected = subtest === null ? results : results.filter((result) => result.name === subtest);
+  const selected = selectResults(results, subtest);
   if (subtest === null && selected.length === 0) {
     print({ path: testPath, subtest, status: 'fail', results, message: 'WPT file completed without reporting any subtests' });
   }

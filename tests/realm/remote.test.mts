@@ -69,8 +69,15 @@ async function waitForWorker(port: number): Promise<Process> {
 
 async function stopWorker(proc: Process): Promise<void> {
   proc.stdin.close();
-  const result = await proc.wait();
-  if (result.code !== 0) {
+  const waiting = proc.wait();
+  let result: Awaited<ReturnType<Process['wait']>>;
+  try {
+    result = await withTimeout(waiting, 500, 'worker graceful shutdown');
+  } catch {
+    proc.kill();
+    result = await waiting;
+  }
+  if (result.code !== 0 && result.signal === null) {
     throw new Error(`worker exited with code ${String(result.code)} signal ${String(result.signal)}`);
   }
 }

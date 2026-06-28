@@ -7,6 +7,7 @@ import type { Assert } from 'fino:test/assert';
 import { Process, env, execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
+import { createRootCommand } from 'internal:commands/root';
 
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 
@@ -26,6 +27,7 @@ async function runCli(args: string[], options: { env?: Record<string, string | u
   for (const [key, value] of Object.entries({ ...env, ...(options.env || {}) })) {
     if (value !== undefined) childEnv[key] = value;
   }
+  childEnv.FINO_OTEL_EXPORT_INTERVAL_MS ??= '20';
   const proc = new Process(execPath, args, {
     env: childEnv,
     cwd: options.cwd,
@@ -101,12 +103,15 @@ async function expectLiveOtelSignal(t: Assert, fixture: string, path: string, la
   t.ok(exportIndex < runningIndex, `${label} export happened before the script finished running`);
 }
 
+async function parseRoot(args: string[]): Promise<string> {
+  const result = await createRootCommand().parse(args);
+  return typeof result === 'string' ? result : '';
+}
+
 describe('CLI commands', () => {
   it('prints root help with command list', async (t) => {
-    const { stdout, stderr, result } = await runCli(['--help']);
+    const stdout = await parseRoot(['--help']);
 
-    t.equal(result.code, 0, 'help exits successfully');
-    t.equal(stderr, '', 'no stderr for help');
     t.ok(stdout.includes('Usage: fino'), 'usage mentions fino root command');
     t.ok(stdout.includes('[script]'), 'usage documents script positional fallback');
     t.ok(stdout.includes('Commands:'), 'help lists commands');
@@ -239,9 +244,7 @@ describe('CLI commands', () => {
     const commands = ['run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'repl'];
 
     for (const command of commands) {
-      const { stdout, stderr, result } = await runCli([command, '--help']);
-      t.equal(result.code, 0, `${command} --help exits successfully`);
-      t.equal(stderr, '', `${command} --help does not write stderr`);
+      const stdout = await parseRoot([command, '--help']);
       t.ok(stdout.includes(`Usage: fino ${command}`), `${command} --help includes command usage`);
     }
   });

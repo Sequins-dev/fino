@@ -13,5 +13,5 @@ if (argv[1] !== 'test') {
 const logger = getLoggerProvider().getLogger('cli.live.log', '1.0.0');
 logger.info('live-log-message', { source: 'cli-live-log' });
 
-await new Promise((resolve) => setTimeout(resolve, 1200));
+await new Promise((resolve) => setTimeout(resolve, 80));
 console.log('still-running');

@@ -103,6 +103,13 @@ function envCompression(): 'gzip' | null {
   throw new TypeError('OTEL_EXPORTER_OTLP_COMPRESSION must be "none" or "gzip"');
 }
 
+function exportIntervalMs(): number {
+  const value = envString('FINO_OTEL_EXPORT_INTERVAL_MS');
+  if (!value) return 1000;
+  const interval = Number(value);
+  return Number.isFinite(interval) && interval >= 0 ? interval : 1000;
+}
+
 function envResourceAttributes(): Record<string, unknown> {
   const text = envString('OTEL_RESOURCE_ATTRIBUTES');
   return text ? parseCommaKeyValues(text) : {};
@@ -182,12 +189,13 @@ export async function createCliOtelRuntime(endpoint: string, script: string, deb
   const loggerProvider = new LoggerProvider();
   const meterProvider = new MeterProvider();
   const resource = await loadCliResource(script);
+  const intervalMs = exportIntervalMs();
   const sdk = new OtelSDK({
     resource,
     exporters: [exporter],
-    spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: 1000 })],
-    logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: 1000 })],
-    metricReaders: [new PeriodicMetricReader(exporter, { intervalMs: 1000 })],
+    spanProcessors: [new BatchSpanProcessor(exporter, { scheduledDelayMillis: intervalMs })],
+    logRecordProcessors: [new BatchLogRecordProcessor(exporter, { scheduledDelayMillis: intervalMs })],
+    metricReaders: [new PeriodicMetricReader(exporter, { intervalMs })],
     instrumentations: [
       new TraceTopicInstrumentation(),
       new HttpServerInstrumentation(),
