@@ -7,12 +7,22 @@ description: Ensure Fino JavaScript documentation comments are complete and mark
 
 Use this skill whenever JS module docs or generated-doc-visible symbols may change. Documentation should explain the contract in markdown prose, not rely on JSDoc tag blocks to carry meaning.
 
+Project documentation is intentionally more complete than a symbol reference.
+Top-level public module comments should read like compact design notes: a new
+user should understand when to reach for the module, what mental model it uses,
+how the main pieces fit together, what defaults or limits matter, and where the
+module intentionally stops.
+
 ## Required Coverage
 
 1. Document every `js/` module with a top-level `/** */` comment.
-   - Explain what the module does, when to use it, important defaults, safety limits, and relevant compatibility constraints.
-   - Include short markdown code examples for public modules when useful.
+   - Start with the public specifier and a short purpose line, for example `fino:config — explicit ordered config loading over fino:validate.`
+   - Explain what the module does, when to use it, and what problem it does **not** try to solve.
+   - Describe the design model: ownership, lifecycle, ordering/precedence rules, mutability, async behavior, storage model, protocol role, or other architecture that users need before reading individual symbols.
+   - Mention important defaults, safety limits, unsupported features, platform gates, failure modes, cleanup/disposal requirements, and compatibility constraints.
+   - Include at least one realistic `ts no_run` example for each public module unless the module is purely a narrow type barrel.
    - Link authoritative specifications or protocol references for spec-backed files. Use `$fino-spec-conformance` when that link or conformance is part of the task.
+   - Use section headings such as `## Design`, `## Storage model`, `## Protocol notes`, or `## Example` when they make the module easier to scan.
 
 2. Document every public or generated-doc-visible symbol.
    - Cover exported functions, classes, interfaces, types, constants, and class members that appear in generated docs.
@@ -23,6 +33,7 @@ Use this skill whenever JS module docs or generated-doc-visible symbols may chan
    - Prefer paragraphs, bullet lists, fenced `ts` examples, and inline code.
    - Avoid `@param`, `@returns`, and similar JSDoc tags as the normal way to describe behavior.
    - Keep examples realistic and minimal. Use `ts no_run` fences when examples are illustrative rather than executable.
+   - For module comments, prefer complete paragraphs over tagline-only summaries. Good module docs in this repo often include a concise overview, a design note, a compatibility/limits note, and an example.
 
 4. Keep docs aligned with behavior.
    - Update comments in the same change as implementation and tests.
@@ -46,6 +57,7 @@ Use this skill whenever JS module docs or generated-doc-visible symbols may chan
 ## Review Checklist
 
 - Module comment exists and gives enough context for a new maintainer.
+- Public module comment has a specifier/purpose line, design model, defaults/limits, and a realistic example when applicable.
 - Public exports and generated-doc-visible members have markdown-first comments.
 - Spec-backed modules link authoritative references.
 - Defaults, failure cases, `null` cases, security caveats, and lifecycle requirements are documented.
