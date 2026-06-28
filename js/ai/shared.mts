@@ -58,6 +58,23 @@ export class ModelError extends Error {
   }
 }
 
+/**
+ * Error thrown when a provider endpoint does not expose model discovery.
+ */
+export class ModelListingUnsupportedError extends Error {
+  provider: string;
+  status: number;
+  body?: string;
+
+  constructor(message: string, opts: { provider: string; status: number; body?: string }) {
+    super(message);
+    this.name = 'ModelListingUnsupportedError';
+    this.provider = opts.provider;
+    this.status = opts.status;
+    this.body = opts.body;
+  }
+}
+
 function parseRetryAfterMs(headers: Record<string, string> | undefined): number | undefined {
   if (!headers) return undefined;
   const val = headers['retry-after'] ?? headers['Retry-After'];

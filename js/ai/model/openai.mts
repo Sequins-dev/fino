@@ -4,10 +4,12 @@
  * OpenAI API reference: https://platform.openai.com/docs/api-reference
  *
  * `openai()` returns a provider-neutral `Model` backed by OpenAI chat
- * completions and embeddings. It translates Fino message parts into OpenAI
- * content blocks, maps streamed chunks into `StreamEvent` values, normalizes
- * usage and stop reasons, and exposes native JSON Schema response-format
- * support through model capabilities.
+ * completions and embeddings. `openaiProvider()` returns a discovery-capable
+ * provider that calls `GET /models` on an OpenAI-compatible base URL and can
+ * construct models from discovered ids. Both paths translate Fino message parts
+ * into OpenAI content blocks, map streamed chunks into `StreamEvent` values,
+ * normalize usage and stop reasons, and expose native JSON Schema
+ * response-format support through model capabilities.
  *
  * ## Defaults and limits
  *
@@ -23,10 +25,11 @@
  *
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
- * import { openai } from 'fino:ai/model/openai';
+ * import { openaiProvider } from 'fino:ai/model/openai';
  *
+ * const [info] = await openaiProvider().listModels();
  * const bot = agent({
- *   model: openai({ model: 'gpt-4o', temperature: 0.2 }),
+ *   model: info.create({ temperature: 0.2 }),
  *   instructions: 'Answer with one concise paragraph.',
  * });
  *
@@ -41,6 +44,9 @@ import type {
   StreamEvent,
   ProviderOptions,
   Model,
+  ModelCreateOptions,
+  ModelInfo,
+  ModelProvider,
   ModelStream,
   StopReason,
   ToolCall,
@@ -51,6 +57,7 @@ import {
   streamFromResponse,
   ModelStreamImpl,
   ModelError,
+  ModelListingUnsupportedError,
   ClientLike,
   ResponseLike,
   OPENAI_BASE_URL,
@@ -391,6 +398,98 @@ class OpenAIModel implements Model {
   }
 }
 
+class OpenAIModelProvider implements ModelProvider {
+  readonly provider = 'openai';
+  #apiKey: string;
+  #client: ClientLike;
+  #baseUrl: string;
+  #headers: Record<string, string>;
+  #maxTokens: number;
+  #temperature: number | undefined;
+  #dimensions: number;
+
+  constructor(opts: ProviderOptions = {}) {
+    this.#apiKey = resolveApiKey(opts, 'OPENAI_API_KEY');
+    this.#client = opts.client != null
+      ? opts.client as unknown as ClientLike
+      : new HttpClient() as unknown as ClientLike;
+    this.#baseUrl = opts.baseUrl ?? OPENAI_BASE_URL;
+    this.#headers = opts.headers ?? {};
+    this.#maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.#temperature = opts.temperature;
+    this.#dimensions = opts.dimensions ?? 0;
+  }
+
+  #authHeaders(headers?: Record<string, string>): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      'authorization': `Bearer ${this.#apiKey}`,
+      ...this.#headers,
+      ...(headers ?? {}),
+    };
+  }
+
+  async listModels(opts: { signal?: AbortSignal } = {}): Promise<ModelInfo[]> {
+    const url = `${this.#baseUrl}/models`;
+    const res = await this.#client.request(url, {
+      method: 'GET',
+      headers: { ...this.#authHeaders(), accept: 'application/json' },
+      signal: opts.signal ?? null,
+    }) as ResponseLike;
+    if (res.status < 200 || res.status >= 300) {
+      const body = await res.text();
+      if (res.status === 404) {
+        throw new ModelListingUnsupportedError(
+          `OpenAI-compatible provider at ${this.#baseUrl} does not support model listing (${url})`,
+          { provider: this.provider, status: res.status, body },
+        );
+      }
+      throw new ModelError(`OpenAI API error ${res.status}: ${body}`, { status: res.status, body });
+    }
+
+    const data = (await res.json()) as { data?: Array<Record<string, unknown>> };
+    return (data.data ?? []).map((entry) => this.#info(entry));
+  }
+
+  createModel(id: string, opts: ModelCreateOptions = {}): Model {
+    return new OpenAIModel(
+      id,
+      this.#apiKey,
+      this.#client,
+      this.#baseUrl,
+      { ...this.#headers, ...(opts.headers ?? {}) },
+      opts.maxTokens ?? this.#maxTokens,
+      opts.temperature ?? this.#temperature,
+      opts.dimensions ?? this.#dimensions,
+      'text-embedding-3-small',
+    );
+  }
+
+  #info(entry: Record<string, unknown>): ModelInfo {
+    const id = String(entry.id);
+    return {
+      id,
+      provider: this.provider,
+      ...(typeof entry.created === 'number' ? { createdAt: entry.created } : {}),
+      ...(typeof entry.owned_by === 'string' ? { ownedBy: entry.owned_by } : {}),
+      capabilities: { responseFormat: true },
+      metadata: { ...entry },
+      create: (opts?: ModelCreateOptions) => this.createModel(id, opts),
+    };
+  }
+}
+
+/**
+ * Create an OpenAI-compatible model provider.
+ *
+ * `listModels()` calls `GET /models` on `baseUrl`, which defaults to the
+ * public OpenAI `/v1` API base URL. OpenAI-compatible gateways can override
+ * `baseUrl` and keep the same discovery shape.
+ */
+export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
+  return new OpenAIModelProvider(opts);
+}
+
 /**
  * Create an OpenAI-backed `Model`.
  *
@@ -398,20 +497,5 @@ class OpenAIModel implements Model {
  * runtimes that provide their own HTTP transport.
  */
 export function openai(opts: ProviderOptions = {}): Model {
-  const apiKey = resolveApiKey(opts, 'OPENAI_API_KEY');
-  const client = opts.client != null
-    ? opts.client as unknown as ClientLike
-    : new HttpClient() as unknown as ClientLike;
-
-  return new OpenAIModel(
-    opts.model ?? 'gpt-4o',
-    apiKey,
-    client,
-    opts.baseUrl ?? OPENAI_BASE_URL,
-    opts.headers ?? {},
-    opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-    opts.temperature,
-    opts.dimensions ?? 0,
-    'text-embedding-3-small',
-  );
+  return openaiProvider(opts).createModel(opts.model ?? 'gpt-4o', opts);
 }

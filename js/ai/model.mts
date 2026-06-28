@@ -18,12 +18,18 @@
  * This module does not hide provider capabilities. Adapters expose `id`,
  * `provider`, and optional `capabilities` so higher layers can make explicit
  * choices, such as using native structured-output transport only when a model
- * declares support for it.
+ * declares support for it. Provider registries can also discover available
+ * model ids from OpenAI-compatible and Anthropic endpoints before constructing
+ * a concrete `Model`.
  *
  * ```ts no_run
- * import { openai, assembleResult } from 'fino:ai/model';
+ * import { assembleResult, modelRegistry, openaiProvider } from 'fino:ai/model';
  *
- * const model = openai({ model: 'gpt-4o' });
+ * const registry = modelRegistry([
+ *   openaiProvider({ baseUrl: 'https://api.openai.com/v1' }),
+ * ]);
+ * const [info] = await registry.list();
+ * const model = info.create({ temperature: 0.2 });
  * const stream = model.stream({
  *   messages: [{ role: 'user', content: 'Say hello in one sentence.' }],
  * });
@@ -36,9 +42,16 @@
 import {
   assembleResult as sharedAssembleResult,
   ModelError as SharedModelError,
+  ModelListingUnsupportedError as SharedModelListingUnsupportedError,
 } from 'internal:ai/shared';
-import { anthropic as anthropicProvider } from 'internal:ai/model/anthropic';
-import { openai as openaiProvider } from 'internal:ai/model/openai';
+import {
+  anthropic as anthropicFactory,
+  anthropicProvider as createAnthropicProvider,
+} from 'internal:ai/model/anthropic';
+import {
+  openai as openaiFactory,
+  openaiProvider as createOpenAIProvider,
+} from 'internal:ai/model/openai';
 
 /**
  * Chat message role understood by all providers.
@@ -235,6 +248,88 @@ export interface Model {
 }
 
 /**
+ * Options applied when constructing a `Model` from a provider or registry.
+ */
+export interface ModelCreateOptions {
+  /**
+   * Default maximum output token count for models created from the provider.
+   */
+  maxTokens?: number;
+  /**
+   * Default sampling temperature for models created from the provider.
+   */
+  temperature?: number;
+  /**
+   * Embedding vector dimensions for providers that support embeddings.
+   */
+  dimensions?: number;
+  /**
+   * Additional provider headers merged with the provider's configured headers.
+   */
+  headers?: Record<string, string>;
+}
+
+/**
+ * Discovered model entry returned by a `ModelProvider`.
+ *
+ * `create()` constructs a provider-neutral `Model` for this exact model id
+ * using the provider configuration that discovered it.
+ */
+export interface ModelInfo {
+  /**
+   * Provider model id used in generation requests.
+   */
+  readonly id: string;
+  /**
+   * Provider identifier such as `openai` or `anthropic`.
+   */
+  readonly provider: string;
+  /**
+   * Human-readable name returned by the provider, when available.
+   */
+  readonly displayName?: string;
+  /**
+   * Provider-reported creation timestamp, when available.
+   */
+  readonly createdAt?: number;
+  /**
+   * Owner or organization returned by OpenAI-compatible endpoints.
+   */
+  readonly ownedBy?: string;
+  /**
+   * Capabilities inferred by the provider adapter for this model.
+   */
+  readonly capabilities?: Model['capabilities'];
+  /**
+   * Raw provider metadata for callers that need provider-specific fields.
+   */
+  readonly metadata?: Record<string, unknown>;
+  /**
+   * Construct a `Model` for this discovered model id.
+   */
+  create(opts?: ModelCreateOptions): Model;
+}
+
+/**
+ * Provider that can discover available model ids and construct `Model`
+ * adapters for those ids.
+ */
+export interface ModelProvider {
+  /**
+   * Stable provider name used in `ModelInfo.provider` and registry filters.
+   */
+  readonly provider: string;
+  /**
+   * Fetch available models from the provider endpoint.
+   */
+  listModels(opts?: { signal?: AbortSignal }): Promise<ModelInfo[]>;
+  /**
+   * Construct a model by provider model id.
+   */
+  createModel(id: string, opts?: ModelCreateOptions): Model;
+}
+
+/**
  * Common provider options accepted by bundled providers.
  */
 export interface ProviderOptions {
@@ -261,6 +356,84 @@ export interface ProviderOptions {
 }
 
 /**
+ * Registry for discovering and constructing provider-neutral models.
+ *
+ * The registry caches `listModels()` results per provider instance. Pass
+ * `refresh: true` to bypass the cache for a call.
+ */
+export class ModelRegistry {
+  #providers: ModelProvider[];
+  #cache = new Map<ModelProvider, ModelInfo[]>();
+
+  /**
+   * Create a registry with an optional initial provider list.
+   */
+  constructor(providers: ModelProvider[] = []) {
+    this.#providers = [...providers];
+  }
+
+  /**
+   * Add a provider and return this registry for chaining.
+   */
+  add(provider: ModelProvider): this {
+    this.#providers.push(provider);
+    this.#cache.delete(provider);
+    return this;
+  }
+
+  /**
+   * List discovered models across all providers or one provider.
+   */
+  async list(opts: { provider?: string; refresh?: boolean; signal?: AbortSignal } = {}): Promise<ModelInfo[]> {
+    const providers = this.#matchingProviders(opts.provider);
+    const out: ModelInfo[] = [];
+    for (const provider of providers) {
+      if (opts.refresh || !this.#cache.has(provider)) {
+        this.#cache.set(provider, await provider.listModels({ signal: opts.signal }));
+      }
+      out.push(...(this.#cache.get(provider) ?? []));
+    }
+    return out;
+  }
+
+  /**
+   * Find a model by id, or return `null` when no provider reports it.
+   */
+  async get(id: string, opts: { provider?: string; refresh?: boolean } = {}): Promise<ModelInfo | null> {
+    const matches = (await this.list(opts)).filter((model) => model.id === id);
+    if (matches.length === 0) return null;
+    if (matches.length > 1) {
+      throw new Error(`Model id "${id}" is ambiguous; pass provider to choose one.`);
+    }
+    return matches[0]!;
+  }
+
+  /**
+   * Construct a `Model` by discovered id.
+   */
+  async create(id: string, opts: ModelCreateOptions & { provider?: string; refresh?: boolean } = {}): Promise<Model> {
+    const { provider, refresh, ...createOpts } = opts;
+    const info = await this.get(id, { provider, refresh });
+    if (!info) throw new Error(`Model "${id}" not found`);
+    return info.create(createOpts);
+  }
+
+  #matchingProviders(providerName: string | undefined): ModelProvider[] {
+    if (providerName === undefined) return this.#providers;
+    const providers = this.#providers.filter((provider) => provider.provider === providerName);
+    if (providers.length === 0) throw new Error(`No model provider named "${providerName}"`);
+    return providers;
+  }
+}
+
+/**
+ * Create a model registry from one or more providers.
+ */
+export function modelRegistry(providers: ModelProvider[] = []): ModelRegistry {
+  return new ModelRegistry(providers);
+}
+
+/**
  * Assemble streamed provider events into a complete `GenerateResult`.
  */
 export function assembleResult(events: AsyncIterable<StreamEvent>): Promise<GenerateResult> {
@@ -273,12 +446,26 @@ export function assembleResult(events: AsyncIterable<StreamEvent>): Promise<Gene
 export const ModelError = SharedModelError;
 
 /**
+ * Error thrown when a provider endpoint does not support model listing.
+ */
+export const ModelListingUnsupportedError = SharedModelListingUnsupportedError;
+
+/**
  * Create an Anthropic-backed `Model`.
  *
  * `apiKey` defaults to `ANTHROPIC_API_KEY`.
  */
 export function anthropic(opts: ProviderOptions = {}): Model {
-  return anthropicProvider(opts);
+  return anthropicFactory(opts);
+}
+
+/**
+ * Create an Anthropic provider that can list and construct models.
+ *
+ * `apiKey` defaults to `ANTHROPIC_API_KEY`.
+ */
+export function anthropicProvider(opts: ProviderOptions = {}): ModelProvider {
+  return createAnthropicProvider(opts);
 }
 
 /**
@@ -287,5 +474,14 @@ export function anthropic(opts: ProviderOptions = {}): Model {
  * `apiKey` defaults to `OPENAI_API_KEY`.
  */
 export function openai(opts: ProviderOptions = {}): Model {
-  return openaiProvider(opts);
+  return openaiFactory(opts);
+}
+
+/**
+ * Create an OpenAI-compatible provider that can list and construct models.
+ *
+ * `apiKey` defaults to `OPENAI_API_KEY`.
+ */
+export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
+  return createOpenAIProvider(opts);
 }

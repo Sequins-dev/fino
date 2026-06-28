@@ -4,10 +4,12 @@
  * Anthropic Messages API reference: https://docs.anthropic.com/en/api/messages
  *
  * `anthropic()` returns a provider-neutral `Model` backed by Anthropic's
- * Messages API. It translates Fino message parts into Anthropic content blocks,
- * maps server-sent events into `StreamEvent` values, normalizes usage and stop
- * reasons, and exposes native JSON Schema response-format support through model
- * capabilities.
+ * Messages API. `anthropicProvider()` returns a discovery-capable provider that
+ * calls Anthropic's `GET /v1/models` endpoint and can construct models from
+ * discovered ids. Both paths translate Fino message parts into Anthropic content
+ * blocks, map server-sent events into `StreamEvent` values, normalize usage and
+ * stop reasons, and expose native JSON Schema response-format support through
+ * model capabilities.
  *
  * ## Defaults and limits
  *
@@ -24,10 +26,11 @@
  *
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
- * import { anthropic } from 'fino:ai/model/anthropic';
+ * import { anthropicProvider } from 'fino:ai/model/anthropic';
  *
+ * const [info] = await anthropicProvider().listModels();
  * const bot = agent({
- *   model: anthropic({ model: 'claude-opus-4-8' }),
+ *   model: info.create(),
  *   instructions: 'Prefer explicit assumptions.',
  * });
  *
@@ -42,6 +45,9 @@ import type {
   StreamEvent,
   ProviderOptions,
   Model,
+  ModelCreateOptions,
+  ModelInfo,
+  ModelProvider,
   ModelStream,
   TextPart,
   StopReason,
@@ -53,6 +59,7 @@ import {
   streamFromResponse,
   ModelStreamImpl,
   ModelError,
+  ModelListingUnsupportedError,
   ClientLike,
   ANTHROPIC_BASE_URL,
 } from 'internal:ai/shared';
@@ -388,6 +395,98 @@ class AnthropicModel implements Model {
   }
 }
 
+class AnthropicModelProvider implements ModelProvider {
+  readonly provider = 'anthropic';
+  #apiKey: string;
+  #client: ClientLike;
+  #baseUrl: string;
+  #headers: Record<string, string>;
+  #maxTokens: number;
+  #temperature: number | undefined;
+
+  constructor(opts: ProviderOptions = {}) {
+    this.#apiKey = resolveApiKey(opts, 'ANTHROPIC_API_KEY');
+    this.#client = opts.client != null
+      ? opts.client as unknown as ClientLike
+      : new HttpClient() as unknown as ClientLike;
+    this.#baseUrl = opts.baseUrl ?? ANTHROPIC_BASE_URL;
+    this.#headers = opts.headers ?? {};
+    this.#maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+    this.#temperature = opts.temperature;
+  }
+
+  #authHeaders(headers?: Record<string, string>): Record<string, string> {
+    return {
+      'content-type': 'application/json',
+      'accept': 'application/json',
+      'x-api-key': this.#apiKey,
+      'anthropic-version': ANTHROPIC_VERSION,
+      ...this.#headers,
+      ...(headers ?? {}),
+    };
+  }
+
+  async listModels(opts: { signal?: AbortSignal } = {}): Promise<ModelInfo[]> {
+    const url = `${this.#baseUrl}/v1/models`;
+    const res = await this.#client.request(url, {
+      method: 'GET',
+      headers: this.#authHeaders(),
+      signal: opts.signal ?? null,
+    }) as ResponseLike;
+    if (res.status < 200 || res.status >= 300) {
+      const body = await res.text();
+      if (res.status === 404) {
+        throw new ModelListingUnsupportedError(
+          `Anthropic provider at ${this.#baseUrl} does not support model listing (${url})`,
+          { provider: this.provider, status: res.status, body },
+        );
+      }
+      throw new ModelError(`Anthropic API error ${res.status}: ${body}`, { status: res.status, body });
+    }
+
+    const data = (await res.json()) as { data?: Array<Record<string, unknown>> };
+    return (data.data ?? []).map((entry) => this.#info(entry));
+  }
+
+  createModel(id: string, opts: ModelCreateOptions = {}): Model {
+    return new AnthropicModel(
+      id,
+      this.#apiKey,
+      this.#client,
+      this.#baseUrl,
+      { ...this.#headers, ...(opts.headers ?? {}) },
+      opts.maxTokens ?? this.#maxTokens,
+      opts.temperature ?? this.#temperature,
+    );
+  }
+
+  #info(entry: Record<string, unknown>): ModelInfo {
+    const id = String(entry.id);
+    const createdAt = typeof entry.created_at === 'string'
+      ? Date.parse(entry.created_at)
+      : undefined;
+    return {
+      id,
+      provider: this.provider,
+      ...(typeof entry.display_name === 'string' ? { displayName: entry.display_name } : {}),
+      ...(createdAt !== undefined && !Number.isNaN(createdAt) ? { createdAt } : {}),
+      capabilities: { responseFormat: true },
+      metadata: { ...entry },
+      create: (opts?: ModelCreateOptions) => this.createModel(id, opts),
+    };
+  }
+}
+
+/**
+ * Create an Anthropic model provider.
+ *
+ * `listModels()` calls `GET /v1/models` on `baseUrl`, which defaults to the
+ * public Anthropic API origin.
+ */
+export function anthropicProvider(opts: ProviderOptions = {}): ModelProvider {
+  return new AnthropicModelProvider(opts);
+}
+
 /**
  * Create an Anthropic-backed `Model`.
  *
@@ -395,18 +494,5 @@ class AnthropicModel implements Model {
  * custom runtimes that provide their own HTTP transport.
  */
 export function anthropic(opts: ProviderOptions = {}): Model {
-  const apiKey = resolveApiKey(opts, 'ANTHROPIC_API_KEY');
-  const client = opts.client != null
-    ? opts.client as unknown as ClientLike
-    : new HttpClient() as unknown as ClientLike;
-
-  return new AnthropicModel(
-    opts.model ?? 'claude-opus-4-8',
-    apiKey,
-    client,
-    opts.baseUrl ?? ANTHROPIC_BASE_URL,
-    opts.headers ?? {},
-    opts.maxTokens ?? DEFAULT_MAX_TOKENS,
-    opts.temperature,
-  );
+  return anthropicProvider(opts).createModel(opts.model ?? 'claude-opus-4-8', opts);
 }
