@@ -124,8 +124,8 @@ fn native_to_ctype(ty: &NativeType) -> CTypeInfo {
         // For Buffer: V8 passes a TypedArray/ArrayBuffer; we extract the backing store ptr.
         // For Pointer: V8 passes an 8-byte ArrayBuffer; we read its contents as a u64 address.
         NativeType::Buffer | NativeType::Pointer => Type::V8Value,
-        // Floats are not fast-eligible — should not reach here
-        NativeType::F32 | NativeType::F64 => Type::Void,
+        // Floats and structs are not fast-eligible — should not reach here.
+        NativeType::F32 | NativeType::F64 | NativeType::Struct(_) => Type::Void,
     };
     CTypeInfo::new(t, Flags::empty())
 }
@@ -272,7 +272,11 @@ unsafe fn fast_dispatch(sym: &FfiSymbol, args: &[u64]) -> u64 {
         NativeType::I32 => r as u32 as i32 as i64 as u64,
         NativeType::U64 | NativeType::USize => r,
         NativeType::I64 | NativeType::ISize => r,
-        NativeType::Pointer | NativeType::Buffer | NativeType::F32 | NativeType::F64 => 0,
+        NativeType::Pointer
+        | NativeType::Buffer
+        | NativeType::F32
+        | NativeType::F64
+        | NativeType::Struct(_) => 0,
     }
 }
 

@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::sync::Arc;
 
 use libffi::middle::Type as FfiType;
 
@@ -23,6 +24,8 @@ pub enum NativeType {
     Pointer,
     /// A JS `ArrayBuffer` / typed array passed as a `void*` to its backing data.
     Buffer,
+    /// A C aggregate passed or returned by value.
+    Struct(Arc<StructLayout>),
 }
 
 impl NativeType {
@@ -65,6 +68,34 @@ impl NativeType {
             Self::F64 => FfiType::f64(),
             // Both pointer and buffer are passed as a C pointer.
             Self::Pointer | Self::Buffer => FfiType::pointer(),
+            Self::Struct(layout) => layout.to_ffi_type(),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Void => 0,
+            Self::Bool | Self::U8 | Self::I8 => 1,
+            Self::U16 | Self::I16 => 2,
+            Self::U32 | Self::I32 | Self::F32 => 4,
+            Self::U64 | Self::I64 | Self::F64 => 8,
+            Self::USize | Self::ISize | Self::Pointer | Self::Buffer => {
+                std::mem::size_of::<usize>()
+            }
+            Self::Struct(layout) => layout.size,
+        }
+    }
+
+    pub fn align(&self) -> usize {
+        match self {
+            Self::Void | Self::Bool | Self::U8 | Self::I8 => 1,
+            Self::U16 | Self::I16 => 2,
+            Self::U32 | Self::I32 | Self::F32 => 4,
+            Self::U64 | Self::I64 | Self::F64 => 8,
+            Self::USize | Self::ISize | Self::Pointer | Self::Buffer => {
+                std::mem::align_of::<usize>()
+            }
+            Self::Struct(layout) => layout.align,
         }
     }
 
@@ -76,14 +107,80 @@ impl NativeType {
     /// Whether this type can be used as a V8 Fast API call parameter.
     /// Excludes floats (different register class) and void.
     pub fn is_fast_param(&self) -> bool {
-        !matches!(self, Self::Void | Self::F32 | Self::F64)
+        !matches!(self, Self::Void | Self::F32 | Self::F64 | Self::Struct(_))
     }
 
     /// Whether this type can be used as a V8 Fast API call return type.
     /// Excludes floats, buffer, and pointer. Pointer returns an ArrayBuffer
     /// which cannot be expressed as a scalar fast-call return value.
     pub fn is_fast_return(&self) -> bool {
-        !matches!(self, Self::Buffer | Self::Pointer | Self::F32 | Self::F64)
+        !matches!(
+            self,
+            Self::Buffer | Self::Pointer | Self::F32 | Self::F64 | Self::Struct(_)
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructLayout {
+    pub fields: Vec<StructField>,
+    pub size: usize,
+    pub align: usize,
+}
+
+impl StructLayout {
+    pub fn field(&self, name: &str) -> Option<&StructField> {
+        self.fields.iter().find(|field| field.name == name)
+    }
+
+    pub fn to_ffi_type(&self) -> FfiType {
+        let mut cursor = 0usize;
+        let mut ffi_fields = Vec::new();
+        for field in &self.fields {
+            if field.offset > cursor {
+                for _ in 0..(field.offset - cursor) {
+                    ffi_fields.push(FfiType::u8());
+                }
+            }
+            if matches!(field.kind, StructFieldKind::Padding) {
+                for _ in 0..field.size {
+                    ffi_fields.push(FfiType::u8());
+                }
+            } else {
+                ffi_fields.push(field.ty.to_ffi_type());
+            }
+            cursor = field.offset.saturating_add(field.size);
+        }
+        if self.size > cursor {
+            for _ in 0..(self.size - cursor) {
+                ffi_fields.push(FfiType::u8());
+            }
+        }
+        FfiType::structure(ffi_fields)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField {
+    pub name: String,
+    pub ty: NativeType,
+    pub offset: usize,
+    pub size: usize,
+    pub align: usize,
+    pub kind: StructFieldKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StructFieldKind {
+    Value,
+    Padding,
+}
+
+pub fn align_to(offset: usize, align: usize) -> usize {
+    if align <= 1 {
+        offset
+    } else {
+        (offset + align - 1) & !(align - 1)
     }
 }
 

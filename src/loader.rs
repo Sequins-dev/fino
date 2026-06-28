@@ -417,6 +417,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     // ai
     source_builtin!("fino:ai/model", "ai/model"),
     source_builtin!("fino:ai/model/anthropic", "ai/model/anthropic"),
+    source_builtin!("fino:ai/model/local", "ai/model/local"),
     source_builtin!("fino:ai/model/openai", "ai/model/openai"),
     source_builtin!("fino:ai/context", "ai/context"),
     source_builtin!("fino:ai/tool", "ai/tool"),
@@ -430,6 +431,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:ai/shared", "ai/shared"),
     source_builtin!("internal:ai/runtime", "ai/runtime-internal"),
     source_builtin!("internal:ai/model/anthropic", "ai/model/anthropic"),
+    source_builtin!("internal:ai/model/local", "ai/model/local"),
     source_builtin!("internal:ai/model/openai", "ai/model/openai"),
     // profiler
     (

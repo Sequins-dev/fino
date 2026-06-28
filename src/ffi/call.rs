@@ -19,7 +19,7 @@ struct AsyncFfiWork {
     cif: Cif,
     code_ptr: CodePtr,
     result_type: NativeType,
-    owned_args: Vec<OwnedScalarArg>,
+    owned_args: Vec<OwnedArg>,
     _store_pins: SmallVec<[v8::SharedRef<v8::BackingStore>; 4]>,
 }
 // SAFETY: Cif / CodePtr are immutable read-only ABI metadata used only on the
@@ -47,6 +47,7 @@ use super::types::{NativeType, NativeValue};
 
 pub struct CallScratch {
     storage: SmallVec<[NativeValue; 8]>,
+    struct_storage: SmallVec<[Vec<u8>; 4]>,
     store_pins: SmallVec<[v8::SharedRef<v8::BackingStore>; 4]>,
 }
 
@@ -54,6 +55,7 @@ impl CallScratch {
     pub fn new() -> Self {
         Self {
             storage: SmallVec::new(),
+            struct_storage: SmallVec::new(),
             store_pins: SmallVec::new(),
         }
     }
@@ -61,6 +63,7 @@ impl CallScratch {
     fn prepare(&mut self, len: usize) {
         self.storage.clear();
         self.storage.resize(len, NativeValue::default());
+        self.struct_storage.clear();
         self.store_pins.clear();
     }
 }
@@ -94,7 +97,13 @@ pub fn ffi_call<'s>(
     scratch.prepare(js_args.len());
 
     for (i, (val, ty)) in js_args.iter().zip(&symbol.param_types).enumerate() {
-        match js_to_native(scope, *val, ty, &mut scratch.store_pins) {
+        match js_to_native(
+            scope,
+            *val,
+            ty,
+            &mut scratch.store_pins,
+            &mut scratch.struct_storage,
+        ) {
             Some(nv) => scratch.storage[i] = nv,
             None => {
                 // js_to_native threw an exception.
@@ -122,6 +131,7 @@ pub fn ffi_call<'s>(
                 NativeType::USize => arg(&val.usize_val),
                 NativeType::ISize => arg(&val.isize_val),
                 NativeType::Pointer | NativeType::Buffer => arg(&val.ptr_val),
+                NativeType::Struct(_) => arg_from_ptr(val.ptr_val as *const u8),
                 NativeType::Void => unreachable!("void is not a valid param type"),
             }
         })
@@ -135,6 +145,7 @@ fn js_to_native<'s>(
     val: v8::Local<'s, v8::Value>,
     ty: &NativeType,
     store_pins: &mut SmallVec<[v8::SharedRef<v8::BackingStore>; 4]>,
+    struct_storage: &mut SmallVec<[Vec<u8>; 4]>,
 ) -> Option<NativeValue> {
     Some(match ty {
         NativeType::Bool => NativeValue {
@@ -182,6 +193,13 @@ fn js_to_native<'s>(
         NativeType::Buffer => NativeValue {
             ptr_val: js_buffer_ptr(scope, val, store_pins)?,
         },
+        NativeType::Struct(layout) => {
+            let bytes = js_struct_bytes(scope, val, layout.size)?;
+            struct_storage.push(bytes);
+            NativeValue {
+                ptr_val: struct_storage.last().unwrap().as_ptr() as *mut c_void,
+            }
+        }
         NativeType::Void => {
             let msg = v8::String::new(scope, "'void' cannot be used as a parameter type")?;
             let exc = v8::Exception::type_error(scope, msg);
@@ -199,13 +217,14 @@ fn js_to_native<'s>(
 /// Buffer params are kept alive by `AsyncFfiWork::_store_pins`; pointer params
 /// are raw addresses copied as integers.
 #[derive(Clone)]
-pub(crate) struct OwnedScalarArg {
-    bytes: [u8; 8],
-    ty: NativeType,
+pub(crate) enum OwnedArg {
+    Scalar { bytes: [u8; 8], ty: NativeType },
+    Struct { bytes: Vec<u8>, ty: NativeType },
 }
 
-impl OwnedScalarArg {
+impl OwnedArg {
     fn from_native(val: NativeValue, ty: &NativeType) -> Self {
+        debug_assert!(!matches!(ty, NativeType::Struct(_)));
         let mut bytes = [0u8; 8];
         unsafe {
             match ty {
@@ -225,20 +244,38 @@ impl OwnedScalarArg {
                 NativeType::Pointer | NativeType::Buffer => {
                     bytes.copy_from_slice(&(val.ptr_val as usize).to_le_bytes());
                 }
+                NativeType::Struct(_) => {}
             }
         }
-        Self {
+        Self::Scalar {
             bytes,
             ty: ty.clone(),
         }
     }
 
+    fn from_struct(bytes: Vec<u8>, ty: &NativeType) -> Self {
+        Self::Struct {
+            bytes,
+            ty: ty.clone(),
+        }
+    }
+
+    fn ty(&self) -> &NativeType {
+        match self {
+            Self::Scalar { ty, .. } | Self::Struct { ty, .. } => ty,
+        }
+    }
+
     fn to_native_value(&self) -> NativeValue {
-        let b = self.bytes;
-        match self.ty {
+        let Self::Scalar { bytes: b, ty } = self else {
+            return NativeValue {
+                ptr_val: std::ptr::null_mut(),
+            };
+        };
+        match ty {
             NativeType::Void => NativeValue { u8_val: 0 },
             NativeType::Pointer | NativeType::Buffer => NativeValue {
-                ptr_val: usize::from_le_bytes(b) as *mut c_void,
+                ptr_val: usize::from_le_bytes(*b) as *mut c_void,
             },
             NativeType::Bool | NativeType::U8 => NativeValue { u8_val: b[0] },
             NativeType::I8 => NativeValue { i8_val: b[0] as i8 },
@@ -255,29 +292,32 @@ impl OwnedScalarArg {
                 i32_val: i32::from_le_bytes([b[0], b[1], b[2], b[3]]),
             },
             NativeType::U64 => NativeValue {
-                u64_val: u64::from_le_bytes(b),
+                u64_val: u64::from_le_bytes(*b),
             },
             NativeType::I64 => NativeValue {
-                i64_val: i64::from_le_bytes(b),
+                i64_val: i64::from_le_bytes(*b),
             },
             NativeType::USize => NativeValue {
-                usize_val: usize::from_le_bytes(b),
+                usize_val: usize::from_le_bytes(*b),
             },
             NativeType::ISize => NativeValue {
-                isize_val: isize::from_le_bytes(b),
+                isize_val: isize::from_le_bytes(*b),
             },
             NativeType::F32 => NativeValue {
                 f32_val: f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
             },
             NativeType::F64 => NativeValue {
-                f64_val: f64::from_le_bytes(b),
+                f64_val: f64::from_le_bytes(*b),
+            },
+            NativeType::Struct(_) => NativeValue {
+                ptr_val: std::ptr::null_mut(),
             },
         }
     }
 }
 
 // SAFETY: OwnedScalarArg contains only primitive bytes — no raw pointers.
-unsafe impl Send for OwnedScalarArg {}
+unsafe impl Send for OwnedArg {}
 
 /// Dispatch an async FFI call. Marshals scalar arguments, submits the call to
 /// the blocking thread pool, and returns a JS Promise that resolves when the
@@ -304,9 +344,18 @@ pub fn ffi_call_async<'s>(
     // Marshal args to owned scalars (no scope needed after this point).
     let mut owned_args = Vec::with_capacity(js_args.len());
     let mut store_pins: SmallVec<[v8::SharedRef<v8::BackingStore>; 4]> = SmallVec::new();
+    let mut struct_storage: SmallVec<[Vec<u8>; 4]> = SmallVec::new();
     for (val, ty) in js_args.iter().zip(&symbol.param_types) {
-        let nv = js_to_native(scope, *val, ty, &mut store_pins)?;
-        owned_args.push(OwnedScalarArg::from_native(nv, ty));
+        if matches!(ty, NativeType::Struct(_)) {
+            let NativeType::Struct(layout) = ty else {
+                unreachable!()
+            };
+            let bytes = js_struct_bytes(scope, *val, layout.size)?;
+            owned_args.push(OwnedArg::from_struct(bytes, ty));
+        } else {
+            let nv = js_to_native(scope, *val, ty, &mut store_pins, &mut struct_storage)?;
+            owned_args.push(OwnedArg::from_native(nv, ty));
+        }
     }
     // Create the JS Promise resolver.
     let resolver = v8::PromiseResolver::new(scope)?;
@@ -360,7 +409,7 @@ fn call_scalar_sync(
     cif: &Cif,
     code_ptr: CodePtr,
     result_type: &NativeType,
-    owned_args: &[OwnedScalarArg],
+    owned_args: &[OwnedArg],
 ) -> Result<crate::async_rt::RawFfiResult, String> {
     // Rebuild NativeValues from owned scalars.
     let native_vals: Vec<NativeValue> = owned_args.iter().map(|a| a.to_native_value()).collect();
@@ -368,9 +417,9 @@ fn call_scalar_sync(
     // Build libffi args.
     let ffi_args: Vec<Arg<'_>> = native_vals
         .iter()
-        .zip(owned_args.iter().map(|a| &a.ty))
+        .zip(owned_args.iter())
         .map(|(val, ty)| unsafe {
-            match ty {
+            match ty.ty() {
                 NativeType::Bool | NativeType::U8 => arg(&val.u8_val),
                 NativeType::I8 => arg(&val.i8_val),
                 NativeType::U16 => arg(&val.u16_val),
@@ -383,10 +432,12 @@ fn call_scalar_sync(
                 NativeType::F64 => arg(&val.f64_val),
                 NativeType::USize => arg(&val.usize_val),
                 NativeType::ISize => arg(&val.isize_val),
-                NativeType::Pointer => arg(&val.ptr_val),
-                NativeType::Buffer | NativeType::Void => {
-                    arg(&val.u8_val) // unreachable: buffer blocked at dlopen, void not a param
-                }
+                NativeType::Pointer | NativeType::Buffer => arg(&val.ptr_val),
+                NativeType::Struct(_) => match ty {
+                    OwnedArg::Struct { bytes, .. } => arg_from_ptr(bytes.as_ptr()),
+                    _ => unreachable!("struct args are owned as struct bytes"),
+                },
+                NativeType::Void => arg(&val.u8_val), // unreachable: void is not a param
             }
         })
         .collect();
@@ -445,8 +496,25 @@ fn call_scalar_sync(
                 let v: f64 = cif.call(code_ptr, &ffi_args);
                 bytes.copy_from_slice(&v.to_le_bytes());
             }
-            NativeType::Pointer | NativeType::Buffer => {
-                return Err("pointer/buffer return type not supported for async FFI".to_string());
+            NativeType::Pointer => {
+                let v: *mut c_void = cif.call(code_ptr, &ffi_args);
+                bytes.copy_from_slice(&(v as usize).to_le_bytes());
+            }
+            NativeType::Buffer => {
+                return Err("'buffer' cannot be used as an async FFI return type".to_string());
+            }
+            NativeType::Struct(layout) => {
+                let mut out = vec![0u8; layout.size];
+                if layout.size > 0 {
+                    cif.call_return_into(code_ptr, &ffi_args, ret_from_mut_ptr(out.as_mut_ptr()));
+                } else {
+                    cif.call_return_into(code_ptr, &ffi_args, Ret::void());
+                }
+                return Ok(crate::async_rt::RawFfiResult {
+                    result_type: result_type.clone(),
+                    bytes,
+                    aggregate: Some(out),
+                });
             }
         }
     }
@@ -454,6 +522,7 @@ fn call_scalar_sync(
     Ok(crate::async_rt::RawFfiResult {
         result_type: result_type.clone(),
         bytes,
+        aggregate: None,
     })
 }
 
@@ -478,6 +547,14 @@ mod tests {
         scratch.prepare(1);
         assert!(scratch.store_pins.is_empty());
     }
+}
+
+unsafe fn arg_from_ptr<'a>(ptr: *const u8) -> Arg<'a> {
+    unsafe { arg(&*ptr) }
+}
+
+unsafe fn ret_from_mut_ptr<'a>(ptr: *mut u8) -> Ret<'a> {
+    unsafe { Ret::new(&mut *ptr) }
 }
 
 /// Get a raw pointer to the backing bytes of an `ArrayBuffer` or TypedArray.
@@ -522,6 +599,46 @@ fn js_buffer_ptr<'s>(
     };
     pins.push(bs);
     Some(ptr)
+}
+
+fn js_struct_bytes<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    val: v8::Local<'s, v8::Value>,
+    size: usize,
+) -> Option<Vec<u8>> {
+    let (base, available): (*const u8, usize) =
+        if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
+            let bs = ab.get_backing_store();
+            let p = bs
+                .data()
+                .map(|d| d.as_ptr() as *const u8)
+                .unwrap_or(std::ptr::null());
+            (p, bs.byte_length())
+        } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(val) {
+            (abv.data() as *const u8, abv.byte_length())
+        } else {
+            let msg = v8::String::new(
+                scope,
+                "Expected an ArrayBuffer or TypedArray for struct argument",
+            )?;
+            let exc = v8::Exception::type_error(scope, msg);
+            scope.throw_exception(exc);
+            return None;
+        };
+    if available < size {
+        let msg = v8::String::new(
+            scope,
+            "Struct argument buffer is smaller than the declared struct size",
+        )?;
+        let exc = v8::Exception::type_error(scope, msg);
+        scope.throw_exception(exc);
+        return None;
+    }
+    let mut out = vec![0u8; size];
+    if size > 0 && !base.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(base, out.as_mut_ptr(), size) };
+    }
+    Some(out)
 }
 
 /// Convert a V8 number or BigInt to i128.
@@ -603,6 +720,29 @@ unsafe fn dispatch_and_convert<'s>(
         NativeType::Pointer => {
             let v: *mut c_void = unsafe { symbol.cif.call(cp, ffi_args) };
             pointer::into_js(scope, v)
+        }
+        NativeType::Struct(layout) => {
+            let mut out = vec![0u8; layout.size];
+            if layout.size > 0 {
+                unsafe {
+                    symbol
+                        .cif
+                        .call_return_into(cp, ffi_args, ret_from_mut_ptr(out.as_mut_ptr()))
+                };
+            } else {
+                unsafe { symbol.cif.call_return_into(cp, ffi_args, Ret::void()) };
+            }
+            let ab = v8::ArrayBuffer::new(scope, layout.size);
+            if let Some(dst) = ab.get_backing_store().data() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        out.as_ptr(),
+                        dst.as_ptr() as *mut u8,
+                        layout.size,
+                    );
+                }
+            }
+            ab.into()
         }
         NativeType::Buffer => {
             let msg = v8::String::new(

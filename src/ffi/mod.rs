@@ -13,15 +13,16 @@ use std::rc::Rc;
 use ::v8;
 
 use library::{DynLib, FfiSymbol};
-use types::NativeType;
+use types::{NativeType, StructField, StructFieldKind, StructLayout, align_to};
 
 use call::{CallScratch, ffi_call};
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["dlopen", "Pointer", "FfiCallback"]
-        .iter()
-        .map(|n| v8::String::new(scope, n).unwrap())
-        .collect();
+    let export_names: Vec<v8::Local<v8::String>> =
+        ["dlopen", "Pointer", "FfiCallback", "structType"]
+            .iter()
+            .map(|n| v8::String::new(scope, n).unwrap())
+            .collect();
     let name = v8::String::new(scope, "fino:ffi").unwrap();
     v8::Module::create_synthetic_module(scope, name, &export_names, ffi_eval)
 }
@@ -45,6 +46,11 @@ fn ffi_eval<'a>(
     let cb_fn = cb_tmpl.get_function(scope)?;
     let cb_key = v8::String::new(scope, "FfiCallback")?;
     module.set_synthetic_module_export(scope, cb_key, cb_fn.into())?;
+
+    let struct_tmpl = v8::FunctionTemplate::new(scope, struct_type_callback);
+    let struct_fn = struct_tmpl.get_function(scope)?;
+    let struct_key = v8::String::new(scope, "structType")?;
+    module.set_synthetic_module_export(scope, struct_key, struct_fn.into())?;
 
     Some(v8::undefined(scope).into())
 }
@@ -371,6 +377,17 @@ fn ffi_callback_constructor(
             return;
         }
     };
+    if param_types
+        .iter()
+        .any(|ty| matches!(ty, NativeType::Struct(_)))
+        || matches!(result_type, NativeType::Struct(_))
+    {
+        throw_error(
+            scope,
+            "FfiCallback: struct parameters and returns are not supported yet",
+        );
+        return;
+    }
 
     let func_local = match v8::Local::<v8::Function>::try_from(args.get(1)) {
         Ok(f) => f,
@@ -469,11 +486,511 @@ fn parse_native_type(
     scope: &mut v8::HandleScope,
     val: v8::Local<v8::Value>,
 ) -> Result<NativeType, String> {
+    if let Some(layout) = struct_layout_from_value(scope, val) {
+        return Ok(NativeType::Struct(layout));
+    }
     let s = val
         .to_string(scope)
         .map(|s| s.to_rust_string_lossy(scope))
         .ok_or_else(|| "expected a string type name".to_string())?;
     NativeType::from_str(&s)
+}
+
+// ---------------------------------------------------------------------------
+// structType
+// ---------------------------------------------------------------------------
+
+struct StructTypeData {
+    layout: std::sync::Arc<StructLayout>,
+}
+
+fn struct_type_marker<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::String> {
+    v8::String::new(scope, "__finoFfiStructType").unwrap()
+}
+
+fn struct_layout_from_value(
+    scope: &mut v8::HandleScope,
+    val: v8::Local<v8::Value>,
+) -> Option<std::sync::Arc<StructLayout>> {
+    let obj = v8::Local::<v8::Object>::try_from(val).ok()?;
+    let marker = struct_type_marker(scope);
+    let ext_val = obj.get(scope, marker.into())?;
+    let ext = v8::Local::<v8::External>::try_from(ext_val).ok()?;
+    let data = unsafe { &*(ext.value() as *const StructTypeData) };
+    Some(std::sync::Arc::clone(&data.layout))
+}
+
+fn struct_type_callback(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let fields = match parse_struct_fields(scope, args.get(0), args.get(1)) {
+        Ok(layout) => layout,
+        Err(e) => {
+            throw_error(scope, &format!("structType: {e}"));
+            return;
+        }
+    };
+    let layout = std::sync::Arc::new(fields);
+    let data = Box::new(StructTypeData {
+        layout: std::sync::Arc::clone(&layout),
+    });
+    let data_ptr = Box::into_raw(data);
+    let ext = v8::External::new(scope, data_ptr as *mut std::ffi::c_void);
+
+    let obj = v8::Object::new(scope);
+    let marker = struct_type_marker(scope);
+    obj.set(scope, marker.into(), ext.into());
+
+    set_number_prop(scope, obj, "size", layout.size as f64);
+    set_number_prop(scope, obj, "align", layout.align as f64);
+    set_fields_prop(scope, obj, &layout);
+    set_struct_method(scope, obj, "alloc", struct_alloc);
+    set_struct_method(scope, obj, "get", struct_get);
+    set_struct_method(scope, obj, "set", struct_set);
+    set_struct_method(scope, obj, "offsetOf", struct_offset_of);
+    rv.set(obj.into());
+}
+
+fn set_number_prop(
+    scope: &mut v8::HandleScope,
+    obj: v8::Local<v8::Object>,
+    name: &str,
+    value: f64,
+) {
+    let key = v8::String::new(scope, name).unwrap();
+    let value = v8::Number::new(scope, value);
+    obj.set(scope, key.into(), value.into());
+}
+
+fn set_fields_prop(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, layout: &StructLayout) {
+    let arr = v8::Array::new(scope, layout.fields.len() as i32);
+    for (i, field) in layout.fields.iter().enumerate() {
+        let f = v8::Object::new(scope);
+        let name_key = v8::String::new(scope, "name").unwrap();
+        let name = v8::String::new(scope, &field.name).unwrap();
+        f.set(scope, name_key.into(), name.into());
+        set_number_prop(scope, f, "offset", field.offset as f64);
+        set_number_prop(scope, f, "size", field.size as f64);
+        arr.set_index(scope, i as u32, f.into());
+    }
+    let key = v8::String::new(scope, "fields").unwrap();
+    obj.set(scope, key.into(), arr.into());
+}
+
+fn set_struct_method(
+    scope: &mut v8::HandleScope,
+    obj: v8::Local<v8::Object>,
+    name: &str,
+    cb: impl v8::MapFnTo<v8::FunctionCallback>,
+) {
+    let tmpl = v8::FunctionTemplate::new(scope, cb);
+    let func = tmpl.get_function(scope).expect("struct method");
+    let key = v8::String::new(scope, name).unwrap();
+    obj.set(scope, key.into(), func.into());
+}
+
+fn parse_struct_fields(
+    scope: &mut v8::HandleScope,
+    fields_val: v8::Local<v8::Value>,
+    opts_val: v8::Local<v8::Value>,
+) -> Result<StructLayout, String> {
+    let arr = v8::Local::<v8::Array>::try_from(fields_val)
+        .map_err(|_| "fields must be an array".to_string())?;
+    let mut fields = Vec::new();
+    let mut offset = 0usize;
+    let mut max_align = 1usize;
+    for i in 0..arr.length() {
+        let val = arr
+            .get_index(scope, i)
+            .ok_or_else(|| format!("field {i} is missing"))?;
+        let field =
+            parse_struct_field(scope, val, &mut offset).map_err(|e| format!("field {i}: {e}"))?;
+        max_align = max_align.max(field.align);
+        fields.push(field);
+    }
+
+    let (size_override, align_override) = parse_struct_opts(scope, opts_val)?;
+    let align = align_override.unwrap_or(max_align);
+    let mut size = align_to(offset, align);
+    if let Some(explicit) = size_override {
+        if explicit < offset {
+            return Err("opts.size is smaller than the last field".to_string());
+        }
+        size = explicit;
+    }
+    Ok(StructLayout {
+        fields,
+        size,
+        align,
+    })
+}
+
+fn parse_struct_opts(
+    scope: &mut v8::HandleScope,
+    opts_val: v8::Local<v8::Value>,
+) -> Result<(Option<usize>, Option<usize>), String> {
+    if opts_val.is_undefined() || opts_val.is_null() {
+        return Ok((None, None));
+    }
+    let obj = v8::Local::<v8::Object>::try_from(opts_val)
+        .map_err(|_| "opts must be an object".to_string())?;
+    Ok((
+        get_usize_prop(scope, obj, "size")?,
+        get_usize_prop(scope, obj, "align")?,
+    ))
+}
+
+fn parse_struct_field<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    val: v8::Local<'s, v8::Value>,
+    next_offset: &mut usize,
+) -> Result<StructField, String> {
+    let (name, ty_val, explicit_offset, padding_size) =
+        if let Ok(tuple) = v8::Local::<v8::Array>::try_from(val) {
+            if tuple.length() != 2 {
+                return Err("tuple fields must be [name, type]".to_string());
+            }
+            let name = tuple
+                .get_index(scope, 0)
+                .and_then(|v| v.to_string(scope))
+                .map(|s| s.to_rust_string_lossy(scope))
+                .ok_or_else(|| "tuple name must be a string".to_string())?;
+            let ty = tuple
+                .get_index(scope, 1)
+                .ok_or_else(|| "tuple type is missing".to_string())?;
+            (name, ty, None, None)
+        } else {
+            let obj = v8::Local::<v8::Object>::try_from(val)
+                .map_err(|_| "field must be a tuple or object".to_string())?;
+            let name = get_string_prop(scope, obj, "name")?
+                .ok_or_else(|| "object field requires name".to_string())?;
+            let ty = get_required_prop(scope, obj, "type")?;
+            let explicit_offset = get_usize_prop(scope, obj, "offset")?;
+            let padding_size = get_usize_prop(scope, obj, "size")?;
+            (name, ty, explicit_offset, padding_size)
+        };
+
+    let ty_name = type_name(scope, ty_val);
+    let kind = if ty_name == "bytes" {
+        StructFieldKind::Padding
+    } else {
+        StructFieldKind::Value
+    };
+    let (size, align, ty) = if kind == StructFieldKind::Padding {
+        let size = padding_size.ok_or_else(|| "'bytes' padding requires size".to_string())?;
+        (size, 1, NativeType::U8)
+    } else {
+        let ty = parse_native_type(scope, ty_val)?;
+        if matches!(ty, NativeType::Void) {
+            return Err("'void' cannot be used as a struct field".to_string());
+        }
+        (ty.size(), ty.align(), ty)
+    };
+    let offset = explicit_offset.unwrap_or_else(|| align_to(*next_offset, align));
+    if offset < *next_offset {
+        return Err("explicit offset overlaps a previous field".to_string());
+    }
+    *next_offset = offset + size;
+    Ok(StructField {
+        name,
+        ty,
+        offset,
+        size,
+        align,
+        kind,
+    })
+}
+
+fn type_name(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> String {
+    val.to_string(scope)
+        .map(|s| s.to_rust_string_lossy(scope))
+        .unwrap_or_default()
+}
+
+fn get_required_prop<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    obj: v8::Local<'s, v8::Object>,
+    name: &str,
+) -> Result<v8::Local<'s, v8::Value>, String> {
+    let key = v8::String::new(scope, name).unwrap();
+    obj.get(scope, key.into())
+        .ok_or_else(|| format!("missing property {name}"))
+}
+
+fn get_string_prop(
+    scope: &mut v8::HandleScope,
+    obj: v8::Local<v8::Object>,
+    name: &str,
+) -> Result<Option<String>, String> {
+    let key = v8::String::new(scope, name).unwrap();
+    let val = match obj.get(scope, key.into()) {
+        Some(v) if !v.is_undefined() && !v.is_null() => v,
+        _ => return Ok(None),
+    };
+    val.to_string(scope)
+        .map(|s| Some(s.to_rust_string_lossy(scope)))
+        .ok_or_else(|| format!("{name} must be a string"))
+}
+
+fn get_usize_prop(
+    scope: &mut v8::HandleScope,
+    obj: v8::Local<v8::Object>,
+    name: &str,
+) -> Result<Option<usize>, String> {
+    let key = v8::String::new(scope, name).unwrap();
+    let val = match obj.get(scope, key.into()) {
+        Some(v) if !v.is_undefined() && !v.is_null() => v,
+        _ => return Ok(None),
+    };
+    let n = val
+        .integer_value(scope)
+        .ok_or_else(|| format!("{name} must be an integer"))?;
+    if n < 0 {
+        return Err(format!("{name} must be non-negative"));
+    }
+    Ok(Some(n as usize))
+}
+
+fn struct_data_from_this<'a, 's>(
+    scope: &mut v8::HandleScope<'s>,
+    this: v8::Local<'s, v8::Object>,
+) -> Option<&'a StructTypeData> {
+    let marker = struct_type_marker(scope);
+    let ext_val = this.get(scope, marker.into())?;
+    let ext = v8::Local::<v8::External>::try_from(ext_val).ok()?;
+    Some(unsafe { &*(ext.value() as *const StructTypeData) })
+}
+
+fn struct_alloc<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(data) = struct_data_from_this(scope, args.this()) else {
+        return;
+    };
+    rv.set(v8::ArrayBuffer::new(scope, data.layout.size).into());
+}
+
+fn struct_offset_of<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(data) = struct_data_from_this(scope, args.this()) else {
+        return;
+    };
+    let Some(name) = args.get(0).to_string(scope) else {
+        throw_error(scope, "offsetOf: expected field name");
+        return;
+    };
+    let name = name.to_rust_string_lossy(scope);
+    let Some(field) = data.layout.field(&name) else {
+        throw_error(scope, &format!("offsetOf: unknown field '{name}'"));
+        return;
+    };
+    rv.set(v8::Integer::new_from_unsigned(scope, field.offset as u32).into());
+}
+
+fn struct_get<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    args: v8::FunctionCallbackArguments<'s>,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(data) = struct_data_from_this(scope, args.this()) else {
+        return;
+    };
+    let Some((base, available, _pin)) = js_buffer_bytes(scope, args.get(0)) else {
+        return;
+    };
+    let Some(name) = args.get(1).to_string(scope) else {
+        throw_error(scope, "get: expected field name");
+        return;
+    };
+    let name = name.to_rust_string_lossy(scope);
+    let Some(field) = data.layout.field(&name) else {
+        throw_error(scope, &format!("get: unknown field '{name}'"));
+        return;
+    };
+    if available < field.offset + field.size {
+        throw_error(scope, "get: buffer is too small for struct field");
+        return;
+    }
+    unsafe {
+        let ptr = base.add(field.offset);
+        match &field.ty {
+            NativeType::Bool => rv.set(v8::Boolean::new(scope, *ptr != 0).into()),
+            NativeType::U8 => rv.set(v8::Integer::new_from_unsigned(scope, *ptr as u32).into()),
+            NativeType::I8 => rv.set(v8::Integer::new(scope, *(ptr as *const i8) as i32).into()),
+            NativeType::U16 => rv.set(
+                v8::Integer::new_from_unsigned(
+                    scope,
+                    std::ptr::read_unaligned(ptr as *const u16) as u32,
+                )
+                .into(),
+            ),
+            NativeType::I16 => rv.set(
+                v8::Integer::new(scope, std::ptr::read_unaligned(ptr as *const i16) as i32).into(),
+            ),
+            NativeType::U32 => rv.set(
+                v8::Integer::new_from_unsigned(scope, std::ptr::read_unaligned(ptr as *const u32))
+                    .into(),
+            ),
+            NativeType::I32 => {
+                rv.set(v8::Integer::new(scope, std::ptr::read_unaligned(ptr as *const i32)).into())
+            }
+            NativeType::U64 => rv.set(
+                v8::BigInt::new_from_u64(scope, std::ptr::read_unaligned(ptr as *const u64)).into(),
+            ),
+            NativeType::I64 => rv.set(
+                v8::BigInt::new_from_i64(scope, std::ptr::read_unaligned(ptr as *const i64)).into(),
+            ),
+            NativeType::USize => rv.set(
+                v8::BigInt::new_from_u64(
+                    scope,
+                    std::ptr::read_unaligned(ptr as *const usize) as u64,
+                )
+                .into(),
+            ),
+            NativeType::ISize => rv.set(
+                v8::BigInt::new_from_i64(
+                    scope,
+                    std::ptr::read_unaligned(ptr as *const isize) as i64,
+                )
+                .into(),
+            ),
+            NativeType::F32 => rv.set(
+                v8::Number::new(scope, std::ptr::read_unaligned(ptr as *const f32) as f64).into(),
+            ),
+            NativeType::F64 => {
+                rv.set(v8::Number::new(scope, std::ptr::read_unaligned(ptr as *const f64)).into())
+            }
+            NativeType::Pointer | NativeType::Buffer => rv.set(pointer::into_js(
+                scope,
+                std::ptr::read_unaligned(ptr as *const *mut std::ffi::c_void),
+            )),
+            NativeType::Struct(layout) => {
+                let ab = v8::ArrayBuffer::new(scope, layout.size);
+                if let Some(dst) = ab.get_backing_store().data() {
+                    std::ptr::copy_nonoverlapping(ptr, dst.as_ptr() as *mut u8, layout.size);
+                }
+                rv.set(ab.into());
+            }
+            NativeType::Void => rv.set(v8::undefined(scope).into()),
+        }
+    }
+}
+
+fn struct_set<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    let Some(data) = struct_data_from_this(scope, args.this()) else {
+        return;
+    };
+    let Some((base, available, _pin)) = js_buffer_bytes(scope, args.get(0)) else {
+        return;
+    };
+    let Some(name) = args.get(1).to_string(scope) else {
+        throw_error(scope, "set: expected field name");
+        return;
+    };
+    let name = name.to_rust_string_lossy(scope);
+    let Some(field) = data.layout.field(&name) else {
+        throw_error(scope, &format!("set: unknown field '{name}'"));
+        return;
+    };
+    if available < field.offset + field.size {
+        throw_error(scope, "set: buffer is too small for struct field");
+        return;
+    }
+    let value = args.get(2);
+    unsafe {
+        let ptr = base.add(field.offset);
+        match &field.ty {
+            NativeType::Bool => *ptr = value.boolean_value(scope) as u8,
+            NativeType::U8 => *ptr = value.integer_value(scope).unwrap_or(0) as u8,
+            NativeType::I8 => *(ptr as *mut i8) = value.integer_value(scope).unwrap_or(0) as i8,
+            NativeType::U16 => std::ptr::write_unaligned(
+                ptr as *mut u16,
+                value.integer_value(scope).unwrap_or(0) as u16,
+            ),
+            NativeType::I16 => std::ptr::write_unaligned(
+                ptr as *mut i16,
+                value.integer_value(scope).unwrap_or(0) as i16,
+            ),
+            NativeType::U32 => std::ptr::write_unaligned(
+                ptr as *mut u32,
+                value.integer_value(scope).unwrap_or(0) as u32,
+            ),
+            NativeType::I32 => std::ptr::write_unaligned(
+                ptr as *mut i32,
+                value.integer_value(scope).unwrap_or(0) as i32,
+            ),
+            NativeType::U64 => std::ptr::write_unaligned(
+                ptr as *mut u64,
+                value.integer_value(scope).unwrap_or(0) as u64,
+            ),
+            NativeType::I64 => {
+                std::ptr::write_unaligned(ptr as *mut i64, value.integer_value(scope).unwrap_or(0))
+            }
+            NativeType::USize => std::ptr::write_unaligned(
+                ptr as *mut usize,
+                value.integer_value(scope).unwrap_or(0) as usize,
+            ),
+            NativeType::ISize => std::ptr::write_unaligned(
+                ptr as *mut isize,
+                value.integer_value(scope).unwrap_or(0) as isize,
+            ),
+            NativeType::F32 => std::ptr::write_unaligned(
+                ptr as *mut f32,
+                value.number_value(scope).unwrap_or(0.0) as f32,
+            ),
+            NativeType::F64 => {
+                std::ptr::write_unaligned(ptr as *mut f64, value.number_value(scope).unwrap_or(0.0))
+            }
+            NativeType::Pointer | NativeType::Buffer => std::ptr::write_unaligned(
+                ptr as *mut *mut std::ffi::c_void,
+                pointer::from_js(scope, value).unwrap_or(std::ptr::null_mut()),
+            ),
+            NativeType::Struct(layout) => {
+                let Some((src, src_len, _src_pin)) = js_buffer_bytes(scope, value) else {
+                    return;
+                };
+                if src_len < layout.size {
+                    throw_error(scope, "set: nested struct buffer is too small");
+                    return;
+                }
+                std::ptr::copy_nonoverlapping(src, ptr, layout.size);
+            }
+            NativeType::Void => {}
+        }
+    }
+}
+
+fn js_buffer_bytes<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    val: v8::Local<'s, v8::Value>,
+) -> Option<(*mut u8, usize, v8::SharedRef<v8::BackingStore>)> {
+    let (ab, offset, len) = if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
+        let len = ab.byte_length();
+        (ab, 0, len)
+    } else if let Ok(view) = v8::Local::<v8::ArrayBufferView>::try_from(val) {
+        let len = view.byte_length();
+        (view.buffer(scope)?, view.byte_offset(), len)
+    } else {
+        throw_error(scope, "expected an ArrayBuffer or TypedArray");
+        return None;
+    };
+    let bs = ab.get_backing_store();
+    let ptr = bs
+        .data()
+        .map(|p| unsafe { (p.as_ptr() as *mut u8).add(offset) })
+        .unwrap_or(std::ptr::null_mut());
+    Some((ptr, len, bs))
 }
 
 fn throw_error(scope: &mut v8::HandleScope, msg: &str) {

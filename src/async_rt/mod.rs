@@ -46,6 +46,8 @@ pub struct RawFfiResult {
     /// Raw 8-byte return value. For types smaller than 8 bytes only the
     /// low bytes are used; for pointer types this holds a `usize`.
     pub bytes: [u8; 8],
+    /// Raw aggregate return bytes for by-value struct results.
+    pub aggregate: Option<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -384,9 +386,27 @@ fn raw_to_v8<'s>(
             let v = f64::from_le_bytes(b);
             v8::Number::new(scope, v).into()
         }
-        // Pointer / Buffer not supported as async return types.
-        NativeType::Pointer | NativeType::Buffer => {
-            eprintln!("fino async_rt: pointer/buffer return type not supported for async FFI");
+        NativeType::Struct(_) => {
+            let bytes = raw.aggregate.as_deref().unwrap_or(&[]);
+            let ab = v8::ArrayBuffer::new(scope, bytes.len());
+            if let Some(dst) = ab.get_backing_store().data() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        bytes.as_ptr(),
+                        dst.as_ptr() as *mut u8,
+                        bytes.len(),
+                    );
+                }
+            }
+            ab.into()
+        }
+        NativeType::Pointer => {
+            let v = usize::from_le_bytes(b) as *mut std::ffi::c_void;
+            crate::ffi::pointer::into_js(scope, v)
+        }
+        // Buffer not supported as an async return type.
+        NativeType::Buffer => {
+            eprintln!("fino async_rt: buffer return type not supported for async FFI");
             v8::undefined(scope).into()
         }
     })

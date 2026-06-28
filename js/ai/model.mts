@@ -4,7 +4,8 @@
  * This module defines the narrow contract that the rest of `fino:ai` builds
  * on. Providers adapt remote APIs into `Model`, agents consume `Model` without
  * provider-specific branches, tools use the shared message and content-part
- * shapes, and evals can run against any compatible implementation.
+ * shapes, and evals can run against any compatible implementation, including
+ * optional local llama.cpp models.
  *
  * ## Design
  *
@@ -12,8 +13,9 @@
  * emit normalized `StreamEvent` values for text, tool-call deltas, usage, stop
  * reasons, and errors; `assembleResult()` folds those events into the same
  * `GenerateResult` shape returned by `Model.generate()`. Message content parts
- * are provider-neutral and are translated by `fino:ai/model/openai` and
- * `fino:ai/model/anthropic` into each provider's wire format.
+ * are provider-neutral and are translated by `fino:ai/model/openai`,
+ * `fino:ai/model/anthropic`, and `fino:ai/model/local` into each provider's
+ * native format.
  *
  * This module does not hide provider capabilities. Adapters expose `id`,
  * `provider`, and optional `capabilities` so higher layers can make explicit
@@ -29,7 +31,7 @@
  *   openaiProvider({ baseUrl: 'https://api.openai.com/v1' }),
  * ]);
  * const [info] = await registry.list();
- * const model = info.create({ temperature: 0.2 });
+ * const model = await info.create({ temperature: 0.2 });
  * const stream = model.stream({
  *   messages: [{ role: 'user', content: 'Say hello in one sentence.' }],
  * });
@@ -52,6 +54,13 @@ import {
   openai as openaiFactory,
   openaiProvider as createOpenAIProvider,
 } from 'internal:ai/model/openai';
+import {
+  hasLlamaCpp as localHasLlamaCpp,
+  local as localFactory,
+  localProvider as createLocalProvider,
+  LocalModelLibraryError as SharedLocalModelLibraryError,
+  LocalModelUnsupportedError as SharedLocalModelUnsupportedError,
+} from 'internal:ai/model/local';
 
 /**
  * Chat message role understood by all providers.
@@ -306,8 +315,11 @@ export interface ModelInfo {
   readonly metadata?: Record<string, unknown>;
   /**
    * Construct a `Model` for this discovered model id.
+   *
+   * Remote providers usually return synchronously. Local providers may return a
+   * promise because resolving a model can involve filesystem or cache work.
    */
-  create(opts?: ModelCreateOptions): Model;
+  create(opts?: ModelCreateOptions): Model | Promise<Model>;
 }
 
 /**
@@ -326,7 +338,7 @@ export interface ModelProvider {
   /**
    * Construct a model by provider model id.
    */
-  createModel(id: string, opts?: ModelCreateOptions): Model;
+  createModel(id: string, opts?: ModelCreateOptions): Model | Promise<Model>;
 }
 
 /**
@@ -354,6 +366,13 @@ export interface ProviderOptions {
   temperature?: number;
   dimensions?: number;
 }
+
+export type {
+  LocalModelOptions,
+  LocalProviderOptions,
+  LocalModelSource,
+  LocalModelProviderEntry,
+} from 'internal:ai/model/local';
 
 /**
  * Registry for discovering and constructing provider-neutral models.
@@ -485,3 +504,42 @@ export function openai(opts: ProviderOptions = {}): Model {
 export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
   return createOpenAIProvider(opts);
 }
+
+/**
+ * Whether the default llama.cpp shim was found when this module was evaluated.
+ *
+ * This is a capability gate for optional local model support. It reflects only
+ * default lookup paths such as `FINO_LLAMA_LIBRARY`; callers can still pass an
+ * explicit `libraryPath` to `local()`.
+ */
+export const hasLlamaCpp = localHasLlamaCpp;
+
+/**
+ * Error thrown when local llama.cpp support is requested but no usable shim is
+ * available.
+ */
+export const LocalModelLibraryError = SharedLocalModelLibraryError;
+
+/**
+ * Error thrown for local model request features that the llama.cpp adapter does
+ * not implement.
+ */
+export const LocalModelUnsupportedError = SharedLocalModelUnsupportedError;
+
+/**
+ * Create a local llama.cpp-backed `Model`.
+ *
+ * The model source can be a local GGUF path or an explicit Hugging Face GGUF
+ * file. Construction is async because Hugging Face sources may need to be
+ * downloaded into the local cache before llama.cpp opens them.
+ */
+export const local = localFactory;
+
+/**
+ * Create a local provider for configured GGUF models.
+ *
+ * Local providers do not discover remote model catalogs. `listModels()` returns
+ * the configured entries so registries can present local and remote models
+ * through one interface.
+ */
+export const localProvider = createLocalProvider;

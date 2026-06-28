@@ -396,6 +396,7 @@ pub unsafe fn read_c_arg(arg_ptr: *const c_void, ty: &NativeType) -> SendArg {
                 let ptr_val = *(arg_ptr as *const *const c_void);
                 SendArg::Pointer(ptr_val as usize)
             }
+            NativeType::Struct(_) => SendArg::Integer(0),
         }
     }
 }
@@ -458,6 +459,7 @@ pub unsafe fn write_c_result(
                 };
                 *(result_ptr as *mut usize) = ptr;
             }
+            NativeType::Struct(_) => {}
         }
     }
 }
