@@ -1,9 +1,38 @@
 /**
- * OpenAI model provider adapter.
+ * fino:ai/model/openai — OpenAI provider adapter for the shared `Model` interface.
  *
- * `openai()` returns a provider-neutral `Model` backed by the OpenAI chat API.
- * It handles Fino message parts, tool calls, streaming events, embeddings, and
- * native JSON schema response formats when requested by the agent.
+ * OpenAI API reference: https://platform.openai.com/docs/api-reference
+ *
+ * `openai()` returns a provider-neutral `Model` backed by OpenAI chat
+ * completions and embeddings. It translates Fino message parts into OpenAI
+ * content blocks, maps streamed chunks into `StreamEvent` values, normalizes
+ * usage and stop reasons, and exposes native JSON Schema response-format
+ * support through model capabilities.
+ *
+ * ## Defaults and limits
+ *
+ * `apiKey` defaults to `OPENAI_API_KEY`, `baseUrl` defaults to the public
+ * OpenAI API, and `model` defaults to `gpt-4o`. The adapter uses
+ * `text-embedding-3-small` for `embed()` and returns embeddings in input order
+ * even when the provider response is unordered. Provider HTTP failures throw
+ * `ModelError` with the response status and body.
+ *
+ * Pass a custom `client` for tests, proxies, or runtimes that need their own
+ * HTTP transport. This adapter does not retry; retry and fallback policy belong
+ * to `fino:ai/agent`.
+ *
+ * ```ts no_run
+ * import { agent } from 'fino:ai/agent';
+ * import { openai } from 'fino:ai/model/openai';
+ *
+ * const bot = agent({
+ *   model: openai({ model: 'gpt-4o', temperature: 0.2 }),
+ *   instructions: 'Answer with one concise paragraph.',
+ * });
+ *
+ * const result = await bot.generate('Explain durable agent sessions.');
+ * console.log(result.text);
+ * ```
  */
 
 import type {

@@ -1,10 +1,34 @@
 /**
- * Lightweight evaluation harness for AI workflows.
+ * fino:ai/eval — evaluation cases, scorers, and reporters for AI behavior.
  *
- * `evaluate()` registers test cases with the Fino test runner and records
- * scorer output. Built-in scorers cover exact/contains/schema checks and
- * model-assisted judging while reporters provide integration points for
- * telemetry or custom result sinks.
+ * This module runs AI evaluations inside the Fino test runner. `evaluate()`
+ * registers cases as tests, executes an application-supplied function, scores
+ * each output, and reports per-case plus aggregate results. Use it for
+ * regression checks around prompts, tool behavior, workflows, retrieval, and
+ * provider migrations.
+ *
+ * ## Scoring model
+ *
+ * Scorers return a numeric score plus optional pass/explanation metadata.
+ * Built-ins cover exact string matches, substring checks, schema validation,
+ * model-assisted rubric judging, and embedding similarity. Reporters are
+ * optional sinks; the OpenTelemetry reporter emits spans/logs/metrics without
+ * changing the test result semantics.
+ *
+ * Evaluations are still tests. Keep cases deterministic where possible, pin or
+ * stub models for CI, and treat LLM-judged scores as a policy choice rather
+ * than a correctness oracle.
+ *
+ * ```ts no_run
+ * import { contains, evaluate } from 'fino:ai/eval';
+ *
+ * evaluate({
+ *   name: 'support answer',
+ *   cases: [{ input: 'refund window?', expected: '30 days' }],
+ *   run: async (input) => `Refunds are available for ${input.includes('refund') ? '30 days' : 'unknown'}.`,
+ *   scorers: { mentionsWindow: contains('30 days') },
+ * });
+ * ```
  */
 
 import { suite, test } from 'fino:test/test';

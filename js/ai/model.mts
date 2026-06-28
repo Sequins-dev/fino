@@ -1,14 +1,44 @@
 /**
- * Provider-neutral model contracts for AI applications.
+ * fino:ai/model — provider-neutral messages, streams, and model adapters.
  *
- * Agents, tools, evals, and providers share these message, stream, usage, and
- * generation types. Provider modules adapt remote APIs into this small `Model`
- * interface so the rest of the framework can stay provider-agnostic.
+ * This module defines the narrow contract that the rest of `fino:ai` builds
+ * on. Providers adapt remote APIs into `Model`, agents consume `Model` without
+ * provider-specific branches, tools use the shared message and content-part
+ * shapes, and evals can run against any compatible implementation.
+ *
+ * ## Design
+ *
+ * `Model.stream()` is the canonical path for agent execution. Provider adapters
+ * emit normalized `StreamEvent` values for text, tool-call deltas, usage, stop
+ * reasons, and errors; `assembleResult()` folds those events into the same
+ * `GenerateResult` shape returned by `Model.generate()`. Message content parts
+ * are provider-neutral and are translated by `fino:ai/model/openai` and
+ * `fino:ai/model/anthropic` into each provider's wire format.
+ *
+ * This module does not hide provider capabilities. Adapters expose `id`,
+ * `provider`, and optional `capabilities` so higher layers can make explicit
+ * choices, such as using native structured-output transport only when a model
+ * declares support for it.
+ *
+ * ```ts no_run
+ * import { openai, assembleResult } from 'fino:ai/model';
+ *
+ * const model = openai({ model: 'gpt-4o' });
+ * const stream = model.stream({
+ *   messages: [{ role: 'user', content: 'Say hello in one sentence.' }],
+ * });
+ *
+ * const result = await assembleResult(stream);
+ * console.log(result.text, result.usage);
+ * ```
  */
 
-import { assembleResult, ModelError } from 'internal:ai/shared';
-import { anthropic } from 'internal:ai/anthropic';
-import { openai } from 'internal:ai/openai';
+import {
+  assembleResult as sharedAssembleResult,
+  ModelError as SharedModelError,
+} from 'internal:ai/shared';
+import { anthropic as anthropicProvider } from 'internal:ai/model/anthropic';
+import { openai as openaiProvider } from 'internal:ai/model/openai';
 
 /**
  * Chat message role understood by all providers.
@@ -230,4 +260,32 @@ export interface ProviderOptions {
   dimensions?: number;
 }
 
-export { assembleResult, ModelError, anthropic, openai };
+/**
+ * Assemble streamed provider events into a complete `GenerateResult`.
+ */
+export function assembleResult(events: AsyncIterable<StreamEvent>): Promise<GenerateResult> {
+  return sharedAssembleResult(events);
+}
+
+/**
+ * Error thrown for provider HTTP failures.
+ */
+export const ModelError = SharedModelError;
+
+/**
+ * Create an Anthropic-backed `Model`.
+ *
+ * `apiKey` defaults to `ANTHROPIC_API_KEY`.
+ */
+export function anthropic(opts: ProviderOptions = {}): Model {
+  return anthropicProvider(opts);
+}
+
+/**
+ * Create an OpenAI-backed `Model`.
+ *
+ * `apiKey` defaults to `OPENAI_API_KEY`.
+ */
+export function openai(opts: ProviderOptions = {}): Model {
+  return openaiProvider(opts);
+}

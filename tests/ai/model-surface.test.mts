@@ -1,5 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { openai, anthropic } from 'fino:ai/model';
+import { openai as directOpenAI } from 'fino:ai/model/openai';
+import { anthropic as directAnthropic } from 'fino:ai/model/anthropic';
 import { GuardrailError } from 'fino:ai/runtime';
 import { agent } from 'fino:ai/agent';
 import { ModelStreamImpl } from 'internal:ai/shared';
@@ -68,6 +70,16 @@ function stubModel(events: StreamEvent[]): Model {
 }
 
 describe('model surface — responseFormat (structured output)', () => {
+  it('provider adapters resolve from nested model specifiers', async (t) => {
+    const o = directOpenAI({ client: makeOpenAIClient('ok') as never, model: 'gpt-direct', apiKey: 'test' });
+    const a = directAnthropic({ client: makeAnthropicClient('ok') as never, model: 'claude-direct', apiKey: 'test' });
+
+    t.equal(o.provider, 'openai', 'OpenAI nested specifier creates OpenAI model');
+    t.equal(o.id, 'gpt-direct');
+    t.equal(a.provider, 'anthropic', 'Anthropic nested specifier creates Anthropic model');
+    t.equal(a.id, 'claude-direct');
+  });
+
   it('providers expose explicit id, provider, and capabilities metadata', async (t) => {
     const o = openai({ client: makeOpenAIClient('ok') as never, model: 'gpt-test', apiKey: 'test' });
     const a = anthropic({ client: makeAnthropicClient('ok') as never, model: 'claude-test', apiKey: 'test' });

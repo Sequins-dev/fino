@@ -1,10 +1,40 @@
 /**
- * Durable working and semantic memory for agents.
+ * fino:ai/memory — durable thread memory, working memory, and vector recall.
  *
- * `Memory` is separate from `MessageHistory`: history is the short-term
+ * This module stores information that should outlive a single model context.
+ * It is deliberately separate from `MessageHistory`: history is the current
  * model-facing sequence owned by a `HistoryStrategy`, while memory stores
- * durable thread messages, resource chunks, embeddings, and working-memory
- * patches that strategies or sessions may choose to recall.
+ * durable conversation messages, resource chunks, embeddings, and structured
+ * working-memory patches that sessions or strategies may recall.
+ *
+ * ## Storage model
+ *
+ * `SqliteMemory` stores thread messages chronologically, working memory as a
+ * JSON object, and ingested documents as chunks with embeddings. Semantic recall
+ * is available when the sqlite vector extension is available; otherwise the
+ * memory still works for chronological history and working memory and reports
+ * `semanticAvailable: false`.
+ *
+ * Memory is scoped by `threadId` for conversation state and by `resourceId` for
+ * resource ingestion. `thread(id)` creates another view over the same database
+ * with a different thread scope. Close the memory when the application owns the
+ * database handle.
+ *
+ * ```ts no_run
+ * import { memory } from 'fino:ai/memory';
+ * import { openai } from 'fino:ai/model';
+ *
+ * const model = openai({ model: 'gpt-4o' });
+ * const mem = await memory({
+ *   path: './agent-memory.db',
+ *   embedder: model,
+ *   threadId: 'support-thread',
+ * });
+ *
+ * await mem.append({ role: 'user', content: 'Prefers concise answers.' });
+ * await mem.ingest([{ text: 'Refund policy: refunds are available for 30 days.' }]);
+ * const recalled = await mem.recall({ text: 'Can I get a refund?', topK: 3 });
+ * ```
  */
 
 import { Database, vec, vecDecode } from 'fino:database/sqlite';

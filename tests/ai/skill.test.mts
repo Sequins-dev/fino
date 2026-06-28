@@ -4,6 +4,15 @@ import { agent } from 'fino:ai/agent';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
 
+const REMOTE_SKILL_MARKDOWN = `---
+name: remote-review
+description: Remote review guidance
+---
+# Remote Review
+
+Check release notes before recommending an upgrade.
+`;
+
 function scriptModel(turns: StreamEvent[][]): Model {
   let idx = 0;
   return {
@@ -56,6 +65,53 @@ function endTurn(text: string): StreamEvent[] {
     { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } },
     { type: 'stop', reason: 'end_turn' },
   ];
+}
+
+function b64(text: string): string {
+  return btoa(text);
+}
+
+function fakeSkillsFetch(log: string[] = []): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    log.push(url);
+    if (url === 'https://skillsmd.dev/api/skill?repo=acme%2Fremote-skill') {
+      return Response.json({
+        repository: 'acme/remote-skill',
+        description: 'SkillsMD metadata description',
+        readme: '# Repository README',
+      });
+    }
+    if (url === 'https://api.github.com/repos/acme/remote-skill/contents/skill.md') {
+      return Response.json({
+        name: 'skill.md',
+        encoding: 'base64',
+        content: b64(REMOTE_SKILL_MARKDOWN),
+      });
+    }
+    if (url === 'https://api.github.com/repos/acme/remote-skill/contents/SKILL.md') {
+      return new Response('not found', { status: 404 });
+    }
+    if (url === 'https://skillsmd.dev/api/skill?repo=acme%2Freadme-skill') {
+      return Response.json({
+        repository: 'acme/readme-skill',
+        description: 'README skill',
+        readme: REMOTE_SKILL_MARKDOWN,
+      });
+    }
+    if (url === 'https://api.github.com/repos/acme/readme-skill/contents/skill.md' ||
+        url === 'https://api.github.com/repos/acme/readme-skill/contents/SKILL.md') {
+      return new Response('not found', { status: 404 });
+    }
+    if (url === 'https://skillsmd.dev/api/skill?repo=acme%2Fmissing-skill') {
+      return Response.json({ repository: 'acme/missing-skill', description: 'Missing markdown' });
+    }
+    if (url === 'https://api.github.com/repos/acme/missing-skill/contents/skill.md' ||
+        url === 'https://api.github.com/repos/acme/missing-skill/contents/SKILL.md') {
+      return new Response('not found', { status: 404 });
+    }
+    return new Response(`unexpected fetch: ${url}`, { status: 500 });
+  }) as typeof fetch;
 }
 
 describe('SkillRegistry', () => {
@@ -268,5 +324,106 @@ describe('SkillRegistry', () => {
 
     const loaded2 = await registry.load('lazy');
     t.ok(loaded2 === loaded, 'second load returns cached result');
+  });
+
+  it('skill({ repo }) appears in manifest without fetching until load()', async (t) => {
+    const calls: string[] = [];
+    const remote = skill({ repo: 'acme/remote-skill', skillsmd: { fetch: fakeSkillsFetch(calls) } });
+    const registry = skillRegistry([remote]);
+
+    t.deepEqual(registry.manifest(), [{
+      name: 'remote-skill',
+      description: 'SkillsMD skill from acme/remote-skill',
+    }], 'remote skill has placeholder manifest metadata');
+    t.equal(calls.length, 0, 'manifest did not fetch');
+
+    const loaded = await registry.load('remote-skill');
+    t.ok(loaded.instructions.includes('Check release notes'), 'loaded instructions from remote skill markdown');
+    t.deepEqual(loaded.tools, {}, 'remote skills do not register executable tools');
+    t.deepEqual(registry.manifest(), [{
+      name: 'remote-review',
+      description: 'Remote review guidance',
+    }], 'frontmatter updates manifest metadata after load');
+    t.ok(calls.some((url) => url.includes('/api/skill?repo=acme%2Fremote-skill')), 'SkillsMD API was fetched');
+    t.ok(calls.some((url) => url.includes('/repos/acme/remote-skill/contents/skill.md')), 'skill.md was fetched from GitHub');
+  });
+
+  it('local and remote skills mix in one registry and load through the same tool', async (t) => {
+    const calls: string[] = [];
+    const registry = skillRegistry([
+      skill({ name: 'local', description: 'Local guidance', instructions: 'Use the local skill.' }),
+      skill({ repo: 'acme/remote-skill', skillsmd: { fetch: fakeSkillsFetch(calls) } }),
+    ]);
+
+    const manifest = registry.manifest();
+    t.equal(manifest.length, 2, 'local and remote skills both appear');
+    t.equal(manifest[0]?.name, 'local', 'local skill is unchanged');
+    t.equal(manifest[1]?.name, 'remote-skill', 'remote skill placeholder appears');
+
+    const loader = registry.asLoaderTool();
+    const local = await loader.invoke(
+      { name: 'local' },
+      { signal: new AbortController().signal, toolCallId: 'l1', step: 0, runId: 'r1', messages: [], suspend() { throw new Error('no'); } },
+    );
+    const remote = await loader.invoke(
+      { name: 'remote-skill' },
+      { signal: new AbortController().signal, toolCallId: 'r1', step: 0, runId: 'r1', messages: [], suspend() { throw new Error('no'); } },
+    );
+
+    t.equal(local.content, 'Use the local skill.', 'local load works');
+    t.ok(String(remote.content).includes('Check release notes'), 'remote load works');
+  });
+
+  it('remote skill fetches are coalesced and cached per registry', async (t) => {
+    const calls: string[] = [];
+    const registry = skillRegistry([
+      skill({ repo: 'acme/remote-skill', skillsmd: { fetch: fakeSkillsFetch(calls) } }),
+    ]);
+
+    const [a, b] = await Promise.all([
+      registry.load('remote-skill'),
+      registry.load('remote-skill'),
+    ]);
+    t.ok(a === b, 'concurrent loads share one cached result');
+
+    await registry.load('remote-skill');
+    const apiCalls = calls.filter((url) => url.includes('/api/skill?repo=acme%2Fremote-skill'));
+    t.equal(apiCalls.length, 1, 'SkillsMD API fetched once');
+  });
+
+  it('remote skill can fall back to SkillsMD README when it contains frontmatter', async (t) => {
+    const registry = skillRegistry([
+      skill({ repo: 'acme/readme-skill', skillsmd: { fetch: fakeSkillsFetch() } }),
+    ]);
+
+    const loaded = await registry.load('readme-skill');
+    t.ok(loaded.instructions.includes('Check release notes'), 'README frontmatter body was loaded');
+  });
+
+  it('invalid remote repo identifiers reject before fetching', async (t) => {
+    const calls: string[] = [];
+    t.throws(
+      () => skill({ repo: 'https://github.com/acme/remote-skill', skillsmd: { fetch: fakeSkillsFetch(calls) } }),
+      /owner\/repo/,
+      'URLs are rejected',
+    );
+    t.throws(
+      () => skill({ repo: 'acme/remote-skill/path', skillsmd: { fetch: fakeSkillsFetch(calls) } }),
+      /owner\/repo/,
+      'extra path segments are rejected',
+    );
+    t.equal(calls.length, 0, 'invalid identifiers did not fetch');
+  });
+
+  it('remote skill reports clear errors for missing markdown', async (t) => {
+    const registry = skillRegistry([
+      skill({ repo: 'acme/missing-skill', skillsmd: { fetch: fakeSkillsFetch() } }),
+    ]);
+
+    await t.rejects(
+      () => registry.load('missing-skill'),
+      /No skill markdown found/,
+      'missing skill markdown rejects clearly',
+    );
   });
 });

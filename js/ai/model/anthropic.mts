@@ -1,9 +1,39 @@
 /**
- * Anthropic model provider adapter.
+ * fino:ai/model/anthropic — Anthropic provider adapter for the shared `Model`.
+ *
+ * Anthropic Messages API reference: https://docs.anthropic.com/en/api/messages
  *
  * `anthropic()` returns a provider-neutral `Model` backed by Anthropic's
- * Messages API. It adapts Fino message parts, tool calls, streaming events,
- * embeddings metadata, and native JSON schema response formats.
+ * Messages API. It translates Fino message parts into Anthropic content blocks,
+ * maps server-sent events into `StreamEvent` values, normalizes usage and stop
+ * reasons, and exposes native JSON Schema response-format support through model
+ * capabilities.
+ *
+ * ## Defaults and limits
+ *
+ * `apiKey` defaults to `ANTHROPIC_API_KEY`, `baseUrl` defaults to the public
+ * Anthropic API, and `model` defaults to `claude-opus-4-8`. The adapter supports
+ * text, image, document, tool-use, and tool-result content parts. Anthropic does
+ * not provide a native embeddings endpoint through this adapter; `embed()`
+ * rejects with a clear error. Use an embeddings-capable provider for memory or
+ * semantic-similarity workflows.
+ *
+ * Pass a custom `client` for tests, proxies, or runtimes that need their own
+ * HTTP transport. This adapter does not retry; retry and fallback policy belong
+ * to `fino:ai/agent`.
+ *
+ * ```ts no_run
+ * import { agent } from 'fino:ai/agent';
+ * import { anthropic } from 'fino:ai/model/anthropic';
+ *
+ * const bot = agent({
+ *   model: anthropic({ model: 'claude-opus-4-8' }),
+ *   instructions: 'Prefer explicit assumptions.',
+ * });
+ *
+ * const result = await bot.generate('Review this migration plan.');
+ * console.log(result.text);
+ * ```
  */
 
 import type {

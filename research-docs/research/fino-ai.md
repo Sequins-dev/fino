@@ -25,7 +25,8 @@ built-in modules under the `fino:ai` namespace. The framework should support:
 - **Sandboxed execution** — capability-scoped tool and subagent code via the
   existing realm system.
 - **Skills** — on-demand expertise units the model loads when relevant.
-- **Channels** — headless transport adapters (HTTP, webhook, WebSocket).
+- **Application routes** — services can expose agents through ordinary HTTP,
+  webhook, or WebSocket handlers built on `Agent` and `Session`.
 - **Evals** — test-suite integration with optional Braintrust reporting.
 - **MCP integration** — MCP client transports and MCP tool adaptation into the
   same `Tool` registry used by agents.
@@ -444,8 +445,9 @@ function session(opts: SessionOptions): Session;
 persists, and **returns** — no timer, no held resources. The row sits in sqlite.
 Later, `session.resume(resumeToken, value)` reloads, injects the value, flips
 to `running`, and continues. Resume tokens are single-use (optional TTL).
-Channels and other stateless adapters should use `Session.resumeSuspended()`
-with both `runId` and `resumeToken` so human approval survives process restart.
+HTTP handlers and other stateless adapters should use
+`Session.resumeSuspended()` with both `runId` and `resumeToken` so human
+approval survives process restart.
 
 ### 5.6 fino:ai/workflow — graph orchestration
 
@@ -529,34 +531,14 @@ resume is automatic with no extra persistence). Skill-bundled tools currently
 execute in the privileged environment; sandbox-gating is a future adaptation
 (see §5.7).
 
-### 5.9 fino:ai/channel — headless transport adapters
+### 5.9 Application transport adapters
 
-```ts
-function httpChannel(driver: AgentDriver, opts?: {
-  path?: string; app?: App;
-}): Channel;                            // POST {threadId, text} → JSON reply
-
-function webhookChannel(driver: AgentDriver, opts: {
-  path: string; verify?: (req: Request) => boolean | Promise<boolean>;
-}): Channel;                            // inbound webhook → fire-and-forget run
-
-function websocketChannel(driver: AgentDriver, opts?: { path?: string }): Channel;
-// WebSocket upgrade via the serve() handler return (HttpHandlerResult); streams tokens
-
-interface AgentDriver {
-  handle(msg: ChannelMessage): Promise<ChannelReply>;
-  stream(msg: ChannelMessage): AsyncIterable<string>;
-  resume(input: { runId: string; resumeToken: string; value: unknown }): Promise<ChannelReply>;
-}
-```
-
-`AgentDriver` is a thin adapter over a `Session`, so channel-driven runs are
-durable and a suspended approval resumes via a later HTTP request carrying both
-`runId` and `resumeToken`. Drivers with a `CheckpointStore` reload suspended
-state from sqlite; the in-memory token map is only a stateless fallback. The
-WebSocket upgrade flows through the `serve()` handler return value (first-class
-`HttpHandlerResult` — matching the runtime's stated preference for protocol
-upgrades).
+The earlier `fino:ai/channel` module was removed before stabilization. It was a
+thin HTTP/webhook/WebSocket wrapper around `Agent` and `Session`, but it did not
+add enough value over ordinary application routes calling `agent.generate()`,
+`agent.stream()`, or `session().start()` directly. If a reusable transport
+adapter proves useful later, it can be reintroduced with a clearer purpose and
+tested against concrete application needs.
 
 ### 5.11 fino:ai/mcp — MCP client and tool adaptation
 
@@ -683,10 +665,8 @@ privileged environment (sandbox-gating deferred to a later milestone).
 
 ### Milestone D — Edges *(delivered)*
 
-**Phase 12 — `fino:ai/channel` + `fino:ai/eval` + `fino:ai/mcp`** *(delivered)*
-`agentDriver` + `httpChannel`/`webhookChannel`/`websocketChannel` headless
-transport adapters with durable suspend/resume via `Session`; MCP client
-transport/resource/tool adaptation. `evaluate()` with five scorers,
+**Phase 12 — `fino:ai/eval` + `fino:ai/mcp`** *(delivered)*
+MCP client transport/resource/tool adaptation. `evaluate()` with five scorers,
 subclassable `EvalReporter` base, `OpenTelemetryReporter` emitting
 standard `gen_ai.evaluation.result` events + `gen_ai.client.evaluation.score`
 metric over OTLP (Braintrust and any collector via config). GenAI semconv

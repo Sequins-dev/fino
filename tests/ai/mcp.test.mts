@@ -1,7 +1,9 @@
 import { describe, it } from 'fino:test/test';
-import { MCPClient } from 'fino:ai/mcp';
+import { MCPClient, mcpServer, mountMcp } from 'fino:ai/mcp';
 import { JsonRpcService, JsonRpcServer, JsonRpcPeer } from 'fino:jsonrpc';
 import { agent } from 'fino:ai/agent';
+import { tool } from 'fino:ai/tool';
+import { App } from 'fino:net/http/app';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Transport } from 'fino:jsonrpc';
 import type { Model, GenerateRequest } from 'fino:ai/model';
@@ -279,5 +281,161 @@ describe('fino:ai/mcp — MCPClient', () => {
     t.ok(toolResultMsg, 'tool result message present in history');
 
     await client.close();
+  });
+});
+
+describe('fino:ai/mcp — MCPServer', () => {
+  it('initialize returns server capabilities and creates an HTTP session', async (t) => {
+    const server = mcpServer({
+      name: 'test-mcp',
+      version: '1.2.3',
+      instructions: 'Use carefully.',
+      tools: [tool({
+        name: 'echo',
+        description: 'Echo input text.',
+        parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+        execute: ({ text }: { text: string }) => text,
+      })],
+      resources: [{ uri: 'memo://one', name: 'memo', mimeType: 'text/plain' }],
+      readResource: (uri) => ({ uri, mimeType: 'text/plain', text: 'memo text' }),
+    });
+
+    const res = await server.httpHandler()(new Request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://127.0.0.1' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+      }),
+    }));
+
+    t.equal(res.status, 200, 'initialize returns success');
+    t.ok(res.headers.get('mcp-session-id'), 'session id header is set');
+    const json = await res.json() as { result: { protocolVersion: string; serverInfo: { name: string; version: string }; capabilities: Record<string, unknown>; instructions?: string } };
+    t.equal(json.result.protocolVersion, '2025-03-26', 'protocol version is negotiated');
+    t.deepEqual(json.result.serverInfo, { name: 'test-mcp', version: '1.2.3' }, 'server info returned');
+    t.ok(json.result.capabilities.tools, 'tools capability advertised');
+    t.ok(json.result.capabilities.resources, 'resources capability advertised');
+    t.equal(json.result.instructions, 'Use carefully.', 'instructions included');
+  });
+
+  it('serves Fino tools and resources over an in-memory MCP transport', async (t) => {
+    const echo = tool({
+      name: 'echo',
+      description: 'Echo input text.',
+      parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+      execute: ({ text }: { text: string }) => ({ content: [{ type: 'text', text }, { type: 'image', mediaType: 'image/png', data: 'aW1n' }] }),
+    });
+    const server = mcpServer({
+      name: 'loopback',
+      tools: [echo],
+      resources: [{ uri: 'memo://one', name: 'memo', mimeType: 'text/plain' }],
+      readResource: (uri) => ({ uri, mimeType: 'text/plain', text: 'memo text' }),
+    });
+
+    const [clientTransport, serverTransport] = loopbackPair();
+    void server.serve(serverTransport);
+    const client = new MCPClient({ transport: clientTransport });
+    await client.connect();
+
+    const tools = await client.listTools();
+    t.equal(tools.length, 1, 'one tool exposed');
+    t.equal(tools[0]?.name, 'echo', 'tool name exposed');
+    const result = await tools[0]!.invoke(
+      { text: 'hello' },
+      { signal: new AbortController().signal, toolCallId: 'tc1', step: 0, runId: 'r1', messages: [] },
+    );
+    t.equal(result.content, 'hello', 'client sees text tool output');
+
+    const resources = await client.listResources();
+    t.deepEqual(resources, [{ uri: 'memo://one', name: 'memo', mimeType: 'text/plain' }], 'resources exposed');
+    const contents = await client.readResource('memo://one');
+    t.deepEqual(contents, [{ uri: 'memo://one', mimeType: 'text/plain', text: 'memo text' }], 'resource content returned');
+    await client.close();
+  });
+
+  it('mounts on App routes and preserves middleware behavior', async (t) => {
+    const server = mcpServer({
+      tools: [tool({
+        name: 'echo',
+        description: 'Echo input text.',
+        parameters: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+        execute: ({ text }: { text: string }) => text,
+      })],
+    });
+    const app = new App()
+      .use((ctx, next) => {
+        if (ctx.request.headers.get('authorization') !== 'Bearer ok') return new Response('blocked', { status: 401 });
+        return next();
+      });
+    mountMcp(app, '/mcp', server);
+
+    const blocked = await app.handle(new Request('http://local.test/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://local.test' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }),
+    }));
+    t.equal(blocked.status, 401, 'app middleware can block MCP route');
+
+    const ok = await app.handle(new Request('http://local.test/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://local.test', authorization: 'Bearer ok' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }),
+    }));
+    t.equal(ok.status, 200, 'authorized initialize reaches MCP route');
+  });
+
+  it('enforces Streamable HTTP session, GET, DELETE, and origin behavior', async (t) => {
+    const server = mcpServer({ name: 'http-state' });
+    const handler = server.httpHandler();
+    const beforeInit = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://127.0.0.1' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'tools/list' }),
+    }));
+    t.equal(beforeInit.status, 400, 'requests before initialize are rejected');
+
+    const init = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://127.0.0.1' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }),
+    }));
+    const sessionId = init.headers.get('mcp-session-id')!;
+    t.ok(sessionId, 'initialize creates a session');
+
+    const missingSession = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://127.0.0.1' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }),
+    }));
+    t.equal(missingSession.status, 400, 'missing session id is rejected after initialization');
+
+    const get = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'GET',
+      headers: { accept: 'text/event-stream', Origin: 'http://127.0.0.1', 'mcp-session-id': sessionId },
+    }));
+    t.equal(get.status, 405, 'GET returns 405 when SSE is not offered');
+
+    const deleted = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'DELETE',
+      headers: { Origin: 'http://127.0.0.1', 'mcp-session-id': sessionId },
+    }));
+    t.equal(deleted.status, 202, 'DELETE terminates the session');
+
+    const afterDelete = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://127.0.0.1', 'mcp-session-id': sessionId },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list' }),
+    }));
+    t.equal(afterDelete.status, 404, 'terminated session is gone');
+
+    const blockedOrigin = await handler(new Request('http://127.0.0.1/mcp', {
+      method: 'POST',
+      headers: { accept: 'application/json, text/event-stream', Origin: 'http://evil.test' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } } }),
+    }));
+    t.equal(blockedOrigin.status, 403, 'cross-origin request is rejected by default');
   });
 });

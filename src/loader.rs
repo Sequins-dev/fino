@@ -410,6 +410,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:jsonrpc", "jsonrpc"),
     // ai
     source_builtin!("fino:ai/model", "ai/model"),
+    source_builtin!("fino:ai/model/anthropic", "ai/model/anthropic"),
+    source_builtin!("fino:ai/model/openai", "ai/model/openai"),
     source_builtin!("fino:ai/context", "ai/context"),
     source_builtin!("fino:ai/tool", "ai/tool"),
     source_builtin!("fino:ai/runtime", "ai/runtime"),
@@ -418,13 +420,12 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ai/session", "ai/session"),
     source_builtin!("fino:ai/workflow", "ai/workflow"),
     source_builtin!("fino:ai/skill", "ai/skill"),
-    source_builtin!("fino:ai/channel", "ai/channel"),
     source_builtin!("fino:ai/eval", "ai/eval"),
     source_builtin!("fino:ai/mcp", "ai/mcp"),
     source_builtin!("internal:ai/shared", "ai/shared"),
     source_builtin!("internal:ai/runtime", "ai/runtime-internal"),
-    source_builtin!("internal:ai/anthropic", "ai/anthropic"),
-    source_builtin!("internal:ai/openai", "ai/openai"),
+    source_builtin!("internal:ai/model/anthropic", "ai/model/anthropic"),
+    source_builtin!("internal:ai/model/openai", "ai/model/openai"),
     // profiler
     (
         "fino:profiler",

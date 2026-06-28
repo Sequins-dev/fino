@@ -1,3 +1,20 @@
+/**
+ * internal:ai/runtime — implementation of the agent model loop.
+ *
+ * This module contains the mutable runtime behind `fino:ai/agent`: model
+ * request assembly, tool execution, structured-output repair, guardrail checks,
+ * fallback/retry behavior, telemetry, and stream plumbing. Public application
+ * code should import `Agent` from `fino:ai/agent` and integration helpers from
+ * `fino:ai/runtime` instead of constructing `AgentRuntime` directly.
+ *
+ * The implementation deliberately keeps history policy out of the runtime. It
+ * calls `HistoryStrategy.onAppend()` when messages are recorded and
+ * `HistoryStrategy.onRead()` before model requests; all compaction, retrieval,
+ * summarization, and memory emission decisions belong to the strategy.
+ *
+ * @internal
+ */
+
 import type { Model, ModelMessage, StreamEvent, StopReason, ToolUsePart, ContentPart, Usage, ToolDefinition, GenerateRequest, ResponseFormat } from 'fino:ai/model';
 import { assembleResult, ModelError, normalizeSchema } from 'internal:ai/shared';
 import type { SchemaLike } from 'internal:ai/shared';
@@ -842,6 +859,16 @@ export class AgentRuntime {
     const doStep = async (): Promise<StepResult> => {
       if (state.history) {
         this.#historyStrategy.history = state.history;
+        const baseLen = state.history.render().length;
+        for (const msg of state.messages.slice(baseLen)) {
+          await this.#historyStrategy.onAppend(msg, {
+            model: this.#model,
+            budgetTokens: this.#budgetTokens,
+            signal: state.signal,
+            stepIndex: state.stepIndex,
+            runId,
+          });
+        }
       } else if (this.#historyStrategy.history.size === 0) {
         for (const msg of state.messages) {
           await this.#historyStrategy.onAppend(msg, {

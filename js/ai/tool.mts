@@ -1,10 +1,38 @@
 /**
- * Tool primitives for agent tool calling and composition.
+ * fino:ai/tool — validated tool definitions for agent tool calling.
  *
- * A `Tool` wraps a named JSON-schema input contract and an executor. Executors
- * receive run context, abort signals, and the current message history when
- * available. Throw `SuspendSignal` from a tool to pause a session or workflow
- * for external input.
+ * A `Tool` wraps a model-visible name, description, `fino:validate` input
+ * schema, and executor. Agents convert the schema into provider-neutral JSON
+ * Schema tool definitions, validate model-supplied arguments with
+ * `fino:validate`, and return tool outputs as model-readable `tool_result`
+ * content.
+ *
+ * ## Execution model
+ *
+ * Tool executors receive `ToolRunContext`, including the abort signal, run id,
+ * step index, current messages, and optional `MessageHistory`. Validation
+ * failures and ordinary executor exceptions are converted into `isError` tool
+ * results by default so the model can repair its call. Set `throwOnError` when
+ * application code should fail the run instead.
+ *
+ * Throw `AbortError` to cancel, or throw/use `SuspendSignal` to pause a durable
+ * session or workflow for external input such as approval. Suspension is a
+ * control-flow signal, not a failed tool result.
+ *
+ * ```ts no_run
+ * import { tool } from 'fino:ai/tool';
+ * import { v } from 'fino:validate';
+ *
+ * const lookup = tool({
+ *   name: 'lookup_user',
+ *   description: 'Look up a user by id.',
+ *   parameters: v.object({ id: v.string().describe('User id') }),
+ *   execute: async ({ id }: { id: string }, ctx) => {
+ *     if (id === 'needs-approval') ctx.suspend({ reason: 'approval required', payload: { id } });
+ *     return { content: `user:${id}` };
+ *   },
+ * });
+ * ```
  */
 
 import type { ContentPart, ModelMessage, ToolDefinition } from 'fino:ai/model';
@@ -48,10 +76,22 @@ export type ToolResult =
 
 /**
  * Definition used to create a `Tool`.
+ *
+ * `parameters` accepts a `fino:validate` schema builder such as
+ * `v.object({ id: v.string() })`, or a raw JSON Schema object when adapting an
+ * external protocol. Builders are normalized to plain JSON Schema before being
+ * sent to providers.
  */
 export interface ToolOptions<Args, R extends ToolResult = ToolResult> {
   name: string;
   description: string;
+  /**
+   * Input schema for model-supplied tool arguments.
+   *
+   * Prefer `fino:validate` builders such as
+   * `v.object({ id: v.string() })`. Raw JSON Schema objects are accepted for
+   * protocol adapters and are normalized before being sent to providers.
+   */
   parameters: SchemaLike<Args>;
   execute: (args: Args, ctx: ToolRunContext) => R | Promise<R>;
   throwOnError?: boolean;

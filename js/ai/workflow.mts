@@ -1,13 +1,46 @@
 /**
- * Durable workflow builder for multi-step agent applications.
+ * fino:ai/workflow — checkpointed multi-step workflows for agent applications.
  *
- * Workflows compose typed steps with branches, parallel fan-out, foreach loops,
- * suspend/resume gates, and checkpointed execution. They share the session
- * checkpoint store so applications can persist agent runs and workflow runs with
- * the same storage contract.
+ * Workflows compose typed steps with sequential chaining, branches, parallel
+ * fan-out, foreach loops, do-until loops, map transforms, and suspend/resume
+ * gates. Use this module when an AI application needs deterministic control
+ * flow around one or more agents or tools, especially when a run must survive
+ * crashes or wait for human approval.
+ *
+ * ## Execution model
+ *
+ * A `Workflow` is an immutable builder. `commit()` produces a
+ * `CompiledWorkflow`, and `createRun()` or `run()` executes it against a
+ * `CheckpointStore`. Completed step outputs are recorded in `scratch`; resume
+ * re-drives from the persisted cursor without re-running completed nodes.
+ *
+ * Workflow runs use only the run-checkpoint part of the session storage
+ * contract. Steps may call `ctx.suspend()` to return a resume token. Suspension
+ * inside parallel nodes is rejected because there is no single deterministic
+ * continuation point.
+ *
+ * ```ts no_run
+ * import { step, workflow, SqliteCheckpointStore } from 'fino:ai/workflow';
+ *
+ * const classify = step({
+ *   id: 'classify',
+ *   async execute(ctx) {
+ *     return String(ctx.input).includes('refund') ? 'billing' : 'general';
+ *   },
+ * });
+ *
+ * const wf = workflow({ id: 'route-ticket' })
+ *   .then(classify)
+ *   .map((team) => ({ team }))
+ *   .commit();
+ *
+ * const result = await wf.run('refund request', {
+ *   store: await SqliteCheckpointStore.open('./workflow-runs.db'),
+ * });
+ * ```
  */
 
-import { SqliteCheckpointStore } from 'fino:ai/session';
+import { SqliteSessionStore as SqliteCheckpointStore } from 'fino:ai/session';
 import { SuspendSignal, runContext } from 'fino:ai/runtime';
 import { compile } from 'fino:validate';
 import type { RunState, CheckpointStore } from 'fino:ai/session';

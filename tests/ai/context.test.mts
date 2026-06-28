@@ -1,8 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import {
-  InMemoryHistoryStore,
   MessageHistory,
-  SqliteHistoryStore,
   appendOnlyHistoryStrategy,
   summarizingHistoryStrategy,
   selectiveSummaryHistoryStrategy,
@@ -16,7 +14,6 @@ import type { ModelMessage, Usage } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { agent } from 'fino:ai/agent';
 import type { Model, GenerateRequest, StreamEvent } from 'fino:ai/model';
-import { DiskFileSystem } from 'fino:file';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -128,32 +125,47 @@ describe('MessageHistory', () => {
     t.deepEqual(view.render().map((m) => m.content), ['base']);
   });
 
-  it('store-backed histories reload by revision id', async (t) => {
-    const store = new InMemoryHistoryStore();
-    let h = new MessageHistory({ store });
+  it('toSnapshot() and fromSnapshot() round-trip graph lineage', async (t) => {
+    let h = new MessageHistory();
     h = await h.append(userMsg('persisted'));
     h = await h.append(assistantMsg('reply'));
+    const baseRevisionId = h.revisionId;
+    const forked = await (await h.fork()).append(userMsg('branch'));
 
-    const loaded = await MessageHistory.load(store, h.revisionId);
-    t.deepEqual(loaded.render().map((m) => m.content), ['persisted', 'reply']);
+    const loaded = MessageHistory.fromSnapshot(forked.toSnapshot());
+    t.deepEqual(loaded.render().map((m) => m.content), ['persisted', 'reply', 'branch']);
+    t.deepEqual(loaded.withView(baseRevisionId).render().map((m) => m.content), ['persisted', 'reply']);
   });
 
-  it('sqlite-backed histories reload by revision id', async (t) => {
-    const path = `/tmp/fino-message-history-${Math.floor(Math.random() * 1_000_000_000)}.db`;
-    const fs = new DiskFileSystem();
-    try { await fs.unlink(path); } catch {}
-    const store = await SqliteHistoryStore.open(path);
-    try {
-      let h = new MessageHistory({ store });
-      h = await h.append(userMsg('sqlite'));
-      h = await h.append(assistantMsg('reload'));
+  it('changesSince() returns only new graph entries and revisions', async (t) => {
+    let h = new MessageHistory();
+    h = await h.append(userMsg('base'));
+    const baseEntryId = h.refs()[0]!.id;
+    const baseRevisionId = h.revisionId;
+    h = await h.append(assistantMsg('new'));
 
-      const loaded = await MessageHistory.load(store, h.revisionId);
-      t.deepEqual(loaded.render().map((m) => m.content), ['sqlite', 'reload']);
-    } finally {
-      await store.close();
-      try { await fs.unlink(path); } catch {}
-    }
+    const delta = h.changesSince(baseRevisionId);
+    t.equal(delta.base, baseRevisionId, 'delta records its base revision');
+    t.equal(delta.revisions.length, 1, 'only the new revision is exported');
+    t.deepEqual(delta.entries.map((entry) => entry.message.content), ['new']);
+    t.ok(!delta.entries.some((entry) => entry.id === baseEntryId), 'base entry is not duplicated');
+  });
+
+  it('summary source restoration survives snapshot export', async (t) => {
+    let h = new MessageHistory();
+    h = await h.append(userMsg('a'));
+    h = await h.append(assistantMsg('b'));
+    const sourceIds = h.refs().map((entry) => entry.id);
+    h = await h.edit({
+      op: 'summary',
+      sourceIds,
+      entry: { message: userMsg('[summary]') },
+      replace: true,
+    });
+
+    const loaded = MessageHistory.fromSnapshot(h.toSnapshot());
+    t.deepEqual(loaded.render().map((m) => m.content), ['[summary]']);
+    t.deepEqual(loaded.restore().map((m) => m.content), ['a', 'b']);
   });
 });
 

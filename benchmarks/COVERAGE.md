@@ -86,7 +86,6 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:ai/session` | not yet benchmarked |
 | `fino:ai/workflow` | not yet benchmarked |
 | `fino:ai/skill` | not yet benchmarked |
-| `fino:ai/channel` | not yet benchmarked |
 | `fino:ai/eval` | not yet benchmarked |
 | `fino:jsonrpc` | not yet benchmarked |
 | `fino:ai/mcp` | not yet benchmarked |

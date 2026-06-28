@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { Session, SqliteCheckpointStore, session } from 'fino:ai/session';
+import { InMemorySessionStore, Session, SqliteSessionStore, session } from 'fino:ai/session';
 import type { RunState } from 'fino:ai/session';
 import { agent } from 'fino:ai/agent';
 import { tool } from 'fino:ai/tool';
@@ -71,14 +71,15 @@ function tmpPath(): string {
 
 async function assertRevisionOnlyCheckpoint(
   t: { ok(value: unknown, message?: string): void; equal(actual: unknown, expected: unknown, message?: string): void },
-  store: SqliteCheckpointStore,
+  store: SqliteSessionStore,
   state: RunState,
 ): Promise<void> {
   t.ok(state.historyRevisionId, 'checkpoint stores a history revision id');
   t.equal('messages' in state, false, 'checkpoint does not duplicate messages');
   t.equal('historyJSON' in state, false, 'checkpoint does not store legacy history JSON');
-  const loadedHistory = await MessageHistory.load(store, state.historyRevisionId!);
-  t.ok(loadedHistory.render().length > 0, 'history revision reloads from store');
+  const loadedHistory = await store.loadHistory(state.historyRevisionId!);
+  t.ok(loadedHistory, 'history revision reloads from store');
+  t.ok(loadedHistory!.render().length > 0, 'history revision contains messages');
 }
 
 describe('Session', () => {
@@ -86,7 +87,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       let recalledQuery: MemoryQuery | undefined;
       const appended: Array<{ role: ModelMessage['role']; content: ModelMessage['content'] }> = [];
@@ -140,7 +141,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const callLog: string[] = [];
       const greet = tool({
@@ -165,12 +166,12 @@ describe('Session', () => {
 
       t.ok(checkpoints.length >= 2, 'checkpointed after each step');
 
-      const loaded = await store.load(result.runId);
+      const loaded = await store.loadRun(result.runId);
       t.equal(loaded?.status, 'done', 'final checkpoint in store');
       t.equal(loaded?.stepIndex, 2, 'two steps completed');
       await assertRevisionOnlyCheckpoint(t, store, loaded!);
 
-      const runs = await store.list({ threadId: sess.state!.threadId });
+      const runs = await store.listRuns({ threadId: sess.state!.threadId });
       t.equal(runs.length, 1, 'one run for this thread');
     } finally {
       await store.close();
@@ -182,7 +183,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const toolCallsDuringResume: string[] = [];
       const echoTool = tool({
@@ -203,7 +204,7 @@ describe('Session', () => {
         usage: { inputTokens: 10, outputTokens: 5 },
         scratch: {},
       };
-      let crashedHistory = new MessageHistory({ store });
+      let crashedHistory = new MessageHistory();
       crashedHistory = await crashedHistory.append({ role: 'user', content: 'start' });
       crashedHistory = await crashedHistory.append({
         role: 'assistant',
@@ -214,7 +215,16 @@ describe('Session', () => {
         content: [{ type: 'tool_result', toolCallId: 'c1', content: 'hi' }],
       });
       crashedState.historyRevisionId = crashedHistory.revisionId;
-      await store.save(crashedState);
+      await store.commitSession({
+        run: crashedState,
+        thread: {
+          threadId: crashedState.threadId,
+          historyRevisionId: crashedHistory.revisionId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        history: crashedHistory,
+      });
 
       const resumeAgent = agent({ model: scriptModel([endTurn('resumed!')]), tools: [echoTool] });
       const result = await Session.resume({ store, agent: resumeAgent, runId: 'crash-test' });
@@ -223,7 +233,7 @@ describe('Session', () => {
       t.equal(result.text, 'resumed!', 'correct final text');
       t.equal(toolCallsDuringResume.length, 0, 'tool was NOT re-executed during resume');
 
-      const final = await store.load('crash-test');
+      const final = await store.loadRun('crash-test');
       t.equal(final?.status, 'done');
     } finally {
       await store.close();
@@ -235,7 +245,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const threadId = 'convo-thread';
 
@@ -247,7 +257,7 @@ describe('Session', () => {
       const { model: spy, getLastMessages } = captureModel();
       const sess2 = session({ store, agent: agent({ model: spy }), threadId });
 
-      const r1Final = await store.load(r1.runId);
+      const r1Final = await store.loadRun(r1.runId);
       t.ok(r1Final, 'first run is persisted');
 
       const r2 = await sess2.start('follow up');
@@ -276,7 +286,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const waitForHuman = tool({
         name: 'await_approval',
@@ -321,7 +331,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       let capturedHistoryRender: import('fino:ai/model').ModelMessage[] | undefined;
       const checkHistory = tool({
@@ -355,7 +365,7 @@ describe('Session', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const pauseTool = tool({
         name: 'pause',
@@ -382,11 +392,11 @@ describe('Session', () => {
     }
   });
 
-  it('store.list({threadId}) enumerates all runs for a thread', async (t) => {
+  it('store.listRuns({threadId}) enumerates all runs for a thread', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const threadId = 'list-test-thread';
       const make = () => session({
@@ -400,14 +410,14 @@ describe('Session', () => {
       t.equal(r1.status, 'done');
       t.equal(r2.status, 'done');
 
-      const all = await store.list({ threadId });
+      const all = await store.listRuns({ threadId });
       t.equal(all.length, 2, 'two runs found');
       t.ok(
         all.every((s) => s.threadId === threadId),
         'all runs belong to the thread',
       );
 
-      const other = await store.list({ threadId: 'other-thread' });
+      const other = await store.listRuns({ threadId: 'other-thread' });
       t.equal(other.length, 0, 'other thread has no runs');
     } finally {
       await store.close();
@@ -421,7 +431,7 @@ describe('Session.fork', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       const seenMessages: ModelMessage[][] = [];
       const trackingModel: Model = {
@@ -448,7 +458,7 @@ describe('Session.fork', () => {
       t.equal(forkResult.status, 'done', 'fork ran to completion');
       t.ok(forkResult.runId !== r1.runId, 'fork has its own runId');
 
-      const forkState = await store.load(forkResult.runId);
+      const forkState = await store.loadRun(forkResult.runId);
       t.ok(forkState, 'fork persisted to store');
       t.ok(forkState!.threadId !== r1.state.threadId, 'fork has its own threadId');
       await assertRevisionOnlyCheckpoint(t, store, forkState!);
@@ -469,7 +479,7 @@ describe('Session.fork', () => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try { await fs.unlink(path); } catch {}
-    const store = await SqliteCheckpointStore.open(path);
+    const store = await SqliteSessionStore.open(path);
     try {
       let compacted = false;
       const compactStrategy: HistoryStrategy = {
@@ -528,6 +538,92 @@ describe('Session.fork', () => {
       ).join(' ');
       t.ok(allContent.includes('[SUMMARY]'), 'fork sees the compacted summary, not raw originals');
       t.ok(allContent.includes('fork after compaction'), 'fork sees its new input');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+});
+
+describe('SessionStore', () => {
+  it('InMemorySessionStore and SqliteSessionStore load equivalent committed sessions', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const sqlite = await SqliteSessionStore.open(path);
+    const memory = new InMemorySessionStore();
+    try {
+      let history = new MessageHistory();
+      history = await history.append({ role: 'user', content: 'stored input' });
+      history = await history.append({ role: 'assistant', content: 'stored reply' });
+      const run: RunState = {
+        runId: 'store-run',
+        threadId: 'store-thread',
+        status: 'done',
+        stepIndex: 1,
+        usage: { inputTokens: 1, outputTokens: 1 },
+        scratch: {},
+        historyRevisionId: history.revisionId,
+      };
+      const thread = {
+        threadId: run.threadId,
+        historyRevisionId: history.revisionId,
+        createdAt: 1,
+        updatedAt: 2,
+      };
+
+      await memory.commitSession({ run, thread, history });
+      await sqlite.commitSession({ run, thread, history });
+
+      for (const store of [memory, sqlite]) {
+        const loadedRun = await store.loadRun(run.runId);
+        const loadedThread = await store.loadThread(run.threadId);
+        const loadedHistory = await store.loadHistory(history.revisionId);
+        t.equal(loadedRun?.historyRevisionId, history.revisionId, 'run points at committed history');
+        t.equal(loadedThread?.historyRevisionId, history.revisionId, 'thread points at committed history');
+        t.deepEqual(loadedHistory?.render().map((m) => m.content), ['stored input', 'stored reply']);
+      }
+    } finally {
+      await sqlite.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('commitSession rejects mismatched revision pointers without persisting state', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteSessionStore.open(path);
+    try {
+      let history = new MessageHistory();
+      history = await history.append({ role: 'user', content: 'valid history' });
+      const run: RunState = {
+        runId: 'bad-run',
+        threadId: 'bad-thread',
+        status: 'done',
+        stepIndex: 1,
+        usage: { inputTokens: 1, outputTokens: 1 },
+        scratch: {},
+        historyRevisionId: history.revisionId,
+      };
+
+      await t.rejects(
+        () => store.commitSession({
+          run,
+          thread: {
+            threadId: run.threadId,
+            historyRevisionId: 'missing-revision',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          history,
+        }),
+        /points at history revision/,
+        'mismatched thread revision rejects before commit',
+      );
+      t.equal(await store.loadRun(run.runId), null, 'run was not persisted');
+      t.equal(await store.loadThread(run.threadId), null, 'thread was not persisted');
+      t.equal(await store.loadHistory(history.revisionId), null, 'history graph was not persisted');
     } finally {
       await store.close();
       try { await fs.unlink(path); } catch {}

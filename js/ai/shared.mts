@@ -1,8 +1,29 @@
 /**
- * Shared provider utilities for bundled AI adapters.
+ * internal:ai/shared — shared support code for AI provider adapters.
  *
- * Most exports in this file support `fino:ai/model` and provider modules rather
- * than direct application use.
+ * This module holds the common pieces used by `fino:ai/model/openai`,
+ * `fino:ai/model/anthropic`, and the `fino:ai/model` convenience exports: provider
+ * base URLs, API-key resolution, provider HTTP errors, SSE response handling,
+ * schema normalization, stream assembly, and the basic `ModelStream`
+ * implementation.
+ *
+ * ## Boundary
+ *
+ * Application code should normally import from `fino:ai/model` or a concrete
+ * provider module. These helpers are kept together so bundled adapters normalize
+ * errors and stream assembly consistently. Provider HTTP failures throw
+ * `ModelError`; non-2xx streaming responses include status, body, and parsed
+ * retry-after delay when the provider supplied one.
+ *
+ * ```ts no_run
+ * import { assembleResult } from 'fino:ai/model';
+ *
+ * // Provider adapters expose streams; application code usually consumes the
+ * // public helper from fino:ai/model instead of importing internal utilities.
+ * const result = await assembleResult(stream);
+ * ```
+ *
+ * @internal
  */
 
 import { env } from 'fino:process';
