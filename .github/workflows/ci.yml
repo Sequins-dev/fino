@@ -8,6 +8,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  test-matrix:
+    name: Test Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.matrix.outputs.include }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Export matrix
+        id: matrix
+        run: |
+          ruby <<'RUBY'
+          require 'json'
+          require 'yaml'
+
+          matrix = YAML.load_file('.github/test-matrix.yml')
+          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |output|
+            output.puts("include=#{JSON.generate(matrix.fetch('include'))}")
+          end
+          RUBY
+
   fmt:
     name: Format Checks
     runs-on: ubuntu-latest
@@ -139,31 +161,13 @@ jobs:
   linux-tests:
     name: Linux Tests (${{ matrix.subsystem }})
     runs-on: ubuntu-latest
-    needs: linux-build
+    needs:
+      - linux-build
+      - test-matrix
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - subsystem: ai
-            paths: tests/ai
-          - subsystem: archive-ffi-process
-            paths: tests/archive tests/async-runtime tests/ffi.test.ts tests/ffi-callback.test.ts tests/process tests/profiler.test.ts
-          - subsystem: file-format
-            paths: tests/file tests/file-random-access.test.ts tests/format tests/markdown.test.ts tests/scanner.test.ts
-          - subsystem: internal-runtime
-            paths: tests/internal tests/runtime tests/commands
-          - subsystem: net-http
-            paths: tests/net/http-app.test.ts tests/net/http-client-webtransport.test.ts tests/net/http-client.test.ts tests/net/http-pool.test.ts tests/net/http-trailers.test.ts tests/net/http.test.ts tests/net/http2.test.ts tests/net/https.test.ts tests/net/eventsource.test.ts tests/net/serve-websocket.test.ts tests/net/serve.test.ts tests/net/websocket.test.ts tests/net/webtransport-h3-framing.test.ts tests/net/webtransport.test.ts
-          - subsystem: net-transport
-            paths: tests/net/dns-live.test.ts tests/net/dns-provider-interface.test.ts tests/net/dns.test.ts tests/net/dnssec.test.ts tests/net/provider-interface.test.ts tests/net/quic-h3.test.ts tests/net/quic-hq.test.ts tests/net/quic-node-interop.test.ts tests/net/quic-raw-packets.test.ts tests/net/quic-sim-recovery.test.ts tests/net/quic-sim.test.ts tests/net/quic-streams.test.ts tests/net/quic.test.ts tests/net/simulated-provider.test.ts tests/net/socket-class.test.ts tests/net/socket.test.ts tests/net/tls.test.ts
-          - subsystem: realm-cluster
-            paths: tests/realm tests/cluster tests/messaging
-          - subsystem: data-security
-            paths: tests/jsonrpc.test.ts tests/log.test.ts tests/security tests/sqlite-virt.test.ts tests/sqlite.test.ts tests/task.test.ts tests/template.test.ts tests/validate.test.ts tests/workflow
-          - subsystem: web-platform
-            paths: tests/integration tests/opentelemetry-http.integration.test.ts tests/opentelemetry.test.ts
-          - subsystem: test-tty-util
-            paths: tests/compress.test.ts tests/config.test.ts tests/test tests/tty.test.ts tests/tty tests/ui.test.ts tests/util tests/uuid.test.ts
+        include: ${{ fromJSON(needs.test-matrix.outputs.include) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -202,31 +206,13 @@ jobs:
   macos-tests:
     name: macOS Tests (${{ matrix.subsystem }})
     runs-on: macos-latest
-    needs: macos-build
+    needs:
+      - macos-build
+      - test-matrix
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - subsystem: ai
-            paths: tests/ai
-          - subsystem: archive-ffi-process
-            paths: tests/archive tests/async-runtime tests/ffi.test.ts tests/ffi-callback.test.ts tests/process tests/profiler.test.ts
-          - subsystem: file-format
-            paths: tests/file tests/file-random-access.test.ts tests/format tests/markdown.test.ts tests/scanner.test.ts
-          - subsystem: internal-runtime
-            paths: tests/internal tests/runtime tests/commands
-          - subsystem: net-http
-            paths: tests/net/http-app.test.ts tests/net/http-client-webtransport.test.ts tests/net/http-client.test.ts tests/net/http-pool.test.ts tests/net/http-trailers.test.ts tests/net/http.test.ts tests/net/http2.test.ts tests/net/https.test.ts tests/net/eventsource.test.ts tests/net/serve-websocket.test.ts tests/net/serve.test.ts tests/net/websocket.test.ts tests/net/webtransport-h3-framing.test.ts tests/net/webtransport.test.ts
-          - subsystem: net-transport
-            paths: tests/net/dns-live.test.ts tests/net/dns-provider-interface.test.ts tests/net/dns.test.ts tests/net/dnssec.test.ts tests/net/provider-interface.test.ts tests/net/quic-h3.test.ts tests/net/quic-hq.test.ts tests/net/quic-node-interop.test.ts tests/net/quic-raw-packets.test.ts tests/net/quic-sim-recovery.test.ts tests/net/quic-sim.test.ts tests/net/quic-streams.test.ts tests/net/quic.test.ts tests/net/simulated-provider.test.ts tests/net/socket-class.test.ts tests/net/socket.test.ts tests/net/tls.test.ts
-          - subsystem: realm-cluster
-            paths: tests/realm tests/cluster tests/messaging
-          - subsystem: data-security
-            paths: tests/jsonrpc.test.ts tests/log.test.ts tests/security tests/sqlite-virt.test.ts tests/sqlite.test.ts tests/task.test.ts tests/template.test.ts tests/validate.test.ts tests/workflow
-          - subsystem: web-platform
-            paths: tests/integration tests/opentelemetry-http.integration.test.ts tests/opentelemetry.test.ts
-          - subsystem: test-tty-util
-            paths: tests/compress.test.ts tests/config.test.ts tests/test tests/tty.test.ts tests/tty tests/ui.test.ts tests/util tests/uuid.test.ts
+        include: ${{ fromJSON(needs.test-matrix.outputs.include) }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -1,0 +1,41 @@
+include:
+  - subsystem: root
+    paths: "tests/*.test.ts"
+  - subsystem: ai
+    paths: tests/ai
+  - subsystem: archive
+    paths: tests/archive
+  - subsystem: async-runtime
+    paths: tests/async-runtime
+  - subsystem: cluster
+    paths: tests/cluster
+  - subsystem: commands
+    paths: tests/commands
+  - subsystem: file
+    paths: tests/file
+  - subsystem: format
+    paths: tests/format
+  - subsystem: integration
+    paths: tests/integration
+  - subsystem: internal
+    paths: tests/internal
+  - subsystem: messaging
+    paths: tests/messaging
+  - subsystem: net
+    paths: tests/net
+  - subsystem: process
+    paths: tests/process
+  - subsystem: realm
+    paths: tests/realm
+  - subsystem: runtime
+    paths: tests/runtime
+  - subsystem: security
+    paths: tests/security
+  - subsystem: test
+    paths: tests/test
+  - subsystem: tty
+    paths: tests/tty
+  - subsystem: util
+    paths: tests/util
+  - subsystem: workflow
+    paths: tests/workflow
