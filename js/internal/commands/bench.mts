@@ -18,7 +18,7 @@
  */
 
 import { cwd } from '../../process.mts';
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { DiskFileSystem } from '../../file/fs.mts';
 
 function normalizeModuleSpecifier(path: string): string {
@@ -73,40 +73,49 @@ async function expandArg(arg: string): Promise<string[]> {
  * await bench.parse(['--filter', 'parser', 'benchmarks/parser.bench.mjs']);
  * ```
  *
- * @returns A configured `Command` instance for `fino bench`.
+ * @returns A configured `Task` instance for `fino bench`.
  * @internal
  */
-export function createBenchCommand(): Command {
-  return new Command({
+export function createBenchCommand(): Task {
+  return new Task({
     name: 'bench',
     description: 'Run benchmark files',
-    run: async function runBenchCommand(ctx: CommandContext) {
-      const benchFiles = Array.isArray(ctx.args.files) ? ctx.args.files : [];
-      const filter = typeof ctx.options.filter === 'string' ? ctx.options.filter : undefined;
+    outputMode: 'both',
+    run: async function runBenchCommand(input: { files?: unknown[]; filter?: unknown }, ctx) {
+      const benchFiles = Array.isArray(input.files) ? input.files : [];
+      const filter = typeof input.filter === 'string' ? input.filter : undefined;
       if (benchFiles.length === 0) {
         throw new Error('fino bench: no benchmark files specified');
       }
 
-      let imported = 0;
+      const importedFiles: string[] = [];
       for (const raw of benchFiles) {
         const expanded = await expandArg(String(raw));
         for (const file of expanded) {
           await import(normalizeModuleSpecifier(file));
-          imported++;
+          importedFiles.push(file);
         }
       }
-      if (imported === 0) {
+      if (importedFiles.length === 0) {
         throw new Error(`fino bench: no benchmark files matched ${benchFiles.map(String).join(', ')}`);
       }
 
       const { run } = await import('fino:bench');
-      return filter === undefined ? run({}) : run({ filter });
+      const output = await (filter === undefined ? run({}) : run({ filter }));
+      if (ctx.writer.mode === 'json') {
+        const result = { command: 'bench', ok: true, files: benchFiles.map(String), imported: importedFiles, filter, output };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
+      return output;
     },
-    options: [
-      { flags: '--filter', type: 'string', description: 'Run only benchmark groups whose full path contains the filter text' },
-    ],
-    positionals: [
-      { name: 'files', type: 'string', multiple: true, required: true, description: 'Benchmark files to import and run' },
-    ],
+    cli: {
+      options: [
+        { flags: '--filter', type: 'string', description: 'Run only benchmark groups whose full path contains the filter text' },
+      ],
+      positionals: [
+        { name: 'files', type: 'string', multiple: true, required: true, description: 'Benchmark files to import and run' },
+      ],
+    },
   });
 }

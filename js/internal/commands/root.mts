@@ -14,7 +14,7 @@
  * @internal
  */
 
-import { Command } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { createTestCommand } from './test.mts';
 import { createBenchCommand } from './bench.mts';
 import { createInstallCommand } from './install.mts';
@@ -23,7 +23,7 @@ import { createDocCommand } from './doc.mts';
 import { createFmtCommand } from './fmt.mts';
 import { createLintCommand } from './lint.mts';
 import { createReplCommand, runReplCommand } from './repl.mts';
-import { createRunCommand, runScriptCommand } from './run.mts';
+import { createRunCommand, runScriptTask } from './run.mts';
 
 /**
  * Create the root CLI command.
@@ -39,34 +39,37 @@ import { createRunCommand, runScriptCommand } from './run.mts';
  * await root.parse(['run', 'example.mts']);
  * ```
  *
- * @returns A configured root `Command` for the Fino CLI.
+ * @returns A configured root `Task` for the Fino CLI.
  * @internal
  */
-export function createRootCommand(): Command {
-  return new Command({
+export function createRootCommand(): Task {
+  return new Task({
     name: 'fino',
     description: 'Fino runtime CLI',
-    options: [
-      {
-        flags: '--otlp-endpoint',
-        type: 'string',
-        description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint',
-      },
-      {
-        flags: '--watch',
-        type: 'boolean',
-        description: 'Re-run the script whenever any imported file changes',
-      },
-    ],
-    run: async function runRootCommand(ctx) {
-      const script = ctx.args.script;
-      if (script === undefined) return runReplCommand();
-      return runScriptCommand(ctx);
+    outputMode: 'text',
+    cli: {
+      options: [
+        {
+          flags: '--otlp-endpoint',
+          type: 'string',
+          description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint',
+        },
+        {
+          flags: '--watch',
+          type: 'boolean',
+          description: 'Re-run the script whenever any imported file changes',
+        },
+      ],
+      positionals: [
+        { name: 'script', type: 'string', description: 'Script module to execute' },
+      ],
     },
-    positionals: [
-      { name: 'script', type: 'string', description: 'Script module to execute' },
-    ],
-    commands: [
+    run: async function runRootCommand(input) {
+      const script = (input as { script?: unknown }).script;
+      if (script === undefined) return runReplCommand();
+      return runScriptTask(input as Record<string, unknown>);
+    },
+    children: [
       createRunCommand(),
       createTestCommand(),
       createBenchCommand(),

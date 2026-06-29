@@ -28,11 +28,11 @@
  * import { agent } from 'fino:ai/agent';
  * import { anthropicProvider } from 'fino:ai/model/anthropic';
  *
- * const [info] = await anthropicProvider().listModels();
- * const bot = agent({
- *   model: info.create(),
- *   instructions: 'Prefer explicit assumptions.',
- * });
+* const [info] = await anthropicProvider().listModels();
+* const bot = agent({
+*   model: await info.create(),
+*   instructions: 'Prefer explicit assumptions.',
+* });
  *
  * const result = await bot.generate('Review this migration plan.');
  * console.log(result.text);
@@ -114,6 +114,8 @@ function buildAnthropicRequest(
   modelName: string,
   maxTokens: number,
   temperature: number | undefined,
+  topP: number | undefined,
+  providerOptions: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
   const messages: Array<Record<string, unknown>> = [];
   let system: unknown;
@@ -153,6 +155,8 @@ function buildAnthropicRequest(
 
   const temp = req.temperature ?? temperature;
   if (temp != null) body.temperature = temp;
+  const effectiveTopP = req.topP ?? topP;
+  if (effectiveTopP != null) body.top_p = effectiveTopP;
 
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({
@@ -182,6 +186,11 @@ function buildAnthropicRequest(
         },
       },
     };
+  }
+
+  const anthropicOptions = req.providerOptions?.anthropic ?? providerOptions?.anthropic;
+  if (anthropicOptions && typeof anthropicOptions === 'object' && !Array.isArray(anthropicOptions)) {
+    Object.assign(body, anthropicOptions);
   }
 
   return body;
@@ -292,6 +301,7 @@ function normalizeAnthropicResponse(data: Record<string, unknown>): GenerateResu
       ...(usage.cache_read_input_tokens ? { cacheReadInputTokens: usage.cache_read_input_tokens } : {}),
       ...(usage.cache_creation_input_tokens ? { cacheCreationInputTokens: usage.cache_creation_input_tokens } : {}),
     },
+    providerMetadata: { anthropic: data },
   };
 }
 
@@ -299,7 +309,14 @@ class AnthropicModel implements Model {
   readonly id: string;
   readonly name: string;
   readonly provider = 'anthropic';
-  readonly capabilities = { responseFormat: true };
+  readonly capabilities = {
+    streaming: true,
+    toolCalling: true,
+    toolChoice: { auto: true, any: true, none: true, named: true },
+    structuredOutput: { jsonSchema: true, strictJsonSchema: true, native: true },
+    input: { text: true, image: true, document: true },
+    sampling: { temperature: true, topP: true, seed: false, stopSequences: true },
+  };
   readonly dimensions = 0;
   #client: ClientLike;
   #apiKey: string;
@@ -307,6 +324,8 @@ class AnthropicModel implements Model {
   #headers: Record<string, string>;
   #maxTokens: number;
   #temperature: number | undefined;
+  #topP: number | undefined;
+  #providerOptions: Record<string, unknown> | undefined;
 
   constructor(
     modelName: string,
@@ -316,6 +335,8 @@ class AnthropicModel implements Model {
     headers: Record<string, string>,
     maxTokens: number,
     temperature: number | undefined,
+    topP: number | undefined,
+    providerOptions: Record<string, unknown> | undefined,
   ) {
     this.id = modelName;
     this.name = modelName;
@@ -325,6 +346,8 @@ class AnthropicModel implements Model {
     this.#headers = headers;
     this.#maxTokens = maxTokens;
     this.#temperature = temperature;
+    this.#topP = topP;
+    this.#providerOptions = providerOptions;
   }
 
   stream(req: GenerateRequest): ModelStream {
@@ -334,10 +357,12 @@ class AnthropicModel implements Model {
     const headers = this.#headers;
     const maxTokens = this.#maxTokens;
     const temperature = this.#temperature;
+    const topP = this.#topP;
+    const providerOptions = this.#providerOptions;
     const modelName = this.name;
 
     async function* gen(): AsyncGenerator<StreamEvent> {
-      const body = buildAnthropicRequest(req, modelName, maxTokens, temperature);
+      const body = buildAnthropicRequest(req, modelName, maxTokens, temperature, topP, providerOptions);
       const res = await client.request(`${baseUrl}/v1/messages`, {
         method: 'POST',
         headers: {
@@ -368,7 +393,7 @@ class AnthropicModel implements Model {
   }
 
   async generate(req: GenerateRequest): Promise<GenerateResult> {
-    const body = buildAnthropicRequest(req, this.name, this.#maxTokens, this.#temperature);
+    const body = buildAnthropicRequest(req, this.name, this.#maxTokens, this.#temperature, this.#topP, this.#providerOptions);
     const res = await this.#client.request(`${this.#baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
@@ -403,6 +428,8 @@ class AnthropicModelProvider implements ModelProvider {
   #headers: Record<string, string>;
   #maxTokens: number;
   #temperature: number | undefined;
+  #topP: number | undefined;
+  #providerOptions: Record<string, unknown> | undefined;
 
   constructor(opts: ProviderOptions = {}) {
     this.#apiKey = resolveApiKey(opts, 'ANTHROPIC_API_KEY');
@@ -413,6 +440,8 @@ class AnthropicModelProvider implements ModelProvider {
     this.#headers = opts.headers ?? {};
     this.#maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.#temperature = opts.temperature;
+    this.#topP = opts.topP;
+    this.#providerOptions = opts.providerOptions;
   }
 
   #authHeaders(headers?: Record<string, string>): Record<string, string> {
@@ -448,7 +477,7 @@ class AnthropicModelProvider implements ModelProvider {
     return (data.data ?? []).map((entry) => this.#info(entry));
   }
 
-  createModel(id: string, opts: ModelCreateOptions = {}): Model {
+  async createModel(id: string, opts: ModelCreateOptions = {}): Promise<Model> {
     return new AnthropicModel(
       id,
       this.#apiKey,
@@ -457,6 +486,8 @@ class AnthropicModelProvider implements ModelProvider {
       { ...this.#headers, ...(opts.headers ?? {}) },
       opts.maxTokens ?? this.#maxTokens,
       opts.temperature ?? this.#temperature,
+      opts.topP ?? this.#topP,
+      opts.providerOptions ?? this.#providerOptions,
     );
   }
 
@@ -470,7 +501,14 @@ class AnthropicModelProvider implements ModelProvider {
       provider: this.provider,
       ...(typeof entry.display_name === 'string' ? { displayName: entry.display_name } : {}),
       ...(createdAt !== undefined && !Number.isNaN(createdAt) ? { createdAt } : {}),
-      capabilities: { responseFormat: true },
+      capabilities: {
+        streaming: true,
+        toolCalling: true,
+        toolChoice: { auto: true, any: true, none: true, named: true },
+        structuredOutput: { jsonSchema: true, strictJsonSchema: true, native: true },
+        input: { text: true, image: true, document: true },
+        sampling: { temperature: true, topP: true, seed: false, stopSequences: true },
+      },
       metadata: { ...entry },
       create: (opts?: ModelCreateOptions) => this.createModel(id, opts),
     };
@@ -494,5 +532,17 @@ export function anthropicProvider(opts: ProviderOptions = {}): ModelProvider {
  * custom runtimes that provide their own HTTP transport.
  */
 export function anthropic(opts: ProviderOptions = {}): Model {
-  return anthropicProvider(opts).createModel(opts.model ?? 'claude-opus-4-8', opts);
+  return new AnthropicModel(
+    opts.model ?? 'claude-opus-4-8',
+    resolveApiKey(opts, 'ANTHROPIC_API_KEY'),
+    opts.client != null
+      ? opts.client as unknown as ClientLike
+      : new HttpClient() as unknown as ClientLike,
+    opts.baseUrl ?? ANTHROPIC_BASE_URL,
+    opts.headers ?? {},
+    opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+    opts.temperature,
+    opts.topP,
+    opts.providerOptions,
+  );
 }

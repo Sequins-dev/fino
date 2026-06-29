@@ -27,11 +27,11 @@
  * import { agent } from 'fino:ai/agent';
  * import { openaiProvider } from 'fino:ai/model/openai';
  *
- * const [info] = await openaiProvider().listModels();
- * const bot = agent({
- *   model: info.create({ temperature: 0.2 }),
- *   instructions: 'Answer with one concise paragraph.',
- * });
+* const [info] = await openaiProvider().listModels();
+* const bot = agent({
+*   model: await info.create({ temperature: 0.2 }),
+*   instructions: 'Answer with one concise paragraph.',
+* });
  *
  * const result = await bot.generate('Explain durable agent sessions.');
  * console.log(result.text);
@@ -82,6 +82,9 @@ function buildOpenAIRequest(
   modelName: string,
   maxTokens: number,
   temperature: number | undefined,
+  topP: number | undefined,
+  seed: number | undefined,
+  providerOptions: Record<string, unknown> | undefined,
   stream: boolean,
 ): Record<string, unknown> {
   const messages: Array<Record<string, unknown>> = [];
@@ -162,6 +165,10 @@ function buildOpenAIRequest(
 
   const temp = req.temperature ?? temperature;
   if (temp != null) body.temperature = temp;
+  const effectiveTopP = req.topP ?? topP;
+  if (effectiveTopP != null) body.top_p = effectiveTopP;
+  const effectiveSeed = req.seed ?? seed;
+  if (effectiveSeed != null) body.seed = effectiveSeed;
 
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({
@@ -188,6 +195,11 @@ function buildOpenAIRequest(
         strict: req.responseFormat.strict ?? true,
       },
     };
+  }
+
+  const openaiOptions = req.providerOptions?.openai ?? providerOptions?.openai;
+  if (openaiOptions && typeof openaiOptions === 'object' && !Array.isArray(openaiOptions)) {
+    Object.assign(body, openaiOptions);
   }
 
   return body;
@@ -290,6 +302,7 @@ function normalizeOpenAIResponse(data: Record<string, unknown>): GenerateResult 
       outputTokens: (usage.completion_tokens as number) ?? 0,
       ...(cached ? { cacheReadInputTokens: cached } : {}),
     },
+    providerMetadata: { openai: data },
   };
 }
 
@@ -297,7 +310,14 @@ class OpenAIModel implements Model {
   readonly id: string;
   readonly name: string;
   readonly provider = 'openai';
-  readonly capabilities = { responseFormat: true };
+  readonly capabilities = {
+    streaming: true,
+    toolCalling: true,
+    toolChoice: { auto: true, any: true, none: true, named: true },
+    structuredOutput: { jsonSchema: true, strictJsonSchema: true, native: true },
+    input: { text: true, image: true, document: false },
+    sampling: { temperature: true, topP: true, seed: true, stopSequences: true },
+  };
   readonly dimensions: number;
   #client: ClientLike;
   #apiKey: string;
@@ -305,6 +325,9 @@ class OpenAIModel implements Model {
   #headers: Record<string, string>;
   #maxTokens: number;
   #temperature: number | undefined;
+  #topP: number | undefined;
+  #seed: number | undefined;
+  #providerOptions: Record<string, unknown> | undefined;
   #embeddingModel: string;
 
   constructor(
@@ -315,6 +338,9 @@ class OpenAIModel implements Model {
     headers: Record<string, string>,
     maxTokens: number,
     temperature: number | undefined,
+    topP: number | undefined,
+    seed: number | undefined,
+    providerOptions: Record<string, unknown> | undefined,
     dimensions: number,
     embeddingModel: string,
   ) {
@@ -327,6 +353,9 @@ class OpenAIModel implements Model {
     this.#headers = headers;
     this.#maxTokens = maxTokens;
     this.#temperature = temperature;
+    this.#topP = topP;
+    this.#seed = seed;
+    this.#providerOptions = providerOptions;
     this.#embeddingModel = embeddingModel;
   }
 
@@ -344,10 +373,13 @@ class OpenAIModel implements Model {
     const modelName = this.name;
     const maxTokens = this.#maxTokens;
     const temperature = this.#temperature;
+    const topP = this.#topP;
+    const seed = this.#seed;
+    const providerOptions = this.#providerOptions;
     const authHeaders = this.#authHeaders();
 
     async function* gen(): AsyncGenerator<StreamEvent> {
-      const body = buildOpenAIRequest(req, modelName, maxTokens, temperature, true);
+      const body = buildOpenAIRequest(req, modelName, maxTokens, temperature, topP, seed, providerOptions, true);
       const res = await client.request(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { ...authHeaders, accept: 'text/event-stream' },
@@ -367,7 +399,7 @@ class OpenAIModel implements Model {
   }
 
   async generate(req: GenerateRequest): Promise<GenerateResult> {
-    const body = buildOpenAIRequest(req, this.name, this.#maxTokens, this.#temperature, false);
+    const body = buildOpenAIRequest(req, this.name, this.#maxTokens, this.#temperature, this.#topP, this.#seed, this.#providerOptions, false);
     const res = await this.#client.request(`${this.#baseUrl}/chat/completions`, {
       method: 'POST',
       headers: { ...this.#authHeaders(), accept: 'application/json' },
@@ -406,6 +438,9 @@ class OpenAIModelProvider implements ModelProvider {
   #headers: Record<string, string>;
   #maxTokens: number;
   #temperature: number | undefined;
+  #topP: number | undefined;
+  #seed: number | undefined;
+  #providerOptions: Record<string, unknown> | undefined;
   #dimensions: number;
 
   constructor(opts: ProviderOptions = {}) {
@@ -417,6 +452,9 @@ class OpenAIModelProvider implements ModelProvider {
     this.#headers = opts.headers ?? {};
     this.#maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
     this.#temperature = opts.temperature;
+    this.#topP = opts.topP;
+    this.#seed = opts.seed;
+    this.#providerOptions = opts.providerOptions;
     this.#dimensions = opts.dimensions ?? 0;
   }
 
@@ -451,7 +489,7 @@ class OpenAIModelProvider implements ModelProvider {
     return (data.data ?? []).map((entry) => this.#info(entry));
   }
 
-  createModel(id: string, opts: ModelCreateOptions = {}): Model {
+  async createModel(id: string, opts: ModelCreateOptions = {}): Promise<Model> {
     return new OpenAIModel(
       id,
       this.#apiKey,
@@ -460,6 +498,9 @@ class OpenAIModelProvider implements ModelProvider {
       { ...this.#headers, ...(opts.headers ?? {}) },
       opts.maxTokens ?? this.#maxTokens,
       opts.temperature ?? this.#temperature,
+      opts.topP ?? this.#topP,
+      opts.seed ?? this.#seed,
+      opts.providerOptions ?? this.#providerOptions,
       opts.dimensions ?? this.#dimensions,
       'text-embedding-3-small',
     );
@@ -472,7 +513,14 @@ class OpenAIModelProvider implements ModelProvider {
       provider: this.provider,
       ...(typeof entry.created === 'number' ? { createdAt: entry.created } : {}),
       ...(typeof entry.owned_by === 'string' ? { ownedBy: entry.owned_by } : {}),
-      capabilities: { responseFormat: true },
+      capabilities: {
+        streaming: true,
+        toolCalling: true,
+        toolChoice: { auto: true, any: true, none: true, named: true },
+        structuredOutput: { jsonSchema: true, strictJsonSchema: true, native: true },
+        input: { text: true, image: true, document: false },
+        sampling: { temperature: true, topP: true, seed: true, stopSequences: true },
+      },
       metadata: { ...entry },
       create: (opts?: ModelCreateOptions) => this.createModel(id, opts),
     };
@@ -497,5 +545,20 @@ export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
  * runtimes that provide their own HTTP transport.
  */
 export function openai(opts: ProviderOptions = {}): Model {
-  return openaiProvider(opts).createModel(opts.model ?? 'gpt-4o', opts);
+  return new OpenAIModel(
+    opts.model ?? 'gpt-4o',
+    resolveApiKey(opts, 'OPENAI_API_KEY'),
+    opts.client != null
+      ? opts.client as unknown as ClientLike
+      : new HttpClient() as unknown as ClientLike,
+    opts.baseUrl ?? OPENAI_BASE_URL,
+    opts.headers ?? {},
+    opts.maxTokens ?? DEFAULT_MAX_TOKENS,
+    opts.temperature,
+    opts.topP,
+    opts.seed,
+    opts.providerOptions,
+    opts.dimensions ?? 0,
+    'text-embedding-3-small',
+  );
 }

@@ -46,7 +46,7 @@
  */
 
 import { AgentRuntime, streamText as runtimeStreamText } from 'internal:ai/runtime';
-import type { AgentRuntimeOptions, AgentState, StepResult, RunInput, AgentResult, AgentStream } from 'internal:ai/runtime';
+import type { AgentRuntimeOptions, AgentState, StepResult, RunInput, AgentResult, AgentStream, AgentEvent, ToolApprovalRequest } from 'internal:ai/runtime';
 import { appendOnlyHistoryStrategy } from 'fino:ai/context';
 import type { HistoryStrategy } from 'fino:ai/context';
 import { tool } from 'fino:ai/tool';
@@ -59,7 +59,7 @@ function normalizeInput(input: string | RunInput): RunInput {
   return input;
 }
 
-export type { AgentState as AgentState, StepResult, RunInput, AgentResult, AgentStream };
+export type { AgentState as AgentState, StepResult, RunInput, AgentResult, AgentStream, AgentEvent };
 
 /**
  * Iterate over only text deltas from an agent stream.
@@ -96,6 +96,17 @@ export class Agent {
    */
   step(state: AgentState): Promise<StepResult> {
     return this.#runtime.step(state);
+  }
+
+  /**
+   * Execute or reject a pending approval-required tool call.
+   *
+   * Sessions call this after validating a resume token. Application code should
+   * usually use `Session.approveTool()` or `Session.rejectTool()` instead so
+   * the decision and resulting tool output are checkpointed durably.
+   */
+  approveTool(state: AgentState, request: ToolApprovalRequest, approval: unknown): Promise<StepResult> {
+    return this.#runtime.approveTool(state, request, approval);
   }
 
   /**

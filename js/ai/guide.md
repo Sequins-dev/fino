@@ -3,13 +3,16 @@ weight: 30
 ---
 # AI Guide
 
-Use these modules when an application needs model calls, tool use, durable
-multi-turn work, external tool exposure, evals, or reusable agent skills. Start
-with the smallest surface that matches the workflow, then add state, tools, and
-transports only when the interaction needs them.
+Use `fino:ai` first when an application needs model calls, tool use, durable
+multi-turn work, external tool exposure, evals, or reusable agent skills. The
+root module re-exports the stable application-facing APIs. Reach for subsystem
+imports when you want narrower type imports or are documenting an advanced
+boundary.
 
 ## Concept Map
 
+- `fino:ai` is the happy-path application surface for agents, tools, models,
+  sessions, memory, evals, skills, and MCP adapters.
 - `fino:ai/model` is the stateless provider-neutral model contract.
 - `fino:ai/agent` runs a model loop with history policy, tools, structured
   output, guardrails, retries, fallbacks, and streaming.
@@ -39,6 +42,12 @@ Use `fino:ai/session` when a run must survive process restarts, fork a thread,
 resume after human approval, or keep durable state across request boundaries.
 Sessions are the durable boundary; the agent remains the behavior boundary.
 
+Use `fino:workflow` with `fino:ai/agent` when an application needs durable
+multi-step orchestration around one or more agent calls. Keep ordinary
+TypeScript branching, loops, `Promise.all`, and external waits in the workflow,
+and put agent calls inside checkpointed workflow steps when duplicate model or
+tool execution would be unsafe.
+
 Use `fino:ai/mcp` when the capabilities need to be available to external MCP
 clients. MCP is a protocol boundary, not an internal-only abstraction for code
 that already lives in the same process.
@@ -59,11 +68,13 @@ A typical advanced application separates the pieces:
 2. Configure an `Agent` with a provider model, instructions, tools, and any
    output schema or guardrails.
 3. Add a `SessionStore` when threads need durability or suspend/resume.
-4. Expose the workflow through your application routes, or through
+4. Wrap agent calls in `fino:workflow` when the surrounding process has multiple
+   durable steps, timers, or external signals.
+5. Expose the workflow through your application routes, or through
    `fino:ai/mcp` when external MCP clients need protocol-level discovery.
-5. Cover important behavior with `fino:ai/eval`, using stubs or pinned models
+6. Cover important behavior with `fino:ai/eval`, using stubs or pinned models
    for CI and OpenTelemetry for traceable reports.
-6. Move optional domain-specific prompting into `fino:ai/skill` once the base
+7. Move optional domain-specific prompting into `fino:ai/skill` once the base
    agent would otherwise carry too much rarely used context.
 
 ## End-to-End Example
@@ -72,10 +83,7 @@ This support assistant has one validated tool, durable session state, structured
 output, and an HTTP route that runs one session turn.
 
 ```ts
-import { agent } from 'fino:ai/agent';
-import { openai } from 'fino:ai/model';
-import { InMemorySessionStore, session } from 'fino:ai/session';
-import { tool } from 'fino:ai/tool';
+import { agent, InMemorySessionStore, openai, session, tool } from 'fino:ai';
 import { App } from 'fino:net/http/app';
 import { v } from 'fino:validate';
 

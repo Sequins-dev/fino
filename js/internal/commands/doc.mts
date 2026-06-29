@@ -29,7 +29,7 @@
  */
 
 import { DiskFileSystem } from '../../file/fs.mts';
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task, type TaskContext } from '../../task.mts';
 import { cwd } from '../../process.mts';
 import { renderMarkdown, renderMarkdownInline, type MarkdownOptions } from '../../format/markdown.mts';
 import { escapeHtml, render as renderTemplate } from '../../template.mts';
@@ -2835,13 +2835,13 @@ async function runDocsStatement(db: DocsDatabase, sql: string, ...params: unknow
   }
 }
 
-async function runBuildCommand(ctx: CommandContext): Promise<string> {
+async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
   const outDir = docsDir();
-  const format = String(ctx.options.format ?? 'markdown');
-  const title = ctx.optionProvided('title') ? String(ctx.options.title ?? '') : await inferDocsTitle();
-  const includePrivate = ctx.options['include-private'] === true;
+  const format = String(input.format ?? 'markdown');
+  const title = ctx.optionProvided?.('title') ? String(input.title ?? '') : await inferDocsTitle();
+  const includePrivate = input['include-private'] === true;
   const written: string[] = [];
-  const inputs = await expandDocInputs(ctx.args.files);
+  const inputs = await expandDocInputs(input.files);
 
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc: no source files specified');
   await ensureDir(outDir);
@@ -2891,7 +2891,23 @@ async function runBuildCommand(ctx: CommandContext): Promise<string> {
   await pruneGeneratedOutputs(expectedOutputs);
   await writeOutputManifest(expectedOutputs);
 
-  return written.join('\n');
+  const message = written.join('\n');
+  if (ctx.writer.mode === 'json') {
+    const result = {
+      command: 'doc build',
+      ok: true,
+      format,
+      title,
+      includePrivate,
+      sourceFiles: inputs.sourceFiles,
+      guideFiles: inputs.guideFiles,
+      written,
+      message,
+    };
+    await ctx.writer.writeJson(result);
+    return result;
+  }
+  return message;
 }
 
 async function inferDocsTitle(): Promise<string> {
@@ -3013,13 +3029,27 @@ async function writeOutputManifest(outputs: Set<string>): Promise<void> {
   }
 }
 
-async function runShowCommand(ctx: CommandContext): Promise<string> {
-  const symbol = String(ctx.args.symbol ?? '');
+async function runShowCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+  const symbol = String(input.symbol ?? '');
   const existingApi = await readExistingApiJson();
   const existing = existingApi ? renderShowResult(existingApi, symbol) : undefined;
-  if (existing !== undefined) return existing;
+  if (existing !== undefined) {
+    if (ctx.writer.mode === 'json') {
+      const result = { command: 'doc show', ok: true, symbol, found: true, output: existing };
+      await ctx.writer.writeJson(result);
+      return result;
+    }
+    return existing;
+  }
   const api = existingApi ? await refreshDocsForQuery(symbol) : await ensureApiJson();
-  return renderShowResult(api, symbol) ?? renderShowMiss(api, symbol);
+  const output = renderShowResult(api, symbol);
+  const message = output ?? renderShowMiss(api, symbol);
+  if (ctx.writer.mode === 'json') {
+    const result = { command: 'doc show', ok: true, symbol, found: output !== undefined, output: message };
+    await ctx.writer.writeJson(result);
+    return result;
+  }
+  return message;
 }
 
 async function readExistingApiJson(): Promise<ApiDoc | undefined> {
@@ -3043,20 +3073,33 @@ function renderShowMiss(api: ApiDoc, symbol: string): string {
     : renderCandidates(`No exact match for ${symbol}. Did you mean:`, suggestions);
 }
 
-async function runSearchCommand(ctx: CommandContext): Promise<string> {
-  const parts = Array.isArray(ctx.args.query) ? ctx.args.query.map(String) : [String(ctx.args.query ?? '')];
+async function runSearchCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+  const parts = Array.isArray(input.query) ? input.query.map(String) : [String(input.query ?? '')];
   const query = parts.join(' ').trim();
   const existingDbPath = docsDbPath();
   if (await exists(existingDbPath)) {
     try {
       const existing = await searchSqlite(existingDbPath, query);
-      if (!isNoResults(existing, query)) return existing;
+      if (!isNoResults(existing, query)) {
+        if (ctx.writer.mode === 'json') {
+          const result = { command: 'doc search', ok: true, query, found: true, output: existing };
+          await ctx.writer.writeJson(result);
+          return result;
+        }
+        return existing;
+      }
     } catch (_) {
       // Fall through to transparent refresh for legacy or corrupt indexes.
     }
   }
   const dbPath = await exists(existingDbPath) ? await refreshDocsDbForQuery(query) : await ensureDocsDb();
-  return searchSqlite(dbPath, query);
+  const output = await searchSqlite(dbPath, query);
+  if (ctx.writer.mode === 'json') {
+    const result = { command: 'doc search', ok: true, query, found: !isNoResults(output, query), output };
+    await ctx.writer.writeJson(result);
+    return result;
+  }
+  return output;
 }
 
 function isNoResults(output: string, query: string): boolean {
@@ -3158,8 +3201,8 @@ function docTestSpecifier(example: { module: ModuleDoc; symbol: FlatSymbol; inde
   return modulePath.slice(0, insertAt) + suffix + ext;
 }
 
-async function runDocTestCommand(ctx: CommandContext): Promise<string> {
-  const files = await expandInputs(ctx.args.files);
+async function runDocTestCommand(input: Record<string, unknown>, ctx: TaskContext): Promise<string | Record<string, unknown>> {
+  const files = await expandInputs(input.files);
   if (files.length === 0) throw new Error('fino doc test: no source files specified');
 
   const api = await extractApi(files, false);
@@ -3202,7 +3245,13 @@ async function runDocTestCommand(ctx: CommandContext): Promise<string> {
   await import(normalizeModuleSpecifier(testPath));
   const { run } = await import('fino:test/test');
   await run({});
-  return `${runnable} passed\n${ignored} ignored`;
+  const message = `${runnable} passed\n${ignored} ignored`;
+  if (ctx.writer.mode === 'json') {
+    const result = { command: 'doc test', ok: true, files, runnable, ignored, message };
+    await ctx.writer.writeJson(result);
+    return result;
+  }
+  return message;
 }
 
 function buildOptions() {
@@ -3236,45 +3285,60 @@ function filesPositional() {
  * await doc.parse(['build', '--format', 'markdown', 'js/internal/stream.mts']);
  * ```
  *
- * @returns A configured `Command` instance for `fino doc`.
+ * @returns A configured `Task` instance for `fino doc`.
  * @internal
  */
-export function createDocCommand(): Command {
-  return new Command({
+export function createDocCommand(): Task {
+  return new Task({
     name: 'doc',
     description: 'Generate, search, and test API docs from commented source files',
+    outputMode: 'both',
     run: runBuildCommand,
-    options: buildOptions(),
-    positionals: filesPositional(),
-    commands: [
-      new Command({
+    cli: {
+      options: buildOptions(),
+      positionals: filesPositional(),
+    },
+    children: [
+      new Task({
         name: 'build',
         description: 'Generate API docs',
+        outputMode: 'both',
         run: runBuildCommand,
-        options: buildOptions(),
-        positionals: filesPositional(),
+        cli: {
+          options: buildOptions(),
+          positionals: filesPositional(),
+        },
       }),
-      new Command({
+      new Task({
         name: 'show',
         description: 'Print one documented symbol as Markdown',
+        outputMode: 'both',
         run: runShowCommand,
-        positionals: [
-          { name: 'symbol', type: 'string', required: true, description: 'Symbol id or name to show' },
-        ],
+        cli: {
+          positionals: [
+            { name: 'symbol', type: 'string', required: true, description: 'Symbol id or name to show' },
+          ],
+        },
       }),
-      new Command({
+      new Task({
         name: 'search',
         description: 'Search generated docs',
+        outputMode: 'both',
         run: runSearchCommand,
-        positionals: [
-          { name: 'query', type: 'string', multiple: true, required: true, description: 'Search query' },
-        ],
+        cli: {
+          positionals: [
+            { name: 'query', type: 'string', multiple: true, required: true, description: 'Search query' },
+          ],
+        },
       }),
-      new Command({
+      new Task({
         name: 'test',
         description: 'Run examples from documentation comments',
+        outputMode: 'both',
         run: runDocTestCommand,
-        positionals: filesPositional(),
+        cli: {
+          positionals: filesPositional(),
+        },
       }),
     ],
   });

@@ -32,14 +32,14 @@
  *
  * const first = await sess.start('Start a support conversation.');
  * if (first.status === 'suspended') {
- *   await sess.resume(first.state.suspendedOn!.token, 'approved');
+ *   await sess.resume(first.state.suspendedOn!.token, 'human input');
  * }
  * ```
  */
 
 import { Database } from 'fino:database/sqlite';
 import { SuspendSignal, runContext } from 'fino:ai/runtime';
-import type { AgentState, StepResult } from 'fino:ai/runtime';
+import type { AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { Agent } from 'fino:ai/agent';
 import type { ModelMessage, Usage } from 'fino:ai/model';
 import type { Memory } from 'fino:ai/memory';
@@ -113,6 +113,13 @@ export interface RunResult {
   state: RunState;
   text?: string;
 }
+
+/**
+ * Decision supplied when resuming a tool approval suspension.
+ */
+export type ToolApprovalDecision =
+  | { approved: true; approval?: unknown }
+  | { approved: false; reason?: string };
 
 /**
  * Options for creating a `Session`.
@@ -207,6 +214,14 @@ function cloneRunState(state: RunState): RunState {
 
 function cloneThreadState(thread: ThreadState): ThreadState {
   return { ...thread };
+}
+
+function isToolApprovalRequest(value: unknown): value is ToolApprovalRequest {
+  return typeof value === 'object' &&
+    value !== null &&
+    (value as { type?: unknown }).type === 'tool_approval' &&
+    typeof (value as { toolCallId?: unknown }).toolCallId === 'string' &&
+    typeof (value as { toolName?: unknown }).toolName === 'string';
 }
 
 function validateCommit(args: {
@@ -646,6 +661,30 @@ export class Session {
   }
 
   /**
+   * Approve a persisted tool approval suspension after process restart.
+   */
+  static async approveSuspended(
+    opts: SessionOptions & { runId: string; resumeToken: string; approval?: unknown; signal?: AbortSignal },
+  ): Promise<RunResult> {
+    const loaded = await opts.store.loadRun(opts.runId);
+    if (!loaded) throw new Error(`Run ${opts.runId} not found`);
+    const sess = new Session(opts, loaded);
+    return sess.approveTool(opts.resumeToken, { approval: opts.approval, signal: opts.signal });
+  }
+
+  /**
+   * Reject a persisted tool approval suspension after process restart.
+   */
+  static async rejectSuspended(
+    opts: SessionOptions & { runId: string; resumeToken: string; reason?: string; signal?: AbortSignal },
+  ): Promise<RunResult> {
+    const loaded = await opts.store.loadRun(opts.runId);
+    if (!loaded) throw new Error(`Run ${opts.runId} not found`);
+    const sess = new Session(opts, loaded);
+    return sess.rejectTool(opts.resumeToken, opts.reason, { signal: opts.signal });
+  }
+
+  /**
    * Start a new run in this session thread.
    */
   async start(
@@ -712,11 +751,10 @@ export class Session {
     if (this.#state.suspendedOn?.token !== resumeToken) {
       throw new Error('Invalid or expired resume token');
     }
+    if (isToolApprovalRequest(this.#state.suspendedOn?.payload)) {
+      throw new Error('Run is suspended for tool approval; use approveTool() or rejectTool()');
+    }
 
-    const injected: ModelMessage = {
-      role: 'user',
-      content: typeof value === 'string' ? value : JSON.stringify(value),
-    };
     const history = await driveHistoryFromState(this.#state, this.#opts.store);
     const baseRevisionId = history.revisionId;
 
@@ -727,7 +765,90 @@ export class Session {
       historyRevisionId: history.revisionId,
     };
 
+    const injected: ModelMessage = {
+      role: 'user',
+      content: typeof value === 'string' ? value : JSON.stringify(value),
+    };
+
     return this.#drive(state, opts?.signal, history, [...history.render(), injected], baseRevisionId);
+  }
+
+  /**
+   * Approve a pending approval-required tool call and continue the run.
+   */
+  approveTool(
+    resumeToken: string,
+    opts: { approval?: unknown; signal?: AbortSignal } = {},
+  ): Promise<RunResult> {
+    return this.#decideTool(resumeToken, { approved: true, approval: opts.approval }, opts.signal);
+  }
+
+  /**
+   * Reject a pending approval-required tool call and continue the run with an
+   * error tool result visible to the model.
+   */
+  rejectTool(
+    resumeToken: string,
+    reason?: string,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<RunResult> {
+    return this.#decideTool(resumeToken, { approved: false, reason }, opts.signal);
+  }
+
+  async #decideTool(
+    resumeToken: string,
+    decision: ToolApprovalDecision,
+    signal?: AbortSignal,
+  ): Promise<RunResult> {
+    if (!this.#state) throw new Error('No state; call start() first');
+    if (this.#state.status !== 'suspended') {
+      throw new Error(`Run is not suspended (currently: ${this.#state.status})`);
+    }
+    if (this.#state.suspendedOn?.token !== resumeToken) {
+      throw new Error('Invalid or expired resume token');
+    }
+    const request = this.#state.suspendedOn.payload;
+    if (!isToolApprovalRequest(request)) {
+      throw new Error('Run is not suspended for tool approval; use resume()');
+    }
+
+    const history = await driveHistoryFromState(this.#state, this.#opts.store);
+    const baseRevisionId = history.revisionId;
+    const state: RunState = {
+      ...this.#state,
+      status: 'running',
+      suspendedOn: undefined,
+      historyRevisionId: history.revisionId,
+    };
+    const approvalValue = decision.approved
+      ? { approved: true, approval: decision.approval }
+      : { approved: false, reason: decision.reason ?? 'not approved' };
+    const approval = await this.#opts.agent.approveTool({
+      messages: history.render(),
+      stepIndex: state.stepIndex,
+      usage: state.usage,
+      cost: state.cost,
+      history,
+      signal,
+    }, request, approvalValue);
+    const approvedHistory = approval.state.history ?? history;
+    const approvedState: RunState = {
+      ...state,
+      stepIndex: approval.state.stepIndex,
+      usage: approval.state.usage,
+      cost: approval.state.cost,
+      historyRevisionId: approvedHistory.revisionId,
+    };
+    this.#state = approvedState;
+    const thread = await this.#commit(approvedState, approvedHistory, baseRevisionId);
+    return this.#drive(
+      approvedState,
+      signal,
+      approvedHistory,
+      approvedHistory.render(),
+      approvedHistory.revisionId,
+      thread,
+    );
   }
 
   /**

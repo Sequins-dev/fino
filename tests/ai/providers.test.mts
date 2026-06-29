@@ -1,4 +1,5 @@
 import { describe, it } from 'fino:test/test';
+import { env } from 'fino:process';
 import { anthropic, openai } from 'fino:ai/model';
 import type { StreamEvent, GenerateResult } from 'fino:ai/model';
 
@@ -124,6 +125,7 @@ describe('anthropic provider', () => {
     t.equal(result.text, 'Done.');
     t.equal(result.stopReason, 'end_turn');
     t.equal(result.usage.inputTokens, 5);
+    t.ok(result.providerMetadata?.anthropic, 'raw Anthropic response is exposed as provider metadata');
   });
 
   it('generate() returns tool calls from JSON response', async (t) => {
@@ -183,6 +185,24 @@ describe('anthropic provider', () => {
     t.equal(tool.name, 'fn');
     t.ok('input_schema' in tool, 'uses input_schema key for Anthropic');
     t.deepEqual(body.tool_choice, { type: 'auto' });
+  });
+
+  it('sends topP and Anthropic provider options', async (t) => {
+    const client = fakeClient([streamResponse(sseBytes(...anthropicTextSse))]);
+    const model = anthropic({
+      apiKey: 'test',
+      client,
+      topP: 0.8,
+      providerOptions: { anthropic: { metadata: { user_id: 'u1' } } },
+    });
+    await model.stream({
+      messages: [{ role: 'user', content: 'go' }],
+      topP: 0.7,
+    }).result();
+
+    const body = client.capturedBodies[0] as Record<string, unknown>;
+    t.equal(body.top_p, 0.7);
+    t.deepEqual(body.metadata, { user_id: 'u1' });
   });
 
   it('sends x-api-key and anthropic-version headers', async (t) => {
@@ -270,6 +290,7 @@ describe('openai provider', () => {
     t.equal(result.stopReason, 'end_turn');
     t.equal(result.usage.inputTokens, 5);
     t.equal(result.usage.outputTokens, 2);
+    t.ok(result.providerMetadata?.openai, 'raw OpenAI response is exposed as provider metadata');
   });
 
   it('generate() returns tool calls from JSON response', async (t) => {
@@ -362,6 +383,26 @@ describe('openai provider', () => {
     t.equal(body.tool_choice, 'required', 'any maps to required');
   });
 
+  it('sends topP, seed, and OpenAI provider options', async (t) => {
+    const client = fakeClient([streamResponse(sseBytes(...openaiTextSse))]);
+    const model = openai({
+      apiKey: 'test',
+      client,
+      topP: 0.9,
+      seed: 123,
+      providerOptions: { openai: { user: 'user-1' } },
+    });
+    await model.stream({
+      messages: [{ role: 'user', content: 'go' }],
+      topP: 0.5,
+    }).result();
+
+    const body = client.capturedBodies[0] as Record<string, unknown>;
+    t.equal(body.top_p, 0.5);
+    t.equal(body.seed, 123);
+    t.equal(body.user, 'user-1');
+  });
+
   it('sends Authorization header and stream_options', async (t) => {
     const client = fakeClient([streamResponse(sseBytes(...openaiTextSse))]);
     const model = openai({ apiKey: 'sk-test', client });
@@ -447,16 +488,28 @@ describe('openai provider', () => {
 
 describe('provider API key resolution', () => {
   it('anthropic throws when no key is provided', async (t) => {
-    t.throws(
-      () => anthropic({ client: fakeClient([]) }),
-      /No API key found/,
-    );
+    const old = env.ANTHROPIC_API_KEY;
+    delete env.ANTHROPIC_API_KEY;
+    try {
+      t.throws(
+        () => anthropic({ client: fakeClient([]) }),
+        /No API key found/,
+      );
+    } finally {
+      if (old !== undefined) env.ANTHROPIC_API_KEY = old;
+    }
   });
 
   it('openai throws when no key is provided', async (t) => {
-    t.throws(
-      () => openai({ client: fakeClient([]) }),
-      /No API key found/,
-    );
+    const old = env.OPENAI_API_KEY;
+    delete env.OPENAI_API_KEY;
+    try {
+      t.throws(
+        () => openai({ client: fakeClient([]) }),
+        /No API key found/,
+      );
+    } finally {
+      if (old !== undefined) env.OPENAI_API_KEY = old;
+    }
   });
 });

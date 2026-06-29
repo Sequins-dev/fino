@@ -17,31 +17,41 @@
  * @internal
  */
 
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { runFormat } from '../tooling/format.mts';
 
 /**
  * Create the `fmt` subcommand used by the root Fino CLI.
  *
- * The command returns a success string for normal output and throws after
- * reportable failures so `internal/main.mts` preserves standard CLI exit
- * behavior.
+ * The task returns a success string for text output, writes a JSON result when
+ * `--json` is requested, and throws after reportable failures so
+ * `internal/main.mts` preserves standard CLI exit behavior.
  *
  * @internal
  */
-export function createFmtCommand(): Command {
-  return new Command({
+export function createFmtCommand(): Task {
+  return new Task({
     name: 'fmt',
     description: 'Format JavaScript and TypeScript source files',
-    run: async function runFmtCommand(ctx: CommandContext) {
-      const files = Array.isArray(ctx.args.files) ? ctx.args.files.map(String) : [];
-      return runFormat({ files, check: ctx.options.check === true });
+    outputMode: 'both',
+    run: async function runFmtCommand(input: { files?: unknown[]; check?: unknown }, ctx) {
+      const files = Array.isArray(input.files) ? input.files.map(String) : [];
+      const check = input.check === true;
+      const message = await runFormat({ files, check });
+      if (ctx.writer.mode === 'json') {
+        const result = { command: 'fmt', ok: true, check, files, message };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
+      return message;
     },
-    options: [
-      { flags: '--check', type: 'boolean', description: 'Report files that would change without writing them' },
-    ],
-    positionals: [
-      { name: 'files', type: 'string', multiple: true, description: 'Files, directories, or globs to format' },
-    ],
+    cli: {
+      options: [
+        { flags: '--check', type: 'boolean', description: 'Report files that would change without writing them' },
+      ],
+      positionals: [
+        { name: 'files', type: 'string', multiple: true, description: 'Files, directories, or globs to format' },
+      ],
+    },
   });
 }

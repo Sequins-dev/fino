@@ -4,10 +4,11 @@
  * Useful references:
  *
  * - Model Context Protocol: https://modelcontextprotocol.io/
- * - Lifecycle: https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle
- * - Streamable HTTP transport: https://modelcontextprotocol.io/specification/2025-03-26/basic/transports
- * - Tools: https://modelcontextprotocol.io/specification/2025-03-26/server/tools
- * - Resources: https://modelcontextprotocol.io/specification/2025-03-26/server/resources
+ * - Lifecycle: https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle
+ * - Streamable HTTP transport: https://modelcontextprotocol.io/specification/2025-06-18/basic/transports
+ * - Tools: https://modelcontextprotocol.io/specification/2025-06-18/server/tools
+ * - Resources: https://modelcontextprotocol.io/specification/2025-06-18/server/resources
+ * - Prompts: https://modelcontextprotocol.io/specification/2025-06-18/server/prompts
  *
  * `MCPClient` connects to an MCP server, performs the initialize handshake,
  * lists remote tools and resources, and converts remote MCP tools into Fino
@@ -29,12 +30,14 @@
  * for local tools and tests; it should not replace the application router in a
  * composed service.
  *
- * ## Implemented subset
+ * ## Current protocol coverage
  *
- * The server implements MCP 2025-03-26 initialization, tools, resources, stdio
- * style transports, and non-streaming Streamable HTTP. HTTP GET SSE streams,
- * prompts, resource templates, subscriptions, sampling, and list-changed
- * notifications are intentionally left to future focused APIs.
+ * The implementation covers MCP 2025-06-18 initialization, tools, resources,
+ * resource templates, prompts, stdio-style transports, Streamable HTTP POST and
+ * GET SSE, client-side roots, sampling, elicitation handlers, cursor-aware
+ * list methods, list-change notifications, and resource subscriptions. OAuth
+ * and authorization policy stay with application middleware around the mounted
+ * endpoint.
  *
  * ```ts no_run
  * import { App } from 'fino:net/http/app';
@@ -71,6 +74,7 @@ import type { ListenOptions, ServerHandle, Transport } from 'fino:jsonrpc';
 import type { ContentPart, ModelMessage } from 'fino:ai/model';
 import { Tool } from 'fino:ai/tool';
 import type { ToolRunContext } from 'fino:ai/tool';
+import type { Task } from 'fino:task';
 import { Process } from 'fino:process';
 import { HttpClient } from 'fino:net/http/client';
 import { parseEventStream } from 'fino:net/http/eventstream';
@@ -78,7 +82,7 @@ import { serveHttp } from 'fino:net/http/server';
 import type { ServeServer } from 'fino:net/http/server';
 import { Channel } from 'internal:stream';
 
-const MCP_PROTOCOL_VERSION = '2025-03-26';
+const MCP_PROTOCOL_VERSION = '2025-06-18';
 const CLIENT_INFO = { name: 'fino', version: '0.1.0' };
 
 export type { Transport };
@@ -151,9 +155,14 @@ export interface HttpTransportOptions {
   sseChannel?: boolean;
 }
 
-async function drainSse(body: AsyncIterable<Uint8Array>, ch: Channel<string>): Promise<void> {
+async function drainSse(
+  body: AsyncIterable<Uint8Array>,
+  ch: Channel<string>,
+  onEventId?: (id: string) => void,
+): Promise<void> {
   try {
     for await (const event of parseEventStream(body)) {
+      if (event.id) onEventId?.(event.id);
       if (event.data && event.data !== '[DONE]') await ch.writer.write(event.data);
     }
   } catch {
@@ -168,23 +177,35 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
   const ch = new Channel<string>();
   const client = new HttpClient({ baseUrl: opts.url });
   const extraHeaders = opts.headers ?? {};
+  let sessionId: string | undefined;
+  let lastEventId: string | undefined;
+  let sseStarted = false;
 
-  // Optional GET SSE channel for server-initiated messages
-  if (opts.sseChannel) {
+  const openSse = (): void => {
+    if (!opts.sseChannel || sseStarted || !sessionId) return;
+    sseStarted = true;
     void (async () => {
       try {
         const res = await client.request('', {
           method: 'GET',
-          headers: { accept: 'text/event-stream', ...extraHeaders },
+          headers: {
+            accept: 'text/event-stream',
+            'mcp-session-id': sessionId!,
+            'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+            ...(lastEventId ? { 'last-event-id': lastEventId } : {}),
+            ...extraHeaders,
+          },
         });
         if (res.status === 200 && res.body) {
-          await drainSse(res.body, ch);
+          await drainSse(res.body, ch, (id) => { lastEventId = id; });
         }
       } catch {
         // Server doesn't support GET SSE channel — silently ignore
+      } finally {
+        sseStarted = false;
       }
     })();
-  }
+  };
 
   return {
     async send(message: string): Promise<void> {
@@ -193,6 +214,8 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
         headers: {
           'content-type': 'application/json',
           accept: 'application/json, text/event-stream',
+          'mcp-protocol-version': MCP_PROTOCOL_VERSION,
+          ...(sessionId ? { 'mcp-session-id': sessionId } : {}),
           ...extraHeaders,
         },
         body: message,
@@ -200,10 +223,15 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
       if (res.status < 200 || res.status >= 300) {
         throw new JsonRpcError(`HTTP ${res.status}`, INTERNAL_ERROR);
       }
+      const nextSessionId = res.headers.get('mcp-session-id');
+      if (nextSessionId) {
+        sessionId = nextSessionId;
+        openSse();
+      }
       const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim();
       if (contentType === 'text/event-stream' && res.body) {
         // Server chose to stream the response as SSE — drain asynchronously
-        void drainSse(res.body, ch);
+        void drainSse(res.body, ch, (id) => { lastEventId = id; });
       } else {
         const text = await res.text();
         if (text.trim()) await ch.writer.write(text.trim());
@@ -227,6 +255,13 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
  */
 export interface MCPClientOptions {
   transport: Transport;
+  roots?: McpRoot[] | (() => McpRoot[] | Promise<McpRoot[]>);
+  sampling?: (params: McpSamplingRequest) => McpSamplingResult | Promise<McpSamplingResult>;
+  elicitation?: (params: McpElicitationRequest) => McpElicitationResult | Promise<McpElicitationResult>;
+  onToolsChanged?: () => void | Promise<void>;
+  onResourcesChanged?: () => void | Promise<void>;
+  onPromptsChanged?: () => void | Promise<void>;
+  onResourceUpdated?: (uri: string) => void | Promise<void>;
 }
 
 interface McpToolDef {
@@ -240,7 +275,10 @@ interface McpCallResult {
   isError?: boolean;
 }
 
-type McpContent =
+/**
+ * Content part used by MCP prompts, sampling, and tool/resource responses.
+ */
+export type McpContent =
   | { type: 'text'; text: string }
   | { type: 'image'; data: string; mimeType: string }
   | { type: 'resource'; resource: McpResourceContent };
@@ -256,6 +294,16 @@ export interface McpResource {
 }
 
 /**
+ * Resource template descriptor returned by an MCP server.
+ */
+export interface McpResourceTemplate {
+  uriTemplate: string;
+  name?: string;
+  description?: string;
+  mimeType?: string;
+}
+
+/**
  * Resource content returned from `readResource()`.
  */
 export interface McpResourceContent {
@@ -263,6 +311,104 @@ export interface McpResourceContent {
   mimeType?: string;
   text?: string;
   blob?: string;
+}
+
+/**
+ * Prompt argument descriptor returned by an MCP server.
+ */
+export interface McpPromptArgument {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+/**
+ * Prompt descriptor returned by an MCP server.
+ */
+export interface McpPrompt {
+  name: string;
+  description?: string;
+  arguments?: McpPromptArgument[];
+}
+
+/**
+ * Prompt message returned by `getPrompt()`.
+ */
+export interface McpPromptMessage {
+  role: 'user' | 'assistant';
+  content: McpContent;
+}
+
+/**
+ * Prompt content returned by `getPrompt()`.
+ */
+export interface McpPromptResult {
+  description?: string;
+  messages: McpPromptMessage[];
+}
+
+/**
+ * Root URI exposed by an MCP client.
+ */
+export interface McpRoot {
+  uri: string;
+  name?: string;
+}
+
+/**
+ * Server-initiated sampling request delivered to an MCP client.
+ */
+export interface McpSamplingRequest {
+  messages: McpPromptMessage[];
+  maxTokens?: number;
+  systemPrompt?: string;
+  includeContext?: string;
+  temperature?: number;
+  stopSequences?: string[];
+  metadata?: Record<string, unknown>;
+  modelPreferences?: Record<string, unknown>;
+}
+
+/**
+ * Sampling result returned by an MCP client.
+ */
+export interface McpSamplingResult {
+  role: 'assistant' | 'user';
+  content: McpContent;
+  model?: string;
+  stopReason?: string;
+}
+
+/**
+ * Server-initiated elicitation request delivered to an MCP client.
+ */
+export interface McpElicitationRequest {
+  message: string;
+  requestedSchema?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Elicitation result returned by an MCP client.
+ */
+export interface McpElicitationResult {
+  action: 'accept' | 'decline' | 'cancel';
+  content?: Record<string, unknown>;
+}
+
+/**
+ * Cursor accepted by MCP list methods.
+ */
+export interface McpListParams {
+  cursor?: string;
+}
+
+/**
+ * Optional MCP list cursor returned when more items are available.
+ */
+export interface McpListPage<T> {
+  items: T[];
+  nextCursor?: string;
 }
 
 /**
@@ -301,11 +447,15 @@ export interface MCPServerOptions {
   /**
    * Local Fino tools exposed through MCP `tools/list` and `tools/call`.
    */
-  tools?: Tool[];
+  tools?: Task[] | ((params: McpListParams) => Task[] | McpListPage<Task> | Promise<Task[] | McpListPage<Task>>);
   /**
    * Static or lazy resource descriptors returned from `resources/list`.
    */
-  resources?: McpResource[] | (() => McpResource[] | Promise<McpResource[]>);
+  resources?: McpResource[] | ((params: McpListParams) => McpResource[] | McpListPage<McpResource> | Promise<McpResource[] | McpListPage<McpResource>>);
+  /**
+   * Static or lazy resource templates returned from `resources/templates/list`.
+   */
+  resourceTemplates?: McpResourceTemplate[] | ((params: McpListParams) => McpResourceTemplate[] | McpListPage<McpResourceTemplate> | Promise<McpResourceTemplate[] | McpListPage<McpResourceTemplate>>);
   /**
    * Reader used by `resources/read`.
    *
@@ -317,6 +467,18 @@ export interface MCPServerOptions {
     ctx: MCPServerContext,
   ) => McpResourceContent | McpResourceContent[] | Promise<McpResourceContent | McpResourceContent[]>;
   /**
+   * Static or lazy prompt descriptors returned from `prompts/list`.
+   */
+  prompts?: McpPrompt[] | ((params: McpListParams) => McpPrompt[] | McpListPage<McpPrompt> | Promise<McpPrompt[] | McpListPage<McpPrompt>>);
+  /**
+   * Prompt renderer used by `prompts/get`.
+   */
+  getPrompt?: (
+    name: string,
+    args: Record<string, unknown>,
+    ctx: MCPServerContext,
+  ) => McpPromptResult | Promise<McpPromptResult>;
+  /**
    * Streamable HTTP `Origin` policy.
    *
    * By default requests with no `Origin` are allowed and requests with an
@@ -324,6 +486,14 @@ export interface MCPServerOptions {
    * when mounting behind a trusted cross-origin gateway.
    */
   allowedOrigins?: string[] | ((origin: string, request: Request) => boolean | Promise<boolean>);
+  /**
+   * Advertise and emit MCP list-changed notifications.
+   */
+  listChanged?: {
+    tools?: boolean;
+    resources?: boolean;
+    prompts?: boolean;
+  };
 }
 
 /**
@@ -418,6 +588,52 @@ function normalizeResourceContent(
   return list.map((item) => ({ ...item, uri: item.uri ?? uri }));
 }
 
+interface SseEvent {
+  id: string;
+  data: string;
+}
+
+interface McpConnectionRecord {
+  id: string;
+  peer?: JsonRpcPeer;
+  outbox?: Channel<SseEvent>;
+  outboxes: Set<Channel<SseEvent>>;
+  replay: SseEvent[];
+  subscriptions: Set<string>;
+  closed: boolean;
+  eventSeq: number;
+}
+
+function isPage<T>(value: T[] | McpListPage<T>): value is McpListPage<T> {
+  return isRecord(value) && Array.isArray(value.items);
+}
+
+function pageResult<T, K extends string>(
+  key: K,
+  value: T[] | McpListPage<T>,
+): Record<K, T[]> & { nextCursor?: string } {
+  const page = isPage(value)
+    ? value
+    : { items: value };
+  return {
+    [key]: page.items,
+    ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+  } as Record<K, T[]> & { nextCursor?: string };
+}
+
+function parseListParams(params: unknown): McpListParams {
+  if (params === undefined) return {};
+  if (!isRecord(params)) throw new JsonRpcError('Invalid list params', INVALID_PARAMS);
+  if (params.cursor !== undefined && typeof params.cursor !== 'string') {
+    throw new JsonRpcError('Invalid list cursor', INVALID_PARAMS);
+  }
+  return params.cursor !== undefined ? { cursor: params.cursor } : {};
+}
+
+function ssePayload(event: SseEvent): Uint8Array {
+  return new TextEncoder().encode(`id: ${event.id}\nevent: message\ndata: ${event.data}\n\n`);
+}
+
 // ---------------------------------------------------------------------------
 // MCPServer
 // ---------------------------------------------------------------------------
@@ -431,19 +647,29 @@ function normalizeResourceContent(
  */
 export class MCPServer {
   #service: JsonRpcService;
-  #tools: Tool[];
+  #tools: NonNullable<MCPServerOptions['tools']>;
   #resources: MCPServerOptions['resources'];
+  #resourceTemplates: MCPServerOptions['resourceTemplates'];
   #readResource?: MCPServerOptions['readResource'];
+  #prompts: MCPServerOptions['prompts'];
+  #getPrompt?: MCPServerOptions['getPrompt'];
   #allowedOrigins?: MCPServerOptions['allowedOrigins'];
-  #sessions = new Set<string>();
+  #listChanged: NonNullable<MCPServerOptions['listChanged']>;
+  #sessions = new Map<string, McpConnectionRecord>();
+  #peers = new Set<McpConnectionRecord>();
   #terminatedSessions = new Set<string>();
   #sessionBySignal = new WeakMap<AbortSignal, string>();
+  #recordBySignal = new WeakMap<AbortSignal, McpConnectionRecord>();
 
   constructor(opts: MCPServerOptions = {}) {
     this.#tools = opts.tools ?? [];
     this.#resources = opts.resources;
+    this.#resourceTemplates = opts.resourceTemplates;
     this.#readResource = opts.readResource;
+    this.#prompts = opts.prompts;
+    this.#getPrompt = opts.getPrompt;
     this.#allowedOrigins = opts.allowedOrigins;
+    this.#listChanged = opts.listChanged ?? {};
 
     const serverInfo = { name: opts.name ?? 'fino', version: opts.version ?? '0.1.0' };
     this.#service = new JsonRpcService()
@@ -460,13 +686,7 @@ export class MCPServer {
         return result;
       })
       .method('notifications/initialized').handle(() => undefined)
-      .method('tools/list').handle(() => ({
-        tools: this.#tools.map((tool) => ({
-          name: tool.name,
-          description: tool.description,
-          inputSchema: tool.parameters,
-        })),
-      }))
+      .method('tools/list').handle(async (params) => this.#toolsListResult(parseListParams(params)))
       .method('tools/call').handle(async (params, ctx) => {
         if (!isRecord(params) || typeof params.name !== 'string') {
           throw new JsonRpcError('Invalid tools/call params', INVALID_PARAMS);
@@ -489,9 +709,8 @@ export class MCPServer {
           ...(result.isError !== undefined ? { isError: result.isError } : {}),
         };
       })
-      .method('resources/list').handle(async () => ({
-        resources: await this.#listResources(),
-      }))
+      .method('resources/list').handle(async (params) => this.#resourcesListResult(parseListParams(params)))
+      .method('resources/templates/list').handle(async (params) => this.#resourceTemplatesListResult(parseListParams(params)))
       .method('resources/read').handle(async (params, ctx) => {
         if (!isRecord(params) || typeof params.uri !== 'string') {
           throw new JsonRpcError('Invalid resources/read params', INVALID_PARAMS);
@@ -502,21 +721,100 @@ export class MCPServer {
           sessionId: this.#sessionBySignal.get(ctx.signal),
         });
         return { contents: normalizeResourceContent(params.uri, content) };
+      })
+      .method('resources/subscribe').handle((params, ctx) => {
+        if (!isRecord(params) || typeof params.uri !== 'string') {
+          throw new JsonRpcError('Invalid resources/subscribe params', INVALID_PARAMS);
+        }
+        const record = this.#recordBySignal.get(ctx.signal) ?? (this.#peers.size === 1 ? [...this.#peers][0] : undefined);
+        if (record) record.subscriptions.add(params.uri);
+        return {};
+      })
+      .method('resources/unsubscribe').handle((params, ctx) => {
+        if (!isRecord(params) || typeof params.uri !== 'string') {
+          throw new JsonRpcError('Invalid resources/unsubscribe params', INVALID_PARAMS);
+        }
+        const record = this.#recordBySignal.get(ctx.signal) ?? (this.#peers.size === 1 ? [...this.#peers][0] : undefined);
+        if (record) record.subscriptions.delete(params.uri);
+        return {};
+      })
+      .method('prompts/list').handle(async (params) => this.#promptsListResult(parseListParams(params)))
+      .method('prompts/get').handle(async (params, ctx) => {
+        if (!isRecord(params) || typeof params.name !== 'string') {
+          throw new JsonRpcError('Invalid prompts/get params', INVALID_PARAMS);
+        }
+        if (!this.#getPrompt) throw new JsonRpcError(`Unknown prompt: ${params.name}`, INVALID_PARAMS);
+        return this.#getPrompt(
+          params.name,
+          isRecord(params.arguments) ? params.arguments : {},
+          {
+            signal: ctx.signal,
+            sessionId: this.#sessionBySignal.get(ctx.signal),
+          },
+        );
       });
   }
 
   #capabilities(): Record<string, unknown> {
     const capabilities: Record<string, unknown> = {};
-    if (this.#tools.length > 0) capabilities.tools = {};
-    if (this.#resources !== undefined || this.#readResource !== undefined) capabilities.resources = {};
+    const toolsList = Array.isArray(this.#tools) ? this.#tools : [];
+    if (toolsList.length > 0 || typeof this.#tools === 'function') capabilities.tools = this.#listChanged.tools ? { listChanged: true } : {};
+    if (this.#resources !== undefined || this.#resourceTemplates !== undefined || this.#readResource !== undefined) capabilities.resources = {};
+    if (capabilities.resources && this.#listChanged.resources) capabilities.resources = { listChanged: true, subscribe: true };
+    if (this.#prompts !== undefined || this.#getPrompt !== undefined) capabilities.prompts = this.#listChanged.prompts ? { listChanged: true } : {};
     return capabilities;
   }
 
-  async #listResources(): Promise<McpResource[]> {
+  async #listTools(params: McpListParams): Promise<Task[] | McpListPage<Task>> {
+    return typeof this.#tools === 'function'
+      ? await this.#tools(params)
+      : this.#tools;
+  }
+
+  async #toolsListResult(params: McpListParams): Promise<{ tools: McpToolDef[]; nextCursor?: string }> {
+    const page = await this.#listTools(params);
+    const normalized = isPage(page) ? page : { items: page };
+    return {
+      tools: normalized.items.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.parameters,
+      })),
+      ...(normalized.nextCursor !== undefined ? { nextCursor: normalized.nextCursor } : {}),
+    };
+  }
+
+  async #listResources(params: McpListParams): Promise<McpResource[] | McpListPage<McpResource>> {
     const resources = typeof this.#resources === 'function'
-      ? await this.#resources()
+      ? await this.#resources(params)
       : this.#resources;
     return resources ?? [];
+  }
+
+  async #resourcesListResult(params: McpListParams): Promise<{ resources: McpResource[]; nextCursor?: string }> {
+    return pageResult('resources', await this.#listResources(params));
+  }
+
+  async #listResourceTemplates(params: McpListParams): Promise<McpResourceTemplate[] | McpListPage<McpResourceTemplate>> {
+    const templates = typeof this.#resourceTemplates === 'function'
+      ? await this.#resourceTemplates(params)
+      : this.#resourceTemplates;
+    return templates ?? [];
+  }
+
+  async #resourceTemplatesListResult(params: McpListParams): Promise<{ resourceTemplates: McpResourceTemplate[]; nextCursor?: string }> {
+    return pageResult('resourceTemplates', await this.#listResourceTemplates(params));
+  }
+
+  async #listPrompts(params: McpListParams): Promise<McpPrompt[] | McpListPage<McpPrompt>> {
+    const prompts = typeof this.#prompts === 'function'
+      ? await this.#prompts(params)
+      : this.#prompts;
+    return prompts ?? [];
+  }
+
+  async #promptsListResult(params: McpListParams): Promise<{ prompts: McpPrompt[]; nextCursor?: string }> {
+    return pageResult('prompts', await this.#listPrompts(params));
   }
 
   async #originAllowed(request: Request): Promise<boolean> {
@@ -536,8 +834,86 @@ export class MCPServer {
   }
 
   async #dispatchMessage(message: unknown, signal: AbortSignal, sessionId?: string): Promise<string | null> {
-    if (sessionId) this.#sessionBySignal.set(signal, sessionId);
+    if (sessionId) {
+      this.#sessionBySignal.set(signal, sessionId);
+      const record = this.#sessions.get(sessionId);
+      if (record) this.#recordBySignal.set(signal, record);
+    }
     return this.#service.handle(JSON.stringify(message), signal);
+  }
+
+  #newRecord(id: string): McpConnectionRecord {
+    return { id, outboxes: new Set(), replay: [], subscriptions: new Set(), closed: false, eventSeq: 0 };
+  }
+
+  async #sendToRecord(record: McpConnectionRecord, method: string, params?: unknown): Promise<void> {
+    if (record.closed) return;
+    if (record.peer) {
+      await record.peer.notify(method, params);
+      return;
+    }
+    const event: SseEvent = {
+      id: `${record.id}-${++record.eventSeq}`,
+      data: JSON.stringify({ jsonrpc: '2.0', method, ...(params !== undefined ? { params } : {}) }),
+    };
+    record.replay.push(event);
+    if (record.replay.length > 32) record.replay.shift();
+    const outbox = record.outbox ?? [...record.outboxes][0];
+    if (outbox) await outbox.writer.write(event);
+  }
+
+  async #broadcast(method: string, params?: unknown, filter?: (record: McpConnectionRecord) => boolean): Promise<void> {
+    const records = [...this.#sessions.values(), ...this.#peers];
+    await Promise.all(records
+      .filter((record) => !filter || filter(record))
+      .map((record) => this.#sendToRecord(record, method, params)));
+  }
+
+  async #handleGet(request: Request): Promise<Response> {
+    const id = request.headers.get('mcp-session-id');
+    if (!id) return new Response('Missing Mcp-Session-Id', { status: 400 });
+    const record = this.#sessions.get(id);
+    if (!record || record.closed) return new Response('Unknown MCP session', { status: 404 });
+    const accept = request.headers.get('accept') ?? '';
+    if (!accept.includes('text/event-stream')) return new Response('Not acceptable', { status: 406 });
+
+    const lastId = request.headers.get('last-event-id');
+    const outbox = new Channel<SseEvent>();
+    record.outbox = outbox;
+    record.outboxes.add(outbox);
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        void (async () => {
+          try {
+            const replay = lastId
+              ? record.replay.slice(record.replay.findIndex((event) => event.id === lastId) + 1)
+              : [];
+            for (const event of replay) controller.enqueue(ssePayload(event));
+            for await (const event of outbox.reader) {
+              controller.enqueue(ssePayload(event));
+            }
+            controller.close();
+          } catch (err) {
+            controller.error(err);
+          } finally {
+            record.outboxes.delete(outbox);
+            if (record.outbox === outbox) record.outbox = [...record.outboxes][0];
+          }
+        })();
+      },
+      cancel: () => {
+        record.outboxes.delete(outbox);
+        if (record.outbox === outbox) record.outbox = [...record.outboxes][0];
+        void outbox.writer.close();
+      },
+    });
+    return new Response(stream, {
+      headers: {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      },
+    });
   }
 
   async #handlePost(request: Request): Promise<Response> {
@@ -588,17 +964,64 @@ export class MCPServer {
     const headers = new Headers({ 'content-type': 'application/json' });
     if (initializing) {
       const id = randomSessionId();
-      this.#sessions.add(id);
+      this.#sessions.set(id, this.#newRecord(id));
       headers.set('mcp-session-id', id);
     }
     return new Response(response, { headers });
   }
 
   /**
+   * Notify clients that the server tool list changed.
+   */
+  async notifyToolsChanged(): Promise<void> {
+    if (!this.#listChanged.tools) return;
+    await this.#broadcast('notifications/tools/list_changed');
+  }
+
+  /**
+   * Notify clients that the server resource list changed.
+   */
+  async notifyResourcesChanged(): Promise<void> {
+    if (!this.#listChanged.resources) return;
+    await this.#broadcast('notifications/resources/list_changed');
+  }
+
+  /**
+   * Notify clients that the server prompt list changed.
+   */
+  async notifyPromptsChanged(): Promise<void> {
+    if (!this.#listChanged.prompts) return;
+    await this.#broadcast('notifications/prompts/list_changed');
+  }
+
+  /**
+   * Notify subscribed clients that a resource URI was updated.
+   */
+  async notifyResourceUpdated(uri: string): Promise<void> {
+    await this.#broadcast(
+      'notifications/resources/updated',
+      { uri },
+      (record) => record.subscriptions.has(uri),
+    );
+  }
+
+  /**
    * Serve this MCP endpoint over any JSON-RPC string transport.
    */
   async serve(transport: Transport): Promise<void> {
-    await new JsonRpcServer(this.#service).serve(transport);
+    const record = this.#newRecord(`transport-${randomSessionId()}`);
+    const controller = new AbortController();
+    this.#recordBySignal.set(controller.signal, record);
+    const peer = new JsonRpcPeer(transport, this.#service, { signal: controller.signal });
+    record.peer = peer;
+    this.#peers.add(record);
+    try {
+      await peer.done;
+    } finally {
+      controller.abort();
+      record.closed = true;
+      this.#peers.delete(record);
+    }
   }
 
   /**
@@ -612,11 +1035,15 @@ export class MCPServer {
     return async (request: Request): Promise<Response> => {
       if (!await this.#originAllowed(request)) return new Response('Forbidden', { status: 403 });
       if (request.method === 'POST') return this.#handlePost(request);
-      if (request.method === 'GET') return new Response('SSE streams are not supported', { status: 405 });
+      if (request.method === 'GET') return this.#handleGet(request);
       if (request.method === 'DELETE') {
         const id = request.headers.get('mcp-session-id');
         if (!id) return new Response('Missing Mcp-Session-Id', { status: 400 });
-        if (!this.#sessions.delete(id)) return new Response('Unknown MCP session', { status: 404 });
+        const record = this.#sessions.get(id);
+        if (!record) return new Response('Unknown MCP session', { status: 404 });
+        record.closed = true;
+        await Promise.all([...record.outboxes].map((outbox) => outbox.writer.close()));
+        this.#sessions.delete(id);
         this.#terminatedSessions.add(id);
         return new Response(null, { status: 202 });
       }
@@ -676,15 +1103,56 @@ export function mountMcp(target: MCPRouteTarget, path: string, server: MCPServer
 export class MCPClient {
   #peer: JsonRpcPeer;
   #connected = false;
+  #opts: MCPClientOptions;
 
   constructor(opts: MCPClientOptions) {
-    this.#peer = new JsonRpcPeer(opts.transport);
+    this.#opts = opts;
+    const service = new JsonRpcService()
+      .method('roots/list').handle(async (params) => {
+        if (params !== undefined) throw new JsonRpcError('Invalid roots/list params', INVALID_PARAMS);
+        const roots = typeof opts.roots === 'function' ? await opts.roots() : opts.roots;
+        return { roots: roots ?? [] };
+      })
+      .method('sampling/createMessage').handle(async (params) => {
+        if (!isRecord(params) || !Array.isArray(params.messages)) {
+          throw new JsonRpcError('Invalid sampling params', INVALID_PARAMS);
+        }
+        if (!opts.sampling) throw new JsonRpcError('Sampling is not configured', INVALID_REQUEST);
+        return await opts.sampling(params as McpSamplingRequest);
+      })
+      .method('elicitation/create').handle(async (params) => {
+        if (!isRecord(params) || typeof params.message !== 'string') {
+          throw new JsonRpcError('Invalid elicitation params', INVALID_PARAMS);
+        }
+        if (!opts.elicitation) throw new JsonRpcError('Elicitation is not configured', INVALID_REQUEST);
+        return await opts.elicitation(params as McpElicitationRequest);
+      })
+      .method('notifications/tools/list_changed').handle(async () => {
+        await opts.onToolsChanged?.();
+      })
+      .method('notifications/resources/list_changed').handle(async () => {
+        await opts.onResourcesChanged?.();
+      })
+      .method('notifications/prompts/list_changed').handle(async () => {
+        await opts.onPromptsChanged?.();
+      })
+      .method('notifications/resources/updated').handle(async (params) => {
+        if (!isRecord(params) || typeof params.uri !== 'string') {
+          throw new JsonRpcError('Invalid resource update params', INVALID_PARAMS);
+        }
+        await opts.onResourceUpdated?.(params.uri);
+      });
+    this.#peer = new JsonRpcPeer(opts.transport, service);
   }
 
   async connect(): Promise<void> {
+    const capabilities: Record<string, unknown> = {};
+    if (this.#opts.roots !== undefined) capabilities.roots = {};
+    if (this.#opts.sampling !== undefined) capabilities.sampling = {};
+    if (this.#opts.elicitation !== undefined) capabilities.elicitation = {};
     await this.#peer.call('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: {},
+      capabilities,
       clientInfo: CLIENT_INFO,
     });
     await this.#peer.notify('notifications/initialized');
@@ -695,36 +1163,107 @@ export class MCPClient {
     if (!this.#connected) throw new Error('MCPClient: call connect() first');
   }
 
-  async listTools(): Promise<Tool[]> {
-    this.#assertConnected();
-    const result = await this.#peer.call('tools/list') as { tools?: McpToolDef[] };
-    const defs = result.tools ?? [];
-    return defs.map((def) => new Tool({
-      name: def.name,
-      description: def.description ?? '',
-      parameters: def.inputSchema ?? { type: 'object', properties: {} },
-      execute: async (args) => {
-        const res = await this.#peer.call('tools/call', { name: def.name, arguments: args }) as McpCallResult;
-        const text = res.content
-          .filter((c) => c.type === 'text')
-          .map((c) => c.text ?? '')
-          .join('');
-        if (res.isError) return { content: text, isError: true };
-        return text;
-      },
-    }));
+  async listTools(params: McpListParams = {}): Promise<Tool[]> {
+    return (await this.listToolsPage(params)).items;
   }
 
-  async listResources(): Promise<McpResource[]> {
+  /**
+   * Return one MCP `tools/list` page with the server-provided cursor metadata.
+   *
+   * Use this when a remote server may paginate large tool lists. `listTools()`
+   * remains the compatibility helper for one-page servers and returns only the
+   * current page's `Tool` instances.
+   */
+  async listToolsPage(params: McpListParams = {}): Promise<McpListPage<Tool>> {
     this.#assertConnected();
-    const result = await this.#peer.call('resources/list') as { resources?: McpResource[] };
-    return result.resources ?? [];
+    const result = await this.#peer.call('tools/list', params) as { tools?: McpToolDef[]; nextCursor?: string };
+    const defs = result.tools ?? [];
+    return {
+      items: defs.map((def) => new Tool({
+        name: def.name,
+        description: def.description ?? '',
+        parameters: def.inputSchema ?? { type: 'object', properties: {} },
+        execute: async (args) => {
+          const res = await this.#peer.call('tools/call', { name: def.name, arguments: args }) as McpCallResult;
+          const text = res.content
+            .filter((c) => c.type === 'text')
+            .map((c) => c.text ?? '')
+            .join('');
+          if (res.isError) return { content: text, isError: true };
+          return text;
+        },
+      })),
+      ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+    };
+  }
+
+  async listResources(params: McpListParams = {}): Promise<McpResource[]> {
+    return (await this.listResourcesPage(params)).items;
+  }
+
+  /**
+   * Return one MCP `resources/list` page with cursor metadata.
+   */
+  async listResourcesPage(params: McpListParams = {}): Promise<McpListPage<McpResource>> {
+    this.#assertConnected();
+    const result = await this.#peer.call('resources/list', params) as { resources?: McpResource[]; nextCursor?: string };
+    return {
+      items: result.resources ?? [],
+      ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+    };
+  }
+
+  async listResourceTemplates(params: McpListParams = {}): Promise<McpResourceTemplate[]> {
+    return (await this.listResourceTemplatesPage(params)).items;
+  }
+
+  /**
+   * Return one MCP `resources/templates/list` page with cursor metadata.
+   */
+  async listResourceTemplatesPage(params: McpListParams = {}): Promise<McpListPage<McpResourceTemplate>> {
+    this.#assertConnected();
+    const result = await this.#peer.call('resources/templates/list', params) as { resourceTemplates?: McpResourceTemplate[]; nextCursor?: string };
+    return {
+      items: result.resourceTemplates ?? [],
+      ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+    };
   }
 
   async readResource(uri: string): Promise<McpResourceContent[]> {
     this.#assertConnected();
     const result = await this.#peer.call('resources/read', { uri }) as { contents?: McpResourceContent[] };
     return result.contents ?? [];
+  }
+
+  async listPrompts(params: McpListParams = {}): Promise<McpPrompt[]> {
+    return (await this.listPromptsPage(params)).items;
+  }
+
+  /**
+   * Return one MCP `prompts/list` page with cursor metadata.
+   */
+  async listPromptsPage(params: McpListParams = {}): Promise<McpListPage<McpPrompt>> {
+    this.#assertConnected();
+    const result = await this.#peer.call('prompts/list', params) as { prompts?: McpPrompt[]; nextCursor?: string };
+    return {
+      items: result.prompts ?? [],
+      ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
+    };
+  }
+
+  async getPrompt(name: string, args: Record<string, unknown> = {}): Promise<McpPromptResult> {
+    this.#assertConnected();
+    return await this.#peer.call('prompts/get', { name, arguments: args }) as McpPromptResult;
+  }
+
+  async subscribeResource(uri: string): Promise<void> {
+    this.#assertConnected();
+    await this.#peer.call('resources/subscribe', { uri });
+  }
+
+  async unsubscribeResource(uri: string): Promise<void> {
+    this.#assertConnected();
+    await this.#peer.call('resources/unsubscribe', { uri });
   }
 
   async close(): Promise<void> {

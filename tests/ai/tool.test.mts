@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { tool, toToolDefinition } from 'fino:ai/tool';
 import type { ToolRunContext } from 'fino:ai/tool';
+import { Task } from 'fino:task';
 import { v } from 'fino:validate';
 
 const schema = {
@@ -42,9 +43,27 @@ describe('tool factory', () => {
 
   it('exposes name, description, and parameters', (t) => {
     const t1 = tool({ name: 'add', description: 'Adds things', parameters: schema, execute: async () => 'ok' });
+    t.ok(t1 instanceof Task, 'tools are tasks');
     t.equal(t1.name, 'add');
     t.equal(t1.description, 'Adds things');
     t.deepEqual(t1.parameters, schema);
+  });
+
+  it('exposes approval and safety metadata', (t) => {
+    const t1 = tool({
+      name: 'danger',
+      description: 'Dangerous operation',
+      parameters: { type: 'object', properties: {} },
+      requiresApproval: true,
+      risk: 'destructive',
+      sideEffects: true,
+      timeoutMs: 5000,
+      execute: async () => 'ok',
+    });
+    t.equal(t1.requiresApproval, true);
+    t.equal(t1.risk, 'destructive');
+    t.equal(t1.sideEffects, true);
+    t.equal(t1.timeoutMs, 5000);
   });
 
   it('invoke() executes with validated args on success', async (t) => {

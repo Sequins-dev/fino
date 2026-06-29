@@ -14,7 +14,9 @@ import type { HistoryStrategy } from 'fino:ai/context';
 function scriptModel(turns: StreamEvent[][]): Model {
   let idx = 0;
   return {
+    id: 'mock',
     name: 'mock',
+    provider: 'test',
     dimensions: 0,
     stream(_req: GenerateRequest): ModelStream {
       const turn = turns[idx % turns.length] ?? [];
@@ -30,7 +32,9 @@ function scriptModel(turns: StreamEvent[][]): Model {
 function captureModel(): { model: Model; getLastMessages(): ModelMessage[] } {
   let last: ModelMessage[] = [];
   const model: Model = {
+    id: 'capture',
     name: 'capture',
+    provider: 'test',
     dimensions: 0,
     stream(req: GenerateRequest): ModelStream {
       last = req.messages;
@@ -424,6 +428,232 @@ describe('Session', () => {
       try { await fs.unlink(path); } catch {}
     }
   });
+
+  it('approval-required tools suspend before execution', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteSessionStore.open(path);
+    try {
+      let executed = false;
+      const risky = tool({
+        name: 'delete_account',
+        description: 'Deletes an account',
+        parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        requiresApproval: true,
+        risk: 'destructive',
+        sideEffects: true,
+        execute: () => {
+          executed = true;
+          return 'deleted';
+        },
+      });
+
+      const a = agent({
+        model: scriptModel([toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}')]),
+        tools: [risky],
+      });
+      const sess = session({ store, agent: a });
+      const result = await sess.start('delete acct_1');
+
+      t.equal(result.status, 'suspended', 'session suspended for approval');
+      t.equal(executed, false, 'tool did not execute before approval');
+      t.equal((result.state.suspendedOn?.payload as Record<string, unknown>)?.toolName, 'delete_account');
+      t.equal((result.state.suspendedOn?.payload as Record<string, unknown>)?.risk, 'destructive');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('approved tools execute once and continue from the pending tool call', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteSessionStore.open(path);
+    try {
+      let executed = 0;
+      const risky = tool({
+        name: 'delete_account',
+        description: 'Deletes an account',
+        parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        requiresApproval: true,
+        risk: 'destructive',
+        sideEffects: true,
+        execute: ({ id }: { id: string }) => {
+          executed++;
+          return `deleted:${id}`;
+        },
+      });
+
+      const { model: spy, getLastMessages } = captureModel();
+      let first = true;
+      const model: Model = {
+        id: 'approval-model',
+        name: 'approval-model',
+        provider: 'test',
+        dimensions: 0,
+        stream(req: GenerateRequest): ModelStream {
+          if (first) {
+            first = false;
+            return new ModelStreamImpl((async function* () { yield* toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}'); })());
+          }
+          return spy.stream(req);
+        },
+        async generate() { throw new Error('use stream'); },
+        async embed() { return []; },
+      };
+
+      const sess = session({ store, agent: agent({ model, tools: [risky] }) });
+      const pending = await sess.start('delete acct_1');
+      t.equal(pending.status, 'suspended');
+
+      await t.rejects(
+        () => sess.resume(pending.state.suspendedOn!.token, { approved: true }),
+        /approveTool|rejectTool|tool approval/i,
+        'resume rejects tool approval suspensions',
+      );
+
+      const done = await sess.approveTool(pending.state.suspendedOn!.token);
+      t.equal(done.status, 'done');
+      t.equal(executed, 1, 'approved tool executed once');
+
+      const toolResultMsg = getLastMessages().find((m) =>
+        m.role === 'user' &&
+        Array.isArray(m.content) &&
+        m.content.some((p) =>
+          p.type === 'tool_result' &&
+          p.toolCallId === 'd1' &&
+          p.content === 'deleted:acct_1'
+        )
+      );
+      t.ok(toolResultMsg, 'resumed model call sees the approved tool result');
+
+      await t.rejects(
+        () => sess.approveTool(pending.state.suspendedOn!.token),
+        /suspended|token/i,
+        'approval token remains single-use',
+      );
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('rejected approval-required tools do not execute and return a tool error', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteSessionStore.open(path);
+    try {
+      let executed = false;
+      const risky = tool({
+        name: 'delete_account',
+        description: 'Deletes an account',
+        parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+        requiresApproval: true,
+        sideEffects: true,
+        execute: () => {
+          executed = true;
+          return 'deleted';
+        },
+      });
+
+      const { model: spy, getLastMessages } = captureModel();
+      let first = true;
+      const model: Model = {
+        id: 'approval-reject-model',
+        name: 'approval-reject-model',
+        provider: 'test',
+        dimensions: 0,
+        stream(req: GenerateRequest): ModelStream {
+          if (first) {
+            first = false;
+            return new ModelStreamImpl((async function* () { yield* toolCallTurn('d1', 'delete_account', '{"id":"acct_1"}'); })());
+          }
+          return spy.stream(req);
+        },
+        async generate() { throw new Error('use stream'); },
+        async embed() { return []; },
+      };
+
+      const sess = session({ store, agent: agent({ model, tools: [risky] }) });
+      const pending = await sess.start('delete acct_1');
+      const done = await sess.rejectTool(pending.state.suspendedOn!.token, 'not allowed');
+
+      t.equal(done.status, 'done');
+      t.equal(executed, false, 'rejected tool did not execute');
+      const toolResult = getLastMessages()
+        .flatMap((m) => Array.isArray(m.content) ? m.content : [])
+        .find((p) => p.type === 'tool_result' && p.toolCallId === 'd1');
+      t.equal(toolResult?.isError, true, 'rejection is returned as a tool error');
+      t.ok(String(toolResult?.content).includes('not allowed'), 'rejection reason is model-visible');
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('static approve/reject helpers resume persisted approval suspensions', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const store = await SqliteSessionStore.open(path);
+    try {
+      let executed = 0;
+      const risky = tool({
+        name: 'charge_card',
+        description: 'Charge card',
+        parameters: { type: 'object', properties: { amount: { type: 'number' } }, required: ['amount'] },
+        requiresApproval: true,
+        execute: ({ amount }: { amount: number }) => {
+          executed++;
+          return `charged:${amount}`;
+        },
+      });
+      const doneModel = captureModel();
+      let first = true;
+      const model: Model = {
+        id: 'static-approval',
+        name: 'static-approval',
+        provider: 'test',
+        stream(req: GenerateRequest): ModelStream {
+          if (first) {
+            first = false;
+            return new ModelStreamImpl((async function* () { yield* toolCallTurn('c1', 'charge_card', '{"amount":42}'); })());
+          }
+          return doneModel.model.stream(req);
+        },
+        async generate() { throw new Error('use stream'); },
+      };
+      const pending = await session({ store, agent: agent({ model, tools: [risky] }) }).start('charge');
+      t.equal(pending.status, 'suspended');
+
+      const resumed = await Session.approveSuspended({
+        store,
+        agent: agent({ model, tools: [risky] }),
+        runId: pending.runId,
+        resumeToken: pending.state.suspendedOn!.token,
+      });
+      t.equal(resumed.status, 'done');
+      t.equal(executed, 1, 'static approval executes once');
+
+      await t.rejects(
+        () => Session.rejectSuspended({
+          store,
+          agent: agent({ model, tools: [risky] }),
+          runId: pending.runId,
+          resumeToken: pending.state.suspendedOn!.token,
+          reason: 'late',
+        }),
+        /suspended|token/i,
+        'consumed token cannot be rejected later',
+      );
+    } finally {
+      await store.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
 });
 
 describe('Session.fork', () => {
@@ -435,7 +665,9 @@ describe('Session.fork', () => {
     try {
       const seenMessages: ModelMessage[][] = [];
       const trackingModel: Model = {
+        id: 'tracking',
         name: 'tracking',
+        provider: 'test',
         dimensions: 0,
         stream(req: GenerateRequest): ModelStream {
           seenMessages.push([...req.messages]);

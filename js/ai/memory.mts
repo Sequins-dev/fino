@@ -67,15 +67,23 @@ export interface MemoryQuery {
   topK?: number;
   last?: number;
   scope?: 'thread' | 'resource';
+  filter?: {
+    metadata?: Record<string, unknown>;
+  };
 }
 
 /**
  * Semantic recall hit returned from ingested memory chunks.
  */
 export interface RecallHit {
+  id?: string;
   text: string;
   score: number;
   metadata?: Record<string, unknown>;
+  citation?: {
+    id?: string;
+    metadata?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -85,6 +93,13 @@ export interface RecalledContext {
   messages: MemoryMessage[];
   recalled: RecallHit[];
   workingMemory: Record<string, unknown> | null;
+}
+
+/**
+ * Query helper over `Memory.recall()`.
+ */
+export interface Retriever {
+  retrieve(text: string, opts?: Omit<MemoryQuery, 'text'>): Promise<RecallHit[]>;
 }
 
 /**
@@ -113,6 +128,22 @@ export interface Memory {
   thread(id: string): Memory;
   close(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
+}
+
+/**
+ * Create a retriever over a `Memory` instance.
+ *
+ * The helper keeps RAG call sites concise when an application only needs
+ * semantic hits rather than the full recalled conversation and working-memory
+ * context.
+ */
+export function retriever(memory: Memory, defaults: Omit<MemoryQuery, 'text'> = {}): Retriever {
+  return {
+    async retrieve(text: string, opts: Omit<MemoryQuery, 'text'> = {}): Promise<RecallHit[]> {
+      const ctx = await memory.recall({ ...defaults, ...opts, text });
+      return ctx.recalled;
+    },
+  };
 }
 
 /**
@@ -155,6 +186,15 @@ function parseRow(r: Record<string, unknown>): MemoryMessage {
     content: JSON.parse(r.content as string),
     createdAt: Number(r.created_at),
   };
+}
+
+function metadataMatches(metadata: Record<string, unknown> | undefined, expected: Record<string, unknown> | undefined): boolean {
+  if (!expected) return true;
+  if (!metadata) return false;
+  for (const [key, value] of Object.entries(expected)) {
+    if (metadata[key] !== value) return false;
+  }
+  return true;
 }
 
 /**
@@ -337,7 +377,7 @@ export class SqliteMemory implements Memory {
     const rowids = knnRows.map((r) => r.rowid as bigint);
     const placeholders = rowids.map(() => '?').join(',');
     const chunksStmt = this.#db.prepare(
-      `SELECT rowid, text, metadata, scope_id FROM chunks WHERE rowid IN (${placeholders})`,
+      `SELECT rowid, id, text, metadata, scope_id FROM chunks WHERE rowid IN (${placeholders})`,
     );
     let chunkRows: Record<string, unknown>[];
     try {
@@ -352,16 +392,26 @@ export class SqliteMemory implements Memory {
 
     const recalled: RecallHit[] = chunkRows
       .filter((r) => r.scope_id === scopeId)
+      .map((r) => ({
+        row: r,
+        metadata: r.metadata !== null ? JSON.parse(r.metadata as string) as Record<string, unknown> : undefined,
+      }))
+      .filter(({ metadata }) => metadataMatches(metadata, query.filter?.metadata))
       .sort((a, b) => {
-        const da = distByRowid.get(a.rowid as bigint) ?? Infinity;
-        const db = distByRowid.get(b.rowid as bigint) ?? Infinity;
+        const da = distByRowid.get(a.row.rowid as bigint) ?? Infinity;
+        const db = distByRowid.get(b.row.rowid as bigint) ?? Infinity;
         return da - db;
       })
       .slice(0, topK)
-      .map((r) => ({
-        text: r.text as string,
-        score: 1 / (1 + (distByRowid.get(r.rowid as bigint) ?? Infinity)),
-        metadata: r.metadata !== null ? JSON.parse(r.metadata as string) : undefined,
+      .map(({ row, metadata }) => ({
+        id: row.id as string,
+        text: row.text as string,
+        score: 1 / (1 + (distByRowid.get(row.rowid as bigint) ?? Infinity)),
+        ...(metadata !== undefined ? { metadata } : {}),
+        citation: {
+          id: row.id as string,
+          ...(metadata !== undefined ? { metadata } : {}),
+        },
       }));
 
     return { messages, recalled, workingMemory };

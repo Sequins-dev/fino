@@ -80,8 +80,10 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:profiler` | `benchmarks/profiler.bench.mts` |
 | `fino:net/http/eventstream` | not yet benchmarked |
 | `fino:ai/context` | not yet benchmarked |
+| `fino:ai` | not yet benchmarked |
 | `fino:ai/model` | not yet benchmarked |
 | `fino:ai/model/anthropic` | not yet benchmarked |
+| `fino:ai/model/local` | not yet benchmarked |
 | `fino:ai/model/openai` | not yet benchmarked |
 | `fino:ai/tool` | not yet benchmarked |
 | `fino:ai/harness` | not yet benchmarked |
@@ -95,6 +97,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:jsonrpc` | not yet benchmarked |
 | `fino:ai/mcp` | not yet benchmarked |
 | `fino:workflow` | not yet benchmarked |
+| `fino:task` | not yet benchmarked |
 
 ## Release Stress And Failure Coverage
 

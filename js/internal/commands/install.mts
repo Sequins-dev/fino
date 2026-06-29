@@ -14,7 +14,7 @@
  * @internal
  */
 
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { installPackages } from '../package_manager.mts';
 
 /**
@@ -32,20 +32,28 @@ import { installPackages } from '../package_manager.mts';
  * await install.parse(['@scope/pkg@^1.2.0']);
  * ```
  *
- * @returns A configured `Command` instance for `fino install`.
+ * @returns A configured `Task` instance for `fino install`.
  * @internal
  */
-export function createInstallCommand(): Command {
-  return new Command({
+export function createInstallCommand(): Task {
+  return new Task({
     name: 'install',
     description: 'Install npm packages into .fino and generate a package map',
-    run: async function runInstallCommand(ctx: CommandContext) {
-      const packages = Array.isArray(ctx.args.packages) ? ctx.args.packages.map(String) : undefined;
+    outputMode: 'both',
+    run: async function runInstallCommand(input: { packages?: unknown[] }, ctx) {
+      const packages = Array.isArray(input.packages) ? input.packages.map(String) : undefined;
       await installPackages(packages);
+      if (ctx.writer.mode === 'json') {
+        const result = { command: 'install', ok: true, packages: packages ?? [] };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
       return '';
     },
-    positionals: [
-      { name: 'packages', type: 'string', multiple: true, description: 'Packages to add to package.json before installing' },
-    ],
+    cli: {
+      positionals: [
+        { name: 'packages', type: 'string', multiple: true, description: 'Packages to add to package.json before installing' },
+      ],
+    },
   });
 }

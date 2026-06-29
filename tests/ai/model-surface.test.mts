@@ -86,11 +86,15 @@ describe('model surface — responseFormat (structured output)', () => {
 
     t.equal(o.id, 'gpt-test', 'OpenAI id is explicit');
     t.equal(o.provider, 'openai', 'OpenAI provider is explicit');
-    t.equal(o.capabilities?.responseFormat, true, 'OpenAI declares native structured output');
+    t.equal(o.capabilities?.structuredOutput?.native, true, 'OpenAI declares native structured output');
+    t.equal(o.capabilities?.toolCalling, true, 'OpenAI declares tool calling');
+    t.equal(o.capabilities?.sampling?.seed, true, 'OpenAI declares seed support');
 
     t.equal(a.id, 'claude-test', 'Anthropic id is explicit');
     t.equal(a.provider, 'anthropic', 'Anthropic provider is explicit');
-    t.equal(a.capabilities?.responseFormat, true, 'Anthropic declares native structured output');
+    t.equal(a.capabilities?.structuredOutput?.native, true, 'Anthropic declares native structured output');
+    t.equal(a.capabilities?.input?.document, true, 'Anthropic declares document input');
+    t.equal(a.capabilities?.sampling?.seed, false, 'Anthropic declares no seed support');
   });
 
   it('OpenAI: serializes responseFormat into response_format in request body', async (t) => {

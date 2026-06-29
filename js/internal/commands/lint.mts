@@ -16,30 +16,41 @@
  * @internal
  */
 
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { runLint } from '../tooling/lint.mts';
 
 /**
  * Create the `lint` subcommand used by the root Fino CLI.
  *
- * The command returns a success string for normal output and throws after
- * diagnostics so `internal/main.mts` preserves standard CLI exit behavior.
+ * The task returns a success string for text output, writes a JSON result when
+ * `--json` is requested, and throws after diagnostics so `internal/main.mts`
+ * preserves standard CLI exit behavior.
  *
  * @internal
  */
-export function createLintCommand(): Command {
-  return new Command({
+export function createLintCommand(): Task {
+  return new Task({
     name: 'lint',
     description: 'Lint JavaScript and TypeScript source files',
-    run: async function runLintCommand(ctx: CommandContext) {
-      const files = Array.isArray(ctx.args.files) ? ctx.args.files.map(String) : [];
-      return runLint({ files, fix: ctx.options.fix === true });
+    outputMode: 'both',
+    run: async function runLintCommand(input: { files?: unknown[]; fix?: unknown }, ctx) {
+      const files = Array.isArray(input.files) ? input.files.map(String) : [];
+      const fix = input.fix === true;
+      const message = await runLint({ files, fix });
+      if (ctx.writer.mode === 'json') {
+        const result = { command: 'lint', ok: true, fix, files, message };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
+      return message;
     },
-    options: [
-      { flags: '--fix', type: 'boolean', description: 'Apply safe lint fixes without running formatting' },
-    ],
-    positionals: [
-      { name: 'files', type: 'string', multiple: true, description: 'Files, directories, or globs to lint' },
-    ],
+    cli: {
+      options: [
+        { flags: '--fix', type: 'boolean', description: 'Apply safe lint fixes without running formatting' },
+      ],
+      positionals: [
+        { name: 'files', type: 'string', multiple: true, description: 'Files, directories, or globs to lint' },
+      ],
+    },
   });
 }

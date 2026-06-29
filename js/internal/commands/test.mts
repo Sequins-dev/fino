@@ -15,7 +15,7 @@
  */
 
 import { cwd } from '../../process.mts';
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { DiskFileSystem } from 'fino:file';
 import { allowInternalForTests } from 'internal:loader-hooks';
 
@@ -78,18 +78,19 @@ async function expandArg(arg: string): Promise<string[]> {
  * await test.parse(['--filter', 'socket', 'tests/net']);
  * ```
  *
- * @returns A configured `Command` instance for `fino test`.
+ * @returns A configured `Task` instance for `fino test`.
  * @internal
  */
-export function createTestCommand(): Command {
-  return new Command({
+export function createTestCommand(): Task {
+  return new Task({
     name: 'test',
     description: 'Run test files',
-    run: async function runTestCommand(ctx: CommandContext) {
-      const testFiles = Array.isArray(ctx.args.files) ? ctx.args.files : [];
-      const filter = typeof ctx.options.filter === 'string' ? ctx.options.filter : undefined;
-      const showOutput = typeof ctx.options['show-output'] === 'string' ? ctx.options['show-output'] : 'failures';
-      const durations = ctx.options.durations === true;
+    outputMode: 'both',
+    run: async function runTestCommand(input: { files?: unknown[]; filter?: unknown; 'show-output'?: unknown; durations?: unknown }, ctx) {
+      const testFiles = Array.isArray(input.files) ? input.files : [];
+      const filter = typeof input.filter === 'string' ? input.filter : undefined;
+      const showOutput = typeof input['show-output'] === 'string' ? input['show-output'] : 'failures';
+      const durations = input.durations === true;
       if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
         throw new Error(`Invalid --show-output value "${showOutput}" (expected failures, always, or never)`);
       }
@@ -113,15 +114,23 @@ export function createTestCommand(): Command {
       }
 
       const { run } = await import('fino:test/test');
-      return run(filter === undefined ? { showOutput, durations } : { filter, showOutput, durations });
+      const output = await run(filter === undefined ? { showOutput, durations } : { filter, showOutput, durations });
+      if (ctx.writer.mode === 'json') {
+        const result = { command: 'test', ok: true, files: testFiles.map(String), imported: importFiles, filter, showOutput, durations, output };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
+      return output;
     },
-    options: [
-      { flags: '--filter', type: 'string', description: 'Run only describe groups whose full path contains the filter text' },
-      { flags: '--show-output', type: 'string', description: 'Show captured console output: failures, always, or never' },
-      { flags: '--durations', type: 'boolean', description: 'Annotate TAP result lines with duration metadata' },
-    ],
-    positionals: [
-      { name: 'files', type: 'string', multiple: true, required: true, description: 'Test files to import and run' },
-    ],
+    cli: {
+      options: [
+        { flags: '--filter', type: 'string', description: 'Run only describe groups whose full path contains the filter text' },
+        { flags: '--show-output', type: 'string', description: 'Show captured console output: failures, always, or never' },
+        { flags: '--durations', type: 'boolean', description: 'Annotate TAP result lines with duration metadata' },
+      ],
+      positionals: [
+        { name: 'files', type: 'string', multiple: true, required: true, description: 'Test files to import and run' },
+      ],
+    },
   });
 }

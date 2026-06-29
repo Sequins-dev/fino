@@ -14,7 +14,7 @@
  * @internal
  */
 
-import { Command } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { Realm } from '../../realm/index.mts';
 import { stdin, stdout } from '../../process.mts';
 import { TextEncoder as _TextEncoder } from '../../globals/encoding.mts';
@@ -194,13 +194,14 @@ export async function runReplCommand(): Promise<void> {
  * await repl.parse([]);
  * ```
  *
- * @returns A configured `Command` instance for `fino repl`.
+ * @returns A configured `Task` instance for `fino repl`.
  * @internal
  */
-export function createReplCommand(): Command {
-  return new Command({
+export function createReplCommand(): Task {
+  return new Task({
     name: 'repl',
     description: 'Start an interactive REPL',
+    outputMode: 'text',
     run: runReplCommand,
   });
 }

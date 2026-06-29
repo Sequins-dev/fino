@@ -147,15 +147,16 @@ const sess = session({
 const first = await sess.start('Refund $250 for account acct_123.');
 if (first.status === 'suspended' && first.state.suspendedOn?.token) {
   const approved = { approvalId: 'APR-1001' };
-  const resumed = await sess.resume(first.state.suspendedOn.token, approved);
+  const resumed = await sess.approveTool(first.state.suspendedOn.token, {
+    approval: approved,
+  });
   console.log(resumed.status, resumed.text);
 }
 ```
 
-The resumed value is injected as a user message. Design the tool and prompt so
-the next model step knows how to use that value, or store enough information in
-the suspended payload for the surrounding application to decide what to resume
-with. Keep suspended payloads small and durable: ids, amounts, and reasons are
+Approved tool calls execute exactly once and append a tool result before the
+next model step. For non-tool external input suspensions, `resume()` still
+injects a user message. Keep suspended payloads small and durable: ids, amounts, and reasons are
 better than live objects or process-local handles.
 
 ## Idempotency and Side Effects

@@ -92,6 +92,53 @@ describe('Agent runtime', () => {
     t.ok(toolResultMsg, 'tool_result appended as user message');
   });
 
+  it('tool timeoutMs returns an error tool result when execution exceeds the limit', async (t) => {
+    let sawToolResult = false;
+    const slow = tool({
+      name: 'slow',
+      description: 'Runs too slowly',
+      parameters: { type: 'object', properties: {} },
+      timeoutMs: 5,
+      execute: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return 'late';
+      },
+    });
+    const inspectingModel: Model = {
+      id: 'timeout-spy',
+      name: 'timeout-spy',
+      provider: 'test',
+      dimensions: 0,
+      stream(req: GenerateRequest): ModelStream {
+        const hasResult = req.messages.some((m) =>
+          m.role === 'user' &&
+          Array.isArray(m.content) &&
+          m.content.some((p) =>
+            p.type === 'tool_result' &&
+            p.toolCallId === 'slow_1' &&
+            p.isError === true &&
+            String(p.content).includes('timed out')
+          )
+        );
+        async function* gen() {
+          if (!sawToolResult) {
+            sawToolResult = hasResult;
+            yield* toolCallEvents('slow_1', 'slow', '{}');
+          } else {
+            yield* endTurnEvents('handled timeout');
+          }
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() { throw new Error('use stream'); },
+      async embed() { return []; },
+    };
+
+    const result = await agent({ model: inspectingModel, tools: [slow] }).generate('run slow tool');
+    t.equal(result.text, 'handled timeout');
+    t.equal(sawToolResult, true, 'model saw timed-out tool result as an error');
+  });
+
   it('concurrent tools both execute', async (t) => {
     const calls: string[] = [];
     const toolA = tool({
@@ -166,7 +213,7 @@ describe('Agent runtime', () => {
     const h = agent({ model: scriptModel(turns) });
     const stream = h.stream({ messages: [{ role: 'user', content: 'hi' }] });
 
-    const collected: StreamEvent[] = [];
+    const collected: import('fino:ai/agent').AgentEvent[] = [];
     for await (const ev of stream.reader) {
       collected.push(ev);
     }
@@ -174,8 +221,22 @@ describe('Agent runtime', () => {
     const result = await stream.result;
     t.equal(result.text, 'Hello');
 
-    const textDeltas = collected.filter((e) => e.type === 'text_delta');
+    const textDeltas = collected.filter((e) => e.type === 'model_event' && e.event.type === 'text_delta');
     t.equal(textDeltas.length, 2, 'both text_delta events forwarded');
+  });
+
+  it('stream() emits agent lifecycle events around model deltas', async (t) => {
+    const h = agent({ model: scriptModel([endTurnEvents('Hello')]) });
+    const stream = h.stream({ messages: [{ role: 'user', content: 'hi' }] });
+
+    const types: string[] = [];
+    for await (const ev of stream.reader) types.push(ev.type);
+    await stream.result;
+
+    t.ok(types.includes('step_start'), 'step start event emitted');
+    t.ok(types.includes('model_event'), 'model delta event wrapper emitted');
+    t.ok(types.includes('step_end'), 'step end event emitted');
+    t.ok(types.includes('final'), 'final event emitted');
   });
 
   it('pre-aborted signal throws immediately', async (t) => {

@@ -51,6 +51,8 @@ import type {
   RetryOptions as RuntimeRetryOptions,
   StrategyMemorySink as RuntimeStrategyMemorySink,
   AgentStream as RuntimeAgentStream,
+  AgentEvent as RuntimeAgentEvent,
+  ToolApprovalRequest as RuntimeToolApprovalRequest,
 } from 'internal:ai/runtime';
 import { SuspendSignal } from 'fino:ai/tool';
 
@@ -127,6 +129,21 @@ export type StrategyMemorySink = RuntimeStrategyMemorySink;
  * Stream handle returned by `Agent.stream()`.
  */
 export type AgentStream = RuntimeAgentStream;
+
+/**
+ * Event emitted by `Agent.stream()`.
+ *
+ * Raw provider stream events are wrapped as
+ * `{ type: 'model_event', event }`. Other event variants describe agent
+ * lifecycle, tool execution, retries, fallbacks, guardrails, suspension, and
+ * final completion.
+ */
+export type AgentEvent = RuntimeAgentEvent;
+
+/**
+ * Persisted request for approval before executing a tool call.
+ */
+export type ToolApprovalRequest = RuntimeToolApprovalRequest;
 
 /**
  * Signals that execution should suspend instead of fail.

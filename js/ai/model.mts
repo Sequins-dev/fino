@@ -12,10 +12,9 @@
  * `Model.stream()` is the canonical path for agent execution. Provider adapters
  * emit normalized `StreamEvent` values for text, tool-call deltas, usage, stop
  * reasons, and errors; `assembleResult()` folds those events into the same
- * `GenerateResult` shape returned by `Model.generate()`. Message content parts
- * are provider-neutral and are translated by `fino:ai/model/openai`,
- * `fino:ai/model/anthropic`, and `fino:ai/model/local` into each provider's
- * native format.
+ * `GenerateResult` shape returned by `Model.generate()`. Embeddings use the
+ * separate `EmbeddingModel` contract so chat-only providers and tests do not
+ * need fake embedding methods.
  *
  * This module does not hide provider capabilities. Adapters expose `id`,
  * `provider`, and optional `capabilities` so higher layers can make explicit
@@ -156,15 +155,17 @@ export interface ToolDefinition {
  * Provider-neutral generation request.
  */
 export interface GenerateRequest {
-  model?: string;
   messages: ModelMessage[];
   system?: string | TextPart[];
   tools?: ToolDefinition[];
   toolChoice?: 'auto' | 'any' | 'none' | { name: string };
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
+  seed?: number;
   stopSequences?: string[];
   responseFormat?: ResponseFormat;
+  providerOptions?: Record<string, unknown>;
   signal?: AbortSignal;
 }
 
@@ -200,6 +201,52 @@ export interface GenerateResult {
   toolCalls: ToolCall[];
   usage: Usage;
   stopReason: StopReason;
+  warnings?: string[];
+  providerMetadata?: Record<string, unknown>;
+}
+
+/**
+ * Feature metadata exposed by chat model adapters.
+ *
+ * Capabilities are semantic flags, not provider names. Agent code uses these
+ * fields to decide whether to request tools, native JSON Schema output,
+ * multimodal input, and optional sampling controls.
+ */
+export interface ModelCapabilities {
+  streaming?: boolean;
+  toolCalling?: boolean;
+  toolChoice?: {
+    auto?: boolean;
+    any?: boolean;
+    none?: boolean;
+    named?: boolean;
+  };
+  structuredOutput?: {
+    jsonSchema?: boolean;
+    strictJsonSchema?: boolean;
+    native?: boolean;
+  };
+  input?: {
+    text?: boolean;
+    image?: boolean;
+    document?: boolean;
+  };
+  sampling?: {
+    temperature?: boolean;
+    topP?: boolean;
+    seed?: boolean;
+    stopSequences?: boolean;
+  };
+  local?: boolean;
+}
+
+/**
+ * Feature metadata exposed by embedding model adapters.
+ */
+export interface EmbeddingCapabilities {
+  dimensions?: number;
+  maxBatchSize?: number;
+  maxInputTokens?: number;
 }
 
 /**
@@ -222,9 +269,9 @@ export interface ModelStream extends AsyncIterable<StreamEvent> {
 }
 
 /**
- * Provider-neutral model adapter.
+ * Provider-neutral chat model adapter.
  */
-export interface Model {
+export interface ChatModel {
   /**
    * Stable model identifier used for provider requests and telemetry.
    *
@@ -242,19 +289,32 @@ export interface Model {
   readonly provider?: string;
   /**
    * Optional provider features that affect request construction.
-   *
-   * `responseFormat` means the provider can accept native JSON Schema response
-   * format requests. The agent still defaults to portable forced-tool
-   * structured output unless `structuredOutputMode: 'native'` is requested.
    */
-  readonly capabilities?: {
-    responseFormat?: boolean;
-  };
-  readonly dimensions: number;
+  readonly capabilities?: ModelCapabilities;
   stream(req: GenerateRequest): ModelStream;
   generate(req: GenerateRequest): Promise<GenerateResult>;
+}
+
+/**
+ * Provider-neutral embedding model adapter.
+ */
+export interface EmbeddingModel {
+  readonly id: string;
+  readonly name: string;
+  readonly provider: string;
+  readonly capabilities?: EmbeddingCapabilities;
+  readonly dimensions: number;
   embed(texts: string[]): Promise<Float32Array[]>;
 }
+
+/**
+ * Provider-neutral model adapter used by chat and agent APIs.
+ *
+ * Providers may also implement `EmbeddingModel`; memory and semantic eval APIs
+ * depend on that narrower embedding contract instead of requiring every chat
+ * model to expose embeddings.
+ */
+export type Model = ChatModel;
 
 /**
  * Options applied when constructing a `Model` from a provider or registry.
@@ -268,6 +328,9 @@ export interface ModelCreateOptions {
    * Default sampling temperature for models created from the provider.
    */
   temperature?: number;
+  topP?: number;
+  seed?: number;
+  providerOptions?: Record<string, unknown>;
   /**
    * Embedding vector dimensions for providers that support embeddings.
    */
@@ -316,10 +379,11 @@ export interface ModelInfo {
   /**
    * Construct a `Model` for this discovered model id.
    *
-   * Remote providers usually return synchronously. Local providers may return a
-   * promise because resolving a model can involve filesystem or cache work.
+   * Model construction is always async so remote and local providers share one
+   * call shape. Remote providers usually resolve immediately, while local
+   * providers may need filesystem or cache work.
    */
-  create(opts?: ModelCreateOptions): Model | Promise<Model>;
+  create(opts?: ModelCreateOptions): Promise<Model>;
 }
 
 /**
@@ -338,7 +402,7 @@ export interface ModelProvider {
   /**
    * Construct a model by provider model id.
    */
-  createModel(id: string, opts?: ModelCreateOptions): Model | Promise<Model>;
+  createModel(id: string, opts?: ModelCreateOptions): Promise<Model>;
 }
 
 /**
@@ -364,6 +428,9 @@ export interface ProviderOptions {
   model?: string;
   maxTokens?: number;
   temperature?: number;
+  topP?: number;
+  seed?: number;
+  providerOptions?: Record<string, unknown>;
   dimensions?: number;
 }
 
@@ -506,17 +573,17 @@ export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
 }
 
 /**
- * Whether the default llama.cpp shim was found when this module was evaluated.
+ * Whether a default system `libllama` was found when this module was evaluated.
  *
  * This is a capability gate for optional local model support. It reflects only
- * default lookup paths such as `FINO_LLAMA_LIBRARY`; callers can still pass an
- * explicit `libraryPath` to `local()`.
+ * default lookup paths such as `LLAMA_CPP_LIBRARY` and `FINO_LLAMA_LIBRARY`;
+ * callers can still pass an explicit `libraryPath` to `local()`.
  */
 export const hasLlamaCpp = localHasLlamaCpp;
 
 /**
- * Error thrown when local llama.cpp support is requested but no usable shim is
- * available.
+ * Error thrown when local llama.cpp support is requested but no usable
+ * `libllama` library is available.
  */
 export const LocalModelLibraryError = SharedLocalModelLibraryError;
 

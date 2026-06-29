@@ -37,7 +37,7 @@
 
 import type { ContentPart, ModelMessage, ToolDefinition } from 'fino:ai/model';
 import type { MessageHistory } from 'fino:ai/context';
-import { compile } from 'fino:validate';
+import { Task } from 'fino:task';
 import { normalizeSchema } from 'internal:ai/shared';
 import type { SchemaLike } from 'internal:ai/shared';
 
@@ -94,60 +94,58 @@ export interface ToolOptions<Args, R extends ToolResult = ToolResult> {
    */
   parameters: SchemaLike<Args>;
   execute: (args: Args, ctx: ToolRunContext) => R | Promise<R>;
+  /**
+   * Human-readable risk category for approval UIs and audit logs.
+   */
+  risk?: string;
+  /**
+   * Whether the tool has external side effects.
+   */
+  sideEffects?: boolean;
+  /**
+   * Require an agent/session to suspend for application approval before this
+   * tool executes.
+   */
+  requiresApproval?: boolean;
+  /**
+   * Maximum intended execution duration in milliseconds.
+   *
+   * When set, `execute` receives a child abort signal and the invocation returns
+   * an error tool result if the timeout elapses before the executor settles.
+   */
+  timeoutMs?: number;
   throwOnError?: boolean;
 }
 
 /**
  * Executable tool exposed to a model.
  */
-export class Tool<Args = unknown, R extends ToolResult = ToolResult> {
-  readonly name: string;
-  readonly description: string;
-  readonly parameters: Record<string, unknown>;
-  #execute: (args: Args, ctx: ToolRunContext) => R | Promise<R>;
-  #throwOnError: boolean;
-  #validator: ReturnType<typeof compile> | null = null;
-
+export class Tool<Args = unknown, R extends ToolResult = ToolResult> extends Task<Args, R> {
   constructor(opts: ToolOptions<Args, R>) {
-    this.name = opts.name;
-    this.description = opts.description;
-    this.parameters = normalizeSchema(opts.parameters);
-    this.#execute = opts.execute;
-    this.#throwOnError = opts.throwOnError ?? false;
-  }
-
-  #getValidator(): ReturnType<typeof compile> {
-    if (!this.#validator) this.#validator = compile(this.parameters);
-    return this.#validator;
-  }
-
-  async invoke(
-    rawArgs: unknown,
-    ctx: ToolRunContext,
-  ): Promise<{ content: string | ContentPart[]; isError?: boolean }> {
-    const parsed = this.#getValidator().safeParse(rawArgs);
-
-    if (!parsed.success) {
-      const summary = parsed.issues
-        .map((issue: { path: string; message: string }) =>
-          `${issue.path || '<root>'}: ${issue.message}`
-        )
-        .join('\n');
-      return { content: summary, isError: true };
-    }
-
-    let output: R;
-    try {
-      output = await this.#execute(parsed.value as Args, ctx);
-    } catch (err: unknown) {
-      if (err instanceof Error && (err.name === 'AbortError' || err.name === 'SuspendSignal')) throw err;
-      if (this.#throwOnError) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      return { content: message, isError: true };
-    }
-
-    if (typeof output === 'string') return { content: output };
-    return output as { content: string | ContentPart[]; isError?: boolean };
+    const parameters = normalizeSchema(opts.parameters);
+    super({
+      name: opts.name,
+      description: opts.description,
+      inputSchema: parameters as SchemaLike<Args>,
+      outputMode: 'text',
+      risk: opts.risk,
+      sideEffects: opts.sideEffects,
+      requiresApproval: opts.requiresApproval,
+      timeoutMs: opts.timeoutMs,
+      throwOnError: opts.throwOnError,
+      run: (args, ctx) => opts.execute(args, {
+        signal: ctx.signal,
+        toolCallId: ctx.toolCallId ?? 'task',
+        step: ctx.step ?? 0,
+        runId: ctx.runId ?? 'task',
+        messages: ctx.messages ?? [],
+        history: ctx.history,
+        suspend(suspendOpts = {}): never {
+          if (ctx.suspend) return ctx.suspend(suspendOpts);
+          throw new SuspendSignal(suspendOpts.reason, suspendOpts.payload);
+        },
+      }),
+    });
   }
 }
 

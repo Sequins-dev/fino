@@ -63,7 +63,7 @@ describe('ModelRegistry', () => {
     t.equal(models[0].createdAt, 123);
     t.equal(models[0].ownedBy, 'openai');
 
-    const model = models[0].create({ maxTokens: 128 });
+    const model = await models[0].create({ maxTokens: 128 });
     t.equal(model.id, 'gpt-a');
     t.equal(model.provider, 'openai');
     t.equal(model.name, 'gpt-a');
@@ -99,7 +99,7 @@ describe('ModelRegistry', () => {
     t.equal(models[0].displayName, 'Claude A');
     t.equal(models[0].createdAt, Date.parse('2026-01-02T03:04:05Z'));
 
-    const model = models[0].create();
+    const model = await models[0].create();
     t.equal(model.id, 'claude-a');
     t.equal(model.provider, 'anthropic');
   });

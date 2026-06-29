@@ -47,8 +47,17 @@ let caughtError: unknown = null;
 let shutdownStarted = false;
 let shutdownDone = false;
 const cliArgv = normalizeCliArgv(argv.slice(1));
+const wantsJson = cliArgv.includes('--json');
 
-Promise.resolve(root.parse(cliArgv)).then(
+Promise.resolve(root.parse(cliArgv, wantsJson ? {
+  outputMode: 'json',
+  writer: {
+    mode: 'json',
+    writeJson(value) {
+      console.log(JSON.stringify(value));
+    },
+  },
+} : {})).then(
   function onCommandDone(result) {
     if (typeof result === 'string' && result.length > 0) console.log(result);
     done = true;

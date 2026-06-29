@@ -32,7 +32,7 @@
  */
 
 import { suite, test } from 'fino:test/test';
-import type { Model } from 'fino:ai/model';
+import type { EmbeddingModel, Model } from 'fino:ai/model';
 import { compile } from 'fino:validate';
 import { agent } from 'fino:ai/agent';
 import { OtelSDK, BatchSpanProcessor, TraceTopicInstrumentation, PeriodicExportingMetricReader, OTLPHttpJsonExporter } from 'fino:opentelemetry/sdk';
@@ -93,6 +93,32 @@ export interface EvalSummary {
 }
 
 /**
+ * JSON-serializable evaluation report.
+ */
+export interface JsonEvalReport {
+  suite?: { name: string; cases: number };
+  cases: EvalCaseReport[];
+  summary?: EvalSummary;
+}
+
+/**
+ * Options for `JsonEvalReporter`.
+ */
+export interface JsonEvalReporterOptions {
+  /**
+   * File path written after `onFinish()` when set.
+   */
+  path?: string;
+  /**
+   * File system implementation with a `writeFile()` method.
+   *
+   * Defaults to no file output. Tests can pass `DiskFileSystem`; applications
+   * may pass another compatible file system.
+   */
+  fs?: { writeFile(path: string, data: string): Promise<void> };
+}
+
+/**
  * Receives per-case and summary evaluation reports.
  */
 export abstract class EvalReporter {
@@ -102,15 +128,64 @@ export abstract class EvalReporter {
 }
 
 /**
+ * Eval reporter that stores deterministic JSON-friendly reports.
+ *
+ * Use this reporter when local CI should write or compare an eval artifact
+ * without sending telemetry to an external service. `toJSON()` returns cloned
+ * data sorted by case name for stable output.
+ */
+export class JsonEvalReporter extends EvalReporter {
+  #suite?: { name: string; cases: number };
+  #cases: EvalCaseReport[] = [];
+  #summary?: EvalSummary;
+  #opts: JsonEvalReporterOptions;
+
+  constructor(opts: JsonEvalReporterOptions = {}) {
+    super();
+    this.#opts = opts;
+  }
+
+  async onStart(suite: { name: string; cases: number }): Promise<void> {
+    this.#suite = { ...suite };
+  }
+
+  async onCase(r: EvalCaseReport): Promise<void> {
+    this.#cases.push(JSON.parse(JSON.stringify(r)) as EvalCaseReport);
+  }
+
+  async onFinish(summary: EvalSummary): Promise<void> {
+    this.#summary = { ...summary };
+    if (this.#opts.path && this.#opts.fs) {
+      await this.#opts.fs.writeFile(this.#opts.path, JSON.stringify(this.toJSON(), null, 2) + '\n');
+    }
+  }
+
+  toJSON(): JsonEvalReport {
+    return {
+      ...(this.#suite ? { suite: { ...this.#suite } } : {}),
+      cases: [...this.#cases]
+        .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+        .map((item) => JSON.parse(JSON.stringify(item)) as EvalCaseReport),
+      ...(this.#summary ? { summary: { ...this.#summary } } : {}),
+    };
+  }
+}
+
+/**
  * Options for `evaluate()`.
  */
 export interface EvalOptions<In = unknown, Out = unknown> {
   name: string;
   target: (input: In) => Promise<Out>;
   cases: EvalCase<In, Out>[];
-  scorers: Scorer<Out>[];
+  scorers: Scorer<Out>[] | Record<string, Scorer<Out>>;
   threshold?: number;
   report?: EvalReporter;
+}
+
+function scorerEntries<Out>(scorers: Scorer<Out>[] | Record<string, Scorer<Out>>): Array<[string | undefined, Scorer<Out>]> {
+  if (Array.isArray(scorers)) return scorers.map((scorer) => [undefined, scorer]);
+  return Object.entries(scorers);
 }
 
 function normalizeScoreResult(raw: number | ScoreResult, threshold: number): ScoreResult {
@@ -141,8 +216,8 @@ export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>
         const scorerResults: Record<string, ScoreResult> = {};
         const scoreValues: number[] = [];
 
-        for (const scorer of scorers) {
-          const scorerName = (scorer as { scorerName?: string }).scorerName ?? scorer.name ?? 'scorer';
+        for (const [name, scorer] of scorerEntries(scorers)) {
+          const scorerName = name ?? (scorer as { scorerName?: string }).scorerName ?? scorer.name ?? 'scorer';
           const raw = await scorer(output, c as EvalCase<unknown, Out>);
           const sr = normalizeScoreResult(raw, threshold);
           scorerResults[scorerName] = sr;
@@ -259,7 +334,7 @@ export function llmJudge(model: Model, rubric: string): Scorer {
 /**
  * Score output by embedding similarity against the expected value.
  */
-export function semanticSimilarity(model: Model, min: number): Scorer {
+export function semanticSimilarity(model: EmbeddingModel, min: number): Scorer {
   const fn = async (output: unknown, c: EvalCase): Promise<ScoreResult> => {
     const outStr = typeof output === 'string' ? output : JSON.stringify(output);
     const expStr = c.expected !== undefined

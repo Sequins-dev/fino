@@ -16,7 +16,7 @@
  * @internal
  */
 
-import { Command, type CommandContext } from '../../process/argv.mts';
+import { Task } from '../../task.mts';
 import { cwd, env } from '../../process.mts';
 import { Realm } from '../../realm/index.mts';
 import {
@@ -68,10 +68,10 @@ function runWithProviders<R>(
       runWithMeterProvider(providers.meterProvider, fn)));
 }
 
-function optionValue(ctx: CommandContext, key: string): unknown {
-  if (ctx.optionProvided(key)) return ctx.options[key];
-  if (ctx.root.providedOptions.has(key)) return ctx.root.options[key];
-  return ctx.options[key];
+interface RunInput {
+  script?: unknown;
+  watch?: unknown;
+  'otlp-endpoint'?: unknown;
 }
 
 /**
@@ -96,11 +96,11 @@ function optionValue(ctx: CommandContext, key: string): unknown {
  * @returns The imported module result, realm run result, or help text.
  * @internal
  */
-export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
-  const script = ctx.args.script;
-  if (script === undefined) return ctx.command.help();
+export async function runScriptTask(input: RunInput): Promise<unknown> {
+  const script = input.script;
+  if (script === undefined) throw new Error('fino run: no script specified');
 
-  const watchMode = optionValue(ctx, 'watch') === true;
+  const watchMode = input.watch === true;
   if (watchMode) {
     const entry = normalizeScriptSpecifier(String(script));
     const realm = new Realm({ entry, watch: true });
@@ -111,7 +111,7 @@ export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
 
   const load = () => import(normalizeScriptSpecifier(String(script)));
   if (String(env.OTEL_SDK_DISABLED || '').trim().toLowerCase() === 'true') return load();
-  const endpointOption = optionValue(ctx, 'otlp-endpoint');
+  const endpointOption = input['otlp-endpoint'];
   const flagEndpoint = typeof endpointOption === 'string' ? endpointOption.trim() : '';
   const envEndpoint = typeof env.OTEL_EXPORTER_OTLP_ENDPOINT === 'string' ? env.OTEL_EXPORTER_OTLP_ENDPOINT.trim() : '';
   const endpoint = flagEndpoint || envEndpoint;
@@ -127,7 +127,7 @@ export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
  *
  * The command requires a script positional and supports `--watch` plus
  * `--otlp-endpoint`. Its runtime behavior is delegated to
- * `runScriptCommand()`, so root-level and subcommand script execution stay
+ * `runScriptTask()`, so root-level and subcommand script execution stay
  * consistent.
  *
  * ```js
@@ -136,28 +136,31 @@ export async function runScriptCommand(ctx: CommandContext): Promise<unknown> {
  * await run.parse(['--watch', 'server.mts']);
  * ```
  *
- * @returns A configured `Command` instance for `fino run`.
+ * @returns A configured `Task` instance for `fino run`.
  * @internal
  */
-export function createRunCommand(): Command {
-  return new Command({
+export function createRunCommand(): Task {
+  return new Task({
     name: 'run',
     description: 'Run a script module',
-    options: [
-      {
-        flags: '--otlp-endpoint',
-        type: 'string',
-        description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint',
-      },
-      {
-        flags: '--watch',
-        type: 'boolean',
-        description: 'Re-run the script whenever any imported file changes',
-      },
-    ],
-    run: runScriptCommand,
-    positionals: [
-      { name: 'script', type: 'string', required: true, description: 'Script module to execute' },
-    ],
+    outputMode: 'text',
+    cli: {
+      options: [
+        {
+          flags: '--otlp-endpoint',
+          type: 'string',
+          description: 'Enable OpenTelemetry export to the given OTLP/HTTP collector endpoint',
+        },
+        {
+          flags: '--watch',
+          type: 'boolean',
+          description: 'Re-run the script whenever any imported file changes',
+        },
+      ],
+      positionals: [
+        { name: 'script', type: 'string', required: true, description: 'Script module to execute' },
+      ],
+    },
+    run: runScriptTask,
   });
 }

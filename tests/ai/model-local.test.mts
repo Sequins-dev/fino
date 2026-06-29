@@ -96,6 +96,10 @@ describe('local llama.cpp model adapter', () => {
 
     t.equal(model.id, '/tmp/model.gguf');
     t.equal(model.provider, 'local');
+    t.equal(model.capabilities?.toolCalling, false, 'local model declares no tool calling');
+    t.equal(model.capabilities?.input?.document, false, 'local model declares no document input');
+    t.equal(model.capabilities?.structuredOutput?.native, false, 'local model declares no native structured output');
+    t.equal(model.capabilities?.sampling?.topP, true, 'local model declares topP sampling support');
     t.equal(binding.opened[0].path, '/tmp/model.gguf');
     t.equal(binding.opened[0].options.contextSize, 2048);
     t.equal(binding.opened[0].options.threads, 2);

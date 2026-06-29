@@ -46,7 +46,7 @@ Provider adapters expose `id`, `provider`, and `capabilities` so application
 code can make explicit decisions instead of guessing from a model name:
 
 ```ts
-if (model.capabilities?.responseFormat) {
+if (model.capabilities?.structuredOutput?.native) {
   console.log(`${model.provider}:${model.id} supports native structured output`);
 }
 ```

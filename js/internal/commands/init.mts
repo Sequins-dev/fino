@@ -15,9 +15,8 @@
  * @internal
  */
 
-import { Command } from '../../process/argv.mts';
+import { Task, type TaskContext } from '../../task.mts';
 import { DiskFileSystem } from '../../file/fs.mts';
-import type { CommandContext } from '../../process/argv.mts';
 import { cwd, env, Process } from '../../process.mts';
 
 const fs = new DiskFileSystem();
@@ -99,13 +98,13 @@ async function getDefaultRepository(root: string): Promise<string> {
   return await gitConfig(['config', '--get', 'remote.origin.url'], root);
 }
 
-async function resolveField(ctx: CommandContext, key: string, options: {
+async function resolveField(ctx: TaskContext, input: Record<string, unknown>, key: string, options: {
   label: string;
   defaultValue: string;
   validate?: (value: string) => string | null;
 }): Promise<string> {
-  const currentValue = String(ctx.options[key] ?? options.defaultValue);
-  if (!ctx.optionProvided(key) && ctx.prompt.isInteractive && !ctx.options.yes) {
+  const currentValue = String(input[key] ?? options.defaultValue);
+  if (!ctx.optionProvided?.(key) && ctx.prompt?.isInteractive && !input.yes) {
     const promptOptions = {
       label: options.label,
       defaultValue: currentValue,
@@ -130,44 +129,45 @@ async function resolveField(ctx: CommandContext, key: string, options: {
  * await init.parse(['--yes', '--name', 'fino-app']);
  * ```
  *
- * @returns A configured `Command` instance for `fino init`.
+ * @returns A configured `Task` instance for `fino init`.
  * @internal
  */
-export function createInitCommand(): Command {
-  return new Command({
+export function createInitCommand(): Task {
+  return new Task({
     name: 'init',
     description: 'Create a package.json for the current project',
-    run: async function runInitCommand(ctx) {
+    outputMode: 'both',
+    run: async function runInitCommand(input: Record<string, unknown>, ctx) {
       const root = cwd();
       const packageJsonPath = root + '/package.json';
-      if (await exists(packageJsonPath) && !ctx.options.force) {
+      if (await exists(packageJsonPath) && !input.force) {
         throw new Error('fino init: package.json already exists (pass --force to overwrite)');
       }
 
-      const name = await resolveField(ctx, 'name', {
+      const name = await resolveField(ctx, input, 'name', {
         label: 'Package name',
-        defaultValue: String(ctx.options.name ?? ''),
+        defaultValue: String(input.name ?? ''),
         validate: validatePackageName,
       });
-      const version = await resolveField(ctx, 'version', {
+      const version = await resolveField(ctx, input, 'version', {
         label: 'Version',
-        defaultValue: String(ctx.options.version ?? '1.0.0'),
+        defaultValue: String(input.version ?? '1.0.0'),
       });
-      const description = await resolveField(ctx, 'description', {
+      const description = await resolveField(ctx, input, 'description', {
         label: 'Description',
-        defaultValue: String(ctx.options.description ?? ''),
+        defaultValue: String(input.description ?? ''),
       });
-      const license = await resolveField(ctx, 'license', {
+      const license = await resolveField(ctx, input, 'license', {
         label: 'License',
-        defaultValue: String(ctx.options.license ?? 'MIT'),
+        defaultValue: String(input.license ?? 'MIT'),
       });
-      const author = await resolveField(ctx, 'author', {
+      const author = await resolveField(ctx, input, 'author', {
         label: 'Author',
-        defaultValue: String(ctx.options.author ?? ''),
+        defaultValue: String(input.author ?? ''),
       });
-      const repository = await resolveField(ctx, 'repository', {
+      const repository = await resolveField(ctx, input, 'repository', {
         label: 'Repository',
-        defaultValue: String(ctx.options.repository ?? ''),
+        defaultValue: String(input.repository ?? ''),
       });
 
       const validationError = validatePackageName(String(name));
@@ -184,17 +184,25 @@ export function createInitCommand(): Command {
       };
 
       await fs.writeFile(packageJsonPath, JSON.stringify(pkg, null, 2) + '\n');
-      return `Wrote ${packageJsonPath}`;
+      const message = `Wrote ${packageJsonPath}`;
+      if (ctx.writer.mode === 'json') {
+        const result = { command: 'init', ok: true, path: packageJsonPath, package: pkg, message };
+        await ctx.writer.writeJson(result);
+        return result;
+      }
+      return message;
     },
-    options: [
-      { flags: '--name', type: 'string', description: 'Package name', default() { return basename(cwd()) || 'fino-app'; } },
-      { flags: '--version', type: 'string', description: 'Package version', default: '1.0.0' },
-      { flags: '--description', type: 'string', description: 'Package description', default: '' },
-      { flags: '--license', type: 'string', description: 'Package license', default: 'MIT' },
-      { flags: '--author', type: 'string', description: 'Package author', default() { return getDefaultAuthor(cwd()); } },
-      { flags: '--repository', type: 'string', description: 'Package repository URL', default() { return getDefaultRepository(cwd()); } },
-      { flags: '--yes, -y', type: 'boolean', description: 'Accept defaults for any promptable values' },
-      { flags: '--force, -f', type: 'boolean', description: 'Overwrite an existing package.json' },
-    ],
+    cli: {
+      options: [
+        { flags: '--name', type: 'string', description: 'Package name', default() { return basename(cwd()) || 'fino-app'; } },
+        { flags: '--version', type: 'string', description: 'Package version', default: '1.0.0' },
+        { flags: '--description', type: 'string', description: 'Package description', default: '' },
+        { flags: '--license', type: 'string', description: 'Package license', default: 'MIT' },
+        { flags: '--author', type: 'string', description: 'Package author', default() { return getDefaultAuthor(cwd()); } },
+        { flags: '--repository', type: 'string', description: 'Package repository URL', default() { return getDefaultRepository(cwd()); } },
+        { flags: '--yes, -y', type: 'boolean', description: 'Accept defaults for any promptable values' },
+        { flags: '--force, -f', type: 'boolean', description: 'Overwrite an existing package.json' },
+      ],
+    },
   });
 }

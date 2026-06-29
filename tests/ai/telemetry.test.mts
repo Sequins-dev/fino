@@ -16,7 +16,9 @@ import {
 function scriptModel(turns: StreamEvent[][]): Model {
   let idx = 0;
   return {
+    id: 'claude-test',
     name: 'claude-test',
+    provider: 'anthropic',
     dimensions: 0,
     stream(_req: GenerateRequest): ModelStream {
       const turn = turns[idx % turns.length] ?? [];

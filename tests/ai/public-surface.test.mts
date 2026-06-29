@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { Agent, agent } from 'fino:ai/agent';
+import * as ai from 'fino:ai';
 import * as runtime from 'fino:ai/runtime';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
@@ -11,7 +12,9 @@ function modelWithText(text: string): Model {
     { type: 'stop', reason: 'end_turn' },
   ];
   return {
+    id: 'surface-test',
     name: 'surface-test',
+    provider: 'test',
     dimensions: 0,
     stream(_req: GenerateRequest): ModelStream {
       async function* gen() { yield* events; }
@@ -23,6 +26,22 @@ function modelWithText(text: string): Model {
 }
 
 describe('AI public surface', () => {
+  it('root module exports the happy-path AI surface', async (t) => {
+    t.equal(typeof ai.agent, 'function');
+    t.equal(typeof ai.task, 'function');
+    t.equal(typeof ai.tool, 'function');
+    t.equal(typeof ai.openai, 'function');
+    t.equal(typeof ai.anthropic, 'function');
+    t.equal(typeof ai.local, 'function');
+    t.equal(typeof ai.session, 'function');
+    t.equal(typeof ai.memory, 'function');
+    t.equal(typeof ai.evaluate, 'function');
+    t.equal(typeof ai.streamText, 'function');
+    t.equal(typeof ai.mcpClient, 'function');
+    t.equal(typeof ai.mcpServer, 'function');
+    t.equal(typeof ai.mountMcp, 'function');
+  });
+
   it('runtime exports helpers but not the internal AgentRuntime class', async (t) => {
     t.equal('runContext' in runtime, true, 'runContext remains public');
     t.equal('maxSteps' in runtime, true, 'stop helpers remain public');

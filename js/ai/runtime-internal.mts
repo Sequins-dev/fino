@@ -92,6 +92,38 @@ export interface StepResult {
 }
 
 /**
+ * Persisted approval request for a tool call that suspended before execution.
+ */
+export interface ToolApprovalRequest {
+  type: 'tool_approval';
+  toolCallId: string;
+  toolName: string;
+  args: unknown;
+  risk?: string;
+  sideEffects?: boolean;
+}
+
+/**
+ * Agent-level streaming event.
+ *
+ * Provider `StreamEvent` values are wrapped in `model_event`. Lifecycle events
+ * add run-loop context around model streaming, retries, fallback, tool
+ * execution, guardrails, suspension, and final completion.
+ */
+export type AgentEvent =
+  | { type: 'model_event'; event: StreamEvent }
+  | { type: 'step_start'; stepIndex: number; model: string; provider: string }
+  | { type: 'step_end'; stepIndex: number; stopReason: StopReason; model: string; provider: string }
+  | { type: 'tool_start'; stepIndex: number; id: string; name: string }
+  | { type: 'tool_result'; stepIndex: number; id: string; name: string; isError?: boolean }
+  | { type: 'tool_error'; stepIndex: number; id: string; name: string; message: string }
+  | { type: 'retry'; attempt: number; model: string; provider: string; delayMs: number }
+  | { type: 'fallback'; model: string; provider: string }
+  | { type: 'guardrail'; stage: 'input' | 'output'; action: GuardrailResult['action']; reason?: string }
+  | { type: 'suspend'; stepIndex: number; reason?: string; payload?: unknown }
+  | { type: 'final'; result: AgentResult };
+
+/**
  * Predicate that decides whether an agent run should stop.
  */
 export type StopCondition = (state: AgentState, info: { stopReason: StopReason }) => boolean;
@@ -154,7 +186,14 @@ export interface AgentRuntimeOptions {
   skills?: SkillRegistry;
   stopWhen?: StopCondition | StopCondition[];
   toolChoice?: 'auto' | 'any' | 'none' | { name: string };
-  defaults?: { temperature?: number; maxTokens?: number; stopSequences?: string[] };
+  defaults?: {
+    temperature?: number;
+    topP?: number;
+    seed?: number;
+    maxTokens?: number;
+    stopSequences?: string[];
+    providerOptions?: Record<string, unknown>;
+  };
   /**
    * Structured output schema used to produce `AgentResult.object`.
    *
@@ -166,7 +205,7 @@ export interface AgentRuntimeOptions {
    *
    * The default `tool` mode uses a synthetic `respond` tool and works across
    * providers. `native` sends a provider response-format request only when the
-   * model declares `capabilities.responseFormat`.
+   * model declares `capabilities.structuredOutput.native`.
    */
   structuredOutputMode?: 'tool' | 'native';
   captureContent?: boolean;
@@ -190,7 +229,7 @@ async function* asyncOf<T>(items: T[]): AsyncGenerator<T> {
  * Stream handle returned by `Agent.stream()`.
  */
 export interface AgentStream {
-  reader: Reader<StreamEvent>;
+  reader: Reader<AgentEvent>;
   result: Promise<AgentResult>;
 }
 
@@ -199,19 +238,12 @@ export interface AgentStream {
  */
 export async function* streamText(stream: AgentStream): AsyncGenerator<string> {
   for await (const ev of stream.reader) {
-    if (ev.type === 'text_delta') yield ev.text;
+    if (ev.type === 'model_event' && ev.event.type === 'text_delta') yield ev.event.text;
   }
 }
 
-function deriveProvider(modelName: string): string {
-  const n = modelName.toLowerCase();
-  if (n.startsWith('claude')) return 'anthropic';
-  if (n.startsWith('gpt') || n.startsWith('o1') || n.startsWith('o3')) return 'openai';
-  return 'unknown';
-}
-
 function providerName(model: Model): string {
-  return model.provider ?? deriveProvider(model.name);
+  return model.provider ?? 'unknown';
 }
 
 function modelId(model: Model): string {
@@ -271,7 +303,14 @@ export class AgentRuntime {
   #baseToolDefs: ToolDefinition[];
   #stopWhen: StopCondition[];
   #toolChoice?: 'auto' | 'any' | 'none' | { name: string };
-  #defaults: { temperature?: number; maxTokens?: number; stopSequences?: string[] };
+  #defaults: {
+    temperature?: number;
+    topP?: number;
+    seed?: number;
+    maxTokens?: number;
+    stopSequences?: string[];
+    providerOptions?: Record<string, unknown>;
+  };
   #output?: Record<string, unknown>;
   #structuredOutputMode: 'tool' | 'native';
   #skills?: SkillRegistry;
@@ -324,7 +363,7 @@ export class AgentRuntime {
 
   async #streamWithRetryAndFallback(
     req: GenerateRequest,
-    onEvent: ((ev: StreamEvent) => void) | undefined,
+    onEvent: ((ev: AgentEvent) => void) | undefined,
   ): Promise<{ events: StreamEvent[]; activeModel: Model }> {
     const maxRetries = this.#retry?.maxRetries ?? 0;
     const baseDelayMs = this.#retry?.baseDelayMs ?? 500;
@@ -334,12 +373,16 @@ export class AgentRuntime {
     let lastErr: unknown;
 
     for (const activeModel of models) {
+      if (activeModel !== this.#model) {
+        onEvent?.({ type: 'fallback', model: modelId(activeModel), provider: providerName(activeModel) });
+      }
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (attempt > 0) {
           if (req.signal?.aborted) throw req.signal.reason;
           const retryAfterMs = (lastErr instanceof ModelError && lastErr.retryAfterMs != null)
             ? lastErr.retryAfterMs
             : Math.floor(Math.random() * Math.min(maxDelayMs, baseDelayMs * (2 ** (attempt - 1))));
+          onEvent?.({ type: 'retry', attempt, model: modelId(activeModel), provider: providerName(activeModel), delayMs: retryAfterMs });
           await sleep(retryAfterMs);
         }
 
@@ -349,7 +392,7 @@ export class AgentRuntime {
           for await (const ev of activeModel.stream(req)) {
             midStream = true;
             events.push(ev);
-            onEvent?.(ev);
+            onEvent?.({ type: 'model_event', event: ev });
           }
         } catch (err) {
           if (midStream) throw err;
@@ -433,7 +476,7 @@ export class AgentRuntime {
     toolsMap: Map<string, Tool>,
     toolDefs: ToolDefinition[],
     toolChoice: 'auto' | 'any' | 'none' | { name: string } | undefined,
-    onEvent: ((ev: StreamEvent) => void) | undefined,
+    onEvent: ((ev: AgentEvent) => void) | undefined,
     runId: string,
     responseFormat?: ResponseFormat,
   ): Promise<StepResult & { turn: { text: string; toolUseParts: ToolUsePart[] }; activeModel: Model; appendedMessages: ModelMessage[] }> {
@@ -456,6 +499,7 @@ export class AgentRuntime {
     effectiveMessages = view.messages;
     if (this.#guardrails?.input) {
       const gr = await this.#guardrails.input(effectiveMessages);
+      onEvent?.({ type: 'guardrail', stage: 'input', action: gr.action, reason: gr.reason });
       if (gr.action === 'block') throw new GuardrailError(gr.reason ?? 'Input blocked by guardrail', gr.reason);
       if (gr.action === 'redact') effectiveMessages = gr.messages ?? effectiveMessages;
     }
@@ -499,6 +543,7 @@ export class AgentRuntime {
         let turnText = rawTurn.text;
         if (this.#guardrails?.output && turnText) {
           const gr = await this.#guardrails.output(turnText);
+          onEvent?.({ type: 'guardrail', stage: 'output', action: gr.action, reason: gr.reason });
           if (gr.action === 'block') throw new GuardrailError(gr.reason ?? 'Output blocked by guardrail', gr.reason);
           if (gr.action === 'redact') turnText = gr.text ?? turnText;
         }
@@ -579,7 +624,7 @@ export class AgentRuntime {
           return { state: nextState, done: true, stopReason, turn: { text: turn.text, toolUseParts: [] }, activeModel, appendedMessages: [newMessages[newMessages.length - 1]!] };
         }
 
-        const { toolResults, suspend } = await this.#runTools(toolUseParts, newMessages, state, runId, activeToolsMap);
+        const { toolResults, suspend } = await this.#runTools(toolUseParts, newMessages, state, runId, activeToolsMap, onEvent);
 
         const toolResultParts: ContentPart[] = toolResults.map(({ part, result }) => ({
           type: 'tool_result',
@@ -603,6 +648,7 @@ export class AgentRuntime {
         stepSpan.end({ status: { code: 'OK' } });
 
         if (suspend) {
+          onEvent?.({ type: 'suspend', stepIndex: state.stepIndex, reason: suspend.message, payload: suspend.payload });
           return { state: nextState, done: false, suspend, stopReason, turn: { text: turn.text, toolUseParts }, activeModel, appendedMessages: messagesWithResults.slice(newMessages.length - 1) };
         }
 
@@ -622,6 +668,7 @@ export class AgentRuntime {
     state: AgentState,
     runId: string,
     toolsMap: Map<string, Tool>,
+    onEvent: ((ev: AgentEvent) => void) | undefined,
   ): Promise<{ toolResults: Array<{ part: ToolUsePart; result: { content: string | ContentPart[]; isError?: boolean } }>; suspend?: SuspendSignal }> {
     const tracer = getTracerProvider().getTracer('fino.ai');
     const sig = state.signal ?? new AbortController().signal;
@@ -641,6 +688,18 @@ export class AgentRuntime {
           toolSpan.setAttribute('error.type', 'UnknownToolError');
           toolSpan.end({ status: { code: 'ERROR' } });
           return { part, result: { content: `Unknown tool: ${part.name}`, isError: true as const } };
+        }
+
+        onEvent?.({ type: 'tool_start', stepIndex: state.stepIndex, id: part.id, name: part.name });
+        if (t.requiresApproval) {
+          throw new SuspendSignal(`Approval required for tool: ${part.name}`, {
+            type: 'tool_approval',
+            toolCallId: part.id,
+            toolName: part.name,
+            args: part.args,
+            risk: t.risk,
+            sideEffects: t.sideEffects,
+          });
         }
 
         const ctx: ToolRunContext = {
@@ -667,6 +726,7 @@ export class AgentRuntime {
           } else {
             toolSpan.end({ status: { code: 'OK' } });
           }
+          onEvent?.({ type: 'tool_result', stepIndex: state.stepIndex, id: part.id, name: part.name, ...(result.isError ? { isError: true } : {}) });
           return { part, result };
         } catch (err) {
           const toolElapsed = (Date.now() - toolT0) / 1000;
@@ -676,6 +736,9 @@ export class AgentRuntime {
           toolSpan.recordException?.(err);
           toolSpan.setAttribute('error.type', (err as Error)?.name ?? 'Error');
           toolSpan.end({ status: { code: 'ERROR', message: String(err) } });
+          if ((err as Error)?.name !== 'SuspendSignal') {
+            onEvent?.({ type: 'tool_error', stepIndex: state.stepIndex, id: part.id, name: part.name, message: (err as Error)?.message ?? String(err) });
+          }
           throw err;
         }
       }),
@@ -698,6 +761,72 @@ export class AgentRuntime {
     }
 
     return { toolResults, suspend };
+  }
+
+  async #invokeApprovedTool(
+    request: ToolApprovalRequest,
+    approval: unknown,
+    state: AgentState,
+    runId: string,
+  ): Promise<{ part: ToolUsePart; result: { content: string | ContentPart[]; isError?: boolean } }> {
+    const approved = approval === true ||
+      (typeof approval === 'object' && approval !== null && (approval as { approved?: unknown }).approved === true);
+    const reason = typeof approval === 'object' && approval !== null && typeof (approval as { reason?: unknown }).reason === 'string'
+      ? (approval as { reason: string }).reason
+      : 'not approved';
+    const part: ToolUsePart = {
+      type: 'tool_use',
+      id: request.toolCallId,
+      name: request.toolName,
+      args: request.args,
+    };
+
+    if (!approved) {
+      return {
+        part,
+        result: { content: `Tool call rejected: ${reason}`, isError: true },
+      };
+    }
+
+    const tool = this.#tools.get(request.toolName);
+    if (!tool) {
+      return {
+        part,
+        result: { content: `Unknown tool: ${request.toolName}`, isError: true },
+      };
+    }
+
+    const signal = state.signal ?? new AbortController().signal;
+    const ctx: ToolRunContext = {
+      signal,
+      toolCallId: request.toolCallId,
+      step: state.stepIndex,
+      runId,
+      messages: state.messages,
+      history: state.history,
+      suspend: (sOpts?) => { throw new SuspendSignal(sOpts?.reason, sOpts?.payload); },
+    };
+    return { part, result: await tool.invoke(request.args, ctx) };
+  }
+
+  #hasPendingToolCall(messages: ModelMessage[], request: ToolApprovalRequest): boolean {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+      if (msg.content.some((part) =>
+        part.type === 'tool_use' &&
+        part.id === request.toolCallId &&
+        part.name === request.toolName
+      )) {
+        const next = messages[i + 1];
+        if (!next || next.role !== 'user' || !Array.isArray(next.content)) return true;
+        return !next.content.some((part) =>
+          part.type === 'tool_result' &&
+          part.toolCallId === request.toolCallId
+        );
+      }
+    }
+    return false;
   }
 
   async #foldStep(
@@ -728,7 +857,7 @@ export class AgentRuntime {
 
   async #runLoop(
     initialState: AgentState,
-    onEvent: ((ev: StreamEvent) => void) | undefined,
+    onEvent: ((ev: AgentEvent) => void) | undefined,
     toolsMap: Map<string, Tool>,
     toolDefs: ToolDefinition[],
     toolChoice: 'auto' | 'any' | 'none' | { name: string } | undefined,
@@ -796,7 +925,9 @@ export class AgentRuntime {
           while (true) {
             runState.stepIndex = state.stepIndex;
             const prevState = state;
+            onEvent?.({ type: 'step_start', stepIndex: state.stepIndex, model: requestModel, provider });
             const r = await this.#step(state, activeToolsMap, activeToolDefs, activeToolChoice, onEvent, runId, responseFormat);
+            onEvent?.({ type: 'step_end', stepIndex: state.stepIndex, stopReason: r.stopReason, model: modelId(r.activeModel), provider: providerName(r.activeModel) });
             steps.push(r.state);
 
             const folded = await this.#foldStep(r, prevState, history, runningCost);
@@ -837,6 +968,7 @@ export class AgentRuntime {
             stopReason: finalStopReason,
           };
           if (capture) result.object = capture.args;
+          onEvent?.({ type: 'final', result });
           return result;
         });
       });
@@ -890,14 +1022,68 @@ export class AgentRuntime {
     return runContext.runWithValue(runState, doStep);
   }
 
+  async approveTool(
+    state: AgentState,
+    request: ToolApprovalRequest,
+    approval: unknown,
+  ): Promise<StepResult> {
+    const existing = runContext.get();
+    const runId = existing?.runId ?? newRunId();
+    const doApprove = async (): Promise<StepResult> => {
+      const history = state.history ?? this.#historyStrategy.history;
+      this.#historyStrategy.history = history;
+      const messages = history.render();
+      if (!this.#hasPendingToolCall(messages, request)) {
+        throw new Error(`Pending tool call ${request.toolCallId} was not found`);
+      }
+
+      const { part, result } = await this.#invokeApprovedTool(request, approval, {
+        ...state,
+        messages,
+        history,
+      }, runId);
+      const toolResultMessage: ModelMessage = {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          toolCallId: part.id,
+          content: result.content,
+          ...(result.isError ? { isError: true } : {}),
+        }],
+      };
+
+      await this.#historyStrategy.onAppend(toolResultMessage, {
+        model: this.#model,
+        budgetTokens: this.#budgetTokens,
+        signal: state.signal,
+        stepIndex: state.stepIndex,
+        runId,
+      });
+      const nextHistory = this.#historyStrategy.history;
+      return {
+        state: {
+          ...state,
+          messages: nextHistory.render(),
+          history: nextHistory,
+        },
+        done: false,
+        stopReason: 'tool_use',
+      };
+    };
+
+    if (existing) return doApprove();
+    const runState = { runId, stepIndex: state.stepIndex, signal: state.signal };
+    return runContext.runWithValue(runState, doApprove);
+  }
+
   #runWithOutput(
     state: AgentState,
-    onEvent: ((ev: StreamEvent) => void) | undefined,
+    onEvent: ((ev: AgentEvent) => void) | undefined,
   ): Promise<AgentResult> {
     if (!this.#output) {
       return this.#runLoop(state, onEvent, this.#tools, this.#baseToolDefs, this.#toolChoice);
     }
-    const supportsNative = this.#model.capabilities?.responseFormat === true;
+    const supportsNative = this.#model.capabilities?.structuredOutput?.native === true;
     if (this.#structuredOutputMode === 'native' && supportsNative) {
       const responseFormat: ResponseFormat = { type: 'json_schema', name: 'response', schema: this.#output };
       return this.#runLoop(state, onEvent, new Map(), [], 'none', responseFormat).then((r) => {
@@ -918,9 +1104,9 @@ export class AgentRuntime {
   }
 
   stream(input: RunInput): AgentStream {
-    const ch = new Channel<StreamEvent>();
+    const ch = new Channel<AgentEvent>();
     const w = ch.writer;
-    const onEvent = (ev: StreamEvent) => void w.write(ev);
+    const onEvent = (ev: AgentEvent) => void w.write(ev);
 
     const result = this.#runWithOutput({
       messages: input.messages,

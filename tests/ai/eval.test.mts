@@ -7,6 +7,7 @@ import {
   llmJudge,
   semanticSimilarity,
   EvalReporter,
+  JsonEvalReporter,
   OpenTelemetryReporter,
 } from 'fino:ai/eval';
 import type { EvalCaseReport, EvalSummary, ScoreResult } from 'fino:ai/eval';
@@ -18,13 +19,16 @@ import {
   TraceTopicInstrumentation,
   PeriodicExportingMetricReader,
 } from 'fino:opentelemetry/sdk';
+import { DiskFileSystem } from 'fino:file';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
 
 function scriptModel(turns: StreamEvent[][]): Model {
   let idx = 0;
   return {
+    id: 'claude-eval-test',
     name: 'claude-eval-test',
+    provider: 'test',
     dimensions: 3,
     stream(_req: GenerateRequest): ModelStream {
       const turn = turns[idx % turns.length] ?? [];
@@ -44,7 +48,9 @@ function scriptModel(turns: StreamEvent[][]): Model {
 
 function jsonResponseModel(responseObj: unknown): Model {
   return {
+    id: 'claude-eval-test',
     name: 'claude-eval-test',
+    provider: 'test',
     dimensions: 0,
     stream(_req: GenerateRequest): ModelStream {
       const events: StreamEvent[] = [
@@ -225,6 +231,76 @@ describe('EvalReporter', () => {
     t.equal(report.scores.exactMatch?.value, 1, 'exactMatch score value');
     t.equal(report.scores.contains?.pass, false, 'contains pass false');
     t.equal(report.scores.contains?.explanation, 'missing', 'contains explanation');
+  });
+
+  it('JsonEvalReporter returns deterministic cloned JSON', async (t) => {
+    const reporter = new JsonEvalReporter();
+    await reporter.onStart({ name: 'json-eval', cases: 2 });
+    await reporter.onCase({
+      name: 'b-case',
+      input: 'b',
+      output: 'B',
+      scores: { exact: { value: 1, pass: true } },
+      score: 1,
+      pass: true,
+    });
+    await reporter.onCase({
+      name: 'a-case',
+      input: 'a',
+      output: 'A',
+      scores: { exact: { value: 1, pass: true } },
+      score: 1,
+      pass: true,
+    });
+    await reporter.onFinish({ name: 'json-eval', mean: 1, passed: 2, total: 2 });
+
+    const json = reporter.toJSON();
+    t.deepEqual(json.cases.map((item) => item.name), ['a-case', 'b-case']);
+    t.deepEqual(json.summary, { name: 'json-eval', mean: 1, passed: 2, total: 2 });
+
+    json.cases[0]!.name = 'mutated';
+    t.equal(reporter.toJSON().cases[0]!.name, 'a-case', 'returned JSON is cloned');
+  });
+
+  it('JsonEvalReporter writes deterministic JSON artifacts', async (t) => {
+    const path = `/tmp/fino-json-eval-${Math.floor(Math.random() * 1_000_000_000)}.json`;
+    const fs = new DiskFileSystem();
+    const reporter = new JsonEvalReporter({ path, fs });
+    try {
+      await reporter.onStart({ name: 'json-file-eval', cases: 1 });
+      await reporter.onCase({
+        name: 'case-1',
+        input: 'q',
+        output: 'a',
+        scores: { exact: { value: 1, pass: true } },
+        score: 1,
+        pass: true,
+      });
+      await reporter.onFinish({ name: 'json-file-eval', mean: 1, passed: 1, total: 1 });
+
+      const raw = await fs.readFile(path);
+      const json = JSON.parse(raw) as { summary?: { name: string }; cases?: Array<{ name: string }> };
+      t.equal(json.summary?.name, 'json-file-eval');
+      t.equal(json.cases?.[0]?.name, 'case-1');
+    } finally {
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('evaluate accepts named scorer maps', async (t) => {
+    const reporter = new JsonEvalReporter();
+    evaluate({
+      name: 'named scorer map eval',
+      cases: [{ name: 'case-1', input: 'abc', expected: 'abc' }],
+      target: async (input) => input,
+      scorers: {
+        exact: exactMatch(),
+        hasB: contains('b'),
+      },
+      report: reporter,
+    });
+
+    t.ok(true, 'named scorer map registered without throwing');
   });
 });
 

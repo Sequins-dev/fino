@@ -624,7 +624,10 @@ interface FinalizeConfig {
   allowMissingPositionals: boolean;
 }
 
-interface ParseOptions {
+/**
+ * Parse-time dependencies for `Command.parse()`.
+ */
+export interface ParseOptions {
   prompt?: PromptSession;
 }
 

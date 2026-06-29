@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { SqliteMemory } from 'fino:ai/memory';
+import { retriever, SqliteMemory } from 'fino:ai/memory';
 import type { Embedder } from 'fino:ai/memory';
 import { DiskFileSystem } from 'fino:file';
 
@@ -176,6 +176,71 @@ describe('SqliteMemory', () => {
         t.equal(ctx.recalled.length, 0, 'degrades to empty recalled without semantic');
         t.equal(mem.semanticAvailable, false, 'semanticAvailable flag is false');
       }
+    } finally {
+      await mem.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('semantic recall filters by metadata and returns citations', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const dim = 8;
+    const mem = await SqliteMemory.open({ path, embedder: deterministicEmbedder(dim), dimensions: dim });
+    try {
+      if (!mem.semanticAvailable) {
+        t.equal(mem.semanticAvailable, false, 'semantic recall unavailable on this sqlite build');
+        return;
+      }
+
+      await mem.ingest([
+        { text: 'refund policy is thirty days', metadata: { topic: 'billing', source: 'policy' } },
+        { text: 'deployment runbook uses blue green', metadata: { topic: 'ops', source: 'runbook' } },
+      ]);
+
+      const ctx = await mem.recall({
+        text: 'refund',
+        topK: 5,
+        filter: { metadata: { topic: 'billing' } },
+      });
+
+      t.ok(ctx.recalled.length > 0, 'filtered recall returned a hit');
+      t.equal(ctx.recalled.every((hit) => hit.metadata?.topic === 'billing'), true);
+      t.ok(ctx.recalled[0].id, 'hit id is exposed');
+      t.equal(ctx.recalled[0].citation?.id, ctx.recalled[0].id, 'citation points at the hit');
+      t.deepEqual(ctx.recalled[0].citation?.metadata, ctx.recalled[0].metadata);
+    } finally {
+      await mem.close();
+      try { await fs.unlink(path); } catch {}
+    }
+  });
+
+  it('retriever returns recalled hits with default query options', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try { await fs.unlink(path); } catch {}
+    const dim = 8;
+    const mem = await SqliteMemory.open({ path, embedder: deterministicEmbedder(dim), dimensions: dim });
+    try {
+      if (!mem.semanticAvailable) {
+        t.equal(mem.semanticAvailable, false, 'semantic recall unavailable on this sqlite build');
+        return;
+      }
+
+      await mem.ingest([
+        { text: 'refund policy is thirty days', metadata: { topic: 'billing' } },
+        { text: 'incident runbook escalates pages', metadata: { topic: 'ops' } },
+      ]);
+
+      const retrieveBilling = retriever(mem, {
+        topK: 3,
+        filter: { metadata: { topic: 'billing' } },
+      });
+      const hits = await retrieveBilling.retrieve('refund');
+
+      t.ok(hits.length > 0, 'retriever returned hits');
+      t.equal(hits.every((hit) => hit.metadata?.topic === 'billing'), true, 'default metadata filter applied');
     } finally {
       await mem.close();
       try { await fs.unlink(path); } catch {}

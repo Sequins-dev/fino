@@ -414,7 +414,9 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:context/topic", "context/topic"),
     source_builtin!("fino:jsonrpc", "jsonrpc"),
     source_builtin!("fino:workflow", "workflow"),
+    source_builtin!("fino:task", "task"),
     // ai
+    source_builtin!("fino:ai", "ai"),
     source_builtin!("fino:ai/model", "ai/model"),
     source_builtin!("fino:ai/model/anthropic", "ai/model/anthropic"),
     source_builtin!("fino:ai/model/local", "ai/model/local"),

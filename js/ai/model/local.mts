@@ -815,7 +815,15 @@ class LocalLlamaModel implements Model {
   readonly id: string;
   readonly name: string;
   readonly provider = 'local';
-  readonly capabilities = { responseFormat: false };
+  readonly capabilities = {
+    streaming: true,
+    toolCalling: false,
+    toolChoice: { auto: false, any: false, none: true, named: false },
+    structuredOutput: { jsonSchema: false, strictJsonSchema: false, native: false },
+    input: { text: true, image: false, document: false },
+    sampling: { temperature: true, topP: true, seed: false, stopSequences: true },
+    local: true,
+  };
   readonly dimensions = 0;
   #bindings: LocalLlamaBindings;
   #handle: unknown;
@@ -878,7 +886,7 @@ class LocalLlamaModel implements Model {
     const options: LocalGenerateOptions = {
       maxTokens: req.maxTokens ?? this.#defaults.maxTokens,
       temperature: req.temperature ?? this.#defaults.temperature,
-      topP: this.#defaults.topP,
+      topP: req.topP ?? this.#defaults.topP,
       topK: this.#defaults.topK,
       stopSequences: req.stopSequences ?? this.#defaults.stopSequences,
     };
@@ -921,7 +929,15 @@ class LocalModelProvider implements ModelProvider {
       id: entry.id,
       provider: this.provider,
       ...(entry.displayName ? { displayName: entry.displayName } : {}),
-      capabilities: { responseFormat: false },
+      capabilities: {
+        streaming: true,
+        toolCalling: false,
+        toolChoice: { auto: false, any: false, none: true, named: false },
+        structuredOutput: { jsonSchema: false, strictJsonSchema: false, native: false },
+        input: { text: true, image: false, document: false },
+        sampling: { temperature: true, topP: true, seed: false, stopSequences: true },
+        local: true,
+      },
       metadata: entry.metadata ?? { source: entry.model },
       create: (opts?: ModelCreateOptions) => this.createModel(entry.id, opts),
     }));

@@ -27,7 +27,9 @@ function streamOf(events: StreamEvent[]): ModelStream {
 function scriptModel(turns: Array<StreamEvent[] | 'throw429' | 'throw503'>): Model {
   let idx = 0;
   return {
+    id: 'claude-test',
     name: 'claude-test',
+    provider: 'anthropic',
     dimensions: 0,
     stream(_req: GenerateRequest): ModelStream {
       const turn = turns[idx % turns.length];
@@ -49,7 +51,9 @@ function scriptModel(turns: Array<StreamEvent[] | 'throw429' | 'throw503'>): Mod
 function countingModel(name: string, results: Array<StreamEvent[] | Error>): { model: Model; callCount: () => number } {
   let count = 0;
   const model: Model = {
+    id: name,
     name,
+    provider: name.startsWith('gpt') ? 'openai' : 'anthropic',
     dimensions: 0,
     stream(_req: GenerateRequest): ModelStream {
       const result = results[count % results.length];
@@ -136,6 +140,26 @@ describe('agent resilience', () => {
     t.equal(result.text, 'fallback response', 'fallback model response used');
     t.equal(primary.callCount(), 1, 'primary tried once');
     t.equal(secondary.callCount(), 1, 'fallback tried once');
+  });
+
+  it('stream emits fallback lifecycle event when secondary model is used', async (t) => {
+    const primary = countingModel('claude-primary', [
+      new ModelError('rate limited', { status: 429, retryAfterMs: 1 }),
+    ]);
+    const secondary = countingModel('gpt-fallback', [endTurnEvents('fallback response')]);
+
+    const h = agent({
+      model: primary.model,
+      fallback: [secondary.model],
+      retry: { maxRetries: 0 },
+    });
+    const stream = h.stream({ messages: [{ role: 'user', content: 'hi' }] });
+    const events: string[] = [];
+    for await (const event of stream.reader) events.push(event.type);
+    const result = await stream.result;
+
+    t.equal(result.text, 'fallback response');
+    t.ok(events.includes('fallback'), 'fallback event emitted');
   });
 
   it('advances to fallback model when primary refuses', async (t) => {

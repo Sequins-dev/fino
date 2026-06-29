@@ -159,14 +159,16 @@ export class JsonRpcService {
 export class JsonRpcPeer {
   #transport: Transport;
   #service: JsonRpcService | null;
+  #signal?: AbortSignal;
   #pending = new Map<number, { resolve(v: unknown): void; reject(e: unknown): void }>();
   #idSeq = 0;
   #closed = false;
   #readLoop: Promise<void>;
 
-  constructor(transport: Transport, service?: JsonRpcService) {
+  constructor(transport: Transport, service?: JsonRpcService, opts: { signal?: AbortSignal } = {}) {
     this.#transport = transport;
     this.#service = service ?? null;
+    this.#signal = opts.signal;
     this.#readLoop = this.#startLoop();
   }
 
@@ -198,7 +200,7 @@ export class JsonRpcPeer {
         }
 
         if (this.#service && typeof m.method === 'string') {
-          void this.#service.handle(raw).then((response) => {
+          void this.#service.handle(raw, this.#signal).then((response) => {
             if (response !== null) void this.#transport.send(response);
           });
         }
