@@ -241,7 +241,97 @@ const DOCS_CACHE_SCHEMA = `
 `;
 const DOCS_CACHE_SCHEMA_STATEMENTS = DOCS_CACHE_SCHEMA.split(';').map((statement) => statement.trim()).filter(Boolean);
 const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-layout-api{grid-template-columns:280px minmax(0,1fr) 240px}.docs-sidebar{grid-column:1;grid-row:1;background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px;grid-column:2;grid-row:1}.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh;grid-column:3;grid-row:1}.docs-page-index-title{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px}.docs-page-index ul{list-style:none;margin:0;padding-left:14px}.docs-page-index>ul{padding-left:0}.docs-page-index li{margin:4px 0}.docs-page-index a{display:inline-block;padding:2px 0}.docs-page-index-members{font-size:.92rem}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout,.docs-layout-api{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,.docs-page-index,main{height:auto}.docs-page-index{border-left:0;border-bottom:1px solid var(--border);padding:18px 20px;position:static;max-height:none}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}`;
-const DOCS_HTML_CSS = `${DOCS_CSS}.docs-page-index-heading-3{padding-left:10px}.docs-page-index-heading-4{padding-left:20px}.docs-page-index-heading-5{padding-left:30px}.docs-page-index-heading-6{padding-left:40px}@media(prefers-color-scheme:dark){main img[src$=".svg"]{filter:invert(1) brightness(1.25)}}`;
+const DOCS_HTML_CSS = `${DOCS_CSS}.docs-page-index-heading-3{padding-left:10px}.docs-page-index-heading-4{padding-left:20px}.docs-page-index-heading-5{padding-left:30px}.docs-page-index-heading-6{padding-left:40px}.docs-loading{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:.95rem}.docs-loading-spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--muted);border-radius:50%;animation:docs-spin .8s linear infinite}@keyframes docs-spin{to{transform:rotate(360deg)}}@media(prefers-color-scheme:dark){main img[src$=".svg"]{filter:invert(1) brightness(1.25)}}`;
+const DOCS_CLIENT_SCRIPT = `<script data-docs-client-navigation>
+(() => {
+  if (!('DOMParser' in window) || !('fetch' in window) || !('history' in window)) return;
+  const parser = new DOMParser();
+  const isHtmlPage = (url) => {
+    const name = url.pathname.slice(url.pathname.lastIndexOf('/') + 1);
+    return url.pathname.endsWith('/') || !name.includes('.') || name.endsWith('.html');
+  };
+  const linkTarget = (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return null;
+    const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
+    if (!anchor || anchor.hasAttribute('download') || (anchor.target && anchor.target !== '_self')) return null;
+    const raw = anchor.getAttribute('href');
+    if (!raw || raw.startsWith('#')) return null;
+    const url = new URL(raw, location.href);
+    if (url.origin !== location.origin || !['http:', 'https:', 'file:'].includes(url.protocol) || !isHtmlPage(url)) return null;
+    if (url.pathname === location.pathname && url.search === location.search) return null;
+    return url;
+  };
+  const scrollMain = (url) => requestAnimationFrame(() => {
+    const main = document.querySelector('main');
+    if (!main) return;
+    if (url.hash) {
+      try {
+        document.getElementById(decodeURIComponent(url.hash.slice(1)))?.scrollIntoView();
+      } catch {
+        main.scrollTo(0, 0);
+      }
+    } else main.scrollTo(0, 0);
+  });
+  const loadingHtml = '<div class="docs-loading" role="status" aria-live="polite"><span class="docs-loading-spinner" aria-hidden="true"></span><span>Loading</span></div>';
+  const showLoading = () => {
+    const layout = document.querySelector('.docs-layout');
+    const main = document.querySelector('main');
+    if (!layout || !main) return;
+    main.innerHTML = loadingHtml;
+    main.scrollTo(0, 0);
+    let pageIndex = document.querySelector('.docs-page-index');
+    if (!pageIndex) {
+      layout.classList.add('docs-layout-api');
+      pageIndex = document.createElement('nav');
+      pageIndex.className = 'docs-page-index docs-page-index-loading';
+      pageIndex.setAttribute('aria-label', 'Page loading');
+      layout.insertBefore(pageIndex, main);
+    }
+    pageIndex.innerHTML = loadingHtml;
+  };
+  const navigate = async (url, push) => {
+    showLoading();
+    const response = await fetch(url.href, { headers: { Accept: 'text/html' } });
+    if (!response.ok) throw new Error('navigation request failed');
+    const doc = parser.parseFromString(await response.text(), 'text/html');
+    const nextLayout = doc.querySelector('.docs-layout');
+    const nextSidebar = doc.querySelector('.docs-sidebar');
+    const nextMain = doc.querySelector('main');
+    const layout = document.querySelector('.docs-layout');
+    const sidebar = document.querySelector('.docs-sidebar');
+    const main = document.querySelector('main');
+    if (!nextLayout || !nextSidebar || !nextMain || !layout || !sidebar || !main) throw new Error('navigation target is not a docs page');
+    const sidebarScroll = sidebar.scrollTop;
+    if (push) history.pushState({ docsNavigation: true }, '', url.href);
+    document.title = doc.title;
+    layout.className = nextLayout.className;
+    sidebar.replaceWith(nextSidebar);
+    nextSidebar.scrollTop = sidebarScroll;
+    const pageIndex = document.querySelector('.docs-page-index');
+    const nextPageIndex = doc.querySelector('.docs-page-index');
+    if (pageIndex && nextPageIndex) pageIndex.replaceWith(nextPageIndex);
+    else if (pageIndex) pageIndex.remove();
+    else if (nextPageIndex) layout.insertBefore(nextPageIndex, main);
+    main.replaceWith(nextMain);
+    scrollMain(url);
+  };
+  history.replaceState({ docsNavigation: true }, '', location.href);
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+  document.addEventListener('click', async (event) => {
+    const url = linkTarget(event);
+    if (!url) return;
+    event.preventDefault();
+    try {
+      await navigate(url, true);
+    } catch {
+      location.href = url.href;
+    }
+  });
+  addEventListener('popstate', () => {
+    navigate(new URL(location.href), false).catch(() => location.reload());
+  });
+})();
+<\/script>`;
 const HTML_PAGE_TEMPLATE = `<!doctype html>
 <html>
 <head>
@@ -257,6 +347,7 @@ const HTML_PAGE_TEMPLATE = `<!doctype html>
 {{{contentHtml}}}
 </main>
 </div>
+{{{script}}}
 </body>
 </html>
 `;
@@ -1488,7 +1579,8 @@ function renderModuleHtml(api: ApiDoc, moduleDoc: ModuleDoc, title: string): str
     hasPageIndex: htmlModule.hasSymbolIndex,
     sidebarHtml: renderSidebarHtml(api, htmlModule.href, title),
     pageIndexHtml: htmlModule.symbolIndexHtml,
-    contentHtml
+    contentHtml,
+    script: DOCS_CLIENT_SCRIPT
   });
 }
 function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
@@ -1500,7 +1592,8 @@ function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
     hasPageIndex: htmlGuide.hasPageIndex,
     sidebarHtml: renderSidebarHtml(api, guide.href, title),
     pageIndexHtml: htmlGuide.pageIndexHtml,
-    contentHtml
+    contentHtml,
+    script: DOCS_CLIENT_SCRIPT
   });
 }
 async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
@@ -1511,7 +1604,8 @@ async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
     hasPageIndex: false,
     sidebarHtml: renderSidebarHtml(api, 'index.html', title),
     pageIndexHtml: '',
-    contentHtml
+    contentHtml,
+    script: DOCS_CLIENT_SCRIPT
   });
 }
 function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
