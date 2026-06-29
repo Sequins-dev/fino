@@ -161,6 +161,15 @@ interface HighlightContext extends HtmlRenderContext {
   linkIdentifiers?: boolean;
 }
 
+interface SourceAssetRef {
+  sourcePath: string;
+  outputPath: string;
+}
+
+interface SourceLinkResolverOptions {
+  assets?: Map<string, SourceAssetRef>;
+}
+
 interface HtmlMember {
   id: string;
   name: string;
@@ -1625,11 +1634,14 @@ function stripFirstHeading(markdown: string): string {
 async function renderReadmeHtml(api: ApiDoc): Promise<string> {
   const readmePath = `${cwd().replace(/\/+$/, '')}/README.md`;
   if (!(await exists(readmePath))) return '<h1>API Documentation</h1>\n<p class="muted">No README.md found.</p>';
-  return renderMarkdown(await fs.readFile(readmePath), {
+  const assets = new Map<string, SourceAssetRef>();
+  const html = renderMarkdown(await fs.readFile(readmePath), {
     headingOffset: 0,
-    resolveLink: buildSourceLinkResolver(api, 'README.md', 'index.html'),
+    resolveLink: buildSourceLinkResolver(api, 'README.md', 'index.html', undefined, { assets }),
     renderCode: (code, lang) => renderCodeHtml(lang, code),
   });
+  await copySourceAssets(assets);
+  return html;
 }
 
 function projectRelativePath(path: string): string {
@@ -1712,7 +1724,7 @@ function buildLinkResolver(api: ApiDoc, moduleDoc: ModuleDoc): (href: string, la
   return buildSourceLinkResolver(api, moduleDoc.path, moduleHref(moduleDoc), moduleDoc);
 }
 
-function buildSourceLinkResolver(api: ApiDoc, sourcePath: string, outputHref: string, moduleDoc?: ModuleDoc): (href: string, label: string) => string | undefined {
+function buildSourceLinkResolver(api: ApiDoc, sourcePath: string, outputHref: string, moduleDoc?: ModuleDoc, options: SourceLinkResolverOptions = {}): (href: string, label: string) => string | undefined {
   return (href) => {
     if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return href;
     const [pathPart, fragment = ''] = href.split('#', 2);
@@ -1725,7 +1737,7 @@ function buildSourceLinkResolver(api: ApiDoc, sourcePath: string, outputHref: st
     const targetModule = moduleDoc
       ? resolveSourceModule(api, moduleDoc, pathPart)
       : resolveSourceModuleFromPath(api, sourcePath, pathPart);
-    if (!targetModule) return rewriteSourceRelativeHref(sourcePath, outputHref, href);
+    if (!targetModule) return rewriteSourceRelativeHref(sourcePath, outputHref, href, options);
     if (!fragment) return relativeHref(outputHref, moduleHref(targetModule));
     const symbol = findSymbolInModule(api, targetModule, fragment);
     return symbol ? symbolHref(symbol, outputHref) : `${relativeHref(outputHref, moduleHref(targetModule))}#${slug(fragment)}`;
@@ -1740,7 +1752,7 @@ function resolveSourceModuleFromPath(api: ApiDoc, sourcePath: string, hrefPath: 
   return api.modules.find((moduleDoc) => normalizeDocPath(moduleDoc.path) === target);
 }
 
-function rewriteSourceRelativeHref(sourcePath: string, outputHref: string, href: string): string {
+function rewriteSourceRelativeHref(sourcePath: string, outputHref: string, href: string, options: SourceLinkResolverOptions = {}): string {
   if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith('#') || href.startsWith('/')) return href;
   const suffixIndex = firstHrefSuffixIndex(href);
   const pathPart = suffixIndex >= 0 ? href.slice(0, suffixIndex) : href;
@@ -1748,7 +1760,31 @@ function rewriteSourceRelativeHref(sourcePath: string, outputHref: string, href:
   if (!pathPart || pathPart.startsWith('#')) return href;
   const sourceDir = dirname(normalizeDocPath(sourcePath));
   const targetPath = normalizeRelativePath(sourceDir === '.' ? pathPart : `${sourceDir}/${pathPart}`);
+  const copiedAsset = sourceAssetHref(targetPath, href, options);
+  if (copiedAsset) return copiedAsset;
   return relativeHref(`${DOCS_DIR_NAME}/${outputHref}`, targetPath) + suffix;
+}
+
+function sourceAssetHref(sourcePath: string, href: string, options: SourceLinkResolverOptions): string | undefined {
+  if (!options.assets || !isCopyableDocAsset(sourcePath)) return undefined;
+  const outputPath = normalizeDocPath(sourcePath);
+  options.assets.set(outputPath, {
+    sourcePath: joinPath(cwd(), sourcePath),
+    outputPath: joinPath(docsDir(), outputPath),
+  });
+  return href;
+}
+
+function isCopyableDocAsset(path: string): boolean {
+  return /\.(avif|gif|ico|jpe?g|png|svg|webp)$/i.test(path);
+}
+
+async function copySourceAssets(assets: Map<string, SourceAssetRef>): Promise<void> {
+  for (const asset of assets.values()) {
+    if (!(await exists(asset.sourcePath))) continue;
+    await ensureDir(dirname(asset.outputPath));
+    await fs.copyFile(asset.sourcePath, asset.outputPath);
+  }
 }
 
 function firstHrefSuffixIndex(href: string): number {

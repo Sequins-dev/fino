@@ -149,6 +149,7 @@ This README becomes the documentation home page.
 - It should render Markdown lists.
 - It should leave the module index to the sidebar.
 `);
+    await fs.writeFile(appDir + '/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"><title>Fixture logo</title></svg>\n');
     await fs.writeFile(appDir + '/package.json', JSON.stringify({
       name: 'fixture-project',
       version: '1.0.0',
@@ -1121,7 +1122,8 @@ export const privateCacheValue = true;
     t.ok(index.includes('<title>Docs Site</title>'), 'root index has site title');
     t.equal(index.includes('<nav class="docs-page-index"'), false, 'root index does not render the API symbol index');
     t.ok(index.includes('<h1>Fixture API</h1>'), 'root index renders project README');
-    t.ok(index.includes('<img src="../logo.svg" alt="Fixture logo">'), 'root index rewrites README image URLs for generated output');
+    t.ok(index.includes('<img src="./logo.svg" alt="Fixture logo">'), 'root index preserves README image URLs for copied docs assets');
+    t.equal(await fs.readFile(docsDir + '/logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><title>Fixture logo</title></svg>\n', 'doc build copies README image assets into docs output');
     t.ok(index.includes('<a href="../guides/start.md">Project guide</a>'), 'root index rewrites README links for generated output');
     t.ok(index.includes('<li>It should render Markdown lists.</li>'), 'root index renders README markdown blocks');
     t.equal(index.includes('module-card'), false, 'root index no longer renders a flat module card list');
