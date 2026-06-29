@@ -40,6 +40,8 @@ const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
 const API_JSON_NAME = 'api.json';
 const DOCS_DB_NAME = 'docs.db';
+const DOCS_CSS_NAME = 'docs.css';
+const DOCS_JS_NAME = 'docs.js';
 const SIGNATURE_WRAP_COLUMN = 100;
 interface DocTag {
   name: string;
@@ -242,7 +244,7 @@ const DOCS_CACHE_SCHEMA = `
 const DOCS_CACHE_SCHEMA_STATEMENTS = DOCS_CACHE_SCHEMA.split(';').map((statement) => statement.trim()).filter(Boolean);
 const DOCS_CSS = `:root{color-scheme:light dark;--border:#d0d7de;--muted:#57606a;--text:#1f2328;--link:#0969da;--bg:#ffffff;--sidebar:#f6f8fa;--code-bg:#f6f8fa;--tok-keyword:#cf222e;--tok-string:#0a3069;--tok-number:#0550ae;--tok-comment:#6e7781;--tok-regexp:#8250df;--tok-type:#953800}@media(prefers-color-scheme:dark){:root{--border:#30363d;--muted:#8b949e;--text:#e6edf3;--link:#58a6ff;--bg:#0d1117;--sidebar:#161b22;--code-bg:#161b22;--tok-keyword:#ff7b72;--tok-string:#a5d6ff;--tok-number:#79c0ff;--tok-comment:#8b949e;--tok-regexp:#d2a8ff;--tok-type:#ffa657}}*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;line-height:1.5;color:var(--text);background:var(--bg);overflow:hidden}a{color:var(--link);text-decoration:none}a:hover{text-decoration:underline}.docs-layout{display:grid;grid-template-columns:280px minmax(0,1fr);height:100vh}.docs-layout-api{grid-template-columns:280px minmax(0,1fr) 240px}.docs-sidebar{grid-column:1;grid-row:1;background:var(--sidebar);border-right:1px solid var(--border);padding:24px 18px;overflow:auto}.docs-sidebar-title{font-weight:700;margin:0 0 12px}.docs-sidebar ul{list-style:none;margin:0;padding-left:14px}.docs-sidebar>ul{padding-left:0}.docs-sidebar li{margin:4px 0}.docs-sidebar-directory{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin-top:12px}.docs-sidebar-link{display:inline-flex;align-items:center;gap:6px;padding:2px 0}.docs-sidebar-icon{width:14px;height:14px;flex:0 0 14px;color:var(--muted);opacity:.62}.docs-sidebar a[aria-current="page"]{font-weight:700;color:var(--text)}main{display:block;max-width:980px;width:100%;height:100vh;overflow:auto;padding:40px 48px 72px;grid-column:2;grid-row:1}.docs-page-index{border-left:1px solid var(--border);padding:40px 18px 72px;overflow:auto;position:sticky;top:0;height:100vh;grid-column:3;grid-row:1}.docs-page-index-title{font-size:.85rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;margin:0 0 10px}.docs-page-index ul{list-style:none;margin:0;padding-left:14px}.docs-page-index>ul{padding-left:0}.docs-page-index li{margin:4px 0}.docs-page-index a{display:inline-block;padding:2px 0}.docs-page-index-members{font-size:.92rem}h2{margin:44px 0 20px}p{margin:0 0 12px}pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:12px;margin:10px 0 18px;overflow:auto}code{font-family:ui-monospace,Menlo,monospace;white-space:pre-wrap}.tok-keyword{color:var(--tok-keyword)}.tok-string{color:var(--tok-string)}.tok-number{color:var(--tok-number)}.tok-comment{color:var(--tok-comment)}.tok-regexp{color:var(--tok-regexp)}.tok-type{color:var(--tok-type)}.tag{color:var(--muted)}.muted{color:var(--muted)}main>p.muted{margin:0 0 16px}.docs-symbol{margin:0 0 72px}.docs-symbol>h3{margin:0 0 8px}.docs-symbol>h3+p,.member>h5+p{margin-top:0}.docs-symbol>h3+pre,.member>h5+pre{margin-top:0}.docs-symbol>:last-child,.member>:last-child{margin-bottom:0}.docs-symbol>h4{margin:34px 0 14px}.member{border-left:3px solid var(--border);padding-left:14px;margin:22px 0 42px}.member>h5{margin:0 0 8px}@media(max-width:760px){body{overflow:auto}.docs-layout,.docs-layout-api{display:block;height:auto}.docs-sidebar{border-right:0;border-bottom:1px solid var(--border);max-height:45vh}.docs-sidebar,.docs-page-index,main{height:auto}.docs-page-index{border-left:0;border-bottom:1px solid var(--border);padding:18px 20px;position:static;max-height:none}main{padding:28px 20px 48px;overflow:visible}.docs-symbol{margin-bottom:56px}.member{margin:18px 0 34px}}`;
 const DOCS_HTML_CSS = `${DOCS_CSS}.docs-page-index-heading-3{padding-left:10px}.docs-page-index-heading-4{padding-left:20px}.docs-page-index-heading-5{padding-left:30px}.docs-page-index-heading-6{padding-left:40px}.docs-loading{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:.95rem}.docs-loading-spinner{width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--muted);border-radius:50%;animation:docs-spin .8s linear infinite}@keyframes docs-spin{to{transform:rotate(360deg)}}@media(prefers-color-scheme:dark){main img[src$=".svg"]{filter:invert(1) brightness(1.25)}}`;
-const DOCS_CLIENT_SCRIPT = `<script data-docs-client-navigation>
+const DOCS_CLIENT_JS = `
 (() => {
   if (!('DOMParser' in window) || !('fetch' in window) || !('history' in window)) return;
   const parser = new DOMParser();
@@ -331,13 +333,13 @@ const DOCS_CLIENT_SCRIPT = `<script data-docs-client-navigation>
     navigate(new URL(location.href), false).catch(() => location.reload());
   });
 })();
-<\/script>`;
+`;
 const HTML_PAGE_TEMPLATE = `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
 <title>{{title}}</title>
-<style>{{{css}}}</style>
+<link rel="stylesheet" href="{{cssHref}}">
 </head>
 <body>
 <div class="docs-layout{{#hasPageIndex}} docs-layout-api{{/hasPageIndex}}">
@@ -347,7 +349,7 @@ const HTML_PAGE_TEMPLATE = `<!doctype html>
 {{{contentHtml}}}
 </main>
 </div>
-{{{script}}}
+<script src="{{scriptHref}}" defer data-docs-client-navigation><\/script>
 </body>
 </html>
 `;
@@ -1575,12 +1577,12 @@ function renderModuleHtml(api: ApiDoc, moduleDoc: ModuleDoc, title: string): str
   const contentHtml = renderTemplate(MODULE_PAGE_TEMPLATE, htmlModule);
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title: `${title} - ${moduleDoc.name}`,
-    css: DOCS_HTML_CSS,
+    cssHref: relativeHref(htmlModule.href, DOCS_CSS_NAME),
+    scriptHref: relativeHref(htmlModule.href, DOCS_JS_NAME),
     hasPageIndex: htmlModule.hasSymbolIndex,
     sidebarHtml: renderSidebarHtml(api, htmlModule.href, title),
     pageIndexHtml: htmlModule.symbolIndexHtml,
-    contentHtml,
-    script: DOCS_CLIENT_SCRIPT
+    contentHtml
   });
 }
 function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
@@ -1588,24 +1590,24 @@ function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
   const contentHtml = renderTemplate(GUIDE_PAGE_TEMPLATE, htmlGuide);
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title: `${title} - ${guide.title}`,
-    css: DOCS_HTML_CSS,
+    cssHref: relativeHref(guide.href, DOCS_CSS_NAME),
+    scriptHref: relativeHref(guide.href, DOCS_JS_NAME),
     hasPageIndex: htmlGuide.hasPageIndex,
     sidebarHtml: renderSidebarHtml(api, guide.href, title),
     pageIndexHtml: htmlGuide.pageIndexHtml,
-    contentHtml,
-    script: DOCS_CLIENT_SCRIPT
+    contentHtml
   });
 }
 async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
   const contentHtml = renderTemplate(INDEX_PAGE_TEMPLATE, { readmeHtml: await renderReadmeHtml(api) });
   return renderTemplate(HTML_PAGE_TEMPLATE, {
     title,
-    css: DOCS_HTML_CSS,
+    cssHref: DOCS_CSS_NAME,
+    scriptHref: DOCS_JS_NAME,
     hasPageIndex: false,
     sidebarHtml: renderSidebarHtml(api, 'index.html', title),
     pageIndexHtml: '',
-    contentHtml,
-    script: DOCS_CLIENT_SCRIPT
+    contentHtml
   });
 }
 function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
@@ -2892,6 +2894,14 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   const api = await extractDocsCached(inputs, includePrivate);
   validateOutputPaths(api, format);
   const expectedOutputs = expectedDocOutputs(api, format);
+  if (format === 'html' || format === 'both') {
+    const cssPath = `${outDir}/${DOCS_CSS_NAME}`;
+    const jsPath = `${outDir}/${DOCS_JS_NAME}`;
+    await fs.writeFile(cssPath, DOCS_HTML_CSS + '\n');
+    await fs.writeFile(jsPath, DOCS_CLIENT_JS.trimStart());
+    written.push(`Wrote ${cssPath}`);
+    written.push(`Wrote ${jsPath}`);
+  }
   for (const moduleDoc of api.modules) {
     if (format === 'markdown' || format === 'both') {
       const markdownPath = `${outDir}/${moduleHref(moduleDoc).replace(/\.html$/i, '.md')}`;
@@ -3020,6 +3030,10 @@ function expectedDocOutputs(api: ApiDoc, format: string): Set<string> {
     if (format === 'html' || format === 'both') outputs.add(guide.href);
   }
   if (format === 'html' || format === 'both') outputs.add('index.html');
+  if (format === 'html' || format === 'both') {
+    outputs.add(DOCS_CSS_NAME);
+    outputs.add(DOCS_JS_NAME);
+  }
   return outputs;
 }
 async function pruneGeneratedOutputs(expected: Set<string>): Promise<void> {
@@ -3046,7 +3060,7 @@ async function isEmptyDirectory(path: string): Promise<boolean> {
   return (await dir.entries()).length === 0;
 }
 function isPrunableDocOutput(path: string): boolean {
-  return /\.(html|md)$/i.test(path) || path === API_JSON_NAME;
+  return /\.(html|md)$/i.test(path) || path === API_JSON_NAME || path === DOCS_CSS_NAME || path === DOCS_JS_NAME;
 }
 function escapeRegExp(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');

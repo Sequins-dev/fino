@@ -13,6 +13,8 @@
 * await writeStdout(enterAlternateScreen());
 * await writeStdout(exitAlternateScreen());
 * ```
+*
+* @internal
 */
 import { env, os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
