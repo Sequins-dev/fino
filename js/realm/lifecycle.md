@@ -10,14 +10,14 @@ Construct a realm by pointing it at an entry module:
 ```ts
 import { Realm } from 'fino:realm';
 
-const realm = new Realm({ entry: './worker.mts' });
+const realm = new Realm({ entry: './worker.ts' });
 ```
 
 The constructor returns immediately. The child context is created and the module starts loading when you call `run()` or `call()`. Pass `root` to change the filesystem root used for module resolution inside the child:
 
 ```ts
 const realm = new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   root: '/srv/plugin',
 });
 ```
@@ -29,8 +29,8 @@ const realm = new Realm({
 ```ts
 const realm = Realm.fromSource(`
   import { basename } from 'fino:file/path';
-  const name = basename('/tmp/example.mts');
-  if (name !== 'example.mts') throw new Error('unexpected: ' + name);
+  const name = basename('/tmp/example.ts');
+  if (name !== 'example.ts') throw new Error('unexpected: ' + name);
 `);
 await realm.run();
 ```
@@ -39,8 +39,8 @@ The optional `specifier` field in the options sets the synthetic URL assigned to
 
 ```ts
 const realm = Realm.fromSource(
-  `import helper from './helper.mts';`,
-  { specifier: '/srv/app/entry.mts' },
+  `import helper from './helper.ts';`,
+  { specifier: '/srv/app/entry.ts' },
 );
 ```
 
@@ -71,14 +71,14 @@ For long-running children such as servers or background workers, `run()` stays p
 When the child's entry module default-exports a function, use `call()` instead of `run()`. The parent sends the arguments, the child invokes the function, and the result comes back as a resolved promise:
 
 ```ts
-// worker.mts (child)
+// worker.ts (child)
 export default async function (name: string): Promise<string> {
   return `hello ${name}`;
 }
 
 // parent
 const realm = new Realm<(name: string) => Promise<string>>({
-  entry: './worker.mts',
+  entry: './worker.ts',
 });
 const greeting = await realm.call('Ana');
 ```
@@ -103,7 +103,7 @@ The `using` declaration triggers `terminate()` automatically when the block exit
 
 ```ts
 {
-  using realm = new Realm({ entry: './worker.mts', thread: true });
+  using realm = new Realm({ entry: './worker.ts', thread: true });
   const result = await realm.call(payload);
 } // realm.terminate() called here
 ```
@@ -113,7 +113,7 @@ The `using` declaration triggers `terminate()` automatically when the block exit
 Setting `watch: true` makes the `Realm` object stable across child restarts. Whenever any file in the child's import graph changes on disk, the runtime tears down the current child context and spawns a fresh one using the same options. The `Realm` instance itself stays constant:
 
 ```ts
-const realm = new Realm({ entry: './server.mts', watch: true });
+const realm = new Realm({ entry: './server.ts', watch: true });
 const done = realm.run();  // stays pending; child restarts silently on file change
 ```
 
@@ -122,7 +122,7 @@ The watcher tracks transitive imports, not just the entry file. If a helper modu
 `run()` stays pending across reloads and only resolves when you call `terminate()`:
 
 ```ts
-const realm = new Realm({ entry: './plugin.mts', watch: true });
+const realm = new Realm({ entry: './plugin.ts', watch: true });
 const done = realm.run();
 
 // later, when you want to stop watching:

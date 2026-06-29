@@ -89,7 +89,7 @@ fn get_port(
 }
 
 /// Records an entry-module error string in the realm's FinoState.
-/// Called from `_onChildEntryError` in `internal/bootstrap.mts` so that the parent
+/// Called from `_onChildEntryError` in `internal/bootstrap.ts` so that the parent
 /// can retrieve the error and reject `Realm.run()` instead of resolving it.
 fn set_entry_error(
     scope: &mut v8::HandleScope,

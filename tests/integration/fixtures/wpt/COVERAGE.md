@@ -1,12 +1,12 @@
 # WPT coverage audit
 
 This audit describes the generated Web Platform Test schedule in
-`manifest.generated.mts`. That generated file remains the source of truth for
+`manifest.generated.ts`. That generated file remains the source of truth for
 which upstream WPT files Fino runs, skips, or defers. Refresh the category
 counts with:
 
 ```sh
-./target/release/fino tests/integration/fixtures/wpt/coverage-summary.mts
+./target/release/fino tests/integration/fixtures/wpt/coverage-summary.ts
 ```
 
 The summary command is read-only. The active issue table below omits categories

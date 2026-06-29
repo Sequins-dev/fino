@@ -63,7 +63,7 @@ for await (const entry of dir) {
   console.log(entry.path.toString());
 }
 
-for await (const entry of fs.glob('js/**/*.mts')) {
+for await (const entry of fs.glob('js/**/*.ts')) {
   console.log('module', entry.path.toString());
 }
 ```

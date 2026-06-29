@@ -61,7 +61,7 @@ Important OpenSSL behavior:
 
 Useful existing pieces:
 
-- `js/internal/openssl.mts` already exposes most OpenSSL primitives needed for
+- `js/internal/openssl.ts` already exposes most OpenSSL primitives needed for
   TCP mTLS:
   - `sslCtxUseCertKey()`
   - `sslCtxLoadCertKey()`
@@ -74,14 +74,14 @@ Useful existing pieces:
   - `sslGetPeerCertificate()`
   - `SSL_VERIFY_PEER`
   - `SSL_VERIFY_FAIL_IF_NO_PEER_CERT`
-- `js/net/tls.mts` has client TLS connection support with `hostname`, `ca`,
+- `js/net/tls.ts` has client TLS connection support with `hostname`, `ca`,
   `rejectUnauthorized`, and `alpn`.
-- `js/net/tls.mts` can accept server-side TLS over an existing fd using a
+- `js/net/tls.ts` can accept server-side TLS over an existing fd using a
   caller-owned `SSL_CTX`.
-- `js/net/http/server.mts` supports TLS servers with `cert`, `key`, and ALPN
+- `js/net/http/server.ts` supports TLS servers with `cert`, `key`, and ALPN
   protocols.
-- `js/globals/fetch.mts`, `js/net/http/client.mts`, and
-  `js/globals/eventsource.mts` already expose client trust options: `ca` and
+- `js/globals/fetch.ts`, `js/net/http/client.ts`, and
+  `js/globals/eventsource.ts` already expose client trust options: `ca` and
   `rejectUnauthorized`.
 - QUIC/H3 already has internal mTLS-adjacent options:
   `verifyClient`, `rejectUnauthorized`, `ca`, `certificateFile`, and
@@ -310,9 +310,9 @@ QUIC/H3:
 
 Commands once implemented:
 
-- `./target/release/fino --test tests/net/tls.test.mts`
-- `./target/release/fino --test tests/net/https.test.mts`
-- `./target/release/fino --test tests/net/http-client.test.mts`
+- `./target/release/fino --test tests/net/tls.test.ts`
+- `./target/release/fino --test tests/net/https.test.ts`
+- `./target/release/fino --test tests/net/http-client.test.ts`
 - Relevant H3/QUIC tests when public H3 options are changed.
 
 ## 8. Assumptions and Defaults

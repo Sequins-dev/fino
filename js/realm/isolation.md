@@ -12,7 +12,7 @@ The default mode. The child runs in the current V8 isolate on the current OS thr
 ```ts
 import { Realm } from 'fino:realm';
 
-const realm = new Realm({ entry: './task.mts' });
+const realm = new Realm({ entry: './task.ts' });
 await realm.run();
 ```
 
@@ -25,7 +25,7 @@ Use embedded realms when you want import isolation or a reloadable module graph 
 `thread: true` spawns the child in a new V8 isolate on a separate OS thread:
 
 ```ts
-const realm = new Realm({ entry: './cpu-task.mts', thread: true });
+const realm = new Realm({ entry: './cpu-task.ts', thread: true });
 const result = await realm.call(payload);
 await realm.terminate();
 ```
@@ -39,7 +39,7 @@ Use thread realms for CPU-bound work, for situations where you need a completely
 `process: true` spawns the child as a separate OS process:
 
 ```ts
-const realm = new Realm({ entry: './untrusted.mts', process: true });
+const realm = new Realm({ entry: './untrusted.ts', process: true });
 await realm.run();
 ```
 
@@ -57,7 +57,7 @@ import { Realm } from 'fino:realm';
 
 await startCluster({ port: 9999 });
 
-const realm = new Realm({ entry: './remote-task.mts', remote: true });
+const realm = new Realm({ entry: './remote-task.ts', remote: true });
 await realm.call('healthcheck');
 realm.terminate();
 ```

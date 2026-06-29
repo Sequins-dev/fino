@@ -14,7 +14,7 @@ supported skip/fail-fast configuration.
 
 Builds that do enable `libnghttp3` must pass the local HTTP/3 verification lane:
 simulated QUIC/H3 request-response tests and loopback UDP H3 tests in
-`tests/net/quic-h3.test.mts`.
+`tests/net/quic-h3.test.ts`.
 
 The HTTP/3 release scope is request/response helpers and lower-level sessions
 over QUIC, including streaming request and response bodies. Deferred H3 scope

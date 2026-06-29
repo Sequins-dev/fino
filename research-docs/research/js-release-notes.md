@@ -26,7 +26,7 @@ docs are ignored and are not committed as release source.
   authentication-failure behavior waits for cluster authentication support.
 - DNSSEC validates signed responses from embedded root trust anchors with
   deterministic coverage and a release-required live lane:
-  `FINO_DNS_LIVE=1 FINO_DNS_SERVER=1.1.1.1 ./target/debug/fino test tests/net/dns-live.test.mts`.
+  `FINO_DNS_LIVE=1 FINO_DNS_SERVER=1.1.1.1 ./target/debug/fino test tests/net/dns-live.test.ts`.
   Override the signed and bogus domains with `FINO_DNS_SIGNED_DOMAIN` and
   `FINO_DNS_BOGUS_DOMAIN` when release infrastructure needs local policy
   targets. Root trust anchors are embedded from
@@ -37,12 +37,12 @@ docs are ignored and are not committed as release source.
   treating unsupported DNSSEC algorithms and digests fail closed as intentional
   non-parity rather than ecosystem-complete DNSSEC support.
 - DNSSEC deterministic release evidence lives in
-  `tests/net/dnssec.test.mts`. It covers DS/DNSKEY chain validation from root
+  `tests/net/dnssec.test.ts`. It covers DS/DNSKEY chain validation from root
   trust anchors, root DNSKEY bootstrap, bogus/tampered data rejection, DS
   digest mismatch rejection, unsupported-only signature rejection with fallback
   to a supported signature, NSEC NODATA and NXDOMAIN proofs, NSEC3 NODATA and
   NXDOMAIN proofs, excessive NSEC3 iteration rejection, and NSEC3 opt-out
-  insecure delegation. `tests/net/dns-live.test.mts` remains gated external
+  insecure delegation. `tests/net/dns-live.test.ts` remains gated external
   smoke evidence and is not the primary proof for DNSSEC conformance.
 - HTTP/3 is release-scoped to request/response behavior over QUIC plus
   WebTransport over H3 when optional libnghttp3 bindings are available. Public

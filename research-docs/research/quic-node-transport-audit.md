@@ -8,8 +8,8 @@ so future audits can distinguish fixed behavior from open work.
 
 Required QUIC release evidence comes from local loopback, simulator, recovery,
 raw-packet, stream, and HTTP/3 tests. External lanes are intentionally gated:
-`tests/net/quic-hq.test.mts` runs when ngtcp2 HQ tools are installed,
-`tests/net/quic-node-interop.test.mts` runs when `NODE_QUIC_BIN` points at a
+`tests/net/quic-hq.test.ts` runs when ngtcp2 HQ tools are installed,
+`tests/net/quic-node-interop.test.ts` runs when `NODE_QUIC_BIN` points at a
 Node build exposing `node:quic`, and the loopback throughput benchmark runs
 when benchmark binaries are configured.
 
@@ -37,12 +37,12 @@ Node comparison gaps that remain release-acceptable:
   `1816` increment packet-only accounting for busy/limit immediate close,
   invalid Retry-token close, Retry, invalid regular token Retry, and Version
   Negotiation paths.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts:3071-3073`
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts:3071-3073`
   incremented packet and byte stats at datagram entry.
 - Resolution: Fino now records packet+bytes only after successful connection
   reads and records packet-only stats for Retry, Version Negotiation, and
   immediate close processing.
-- Tests: `tests/net/quic-sim.test.mts` covers source filtering, malformed
+- Tests: `tests/net/quic-sim.test.ts` covers source filtering, malformed
   Initial drops, Version Negotiation, Retry, busy/limit refusal, and
   session-creation rate-limit drops.
 
@@ -52,11 +52,11 @@ Node comparison gaps that remain release-acceptable:
   `onsessionticket` from `onnewtoken`.
 - Node proof: `src/quic/session.cc:3628-3670` emits TLS session-ticket payloads
   through a dedicated session-ticket callback.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts:5286-5299`
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts:5286-5299`
   persisted NEW_TOKEN but dispatched `sessionticket`.
 - Resolution: Fino now dispatches `newtoken` with `QuicNewTokenEvent` for QUIC
   address-validation tokens and keeps `sessionticket` for TLS tickets.
-- Tests: `tests/net/quic.test.mts` asserts NEW_TOKEN persistence, event
+- Tests: `tests/net/quic.test.ts` asserts NEW_TOKEN persistence, event
   separation, and topic payloads.
 
 ## Diagnostics-Channel Parity Via Fino Topics
@@ -73,7 +73,7 @@ Node comparison gaps that remain release-acceptable:
   update, received Version Negotiation, streams, DATAGRAM send/receive/status,
   path validation, token/ticket, and close/error paths. Publication is gated by
   `topic(name).hasSubscribers`.
-- Tests: `tests/net/quic.test.mts` subscribes to the transport topic set and
+- Tests: `tests/net/quic.test.ts` subscribes to the transport topic set and
   verifies production QUIC objects or existing internal callback hooks publish
   the expected payloads.
 
@@ -86,12 +86,12 @@ Node comparison gaps that remain release-acceptable:
 - Node proof: `test/parallel/test-quic-diagnostics-channel-session.mjs:19-27`
   asserts handshake diagnostics fire on both peers and include standard TLS
   fields.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts:4622-4628`
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts:4622-4628`
   published only connection, local/remote addresses, ALPN, and QUIC version.
 - Resolution: Fino now keeps its `connection` and `alpnProtocol` fields, adds
   Node-aligned `protocol`, TLS metadata, verification status, and early-data
   booleans, and reports backend-unavailable TLS metadata as `null`.
-- Tests: `tests/net/quic.test.mts` asserts the handshake topic includes the
+- Tests: `tests/net/quic.test.ts` asserts the handshake topic includes the
   Node-aligned TLS metadata fields while preserving Fino naming.
 
 ## Diagnostics Payload Owner/Error Context
@@ -102,15 +102,15 @@ Node comparison gaps that remain release-acceptable:
   `quic.stream.reset` with `stream`, owning `session`, and `error`.
 - Node proof: `lib/internal/quic/quic.js:3574-3580` publishes
   `quic.session.closed` with `session`, `error`, and `stats`.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts:5819-5823`
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts:5819-5823`
   published stream reset topics without the owning connection;
-  `js/internal/net/quic/endpoint.mts:5887-5893` published stream close topics
-  with only the stream; and `js/internal/net/quic/endpoint.mts:4350-4352`
+  `js/internal/net/quic/endpoint.ts:5887-5893` published stream close topics
+  with only the stream; and `js/internal/net/quic/endpoint.ts:4350-4352`
   published session close topics without the close error.
 - Resolution: Fino topics now keep Fino naming (`connection` instead of
   Node's `session`) while preserving owner, error, and stats context for stream
   reset, stream close, and session close payloads.
-- Tests: `tests/net/quic.test.mts` asserts `quic.stream.reset`,
+- Tests: `tests/net/quic.test.ts` asserts `quic.stream.reset`,
   `quic.stream.closed`, and `quic.session.closed` expose owner connection,
   error, and stats payloads where Node does.
 
@@ -124,7 +124,7 @@ Node comparison gaps that remain release-acceptable:
 - Node proof: `test/parallel/test-quic-datagram-sources.mjs:22-220` covers
   encoded string sources, promises, shared-buffer-backed views, partial views,
   and `DataView`.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts:4139-4176`
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts:4139-4176`
   accepted only `Uint8Array`, generated an internal ID, and returned `void`,
   leaving applications unable to correlate status events with sends.
 - Resolution: Fino `sendDatagram()` now returns the generated numeric ID,
@@ -134,7 +134,7 @@ Node comparison gaps that remain release-acceptable:
 - Intentional divergence preserved: zero-length DATAGRAMs still return a real
   ID and are delivered because RFC 9221 permits them, even though Node returns
   its nil DATAGRAM ID for zero-length sources.
-- Tests: `tests/net/quic.test.mts` asserts returned IDs correlate with Fino
+- Tests: `tests/net/quic.test.ts` asserts returned IDs correlate with Fino
   status events/topics, drop policies report returned IDs, zero-length
   DATAGRAMs return IDs, and source encodings/views preserve expected bytes.
 
@@ -144,14 +144,14 @@ Node comparison gaps that remain release-acceptable:
   `Session::EmitVersionNegotiation()`, and
   `lib/internal/quic/quic.js:[kVersionNegotiation]` publishes
   `quic.session.version.negotiation`.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts` installed a no-op
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts` installed a no-op
   `CB_RECV_VERSION_NEGOTIATION` callback and delegated only the crypto
   `CB_VERSION_NEGOTIATION` helper to ngtcp2_crypto, so no Fino topic could
   observe received session Version Negotiation.
 - Resolution: Fino now keeps the crypto helper delegated and adds a receive
   callback that publishes `quic.session.version.negotiation` through topics with
   raw wire-version arrays.
-- Tests: `tests/net/quic.test.mts` asserts the lifecycle topic set includes the
+- Tests: `tests/net/quic.test.ts` asserts the lifecycle topic set includes the
   received Version Negotiation topic and payload.
 
 ## Draining Period Multiplier
@@ -160,13 +160,13 @@ Node comparison gaps that remain release-acceptable:
   `drainingPeriodMultiplier` as a `3..255` multiplier, and
   `src/quic/session.cc::UpdateTimer()` computes draining expiry as
   `now + multiplier * ngtcp2_conn_get_pto()`.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts` accepted
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts` accepted
   `connection.drainingPeriodMultiplier`, but endpoint route/CID cleanup used a
   fixed `CONNECTION_DRAINING_TIMEOUT_MS` value of 3000 ms.
 - Resolution: Fino now binds `ngtcp2_conn_get_pto()`, snapshots
   multiplier-based route retention before freeing the native connection, and
   uses that value when removing CIDs from the endpoint route table.
-- Tests: `tests/net/quic-sim.test.mts` proves a custom multiplier retains the
+- Tests: `tests/net/quic-sim.test.ts` proves a custom multiplier retains the
   route past the old fixed 3000 ms timeout and eventually removes it.
 
 ## Peer-Initiated Key Update Coverage
@@ -176,7 +176,7 @@ Node comparison gaps that remain release-acceptable:
 - Fino proof: `CB_RECV_RX_KEY` and `CB_RECV_TX_KEY` are wired, and simulator
   traffic continues after a server-initiated key update.
 - Resolution: no implementation change was needed; this was a missing proof.
-- Tests: `tests/net/quic-sim.test.mts` covers peer-initiated key update.
+- Tests: `tests/net/quic-sim.test.ts` covers peer-initiated key update.
 
 ## Stream Flow-Control Blocked Events
 
@@ -185,12 +185,12 @@ Node comparison gaps that remain release-acceptable:
   diagnostic and invokes `stream.onblocked`; and
   `test/parallel/test-quic-stream-onblocked.mjs` proves the callback fires when
   stream-level flow control blocks sender progress.
-- Fino proof before fix: `js/internal/net/quic/endpoint.mts` published
+- Fino proof before fix: `js/internal/net/quic/endpoint.ts` published
   `quic.stream.blocked` when `NGTCP2_ERR_STREAM_DATA_BLOCKED` was returned, but
   `QuicStream` had no corresponding EventTarget `blocked` event.
 - Resolution: Fino now dispatches a typed `QuicStreamBlockedEvent` on the
   blocked stream while preserving the existing Fino topic payload.
-- Tests: `tests/net/quic-sim.test.mts` asserts blocked topics and blocked
+- Tests: `tests/net/quic-sim.test.ts` asserts blocked topics and blocked
   stream events both carry the affected connection and stream.
 
 ## Stream Reset Error-Code Events
@@ -203,8 +203,8 @@ Node comparison gaps that remain release-acceptable:
   `QuicErrorEvent` with only `error`.
 - Resolution: Fino now dispatches `QuicStreamResetEvent` with both `error` and
   `errorCode`.
-- Tests: `tests/net/quic.test.mts` covers the event class and
-  `tests/net/quic-sim.test.mts` asserts peer RESET_STREAM code propagation.
+- Tests: `tests/net/quic.test.ts` covers the event class and
+  `tests/net/quic-sim.test.ts` asserts peer RESET_STREAM code propagation.
 
 ## Callback Error Semantics
 
@@ -212,12 +212,12 @@ Node comparison gaps that remain release-acceptable:
   callbacks through `safeCallbackInvoke`, and the callback-error tests under
   `test/parallel/test-quic-callback-error-*.mjs` assert lifecycle handling for
   callback throws.
-- Fino proof: `js/internal/globals/eventtarget.mts` catches listener exceptions
+- Fino proof: `js/internal/globals/eventtarget.ts` catches listener exceptions
   during `dispatchEvent()` so later EventTarget listeners still run.
 - Resolution: this remains an intentional Fino API divergence. The public model
   is EventTarget rather than Node callback properties, so listener throws are
   isolated instead of becoming transport lifecycle errors.
-- Tests: `tests/net/quic.test.mts` documents the behavior with a throwing QUIC
+- Tests: `tests/net/quic.test.ts` documents the behavior with a throwing QUIC
   stream listener followed by a second listener.
 
 ## Evidence Matrix
@@ -228,7 +228,7 @@ Node comparison gaps that remain release-acceptable:
   stale test names could still pass, and original alignment-plan rows could be
   omitted from the matrix entirely.
 - Resolution: `spec-fixtures.json` has top-level `evidence` entries for every
-  Direct matrix row, and `tests/net/quic.test.mts` now verifies that each
+  Direct matrix row, and `tests/net/quic.test.ts` now verifies that each
   referenced test file exists and contains the named test or benchmark marker.
   The same meta-test carries an explicit completeness list for the remaining
   original-plan rows so omissions fail even when no row is present.
@@ -248,12 +248,12 @@ Node comparison gaps that remain release-acceptable:
   they request receive traffic-class control messages, parse `recvmsg`/`recvmmsg`
   ECN metadata, and apply ngtcp2's outbound ECN marks with per-packet
   `sendmsg`/`sendmmsg` traffic-class control messages.
-- Tests: `tests/net/quic-sim.test.mts` proves multi-packet `sendBatch` use and
+- Tests: `tests/net/quic-sim.test.ts` proves multi-packet `sendBatch` use and
   ECT(0) metadata propagation with DATAGRAM delivery intact.
-  `tests/net/quic.test.mts` proves the real UDP ECN receive path preserves
-  DATAGRAM delivery on IPv4 loopback. `tests/net/quic.test.mts` also exposes
+  `tests/net/quic.test.ts` proves the real UDP ECN receive path preserves
+  DATAGRAM delivery on IPv4 loopback. `tests/net/quic.test.ts` also exposes
   the larger batched receive turn limit through `__inspectQuicRuntimeTuning()`.
-- Benchmark: `benchmarks/net/quic-loopback-transfer.bench.mts` is a bounded
+- Benchmark: `benchmarks/net/quic-loopback-transfer.bench.ts` is a bounded
   loopback bulk-transfer benchmark that emits JSON throughput results outside
   the adaptive `fino:bench` runner. It also supports
   `QUIC_BENCH_BASELINE_BIN` and `QUIC_BENCH_CANDIDATE_BIN` comparison mode,
@@ -274,11 +274,11 @@ Node comparison gaps that remain release-acceptable:
   stale path cache unless another write path synchronized active path state.
 - Resolution: `sendDatagram()` now refreshes the active path from ngtcp2 before
   enqueueing the DATAGRAM frame.
-- Tests: `tests/net/quic-streams.test.mts` covers half-close final-size and
+- Tests: `tests/net/quic-streams.test.ts` covers half-close final-size and
   ACK stats, RESET_STREAM before data / crossing data / after FIN,
   stream-level `MAX_STREAM_DATA` unblock, unidirectional `MAX_STREAMS`
   exhaustion and credit return, plus STOP_SENDING crossing data.
-  `tests/net/quic-sim-recovery.test.mts` covers repeated key updates under
+  `tests/net/quic-sim-recovery.test.ts` covers repeated key updates under
   deterministic loss, persistent-congestion stats with RTT tolerance and cwnd
   collapse, path-validation abort on close, and DATAGRAM delivery plus ACK
   status before and after active migration.
@@ -295,7 +295,7 @@ Node comparison gaps that remain release-acceptable:
   when a client cert fails CA verification while still surfacing the cert.
 - Remaining divergence: per-SNI contexts and group constraints are
   **OpenSSL-only by design** — see Dual-Backend Design below.
-- Tests: `tests/net/quic.test.mts` covers CA PEM, mTLS DER exposure, per-SNI
+- Tests: `tests/net/quic.test.ts` covers CA PEM, mTLS DER exposure, per-SNI
   ALPN selection, runtime `setSNIContexts`, `rejectUnauthorized: false` mTLS,
   and a constrained `X25519` QUIC TLS handshake.
 
@@ -310,7 +310,7 @@ Node comparison gaps that remain release-acceptable:
   API. Those distributions ship `libngtcp2_crypto_gnutls` via GnuTLS instead.
 - Decision: **Keep both backends** — prefer the OpenSSL ngtcp2 backend when
   system OpenSSL ≥3.5 is present, fall back to GnuTLS on older LTS where only
-  GnuTLS is available. This is cheap because `crypto.mts` is already a single
+  GnuTLS is available. This is cheap because `crypto.ts` is already a single
   facade with ~12 `if (backend==='ossl')…else…` branches. Phasing out GnuTLS
   later means deleting the leaf module and `else` arms with no endpoint changes.
 - OpenSSL-only features (documented limitations, not bugs):
@@ -321,7 +321,7 @@ Node comparison gaps that remain release-acceptable:
   (`gnutls_certificate_set_x509_trust_file/dir/mem`), peer certificate DER
   exposure (`gnutls_certificate_get_peers`), peer verification result
   (`gnutls_certificate_verify_peers3`), cipher/protocol metadata, keylog.
-- Tests: `tests/net/quic.test.mts` gates per-SNI and `tlsGroups` tests on
+- Tests: `tests/net/quic.test.ts` gates per-SNI and `tlsGroups` tests on
   `cryptoBackend === 'ossl'`. The "QUIC GnuTLS backend parity" describe block
   gates four tests on `cryptoBackend === 'gnutls'` and skips cleanly when the
   active backend is OpenSSL.

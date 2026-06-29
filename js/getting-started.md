@@ -12,7 +12,7 @@ program.
 
 ## Run a Script
 
-Create `hello.mts` and import runtime APIs with `fino:*` specifiers:
+Create `hello.ts` and import runtime APIs with `fino:*` specifiers:
 
 ```ts
 import { parse } from 'fino:format/toml';
@@ -31,7 +31,7 @@ and `fino:*` imports for built-in runtime modules.
 Run the script:
 
 ```sh
-fino ./hello.mts
+fino ./hello.ts
 ```
 
 ## Start an HTTP Server
@@ -62,7 +62,7 @@ console.log(`listening on http://127.0.0.1:${server.port}`);
 Run it:
 
 ```sh
-PORT=3000 fino ./server.mts
+PORT=3000 fino ./server.ts
 ```
 
 The [HTTP guide](./net/http/guide.md) covers routing, request bodies, streaming
@@ -83,7 +83,7 @@ test('math still works', (t) => {
 Run a file:
 
 ```sh
-fino test ./math.test.mts
+fino test ./math.test.ts
 ```
 
 Run a directory of tests:

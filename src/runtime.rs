@@ -155,7 +155,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             }
         }
 
-        // First pump + checkpoint: runs internal/main.mts module body as a microtask.
+        // First pump + checkpoint: runs internal/main.ts module body as a microtask.
         // The module body calls runLoop(step, onDone) from internal:async-context,
         // storing those callbacks in FinoState for the loop below.
         pump_and_checkpoint(scope);
@@ -192,7 +192,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             // Extract stored JS step callback without holding the borrow during call.
             let loop_step_fn = match state_rc.borrow().loop_step_fn.clone() {
                 Some(f) => f,
-                // internal/main.mts never called runLoop (e.g. argv.length < 2).
+                // internal/main.ts never called runLoop (e.g. argv.length < 2).
                 None => break 'main,
             };
 
@@ -278,7 +278,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         // the flag and call their on_done_fn if any).
         realm::terminate_all_children(scope);
 
-        // Call onDone() — runs the post-loop error check from internal/main.mts (e.g.
+        // Call onDone() — runs the post-loop error check from internal/main.ts (e.g.
         // `if (caughtError) { exit(1); }`).  If onDone calls exit(), we never
         // return from here; otherwise it returns normally.
         let on_done_fn = state_rc.borrow().on_done_fn.clone();

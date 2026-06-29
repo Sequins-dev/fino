@@ -1,5 +1,5 @@
 /**
- * TypeScript sample module used by tests/internal/typescript.test.mts.
+ * TypeScript sample module used by tests/internal/typescript.test.ts.
  * Exercises type-stripping: typed functions, generics, class field annotations,
  * interface declarations, and type-only exports.
  */

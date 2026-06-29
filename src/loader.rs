@@ -466,7 +466,7 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
 }
 
 fn strip_builtin_extension(path: &str) -> &str {
-    for ext in [".mts", ".mjs", ".ts", ".js", ".json"] {
+    for ext in [".ts", ".mts", ".mjs", ".js", ".json"] {
         if let Some(stripped) = path.strip_suffix(ext) {
             return stripped;
         }
@@ -754,7 +754,7 @@ pub fn resolve_module_callback<'s>(
     let scope = &mut unsafe { v8::CallbackScope::new(context) };
     let raw_spec = specifier.to_rust_string_lossy(scope);
 
-    // Resolve builtin-relative specifiers (e.g. './loop.mts' from a builtin).
+    // Resolve builtin-relative specifiers (e.g. './loop.ts' from a builtin).
     let state_rc = get_state(scope);
     let builtin_referrer: Option<String> = referrer
         .script_id()
@@ -993,7 +993,7 @@ pub fn dynamic_import_callback<'s>(
     let referrer_url = referrer_from_hdo(scope, host_defined_options, resource_name);
     let referrer_is_user_code = referrer_url.starts_with("file://");
 
-    // Resolve builtin-relative specifiers (e.g. './loop.mts' from a builtin).
+    // Resolve builtin-relative specifiers (e.g. './loop.ts' from a builtin).
     let builtin_spec = if referrer_is_user_code {
         None
     } else {

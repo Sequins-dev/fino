@@ -2,7 +2,7 @@
 //!
 //! Exposes `internal:async-context` as a synthetic V8 module. The slot management
 //! logic (COW array manipulation, snapshot/restore) lives entirely in JavaScript
-//! (`js/context/index.mts`). This module only provides:
+//! (`js/context/index.ts`). This module only provides:
 //!
 //! - `getCPED` / `setCPED`: V8 Torque builtins extracted from the extras binding
 //!   object. These compile to direct CPED memory loads/stores on the V8 isolate
@@ -147,7 +147,7 @@ fn schedule_sync(
     rv.set(promise.into());
 }
 
-/// Called by `internal/main.mts` with `(step, onDone)` to hand off host-safe loop
+/// Called by `internal/main.ts` with `(step, onDone)` to hand off host-safe loop
 /// stepping to Rust. JS owns scheduling policy; Rust only calls `step()`
 /// outside checkpoints and services deferred sync work between calls.
 fn run_loop(

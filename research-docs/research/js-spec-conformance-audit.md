@@ -26,11 +26,11 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 
 | Area | Files | Classification | Specs | Coverage reviewed | Result |
 | --- | --- | --- | --- | --- | --- |
-| Web globals | `js/globals/**`, `js/stream.mts`, `js/realm/messaging.mts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.mts`, `tests/net/websocket.test.mts` | No open findings |
-| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.mts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | No open findings |
-| Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.mts`, `js/compress.mts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.mts`, `tests/file/**` | No open findings |
-| Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.mts`, `js/uuid.mts`, `js/validate.mts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.mts`, `tests/security/**`, `tests/uuid.test.mts`, `tests/validate.test.mts` | No open findings |
-| Runtime, modules, process, packaging | `js/process*`, `js/module.mts`, `js/internal/loader.mts`, `js/internal/package_manager.mts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.mts`, `tests/tty.test.mts` | No open findings |
+| Web globals | `js/globals/**`, `js/stream.ts`, `js/realm/messaging.ts` | Spec-backed web APIs plus Fino adapters | Fetch, DOM, HTML messaging, Streams, URL, Encoding, WebCrypto, File API, RFC 6455 | `tests/internal/globals/**`, `tests/messaging/**`, `tests/realm/**`, `tests/net/eventsource.test.ts`, `tests/net/websocket.test.ts` | No open findings |
+| Networking protocols | `js/net/**`, `js/internal/net/**`, `js/security/cors.ts` | Spec-backed protocols; provider internals are spec-adjacent | HTTP RFCs, QUIC RFCs, DNS/DNSSEC, TLS, Fetch CORS, WebTransport H3 draft | `tests/net/**`, `tests/integration/h2spec*`, QUIC research docs | No open findings |
+| Formats, files, archives, compression | `js/format/**`, `js/file/**`, `js/archive.ts`, `js/compress.ts` | Format parsers are spec-backed; file helpers are POSIX-adjacent | CSV, TOML, YAML, XML, ZIP, tar, compression RFCs, POSIX | `tests/format/**`, `tests/archive/**`, `tests/compress.test.ts`, `tests/file/**` | No open findings |
+| Security, crypto, identifiers, validation | `js/security/**`, `js/globals/crypto.ts`, `js/uuid.ts`, `js/validate.ts` | Spec-backed crypto/security formats with documented subsets | WebCrypto, JOSE/JWK/JWT/JWE, UUID, JSON Schema, Fetch CORS | `tests/internal/globals/crypto*.test.ts`, `tests/security/**`, `tests/uuid.test.ts`, `tests/validate.test.ts` | No open findings |
+| Runtime, modules, process, packaging | `js/process*`, `js/module.ts`, `js/internal/loader.ts`, `js/internal/package_manager.ts`, `js/tty/**` | Spec-adjacent runtime APIs and package metadata | POSIX/SUS CLI, ECMA modules, npm metadata, SRI | `tests/process/**`, `tests/runtime/**`, `tests/internal/package-manager-integrity.test.ts`, `tests/tty.test.ts` | No open findings |
 | Observability, database, cluster, realm | `js/opentelemetry/**`, `js/database/**`, `js/cluster/**`, `js/realm/**` | Spec-backed where protocol/wire/API claims exist; Fino orchestration is spec-adjacent | OpenTelemetry, W3C Trace Context/Baggage, SQLite C/VFS, WebTransport, HTML messaging | `tests/opentelemetry*`, `tests/sqlite*`, `tests/cluster/**`, `tests/realm/**` | No open findings |
 
 ## Closed Conformance Evidence
@@ -38,20 +38,20 @@ coverage, and accepted subset boundaries. It does not include source fixes.
 ### Web Streams
 
 The WHATWG Streams release subset is covered by a focused conformance map
-against the Streams Standard living specification. `js/globals/webstreams.mts`
+against the Streams Standard living specification. `js/globals/webstreams.ts`
 links the authoritative spec and documents the supported implementation model:
 readable, writable, transform, byte/BYOB, queuing strategy, pipe, tee, and
 non-transferable stream behavior.
 
 | Spec area | Implementation | Evidence | Status |
 | --- | --- | --- | --- |
-| Readable streams, default readers, locking, cancellation, and async iteration | `ReadableStream`, `ReadableStreamDefaultReader` | `tests/internal/globals/webstreams.test.mts`: basics, cancellation, lock errors, invalid receivers, released-reader errors, closed promise timing | Covered |
-| Byte streams and BYOB readers | `ReadableByteStreamController`, `ReadableStreamBYOBReader`, `ReadableStreamBYOBRequest` | `tests/internal/globals/webstreams.test.mts`: BYOB reads, `byobRequest`, pending read release, cancel behavior, detached view rejection | Covered |
-| Writable streams, writers, close/abort, backpressure, and `ready` | `WritableStream`, `WritableStreamDefaultWriter`, `WritableStreamDefaultController` | `tests/internal/globals/webstreams.test.mts`: serialized writes, abort, close, desired size, `ready`, released-writer promise behavior | Covered |
-| Transform streams and controllers | `TransformStream`, `TransformStreamDefaultController` | `tests/internal/globals/webstreams.test.mts`: transform, flush, terminate, error propagation, `pipeThrough` | Covered |
-| Piping, prevent flags, abort signals, and tee cancellation | `pipeTo()`, `pipeThrough()`, `tee()` | `tests/internal/globals/webstreams.test.mts`: locked-stream rejection, preventClose/preventAbort/preventCancel, already-aborted signals, composite tee cancellation | Covered |
-| Queuing strategies and backpressure | `CountQueuingStrategy`, `ByteLengthQueuingStrategy` | `tests/internal/globals/webstreams.test.mts`: highWaterMark, size algorithms, desiredSize, pull scheduling | Covered |
-| Transferable streams | Structured clone and realm messaging integration | `tests/internal/globals/encoding.test.mts`, `tests/realm/transfer.test.mts`; audit non-goal says streams are not general-purpose transferable surfaces | Intentional limit |
+| Readable streams, default readers, locking, cancellation, and async iteration | `ReadableStream`, `ReadableStreamDefaultReader` | `tests/internal/globals/webstreams.test.ts`: basics, cancellation, lock errors, invalid receivers, released-reader errors, closed promise timing | Covered |
+| Byte streams and BYOB readers | `ReadableByteStreamController`, `ReadableStreamBYOBReader`, `ReadableStreamBYOBRequest` | `tests/internal/globals/webstreams.test.ts`: BYOB reads, `byobRequest`, pending read release, cancel behavior, detached view rejection | Covered |
+| Writable streams, writers, close/abort, backpressure, and `ready` | `WritableStream`, `WritableStreamDefaultWriter`, `WritableStreamDefaultController` | `tests/internal/globals/webstreams.test.ts`: serialized writes, abort, close, desired size, `ready`, released-writer promise behavior | Covered |
+| Transform streams and controllers | `TransformStream`, `TransformStreamDefaultController` | `tests/internal/globals/webstreams.test.ts`: transform, flush, terminate, error propagation, `pipeThrough` | Covered |
+| Piping, prevent flags, abort signals, and tee cancellation | `pipeTo()`, `pipeThrough()`, `tee()` | `tests/internal/globals/webstreams.test.ts`: locked-stream rejection, preventClose/preventAbort/preventCancel, already-aborted signals, composite tee cancellation | Covered |
+| Queuing strategies and backpressure | `CountQueuingStrategy`, `ByteLengthQueuingStrategy` | `tests/internal/globals/webstreams.test.ts`: highWaterMark, size algorithms, desiredSize, pull scheduling | Covered |
+| Transferable streams | Structured clone and realm messaging integration | `tests/internal/globals/encoding.test.ts`, `tests/realm/transfer.test.ts`; audit non-goal says streams are not general-purpose transferable surfaces | Intentional limit |
 
 ## Test Coverage Priorities
 

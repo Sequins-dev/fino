@@ -97,9 +97,9 @@ The parent controls what a child can import:
 import { ImportMap, Realm } from 'fino:realm';
 
 const realm = new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   overrides: ImportMap.deny([
-    { pattern: './worker.mts', directive: 'inherit' },
+    { pattern: './worker.ts', directive: 'inherit' },
     { pattern: 'fino:format/*', directive: 'inherit' },
   ]),
 });

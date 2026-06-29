@@ -75,10 +75,10 @@ fino already owns the primitives these frameworks bolt on externally. The entire
 | HTTP channels | `fino:net/http/server`, `fino:net/http/app` | `serve()`; `HttpHandlerResult` (upgrade via return value) |
 | Evals runner | `fino:test/test` | `test/suite/describe`, `TestContext` |
 
-Module authoring pattern: add `js/ai/<x>.mts`, register
+Module authoring pattern: add `js/ai/<x>.ts`, register
 `source_builtin!("fino:ai/<x>", "ai/<x>")` in the `BUILTINS` array of
-`src/loader.rs`. Mirror `js/context/index.mts` conventions: JSDoc, `#private`
-fields, generics, no `DOMException`. Tests in `tests/ai-*.test.mts`.
+`src/loader.rs`. Mirror `js/context/index.ts` conventions: JSDoc, `#private`
+fields, generics, no `DOMException`. Tests in `tests/ai-*.test.ts`.
 
 ## 4. Cross-cutting prerequisites
 

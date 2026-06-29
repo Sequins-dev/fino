@@ -44,13 +44,13 @@ The debug build is better for symbolized native profiling. The release build is 
 Run a script:
 
 ```sh
-cargo run -- path/to/script.mts
+cargo run -- path/to/script.ts
 ```
 
 Run tests:
 
 ```sh
-./target/release/fino test tests/net/serve.test.mts
+./target/release/fino test tests/net/serve.test.ts
 ```
 
 Run benchmarks:
@@ -64,7 +64,7 @@ Run benchmarks:
 The repository includes a minimal HTTP benchmark server:
 
 ```sh
-PORT=3001 cargo run -- example.mts
+PORT=3001 cargo run -- example.ts
 ```
 
 Then benchmark it:
@@ -77,7 +77,7 @@ curl http://127.0.0.1:3001/stop
 There is also a profiling variant:
 
 ```sh
-PORT=3002 cargo run -- example_profile.mts
+PORT=3002 cargo run -- example_profile.ts
 autocannon -c 100 -d 10 http://127.0.0.1:3002/
 curl http://127.0.0.1:3002/stop
 go tool pprof profile.pb
@@ -87,7 +87,7 @@ go tool pprof profile.pb
 
 - `src/`: Rust runtime, loader, profiler, and FFI implementation
 - `js/`: built-in JS runtime modules and platform APIs
-- `tests/`: `.test.mts` integration tests
+- `tests/`: `.test.ts` integration tests
 - `benchmarks/`: `.bench.mjs` performance microbenchmarks
 - `docs/roadmap.md`: planned compatibility and runtime work
 
@@ -101,8 +101,8 @@ Useful commands:
 
 ```sh
 cargo test --quiet
-./target/release/fino test tests/net/socket-class.test.mts
-./target/release/fino test tests/net/serve.test.mts
+./target/release/fino test tests/net/socket-class.test.ts
+./target/release/fino test tests/net/serve.test.ts
 ```
 
 If you are working on performance-sensitive code, prefer benchmarking on a unique port and keep profiling runs separate from general local testing.

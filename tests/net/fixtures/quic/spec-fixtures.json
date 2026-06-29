@@ -7,442 +7,442 @@
   "evidence": [
     {
       "matrixRow": "Version Negotiation",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 6: unsupported-version Initial receives Version Negotiation"
     },
     {
       "matrixRow": "RFC 9368 compatible Version Negotiation retry",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9368 section 2: default client first flight uses v1 and upgrades after compatible VN"
     },
     {
       "matrixRow": "Initial packet size and padding",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 sections 6, 7, and 14.1: v2 handshake completes and Initial datagrams are at least 1200 bytes"
     },
     {
       "matrixRow": "Retry address validation",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "listener rejects tampered and address-mismatched Retry tokens"
     },
     {
       "matrixRow": "Expired Retry token",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "listener rejects expired Retry tokens with an immediate close"
     },
     {
       "matrixRow": "NEW_TOKEN receipt and reuse",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 8.1.3: same-address NEW_TOKEN reconnect validates without Retry"
     },
     {
       "matrixRow": "NEW_TOKEN tamper/expiry/replay rejection",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 8.1.3: tampered, expired, and wrong-address NEW_TOKENs are rejected"
     },
     {
       "matrixRow": "Node-aligned endpoint policy defaults",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "uses Node-aligned transport defaults while keeping 0-RTT opt-in"
     },
     {
       "matrixRow": "Node API parity",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "supports async disposal for endpoints, listeners, and connections"
     },
     {
       "matrixRow": "Node API parity",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "supports AbortSignal on QUIC stream reads"
     },
     {
       "matrixRow": "Endpoint packet diagnostics",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "Node transport parity: source-address deny filtering blocks packets before QUIC parsing"
     },
     {
       "matrixRow": "QUIC lifecycle topics",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "publishes Node-aligned QUIC transport lifecycle topics through Fino topics"
     },
     {
       "matrixRow": "Transport parameter snapshots",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "exposes local and remote transport parameter snapshots after handshake"
     },
     {
       "matrixRow": "Configurable transport parameters",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "advertises configured transport parameters to the peer"
     },
     {
       "matrixRow": "Streams and flow control",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "reassembles stream data by QUIC offset before exposing reads"
     },
     {
       "matrixRow": "Streams and flow control",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 sections 3.5, 4.4, and 4.5: RESET_STREAM surfaces public stream errors"
     },
     {
       "matrixRow": "Stream half-close and stats",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "tracks finalSize and bytesAcked across stream half-close"
     },
     {
       "matrixRow": "Stream reset edge cases",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "rejects peer reads when RESET_STREAM arrives before data"
     },
     {
       "matrixRow": "Stream reset edge cases",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "rejects peer reads when RESET_STREAM crosses data in flight"
     },
     {
       "matrixRow": "Stream reset edge cases",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "ignores a local RESET_STREAM after FIN is fully consumed by the peer"
     },
     {
       "matrixRow": "STOP_SENDING crossing data",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "rejects peer writes after STOP_SENDING drains in-flight data"
     },
     {
       "matrixRow": "Stream-level MAX_STREAM_DATA",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "unblocks stream-level MAX_STREAM_DATA writes after peer read credit returns"
     },
     {
       "matrixRow": "Unidirectional MAX_STREAMS exhaustion",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "pends unidirectional stream opens at MAX_STREAMS until peer returns credit"
     },
     {
       "matrixRow": "Unidirectional stream sides",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "pre-closes unavailable unidirectional stream sides"
     },
     {
       "matrixRow": "Unidirectional stream sides",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "client-initiated unidirectional streams expose only the writable side locally"
     },
     {
       "matrixRow": "Unidirectional stream sides",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "server-initiated unidirectional streams expose only the writable side locally"
     },
     {
       "matrixRow": "Stream source handling",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "copies QUIC stream source bytes before delayed transport flush"
     },
     {
       "matrixRow": "Stream source handling",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "accepts Node-covered QUIC stream source view types"
     },
     {
       "matrixRow": "Stream source handling",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "copies Web Streams QUIC writable chunks before delayed transport flush"
     },
     {
       "matrixRow": "Connection-level flow-control unblock",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 sections 4.1 and 4.2: connection flow-control credit unblocks aggregate writes across streams"
     },
     {
       "matrixRow": "Node send-drain reentrancy",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "coalesces stream FIN with pending write data"
     },
     {
       "matrixRow": "Send-path batching",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "Node transport parity: write drain flushes encoded packets through sendBatch"
     },
     {
       "matrixRow": "Before/after QUIC throughput benchmark",
-      "testFile": "benchmarks/net/quic-loopback-transfer.bench.mts",
+      "testFile": "benchmarks/net/quic-loopback-transfer.bench.ts",
       "testName": "QUIC loopback transfer benchmark"
     },
     {
       "matrixRow": "Read-path batching",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "keeps UDP receive bursts aligned with Node flush pacing"
     },
     {
       "matrixRow": "ECN metadata",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "Node transport parity: ECN metadata marks simulator packets as ECT(0)"
     },
     {
       "matrixRow": "ECN metadata",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "exchanges DATAGRAM frames over real UDP with ECN enabled"
     },
     {
       "matrixRow": "Migration and path validation",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 9: NAT rebinding validates a new peer path and preserves streams"
     },
     {
       "matrixRow": "Migration and path validation",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 9.6: ignores preferred address unless client opts in"
     },
     {
       "matrixRow": "DATAGRAM across migration",
-      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testFile": "tests/net/quic-sim-recovery.test.ts",
       "testName": "delivers DATAGRAM frames before and after active migration"
     },
     {
       "matrixRow": "Path-validation NEW_TOKEN flag",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "surfaces NEW_TOKEN requests on path-validation events"
     },
     {
       "matrixRow": "Path-validation abort on close",
-      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testFile": "tests/net/quic-sim-recovery.test.ts",
       "testName": "reports path-validation abort when a connection closes mid-validation"
     },
     {
       "matrixRow": "CID lifecycle and stateless reset",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "registers and unregisters issued CIDs in the endpoint route table"
     },
     {
       "matrixRow": "Configurable CID length",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "uses configured connection ID lengths for local CIDs"
     },
     {
       "matrixRow": "Idle timeout",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 10.1: idle timeout closes connections and rejects stream operations"
     },
     {
       "matrixRow": "Keep-alive PINGs",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "sends keep-alive PINGs only when keep-alive is enabled"
     },
     {
       "matrixRow": "Peer stream idle timeout",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "Node transport parity: peer-initiated stream idle timeout closes only the idle stream"
     },
     {
       "matrixRow": "Handshake timeout",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 10.1: handshake timeout rejects pending connect and accept"
     },
         {
             "matrixRow": "Connection close and draining",
-            "testFile": "tests/net/quic-sim.test.mts",
+            "testFile": "tests/net/quic-sim.test.ts",
             "testName": "Node transport parity: custom drainingPeriodMultiplier extends draining route retention"
     },
     {
       "matrixRow": "Node-aligned close API",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "exposes Node-aligned connection close state and destroy API"
     },
     {
       "matrixRow": "Endpoint UDP socket options",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "validates endpoint UDP socket options"
     },
         {
             "matrixRow": "TLS 1.3 integration and ALPN",
-            "testFile": "tests/net/quic.test.mts",
+            "testFile": "tests/net/quic.test.ts",
             "testName": "negotiates h3 ALPN over raw QUIC streams without HTTP integration"
         },
         {
             "matrixRow": "Handshake diagnostics metadata",
-            "testFile": "tests/net/quic.test.mts",
+            "testFile": "tests/net/quic.test.ts",
             "testName": "publishes Node-aligned QUIC transport lifecycle topics through Fino topics"
         },
         {
             "matrixRow": "Fino boolean peer verification",
-            "testFile": "tests/net/quic.test.mts",
+            "testFile": "tests/net/quic.test.ts",
             "testName": "covers Fino boolean verifyPeer modes for self-signed loopback certificates"
         },
     {
       "matrixRow": "TLS CA trust options",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "accepts pinned CA trust for self-signed loopback certificates"
     },
     {
       "matrixRow": "TLS CA trust options",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "accepts in-memory PEM CA trust for self-signed loopback certificates"
     },
     {
       "matrixRow": "mTLS client certificates",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "requires and exposes client certificates for mTLS listeners"
     },
     {
       "matrixRow": "Per-SNI server TLS contexts",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "selects per-SNI server TLS contexts with wildcard matching"
     },
     {
       "matrixRow": "TLS supported groups",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "negotiates QUIC TLS with configured supported groups"
     },
         {
             "matrixRow": "Key update",
-            "testFile": "tests/net/quic-sim.test.mts",
+            "testFile": "tests/net/quic-sim.test.ts",
             "testName": "RFC 9001 key update behavior: peer-initiated key update preserves stream traffic"
     },
     {
       "matrixRow": "Key-updated traffic under loss",
-      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testFile": "tests/net/quic-sim-recovery.test.ts",
       "testName": "preserves bulk stream traffic after repeated key updates under loss"
     },
     {
       "matrixRow": "Parsed TLS keylog validity",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "writes TLS keylog output when keylog path is configured"
     },
     {
       "matrixRow": "Session tickets and 0-RTT",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "returns resumed early-data connections before handshake completion"
     },
     {
       "matrixRow": "PTO recovery",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9002 sections 6.2 and 6.2.1: dropped first flight recovers through PTO"
     },
     {
       "matrixRow": "Retransmission behavior",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9002 sections 5 and 6: corrupted stream packets are dropped and retransmitted"
     },
     {
       "matrixRow": "Sustained-loss recovery",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9002 sustained-loss recovery completes a 4MiB transfer"
     },
     {
       "matrixRow": "Blackhole recovery and RTT stats",
-      "testFile": "tests/net/quic-sim-recovery.test.mts",
+      "testFile": "tests/net/quic-sim-recovery.test.ts",
       "testName": "records persistent congestion collapse and RTT after a simulated blackhole window"
     },
     {
       "matrixRow": "Congestion control and ACK delay",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9002 congestion-control selections complete stream traffic"
     },
     {
       "matrixRow": "DATAGRAM negotiation and sizing",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "exchanges unreliable datagrams when DATAGRAM is negotiated"
     },
         {
             "matrixRow": "Delivery and status events",
-            "testFile": "tests/net/quic.test.mts",
+            "testFile": "tests/net/quic.test.ts",
             "testName": "returns DATAGRAM ids that correlate with status events and topics"
         },
         {
             "matrixRow": "DATAGRAM source handling",
-            "testFile": "tests/net/quic.test.mts",
+            "testFile": "tests/net/quic.test.ts",
             "testName": "accepts Node-covered DATAGRAM source types and copies source bytes"
         },
     {
       "matrixRow": "Non-retransmission",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9221 section 5.3: lost DATAGRAMs are not retransmitted and surface loss status"
     },
     {
       "matrixRow": "0-RTT DATAGRAM",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9221 section 5: 0-RTT DATAGRAM rejects when remembered peer parameters omit DATAGRAM support"
     },
     {
       "matrixRow": "Raw QUIC and `h3` ALPN interop",
-      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testFile": "tests/net/quic-node-interop.test.ts",
       "testName": "exchanges raw h3 streams with Node QUIC when configured"
     },
     {
       "matrixRow": "Large raw QUIC Node interop",
-      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testFile": "tests/net/quic-node-interop.test.ts",
       "testName": "exchanges large raw h3 streams with Node QUIC when configured"
     },
     {
       "matrixRow": "Node interop ALPN mismatch",
-      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testFile": "tests/net/quic-node-interop.test.ts",
       "testName": "fails cleanly on ALPN mismatch with Node QUIC when configured"
     },
     {
       "matrixRow": "Node interop key-update scenario",
-      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testFile": "tests/net/quic-node-interop.test.ts",
       "testName": "exchanges key-update scenario traffic with Node QUIC when configured"
     },
     {
       "matrixRow": "Node interop Retry scenario",
-      "testFile": "tests/net/quic-node-interop.test.mts",
+      "testFile": "tests/net/quic-node-interop.test.ts",
       "testName": "exchanges Retry scenario traffic with Node QUIC when configured"
     },
     {
       "matrixRow": "Graceful close stream behaviors",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "graceful close rejects new stream operations and drains existing streams"
     },
     {
       "matrixRow": "Graceful close stream behaviors",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "graceful close does not surface new peer streams to acceptStream"
     },
     {
       "matrixRow": "Graceful close stream behaviors",
-      "testFile": "tests/net/quic-streams.test.mts",
+      "testFile": "tests/net/quic-streams.test.ts",
       "testName": "graceful close half-close nudge lets read-ended streams complete"
     },
     {
       "matrixRow": "Per-SNI server TLS contexts",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "runtime setSNIContexts updates per-SNI cert for new handshakes"
     },
     {
       "matrixRow": "mTLS client certificates",
-      "testFile": "tests/net/quic.test.mts",
+      "testFile": "tests/net/quic.test.ts",
       "testName": "completes mTLS handshake and surfaces peer cert when rejectUnauthorized is false"
     },
     {
       "matrixRow": "Client Version Negotiation bad-CID rejection",
-      "testFile": "tests/net/quic-raw-packets.test.mts",
+      "testFile": "tests/net/quic-raw-packets.test.ts",
       "testName": "silently ignores Version Negotiation with a mismatched destination connection ID"
     },
     {
       "matrixRow": "Client incompatible Version Negotiation failure",
-      "testFile": "tests/net/quic-raw-packets.test.mts",
+      "testFile": "tests/net/quic-raw-packets.test.ts",
       "testName": "rejects connect with QuicVersionNegotiationError when no mutual version found"
     },
     {
       "matrixRow": "Active CID limit migration rotation",
-      "testFile": "tests/net/quic-sim.test.mts",
+      "testFile": "tests/net/quic-sim.test.ts",
       "testName": "RFC 9000 section 5.1.1: active CID limit migration rotation retires old CIDs and replenishes the pool"
     },
     {
       "matrixRow": "HTTP/3 request/response (GET, POST, headers, binary, concurrent, errors)",
-      "testFile": "tests/net/quic-h3.test.mts",
+      "testFile": "tests/net/quic-h3.test.ts",
       "testName": "GET request/response round-trip"
     },
     {
       "matrixRow": "HTTP/3 request/response (GET, POST, headers, binary, concurrent, errors)",
-      "testFile": "tests/net/quic-h3.test.mts",
+      "testFile": "tests/net/quic-h3.test.ts",
       "testName": "POST with request body"
     },
     {
       "matrixRow": "QPACK header compression",
-      "testFile": "tests/net/quic-h3.test.mts",
+      "testFile": "tests/net/quic-h3.test.ts",
       "testName": "custom request and response headers round-trip"
     }
   ],

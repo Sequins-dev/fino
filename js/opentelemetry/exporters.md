@@ -142,7 +142,7 @@ const metrics = memory.getFinishedMetrics(); // MetricRecord[]
 The simplest way to enable OTLP export for a script is the `--otlp-endpoint` flag:
 
 ```sh
-fino --otlp-endpoint http://127.0.0.1:4318 app.mts
+fino --otlp-endpoint http://127.0.0.1:4318 app.ts
 ```
 
 This installs tracer, logger, and meter providers, starts a full instrumentation set (HTTP server, fetch, DNS, socket, TLS, trace topics), and registers a shutdown hook that flushes and stops the SDK when the script exits.
@@ -150,7 +150,7 @@ This installs tracer, logger, and meter providers, starts a full instrumentation
 The equivalent using the `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable:
 
 ```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 fino app.mts
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318 fino app.ts
 ```
 
 ### Supported environment variables

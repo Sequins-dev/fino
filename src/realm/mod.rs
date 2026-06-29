@@ -297,7 +297,7 @@ fn create_child_context(
         child_scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
         // 5. Compile and evaluate internal/bootstrap.mjs in the child context.
-        //    internal/bootstrap.mts detects it's in a child Realm (entry_path is set),
+        //    internal/bootstrap.ts detects it's in a child Realm (entry_path is set),
         //    auto-imports the entry module, and calls driveLoop — so
         //    loop_step_fn is registered by the time pump_and_checkpoint returns.
         let bootstrap_src = include_str!(concat!(env!("OUT_DIR"), "/js/internal/bootstrap.mjs"));
@@ -335,7 +335,7 @@ fn create_child_context(
 
         // Register as "internal:bootstrap" so resolve_builtin_relative can
         // look up its source path and correctly resolve relative imports
-        // like './runtime/loop.mts' within the bootstrap module body.
+        // like './runtime/loop.ts' within the bootstrap module body.
         loader::register_as_builtin(child_scope, bootstrap_module, "internal:bootstrap");
 
         let instantiate_start = if realm_timing_enabled() {

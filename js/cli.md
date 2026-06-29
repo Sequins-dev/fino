@@ -11,7 +11,7 @@ interactive sessions.
 Run an given entrypoint:
 
 ```sh
-fino app.mts
+fino app.ts
 ```
 
 Accepts TypeScript or ESM files.
@@ -19,27 +19,27 @@ Accepts TypeScript or ESM files.
 Arguments after the script path are passed to the script:
 
 ```sh
-fino app.mts -- --config ./config.toml
+fino app.ts -- --config ./config.toml
 ```
 
 Use `--` before option-like script arguments. Options before `--` belong to
 the Fino command parser. The `run` command follows the same rule:
 
 ```sh
-fino run app.mts -- --config ./config.toml
+fino run app.ts -- --config ./config.toml
 ```
 
 Use watch mode while editing. Fino watches the modules imported by the entry
 program and restarts when one changes:
 
 ```sh
-fino --watch app.mts
+fino --watch app.ts
 ```
 
 Enable OpenTelemetry export with an OTLP/HTTP collector endpoint:
 
 ```sh
-fino --otlp-endpoint http://127.0.0.1:4318 app.mts
+fino --otlp-endpoint http://127.0.0.1:4318 app.ts
 ```
 
 Script inputs are single module specifiers. The root shortcut and `run` command
@@ -50,16 +50,16 @@ do not expand directories or glob patterns.
 Run a test file:
 
 ```sh
-fino test tests/app.test.mts
+fino test tests/app.test.ts
 ```
 
 Or many test files:
 
 ```sh
-fino test tests/**/*.test.mts
+fino test tests/**/*.test.ts
 ```
 
-Passing a directory expands to matching `*.test.mts` files:
+Passing a directory expands to matching `*.test.ts` files:
 
 ```sh
 fino test tests/net
@@ -76,11 +76,11 @@ Console output is captured by default and printed for failures. Use
 suppress captured output in failure details:
 
 ```sh
-fino test --show-output=always tests/app.test.mts
+fino test --show-output=always tests/app.test.ts
 ```
 
 Tests emit TAP-13 so the output can be read directly or consumed by TAP
-tooling. The command imports `.test.mts` files from direct file, directory, or
+tooling. The command imports `.test.ts` files from direct file, directory, or
 glob inputs and delegates to Fino's test framework; it is not a Node
 `node:test` compatibility command.
 
@@ -136,7 +136,7 @@ fino lint --fix src/**/*.ts
 When no file inputs are given, both commands recursively scan the current
 working directory. Explicit inputs can be files, directories, or glob patterns.
 Discovery is hardcoded in `internal/tooling/files`: only `.js`, `.mjs`, `.cjs`,
-`.jsx`, `.ts`, `.mts`, `.cts`, and `.tsx` files are selected; paths are sorted
+`.jsx`, `.ts`, `.ts`, `.cts`, and `.tsx` files are selected; paths are sorted
 and de-duplicated; hidden directories and built-in dependency, cache, generated,
 and build-output directories such as `node_modules`, `dist`, `build`, `target`,
 and `coverage` are skipped.

@@ -16,14 +16,14 @@ cargo build
 cargo build --release
 
 # Run a script
-cargo run -- script.mts
-./target/debug/fino script.mts
+cargo run -- script.ts
+./target/debug/fino script.ts
 
 # Run all tests
-cargo run -- --test 'tests/**/*.test.mts'
+cargo run -- --test 'tests/**/*.test.ts'
 
 # Run a single test file
-cargo run -- --test tests/ffi.test.mts
+cargo run -- --test tests/ffi.test.ts
 
 # Lint / format
 cargo clippy
@@ -60,10 +60,10 @@ Tests emit TAP output. Use exit code: `0` = all pass, `1` = failures.
 
 ### JS layer (`js/`)
 
-All `.mts` files in `js/` are TypeScript sources stripped of types at build time by `build.rs` (OXC) and baked into the binary via `include_str!()`. They are registered as `fino:*` or `internal:*` specifiers in `src/loader.rs`.
+All `.ts` files in `js/` are TypeScript sources stripped of types at build time by `build.rs` (OXC) and baked into the binary via `include_str!()`. They are registered as `fino:*` or `internal:*` specifiers in `src/loader.rs`.
 
 **To add a new built-in:**
-1. Create `js/mymodule.mts`
+1. Create `js/mymodule.ts`
 2. Add `source_builtin!("fino:mymodule", "mymodule")` to the `BUILTINS` array in `src/loader.rs`
 3. Import as `import ... from 'fino:mymodule'`
 
@@ -76,7 +76,7 @@ The runtime is V8-based, not Boa. Key primitives:
 - **`internal:async-context`** exposes `drainMicrotasks`, `scheduleSync`, `runLoop`, and CPED helpers to JS.
 - The host loop (`runtime.rs:184`) calls a JS step function (`loop_step_fn`) each iteration; the step function drives kqueue/io_uring I/O.
 
-kqueue (macOS) and io_uring (Linux) backends are in `js/internal/runtime/kqueue.mts` and `js/internal/runtime/io_uring.mts`. `internal:runtime/loop` abstracts over both.
+kqueue (macOS) and io_uring (Linux) backends are in `js/internal/runtime/kqueue.ts` and `js/internal/runtime/io_uring.ts`. `internal:runtime/loop` abstracts over both.
 
 ### FFI (`fino:ffi`)
 
@@ -112,7 +112,7 @@ const realm = new Realm({
   overrides: ImportMap.deny([
     { pattern: 'fino:myapi', directive: facade.toDirective() },
   ]),
-  entry: '/path/to/child.mts',
+  entry: '/path/to/child.ts',
 });
 ```
 
@@ -151,4 +151,4 @@ describe('my module', () => {
 });
 ```
 
-Tests are in `tests/` grouped by domain. Name files `*.test.mts`.
+Tests are in `tests/` grouped by domain. Name files `*.test.ts`.

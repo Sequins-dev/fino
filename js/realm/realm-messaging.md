@@ -12,7 +12,7 @@ Listen for messages from the child and send messages to it through `realm.port`:
 ```ts
 import { Realm } from 'fino:realm';
 
-const realm = new Realm({ entry: './worker.mts' });
+const realm = new Realm({ entry: './worker.ts' });
 
 realm.port.addEventListener('message', (ev) => {
   console.log('from child:', ev.data);
@@ -78,7 +78,7 @@ import { MessageChannel } from 'fino:realm/messaging';
 
 const { port1, port2 } = new MessageChannel();
 const realm = new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   input: port1,   // parent keeps port1
   output: port2,  // child receives port2 (available via fino:realm/self)
 });

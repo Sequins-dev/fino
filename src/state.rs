@@ -267,7 +267,7 @@ pub struct PendingRealm {
     pub watch_mode: bool,
 
     /// Whether this embedded child realm runs in REPL mode. Exposed to JS via
-    /// `internal:realm-bridge.getReplMode()` so `internal/bootstrap.mts` can activate
+    /// `internal:realm-bridge.getReplMode()` so `internal/bootstrap.ts` can activate
     /// the REPL message loop instead of importing an entry module.
     pub repl_mode: bool,
 }
@@ -314,7 +314,7 @@ pub struct FinoState {
     pub builtin_cache: HashMap<String, v8::Global<v8::Module>>,
     pub fs_cache: HashMap<PathBuf, v8::Global<v8::Module>>,
     /// Reverse lookup from V8 script id to builtin specifier.
-    /// Used for relative-import resolution from builtins (e.g. `./loop.mts`
+    /// Used for relative-import resolution from builtins (e.g. `./loop.ts`
     /// from `internal:runtime/loop`) and as the `from` specifier for import-rule
     /// matching. Static BUILTINS and dynamic `Source` overrides are both stored.
     pub builtin_specifiers: HashMap<i32, String>,
@@ -336,7 +336,7 @@ pub struct FinoState {
     pub transpile_fn: Option<v8::Global<v8::Function>>,
 
     // ---------------------------------------------------------------------------
-    // V8 event loop callbacks (set by runLoop() from internal/main.mts via internal:async-context)
+    // V8 event loop callbacks (set by runLoop() from internal/main.ts via internal:async-context)
     // ---------------------------------------------------------------------------
     /// One host-safe loop step callback. Returns true to continue, false to exit.
     pub loop_step_fn: Option<v8::Global<v8::Function>>,
@@ -419,12 +419,12 @@ pub struct FinoState {
     pub reload_requested: bool,
 
     /// `true` when this realm was started with `watch: true`. Exposed to JS
-    /// via `internal:realm-bridge.getWatchMode()` so `internal/bootstrap.mts` can
+    /// via `internal:realm-bridge.getWatchMode()` so `internal/bootstrap.ts` can
     /// start the file-watch loop.
     pub watch_mode: bool,
 
     /// `true` when this realm was started with `repl: true`. Exposed to JS
-    /// via `internal:realm-bridge.getReplMode()` so `internal/bootstrap.mts` can
+    /// via `internal:realm-bridge.getReplMode()` so `internal/bootstrap.ts` can
     /// activate the REPL message loop instead of importing an entry module.
     pub repl_mode: bool,
 
@@ -703,7 +703,7 @@ mod tests {
         ));
         // user code importer — still blocked
         assert!(matches!(
-            resolve_directive(&rules, Some("/app/main.mts"), "internal:ffi"),
+            resolve_directive(&rules, Some("/app/main.ts"), "internal:ffi"),
             Some(ImportDirective::Block)
         ));
     }
@@ -729,7 +729,7 @@ mod tests {
     fn default_rules_block_internal_for_user_code() {
         let rules = default_import_rules();
         assert!(matches!(
-            resolve_directive(&rules, Some("/app/main.mts"), "internal:realm-native"),
+            resolve_directive(&rules, Some("/app/main.ts"), "internal:realm-native"),
             Some(ImportDirective::Block)
         ));
     }
@@ -756,7 +756,7 @@ mod tests {
     fn default_rules_do_not_restrict_fino_specifiers() {
         let rules = default_import_rules();
         // fino:* specifiers are not explicitly covered → fall through to BUILTINS
-        assert!(resolve_directive(&rules, Some("/app/main.mts"), "fino:file").is_none());
+        assert!(resolve_directive(&rules, Some("/app/main.ts"), "fino:file").is_none());
     }
 
     #[test]

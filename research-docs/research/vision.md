@@ -319,7 +319,7 @@ breadth-of-unlock x leverage. Items already tracked elsewhere are cross-referenc
    *Unlocks:* #4,#6,#8,#14 — anything that places work across the fleet.
 5. **mTLS** (client-cert + server verify). *Unlocks:* #3,#13 directly and is a
    prerequisite for cluster auth (#3 above). (FFI primitives mostly present in
-   `openssl.mts`.)
+   `openssl.ts`.)
 6. **Cross-process/remote capability transfer.** *Unlocks:* #2,#5,#7,#12 — ocap
    delegation in process/remote topologies (extend `transit.rs` model).
 7. **Durable state / journal primitive** (over `fino:database/sqlite`, optional distributed KV
@@ -382,17 +382,17 @@ operational-maturity investments each requires.
 
 For readers verifying claims against the code:
 
-- Realms / modes / lifecycle: `js/realm/index.mts`, `src/realm/{mod,native,child,bridge}.rs`
+- Realms / modes / lifecycle: `js/realm/index.ts`, `src/realm/{mod,native,child,bridge}.rs`
 - Capability narrowing: `src/state.rs` (directives), `src/realm/native.rs` (`narrowing_check`),
   `src/loader.rs` (block/remap enforcement)
-- RPC / Facade / streaming / handles: `js/realm/index.mts`, `js/internal/.../parent-rpc.mts`,
+- RPC / Facade / streaming / handles: `js/realm/index.ts`, `js/internal/.../parent-rpc.ts`,
   `src/realm/synthetic.rs`; cross-thread port transfer: `src/realm/transit.rs`
 - Cluster / remote realms / transport: `js/cluster/*`, `docs/research/cluster.md`
-- Networking: `js/net/{dns,socket,tls}.mts`, `js/net/http/*.mts`,
-  `js/internal/openssl.mts`, `js/net/socket.mts`; gaps noted in §1
+- Networking: `js/net/{dns,socket,tls}.ts`, `js/net/http/*.ts`,
+  `js/internal/openssl.ts`, `js/net/socket.ts`; gaps noted in §1
 - FFI / callbacks: `src/ffi/{mod,call,closure,pointer,fast}.rs`
-- Async / event loop: `src/async_rt/*`, `src/runtime.rs`, `js/internal/runtime/loop.mts`
-- SQLite / vector / VFS: `js/sqlite/*`, `js/sqlite.mts`
+- Async / event loop: `src/async_rt/*`, `src/runtime.rs`, `js/internal/runtime/loop.ts`
+- SQLite / vector / VFS: `js/sqlite/*`, `js/sqlite.ts`
 - Observability: `fino:opentelemetry`, `internal:inspector` (`src/inspector_module.rs`)
 - Existing roadmap and research: `docs/roadmap.md`,
   `docs/research/{cluster,distribution,virtual-io}.md`

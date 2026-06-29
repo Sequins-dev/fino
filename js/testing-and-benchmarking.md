@@ -59,7 +59,7 @@ subtests, and pluggable reporters are outside this baseline.
 Run specific files:
 
 ```sh
-fino test tests/net/serve.test.mts
+fino test tests/net/serve.test.ts
 ```
 
 Run all tests in a directory:
@@ -74,7 +74,7 @@ Filter by registered test name:
 fino test --filter websocket tests/net
 ```
 
-Directory arguments expand to `*.test.mts` files. Keep tests close to the
+Directory arguments expand to `*.test.ts` files. Keep tests close to the
 system they cover: networking tests under `tests/net`, runtime tests under
 `tests/runtime`, file tests under `tests/file`, and so on.
 

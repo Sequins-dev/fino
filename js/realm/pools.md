@@ -11,7 +11,7 @@ A `RealmPool` maintains a set of warm thread realms and dispatches tasks across 
 import { RealmPool } from 'fino:realm/pool';
 
 const pool = new RealmPool({
-  entry: './worker.mts',
+  entry: './worker.ts',
   size: 4,
 });
 ```
@@ -25,7 +25,7 @@ import { ImportMap } from 'fino:realm';
 import { RealmPool } from 'fino:realm/pool';
 
 const pool = new RealmPool({
-  entry: './worker.mts',
+  entry: './worker.ts',
   size: 2,
   realm: {
     overrides: ImportMap.inherit([
@@ -40,7 +40,7 @@ const pool = new RealmPool({
 The worker's entry module must default-export a function. `pool.call()` sends arguments to the worker with the lowest predicted completion time and resolves with the function's return value:
 
 ```ts
-// worker.mts
+// worker.ts
 export default (n: number): number => n * n;
 
 // parent
@@ -50,7 +50,7 @@ const result = await pool.call(9);  // 81
 Type the pool with the worker function signature for end-to-end type safety:
 
 ```ts
-const pool = new RealmPool<(n: number) => number>({ entry: './square.mts' });
+const pool = new RealmPool<(n: number) => number>({ entry: './square.ts' });
 const result = await pool.call(9);  // result is typed as number
 ```
 
@@ -62,7 +62,7 @@ The default per-task timeout is 30 seconds. Tasks that do not respond in time re
 
 ```ts
 const pool = new RealmPool({
-  entry: './worker.mts',
+  entry: './worker.ts',
   timeout: 10_000,  // 10 seconds
 });
 ```
@@ -91,7 +91,7 @@ Future `call()` attempts after `close()` starts reject immediately. If in-flight
 
 ```ts
 const pool = new RealmPool({
-  entry: './worker.mts',
+  entry: './worker.ts',
   closeTimeout: 1_000,  // force-terminate after 1 second if still draining
 });
 await pool.close();
@@ -100,7 +100,7 @@ await pool.close();
 The pool also implements `Symbol.asyncDispose`:
 
 ```ts
-await using pool = new RealmPool({ entry: './worker.mts' });
+await using pool = new RealmPool({ entry: './worker.ts' });
 // pool.close() is called automatically when the block exits
 ```
 
@@ -109,7 +109,7 @@ await using pool = new RealmPool({ entry: './worker.mts' });
 `correlationIdContext` from `fino:realm/pool` is a context slot that carries a correlation ID through each call. Code running inside a pool task — including async continuations — can read it via `.get()`. This is useful for linking pool tasks to traces or log streams:
 
 ```ts
-// worker.mts (child)
+// worker.ts (child)
 import { correlationIdContext } from 'fino:realm/pool';
 
 export default async function processJob(jobId: string) {

@@ -58,7 +58,7 @@
 
 ## Test Matrix
 
-- `tests/net/webtransport.test.mts`
+- `tests/net/webtransport.test.ts`
   - standard public API shape
   - URL validation
   - H3 setup and fail-fast unavailable paths
@@ -66,17 +66,17 @@
   - datagram duplex stream
   - protocol negotiation
   - clean close and transport failure promise behavior
-- `tests/net/quic-h3.test.mts`
+- `tests/net/quic-h3.test.ts`
   - SETTINGS negotiation
   - extended CONNECT
   - HTTP Datagram framing
   - concurrent H3 requests plus WebTransport sessions
   - GOAWAY behavior
   - buffering limits
-- `tests/net/http-client.test.mts`
+- `tests/net/http-client.test.ts`
   - `HttpClient.webtransport()`
   - `HttpSession.webtransport()`
-- `tests/net/http-app.test.mts`
+- `tests/net/http-app.test.ts`
   - `app.webtransport()` context
   - params
   - middleware/producers
@@ -115,12 +115,12 @@
 
 | Requirement | Status | Evidence |
 | --- | --- | --- |
-| draft-15 SETTINGS negotiation and Extended CONNECT | Covered | `tests/net/webtransport-h3-framing.test.mts` and `tests/net/quic-h3.test.mts` assert `SETTINGS_WT_ENABLED = 0x2c7cf000`, `SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x08`, `SETTINGS_H3_DATAGRAM = 0x33`, patched control-stream SETTINGS parsing, incomplete peer SETTINGS rejection, server rejection when client SETTINGS are incomplete, and successful `:method = CONNECT` / `:protocol = webtransport-h3` session takeover. |
-| HTTP Datagram quarter-stream-id framing | Covered | `tests/net/webtransport-h3-framing.test.mts` and `tests/net/quic-h3.test.mts` round-trip `encodeHttpDatagram()` / `decodeHttpDatagram()` with quarter stream IDs and reject non-client-initiated bidirectional session stream IDs; the live H3 pair test verifies QUIC DATAGRAM delivery to the accepted WebTransport session. |
-| Bidirectional and unidirectional WebTransport stream prefixes | Covered | `tests/net/webtransport-h3-framing.test.mts`, `tests/net/webtransport.test.mts`, and `tests/net/quic-h3.test.mts` assert stream type prefixes `0x41` and `0x54`, decode split prefixes, and route client/server-created bidirectional and unidirectional streams to the owning session. |
-| Session takeover and app/client routing | Covered | `tests/net/quic-h3.test.mts`, `tests/net/http-client-webtransport.test.mts`, and `tests/net/webtransport.test.mts` cover H3 `HttpClient` / `HttpSession` helpers, `app.webtransport()` routing, server request context, unavailable paths, and public `WebTransport` lifecycle shape. |
-| Certificate hash validation and keying material export | Covered | `tests/net/webtransport.test.mts` validates fake connection hashes and `exportKeyingMaterial()`. `tests/net/quic-h3.test.mts` validates matching and mismatched `serverCertificateHashes` over real H3 and confirms client/server TLS keying material exports match. |
-| Close and error propagation | Covered | `tests/net/webtransport.test.mts` covers clean close, transport error propagation to `ready` / `closed`, and stream/datagram close behavior. H3 integration tests close underlying QUIC/H3 connections after accepted sessions and assert pending operations settle. |
-| GOAWAY behavior | Covered as H3-session-level behavior | `tests/net/quic-h3.test.mts` covers `closeWhenIdle()` GOAWAY emission, rejection of future requests, and rejection of in-flight requests with stream IDs greater than the received GOAWAY last stream ID. WebTransport sessions inherit underlying QUIC/H3 connection close/error propagation rather than defining a separate GOAWAY surface. |
-| `reset_stream_at` support | Optional capability with explicit API gate | `tests/net/quic-streams.test.mts` asserts `QuicStream.resetAt()` is present and fails clearly when the local ngtcp2 does not expose `reset_stream_at`; compatible ngtcp2 builds use the optional native binding. |
-| H2 capsule fallback | Intentional limit | Capsule-based WebTransport over HTTP/2 is outside the H3-only implementation. Public helpers fail fast unless the caller uses an H3 session, covered by `tests/net/http-client-webtransport.test.mts`. |
+| draft-15 SETTINGS negotiation and Extended CONNECT | Covered | `tests/net/webtransport-h3-framing.test.ts` and `tests/net/quic-h3.test.ts` assert `SETTINGS_WT_ENABLED = 0x2c7cf000`, `SETTINGS_ENABLE_CONNECT_PROTOCOL = 0x08`, `SETTINGS_H3_DATAGRAM = 0x33`, patched control-stream SETTINGS parsing, incomplete peer SETTINGS rejection, server rejection when client SETTINGS are incomplete, and successful `:method = CONNECT` / `:protocol = webtransport-h3` session takeover. |
+| HTTP Datagram quarter-stream-id framing | Covered | `tests/net/webtransport-h3-framing.test.ts` and `tests/net/quic-h3.test.ts` round-trip `encodeHttpDatagram()` / `decodeHttpDatagram()` with quarter stream IDs and reject non-client-initiated bidirectional session stream IDs; the live H3 pair test verifies QUIC DATAGRAM delivery to the accepted WebTransport session. |
+| Bidirectional and unidirectional WebTransport stream prefixes | Covered | `tests/net/webtransport-h3-framing.test.ts`, `tests/net/webtransport.test.ts`, and `tests/net/quic-h3.test.ts` assert stream type prefixes `0x41` and `0x54`, decode split prefixes, and route client/server-created bidirectional and unidirectional streams to the owning session. |
+| Session takeover and app/client routing | Covered | `tests/net/quic-h3.test.ts`, `tests/net/http-client-webtransport.test.ts`, and `tests/net/webtransport.test.ts` cover H3 `HttpClient` / `HttpSession` helpers, `app.webtransport()` routing, server request context, unavailable paths, and public `WebTransport` lifecycle shape. |
+| Certificate hash validation and keying material export | Covered | `tests/net/webtransport.test.ts` validates fake connection hashes and `exportKeyingMaterial()`. `tests/net/quic-h3.test.ts` validates matching and mismatched `serverCertificateHashes` over real H3 and confirms client/server TLS keying material exports match. |
+| Close and error propagation | Covered | `tests/net/webtransport.test.ts` covers clean close, transport error propagation to `ready` / `closed`, and stream/datagram close behavior. H3 integration tests close underlying QUIC/H3 connections after accepted sessions and assert pending operations settle. |
+| GOAWAY behavior | Covered as H3-session-level behavior | `tests/net/quic-h3.test.ts` covers `closeWhenIdle()` GOAWAY emission, rejection of future requests, and rejection of in-flight requests with stream IDs greater than the received GOAWAY last stream ID. WebTransport sessions inherit underlying QUIC/H3 connection close/error propagation rather than defining a separate GOAWAY surface. |
+| `reset_stream_at` support | Optional capability with explicit API gate | `tests/net/quic-streams.test.ts` asserts `QuicStream.resetAt()` is present and fails clearly when the local ngtcp2 does not expose `reset_stream_at`; compatible ngtcp2 builds use the optional native binding. |
+| H2 capsule fallback | Intentional limit | Capsule-based WebTransport over HTTP/2 is outside the H3-only implementation. Public helpers fail fast unless the caller uses an H3 session, covered by `tests/net/http-client-webtransport.test.ts`. |

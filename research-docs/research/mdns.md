@@ -63,14 +63,14 @@ Important DNS-SD constraints from RFC 6763:
 
 Useful existing pieces:
 
-- `js/net/dns.mts` already has a DNS wire-format resolver and parser, including
+- `js/net/dns.ts` already has a DNS wire-format resolver and parser, including
   A, AAAA, PTR, TXT, SRV, MX, SOA, NS, CNAME, OPT, DS, DNSKEY, RRSIG, NSEC, and
   NSEC3 handling.
-- `js/internal/net/dns-provider.mts` has a provider abstraction with common
+- `js/internal/net/dns-provider.ts` has a provider abstraction with common
   record types including PTR, TXT, SRV, A, and AAAA.
-- `tests/net/dns.test.mts` has a local UDP/TCP DNS fixture and parser coverage
+- `tests/net/dns.test.ts` has a local UDP/TCP DNS fixture and parser coverage
   that can be extended for mDNS packet cases.
-- `js/net/socket.mts` exposes raw UDP `sendto()` and `recvfrom()`, `setsockopt()`
+- `js/net/socket.ts` exposes raw UDP `sendto()` and `recvfrom()`, `setsockopt()`
   with raw buffers, and IP family constants.
 - The socket module currently has unicast TTL constants (`IP_TTL`,
   `IPV6_UNICAST_HOPS`) and basic reuse options (`SO_REUSEADDR`,
@@ -140,7 +140,7 @@ layer for semantics that differ from unicast DNS:
 - goodbye packet handling.
 
 Do not fork the entire DNS parser unless the shared parser becomes too hard to
-reason about. The record decoding work in `js/net/dns.mts` is directly useful.
+reason about. The record decoding work in `js/net/dns.ts` is directly useful.
 
 ### 4.3 Public discovery API
 
@@ -244,9 +244,9 @@ Publication behavior:
 
 Commands once implemented:
 
-- `./target/release/fino --test tests/net/socket.test.mts`
-- `./target/release/fino --test tests/net/dns.test.mts`
-- New focused `tests/net/mdns.test.mts`, with multicast tests gated when the
+- `./target/release/fino --test tests/net/socket.test.ts`
+- `./target/release/fino --test tests/net/dns.test.ts`
+- New focused `tests/net/mdns.test.ts`, with multicast tests gated when the
   local platform or CI network does not support multicast.
 
 ## 7. Assumptions and Defaults

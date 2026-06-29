@@ -16,7 +16,7 @@ const config = new Facade('app:config', ['getDatabaseUrl'])
   .handle('getDatabaseUrl', async () => process.env.DATABASE_URL ?? '');
 
 const realm = new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   thread: true,
   overrides: ImportMap.inherit([
     { pattern: 'app:config', directive: config },
@@ -29,7 +29,7 @@ await realm.run();
 The child imports the module by the specifier you chose:
 
 ```ts
-// worker.mts (child)
+// worker.ts (child)
 import { getDatabaseUrl } from 'app:config';
 
 const url = await getDatabaseUrl();

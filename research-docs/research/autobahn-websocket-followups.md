@@ -1,7 +1,7 @@
 # Autobahn WebSocket Follow-ups
 
 This tracks Autobahn cases that were not kept in the first passing
-`tests/integration/autobahn-websocket.test.mts` lane. These are not considered
+`tests/integration/autobahn-websocket.test.ts` lane. These are not considered
 resolved. Re-enable and address them one at a time, either by fixing Fino or by
 recording a precise out-of-scope reason when the case exercises an intentionally
 unsupported WebSocket feature.

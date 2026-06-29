@@ -13,7 +13,7 @@ Every import a child realm makes is evaluated against an ordered rule list. Rule
 import { Realm, ImportMap } from 'fino:realm';
 
 const realm = new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   overrides: ImportMap.deny([
     { pattern: 'fino:file/path', directive: 'inherit' },
     { pattern: 'fino:context',   directive: 'inherit' },
@@ -27,7 +27,7 @@ This child can import `fino:file/path` and `fino:context`. Every other specifier
 
 ```ts
 const realm = new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   overrides: ImportMap.inherit([
     { pattern: 'fino:process', directive: 'block' },
   ]),
@@ -84,7 +84,7 @@ new Realm({
   overrides: ImportMap.deny([
     { pattern: 'internal:*', directive: { type: 'remap', target: 'internal:realm-native' } },
   ]),
-  entry: './worker.mts',
+  entry: './worker.ts',
 });
 ```
 
@@ -98,7 +98,7 @@ This is enforced by the Rust-side loader before the child realm is created. Ther
 import { Realm, DiskFsConfig, SystemNetConfig } from 'fino:realm';
 
 new Realm({
-  entry: './worker.mts',
+  entry: './worker.ts',
   providers: {
     fs:  new DiskFsConfig({ root: '/srv/app' }),
     net: new SystemNetConfig(),

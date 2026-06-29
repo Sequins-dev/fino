@@ -15,7 +15,7 @@
 //!
 //! # Configuring the cap
 //! Set `BLOCKING_MAX_THREADS=<n>` in the environment before starting fino to
-//! override the default cap. E.g., `BLOCKING_MAX_THREADS=32 fino script.mts`.
+//! override the default cap. E.g., `BLOCKING_MAX_THREADS=32 fino script.ts`.
 
 /// Submit a blocking closure to the shared thread pool (fire-and-forget).
 ///

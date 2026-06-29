@@ -38,7 +38,7 @@ fn main() {
     process_dir(&js_src, &js_src, &js_out);
 }
 
-/// Recursively process a directory: strip .mts files and copy .mjs files as-is.
+/// Recursively process a directory: strip TypeScript files and copy .mjs files as-is.
 fn process_dir(src_root: &Path, src_dir: &Path, out_root: &Path) {
     for entry in fs::read_dir(src_dir).expect("failed to read js/ directory") {
         let entry = entry.expect("failed to read dir entry");
@@ -49,7 +49,7 @@ fn process_dir(src_root: &Path, src_dir: &Path, out_root: &Path) {
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             match ext {
-                "mts" => process_mts(src_root, &path, out_root),
+                "ts" | "mts" => process_ts(src_root, &path, out_root),
                 "mjs" => copy_mjs(src_root, &path, out_root),
                 _ => {}
             }
@@ -57,8 +57,8 @@ fn process_dir(src_root: &Path, src_dir: &Path, out_root: &Path) {
     }
 }
 
-/// Strip TypeScript types from a .mts file and write the result as a .mjs file in OUT_DIR.
-fn process_mts(src_root: &Path, src_path: &Path, out_root: &Path) {
+/// Strip TypeScript types from a file and write the result as a .mjs file in OUT_DIR.
+fn process_ts(src_root: &Path, src_path: &Path, out_root: &Path) {
     let rel = src_path.strip_prefix(src_root).unwrap();
     let out_path = out_root.join(rel).with_extension("mjs");
     let map_path = out_root.join(rel).with_extension("mjs.map");
@@ -77,7 +77,7 @@ fn process_mts(src_root: &Path, src_path: &Path, out_root: &Path) {
         .unwrap_or_else(|e| panic!("failed to write {}: {e}", map_path.display()));
 }
 
-/// Copy a .mjs file as-is into OUT_DIR (for files not yet converted to .mts).
+/// Copy a .mjs file as-is into OUT_DIR (for files not yet converted to .ts).
 fn copy_mjs(src_root: &Path, src_path: &Path, out_root: &Path) {
     let rel = src_path.strip_prefix(src_root).unwrap();
     let out_path = out_root.join(rel);
