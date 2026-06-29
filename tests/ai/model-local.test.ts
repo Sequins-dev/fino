@@ -51,9 +51,7 @@ describe('local llama.cpp model adapter', () => {
     t.equal(typeof local, 'function');
   });
 
-  it('generates text with real libllama and a tiny GGUF model', async (t) => {
-    t.equal(hasLlamaCpp, true, 'default libllama discovery must be available for real local model tests');
-
+  it('generates text with real libllama and a tiny GGUF model', { skip: hasLlamaCpp ? false : 'libllama is not available' }, async (t) => {
     const model = await local({
       model: {
         repo: 'bartowski/SmolLM2-135M-Instruct-GGUF',

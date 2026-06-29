@@ -2,7 +2,8 @@
  * Tests for the global `fetch()` function.
  *
  * Uses fino:serve to spin up local HTTP servers so no external network is
- * required. Each test uses a distinct port in the 19801–19823 range.
+ * required. Servers bind ephemeral ports so repeated tests do not race with
+ * ports that are still being released by the OS.
  */
 
 import { describe, it } from 'fino:test/test';
@@ -18,9 +19,9 @@ function descriptor(target: object, key: PropertyKey): PropertyDescriptor {
   return desc;
 }
 
-async function withServer<T>(port: number, handler: Handler, fn: (url: string, srv: Server) => Promise<T>): Promise<T> {
-  const srv = serveHttp({ port, hostname: '127.0.0.1' }, handler);
-  const url = `http://127.0.0.1:${port}`;
+async function withServer<T>(handler: Handler, fn: (url: string, srv: Server) => Promise<T>): Promise<T> {
+  const srv = serveHttp({ port: 0, hostname: '127.0.0.1' }, handler);
+  const url = `http://127.0.0.1:${srv.port}`;
   try {
     return await fn(url, srv);
   } finally {
@@ -160,7 +161,7 @@ describe('fetchLater WebIDL surface', () => {
 
 describe('Basic GET / POST', () => {
   it('basic GET returns 200', async (t) => {
-    await withServer(19801,
+    await withServer(
       () => new Response('hello world', { status: 200 }),
       async (url) => {
         const res = await fetch(url);
@@ -172,7 +173,7 @@ describe('Basic GET / POST', () => {
   });
 
   it('response.url is set to the request URL', async (t) => {
-    await withServer(19802,
+    await withServer(
       () => new Response('ok'),
       async (url) => {
         const res = await fetch(url);
@@ -183,7 +184,7 @@ describe('Basic GET / POST', () => {
   });
 
   it('resolves relative string URLs against globalThis.location', async (t) => {
-    await withServer(19824,
+    await withServer(
       (req) => new Response(new URL(req.url).pathname),
       async (url) => {
         const previousLocation = (globalThis as any).location;
@@ -200,7 +201,7 @@ describe('Basic GET / POST', () => {
   });
 
   it('response headers are accessible', async (t) => {
-    await withServer(19803,
+    await withServer(
       () => new Response('body', { headers: { 'x-custom': 'fino' } }),
       async (url) => {
         const res = await fetch(url);
@@ -210,7 +211,7 @@ describe('Basic GET / POST', () => {
   });
 
   it('POST sends body and receives echo', async (t) => {
-    await withServer(19804,
+    await withServer(
       async (req) => {
         const body = await req.text();
         return new Response(body, { status: 201, headers: { 'x-method': req.method } });
@@ -229,7 +230,7 @@ describe('Basic GET / POST', () => {
   });
 
   it('response.json() parses JSON body', async (t) => {
-    await withServer(19805,
+    await withServer(
       () => Response.json({ hello: 'world' }),
       async (url) => {
         const data = await (await fetch(url)).json();
@@ -239,7 +240,7 @@ describe('Basic GET / POST', () => {
   });
 
   it('204 No Content has null body', async (t) => {
-    await withServer(19806,
+    await withServer(
       () => new Response(null, { status: 204 }),
       async (url) => {
         const res = await fetch(url);
@@ -390,7 +391,7 @@ describe('Redirects', () => {
   it('301 redirect is followed and method becomes GET', async (t) => {
     let requestCount = 0;
     let finalMethod: string | undefined;
-    await withServer(19807,
+    await withServer(
       (req) => {
         requestCount++;
         if (requestCount === 1) {
@@ -414,7 +415,7 @@ describe('Redirects', () => {
 
   it('302 redirect is followed', async (t) => {
     let count = 0;
-    await withServer(19808,
+    await withServer(
       (req) => {
         count++;
         if (count === 1) {
@@ -437,7 +438,7 @@ describe('Redirects', () => {
   it('303 See Other changes method to GET', async (t) => {
     let count = 0;
     let method: string | undefined;
-    await withServer(19809,
+    await withServer(
       (req) => {
         count++;
         if (count === 1) {
@@ -459,7 +460,7 @@ describe('Redirects', () => {
   it('307 redirect preserves method', async (t) => {
     let count = 0;
     let finalMethod: string | undefined;
-    await withServer(19810,
+    await withServer(
       (req) => {
         count++;
         if (count === 1) {
@@ -479,7 +480,7 @@ describe('Redirects', () => {
   });
 
   it("redirect: 'error' throws on redirect response", async (t) => {
-    await withServer(19811,
+    await withServer(
       (req) => new Response(null, {
         status: 302,
         headers: { location: new URL('/other', req.url).href },
@@ -495,7 +496,7 @@ describe('Redirects', () => {
   });
 
   it("redirect: 'manual' returns opaque redirect response", async (t) => {
-    await withServer(19812,
+    await withServer(
       () => new Response(null, {
         status: 302,
         headers: { location: 'http://example.com/other' },
@@ -512,7 +513,7 @@ describe('Redirects', () => {
 
   it('throws after too many redirects', async (t) => {
     let count = 0;
-    await withServer(19813,
+    await withServer(
       (req) => {
         count++;
         return new Response(null, {
@@ -647,7 +648,7 @@ describe('Redirects — Authorization header security', () => {
 describe('AbortSignal', () => {
   it('pre-aborted signal rejects immediately', async (t) => {
     const signal = AbortSignal.abort();
-    await withServer(19814,
+    await withServer(
       () => new Response('never'),
       async (url) => {
         await t.rejects(
@@ -660,7 +661,7 @@ describe('AbortSignal', () => {
   });
 
   it('AbortSignal.timeout cancels a slow request', async (t) => {
-    await withServer(19815,
+    await withServer(
       async () => {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         return new Response('late');
@@ -744,7 +745,7 @@ describe('Misc', () => {
   });
 
   it('accepts a Request object as input', async (t) => {
-    await withServer(19816,
+    await withServer(
       async (req) => new Response(req.method + ':' + new URL(req.url).pathname),
       async (url) => {
         const req = new Request(url + '/path', { method: 'PATCH' });
@@ -806,7 +807,7 @@ describe('Misc', () => {
 
   it('Host header is automatically set', async (t) => {
     let receivedHost: string | null = null;
-    await withServer(19817,
+    await withServer(
       (req) => {
         receivedHost = req.headers.get('host');
         return new Response('ok');
@@ -821,7 +822,7 @@ describe('Misc', () => {
   });
 
   it('chunked response body is readable', async (t) => {
-    await withServer(19818,
+    await withServer(
       () => {
         const body = 'chunk1chunk2chunk3';
         return new Response(body, {
@@ -836,7 +837,7 @@ describe('Misc', () => {
   });
 
   it('response.bytes() returns Uint8Array', async (t) => {
-    await withServer(19819,
+    await withServer(
       () => new Response('binary'),
       async (url) => {
         const bytes = await (await fetch(url)).bytes();
@@ -848,7 +849,7 @@ describe('Misc', () => {
 
   it('accepts non-enforced RequestInit compatibility options', async (t) => {
     let receivedMethod: string | undefined;
-    await withServer(19831,
+    await withServer(
       (req) => {
         receivedMethod = req.method;
         return new Response('compat');
@@ -869,7 +870,7 @@ describe('Misc', () => {
 
   it('does not synthesize browser CORS or opaque responses from mode options', async (t) => {
     const seenModes: string[] = [];
-    await withServer(19833,
+    await withServer(
       (req) => {
         seenModes.push(req.headers.get('origin') ?? 'no-origin');
         return new Response('visible body', {
@@ -895,7 +896,7 @@ describe('Misc', () => {
   it('does not retain Set-Cookie or cache responses between fetch calls', async (t) => {
     let requestCount = 0;
     const cookies: Array<string | null> = [];
-    await withServer(19834,
+    await withServer(
       (req) => {
         requestCount++;
         cookies.push(req.headers.get('cookie'));
@@ -934,7 +935,7 @@ describe('Misc', () => {
 
   it('sends a streaming request body when duplex is half', async (t) => {
     let receivedBody = '';
-    await withServer(19832,
+    await withServer(
       async (req) => {
         receivedBody = await req.text();
         return new Response('stream-ok');
@@ -961,7 +962,7 @@ describe('Redirects — additional', () => {
   it('307 redirect preserves request body', async (t) => {
     let count = 0;
     let receivedBody: string | null = null;
-    await withServer(19824,
+    await withServer(
       async (req) => {
         count++;
         if (count === 1) {
@@ -984,7 +985,7 @@ describe('Redirects — additional', () => {
     let count = 0;
     let finalMethod: string | null = null;
     let receivedBody: string | null = null;
-    await withServer(19825,
+    await withServer(
       async (req) => {
         count++;
         if (count === 1) {
@@ -1007,7 +1008,7 @@ describe('Redirects — additional', () => {
 
   it('redirect with relative Location header is followed', async (t) => {
     let count = 0;
-    await withServer(19826,
+    await withServer(
       (req) => {
         count++;
         if (count === 1) {
@@ -1029,7 +1030,7 @@ describe('Redirects — additional', () => {
 
   it('307 redirect rejects a streaming request body instead of replaying it', async (t) => {
     let finalRequestSeen = false;
-    await withServer(19833,
+    await withServer(
       (req) => {
         if (new URL(req.url).pathname === '/target') {
           finalRequestSeen = true;
@@ -1076,7 +1077,7 @@ describe('fetch — invalid URL', () => {
 describe('Compression', () => {
   it('sends Accept-Encoding header', async (t) => {
     let receivedEncoding: string | null = null;
-    await withServer(19820,
+    await withServer(
       (req) => {
         receivedEncoding = req.headers.get('accept-encoding');
         return new Response('ok');
@@ -1092,7 +1093,7 @@ describe('Compression', () => {
 
   it('auto-decompresses gzip Content-Encoding', async (t) => {
     const original = 'Hello, compressed world!';
-    await withServer(19821,
+    await withServer(
       () => {
         const compressed = compress(new TextEncoder().encode(original), { format: 'gzip' });
         return new Response(compressed, {
@@ -1114,7 +1115,7 @@ describe('Compression', () => {
 
   it('user-set Accept-Encoding is filtered', async (t) => {
     let received: string | null = null;
-    await withServer(19822,
+    await withServer(
       (req) => {
         received = req.headers.get('accept-encoding');
         return new Response('ok');
@@ -1130,7 +1131,7 @@ describe('Compression', () => {
   });
 
   it('uncompressed response passes through unchanged', async (t) => {
-    await withServer(19823,
+    await withServer(
       () => new Response('plain text'),
       async (url) => {
         t.equal(await (await fetch(url)).text(), 'plain text', 'uncompressed body unchanged');
@@ -1139,7 +1140,7 @@ describe('Compression', () => {
   });
 
   it('HEAD response has no body (bodyless)', async (t) => {
-    await withServer(19828,
+    await withServer(
       () => new Response('body content', {
         status: 200,
         headers: { 'content-type': 'text/plain', 'content-length': '12' },
@@ -1155,7 +1156,7 @@ describe('Compression', () => {
   });
 
   it('304 response is bodyless', async (t) => {
-    await withServer(19829,
+    await withServer(
       () => new Response(null, { status: 304 }),
       async (url) => {
         const res = await fetch(url);
@@ -1167,7 +1168,7 @@ describe('Compression', () => {
 
   it('method normalization: lowercase method is uppercased', async (t) => {
     let receivedMethod: string | undefined;
-    await withServer(19830,
+    await withServer(
       (req) => {
         receivedMethod = req.method;
         return new Response('ok');
@@ -1185,7 +1186,7 @@ describe('Compression', () => {
       return;
     }
     const original = 'brotli compressed content';
-    await withServer(19827,
+    await withServer(
       () => {
         const compressed = compress(new TextEncoder().encode(original), { format: 'brotli' });
         return new Response(compressed, {

@@ -13,6 +13,12 @@ import type asyncFfiChild from './fixtures/async-ffi-child.ts';
 const ENTRY = new URL('./fixtures/async-ffi-child.ts', import.meta.url).pathname;
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 
+async function elapsed(fn: () => Promise<unknown>): Promise<number> {
+  const start = Date.now();
+  await fn();
+  return Date.now() - start;
+}
+
 describe('embedded realm shares async executor', () => {
   it('async FFI works inside an embedded child realm', async (t) => {
     const realm = new Realm<typeof asyncFfiChild>({ entry: ENTRY });
@@ -25,41 +31,50 @@ describe('embedded realm shares async executor', () => {
       usleep: { parameters: ['u32'], result: 'i32', async: true },
     });
 
+    const sequential = await elapsed(async () => {
+      const realm = new Realm<typeof asyncFfiChild>({ entry: ENTRY });
+      await realm.call(100_000);
+      await libAsync.symbols.usleep(100_000);
+    });
     const realm = new Realm<typeof asyncFfiChild>({ entry: ENTRY });
-
-    const start = Date.now();
-    // Parent and child each sleep 50ms concurrently — should take ~50ms total
-    const [childPid] = await Promise.all([
-      realm.call(50_000),
-      libAsync.symbols.usleep(50_000),
-    ]);
-    const elapsed = Date.now() - start;
+    let childPid = 0;
+    const concurrent = await elapsed(async () => {
+      const [pid] = await Promise.all([
+        realm.call(100_000),
+        libAsync.symbols.usleep(100_000),
+      ]);
+      childPid = pid;
+    });
 
     t.ok(typeof childPid === 'number' && childPid > 0, 'child returned valid pid');
-    // Embedded realm startup adds ~100–150ms overhead; verify it's less than serial execution
-    // (serial would be ~250ms: realm startup + 50ms + parent 50ms sequential).
-    t.ok(elapsed < 350, `concurrent parent+child took ${elapsed}ms (expected < 350ms)`);
+    t.ok(sequential > 0, 'sequential baseline completed');
+    t.ok(concurrent < sequential, `concurrent parent+child took ${concurrent}ms vs ${sequential}ms sequential`);
   });
 
   it('multiple embedded children complete async FFI concurrently', async (t) => {
+    const sequential = await elapsed(async () => {
+      const children = [
+        new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
+        new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
+        new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
+      ];
+      for (const child of children) await child.call(150_000);
+    });
     const children = [
       new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
       new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
       new Realm<typeof asyncFfiChild>({ entry: ENTRY }),
     ];
-
-    const start = Date.now();
-    const pids = await Promise.all(children.map(r => r.call(150_000)));
-    const elapsed = Date.now() - start;
+    const pids: number[] = [];
+    const concurrent = await elapsed(async () => {
+      pids.push(...await Promise.all(children.map(r => r.call(150_000))));
+    });
 
     t.equal(pids.length, 3, 'all 3 children returned');
     for (const pid of pids) {
       t.ok(typeof pid === 'number' && pid > 0, `pid ${pid} is valid`);
     }
-    // Timing includes realm startup. 3 serial sleeps × 150ms would add 450ms
-    // on top of that startup, while concurrent shared-pool work adds ~150ms.
-    // Allow up to 1200ms to accommodate startup variance across machines.
-    t.ok(elapsed < 1200, `3 concurrent child realms took ${elapsed}ms`);
+    t.ok(concurrent < sequential, `3 concurrent child realms took ${concurrent}ms vs ${sequential}ms sequential`);
   });
 });
 
@@ -78,22 +93,29 @@ describe('thread realm has its own async executor', () => {
       usleep: { parameters: ['u32'], result: 'i32', async: true },
     });
 
+    const sequential = await elapsed(async () => {
+      const realm = new Realm<typeof asyncFfiChild>({
+        thread: true,
+        entry: ENTRY,
+      });
+      await realm.call(100_000);
+      await libAsync.symbols.usleep(100_000);
+    });
     const realm = new Realm<typeof asyncFfiChild>({
       thread: true,
       entry: ENTRY,
     });
-
-    const start = Date.now();
-    const [childPid] = await Promise.all([
-      realm.call(100_000),
-      libAsync.symbols.usleep(100_000),
-    ]);
-    const elapsed = Date.now() - start;
+    let childPid = 0;
+    const concurrent = await elapsed(async () => {
+      const [pid] = await Promise.all([
+        realm.call(100_000),
+        libAsync.symbols.usleep(100_000),
+      ]);
+      childPid = pid;
+    });
 
     t.ok(typeof childPid === 'number' && childPid > 0, 'thread realm returned valid pid');
-    // Thread realm startup can add scheduler variance under full-suite load.
-    // Serial execution would include two 100ms sleeps plus startup, so this
-    // still catches loss of concurrency without failing on small timing jitter.
-    t.ok(elapsed < 500, `parent+thread realm concurrent took ${elapsed}ms`);
+    t.ok(sequential > 0, 'sequential baseline completed');
+    t.ok(concurrent < sequential, `parent+thread realm concurrent took ${concurrent}ms vs ${sequential}ms sequential`);
   });
 });

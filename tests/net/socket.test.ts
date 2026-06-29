@@ -52,17 +52,17 @@ describe('Address encoding / decoding', () => {
 
 describe('TCP / UDP loopback', () => {
   it('TCP echo via loop.readable / loop.writable', async (t) => {
-    const PORT = 19900;
-
     const serverFd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
     sock.setsockopt(serverFd, sock.SOL_SOCKET, sock.SO_REUSEADDR, true);
-    sock.bind(serverFd, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.bind(serverFd, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
     sock.listen(serverFd, 10);
     sock.setNonblocking(serverFd);
+    const address = sock.getsockname(serverFd);
+    if (address.family !== 'ipv4') throw new Error('expected IPv4 socket address');
 
     const clientFd = sock.socket(sock.AF_INET, sock.SOCK_STREAM, 0);
     sock.setNonblocking(clientFd);
-    sock.connect(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.connect(clientFd, { family: 'ipv4', ip: '127.0.0.1', port: address.port });
 
     await loop.readable(serverFd);
     const result = sock.accept(serverFd);
@@ -99,14 +99,14 @@ describe('TCP / UDP loopback', () => {
   });
 
   it('UDP sendto / recvfrom', async (t) => {
-    const PORT = 19901;
-
     const server = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
     const client = sock.socket(sock.AF_INET, sock.SOCK_DGRAM, 0);
-    sock.bind(server, { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.bind(server, { family: 'ipv4', ip: '127.0.0.1', port: 0 });
     sock.setNonblocking(server);
+    const address = sock.getsockname(server);
+    if (address.family !== 'ipv4') throw new Error('expected IPv4 socket address');
 
-    sock.sendto(client, encodeUtf8('udp-ping'), { family: 'ipv4', ip: '127.0.0.1', port: PORT });
+    sock.sendto(client, encodeUtf8('udp-ping'), { family: 'ipv4', ip: '127.0.0.1', port: address.port });
 
     await loop.readable(server);
     const res = sock.recvfrom(server, 256);
@@ -141,10 +141,19 @@ describe('TCP / UDP loopback', () => {
       t.equal(sent.sent, 2, 'sendmmsgBatch accepted both datagrams');
       t.equal(sent.errno, null, 'sendmmsgBatch reports no errno');
 
-      await loop.readable(server);
-      const received = sock.recvmmsgBatch(server, 2, 64);
-      t.ok(Array.isArray(received), 'recvmmsgBatch returned datagrams');
-      if (!Array.isArray(received)) throw new Error('expected recvmmsgBatch results');
+      const received = [];
+      const deadline = Date.now() + 200;
+      while (received.length < 2 && Date.now() < deadline) {
+        const readable = await Promise.race([
+          loop.readable(server).then(() => true),
+          loop.timeout(20).then(() => false),
+        ]);
+        if (!readable) continue;
+        const batch = sock.recvmmsgBatch(server, 2 - received.length, 64);
+        t.ok(Array.isArray(batch), 'recvmmsgBatch returned datagrams');
+        if (!Array.isArray(batch)) throw new Error('expected recvmmsgBatch results');
+        received.push(...batch);
+      }
       t.equal(received.length, 2, 'recvmmsgBatch received both datagrams');
       t.deepEqual(
         received.map((packet) => decodeUtf8(packet.data)).sort(),
