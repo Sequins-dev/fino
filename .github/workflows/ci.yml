@@ -137,33 +137,33 @@ jobs:
           if-no-files-found: error
 
   linux-tests:
-    name: Linux Tests (${{ matrix.path }})
+    name: Linux Tests (tests/${{ matrix.path }})
     runs-on: ubuntu-latest
     needs: linux-build
     strategy:
       fail-fast: false
       matrix:
         path: &test-paths
-          - "tests/*.test.ts"
-          - tests/ai
-          - tests/archive
-          - tests/async-runtime
-          - tests/cluster
-          - tests/commands
-          - tests/file
-          - tests/format
-          - tests/integration
-          - tests/internal
-          - tests/messaging
-          - tests/net
-          - tests/process
-          - tests/realm
-          - tests/runtime
-          - tests/security
-          - tests/test
-          - tests/tty
-          - tests/util
-          - tests/workflow
+          - "*.test.ts"
+          - ai
+          - archive
+          - async-runtime
+          - cluster
+          - commands
+          - file
+          - format
+          - integration
+          - internal
+          - messaging
+          - net
+          - process
+          - realm
+          - runtime
+          - security
+          - test
+          - tty
+          - util
+          - workflow
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -197,10 +197,10 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test ${{ matrix.path }}
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
 
   macos-tests:
-    name: macOS Tests (${{ matrix.path }})
+    name: macOS Tests (tests/${{ matrix.path }})
     runs-on: macos-latest
     needs: macos-build
     strategy:
@@ -224,4 +224,4 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test ${{ matrix.path }}
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests/${{ matrix.path }}
