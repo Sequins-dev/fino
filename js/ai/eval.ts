@@ -1,36 +1,35 @@
 /**
- * fino:ai/eval — evaluation cases, scorers, and reporters for AI behavior.
- *
- * This module runs AI evaluations inside the Fino test runner. `evaluate()`
- * registers cases as tests, executes an application-supplied function, scores
- * each output, and reports per-case plus aggregate results. Use it for
- * regression checks around prompts, tool behavior, workflows, retrieval, and
- * provider migrations.
- *
- * ## Scoring model
- *
- * Scorers return a numeric score plus optional pass/explanation metadata.
- * Built-ins cover exact string matches, substring checks, schema validation,
- * model-assisted rubric judging, and embedding similarity. Reporters are
- * optional sinks; the OpenTelemetry reporter emits spans/logs/metrics without
- * changing the test result semantics.
- *
- * Evaluations are still tests. Keep cases deterministic where possible, pin or
- * stub models for CI, and treat LLM-judged scores as a policy choice rather
- * than a correctness oracle.
- *
- * ```ts no_run
- * import { contains, evaluate } from 'fino:ai/eval';
- *
- * evaluate({
- *   name: 'support answer',
- *   cases: [{ input: 'refund window?', expected: '30 days' }],
- *   run: async (input) => `Refunds are available for ${input.includes('refund') ? '30 days' : 'unknown'}.`,
- *   scorers: { mentionsWindow: contains('30 days') },
- * });
- * ```
- */
-
+* fino:ai/eval — evaluation cases, scorers, and reporters for AI behavior.
+*
+* This module runs AI evaluations inside the Fino test runner. `evaluate()`
+* registers cases as tests, executes an application-supplied function, scores
+* each output, and reports per-case plus aggregate results. Use it for
+* regression checks around prompts, tool behavior, workflows, retrieval, and
+* provider migrations.
+*
+* ## Scoring model
+*
+* Scorers return a numeric score plus optional pass/explanation metadata.
+* Built-ins cover exact string matches, substring checks, schema validation,
+* model-assisted rubric judging, and embedding similarity. Reporters are
+* optional sinks; the OpenTelemetry reporter emits spans/logs/metrics without
+* changing the test result semantics.
+*
+* Evaluations are still tests. Keep cases deterministic where possible, pin or
+* stub models for CI, and treat LLM-judged scores as a policy choice rather
+* than a correctness oracle.
+*
+* ```ts no_run
+* import { contains, evaluate } from 'fino:ai/eval';
+*
+* evaluate({
+*   name: 'support answer',
+*   cases: [{ input: 'refund window?', expected: '30 days' }],
+*   run: async (input) => `Refunds are available for ${input.includes('refund') ? '30 days' : 'unknown'}.`,
+*   scorers: { mentionsWindow: contains('30 days') },
+* });
+* ```
+*/
 import { suite, test } from 'fino:test/test';
 import type { EmbeddingModel, Model } from 'fino:ai/model';
 import { compile } from 'fino:validate';
@@ -39,38 +38,37 @@ import { OtelSDK, BatchSpanProcessor, TraceTopicInstrumentation, PeriodicExporti
 import type { Resource } from 'fino:opentelemetry/sdk';
 import { getLoggerProvider, LogRecordBuilder, SeverityNumber } from 'fino:opentelemetry/logs';
 import { getMeterProvider } from 'fino:opentelemetry/metrics';
-
 /**
- * One evaluation case.
- */
-export interface EvalCase<In = unknown, Out = unknown> {
+* One evaluation case.
+*/
+export interface EvalCase<
+  In = unknown,
+  Out = unknown
+> {
   name: string;
   input: In;
   expected?: Out;
   [key: string]: unknown;
 }
-
 /**
- * Result produced by a scorer.
- */
+* Result produced by a scorer.
+*/
 export interface ScoreResult {
   value: number;
   pass: boolean;
   explanation?: string;
 }
-
 /**
- * Function that scores one evaluation output.
- */
-export type Scorer<Out = unknown> = (
-  output: Out,
-  evalCase: EvalCase<unknown, Out>,
-) => number | ScoreResult | Promise<number | ScoreResult>;
-
+* Function that scores one evaluation output.
+*/
+export type Scorer<Out = unknown> = (output: Out, evalCase: EvalCase<unknown, Out>) => number | ScoreResult | Promise<number | ScoreResult>;
 /**
- * Report for one evaluated case.
- */
-export interface EvalCaseReport<In = unknown, Out = unknown> {
+* Report for one evaluated case.
+*/
+export interface EvalCaseReport<
+  In = unknown,
+  Out = unknown
+> {
   name: string;
   input: In;
   output: Out;
@@ -81,100 +79,104 @@ export interface EvalCaseReport<In = unknown, Out = unknown> {
   score: number;
   pass: boolean;
 }
-
 /**
- * Aggregate report for an evaluation suite.
- */
+* Aggregate report for an evaluation suite.
+*/
 export interface EvalSummary {
   name: string;
   mean: number;
   passed: number;
   total: number;
 }
-
 /**
- * JSON-serializable evaluation report.
- */
+* JSON-serializable evaluation report.
+*/
 export interface JsonEvalReport {
-  suite?: { name: string; cases: number };
+  suite?: {
+    name: string;
+    cases: number;
+  };
   cases: EvalCaseReport[];
   summary?: EvalSummary;
 }
-
 /**
- * Options for `JsonEvalReporter`.
- */
+* Options for `JsonEvalReporter`.
+*/
 export interface JsonEvalReporterOptions {
   /**
-   * File path written after `onFinish()` when set.
-   */
+  * File path written after `onFinish()` when set.
+  */
   path?: string;
   /**
-   * File system implementation with a `writeFile()` method.
-   *
-   * Defaults to no file output. Tests can pass `DiskFileSystem`; applications
-   * may pass another compatible file system.
-   */
-  fs?: { writeFile(path: string, data: string): Promise<void> };
+  * File system implementation with a `writeFile()` method.
+  *
+  * Defaults to no file output. Tests can pass `DiskFileSystem`; applications
+  * may pass another compatible file system.
+  */
+  fs?: {
+    writeFile(path: string, data: string): Promise<void>;
+  };
 }
-
 /**
- * Receives per-case and summary evaluation reports.
- */
+* Receives per-case and summary evaluation reports.
+*/
 export abstract class EvalReporter {
-  async onStart(_suite: { name: string; cases: number }): Promise<void> {}
+  async onStart(_suite: {
+    name: string;
+    cases: number;
+  }): Promise<void> {}
   async onCase(_r: EvalCaseReport): Promise<void> {}
   async onFinish(_summary: EvalSummary): Promise<void> {}
 }
-
 /**
- * Eval reporter that stores deterministic JSON-friendly reports.
- *
- * Use this reporter when local CI should write or compare an eval artifact
- * without sending telemetry to an external service. `toJSON()` returns cloned
- * data sorted by case name for stable output.
- */
+* Eval reporter that stores deterministic JSON-friendly reports.
+*
+* Use this reporter when local CI should write or compare an eval artifact
+* without sending telemetry to an external service. `toJSON()` returns cloned
+* data sorted by case name for stable output.
+*/
 export class JsonEvalReporter extends EvalReporter {
-  #suite?: { name: string; cases: number };
+  #suite?: {
+    name: string;
+    cases: number;
+  };
   #cases: EvalCaseReport[] = [];
   #summary?: EvalSummary;
   #opts: JsonEvalReporterOptions;
-
   constructor(opts: JsonEvalReporterOptions = {}) {
     super();
     this.#opts = opts;
   }
-
-  async onStart(suite: { name: string; cases: number }): Promise<void> {
+  async onStart(suite: {
+    name: string;
+    cases: number;
+  }): Promise<void> {
     this.#suite = { ...suite };
   }
-
   async onCase(r: EvalCaseReport): Promise<void> {
     this.#cases.push(JSON.parse(JSON.stringify(r)) as EvalCaseReport);
   }
-
   async onFinish(summary: EvalSummary): Promise<void> {
     this.#summary = { ...summary };
     if (this.#opts.path && this.#opts.fs) {
       await this.#opts.fs.writeFile(this.#opts.path, JSON.stringify(this.toJSON(), null, 2) + '\n');
     }
   }
-
   toJSON(): JsonEvalReport {
     return {
-      ...(this.#suite ? { suite: { ...this.#suite } } : {}),
-      cases: [...this.#cases]
-        .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
-        .map((item) => JSON.parse(JSON.stringify(item)) as EvalCaseReport),
-      ...(this.#summary ? { summary: { ...this.#summary } } : {}),
+      ...this.#suite ? { suite: { ...this.#suite } } : {},
+      cases: [...this.#cases].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).map((item) => JSON.parse(JSON.stringify(item)) as EvalCaseReport),
+      ...this.#summary ? { summary: { ...this.#summary } } : {}
     };
   }
 }
-
 /**
- * Options for `evaluate()`.
- */
-export interface EvalOptions<In = unknown, Out = unknown> {
+* Options for `evaluate()`.
+*/
+export interface EvalOptions<
+  In = unknown,
+  Out = unknown
+> {
   name: string;
   target: (input: In) => Promise<Out>;
   cases: EvalCase<In, Out>[];
@@ -182,59 +184,62 @@ export interface EvalOptions<In = unknown, Out = unknown> {
   threshold?: number;
   report?: EvalReporter;
 }
-
 function scorerEntries<Out>(scorers: Scorer<Out>[] | Record<string, Scorer<Out>>): Array<[string | undefined, Scorer<Out>]> {
   if (Array.isArray(scorers)) return scorers.map((scorer) => [undefined, scorer]);
   return Object.entries(scorers);
 }
-
 function normalizeScoreResult(raw: number | ScoreResult, threshold: number): ScoreResult {
   if (typeof raw === 'number') {
-    return { value: raw, pass: raw >= threshold };
+    return {
+      value: raw,
+      pass: raw >= threshold
+    };
   }
-  return { value: raw.value, pass: raw.pass, explanation: raw.explanation };
+  return {
+    value: raw.value,
+    pass: raw.pass,
+    explanation: raw.explanation
+  };
 }
-
 /**
- * Register an evaluation suite with the Fino test runner.
- */
-export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>): void {
-  const { name, target, cases, scorers, threshold = 1.0, report } = opts;
+* Register an evaluation suite with the Fino test runner.
+*/
+export function evaluate<
+  In = unknown,
+  Out = unknown
+>(opts: EvalOptions<In, Out>): void {
+  const { name, target, cases, scorers, threshold = 1, report } = opts;
   const allScores: number[] = [];
   let passedCount = 0;
   let startCalled = false;
-
   suite(name, () => {
     for (const c of cases) {
       test(c.name, async (t) => {
         if (!startCalled) {
           startCalled = true;
-          await report?.onStart({ name, cases: cases.length });
+          await report?.onStart({
+            name,
+            cases: cases.length
+          });
         }
-
         const output = await target(c.input);
         const scorerResults: Record<string, ScoreResult> = {};
         const scoreValues: number[] = [];
-
         for (const [name, scorer] of scorerEntries(scorers)) {
-          const scorerName = name ?? (scorer as { scorerName?: string }).scorerName ?? scorer.name ?? 'scorer';
+          const scorerName = name ?? (scorer as {
+            scorerName?: string;
+          }).scorerName ?? scorer.name ?? 'scorer';
           const raw = await scorer(output, c as EvalCase<unknown, Out>);
           const sr = normalizeScoreResult(raw, threshold);
           scorerResults[scorerName] = sr;
           scoreValues.push(sr.value);
         }
-
-        const meanScore = scoreValues.length > 0
-          ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length
-          : 1;
+        const meanScore = scoreValues.length > 0 ? scoreValues.reduce((a, b) => a + b, 0) / scoreValues.length : 1;
         const passes = meanScore >= threshold;
-
         allScores.push(meanScore);
         if (passes) passedCount++;
-
         t.meta({ score: meanScore });
         t.ok(passes, `score ${meanScore.toFixed(3)} >= threshold ${threshold}`);
-
         await report?.onCase({
           name: c.name,
           input: c.input as unknown,
@@ -242,109 +247,136 @@ export function evaluate<In = unknown, Out = unknown>(opts: EvalOptions<In, Out>
           expected: c.expected as unknown,
           scores: scorerResults,
           score: meanScore,
-          pass: passes,
+          pass: passes
         });
       });
     }
-
     test('summary', async (t) => {
-      const mean = allScores.length > 0
-        ? allScores.reduce((a, b) => a + b, 0) / allScores.length
-        : 1;
+      const mean = allScores.length > 0 ? allScores.reduce((a, b) => a + b, 0) / allScores.length : 1;
       const passes = mean >= threshold;
-      t.meta({ mean: mean.toFixed(3), passed: passedCount, total: cases.length });
+      t.meta({
+        mean: mean.toFixed(3),
+        passed: passedCount,
+        total: cases.length
+      });
       t.ok(passes, `mean score ${mean.toFixed(3)} >= threshold ${threshold}`);
-
-      await report?.onFinish({ name, mean, passed: passedCount, total: cases.length });
+      await report?.onFinish({
+        name,
+        mean,
+        passed: passedCount,
+        total: cases.length
+      });
     });
   });
 }
-
 /**
- * Score exact string equality.
- */
+* Score exact string equality.
+*/
 export function exactMatch(): Scorer {
   const fn = (output: unknown, c: EvalCase): ScoreResult => {
     const pass = JSON.stringify(output) === JSON.stringify(c.expected);
-    return { value: pass ? 1 : 0, pass };
+    return {
+      value: pass ? 1 : 0,
+      pass
+    };
   };
-  (fn as { scorerName?: string }).scorerName = 'exactMatch';
+  (fn as {
+    scorerName?: string;
+  }).scorerName = 'exactMatch';
   return fn;
 }
-
 /**
- * Score whether the output text contains `substr`.
- */
+* Score whether the output text contains `substr`.
+*/
 export function contains(substr: string): Scorer {
   const fn = (output: unknown): ScoreResult => {
     const str = typeof output === 'string' ? output : JSON.stringify(output);
     const pass = str.includes(substr);
-    return { value: pass ? 1 : 0, pass };
+    return {
+      value: pass ? 1 : 0,
+      pass
+    };
   };
-  (fn as { scorerName?: string }).scorerName = `contains(${substr})`;
+  (fn as {
+    scorerName?: string;
+  }).scorerName = `contains(${substr})`;
   return fn;
 }
-
 /**
- * Score whether the output validates against a schema.
- */
+* Score whether the output validates against a schema.
+*/
 export function schemaScorer(schema: unknown): Scorer {
   const compiled = compile(schema as Record<string, unknown>);
   const fn = (output: unknown): ScoreResult => {
     const r = compiled.safeParse(output);
     const pass = r.success;
-    const explanation = pass
-      ? undefined
-      : r.issues?.map((i: { path: string; message: string }) => `${i.path}: ${i.message}`).join('; ');
-    return { value: pass ? 1 : 0, pass, explanation };
+    const explanation = pass ? undefined : r.issues?.map((i: {
+      path: string;
+      message: string;
+    }) => `${i.path}: ${i.message}`).join('; ');
+    return {
+      value: pass ? 1 : 0,
+      pass,
+      explanation
+    };
   };
-  (fn as { scorerName?: string }).scorerName = 'schemaScorer';
+  (fn as {
+    scorerName?: string;
+  }).scorerName = 'schemaScorer';
   return fn;
 }
-
 /**
- * Score output with a model using a rubric.
- */
+* Score output with a model using a rubric.
+*/
 export function llmJudge(model: Model, rubric: string): Scorer {
   const judgeAgent = agent({ model });
-
   const fn = async (output: unknown, c: EvalCase): Promise<ScoreResult> => {
     const prompt = [
       `Rubric: ${rubric}`,
       `Input: ${JSON.stringify(c.input)}`,
       `Expected: ${c.expected !== undefined ? JSON.stringify(c.expected) : 'none'}`,
       `Output: ${JSON.stringify(output)}`,
-      'Score from 0 to 1. Respond with ONLY valid JSON: {"score": 0.0, "explanation": "..."}',
+      'Score from 0 to 1. Respond with ONLY valid JSON: {"score": 0.0, "explanation": "..."}'
     ].join('\n');
-
     const result = await judgeAgent.generate(prompt);
-    let obj: { score?: number; explanation?: string } | undefined;
+    let obj: {
+      score?: number;
+      explanation?: string;
+    } | undefined;
     try {
       obj = JSON.parse(result.text) as typeof obj;
     } catch {
       obj = undefined;
     }
     const value = Math.max(0, Math.min(1, obj?.score ?? 0));
-    return { value, pass: value >= 1, explanation: obj?.explanation };
+    return {
+      value,
+      pass: value >= 1,
+      explanation: obj?.explanation
+    };
   };
-  (fn as { scorerName?: string }).scorerName = 'llmJudge';
+  (fn as {
+    scorerName?: string;
+  }).scorerName = 'llmJudge';
   return fn;
 }
-
 /**
- * Score output by embedding similarity against the expected value.
- */
+* Score output by embedding similarity against the expected value.
+*/
 export function semanticSimilarity(model: EmbeddingModel, min: number): Scorer {
   const fn = async (output: unknown, c: EvalCase): Promise<ScoreResult> => {
     const outStr = typeof output === 'string' ? output : JSON.stringify(output);
-    const expStr = c.expected !== undefined
-      ? (typeof c.expected === 'string' ? c.expected : JSON.stringify(c.expected))
-      : '';
-    if (!expStr) return { value: 0, pass: false, explanation: 'no expected value' };
-
+    const expStr = c.expected !== undefined ? typeof c.expected === 'string' ? c.expected : JSON.stringify(c.expected) : '';
+    if (!expStr) return {
+      value: 0,
+      pass: false,
+      explanation: 'no expected value'
+    };
     const [outEmb, expEmb] = await model.embed([outStr, expStr]);
-    if (!outEmb || !expEmb) return { value: 0, pass: false };
-
+    if (!outEmb || !expEmb) return {
+      value: 0,
+      pass: false
+    };
     let dot = 0, normA = 0, normB = 0;
     for (let i = 0; i < outEmb.length; i++) {
       dot += outEmb[i]! * expEmb[i]!;
@@ -353,84 +385,76 @@ export function semanticSimilarity(model: EmbeddingModel, min: number): Scorer {
     }
     const cosine = normA > 0 && normB > 0 ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
     const pass = cosine >= min;
-    return { value: cosine, pass, explanation: `cosine similarity ${cosine.toFixed(4)}` };
+    return {
+      value: cosine,
+      pass,
+      explanation: `cosine similarity ${cosine.toFixed(4)}`
+    };
   };
-  (fn as { scorerName?: string }).scorerName = `semanticSimilarity(${min})`;
+  (fn as {
+    scorerName?: string;
+  }).scorerName = `semanticSimilarity(${min})`;
   return fn;
 }
-
 /**
- * Options for `OpenTelemetryReporter`.
- */
+* Options for `OpenTelemetryReporter`.
+*/
 export interface OpenTelemetryReporterOptions {
   endpoint?: string;
   headers?: Record<string, string>;
   exporter?: unknown;
   resource?: Resource;
 }
-
 /**
- * Eval reporter that emits OpenTelemetry spans.
- */
+* Eval reporter that emits OpenTelemetry spans.
+*/
 export class OpenTelemetryReporter extends EvalReporter {
   #opts: OpenTelemetryReporterOptions;
   #sdk: OtelSDK | undefined;
-
   constructor(opts: OpenTelemetryReporterOptions = {}) {
     super();
     this.#opts = opts;
   }
-
-  async onStart(suite: { name: string; cases: number }): Promise<void> {
-    const exp = this.#opts.exporter ?? (this.#opts.endpoint
-      ? new OTLPHttpJsonExporter({ endpoint: this.#opts.endpoint, headers: this.#opts.headers })
-      : undefined);
-
+  async onStart(suite: {
+    name: string;
+    cases: number;
+  }): Promise<void> {
+    const exp = this.#opts.exporter ?? (this.#opts.endpoint ? new OTLPHttpJsonExporter({
+      endpoint: this.#opts.endpoint,
+      headers: this.#opts.headers
+    }) : undefined);
     if (exp) {
       const sdkOpts: Record<string, unknown> = {
         spanProcessors: [new BatchSpanProcessor(exp as never, { scheduledDelayMillis: 0 })],
         instrumentations: [new TraceTopicInstrumentation()],
         exporters: [exp],
-        metricReaders: [new PeriodicExportingMetricReader(exp as never)],
+        metricReaders: [new PeriodicExportingMetricReader(exp as never)]
       };
       if (this.#opts.resource) sdkOpts['resource'] = this.#opts.resource;
       this.#sdk = new OtelSDK(sdkOpts).start();
     }
-
     void suite;
   }
-
   async onCase(r: EvalCaseReport): Promise<void> {
     const logger = getLoggerProvider().getLogger('fino.ai.eval');
     const meter = getMeterProvider().getMeter('fino.ai.eval');
     const evalScoreHist = meter.createHistogram('gen_ai.client.evaluation.score', {
       unit: '1',
-      description: 'GenAI evaluation score',
+      description: 'GenAI evaluation score'
     });
-
     for (const [scorerName, sr] of Object.entries(r.scores)) {
-      const attrs: Record<string, unknown> = {
-        'gen_ai.evaluation.name': scorerName,
-      };
+      const attrs: Record<string, unknown> = { 'gen_ai.evaluation.name': scorerName };
       if (r.conversationId) attrs['gen_ai.conversation.id'] = r.conversationId;
       if (r.responseId) attrs['gen_ai.response.id'] = r.responseId;
-
       evalScoreHist.record(sr.value, attrs);
-
-      logger.emitRecord(
-        new LogRecordBuilder()
-          .setEventName('gen_ai.evaluation.result')
-          .setSeverity('INFO', SeverityNumber.INFO)
-          .setAttributes({
-            ...attrs,
-            'gen_ai.evaluation.score.value': sr.value,
-            'gen_ai.evaluation.score.label': sr.pass ? 'pass' : 'fail',
-            ...(sr.explanation ? { 'gen_ai.evaluation.explanation': sr.explanation } : {}),
-          }),
-      );
+      logger.emitRecord(new LogRecordBuilder().setEventName('gen_ai.evaluation.result').setSeverity('INFO', SeverityNumber.INFO).setAttributes({
+        ...attrs,
+        'gen_ai.evaluation.score.value': sr.value,
+        'gen_ai.evaluation.score.label': sr.pass ? 'pass' : 'fail',
+        ...sr.explanation ? { 'gen_ai.evaluation.explanation': sr.explanation } : {}
+      }));
     }
   }
-
   async onFinish(_summary: EvalSummary): Promise<void> {
     if (this.#sdk) {
       await this.#sdk.flush();

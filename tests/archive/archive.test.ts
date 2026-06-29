@@ -1,19 +1,11 @@
 /**
- * Tests for fino:archive — zip, tar, tar.gz create/read/mutate/extract.
- */
-
+* Tests for fino:archive — zip, tar, tar.gz create/read/mutate/extract.
+*/
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import {
-  createArchive,
-  extractArchive,
-  listArchive,
-  openArchive,
-} from 'fino:archive';
-
+import { createArchive, extractArchive, listArchive, openArchive } from 'fino:archive';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
-const TEST_DIR = '/tmp/fino-archive-test-' + Math.floor(Math.random() * 1_000_000);
-
+const TEST_DIR = '/tmp/fino-archive-test-' + Math.floor(Math.random() * 1e6);
 async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   try {
     await fs.lstat(path);
@@ -22,9 +14,8 @@ async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
     return false;
   }
 }
-
 async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
-  if (!(await exists(fs, path))) return;
+  if (!await exists(fs, path)) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -36,7 +27,6 @@ async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
   }
   await fs.unlink(path);
 }
-
 async function readBytes(fs: DiskFileSystem, path: string): Promise<Uint8Array> {
   const file = await fs.open(path, 'r');
   try {
@@ -45,19 +35,12 @@ async function readBytes(fs: DiskFileSystem, path: string): Promise<Uint8Array> 
     await file.close();
   }
 }
-
 function findSignature(bytes: Uint8Array, signature: number): number {
   for (let i = 0; i + 4 <= bytes.byteLength; i++) {
-    if (
-      bytes[i] === (signature & 0xff) &&
-      bytes[i + 1] === ((signature >>> 8) & 0xff) &&
-      bytes[i + 2] === ((signature >>> 16) & 0xff) &&
-      bytes[i + 3] === ((signature >>> 24) & 0xff)
-    ) return i;
+    if (bytes[i] === (signature & 255) && bytes[i + 1] === (signature >>> 8 & 255) && bytes[i + 2] === (signature >>> 16 & 255) && bytes[i + 3] === (signature >>> 24 & 255)) return i;
   }
   return -1;
 }
-
 function makeTarHeader(name: string, size: number, typeflag: number = 48): Uint8Array {
   const hdr = new Uint8Array(512);
   hdr.set(encodeUtf8(name.slice(0, 99)), 0);
@@ -65,56 +48,54 @@ function makeTarHeader(name: string, size: number, typeflag: number = 48): Uint8
   hdr.set(encodeUtf8(size.toString(8).padStart(11, '0') + '\0'), 124);
   hdr.set(encodeUtf8('00000000000\0'), 136);
   hdr[156] = typeflag;
-  hdr.fill(0x20, 148, 156);
+  hdr.fill(32, 148, 156);
   let sum = 0;
   for (let i = 0; i < 512; i++) sum += hdr[i]!;
   hdr.set(encodeUtf8(sum.toString(8).padStart(6, '0') + '\0 '), 148);
   return hdr;
 }
-
 function refreshTarChecksum(header: Uint8Array): void {
-  header.fill(0x20, 148, 156);
+  header.fill(32, 148, 156);
   let sum = 0;
   for (let i = 0; i < 512; i++) sum += header[i]!;
   header.set(encodeUtf8(sum.toString(8).padStart(6, '0') + '\0 '), 148);
 }
-
 function crc32(bytes: Uint8Array): number {
-  let crc = 0xffffffff;
+  let crc = 4294967295;
   for (const byte of bytes) {
     crc ^= byte;
     for (let i = 0; i < 8; i++) {
-      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+      crc = crc >>> 1 ^ (crc & 1 ? 3988292384 : 0);
     }
   }
-  return (crc ^ 0xffffffff) >>> 0;
+  return (crc ^ 4294967295) >>> 0;
 }
-
 function pushU16(out: number[], value: number): void {
-  out.push(value & 0xff, (value >>> 8) & 0xff);
+  out.push(value & 255, value >>> 8 & 255);
 }
-
 function pushU32(out: number[], value: number): void {
-  out.push(value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff);
+  out.push(value & 255, value >>> 8 & 255, value >>> 16 & 255, value >>> 24 & 255);
 }
-
 function pushBytes(out: number[], bytes: Uint8Array): void {
   for (const byte of bytes) out.push(byte);
 }
-
-function makeStoredZip(entries: Array<{ name: string; data?: Uint8Array; directory?: boolean; mode?: number }>): Uint8Array {
+function makeStoredZip(entries: Array<{
+  name: string;
+  data?: Uint8Array;
+  directory?: boolean;
+  mode?: number;
+}>): Uint8Array {
   const out: number[] = [];
   const central: number[] = [];
   for (const entry of entries) {
     const name = entry.directory && !entry.name.endsWith('/') ? entry.name + '/' : entry.name;
     const nameBytes = encodeUtf8(name);
-    const data = entry.directory ? new Uint8Array() : (entry.data ?? new Uint8Array());
+    const data = entry.directory ? new Uint8Array() : entry.data ?? new Uint8Array();
     const crc = crc32(data);
     const offset = out.length;
-    const mode = entry.mode ?? (entry.directory ? 0o755 : 0o644);
-    const externalAttrs = ((entry.directory ? 0o040000 : 0o100000) | mode) << 16;
-
-    pushU32(out, 0x04034b50);
+    const mode = entry.mode ?? (entry.directory ? 493 : 420);
+    const externalAttrs = ((entry.directory ? 16384 : 32768) | mode) << 16;
+    pushU32(out, 67324752);
     pushU16(out, 20);
     pushU16(out, 0);
     pushU16(out, 0);
@@ -127,9 +108,8 @@ function makeStoredZip(entries: Array<{ name: string; data?: Uint8Array; directo
     pushU16(out, 0);
     pushBytes(out, nameBytes);
     pushBytes(out, data);
-
-    pushU32(central, 0x02014b50);
-    pushU16(central, 0x031e);
+    pushU32(central, 33639248);
+    pushU16(central, 798);
     pushU16(central, 20);
     pushU16(central, 0);
     pushU16(central, 0);
@@ -147,10 +127,9 @@ function makeStoredZip(entries: Array<{ name: string; data?: Uint8Array; directo
     pushU32(central, offset);
     pushBytes(central, nameBytes);
   }
-
   const centralOffset = out.length;
   pushBytes(out, Uint8Array.from(central));
-  pushU32(out, 0x06054b50);
+  pushU32(out, 101010256);
   pushU16(out, 0);
   pushU16(out, 0);
   pushU16(out, entries.length);
@@ -160,41 +139,38 @@ function makeStoredZip(entries: Array<{ name: string; data?: Uint8Array; directo
   pushU16(out, 0);
   return Uint8Array.from(out);
 }
-
 describe('fino:archive', () => {
   let fs: DiskFileSystem;
-
   before(async () => {
     fs = new DiskFileSystem();
     await fs.mkdir(TEST_DIR);
   });
-
   after(async () => {
     await removeTree(fs, TEST_DIR);
   });
-
   it('creates, lists, reads, and extracts zip archives', async (t) => {
     const archivePath = TEST_DIR + '/sample.zip';
     const outputDir = TEST_DIR + '/zip-out';
-
     const archive = await createArchive(archivePath);
     await archive.write('hello.txt', 'hello zip');
-    await archive.write('nested/data.bin', new Uint8Array([1, 2, 3, 4]));
+    await archive.write('nested/data.bin', new Uint8Array([
+      1,
+      2,
+      3,
+      4
+    ]));
     await archive.save();
     await archive.close();
-
     const entries = await listArchive(archivePath);
     t.equal(entries.length, 2, 'lists two entries');
     t.equal(entries[0]?.name, 'hello.txt', 'first entry name');
     t.equal(entries[1]?.name, 'nested/data.bin', 'second entry name');
-
     const opened = await openArchive(archivePath);
     t.equal(await opened.readText('hello.txt'), 'hello zip', 'reads text entry');
     const bytes = await opened.read('nested/data.bin');
     t.equal(bytes.byteLength, 4, 'reads binary entry');
     t.equal(bytes[3], 4, 'binary content preserved');
     await opened.close();
-
     await extractArchive(archivePath, outputDir);
     t.equal(await fs.readFile(outputDir + '/hello.txt'), 'hello zip', 'extracts text file');
     const nested = await fs.open(outputDir + '/nested/data.bin', 'r');
@@ -203,97 +179,77 @@ describe('fino:archive', () => {
     t.equal(nestedBytes[0], 1, 'extracts binary file');
     t.equal(nestedBytes[3], 4, 'extracts full binary payload');
   });
-
   it('buffers zip mutations until save and persists on close', async (t) => {
     const archivePath = TEST_DIR + '/mutate.zip';
-
     const created = await createArchive(archivePath);
     await created.write('alpha.txt', 'alpha');
     await created.close();
-
     const archive = await openArchive(archivePath);
     await archive.write('alpha.txt', 'beta');
     await archive.write('new.txt', 'new value');
     await archive.remove('missing.txt');
-
     const beforeSave = await openArchive(archivePath);
     t.equal(await beforeSave.readText('alpha.txt'), 'alpha', 'disk content unchanged before save');
     await beforeSave.close();
-
     await archive.save();
     await archive.close();
-
     const reopened = await openArchive(archivePath);
     t.equal(await reopened.readText('alpha.txt'), 'beta', 'save persists overwrite');
     t.equal(await reopened.readText('new.txt'), 'new value', 'save persists new entry');
     await reopened.remove('new.txt');
     await reopened.close();
-
     const afterClose = await openArchive(archivePath);
-    const names = (await afterClose.entries()).map(entry => entry.name);
+    const names = (await afterClose.entries()).map((entry) => entry.name);
     t.equal(names.length, 1, 'dirty close persisted removal');
     t.equal(names[0], 'alpha.txt', 'remaining entry after dirty close');
     await afterClose.close();
   });
-
   it('creates, reads, and extracts tar archives', async (t) => {
     const archivePath = TEST_DIR + '/sample.tar';
     const outputDir = TEST_DIR + '/tar-out';
-
     const archive = await createArchive(archivePath);
     await archive.write('docs/readme.txt', 'hello tar');
     await archive.close();
-
     const entries = await listArchive(archivePath);
     t.equal(entries.length, 1, 'tar lists one entry');
     t.equal(entries[0]?.name, 'docs/readme.txt', 'tar entry name');
-
     const opened = await openArchive(archivePath);
     t.equal(await opened.readText('docs/readme.txt'), 'hello tar', 'tar readText');
     await opened.close();
-
     await extractArchive(archivePath, outputDir);
     t.equal(await fs.readFile(outputDir + '/docs/readme.txt'), 'hello tar', 'tar extract');
   });
-
   it('creates, reads, mutates, and extracts tar.gz archives', async (t) => {
     const archivePath = TEST_DIR + '/sample.tgz';
     const outputDir = TEST_DIR + '/tgz-out';
-
     const archive = await createArchive(archivePath);
     await archive.write('a.txt', 'one');
     await archive.write('b/c.txt', 'two');
     await archive.close();
-
     const opened = await openArchive(archivePath);
     t.equal(await opened.readText('a.txt'), 'one', 'tar.gz reads entry');
     await opened.rename('a.txt', 'renamed.txt');
     await opened.remove('b/c.txt');
     await opened.write('added.txt', encodeUtf8('three'));
     await opened.close();
-
     const reopened = await openArchive(archivePath);
-    const names = (await reopened.entries()).map(entry => entry.name);
+    const names = (await reopened.entries()).map((entry) => entry.name);
     t.equal(names.length, 2, 'tar.gz has two entries after mutation');
     t.equal(names[0], 'added.txt', 'first mutated tar.gz entry');
     t.equal(names[1], 'renamed.txt', 'second mutated tar.gz entry');
     t.equal(await reopened.readText('renamed.txt'), 'one', 'renamed entry preserved');
     await reopened.close();
-
     await extractArchive(archivePath, outputDir);
     t.equal(await fs.readFile(outputDir + '/renamed.txt'), 'one', 'tar.gz extract renamed file');
     t.equal(await fs.readFile(outputDir + '/added.txt'), 'three', 'tar.gz extract added file');
   });
-
   // ---------------------------------------------------------------------------
   // Security regression tests (A1, A2, A3 fixes)
   // ---------------------------------------------------------------------------
-
   it('A1: tar extraction silently skips symlink/hardlink entries (typeflag 1 and 2)', async (t) => {
     // Craft a raw tar archive with a symlink entry (typeflag=50='2') followed by
     // a normal file entry. The symlink entry must be skipped; the file must extract.
     const enc = new TextEncoder();
-
     function tarHeader(name: string, size: number, typeflag: number): Uint8Array {
       const hdr = new Uint8Array(512);
       const nameBytes = enc.encode(name.slice(0, 99));
@@ -310,18 +266,16 @@ describe('fino:archive', () => {
       // typeflag
       hdr[156] = typeflag;
       // checksum placeholder
-      hdr.fill(0x20, 148, 156);
+      hdr.fill(32, 148, 156);
       let sum = 0;
       for (let i = 0; i < 512; i++) sum += hdr[i]!;
       const chk = sum.toString(8).padStart(6, '0') + '\0 ';
       hdr.set(enc.encode(chk), 148);
       return hdr;
     }
-
     const fileContent = enc.encode('safe file content');
     const fileSize = fileContent.length;
     const filePadded = Math.ceil(fileSize / 512) * 512;
-
     // Entry 1: symlink (typeflag=50='2'), size 0
     const symlinkHdr = tarHeader('link-target.txt', 0, 50);
     // Entry 2: hardlink (typeflag=49='1'), size 0
@@ -332,34 +286,39 @@ describe('fino:archive', () => {
     filePaddedBytes.set(fileContent);
     // Terminal: two zero blocks
     const terminal = new Uint8Array(1024);
-
     const totalLen = 512 + 512 + 512 + filePadded + 1024;
     const tarBytes = new Uint8Array(totalLen);
     let off = 0;
-    tarBytes.set(symlinkHdr, off); off += 512;          // symlink header (no data block)
-    tarBytes.set(hardlinkHdr, off); off += 512;         // hardlink header (no data block)
-    tarBytes.set(fileHdr, off); off += 512;             // file header
-    tarBytes.set(filePaddedBytes, off); off += filePadded; // file data
-    tarBytes.set(terminal, off);                         // terminal blocks
-
+    tarBytes.set(symlinkHdr, off);
+    off += 512;
+    tarBytes.set(hardlinkHdr, off);
+    off += 512;
+    tarBytes.set(fileHdr, off);
+    off += 512;
+    tarBytes.set(filePaddedBytes, off);
+    off += filePadded;
+    tarBytes.set(terminal, off);
     const archivePath = TEST_DIR + '/symlink-tar.tar';
-    const outputDir   = TEST_DIR + '/symlink-tar-out';
+    const outputDir = TEST_DIR + '/symlink-tar-out';
     await fs.mkdir(outputDir);
     await fs.writeFile(archivePath, tarBytes);
-
     await extractArchive(archivePath, outputDir);
-
     // The safe file should be extracted
     t.equal(await fs.readFile(outputDir + '/safe.txt'), 'safe file content', 'regular file extracted');
     // The symlink entry must NOT have created a file
     let symlinkFileExists = false;
-    try { await fs.stat(outputDir + '/link-target.txt'); symlinkFileExists = true; } catch (_) {}
+    try {
+      await fs.stat(outputDir + '/link-target.txt');
+      symlinkFileExists = true;
+    } catch (_) {}
     t.ok(!symlinkFileExists, 'symlink entry was skipped — no file created');
     let hardlinkFileExists = false;
-    try { await fs.stat(outputDir + '/hardlink-target.txt'); hardlinkFileExists = true; } catch (_) {}
+    try {
+      await fs.stat(outputDir + '/hardlink-target.txt');
+      hardlinkFileExists = true;
+    } catch (_) {}
     t.ok(!hardlinkFileExists, 'hardlink entry was skipped — no file created');
   });
-
   it('A2: tar extraction throws when an entry exceeds MAX_DECOMPRESSED_BYTES', async (t) => {
     // Craft a tar header claiming a file of 600 MiB (> 512 MiB limit).
     // parseTar checks size before slicing so this throws without OOM.
@@ -372,11 +331,11 @@ describe('fino:archive', () => {
     const hugeSizeOctal = (600 * 1024 * 1024).toString(8).padStart(11, '0') + '\0';
     hdr.set(enc.encode(hugeSizeOctal), 124);
     hdr.set(enc.encode('00000000000\0'), 136);
-    hdr[156] = 48; // regular file
-    hdr.fill(0x20, 148, 156);
-    let sum = 0; for (let i = 0; i < 512; i++) sum += hdr[i]!;
+    hdr[156] = 48;
+    hdr.fill(32, 148, 156);
+    let sum = 0;
+    for (let i = 0; i < 512; i++) sum += hdr[i]!;
     hdr.set(enc.encode(sum.toString(8).padStart(6, '0') + '\0 '), 148);
-
     // The archive consists of just this header (the data block would be huge,
     // but parseTar checks size before reading data, so we can omit the data blocks
     // and just add the terminal blocks).
@@ -384,36 +343,25 @@ describe('fino:archive', () => {
     const tarBytes = new Uint8Array(512 + 1024);
     tarBytes.set(hdr, 0);
     tarBytes.set(terminal, 512);
-
     const archivePath = TEST_DIR + '/huge-tar.tar';
-    const outputDir   = TEST_DIR + '/huge-tar-out';
+    const outputDir = TEST_DIR + '/huge-tar-out';
     await fs.mkdir(outputDir);
     await fs.writeFile(archivePath, tarBytes);
-
-    await t.rejects(
-      () => extractArchive(archivePath, outputDir),
-      /limit|exceeding|512|bytes/i,
-      'extract throws for entries exceeding the decompressed-size limit',
-    );
+    await t.rejects(() => extractArchive(archivePath, outputDir), /limit|exceeding|512|bytes/i, 'extract throws for entries exceeding the decompressed-size limit');
   });
-
   it('A3: extract() unlinks pre-placed symlinks before writing', async (t) => {
     const archivePath = TEST_DIR + '/overwrite.zip';
-    const outputDir   = TEST_DIR + '/overwrite-out';
+    const outputDir = TEST_DIR + '/overwrite-out';
     await fs.mkdir(outputDir);
-
     // Archive contains a single file 'data.txt' with known content.
     const archive = await createArchive(archivePath);
     await archive.write('data.txt', 'real content from archive');
     await archive.close();
-
     // Place a symlink at the expected output path pointing to a different file.
     const victim = TEST_DIR + '/victim.txt';
     await fs.writeFile(victim, 'original victim');
     await fs.symlink(victim, outputDir + '/data.txt');
-
     await extractArchive(archivePath, outputDir);
-
     // The symlink should have been replaced with the real file.
     const content = await fs.readFile(outputDir + '/data.txt');
     t.equal(content, 'real content from archive', 'archive content written to output path');
@@ -421,115 +369,75 @@ describe('fino:archive', () => {
     const victimContent = await fs.readFile(victim);
     t.equal(victimContent, 'original victim', 'victim file was NOT modified (symlink was unlinked)');
   });
-
   it('rejects traversal entries during extract', async (t) => {
     const archivePath = TEST_DIR + '/unsafe.zip';
     const outputDir = TEST_DIR + '/unsafe-out';
-
     const archive = await createArchive(archivePath);
     await archive.write('../escape.txt', 'nope');
     await archive.close();
-
-    await t.rejects(
-      () => extractArchive(archivePath, outputDir),
-      /unsafe archive path|traversal|absolute/i,
-      'extract blocks traversal paths',
-    );
+    await t.rejects(() => extractArchive(archivePath, outputDir), /unsafe archive path|traversal|absolute/i, 'extract blocks traversal paths');
   });
-
   it('rejects malformed zip central/local records and unsupported markers', async (t) => {
     const archivePath = TEST_DIR + '/corpus.zip';
     const archive = await createArchive(archivePath);
     await archive.write('file.txt', 'zip corpus', { compression: 'store' });
     await archive.close();
     const original = await readBytes(fs, archivePath);
-    const central = findSignature(original, 0x02014b50);
-    const eocd = findSignature(original, 0x06054b50);
+    const central = findSignature(original, 33639248);
+    const eocd = findSignature(original, 101010256);
     t.ok(central >= 0 && eocd >= 0, 'fixture zip contains central directory and EOCD');
-
     const truncatedCentral = original.slice(0, central + 12);
     await fs.writeFile(TEST_DIR + '/truncated-central.zip', truncatedCentral);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/truncated-central.zip'),
-      /Invalid zip archive|truncated/i,
-      'truncated central record is rejected',
-    );
-
+    await t.rejects(() => listArchive(TEST_DIR + '/truncated-central.zip'), /Invalid zip archive|truncated/i, 'truncated central record is rejected');
     const badCentralOffset = original.slice();
     new DataView(badCentralOffset.buffer).setUint32(eocd + 16, original.byteLength + 100, true);
     await fs.writeFile(TEST_DIR + '/bad-central-offset.zip', badCentralOffset);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/bad-central-offset.zip'),
-      /Invalid zip archive|central/i,
-      'bad central directory offset is rejected',
-    );
-
+    await t.rejects(() => listArchive(TEST_DIR + '/bad-central-offset.zip'), /Invalid zip archive|central/i, 'bad central directory offset is rejected');
     const badLocalOffset = original.slice();
     new DataView(badLocalOffset.buffer).setUint32(central + 42, original.byteLength + 100, true);
     await fs.writeFile(TEST_DIR + '/bad-local-offset.zip', badLocalOffset);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/bad-local-offset.zip'),
-      /Invalid zip archive|local/i,
-      'bad local header offset is rejected',
-    );
-
+    await t.rejects(() => listArchive(TEST_DIR + '/bad-local-offset.zip'), /Invalid zip archive|local/i, 'bad local header offset is rejected');
     const dataDescriptor = original.slice();
-    new DataView(dataDescriptor.buffer).setUint16(central + 8, 0x08, true);
+    new DataView(dataDescriptor.buffer).setUint16(central + 8, 8, true);
     await fs.writeFile(TEST_DIR + '/data-descriptor.zip', dataDescriptor);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/data-descriptor.zip'),
-      /data descriptor/i,
-      'data descriptor entries are rejected',
-    );
-
+    await t.rejects(() => listArchive(TEST_DIR + '/data-descriptor.zip'), /data descriptor/i, 'data descriptor entries are rejected');
     const zip64Marker = original.slice();
-    new DataView(zip64Marker.buffer).setUint32(central + 24, 0xffffffff, true);
+    new DataView(zip64Marker.buffer).setUint32(central + 24, 4294967295, true);
     await fs.writeFile(TEST_DIR + '/zip64-marker.zip', zip64Marker);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/zip64-marker.zip'),
-      /ZIP64/i,
-      'ZIP64 size marker is rejected',
-    );
+    await t.rejects(() => listArchive(TEST_DIR + '/zip64-marker.zip'), /ZIP64/i, 'ZIP64 size marker is rejected');
   });
-
   it('rejects zip local headers that disagree with the central directory', async (t) => {
-    const original = makeStoredZip([
-      { name: 'file.txt', data: encodeUtf8('zip local header') },
-    ]);
-    const local = findSignature(original, 0x04034b50);
+    const original = makeStoredZip([{
+      name: 'file.txt',
+      data: encodeUtf8('zip local header')
+    }]);
+    const local = findSignature(original, 67324752);
     t.ok(local >= 0, 'fixture zip contains a local file header');
-
     async function rejectMutatedLocal(name: string, mutate: (bytes: Uint8Array, view: DataView) => void): Promise<void> {
       const bytes = original.slice();
       mutate(bytes, new DataView(bytes.buffer));
       const archivePath = `${TEST_DIR}/${name}.zip`;
       await fs.writeFile(archivePath, bytes);
-      await t.rejects(
-        () => listArchive(archivePath),
-        /Invalid zip archive|data descriptor/i,
-        `${name} mismatch is rejected`,
-      );
+      await t.rejects(() => listArchive(archivePath), /Invalid zip archive|data descriptor/i, `${name} mismatch is rejected`);
     }
-
-    await rejectMutatedLocal('local-flags', (_bytes, view) => view.setUint16(local + 6, 0x08, true));
+    await rejectMutatedLocal('local-flags', (_bytes, view) => view.setUint16(local + 6, 8, true));
     await rejectMutatedLocal('local-method', (_bytes, view) => view.setUint16(local + 8, 8, true));
-    await rejectMutatedLocal('local-crc', (_bytes, view) => view.setUint32(local + 14, 0x12345678, true));
+    await rejectMutatedLocal('local-crc', (_bytes, view) => view.setUint32(local + 14, 305419896, true));
     await rejectMutatedLocal('local-compressed-size', (_bytes, view) => view.setUint32(local + 18, 1, true));
     await rejectMutatedLocal('local-uncompressed-size', (_bytes, view) => view.setUint32(local + 22, 1, true));
     await rejectMutatedLocal('local-filename', (bytes) => {
       bytes[local + 30] = 'x'.charCodeAt(0);
     });
   });
-
   it('rejects unsafe stored zip entry sizes while reading', async (t) => {
     const payload = encodeUtf8('tiny');
-    const original = makeStoredZip([
-      { name: 'file.txt', data: payload },
-    ]);
-    const local = findSignature(original, 0x04034b50);
-    const central = findSignature(original, 0x02014b50);
+    const original = makeStoredZip([{
+      name: 'file.txt',
+      data: payload
+    }]);
+    const local = findSignature(original, 67324752);
+    const central = findSignature(original, 33639248);
     t.ok(local >= 0 && central >= 0, 'fixture zip contains local and central records');
-
     const hugeSize = 600 * 1024 * 1024;
     const huge = original.slice();
     let view = new DataView(huge.buffer);
@@ -537,56 +445,34 @@ describe('fino:archive', () => {
     view.setUint32(central + 24, hugeSize, true);
     await fs.writeFile(TEST_DIR + '/stored-huge-size.zip', huge);
     const hugeArchive = await openArchive(TEST_DIR + '/stored-huge-size.zip');
-    await t.rejects(
-      () => hugeArchive.read('file.txt'),
-      /limit|exceeding|512|bytes/i,
-      'stored entries reject declared sizes above the decompressed-size limit',
-    );
+    await t.rejects(() => hugeArchive.read('file.txt'), /limit|exceeding|512|bytes/i, 'stored entries reject declared sizes above the decompressed-size limit');
     await hugeArchive.close();
-
     const mismatched = original.slice();
     view = new DataView(mismatched.buffer);
     view.setUint32(local + 22, payload.byteLength + 1, true);
     view.setUint32(central + 24, payload.byteLength + 1, true);
     await fs.writeFile(TEST_DIR + '/stored-size-mismatch.zip', mismatched);
     const mismatchedArchive = await openArchive(TEST_DIR + '/stored-size-mismatch.zip');
-    await t.rejects(
-      () => mismatchedArchive.read('file.txt'),
-      /size mismatch|Invalid zip archive/i,
-      'stored entries require compressed and uncompressed sizes to match',
-    );
+    await t.rejects(() => mismatchedArchive.read('file.txt'), /size mismatch|Invalid zip archive/i, 'stored entries require compressed and uncompressed sizes to match');
     await mismatchedArchive.close();
   });
-
   it('validates zip CRC while reading and extracting', async (t) => {
     const archivePath = TEST_DIR + '/crc.zip';
     const archive = await createArchive(archivePath);
     await archive.write('file.txt', 'crc corpus', { compression: 'store' });
     await archive.close();
-
     const corrupted = await readBytes(fs, archivePath);
-    const local = findSignature(corrupted, 0x04034b50);
+    const local = findSignature(corrupted, 67324752);
     const view = new DataView(corrupted.buffer);
     const localNameLength = view.getUint16(local + 26, true);
     const localExtraLength = view.getUint16(local + 28, true);
-    corrupted[local + 30 + localNameLength + localExtraLength] ^= 0xff;
+    corrupted[local + 30 + localNameLength + localExtraLength] ^= 255;
     await fs.writeFile(TEST_DIR + '/crc-bad.zip', corrupted);
-
     const opened = await openArchive(TEST_DIR + '/crc-bad.zip');
-    await t.rejects(
-      () => opened.read('file.txt'),
-      /CRC mismatch/i,
-      'read rejects CRC mismatch',
-    );
+    await t.rejects(() => opened.read('file.txt'), /CRC mismatch/i, 'read rejects CRC mismatch');
     await opened.close();
-
-    await t.rejects(
-      () => extractArchive(TEST_DIR + '/crc-bad.zip', TEST_DIR + '/crc-out'),
-      /CRC mismatch/i,
-      'extract rejects CRC mismatch',
-    );
+    await t.rejects(() => extractArchive(TEST_DIR + '/crc-bad.zip', TEST_DIR + '/crc-out'), /CRC mismatch/i, 'extract rejects CRC mismatch');
   });
-
   it('rejects bad tar checksums, truncation, and unsupported long-name/PAX entries', async (t) => {
     const payload = encodeUtf8('hello');
     const padded = new Uint8Array(512);
@@ -596,46 +482,41 @@ describe('fino:archive', () => {
     valid.set(padded, 512);
     await fs.writeFile(TEST_DIR + '/valid-corpus.tar', valid);
     t.equal((await listArchive(TEST_DIR + '/valid-corpus.tar'))[0]?.name, 'ok.txt', 'valid tar fixture parses');
-
     const badChecksum = valid.slice();
     badChecksum[0] = 'X'.charCodeAt(0);
     await fs.writeFile(TEST_DIR + '/bad-checksum.tar', badChecksum);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/bad-checksum.tar'),
-      /checksum/i,
-      'bad tar checksum is rejected',
-    );
-
+    await t.rejects(() => listArchive(TEST_DIR + '/bad-checksum.tar'), /checksum/i, 'bad tar checksum is rejected');
     const truncated = new Uint8Array(512);
     truncated.set(makeTarHeader('truncated.txt', 64), 0);
     await fs.writeFile(TEST_DIR + '/truncated-data.tar', truncated);
-    await t.rejects(
-      () => listArchive(TEST_DIR + '/truncated-data.tar'),
-      /truncated/i,
-      'truncated tar payload is rejected',
-    );
-
+    await t.rejects(() => listArchive(TEST_DIR + '/truncated-data.tar'), /truncated/i, 'truncated tar payload is rejected');
     for (const [name, flag] of [['long-name', 76], ['pax', 120]] as Array<[string, number]>) {
       const unsupported = new Uint8Array(512 + 1024);
       unsupported.set(makeTarHeader(name, 0, flag), 0);
       await fs.writeFile(`${TEST_DIR}/${name}.tar`, unsupported);
-      await t.rejects(
-        () => listArchive(`${TEST_DIR}/${name}.tar`),
-        /Unsupported tar archive/i,
-        `${name} tar entry is rejected`,
-      );
+      await t.rejects(() => listArchive(`${TEST_DIR}/${name}.tar`), /Unsupported tar archive/i, `${name} tar entry is rejected`);
     }
   });
-
   it('rejects tar numeric fields containing non-octal characters', async (t) => {
     const payload = encodeUtf8('x');
     const padded = new Uint8Array(512);
     padded.set(payload);
-
     for (const [field, offset, value] of [
-      ['mode', 100, '0000648\0'],
-      ['size', 124, '0000000001x'],
-      ['mtime', 136, '0000000001z'],
+      [
+        'mode',
+        100,
+        '0000648\0'
+      ],
+      [
+        'size',
+        124,
+        '0000000001x'
+      ],
+      [
+        'mtime',
+        136,
+        '0000000001z'
+      ]
     ] as Array<[string, number, string]>) {
       const archive = new Uint8Array(512 + 512 + 1024);
       const header = makeTarHeader(`${field}.txt`, payload.byteLength);
@@ -643,49 +524,39 @@ describe('fino:archive', () => {
       refreshTarChecksum(header);
       archive.set(header, 0);
       archive.set(padded, 512);
-
       const archivePath = `${TEST_DIR}/invalid-tar-${field}.tar`;
       await fs.writeFile(archivePath, archive);
-      await t.rejects(
-        () => listArchive(archivePath),
-        /octal/i,
-        `${field} field with non-octal characters is rejected`,
-      );
+      await t.rejects(() => listArchive(archivePath), /octal/i, `${field} field with non-octal characters is rejected`);
     }
   });
-
   it('enforces explicit extraction entry and total-byte limits', async (t) => {
     const archivePath = TEST_DIR + '/limits.zip';
     const archive = await createArchive(archivePath);
     await archive.write('a.txt', 'aa', { compression: 'store' });
     await archive.write('b.txt', 'bb', { compression: 'store' });
     await archive.close();
-
-    await t.rejects(
-      () => extractArchive(archivePath, TEST_DIR + '/limit-entries', { maxEntries: 1 }),
-      /entry limit/i,
-      'maxEntries rejects low explicit limit',
-    );
-    await t.rejects(
-      () => extractArchive(archivePath, TEST_DIR + '/limit-bytes', { maxTotalBytes: 3 }),
-      /byte limit/i,
-      'maxTotalBytes rejects low explicit limit',
-    );
-
-    const result = await extractArchive(archivePath, TEST_DIR + '/limits-ok', { maxEntries: 2, maxTotalBytes: 4 });
+    await t.rejects(() => extractArchive(archivePath, TEST_DIR + '/limit-entries', { maxEntries: 1 }), /entry limit/i, 'maxEntries rejects low explicit limit');
+    await t.rejects(() => extractArchive(archivePath, TEST_DIR + '/limit-bytes', { maxTotalBytes: 3 }), /byte limit/i, 'maxTotalBytes rejects low explicit limit');
+    const result = await extractArchive(archivePath, TEST_DIR + '/limits-ok', {
+      maxEntries: 2,
+      maxTotalBytes: 4
+    });
     t.equal(result.entries, 2, 'limits allow exact-size extraction');
     t.equal(await fs.readFile(TEST_DIR + '/limits-ok/a.txt'), 'aa', 'first limited file extracted');
     t.equal(await fs.readFile(TEST_DIR + '/limits-ok/b.txt'), 'bb', 'second limited file extracted');
   });
-
   it('reads compatibility-style ZIP and TAR fixtures with directory entries and metadata', async (t) => {
     const zipPath = TEST_DIR + '/compat.zip';
     const zipOut = TEST_DIR + '/compat-zip-out';
-    await fs.writeFile(zipPath, makeStoredZip([
-      { name: 'docs/', directory: true, mode: 0o755 },
-      { name: 'docs/readme.txt', data: encodeUtf8('zip compat\n'), mode: 0o644 },
-    ]));
-
+    await fs.writeFile(zipPath, makeStoredZip([{
+      name: 'docs/',
+      directory: true,
+      mode: 493
+    }, {
+      name: 'docs/readme.txt',
+      data: encodeUtf8('zip compat\n'),
+      mode: 420
+    }]));
     const zipEntries = await listArchive(zipPath);
     t.equal(zipEntries.length, 2, 'zip fixture lists directory and file entries');
     t.equal(zipEntries[0]?.name, 'docs', 'zip directory entry is preserved');
@@ -693,7 +564,6 @@ describe('fino:archive', () => {
     t.equal(zipEntries[1]?.name, 'docs/readme.txt', 'zip file entry is preserved');
     await extractArchive(zipPath, zipOut);
     t.equal(await fs.readFile(zipOut + '/docs/readme.txt'), 'zip compat\n', 'zip fixture extracts file under directory');
-
     const tarPath = TEST_DIR + '/compat.tar';
     const payload = encodeUtf8('tar compat\n');
     const padded = new Uint8Array(Math.ceil(payload.byteLength / 512) * 512);
@@ -703,7 +573,6 @@ describe('fino:archive', () => {
     tarBytes.set(makeTarHeader('docs/readme.txt', payload.byteLength, 48), 512);
     tarBytes.set(padded, 1024);
     await fs.writeFile(tarPath, tarBytes);
-
     const tarEntries = await listArchive(tarPath);
     t.equal(tarEntries.length, 2, 'tar fixture lists directory and file entries');
     t.equal(tarEntries[0]?.kind, 'directory', 'tar directory kind is detected');

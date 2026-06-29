@@ -1,167 +1,630 @@
 /**
- * internal:net/quic/ngtcp2/bindings — system libngtcp2 via dlopen.
- *
- * This module is the narrow native boundary for Fino's low-level QUIC support.
- * It loads `libngtcp2` from Homebrew, MacPorts, and common Linux locations and
- * exposes only Phase 1 symbols needed by the QUIC endpoint implementation:
- * connection creation/destruction, packet read/write, stream open/write,
- * timers, transport parameters, connection IDs, and error helpers.
- *
- * The exported availability flag is intentionally non-throwing so tests and
- * applications can skip QUIC work on systems without ngtcp2. Call
- * `requireNgtcp2()` when native QUIC is mandatory.
- *
- * @internal
- */
-
+* internal:net/quic/ngtcp2/bindings — system libngtcp2 via dlopen.
+*
+* This module is the narrow native boundary for Fino's low-level QUIC support.
+* It loads `libngtcp2` from Homebrew, MacPorts, and common Linux locations and
+* exposes only Phase 1 symbols needed by the QUIC endpoint implementation:
+* connection creation/destruction, packet read/write, stream open/write,
+* timers, transport parameters, connection IDs, and error helpers.
+*
+* The exported availability flag is intentionally non-throwing so tests and
+* applications can skip QUIC work on systems without ngtcp2. Call
+* `requireNgtcp2()` when native QUIC is mandatory.
+*
+* @internal
+*/
 import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-
 export { FfiCallback, Pointer };
-
 const _IS_DARWIN = os === 'darwin';
-
-const _CANDIDATES = _IS_DARWIN
-  ? [
-      '/opt/homebrew/opt/libngtcp2/lib/libngtcp2.dylib',
-      '/opt/homebrew/lib/libngtcp2.dylib',
-      '/usr/local/opt/libngtcp2/lib/libngtcp2.dylib',
-      '/usr/local/lib/libngtcp2.dylib',
-      '/opt/local/lib/libngtcp2.dylib',
-    ]
-  : [
-      'libngtcp2.so.16',
-      'libngtcp2.so',
-      '/usr/lib/x86_64-linux-gnu/libngtcp2.so.16',
-      '/usr/lib/aarch64-linux-gnu/libngtcp2.so.16',
-      '/usr/local/lib/libngtcp2.so',
-    ];
-
+const _CANDIDATES = _IS_DARWIN ? [
+  '/opt/homebrew/opt/libngtcp2/lib/libngtcp2.dylib',
+  '/opt/homebrew/lib/libngtcp2.dylib',
+  '/usr/local/opt/libngtcp2/lib/libngtcp2.dylib',
+  '/usr/local/lib/libngtcp2.dylib',
+  '/opt/local/lib/libngtcp2.dylib'
+] : [
+  'libngtcp2.so.16',
+  'libngtcp2.so',
+  '/usr/lib/x86_64-linux-gnu/libngtcp2.so.16',
+  '/usr/lib/aarch64-linux-gnu/libngtcp2.so.16',
+  '/usr/local/lib/libngtcp2.so'
+];
 const _SYMBOLS = {
-  ngtcp2_version: { parameters: ['i32'], result: 'pointer' },
-  ngtcp2_strerror: { parameters: ['i32'], result: 'pointer' },
-  ngtcp2_err_is_fatal: { parameters: ['i32'], result: 'i32' },
-  ngtcp2_err_infer_quic_transport_error_code: { parameters: ['i32'], result: 'u64' },
-  ngtcp2_is_supported_version: { parameters: ['u32'], result: 'i32' },
-  ngtcp2_ccerr_default: { parameters: ['pointer'], result: 'void' },
-  ngtcp2_ccerr_set_liberr: { parameters: ['pointer', 'i32', 'buffer', 'usize'], result: 'void' },
-  ngtcp2_ccerr_set_tls_alert: { parameters: ['pointer', 'u8', 'buffer', 'usize'], result: 'void' },
-  ngtcp2_ccerr_set_transport_error: { parameters: ['pointer', 'u64', 'buffer', 'usize'], result: 'void' },
-  ngtcp2_ccerr_set_application_error: { parameters: ['pointer', 'u64', 'buffer', 'usize'], result: 'void' },
-
-  ngtcp2_accept: { parameters: ['pointer', 'buffer', 'usize'], result: 'i32' },
-  ngtcp2_settings_default_versioned: { parameters: ['i32', 'pointer'], result: 'void' },
-  ngtcp2_transport_params_default_versioned: { parameters: ['i32', 'pointer'], result: 'void' },
-  ngtcp2_transport_params_encode_versioned: { parameters: ['i32', 'pointer', 'usize', 'pointer'], result: 'isize' },
-  ngtcp2_transport_params_decode_versioned: { parameters: ['i32', 'pointer', 'pointer', 'usize'], result: 'i32' },
-  ngtcp2_transport_params_decode_new: { parameters: ['pointer', 'pointer', 'usize', 'pointer'], result: 'i32' },
-  ngtcp2_transport_params_del: { parameters: ['pointer', 'pointer'], result: 'void' },
-
-  ngtcp2_cid_init: { parameters: ['pointer', 'buffer', 'usize'], result: 'void' },
-  ngtcp2_cid_eq: { parameters: ['pointer', 'pointer'], result: 'i32' },
-  ngtcp2_pkt_decode_version_cid: { parameters: ['pointer', 'buffer', 'usize', 'usize'], result: 'i32' },
-  ngtcp2_pkt_write_version_negotiation: { parameters: ['buffer', 'usize', 'u8', 'buffer', 'usize', 'buffer', 'usize', 'buffer', 'usize'], result: 'isize' },
-  ngtcp2_pkt_decode_hd_long: { parameters: ['pointer', 'buffer', 'usize'], result: 'isize' },
-
-  ngtcp2_conn_client_new_versioned: { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'u32', 'i32', 'pointer', 'i32', 'pointer', 'i32', 'pointer', 'pointer', 'pointer'], result: 'i32', fast: false },
-  ngtcp2_conn_server_new_versioned: { parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'u32', 'i32', 'pointer', 'i32', 'pointer', 'i32', 'pointer', 'pointer', 'pointer'], result: 'i32', fast: false },
-  ngtcp2_conn_del: { parameters: ['pointer'], result: 'void' },
-  ngtcp2_conn_read_pkt_versioned: { parameters: ['pointer', 'pointer', 'i32', 'pointer', 'buffer', 'usize', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_write_pkt_versioned: { parameters: ['pointer', 'pointer', 'i32', 'pointer', 'buffer', 'usize', 'u64'], result: 'isize', fast: false },
-  ngtcp2_conn_writev_stream_versioned: { parameters: ['pointer', 'pointer', 'i32', 'pointer', 'buffer', 'usize', 'pointer', 'u32', 'i64', 'pointer', 'usize', 'u64'], result: 'isize', fast: false },
-  ngtcp2_conn_write_datagram_versioned: { parameters: ['pointer', 'pointer', 'i32', 'pointer', 'buffer', 'usize', 'pointer', 'u32', 'u64', 'buffer', 'usize', 'u64'], result: 'isize' },
-  ngtcp2_conn_write_connection_close_versioned: { parameters: ['pointer', 'pointer', 'i32', 'pointer', 'buffer', 'usize', 'pointer', 'u64'], result: 'isize', fast: false },
-  ngtcp2_conn_initiate_key_update: { parameters: ['pointer', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_initiate_immediate_migration: { parameters: ['pointer', 'pointer', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_initiate_migration: { parameters: ['pointer', 'pointer', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_set_local_addr: { parameters: ['pointer', 'pointer'], result: 'void', fast: false },
-  ngtcp2_conn_set_path_user_data: { parameters: ['pointer', 'pointer'], result: 'void', fast: false },
-  ngtcp2_conn_get_ccerr: { parameters: ['pointer'], result: 'pointer' },
-
-  ngtcp2_conn_get_expiry: { parameters: ['pointer'], result: 'u64' },
-  ngtcp2_conn_get_pto: { parameters: ['pointer'], result: 'u64' },
-  ngtcp2_conn_handle_expiry: { parameters: ['pointer', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_set_keep_alive_timeout: { parameters: ['pointer', 'u64'], result: 'void', fast: false },
-  ngtcp2_conn_update_pkt_tx_time: { parameters: ['pointer', 'u64'], result: 'void', fast: false },
-  ngtcp2_conn_get_send_quantum: { parameters: ['pointer'], result: 'usize' },
-  ngtcp2_conn_get_max_tx_udp_payload_size: { parameters: ['pointer'], result: 'usize' },
-  ngtcp2_conn_get_handshake_completed: { parameters: ['pointer'], result: 'i32' },
-  ngtcp2_conn_tls_handshake_completed: { parameters: ['pointer'], result: 'void', fast: false },
-  ngtcp2_conn_get_tls_alert: { parameters: ['pointer'], result: 'u8' },
-  ngtcp2_conn_get_tls_error: { parameters: ['pointer'], result: 'i32' },
-  ngtcp2_conn_get_negotiated_version: { parameters: ['pointer'], result: 'u32' },
-  ngtcp2_conn_set_tls_error: { parameters: ['pointer', 'i32'], result: 'void', fast: false },
-  ngtcp2_conn_set_tls_native_handle: { parameters: ['pointer', 'pointer'], result: 'void', fast: false },
-  ngtcp2_conn_get_tls_native_handle: { parameters: ['pointer'], result: 'pointer' },
-  ngtcp2_conn_get_conn_info_versioned: { parameters: ['pointer', 'i32', 'pointer'], result: 'void', fast: false },
-  ngtcp2_conn_set_local_transport_params_versioned: { parameters: ['pointer', 'pointer', 'i32'], result: 'i32', fast: false },
-  ngtcp2_conn_get_local_transport_params: { parameters: ['pointer'], result: 'pointer' },
-  ngtcp2_conn_get_remote_transport_params: { parameters: ['pointer'], result: 'pointer' },
-  ngtcp2_conn_decode_and_set_remote_transport_params: { parameters: ['pointer', 'pointer', 'usize'], result: 'i32', fast: false },
-  ngtcp2_conn_encode_0rtt_transport_params: { parameters: ['pointer', 'buffer', 'usize'], result: 'isize', fast: false },
-  ngtcp2_conn_decode_and_set_0rtt_transport_params: { parameters: ['pointer', 'buffer', 'usize'], result: 'i32', fast: false },
-  ngtcp2_conn_encode_local_transport_params: { parameters: ['pointer', 'pointer', 'usize'], result: 'isize', fast: false },
-  ngtcp2_conn_get_active_dcid: { parameters: ['pointer', 'pointer'], result: 'usize' },
-  ngtcp2_conn_get_dcid: { parameters: ['pointer'], result: 'pointer' },
-  ngtcp2_conn_get_path: { parameters: ['pointer'], result: 'pointer' },
-  ngtcp2_conn_get_scid: { parameters: ['pointer', 'pointer'], result: 'usize' },
-  ngtcp2_conn_open_bidi_stream: { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32', fast: false },
-  ngtcp2_conn_open_uni_stream: { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32', fast: false },
-  ngtcp2_conn_get_streams_bidi_left: { parameters: ['pointer'], result: 'u64' },
-  ngtcp2_conn_get_streams_uni_left: { parameters: ['pointer'], result: 'u64' },
-  ngtcp2_conn_set_stream_user_data: { parameters: ['pointer', 'i64', 'pointer'], result: 'i32', fast: false },
-  ngtcp2_conn_shutdown_stream: { parameters: ['pointer', 'u32', 'i64', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_shutdown_stream_read: { parameters: ['pointer', 'u32', 'i64', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_shutdown_stream_write: { parameters: ['pointer', 'u32', 'i64', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_extend_max_stream_offset: { parameters: ['pointer', 'i64', 'u64'], result: 'i32', fast: false },
-  ngtcp2_conn_extend_max_offset: { parameters: ['pointer', 'u64'], result: 'void', fast: false },
-  ngtcp2_conn_extend_max_streams_bidi: { parameters: ['pointer', 'usize'], result: 'void', fast: false },
-  ngtcp2_conn_extend_max_streams_uni: { parameters: ['pointer', 'usize'], result: 'void', fast: false },
-  ngtcp2_conn_submit_crypto_data: { parameters: ['pointer', 'i32', 'buffer', 'usize'], result: 'i32', fast: false },
-  ngtcp2_conn_submit_new_token: { parameters: ['pointer', 'buffer', 'usize'], result: 'i32', fast: false },
-  ngtcp2_is_bidi_stream: { parameters: ['i64'], result: 'i32' },
+  ngtcp2_version: {
+    parameters: ['i32'],
+    result: 'pointer'
+  },
+  ngtcp2_strerror: {
+    parameters: ['i32'],
+    result: 'pointer'
+  },
+  ngtcp2_err_is_fatal: {
+    parameters: ['i32'],
+    result: 'i32'
+  },
+  ngtcp2_err_infer_quic_transport_error_code: {
+    parameters: ['i32'],
+    result: 'u64'
+  },
+  ngtcp2_is_supported_version: {
+    parameters: ['u32'],
+    result: 'i32'
+  },
+  ngtcp2_ccerr_default: {
+    parameters: ['pointer'],
+    result: 'void'
+  },
+  ngtcp2_ccerr_set_liberr: {
+    parameters: [
+      'pointer',
+      'i32',
+      'buffer',
+      'usize'
+    ],
+    result: 'void'
+  },
+  ngtcp2_ccerr_set_tls_alert: {
+    parameters: [
+      'pointer',
+      'u8',
+      'buffer',
+      'usize'
+    ],
+    result: 'void'
+  },
+  ngtcp2_ccerr_set_transport_error: {
+    parameters: [
+      'pointer',
+      'u64',
+      'buffer',
+      'usize'
+    ],
+    result: 'void'
+  },
+  ngtcp2_ccerr_set_application_error: {
+    parameters: [
+      'pointer',
+      'u64',
+      'buffer',
+      'usize'
+    ],
+    result: 'void'
+  },
+  ngtcp2_accept: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize'
+    ],
+    result: 'i32'
+  },
+  ngtcp2_settings_default_versioned: {
+    parameters: ['i32', 'pointer'],
+    result: 'void'
+  },
+  ngtcp2_transport_params_default_versioned: {
+    parameters: ['i32', 'pointer'],
+    result: 'void'
+  },
+  ngtcp2_transport_params_encode_versioned: {
+    parameters: [
+      'i32',
+      'pointer',
+      'usize',
+      'pointer'
+    ],
+    result: 'isize'
+  },
+  ngtcp2_transport_params_decode_versioned: {
+    parameters: [
+      'i32',
+      'pointer',
+      'pointer',
+      'usize'
+    ],
+    result: 'i32'
+  },
+  ngtcp2_transport_params_decode_new: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'usize',
+      'pointer'
+    ],
+    result: 'i32'
+  },
+  ngtcp2_transport_params_del: {
+    parameters: ['pointer', 'pointer'],
+    result: 'void'
+  },
+  ngtcp2_cid_init: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize'
+    ],
+    result: 'void'
+  },
+  ngtcp2_cid_eq: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32'
+  },
+  ngtcp2_pkt_decode_version_cid: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize',
+      'usize'
+    ],
+    result: 'i32'
+  },
+  ngtcp2_pkt_write_version_negotiation: {
+    parameters: [
+      'buffer',
+      'usize',
+      'u8',
+      'buffer',
+      'usize',
+      'buffer',
+      'usize',
+      'buffer',
+      'usize'
+    ],
+    result: 'isize'
+  },
+  ngtcp2_pkt_decode_hd_long: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize'
+    ],
+    result: 'isize'
+  },
+  ngtcp2_conn_client_new_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'pointer',
+      'pointer',
+      'u32',
+      'i32',
+      'pointer',
+      'i32',
+      'pointer',
+      'i32',
+      'pointer',
+      'pointer',
+      'pointer'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_server_new_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'pointer',
+      'pointer',
+      'u32',
+      'i32',
+      'pointer',
+      'i32',
+      'pointer',
+      'i32',
+      'pointer',
+      'pointer',
+      'pointer'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_del: {
+    parameters: ['pointer'],
+    result: 'void'
+  },
+  ngtcp2_conn_read_pkt_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'i32',
+      'pointer',
+      'buffer',
+      'usize',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_write_pkt_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'i32',
+      'pointer',
+      'buffer',
+      'usize',
+      'u64'
+    ],
+    result: 'isize',
+    fast: false
+  },
+  ngtcp2_conn_writev_stream_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'i32',
+      'pointer',
+      'buffer',
+      'usize',
+      'pointer',
+      'u32',
+      'i64',
+      'pointer',
+      'usize',
+      'u64'
+    ],
+    result: 'isize',
+    fast: false
+  },
+  ngtcp2_conn_write_datagram_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'i32',
+      'pointer',
+      'buffer',
+      'usize',
+      'pointer',
+      'u32',
+      'u64',
+      'buffer',
+      'usize',
+      'u64'
+    ],
+    result: 'isize'
+  },
+  ngtcp2_conn_write_connection_close_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'i32',
+      'pointer',
+      'buffer',
+      'usize',
+      'pointer',
+      'u64'
+    ],
+    result: 'isize',
+    fast: false
+  },
+  ngtcp2_conn_initiate_key_update: {
+    parameters: ['pointer', 'u64'],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_initiate_immediate_migration: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_initiate_migration: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_set_local_addr: {
+    parameters: ['pointer', 'pointer'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_set_path_user_data: {
+    parameters: ['pointer', 'pointer'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_get_ccerr: {
+    parameters: ['pointer'],
+    result: 'pointer'
+  },
+  ngtcp2_conn_get_expiry: {
+    parameters: ['pointer'],
+    result: 'u64'
+  },
+  ngtcp2_conn_get_pto: {
+    parameters: ['pointer'],
+    result: 'u64'
+  },
+  ngtcp2_conn_handle_expiry: {
+    parameters: ['pointer', 'u64'],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_set_keep_alive_timeout: {
+    parameters: ['pointer', 'u64'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_update_pkt_tx_time: {
+    parameters: ['pointer', 'u64'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_get_send_quantum: {
+    parameters: ['pointer'],
+    result: 'usize'
+  },
+  ngtcp2_conn_get_max_tx_udp_payload_size: {
+    parameters: ['pointer'],
+    result: 'usize'
+  },
+  ngtcp2_conn_get_handshake_completed: {
+    parameters: ['pointer'],
+    result: 'i32'
+  },
+  ngtcp2_conn_tls_handshake_completed: {
+    parameters: ['pointer'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_get_tls_alert: {
+    parameters: ['pointer'],
+    result: 'u8'
+  },
+  ngtcp2_conn_get_tls_error: {
+    parameters: ['pointer'],
+    result: 'i32'
+  },
+  ngtcp2_conn_get_negotiated_version: {
+    parameters: ['pointer'],
+    result: 'u32'
+  },
+  ngtcp2_conn_set_tls_error: {
+    parameters: ['pointer', 'i32'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_set_tls_native_handle: {
+    parameters: ['pointer', 'pointer'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_get_tls_native_handle: {
+    parameters: ['pointer'],
+    result: 'pointer'
+  },
+  ngtcp2_conn_get_conn_info_versioned: {
+    parameters: [
+      'pointer',
+      'i32',
+      'pointer'
+    ],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_set_local_transport_params_versioned: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'i32'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_get_local_transport_params: {
+    parameters: ['pointer'],
+    result: 'pointer'
+  },
+  ngtcp2_conn_get_remote_transport_params: {
+    parameters: ['pointer'],
+    result: 'pointer'
+  },
+  ngtcp2_conn_decode_and_set_remote_transport_params: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'usize'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_encode_0rtt_transport_params: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize'
+    ],
+    result: 'isize',
+    fast: false
+  },
+  ngtcp2_conn_decode_and_set_0rtt_transport_params: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_encode_local_transport_params: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'usize'
+    ],
+    result: 'isize',
+    fast: false
+  },
+  ngtcp2_conn_get_active_dcid: {
+    parameters: ['pointer', 'pointer'],
+    result: 'usize'
+  },
+  ngtcp2_conn_get_dcid: {
+    parameters: ['pointer'],
+    result: 'pointer'
+  },
+  ngtcp2_conn_get_path: {
+    parameters: ['pointer'],
+    result: 'pointer'
+  },
+  ngtcp2_conn_get_scid: {
+    parameters: ['pointer', 'pointer'],
+    result: 'usize'
+  },
+  ngtcp2_conn_open_bidi_stream: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'pointer'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_open_uni_stream: {
+    parameters: [
+      'pointer',
+      'pointer',
+      'pointer'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_get_streams_bidi_left: {
+    parameters: ['pointer'],
+    result: 'u64'
+  },
+  ngtcp2_conn_get_streams_uni_left: {
+    parameters: ['pointer'],
+    result: 'u64'
+  },
+  ngtcp2_conn_set_stream_user_data: {
+    parameters: [
+      'pointer',
+      'i64',
+      'pointer'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_shutdown_stream: {
+    parameters: [
+      'pointer',
+      'u32',
+      'i64',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_shutdown_stream_read: {
+    parameters: [
+      'pointer',
+      'u32',
+      'i64',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_shutdown_stream_write: {
+    parameters: [
+      'pointer',
+      'u32',
+      'i64',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_extend_max_stream_offset: {
+    parameters: [
+      'pointer',
+      'i64',
+      'u64'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_extend_max_offset: {
+    parameters: ['pointer', 'u64'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_extend_max_streams_bidi: {
+    parameters: ['pointer', 'usize'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_extend_max_streams_uni: {
+    parameters: ['pointer', 'usize'],
+    result: 'void',
+    fast: false
+  },
+  ngtcp2_conn_submit_crypto_data: {
+    parameters: [
+      'pointer',
+      'i32',
+      'buffer',
+      'usize'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_conn_submit_new_token: {
+    parameters: [
+      'pointer',
+      'buffer',
+      'usize'
+    ],
+    result: 'i32',
+    fast: false
+  },
+  ngtcp2_is_bidi_stream: {
+    parameters: ['i64'],
+    result: 'i32'
+  }
 };
-
 type StatelessResetWriter = (dest: Uint8Array, destlen: number, token: Uint8Array, random: Uint8Array, randomLength: number) => number;
 type ResetStreamAtWriter = (conn: ArrayBuffer, flags: number, streamId: bigint, appErrorCode: bigint, finalSize: bigint) => number;
-
 let _lib: ReturnType<typeof dlopen> | null = null;
 let _statelessResetLib: ReturnType<typeof dlopen> | null = null;
 let _statelessResetWriter: StatelessResetWriter | null = null;
 let _resetStreamAtLib: ReturnType<typeof dlopen> | null = null;
 let _resetStreamAtWriter: ResetStreamAtWriter | null = null;
 const _loadErrors: string[] = [];
-
 function statelessResetTokenPointer(token: Uint8Array): ArrayBuffer {
-  const view = token.byteOffset === 0 && token.byteLength === token.buffer.byteLength
-    ? token
-    : token.slice();
+  const view = token.byteOffset === 0 && token.byteLength === token.buffer.byteLength ? token : token.slice();
   return Pointer.of(view.buffer);
 }
-
 function tryOpenResetStreamAt(path: string): ResetStreamAtWriter | null {
   const signature = {
-    parameters: ['pointer', 'u32', 'i64', 'u64', 'u64'],
+    parameters: [
+      'pointer',
+      'u32',
+      'i64',
+      'u64',
+      'u64'
+    ],
     result: 'i32',
-    fast: false,
+    fast: false
   } as const;
   try {
-    const lib = dlopen(path, {
-      ngtcp2_conn_shutdown_stream_at: signature,
-    });
+    const lib = dlopen(path, { ngtcp2_conn_shutdown_stream_at: signature });
     _resetStreamAtLib = lib;
-    return (conn, flags, streamId, appErrorCode, finalSize) => Number(
-      lib.symbols.ngtcp2_conn_shutdown_stream_at(conn, flags, streamId, appErrorCode, finalSize),
-    );
+    return (conn, flags, streamId, appErrorCode, finalSize) => Number(lib.symbols.ngtcp2_conn_shutdown_stream_at(conn, flags, streamId, appErrorCode, finalSize));
   } catch (error1) {
     try {
-      const lib = dlopen(path, {
-        ngtcp2_conn_reset_stream_at: signature,
-      });
+      const lib = dlopen(path, { ngtcp2_conn_reset_stream_at: signature });
       _resetStreamAtLib = lib;
-      return (conn, flags, streamId, appErrorCode, finalSize) => Number(
-        lib.symbols.ngtcp2_conn_reset_stream_at(conn, flags, streamId, appErrorCode, finalSize),
-      );
+      return (conn, flags, streamId, appErrorCode, finalSize) => Number(lib.symbols.ngtcp2_conn_reset_stream_at(conn, flags, streamId, appErrorCode, finalSize));
     } catch (error2) {
       const message1 = error1 instanceof Error ? error1.message : String(error1);
       const message2 = error2 instanceof Error ? error2.message : String(error2);
@@ -170,33 +633,34 @@ function tryOpenResetStreamAt(path: string): ResetStreamAtWriter | null {
     }
   }
 }
-
 function tryOpenStatelessReset(path: string): StatelessResetWriter | null {
   try {
-    const lib = dlopen(path, {
-      ngtcp2_pkt_write_stateless_reset2: { parameters: ['buffer', 'usize', 'pointer', 'buffer', 'usize'], result: 'isize' },
-    });
+    const lib = dlopen(path, { ngtcp2_pkt_write_stateless_reset2: {
+      parameters: [
+        'buffer',
+        'usize',
+        'pointer',
+        'buffer',
+        'usize'
+      ],
+      result: 'isize'
+    } });
     _statelessResetLib = lib;
-    return (dest, destlen, token, random, randomLength) => Number(lib.symbols.ngtcp2_pkt_write_stateless_reset2(
-      dest,
-      destlen,
-      statelessResetTokenPointer(token),
-      random,
-      randomLength,
-    ));
+    return (dest, destlen, token, random, randomLength) => Number(lib.symbols.ngtcp2_pkt_write_stateless_reset2(dest, destlen, statelessResetTokenPointer(token), random, randomLength));
   } catch (error2) {
     try {
-      const lib = dlopen(path, {
-        ngtcp2_pkt_write_stateless_reset: { parameters: ['buffer', 'usize', 'buffer', 'buffer', 'usize'], result: 'isize' },
-      });
+      const lib = dlopen(path, { ngtcp2_pkt_write_stateless_reset: {
+        parameters: [
+          'buffer',
+          'usize',
+          'buffer',
+          'buffer',
+          'usize'
+        ],
+        result: 'isize'
+      } });
       _statelessResetLib = lib;
-      return (dest, destlen, token, random, randomLength) => Number(lib.symbols.ngtcp2_pkt_write_stateless_reset(
-        dest,
-        destlen,
-        token,
-        random,
-        randomLength,
-      ));
+      return (dest, destlen, token, random, randomLength) => Number(lib.symbols.ngtcp2_pkt_write_stateless_reset(dest, destlen, token, random, randomLength));
     } catch (error1) {
       const message2 = error2 instanceof Error ? error2.message : String(error2);
       const message1 = error1 instanceof Error ? error1.message : String(error1);
@@ -205,7 +669,6 @@ function tryOpenStatelessReset(path: string): StatelessResetWriter | null {
     }
   }
 }
-
 for (const path of _CANDIDATES) {
   try {
     const lib = dlopen(path, _SYMBOLS);
@@ -220,44 +683,33 @@ for (const path of _CANDIDATES) {
     _loadErrors.push(`${path}: ${message}`);
   }
 }
-
 export const ngtcp2Available = _lib !== null && _statelessResetWriter !== null;
 export const ngtcp2ResetStreamAtAvailable = _resetStreamAtWriter !== null;
 export const sym = _lib?.symbols ?? null;
 export const ptr = _lib?.pointers ?? null;
-
 export function ngtcp2PktWriteStatelessReset(dest: Uint8Array, destlen: number, token: Uint8Array, random: Uint8Array, randomLength: number): number {
   if (_statelessResetWriter === null) throw new Error('ngtcp2 stateless reset writer is unavailable');
   return _statelessResetWriter(dest, destlen, token, random, randomLength);
 }
-
 export function ngtcp2ConnResetStreamAt(conn: ArrayBuffer, flags: number, streamId: bigint, appErrorCode: bigint, finalSize: bigint): number {
   if (_resetStreamAtWriter === null) throw new Error('ngtcp2 reset_stream_at is not supported by the loaded library');
   return _resetStreamAtWriter(conn, flags, streamId, appErrorCode, finalSize);
 }
-
 export function requireNgtcp2(): ReturnType<typeof dlopen> {
   if (_lib === null) {
-    throw new Error(
-      'libngtcp2 not found. Install via:\n' +
-      '  macOS:  brew install libngtcp2 openssl@3\n' +
-      '  Debian/Ubuntu: apt install libngtcp2-16 libngtcp2-crypto-gnutls8' +
-      (_loadErrors.length === 0 ? '' : '\nTried:\n  ' + _loadErrors.join('\n  ')),
-    );
+    throw new Error('libngtcp2 not found. Install via:\n' + '  macOS:  brew install libngtcp2 openssl@3\n' + '  Debian/Ubuntu: apt install libngtcp2-16 libngtcp2-crypto-gnutls8' + (_loadErrors.length === 0 ? '' : '\nTried:\n  ' + _loadErrors.join('\n  ')));
   }
   return _lib;
 }
-
 export function readCStr(ptr: ArrayBuffer): string {
   const bytes: number[] = [];
-  for (let i = 0; ; i++) {
+  for (let i = 0;; i++) {
     const b = Pointer.readU8(ptr, i);
     if (b === 0) break;
     bytes.push(b);
   }
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
-
 function loadedNgtcp2VersionNumber(): number {
   if (_lib === null) return 0;
   try {
@@ -267,17 +719,11 @@ function loadedNgtcp2VersionNumber(): number {
     return 0;
   }
 }
-
 const _VERSION_NUM = loadedNgtcp2VersionNumber();
-
-export const NGTCP2_PROTO_VER_V1 = 0x00000001;
-export const NGTCP2_PROTO_VER_V2 = 0x6b3343cf;
-export const NGTCP2_CALLBACKS_VERSION = _VERSION_NUM >= 0x011600
-  ? 3
-  : _VERSION_NUM >= 0x010e00
-    ? 2
-    : 1;
-export const NGTCP2_SETTINGS_VERSION = _VERSION_NUM >= 0x010f00 ? 3 : 2;
+export const NGTCP2_PROTO_VER_V1 = 1;
+export const NGTCP2_PROTO_VER_V2 = 1798521807;
+export const NGTCP2_CALLBACKS_VERSION = _VERSION_NUM >= 71168 ? 3 : _VERSION_NUM >= 69120 ? 2 : 1;
+export const NGTCP2_SETTINGS_VERSION = _VERSION_NUM >= 69376 ? 3 : 2;
 export const NGTCP2_TRANSPORT_PARAMS_VERSION = 1;
 export const NGTCP2_PKT_INFO_VERSION = 1;
 export const NGTCP2_PKT_INFO_SIZE = 8;
@@ -288,7 +734,7 @@ export const NGTCP2_ECN_ECT_0 = 2;
 export const NGTCP2_ECN_CE = 3;
 export const NGTCP2_ECN_MASK = 3;
 export const NGTCP2_NO_ERROR = 0;
-export const NGTCP2_CRYPTO_ERROR = 0x100;
+export const NGTCP2_CRYPTO_ERROR = 256;
 export const NGTCP2_MAX_UDP_PAYLOAD_SIZE = 1200;
 export const NGTCP2_DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE = 65527;
 export const NGTCP2_MIN_INITIAL_DCIDLEN = 8;
@@ -314,26 +760,21 @@ export const NGTCP2_ERR_DRAINING = -224;
 export const NGTCP2_TOKEN_TYPE_UNKNOWN = 0;
 export const NGTCP2_TOKEN_TYPE_RETRY = 1;
 export const NGTCP2_TOKEN_TYPE_NEW_TOKEN = 2;
-export const NGTCP2_WRITE_STREAM_FLAG_FIN = 0x02;
-export const NGTCP2_WRITE_STREAM_FLAG_MORE = 0x01;
-export const NGTCP2_WRITE_DATAGRAM_FLAG_NONE = 0x00;
-export const NGTCP2_DATAGRAM_FLAG_0RTT = 0x01;
+export const NGTCP2_WRITE_STREAM_FLAG_FIN = 2;
+export const NGTCP2_WRITE_STREAM_FLAG_MORE = 1;
+export const NGTCP2_WRITE_DATAGRAM_FLAG_NONE = 0;
+export const NGTCP2_DATAGRAM_FLAG_0RTT = 1;
 export const NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE = 0;
 export const NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE = 1;
 export const NGTCP2_PATH_VALIDATION_RESULT_SUCCESS = 0;
 export const NGTCP2_PATH_VALIDATION_RESULT_FAILURE = 1;
 export const NGTCP2_PATH_VALIDATION_RESULT_ABORTED = 2;
-export const NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR = 0x01;
-export const NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN = 0x02;
-
+export const NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR = 1;
+export const NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN = 2;
 // ABI layout constants for the libngtcp2 v1 callback / v2 settings LP64 ABI.
 // These values are generated with C sizeof/offsetof and keep this module pure
 // FFI: JS owns the backing ArrayBuffers and passes their addresses to ngtcp2.
-export const NGTCP2_CALLBACKS_SIZE = NGTCP2_CALLBACKS_VERSION >= 3
-  ? 360
-  : NGTCP2_CALLBACKS_VERSION >= 2
-    ? 328
-    : 320;
+export const NGTCP2_CALLBACKS_SIZE = NGTCP2_CALLBACKS_VERSION >= 3 ? 360 : NGTCP2_CALLBACKS_VERSION >= 2 ? 328 : 320;
 export const NGTCP2_SETTINGS_SIZE = NGTCP2_SETTINGS_VERSION >= 3 ? 200 : 184;
 export const NGTCP2_TRANSPORT_PARAMS_SIZE = 344;
 export const NGTCP2_CCERR_SIZE = 40;
@@ -343,7 +784,6 @@ export const NGTCP2_PATH_SIZE = 40;
 export const NGTCP2_PKT_HD_SIZE = 112;
 export const NGTCP2_VEC_SIZE = 16;
 export const NGTCP2_VERSION_CID_SIZE = 40;
-
 export const CB_CLIENT_INITIAL = 0;
 export const CB_RECV_CLIENT_INITIAL = 8;
 export const CB_RECV_CRYPTO_DATA = 16;
@@ -389,7 +829,6 @@ export const CB_RECV_STATELESS_RESET2 = 328;
 export const CB_GET_NEW_CONNECTION_ID2 = 336;
 export const CB_DCID_STATUS2 = 344;
 export const CB_GET_PATH_CHALLENGE_DATA2 = 352;
-
 export const CID_DATALEN = 0;
 export const CID_DATA = 8;
 export const ADDR_ADDR = 0;

@@ -1,10 +1,8 @@
 /**
- * Tests for internal:cluster/registry — realm ownership tree.
- */
-
+* Tests for internal:cluster/registry — realm ownership tree.
+*/
 import { describe, it } from 'fino:test/test';
 import { RealmRegistry } from 'internal:cluster/registry';
-
 describe('RealmRegistry', () => {
   it('register and getNodeId', (t) => {
     const reg = new RealmRegistry();
@@ -12,7 +10,6 @@ describe('RealmRegistry', () => {
     t.equal(reg.getNodeId('portA'), 'node1', 'returns registered nodeId');
     t.equal(reg.getNodeId('missing'), undefined, 'returns undefined for unknown portId');
   });
-
   it('exit removes the port and returns it in the list', (t) => {
     const reg = new RealmRegistry();
     reg.register('portA', null, 'node1');
@@ -20,7 +17,6 @@ describe('RealmRegistry', () => {
     t.ok(removed.includes('portA'), 'removed list includes portA');
     t.equal(reg.getNodeId('portA'), undefined, 'portA gone after exit');
   });
-
   it('exit recursively removes descendants', (t) => {
     const reg = new RealmRegistry();
     reg.register('root', null, 'node1');
@@ -32,7 +28,6 @@ describe('RealmRegistry', () => {
     t.ok(removed.includes('grandchild'), 'grandchild removed');
     t.equal(reg.getNodeId('grandchild'), undefined, 'grandchild gone');
   });
-
   it('exit only removes the subtree, not unrelated ports', (t) => {
     const reg = new RealmRegistry();
     reg.register('portA', null, 'node1');
@@ -44,7 +39,6 @@ describe('RealmRegistry', () => {
     t.ok(!removed.includes('portB'), 'portB untouched');
     t.equal(reg.getNodeId('portB'), 'node1', 'portB still registered');
   });
-
   it('nodeDown removes all ports on that node and their descendants', (t) => {
     const reg = new RealmRegistry();
     reg.register('parentPort', null, 'nodeA');
@@ -52,13 +46,12 @@ describe('RealmRegistry', () => {
     reg.register('grandchildPort', 'childPort', 'nodeC');
     // nodeB goes down
     const removed = reg.nodeDown('nodeB');
-    const removedIds = removed.map(r => r.portId);
+    const removedIds = removed.map((r) => r.portId);
     t.ok(removedIds.includes('childPort'), 'childPort on dead node removed');
     t.ok(removedIds.includes('grandchildPort'), 'grandchild removed too');
     t.ok(!removedIds.includes('parentPort'), 'parentPort on nodeA is unaffected');
     t.equal(reg.getNodeId('parentPort'), 'nodeA', 'parentPort still registered');
   });
-
   it('getChildren returns child portIds', (t) => {
     const reg = new RealmRegistry();
     reg.register('parent', null, 'node1');
@@ -69,7 +62,6 @@ describe('RealmRegistry', () => {
     t.ok(children.includes('childB'), 'childB listed');
     t.equal(children.length, 2, 'exactly 2 children');
   });
-
   it('getParentPortId returns the parent edge', (t) => {
     const reg = new RealmRegistry();
     reg.register('parent', null, 'node1');
@@ -78,7 +70,6 @@ describe('RealmRegistry', () => {
     t.equal(reg.getParentPortId('child'), 'parent', 'child returns parent port');
     t.equal(reg.getParentPortId('missing'), undefined, 'unknown port returns undefined');
   });
-
   it('exit of parent removes portId from parent-of-parent children set', (t) => {
     const reg = new RealmRegistry();
     reg.register('root', null, 'n1');

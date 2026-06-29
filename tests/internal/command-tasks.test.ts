@@ -10,7 +10,6 @@ import { createReplCommand } from 'internal:commands/repl';
 import { createRootCommand } from 'internal:commands/root';
 import { createRunCommand } from 'internal:commands/run';
 import { createTestCommand } from 'internal:commands/test';
-
 describe('builtin command tasks', () => {
   it('exposes every builtin CLI command as a Task', (t) => {
     const commands = [
@@ -23,15 +22,18 @@ describe('builtin command tasks', () => {
       createDocCommand(),
       createFmtCommand(),
       createLintCommand(),
-      createReplCommand(),
+      createReplCommand()
     ];
-
     for (const command of commands) t.ok(command instanceof Task, `${command.name} is a Task`);
   });
-
   it('exposes doc subcommands as nested Tasks', (t) => {
     const doc = createDocCommand();
-    t.deepEqual(doc.list().map((task) => task.name), ['build', 'show', 'search', 'test']);
+    t.deepEqual(doc.list().map((task) => task.name), [
+      'build',
+      'show',
+      'search',
+      'test'
+    ]);
     for (const child of doc.list()) t.ok(child instanceof Task, `${child.name} is a Task`);
   });
 });

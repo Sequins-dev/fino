@@ -1,11 +1,10 @@
 /**
- * Real upstream Web Platform Tests integration.
- *
- * The schedule is generated from `third_party/wpt`; test bodies are never
- * copied into this repository. Runnable `.any.js` files execute in isolated
- * Fino child processes after loading upstream `resources/testharness.js`.
- */
-
+* Real upstream Web Platform Tests integration.
+*
+* The schedule is generated from `third_party/wpt`; test bodies are never
+* copied into this repository. Runnable `.any.js` files execute in isolated
+* Fino child processes after loading upstream `resources/testharness.js`.
+*/
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Process, cwd, env, execPath } from 'fino:process';
@@ -13,16 +12,14 @@ import * as loop from 'internal:runtime/loop';
 import { WPT_MANIFEST } from './fixtures/wpt/manifest.generated.ts';
 import { specSuiteSkipReason, specSuitesEnabled } from './spec-gate.ts';
 import type { WptManifestEntry } from './fixtures/wpt/manifest.ts';
-
 const fs = new DiskFileSystem();
 const decoder = new TextDecoder();
 const setupMessage = [
   'Real WPT checkout is missing or the generated manifest is stale.',
   'Run:',
   '  git submodule update --init third_party/wpt',
-  '  ./target/release/fino tests/integration/fixtures/wpt/generate-manifest.ts',
+  '  ./target/release/fino tests/integration/fixtures/wpt/generate-manifest.ts'
 ].join('\n');
-
 async function exists(path: string): Promise<boolean> {
   try {
     await fs.lstat(path);
@@ -31,31 +28,27 @@ async function exists(path: string): Promise<boolean> {
     return false;
   }
 }
-
 async function collect(readable: AsyncIterable<Uint8Array>): Promise<string> {
   let out = '';
   for await (const chunk of readable) out += decoder.decode(chunk);
   return out;
 }
-
 function timeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    loop.timeout(ms).then(() => { throw new Error(`${label} timed out after ${ms}ms`); }),
-  ]);
+  return Promise.race([promise, loop.timeout(ms).then(() => {
+    throw new Error(`${label} timed out after ${ms}ms`);
+  })]);
 }
-
 async function runWpt(entry: WptManifestEntry, subtest: string | null, variant: string): Promise<void> {
   const proc = new Process(execPath, [
     'tests/integration/fixtures/wpt/runner-child.ts',
     entry.path,
     subtest ?? '',
-    variant,
+    variant
   ], { cwd: cwd() });
   proc.stdin.close();
   const stdout = collect(proc.stdout);
   const stderr = collect(proc.stderr);
-  const status = await timeout(proc.wait(), 10_000, `WPT ${entry.path}`);
+  const status = await timeout(proc.wait(), 1e4, `WPT ${entry.path}`);
   const out = (await stdout).trim();
   const err = await stderr;
   if (status.code !== 0) {
@@ -69,23 +62,16 @@ async function runWpt(entry: WptManifestEntry, subtest: string | null, variant: 
     throw new Error(message);
   }
 }
-
 const hasCheckout = await exists(`${cwd()}/third_party/wpt/resources/testharness.js`);
 const hasManifest = WPT_MANIFEST.entries.length > 0;
 const categoryFilter = env.FINO_WPT_CATEGORY;
 const pathFilter = env.FINO_WPT_PATH;
 const fileLevel = env.FINO_WPT_FILE_LEVEL === '1';
-const deferredCategories = new Map([
-  [
-    'encoding',
-    [
-      'deferred: full WHATWG Encoding WPT coverage needs legacy decoder tables',
-      'and stateful encoders/decoders before this category can be useful for',
-      'category-by-category conformance work',
-    ].join(' '),
-  ],
-]);
-
+const deferredCategories = new Map([['encoding', [
+  'deferred: full WHATWG Encoding WPT coverage needs legacy decoder tables',
+  'and stateful encoders/decoders before this category can be useful for',
+  'category-by-category conformance work'
+].join(' ')]]);
 function selectedEntries(): WptManifestEntry[] {
   let entries = WPT_MANIFEST.entries;
   if (categoryFilter !== undefined && categoryFilter.length > 0) {
@@ -97,7 +83,6 @@ function selectedEntries(): WptManifestEntry[] {
   }
   return entries;
 }
-
 describe('upstream WPT web globals', () => {
   if (!specSuitesEnabled) {
     it('preflight', { skip: specSuiteSkipReason }, () => {});

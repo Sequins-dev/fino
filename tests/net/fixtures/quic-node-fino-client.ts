@@ -1,21 +1,23 @@
 import { argv } from 'fino:process';
 import { QuicEndpoint } from 'fino:net/quic';
-
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const port = Number(argv[2]);
 const scenario = argv.find((arg) => arg.startsWith('--scenario='))?.slice('--scenario='.length) ?? 'h3';
 if (!Number.isFinite(port) || port <= 0) throw new Error('missing Node server port');
-
 const alpnProtocols = scenario === 'alpn-mismatch' ? ['fino-no-match'] : ['h3'];
 const endpoint = new QuicEndpoint({ alpnProtocols });
 try {
   let connection;
   try {
     connection = await endpoint.connect({
-      address: { family: 'ipv4', ip: '127.0.0.1', port },
+      address: {
+        family: 'ipv4',
+        ip: '127.0.0.1',
+        port
+      },
       serverName: 'localhost',
-      alpnProtocols,
+      alpnProtocols
     });
   } catch (error) {
     if (scenario !== 'alpn-mismatch') throw error;

@@ -1,21 +1,22 @@
 /**
- * Benchmarks for fino:compress
- *
- * Run with: cargo run -- bench benchmarks/compress.bench.ts
- */
-
+* Benchmarks for fino:compress
+*
+* Run with: cargo run -- bench benchmarks/compress.bench.ts
+*/
 import { compress, decompress, createCompressor, createDecompressor, brotliAvailable } from 'fino:compress';
 import { bench } from 'fino:bench';
-
 const payload = new TextEncoder().encode('hello '.repeat(128));
-const formats = brotliAvailable
-  ? ['gzip', 'deflate', 'deflate-raw', 'brotli'] as const
-  : ['gzip', 'deflate', 'deflate-raw'] as const;
-
-const compressedByFormat = new Map(
-  formats.map((format) => [format, compress(payload, { format })])
-);
-
+const formats = brotliAvailable ? [
+  'gzip',
+  'deflate',
+  'deflate-raw',
+  'brotli'
+] as const : [
+  'gzip',
+  'deflate',
+  'deflate-raw'
+] as const;
+const compressedByFormat = new Map(formats.map((format) => [format, compress(payload, { format })]));
 function concat(parts: Uint8Array[]): Uint8Array {
   let total = 0;
   for (const part of parts) total += part.byteLength;
@@ -27,7 +28,6 @@ function concat(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
-
 bench('compress', (b) => {
   for (const format of formats) {
     const compressed = compressedByFormat.get(format)!;
@@ -38,7 +38,7 @@ bench('compress', (b) => {
       return concat([
         ...compressor.write(payload.slice(0, payload.byteLength / 2)),
         ...compressor.write(payload.slice(payload.byteLength / 2)),
-        ...compressor.finish(),
+        ...compressor.finish()
       ]);
     });
     b.measure(`${format} stream decompress`, () => {
@@ -46,7 +46,7 @@ bench('compress', (b) => {
       return concat([
         ...decompressor.write(compressed.slice(0, compressed.byteLength / 2)),
         ...decompressor.write(compressed.slice(compressed.byteLength / 2)),
-        ...decompressor.finish(),
+        ...decompressor.finish()
       ]);
     });
   }

@@ -1,21 +1,24 @@
 /**
- * Integration tests for `fino doc`.
- */
-
+* Integration tests for `fino doc`.
+*/
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { chdir, cwd, execPath, Process } from 'fino:process';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import { createRootCommand } from 'internal:commands/root';
-
-const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1_000_000);
-
+const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1e6);
 interface DocJsonMember {
   name: string;
   id?: string;
   kind?: string;
   signatures?: string[];
-  doc?: { text: string; blocks?: Array<{ kind: string; [key: string]: unknown }> };
+  doc?: {
+    text: string;
+    blocks?: Array<{
+      kind: string;
+      [key: string]: unknown;
+    }>;
+  };
   reExport?: {
     mode: string;
     sourceModule: string;
@@ -23,20 +26,23 @@ interface DocJsonMember {
     sourceId?: string;
   };
 }
-
 interface DocJsonExport extends DocJsonMember {
   signature?: string;
   members: DocJsonMember[];
 }
-
 interface DocJsonModule {
   name: string;
   id?: string;
   sourceModule?: string;
-  doc: { text: string; blocks?: Array<{ kind: string; [key: string]: unknown }> };
+  doc: {
+    text: string;
+    blocks?: Array<{
+      kind: string;
+      [key: string]: unknown;
+    }>;
+  };
   exports: DocJsonExport[];
 }
-
 interface DocJsonGuide {
   title: string;
   path: string;
@@ -45,16 +51,13 @@ interface DocJsonGuide {
   text: string;
   weight?: number;
 }
-
 interface DocJsonOutput {
   modules: DocJsonModule[];
   guides?: DocJsonGuide[];
 }
-
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
 }
-
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);
@@ -65,7 +68,6 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
     return merged;
   }, new Uint8Array(0)));
 }
-
 async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   try {
     await fs.lstat(path);
@@ -74,7 +76,6 @@ async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
     return false;
   }
 }
-
 async function ensureDir(fs: DiskFileSystem, path: string): Promise<void> {
   if (path === '.' || path === '/' || path.length === 0) return;
   if (await exists(fs, path)) return;
@@ -83,9 +84,8 @@ async function ensureDir(fs: DiskFileSystem, path: string): Promise<void> {
   await ensureDir(fs, parent);
   await fs.mkdir(path);
 }
-
 async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
-  if (!(await exists(fs, path))) return;
+  if (!await exists(fs, path)) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -95,8 +95,14 @@ async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
   }
   await fs.unlink(path);
 }
-
-async function runCli(args: string[], nextCwd: string): Promise<{ stdout: string; stderr: string; result: { code: number; signal: number | null } }> {
+async function runCli(args: string[], nextCwd: string): Promise<{
+  stdout: string;
+  stderr: string;
+  result: {
+    code: number;
+    signal: number | null;
+  };
+}> {
   const previousCwd = cwd();
   try {
     chdir(nextCwd);
@@ -104,35 +110,46 @@ async function runCli(args: string[], nextCwd: string): Promise<{ stdout: string
     return {
       stdout: typeof result === 'string' ? result : '',
       stderr: '',
-      result: { code: 0, signal: null },
+      result: {
+        code: 0,
+        signal: null
+      }
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
       stdout: '',
       stderr: message + '\n',
-      result: { code: 1, signal: null },
+      result: {
+        code: 1,
+        signal: null
+      }
     };
   } finally {
     chdir(previousCwd);
   }
 }
-
-async function runCliProcess(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
+async function runCliProcess(args: string[], cwd: string): Promise<{
+  stdout: string;
+  stderr: string;
+  result: Awaited<ReturnType<Process['wait']>>;
+}> {
   const proc = new Process(execPath, args, { cwd });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait(),
+    proc.wait()
   ]);
-  return { stdout, stderr, result };
+  return {
+    stdout,
+    stderr,
+    result
+  };
 }
-
 describe('fino doc', () => {
   let fs: DiskFileSystem;
   let appDir: string;
-
   before(async () => {
     fs = new DiskFileSystem();
     await ensureDir(fs, TEST_DIR);
@@ -152,7 +169,7 @@ This README becomes the documentation home page.
     await fs.writeFile(appDir + '/logo.svg', '<svg xmlns="http://www.w3.org/2000/svg"><title>Fixture logo</title></svg>\n');
     await fs.writeFile(appDir + '/package.json', JSON.stringify({
       name: 'fixture-project',
-      version: '1.0.0',
+      version: '1.0.0'
     }, null, 2) + '\n');
     await ensureDir(fs, appDir + '/guides');
     await fs.writeFile(appDir + '/guides/start.md', `---
@@ -163,6 +180,8 @@ weight: 10
 Start with the [advanced guide](./advanced.md), then open the [advanced API](../advanced.ts#open).
 
 This guide explains first steps for fixture users.
+
+## Usage
 
 \`\`\`ts
 import { open } from '../advanced.ts';
@@ -661,21 +680,17 @@ export function afterEnum(): string {
 }
 `);
   });
-
   after(async () => {
     await removeTree(fs, TEST_DIR);
   });
-
   it('writes markdown and json docs for exported declarations', async (t) => {
     const outDir = appDir + '/docs';
     const jsonPath = outDir + '/api.json';
     await removeTree(fs, outDir);
     const run = await runCli(['doc', './api.ts'], appDir);
-
     t.equal(run.result.code, 0, 'doc exits successfully');
     t.equal(run.stderr, '', 'doc writes no stderr');
     t.ok(run.stdout.includes('Wrote'), 'doc reports generated files');
-
     const markdown = await fs.readFile(outDir + '/api.md');
     t.ok(markdown.includes('# api'), 'markdown includes module heading');
     t.ok(markdown.includes('Example API module.'), 'markdown includes module prelude');
@@ -697,9 +712,8 @@ export function afterEnum(): string {
     t.ok(markdown.includes('## VERSION'), 'markdown includes const section');
     t.ok(markdown.includes('## ConfigSource'), 'markdown includes long type alias section');
     t.ok(markdown.includes('type ConfigSource = {\n'), 'markdown formats long type alias across lines');
-    t.ok(markdown.includes("format: 'json' | 'yaml' | 'toml';"), 'markdown preserves nested literal union in formatted signature');
+    t.ok(markdown.includes('format: \'json\' | \'yaml\' | \'toml\';'), 'markdown preserves nested literal union in formatted signature');
     t.equal(markdown.includes('internal marker'), false, 'markdown strips comments from formatted signatures');
-
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const firstModule = json.modules[0]!;
     const firstExport = firstModule.exports[0]!;
@@ -725,22 +739,27 @@ export function afterEnum(): string {
     t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === '#token'), false, 'json excludes private class property');
     t.equal(secretBox!.members.some((item: DocJsonMember) => item.name === '#peek'), false, 'json excludes private class method');
   });
-
   it('includes private and internal members only with --include-private', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', './api.ts', '--format', 'both', '--include-private', '--title', 'Private API'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './api.ts',
+      '--format',
+      'both',
+      '--include-private',
+      '--title',
+      'Private API'
+    ], appDir);
     t.equal(run.result.code, 0, 'private doc build exits successfully');
     t.equal(run.stderr, '', 'private doc build writes no stderr');
-
     const html = await fs.readFile(docsDir + '/api.html');
     t.ok(html.includes('traceId'), 'include-private html includes @internal interface member');
     t.ok(html.includes('debugToken'), 'include-private html includes @internal class member');
     t.ok(html.includes('#token'), 'include-private html includes private class field');
     t.ok(html.includes('#peek'), 'include-private html includes private class method');
-
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const api = json.modules.find((moduleDoc) => moduleDoc.name === 'api')!;
     const response = api.exports.find((item) => item.name === 'ApiResponse')!;
@@ -750,7 +769,6 @@ export function afterEnum(): string {
     t.equal(secretBox.members.some((member) => member.name === '#token'), true, 'include-private json includes private class property');
     t.equal(secretBox.members.some((member) => member.name === '#peek'), true, 'include-private json includes private class method');
   });
-
   it('keeps generated public module docs free of private-member stubs by default', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
@@ -761,43 +779,41 @@ export function afterEnum(): string {
       '--format',
       'both',
       '--title',
-      'SDK Public Docs',
+      'SDK Public Docs'
     ], appDir);
-
     t.equal(run.result.code, 0, 'public module doc build exits successfully');
     t.equal(run.stderr, '', 'public module doc build writes no stderr');
-
     const html = await fs.readFile(docsDir + '/private-stubs.html');
     const markdown = await fs.readFile(docsDir + '/private-stubs.md');
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const moduleDoc = json.modules.find((item) => item.name === 'private-stubs')!;
-
     t.equal(html.includes('private field on'), false, 'html excludes generated private-field stub text');
     t.equal(html.includes('private member'), false, 'html excludes private-member language');
     t.equal(html.includes('#secret'), false, 'html excludes private field anchors');
     t.equal(markdown.includes('private field on'), false, 'markdown excludes generated private-field stub text');
     t.equal(markdown.includes('#secret'), false, 'markdown excludes private field anchors');
     t.equal(moduleDoc.exports.some((item) => item.name.startsWith('#')), false, 'json excludes private exported names');
-    t.equal(
-      moduleDoc.exports.some((item) => item.members.some((member) => member.name.startsWith('#'))),
-      false,
-      'json excludes private member names',
-    );
+    t.equal(moduleDoc.exports.some((item) => item.members.some((member) => member.name.startsWith('#'))), false, 'json excludes private member names');
   });
-
   it('builds v2 json, html, and sqlite search artifacts', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
     const dbPath = docsDir + '/docs.db';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', './advanced.ts', '--format', 'both', '--title', 'Advanced API'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './advanced.ts',
+      '--format',
+      'both',
+      '--title',
+      'Advanced API'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     t.ok(run.stdout.includes('/docs/advanced.md'), 'doc build reports markdown');
     t.ok(run.stdout.includes('/docs/advanced.html'), 'doc build reports html');
     t.ok(run.stdout.includes('/docs/docs.db'), 'doc build reports sqlite index');
-
     const html = await fs.readFile(docsDir + '/advanced.html');
     t.ok(html.includes('<title>Advanced API - advanced</title>'), 'html includes title');
     t.ok(html.includes('<p class="muted">advanced.ts</p>'), 'html shows module path relative to project root');
@@ -846,12 +862,10 @@ export function afterEnum(): string {
     t.equal(html.includes('trace()'), false, 'html excludes @internal class members by default');
     t.equal(html.includes('internalOnly'), false, 'html excludes TypeScript private class members by default');
     t.equal(html.includes('Hidden implementation detail.'), false, 'html excludes private member docs by default');
-
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const moduleDoc = json.modules[0]!;
     const open = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'open')!;
     const box = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'ResourceBox')!;
-
     t.equal(moduleDoc.id, 'module:advanced', 'module has stable id');
     t.equal(moduleDoc.sourceModule, 'advanced', 'module has source specifier metadata');
     t.equal(open.id, 'advanced.open', 'export has stable id');
@@ -865,16 +879,22 @@ export function afterEnum(): string {
     t.equal(box.members.some((member) => member.kind === 'static-method' && member.name === 'from'), true, 'static method is classified');
     t.equal(box.members.some((member) => member.name === 'trace'), false, 'internal members are excluded from json by default');
     t.equal(box.members.some((member) => member.name === 'internalOnly'), false, 'internal members are excluded by default');
-
-    const found = await runCli(['doc', 'search', 'display', 'name'], appDir);
+    const found = await runCli([
+      'doc',
+      'search',
+      'display',
+      'name'
+    ], appDir);
     t.equal(found.result.code, 0, 'doc search uses the generated sqlite index');
     t.ok(found.stdout.includes('advanced.ResourceBox.name'), 'sqlite search finds member docs');
-
-    const hidden = await runCli(['doc', 'search', 'internalOnly'], appDir);
+    const hidden = await runCli([
+      'doc',
+      'search',
+      'internalOnly'
+    ], appDir);
     t.equal(hidden.result.code, 0, 'doc search exits successfully for private member query');
     t.equal(hidden.stdout.includes('advanced.ResourceBox.internalOnly'), false, 'sqlite search excludes private members by default');
   });
-
   it('assigns unique doc ids to same-name type and value exports', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
@@ -897,77 +917,111 @@ export const Widget = class WidgetImpl {
   id = 'fixture';
 };
 `);
-
-    const run = await runCli(['doc', 'build', './same-name.ts', '--format', 'both', '--title', 'Same Name API'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './same-name.ts',
+      '--format',
+      'both',
+      '--title',
+      'Same Name API'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     t.ok(run.stdout.includes('/docs/docs.db'), 'doc build reports sqlite index');
-
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const moduleDoc = json.modules.find((item) => item.name === 'same-name')!;
     const widgets = moduleDoc.exports.filter((item) => item.name === 'Widget');
     const ids = widgets.map((item) => item.id);
-
     t.equal(widgets.length, 2, 'json keeps both same-name exports');
     t.equal(new Set(ids).size, ids.length, 'same-name exports have distinct symbol ids');
     t.ok(ids.includes('same-name.Widget'), 'first same-name export keeps the canonical symbol id');
     t.ok(ids.includes('same-name.Widget:const'), 'second same-name export is disambiguated by kind');
   });
-
   it('shows and searches fixed project docs artifacts', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
     const dbPath = docsDir + '/docs.db';
     await removeTree(fs, docsDir);
-
-    const coldSearch = await runCli(['doc', 'search', 'display', 'name'], appDir);
+    const coldSearch = await runCli([
+      'doc',
+      'search',
+      'display',
+      'name'
+    ], appDir);
     t.equal(coldSearch.result.code, 0, 'doc search exits successfully without prebuilt artifacts');
     t.equal(coldSearch.stderr, '', 'doc search writes no stderr');
     t.ok(coldSearch.stdout.includes('advanced.ResourceBox.name'), 'search finds member docs');
     t.equal(coldSearch.stdout.includes('Wrote '), false, 'search does not surface transparent build output');
     t.equal(await exists(fs, jsonPath), true, 'search generates missing api.json in fixed docs dir');
     t.equal(await exists(fs, dbPath), true, 'search generates missing docs.db in fixed docs dir');
-
-    const shown = await runCli(['doc', 'show', 'advanced.open'], appDir);
+    const shown = await runCli([
+      'doc',
+      'show',
+      'advanced.open'
+    ], appDir);
     t.equal(shown.result.code, 0, 'doc show exits successfully');
     t.ok(shown.stdout.includes('## open'), 'show renders symbol heading');
     t.ok(shown.stdout.includes('function open(name: string): string'), 'show renders overload signature without export prefix');
     t.equal(shown.stdout.includes('export function open'), false, 'show omits redundant export prefix');
     t.ok(shown.stdout.includes('```ts\nconst value = open("primary");'), 'show renders examples');
-
-    const member = await runCli(['doc', 'show', 'ResourceBox.name'], appDir);
+    const member = await runCli([
+      'doc',
+      'show',
+      'ResourceBox.name'
+    ], appDir);
     t.equal(member.result.code, 0, 'doc show finds member-qualified names');
     t.ok(member.stdout.includes('### name'), 'member show renders member heading');
-
     if (sqliteAvailable) {
       await fs.unlink(dbPath);
-      const fromJson = await runCli(['doc', 'search', 'doc:display'], appDir);
+      const fromJson = await runCli([
+        'doc',
+        'search',
+        'doc:display'
+      ], appDir);
       t.equal(fromJson.result.code, 0, 'doc search regenerates missing sqlite index from api.json');
       t.ok(fromJson.stdout.includes('advanced.ResourceBox.name'), 'regenerated sqlite search supports FTS column queries');
       t.equal(await exists(fs, dbPath), true, 'search writes regenerated docs.db in fixed docs dir');
     }
-
-    const rejectedDb = await runCli(['doc', 'search', 'display', '--db', 'custom.db'], appDir);
+    const rejectedDb = await runCli([
+      'doc',
+      'search',
+      'display',
+      '--db',
+      'custom.db'
+    ], appDir);
     t.notEqual(rejectedDb.result.code, 0, 'doc search rejects --db');
-
-    const rejectedOut = await runCli(['doc', 'search', 'display', '--out', 'custom-docs'], appDir);
+    const rejectedOut = await runCli([
+      'doc',
+      'search',
+      'display',
+      '--out',
+      'custom-docs'
+    ], appDir);
     t.notEqual(rejectedOut.result.code, 0, 'doc search rejects --out');
-
-    const ambiguous = await runCli(['doc', 'show', 'name'], appDir);
+    const ambiguous = await runCli([
+      'doc',
+      'show',
+      'name'
+    ], appDir);
     t.equal(ambiguous.result.code, 0, 'ambiguous show exits successfully');
     t.ok(ambiguous.stdout.includes('Multiple matches'), 'ambiguous show reports candidates');
   });
-
   it('refreshes stale search artifacts from new and changed inputs', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
     await removeTree(fs, docsDir);
-
-    const initial = await runCli(['doc', 'build', './advanced.ts', '--format', 'both', '--title', 'Advanced API'], appDir);
+    const initial = await runCli([
+      'doc',
+      'build',
+      './advanced.ts',
+      '--format',
+      'both',
+      '--title',
+      'Advanced API'
+    ], appDir);
     t.equal(initial.result.code, 0, 'initial doc build exits successfully');
     t.equal(initial.stderr, '', 'initial doc build writes no stderr');
-
     await fs.writeFile(appDir + '/incremental-new.ts', `/**
  * Incremental new module fixture.
  */
@@ -979,16 +1033,17 @@ export function staleSearchAdded(): string {
   return 'added';
 }
 `);
-
-    const foundNew = await runCli(['doc', 'search', 'staleSearchAdded'], appDir);
+    const foundNew = await runCli([
+      'doc',
+      'search',
+      'staleSearchAdded'
+    ], appDir);
     t.equal(foundNew.result.code, 0, 'stale search refresh exits successfully');
     t.equal(foundNew.stderr, '', 'stale search refresh writes no stderr');
     t.ok(foundNew.stdout.includes('incremental-new.staleSearchAdded'), 'search finds a symbol from a new source file');
     t.equal(foundNew.stdout.includes('Wrote '), false, 'search does not surface incremental refresh output');
-
     let json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     t.ok(json.modules.some((item) => item.name === 'incremental-new'), 'incremental search refresh updates api.json');
-
     await fs.writeFile(appDir + '/incremental-new.ts', `/**
  * Incremental changed module fixture.
  */
@@ -1007,25 +1062,28 @@ export function staleSearchChanged(): string {
   return 'changed';
 }
 `);
-
-    const foundChanged = await runCli(['doc', 'search', 'staleSearchChanged'], appDir);
+    const foundChanged = await runCli([
+      'doc',
+      'search',
+      'staleSearchChanged'
+    ], appDir);
     t.equal(foundChanged.result.code, 0, 'changed-file stale search refresh exits successfully');
     t.ok(foundChanged.stdout.includes('incremental-new.staleSearchChanged'), 'search finds a symbol added to an existing source file');
-
-    const shown = await runCli(['doc', 'show', 'staleSearchChanged'], appDir);
+    const shown = await runCli([
+      'doc',
+      'show',
+      'staleSearchChanged'
+    ], appDir);
     t.equal(shown.result.code, 0, 'show refreshes stale api json');
     t.ok(shown.stdout.includes('## staleSearchChanged'), 'show renders the newly added symbol');
-
     json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     const incremental = json.modules.find((item) => item.name === 'incremental-new')!;
     t.ok(incremental.exports.some((item) => item.name === 'staleSearchChanged'), 'api.json includes changed-file symbol');
   });
-
   it('refreshes re-exported symbols and removes deleted cached files', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
     await removeTree(fs, docsDir);
-
     await fs.writeFile(appDir + '/incremental-source.ts', `/**
  * Incremental source fixture.
  */
@@ -1041,11 +1099,18 @@ export const firstReExported = 'first';
 
 export * from './incremental-source.ts';
 `);
-
-    const initial = await runCli(['doc', 'build', './incremental-facade.ts', './incremental-source.ts', '--format', 'both', '--title', 'Incremental API'], appDir);
+    const initial = await runCli([
+      'doc',
+      'build',
+      './incremental-facade.ts',
+      './incremental-source.ts',
+      '--format',
+      'both',
+      '--title',
+      'Incremental API'
+    ], appDir);
     t.equal(initial.result.code, 0, 'initial re-export build exits successfully');
     t.equal(initial.stderr, '', 'initial re-export build writes no stderr');
-
     await fs.writeFile(appDir + '/incremental-source.ts', `/**
  * Incremental source fixture.
  */
@@ -1060,26 +1125,33 @@ export const firstReExported = 'first';
  */
 export const laterReExported = 'later';
 `);
-
-    const found = await runCli(['doc', 'search', 'laterReExported'], appDir);
+    const found = await runCli([
+      'doc',
+      'search',
+      'laterReExported'
+    ], appDir);
     t.equal(found.result.code, 0, 're-export stale search refresh exits successfully');
     t.ok(found.stdout.includes('incremental-facade.laterReExported'), 'search finds the newly re-exported facade symbol');
-
     await fs.unlink(appDir + '/incremental-source.ts');
-    const rebuilt = await runCli(['doc', 'build', './incremental-facade.ts', '--format', 'both', '--title', 'Incremental API'], appDir);
+    const rebuilt = await runCli([
+      'doc',
+      'build',
+      './incremental-facade.ts',
+      '--format',
+      'both',
+      '--title',
+      'Incremental API'
+    ], appDir);
     t.equal(rebuilt.result.code, 0, 'rebuild after deleting an input exits successfully');
     t.equal(rebuilt.stderr, '', 'rebuild after deleting an input writes no stderr');
-
     const json = JSON.parse(await fs.readFile(jsonPath)) as DocJsonOutput;
     t.equal(json.modules.some((item) => item.name === 'incremental-source'), false, 'api.json drops deleted source files');
     t.equal(json.modules.some((item) => item.exports.some((exp) => exp.name === 'laterReExported')), false, 'api.json drops symbols from deleted sources');
     t.equal(await exists(fs, docsDir + '/incremental-source.html'), false, 'doc build prunes generated output for deleted files');
   });
-
   it('keeps public and private doc caches separate', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
-
     await fs.writeFile(appDir + '/incremental-private.ts', `/**
  * Incremental private fixture.
  */
@@ -1096,33 +1168,61 @@ export const publicCacheValue = true;
  */
 export const privateCacheValue = true;
 `);
-
-    const privateRun = await runCli(['doc', 'build', './incremental-private.ts', '--include-private', '--format', 'both', '--title', 'Private API'], appDir);
+    const privateRun = await runCli([
+      'doc',
+      'build',
+      './incremental-private.ts',
+      '--include-private',
+      '--format',
+      'both',
+      '--title',
+      'Private API'
+    ], appDir);
     t.equal(privateRun.result.code, 0, 'private doc build exits successfully');
     t.equal(privateRun.stderr, '', 'private doc build writes no stderr');
-
-    const publicRun = await runCli(['doc', 'build', './incremental-private.ts', '--format', 'both', '--title', 'Public API'], appDir);
+    const publicRun = await runCli([
+      'doc',
+      'build',
+      './incremental-private.ts',
+      '--format',
+      'both',
+      '--title',
+      'Public API'
+    ], appDir);
     t.equal(publicRun.result.code, 0, 'public doc build exits successfully');
     t.equal(publicRun.stderr, '', 'public doc build writes no stderr');
-
-    const hidden = await runCli(['doc', 'search', 'privateCacheValue'], appDir);
+    const hidden = await runCli([
+      'doc',
+      'search',
+      'privateCacheValue'
+    ], appDir);
     t.equal(hidden.result.code, 0, 'public search exits successfully');
     t.equal(hidden.stdout.includes('incremental-private.privateCacheValue'), false, 'public search does not reuse the private cache entry');
   });
-
   it('writes README-backed root html index and mirrors source paths', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', './advanced.ts', './pkg/index.ts', './alpha/client.ts', './beta/client.ts', './internal-only.ts', '--format', 'html', '--title', 'Docs Site'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './advanced.ts',
+      './pkg/index.ts',
+      './alpha/client.ts',
+      './beta/client.ts',
+      './internal-only.ts',
+      '--format',
+      'html',
+      '--title',
+      'Docs Site'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
-
     const index = await fs.readFile(docsDir + '/index.html');
     t.ok(index.includes('<title>Docs Site</title>'), 'root index has site title');
     t.equal(index.includes('<nav class="docs-page-index"'), false, 'root index does not render the API symbol index');
     t.ok(index.includes('<h1>Fixture API</h1>'), 'root index renders project README');
     t.ok(index.includes('<img src="./logo.svg" alt="Fixture logo">'), 'root index preserves README image URLs for copied docs assets');
+    t.ok(index.includes('main img[src$=".svg"]{filter:invert(1) brightness(1.25)}'), 'dark mode inverts copied SVG images such as logos');
     t.equal(await fs.readFile(docsDir + '/logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><title>Fixture logo</title></svg>\n', 'doc build copies README image assets into docs output');
     t.ok(index.includes('<a href="../guides/start.md">Project guide</a>'), 'root index rewrites README links for generated output');
     t.ok(index.includes('<li>It should render Markdown lists.</li>'), 'root index renders README markdown blocks');
@@ -1136,56 +1236,69 @@ export const privateCacheValue = true;
     t.equal(index.includes('internal-only.html'), false, 'sidebar excludes file-level internal modules by default');
     t.ok(!index.includes('<h1 id="module:index">index</h1>'), 'root index is not an index module page');
     t.equal(await exists(fs, docsDir + '/internal-only.html'), false, 'build excludes file-level internal module pages by default');
-
     t.equal(await exists(fs, docsDir + '/pkg/index.html'), false, 'index module does not write a nested index.html page');
     const indexModule = await fs.readFile(docsDir + '/pkg.html');
     t.ok(indexModule.includes('<title>Docs Site - pkg</title>'), 'index module gets parent output page');
     t.ok(indexModule.includes('Package index docs.'), 'index module page renders docs');
     t.ok(indexModule.includes('href="index.html"'), 'folded index module links back to root index');
     t.ok(indexModule.includes('href="alpha/client.html"'), 'folded index module sidebar uses relative links to sibling folders');
-
     const alphaClient = await fs.readFile(docsDir + '/alpha/client.html');
     const betaClient = await fs.readFile(docsDir + '/beta/client.html');
     t.ok(alphaClient.includes('<title>Docs Site - alpha/client</title>'), 'first same-basename module writes mirrored page');
     t.ok(betaClient.includes('<title>Docs Site - beta/client</title>'), 'second same-basename module writes mirrored page');
     t.ok(betaClient.includes('<a href="../alpha/client.html#alpha-client.Client">AlphaClient</a>'), 'markdown source links resolve across mirrored paths');
-
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     t.equal(json.modules.some((moduleDoc) => moduleDoc.name === 'internal-only'), false, 'json excludes file-level internal modules by default');
-
-    const privateRun = await runCli(['doc', 'build', './internal-only.ts', '--format', 'html', '--include-private', '--title', 'Private Docs'], appDir);
+    const privateRun = await runCli([
+      'doc',
+      'build',
+      './internal-only.ts',
+      '--format',
+      'html',
+      '--include-private',
+      '--title',
+      'Private Docs'
+    ], appDir);
     t.equal(privateRun.result.code, 0, 'private doc build exits successfully');
     t.equal(await exists(fs, docsDir + '/internal-only.html'), true, 'include-private includes file-level internal module pages');
     const internalHtml = await fs.readFile(docsDir + '/internal-only.html');
     t.ok(internalHtml.includes('Internal-only module docs.'), 'include-private renders file-level internal module docs');
   });
-
   it('uses the project package name as the default html title', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', './advanced.ts', '--format', 'html'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './advanced.ts',
+      '--format',
+      'html'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
-
     const index = await fs.readFile(docsDir + '/index.html');
     const html = await fs.readFile(docsDir + '/advanced.html');
     t.ok(index.includes('<title>fixture-project</title>'), 'root index uses inferred project title');
     t.ok(index.includes('<p class="docs-sidebar-title"><a href="index.html">fixture-project</a></p>'), 'sidebar home link uses inferred project title');
     t.ok(html.includes('<title>fixture-project - advanced</title>'), 'module page uses inferred project title');
   });
-
   it('renders directory-discovered markdown guides as sidebar and search pages', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', '.', '--format', 'both', '--title', 'Guide Docs'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      '.',
+      '--format',
+      'both',
+      '--title',
+      'Guide Docs'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     t.ok(run.stdout.includes('/docs/guides/start.html'), 'doc build reports guide html');
     t.ok(run.stdout.includes('/docs/guides/start.md'), 'doc build reports guide markdown');
     t.equal(await exists(fs, docsDir + '/README.html'), false, 'root README is not duplicated as a guide page');
-
     const index = await fs.readFile(docsDir + '/index.html');
     t.ok(index.includes('href="guides/start.html"'), 'root README links to generated guide pages');
     t.ok(index.includes('class="docs-sidebar-link docs-sidebar-link-api"'), 'sidebar marks API reference links');
@@ -1203,10 +1316,11 @@ export const privateCacheValue = true;
     t.ok(index.indexOf('href="alpha/guide.html"') < index.indexOf('<div class="docs-sidebar-directory">API Reference</div>'), 'sidebar separates guides from API pages');
     t.ok(index.indexOf('href="guides/start.html"') < index.indexOf('href="guides/advanced.html"'), 'sidebar sorts weighted guides by ascending weight');
     t.ok(index.includes('href="docs/concepts/virtual.html"'), 'sidebar uses virtual guide paths from frontmatter');
-
     const guideHtml = await fs.readFile(docsDir + '/guides/start.html');
     t.ok(guideHtml.includes('<title>Guide Docs - Getting Started</title>'), 'guide html uses markdown title');
-    t.equal(guideHtml.includes('<nav class="docs-page-index"'), false, 'guide pages do not render the API symbol index');
+    t.ok(guideHtml.includes('<nav class="docs-page-index" aria-label="Page table of contents">'), 'guide pages render a right-side table of contents');
+    t.ok(guideHtml.includes('<h2 id="Usage">Usage</h2>'), 'guide markdown headings receive stable anchors');
+    t.ok(guideHtml.includes('<li class="docs-page-index-heading docs-page-index-heading-2"><a href="#Usage">Usage</a></li>'), 'guide table of contents links to heading anchors');
     t.ok(guideHtml.includes('<p class="muted">guides/start.md</p>'), 'guide html shows source path');
     t.equal(guideHtml.includes('weight: 10'), false, 'guide html strips frontmatter');
     t.ok(guideHtml.includes('<a href="advanced.html">advanced guide</a>'), 'guide links resolve to other generated guides');
@@ -1214,19 +1328,15 @@ export const privateCacheValue = true;
     t.ok(guideHtml.includes('<span class="tok-keyword">import</span>'), 'guide fenced code uses syntax highlighting');
     t.ok(guideHtml.includes('<span class="tok-keyword">const</span> value'), 'guide code highlighting preserves code text');
     t.ok(guideHtml.includes('href="start.html" aria-current="page"'), 'guide page marks current sidebar entry');
-
     const advancedGuideHtml = await fs.readFile(docsDir + '/guides/advanced.html');
     t.ok(advancedGuideHtml.includes('<a href="../advanced.html#advanced.ResourceBox">ResourceBox</a>'), 'sibling guide resolves API type links');
     t.ok(advancedGuideHtml.includes('<a href="start.html">getting started</a>'), 'sibling guide resolves guide links');
-
     const virtualGuideHtml = await fs.readFile(docsDir + '/docs/concepts/virtual.html');
     t.ok(virtualGuideHtml.includes('<p class="muted">guides/virtual.md</p>'), 'guide html shows source path even when output path is virtualized');
     t.equal(virtualGuideHtml.includes('path: docs/concepts/virtual.md'), false, 'virtual guide html strips path frontmatter');
-
     const guideMarkdown = await fs.readFile(docsDir + '/guides/start.md');
     t.ok(guideMarkdown.includes('# Getting Started'), 'markdown output copies guide markdown');
     t.equal(guideMarkdown.includes('weight: 10'), false, 'markdown output strips guide frontmatter');
-
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const startGuide = json.guides?.find((guide) => guide.path === 'guides/start.md');
     t.ok(startGuide, 'json records guide metadata');
@@ -1238,23 +1348,31 @@ export const privateCacheValue = true;
     const virtualGuide = json.guides?.find((guide) => guide.path === 'guides/virtual.md');
     t.ok(virtualGuide, 'json records virtual guide metadata');
     t.equal(virtualGuide!.href, 'docs/concepts/virtual.html', 'json records virtual guide output href');
-
-    const found = await runCli(['doc', 'search', 'fixture users'], appDir);
+    const found = await runCli([
+      'doc',
+      'search',
+      'fixture users'
+    ], appDir);
     t.equal(found.result.code, 0, 'doc search exits successfully');
     t.ok(found.stdout.includes('guide:guides/start'), 'sqlite search finds guide pages');
     t.ok(found.stdout.includes('(guide)'), 'sqlite search reports guide kind');
-
     const collisionDir = appDir + '/collision';
     await ensureDir(fs, collisionDir);
     await fs.writeFile(collisionDir + '/index.ts', `/** Collision module. */
 export const collision = true;
 `);
     await fs.writeFile(appDir + '/collision.md', '# Collision Guide\n');
-    const collisionRun = await runCli(['doc', 'build', './collision/index.ts', './collision.md', '--format', 'html'], appDir);
+    const collisionRun = await runCli([
+      'doc',
+      'build',
+      './collision/index.ts',
+      './collision.md',
+      '--format',
+      'html'
+    ], appDir);
     t.notEqual(collisionRun.result.code, 0, 'doc build rejects guide and API output collisions');
     t.ok(collisionRun.stderr.includes('output path collision'), 'collision failure explains the duplicated output path');
   });
-
   it('renders separate docs and API reference trees for a shared source base', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
@@ -1288,20 +1406,21 @@ Handle HTTP requests.
     await fs.writeFile(sectionDir + '/net/http/server.ts', `/** HTTP server API. */
 export function serve(): void {}
 `);
-
     const run = await runCli([
-      'doc', 'build',
+      'doc',
+      'build',
       './section/start.md',
       './section/concepts.md',
       './section/nested/api.ts',
       './section/net/http/guide.md',
       './section/net/http/server.ts',
-      '--format', 'html',
-      '--title', 'Section Docs',
+      '--format',
+      'html',
+      '--title',
+      'Section Docs'
     ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
-
     const startHtml = await fs.readFile(docsDir + '/section/start.html');
     t.ok(startHtml.includes('<p class="docs-sidebar-title"><a href="../index.html">Section Docs</a></p>'), 'sidebar title links home using project title');
     t.ok(startHtml.includes('<div class="docs-sidebar-directory">Docs</div>'), 'sidebar renders docs section');
@@ -1318,7 +1437,6 @@ export function serve(): void {}
     t.ok(startHtml.includes('href="net/http/guide.html"'), 'collapsed docs directory keeps guide link valid');
     t.ok(startHtml.includes('href="net/http/server.html"'), 'collapsed API directory keeps module link valid');
   });
-
   it('rejects invalid guide frontmatter', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
@@ -1339,29 +1457,53 @@ path: ../escape.md
 ---
 # Bad Path
 `);
-
-    const yamlRun = await runCli(['doc', 'build', './invalid-guides/bad-yaml.md', '--format', 'html'], appDir);
+    const yamlRun = await runCli([
+      'doc',
+      'build',
+      './invalid-guides/bad-yaml.md',
+      '--format',
+      'html'
+    ], appDir);
     t.notEqual(yamlRun.result.code, 0, 'doc build rejects malformed guide frontmatter');
     t.ok(yamlRun.stderr.includes('bad-yaml.md'), 'malformed frontmatter error includes guide path');
-
-    const weightRun = await runCli(['doc', 'build', './invalid-guides/bad-weight.md', '--format', 'html'], appDir);
+    const weightRun = await runCli([
+      'doc',
+      'build',
+      './invalid-guides/bad-weight.md',
+      '--format',
+      'html'
+    ], appDir);
     t.notEqual(weightRun.result.code, 0, 'doc build rejects non-numeric guide weight');
     t.ok(weightRun.stderr.includes('bad-weight.md'), 'invalid weight error includes guide path');
-
-    const pathRun = await runCli(['doc', 'build', './invalid-guides/bad-path.md', '--format', 'html'], appDir);
+    const pathRun = await runCli([
+      'doc',
+      'build',
+      './invalid-guides/bad-path.md',
+      '--format',
+      'html'
+    ], appDir);
     t.notEqual(pathRun.result.code, 0, 'doc build rejects unsafe virtual guide path');
     t.ok(pathRun.stderr.includes('bad-path.md'), 'invalid virtual path error includes guide path');
   });
-
   it('documents re-exports from hidden modules and links documented source modules', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
-    const run = await runCli(['doc', 'build', './facade.ts', './hidden-source.ts', './hidden-star.ts', './public-source.ts', './public-star.ts', '--format', 'html', '--title', 'Facade Docs'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './facade.ts',
+      './hidden-source.ts',
+      './hidden-star.ts',
+      './public-source.ts',
+      './public-star.ts',
+      '--format',
+      'html',
+      '--title',
+      'Facade Docs'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     t.equal(await exists(fs, docsDir + '/hidden-source.html'), false, 'internal source module remains hidden by default');
-
     const facadeHtml = await fs.readFile(docsDir + '/facade.html');
     t.ok(facadeHtml.includes('Hidden class docs copied into public facades.'), 'html inlines class docs from hidden source module');
     t.ok(facadeHtml.includes('Hidden value docs copied with the class.'), 'html inlines members from hidden source module');
@@ -1374,14 +1516,12 @@ path: ../escape.md
     t.ok(facadeHtml.includes('Re-exported from <a href="public-star.html#public-star.PublicStar">public-star.PublicStar</a>.'), 'html links star re-exports from documented public modules');
     t.equal(facadeHtml.includes('Public target docs stay canonical in the source module.'), false, 'html does not duplicate public source docs in the facade');
     t.equal(facadeHtml.includes('Public star docs stay canonical in the source module.'), false, 'html does not duplicate public star docs in the facade');
-
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const facade = json.modules.find((moduleDoc) => moduleDoc.name === 'facade')!;
     const publicSource = json.modules.find((moduleDoc) => moduleDoc.name === 'public-source')!;
     t.ok(facade, 'json includes facade module');
     t.ok(publicSource, 'json includes public source module');
     t.equal(json.modules.some((moduleDoc) => moduleDoc.name === 'hidden-source'), false, 'json excludes hidden source module by default');
-
     const publicThing = facade.exports.find((item) => item.name === 'PublicThing')!;
     const hiddenOptions = facade.exports.find((item) => item.name === 'HiddenOptions')!;
     const linkedTarget = facade.exports.find((item) => item.name === 'linkedTarget')!;
@@ -1395,36 +1535,49 @@ path: ../escape.md
     t.equal(linkedTarget.reExport?.sourceId, 'public-source.publicTarget', 'json records linked source symbol id');
     t.equal(publicStar.reExport?.mode, 'link', 'json marks public star re-export as linked');
     t.equal(publicStar.reExport?.sourceId, 'public-star.PublicStar', 'json records linked star source symbol id');
-
     await removeTree(fs, docsDir);
-    const privateRun = await runCli(['doc', 'build', './facade.ts', './hidden-source.ts', './hidden-star.ts', './public-source.ts', './public-star.ts', '--format', 'html', '--include-private', '--title', 'Facade Docs'], appDir);
+    const privateRun = await runCli([
+      'doc',
+      'build',
+      './facade.ts',
+      './hidden-source.ts',
+      './hidden-star.ts',
+      './public-source.ts',
+      './public-star.ts',
+      '--format',
+      'html',
+      '--include-private',
+      '--title',
+      'Facade Docs'
+    ], appDir);
     t.equal(privateRun.result.code, 0, 'private doc build exits successfully');
     const privateFacadeHtml = await fs.readFile(docsDir + '/facade.html');
     t.ok(await exists(fs, docsDir + '/hidden-source.html'), 'include-private emits hidden source page');
     t.ok(privateFacadeHtml.includes('Re-exported from <a href="hidden-source.html#hidden-source.HiddenThing">hidden-source.HiddenThing</a>.'), 'include-private links internal-source re-exports once the source page exists');
     t.equal(privateFacadeHtml.includes('Hidden class docs copied into public facades.'), false, 'include-private does not duplicate hidden source docs in facade');
   });
-
   it('documents moved web globals without exposing internal import specifiers', async (t) => {
     const repoRoot = cwd();
     const docsDir = repoRoot + '/docs';
     await removeTree(fs, docsDir);
-
-    const run = await runCli(['doc', 'build', 'js/globals/fetch.ts', '--format', 'markdown', '--title', 'Globals Docs'], repoRoot);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      'js/globals/fetch.ts',
+      '--format',
+      'markdown',
+      '--title',
+      'Globals Docs'
+    ], repoRoot);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
-
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const fetchModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/fetch.ts');
     t.ok(fetchModule, 'moved fetch globals module is documented by default');
-
     const markdown = await fs.readFile(docsDir + '/js/globals/fetch.md');
     t.equal(markdown.includes('internal:globals/'), false, 'generated module docs do not advertise internal globals specifiers');
-
     await removeTree(fs, docsDir);
   });
-
   it('links OpenTelemetry facade re-exports from public signal modules', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
@@ -1531,7 +1684,6 @@ export const internalLog = true;
  */
 export const internalSdk = true;
 `);
-
     const run = await runCli([
       'doc',
       'build',
@@ -1547,16 +1699,14 @@ export const internalSdk = true;
       '--format',
       'html',
       '--title',
-      'OpenTelemetry Docs',
+      'OpenTelemetry Docs'
     ], appDir);
-
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     t.ok(await exists(fs, docsDir + '/opentelemetry/traces.html'), 'traces page is emitted');
     t.ok(await exists(fs, docsDir + '/opentelemetry/metrics.html'), 'metrics page is emitted');
     t.ok(await exists(fs, docsDir + '/opentelemetry/logs.html'), 'logs page is emitted');
     t.ok(await exists(fs, docsDir + '/opentelemetry/sdk.html'), 'sdk page is emitted');
-
     const facadeHtml = await fs.readFile(docsDir + '/opentelemetry.html');
     t.ok(facadeHtml.includes('Re-exported from <a href="opentelemetry/traces.html#opentelemetry-traces.Span">opentelemetry/traces.Span</a>.'), 'root links trace class re-export');
     t.ok(facadeHtml.includes('Re-exported from <a href="opentelemetry/metrics.html#opentelemetry-metrics.Counter">opentelemetry/metrics.Counter</a>.'), 'root links metric class re-export');
@@ -1567,19 +1717,23 @@ export const internalSdk = true;
     t.equal(facadeHtml.includes('Detailed severity docs should stay on the logs page.'), false, 'root does not inline log detail docs');
     t.equal(facadeHtml.includes('Detailed SDK docs should stay on the sdk page.'), false, 'root does not inline sdk detail docs');
   });
-
   it('documents exported object literal members and cleans stale output', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
     await ensureDir(fs, docsDir);
     await fs.writeFile(docsDir + '/stale.html', '<p>old docs</p>');
-
-    const run = await runCli(['doc', 'build', './surface.ts', '--format', 'both', '--title', 'Surface API'], appDir);
-
+    const run = await runCli([
+      'doc',
+      'build',
+      './surface.ts',
+      '--format',
+      'both',
+      '--title',
+      'Surface API'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc build exits successfully');
     t.equal(run.stderr, '', 'doc build writes no stderr');
     t.equal(await exists(fs, docsDir + '/stale.html'), false, 'doc build removes stale generated html');
-
     const html = await fs.readFile(docsDir + '/surface.html');
     t.ok(html.includes('<ul>'), 'html renders markdown list from module comment');
     t.ok(html.includes('<li>surface.run(input)</li>'), 'html keeps module call list readable');
@@ -1593,7 +1747,6 @@ export const internalSdk = true;
     t.equal(html.includes('localHelper'), false, 'html excludes unexported local helpers');
     t.equal(html.includes('<span class="tok-keyword">export</span>'), false, 'html omits redundant export prefix');
     t.equal(html.includes('Propertys'), false, 'html uses grammatical group labels');
-
     const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
     const moduleDoc = json.modules[0]!;
     const surface = moduleDoc.exports.find((item: DocJsonExport) => item.name === 'surface')!;
@@ -1609,17 +1762,22 @@ export const internalSdk = true;
     t.equal(mode.signature!.includes('export function afterEnum'), false, 'enum signature stops before following exports');
     t.ok(mode.signature!.includes('\n'), 'json records formatted multiline enum signature');
     t.equal(mode.signature!.includes('Internal enum member docs'), false, 'json strips comments from enum signatures');
-
-    const found = await runCli(['doc', 'search', 'nested ping'], appDir);
+    const found = await runCli([
+      'doc',
+      'search',
+      'nested ping'
+    ], appDir);
     t.equal(found.stderr, '', 'doc search writes no stderr');
     t.equal(found.result.code, 0, 'doc search exits successfully');
     t.ok(found.stdout.includes('surface.surface.nested.ping'), 'search finds nested exported object member');
     t.equal(found.stdout.includes('export const'), false, 'search signatures omit export prefix');
   });
-
   it('runs examples from documentation comments', async (t) => {
-    const run = await runCliProcess(['doc', 'test', './examples.ts'], appDir);
-
+    const run = await runCliProcess([
+      'doc',
+      'test',
+      './examples.ts'
+    ], appDir);
     t.equal(run.result.code, 0, 'doc test exits successfully');
     t.equal(run.stderr, '', 'doc test writes no stderr');
     t.ok(run.stdout.includes('4 passed'), 'doc test runs non-ignored examples');

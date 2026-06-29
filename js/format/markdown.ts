@@ -1,136 +1,136 @@
 /**
- * fino:format/markdown - safe Markdown parser and HTML renderer for documentation and templates.
- *
- * This module implements a practical CommonMark/GFM-oriented Markdown surface
- * in TypeScript. It supports headings, paragraphs, blockquotes, thematic
- * breaks, fenced code, nested ordered and unordered lists, task-list markers,
- * GFM tables, reference links, autolinks, emphasis, strong text, code spans,
- * strikethrough, links, images, and raw HTML with safe defaults.
- *
- * Raw HTML is escaped unless `allowRawHtml` is enabled. Link URLs are limited
- * to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
- *
- * Useful references:
- * - CommonMark: https://spec.commonmark.org/0.31.2/
- * - GitHub Flavored Markdown: https://github.github.com/gfm/
- */
-
+* fino:format/markdown - safe Markdown parser and HTML renderer for documentation and templates.
+*
+* This module implements a practical CommonMark/GFM-oriented Markdown surface
+* in TypeScript. It supports headings, paragraphs, blockquotes, thematic
+* breaks, fenced code, nested ordered and unordered lists, task-list markers,
+* GFM tables, reference links, autolinks, emphasis, strong text, code spans,
+* strikethrough, links, images, and raw HTML with safe defaults.
+*
+* Raw HTML is escaped unless `allowRawHtml` is enabled. Link URLs are limited
+* to relative URLs and `http`/`https` unless `allowUnsafeLinks` is set.
+*
+* Useful references:
+* - CommonMark: https://spec.commonmark.org/0.31.2/
+* - GitHub Flavored Markdown: https://github.github.com/gfm/
+*/
 import { Scanner } from '../parsing/scanner.ts';
-
 /**
- * Options controlling Markdown HTML rendering, link safety, and code output.
- */
+* Options controlling Markdown HTML rendering, link safety, and code output.
+*/
 export interface MarkdownOptions {
   /**
-   * Allow link URLs outside the default safe set.
-   */
+  * Allow link URLs outside the default safe set.
+  */
   allowUnsafeLinks?: boolean;
-
   /**
-   * Render raw HTML blocks and inline spans instead of escaping them.
-   *
-   * GFM tagfilter remains active for disallowed raw HTML tags such as `xmp`
-   * and `script`.
-   */
+  * Render raw HTML blocks and inline spans instead of escaping them.
+  *
+  * GFM tagfilter remains active for disallowed raw HTML tags such as `xmp`
+  * and `script`.
+  */
   allowRawHtml?: boolean;
-
   /**
-   * Add this many levels to rendered Markdown headings.
-   */
+  * Add this many levels to rendered Markdown headings.
+  */
   headingOffset?: number;
-
   /**
-   * Reference-style link definitions to use in addition to definitions parsed
-   * from the document.
-   */
+  * Reference-style link definitions to use in addition to definitions parsed
+  * from the document.
+  */
   references?: Record<string, string>;
-
   /**
-   * Rewrite link URLs while rendering.
-   */
+  * Rewrite link URLs while rendering.
+  */
   resolveLink?: (href: string, label: string) => string | undefined;
-
   /**
-   * Render fenced code blocks.
-   */
+  * Render fenced code blocks.
+  */
   renderCode?: (code: string, lang: string, meta: string) => string;
 }
-
 /**
- * Block node in a parsed Markdown document.
- *
- * The tree represents the block constructs rendered by `renderMarkdown()`.
- * Inline Markdown remains in string fields and is interpreted during rendering.
- */
-export type MarkdownNode =
-  | { kind: 'paragraph'; text: string }
-  | { kind: 'heading'; level: number; text: string }
-  | { kind: 'list'; ordered: boolean; tight: boolean; items: MarkdownListItem[] }
-  | { kind: 'code'; lang: string; meta: string; code: string }
-  | { kind: 'blockquote'; nodes: MarkdownNode[] }
-  | { kind: 'thematicBreak' }
-  | { kind: 'htmlBlock'; html: string }
-  | { kind: 'table'; align: TableAlign[]; header: string[]; rows: string[][] };
-
+* Block node in a parsed Markdown document.
+*
+* The tree represents the block constructs rendered by `renderMarkdown()`.
+* Inline Markdown remains in string fields and is interpreted during rendering.
+*/
+export type MarkdownNode = {
+  kind: 'paragraph';
+  text: string;
+} | {
+  kind: 'heading';
+  level: number;
+  text: string;
+} | {
+  kind: 'list';
+  ordered: boolean;
+  tight: boolean;
+  items: MarkdownListItem[];
+} | {
+  kind: 'code';
+  lang: string;
+  meta: string;
+  code: string;
+} | {
+  kind: 'blockquote';
+  nodes: MarkdownNode[];
+} | {
+  kind: 'thematicBreak';
+} | {
+  kind: 'htmlBlock';
+  html: string;
+} | {
+  kind: 'table';
+  align: TableAlign[];
+  header: string[];
+  rows: string[][];
+};
 /**
- * Parsed list item content.
- *
- * `nodes` contains the item blocks. `task` is `true` for checked GFM task
- * items, `false` for unchecked items, and omitted for ordinary list items.
- */
+* Parsed list item content.
+*
+* `nodes` contains the item blocks. `task` is `true` for checked GFM task
+* items, `false` for unchecked items, and omitted for ordinary list items.
+*/
 export interface MarkdownListItem {
   nodes: MarkdownNode[];
   task?: boolean;
 }
-
 /**
- * GFM table column alignment.
- */
+* GFM table column alignment.
+*/
 export type TableAlign = 'left' | 'right' | 'center' | undefined;
-
 /**
- * Parsed Markdown tree and reference-style link definitions.
- */
+* Parsed Markdown tree and reference-style link definitions.
+*/
 export interface MarkdownDocument {
   /**
-   * Block nodes in source order.
-   */
+  * Block nodes in source order.
+  */
   nodes: MarkdownNode[];
   /**
-   * Normalized reference-style link definitions parsed from the document.
-   */
+  * Normalized reference-style link definitions parsed from the document.
+  */
   references: Record<string, string>;
 }
-
 interface Line {
   raw: string;
   text: string;
   indent: number;
 }
-
 interface ParseState {
   lines: Line[];
   index: number;
   references: Record<string, string>;
 }
-
 function escapeHtml(value: unknown): string {
-  return String(value)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-
 function escapeAttribute(value: unknown): string {
   return escapeHtml(value);
 }
-
 function normalizeReference(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
-
 function isSafeHref(href: string, options: MarkdownOptions): boolean {
   if (options.allowUnsafeLinks) return true;
   const trimmed = href.trim().toLowerCase();
@@ -138,78 +138,93 @@ function isSafeHref(href: string, options: MarkdownOptions): boolean {
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return false;
   return trimmed.length > 0;
 }
-
 function readLine(scanner: Scanner): string | undefined {
   if (scanner.done) return undefined;
-  const line = scanner.eatUntil((code) => code === 0x0A || code === 0x0D);
+  const line = scanner.eatUntil((code) => code === 10 || code === 13);
   if (scanner.match('\r\n')) return line;
   scanner.eatChar('\n') || scanner.eatChar('\r');
   return line;
 }
-
 function toLine(raw: string): Line {
   const spaces = /^ */.exec(raw)?.[0].length ?? 0;
-  return { raw, text: raw.slice(spaces), indent: spaces };
+  return {
+    raw,
+    text: raw.slice(spaces),
+    indent: spaces
+  };
 }
-
-function splitFenceInfo(info: string): { lang: string; meta: string } {
+function splitFenceInfo(info: string): {
+  lang: string;
+  meta: string;
+} {
   const trimmed = info.trim();
   const match = /^(\S+)?\s*(.*)$/.exec(trimmed);
   return {
     lang: match?.[1] ?? '',
-    meta: match?.[2]?.trim() ?? '',
+    meta: match?.[2]?.trim() ?? ''
   };
 }
-
-function referenceDefinition(line: string): { id: string; href: string } | undefined {
+function referenceDefinition(line: string): {
+  id: string;
+  href: string;
+} | undefined {
   const match = /^\s*\[([^\]]+)\]:\s*(\S+)(?:\s+.*)?$/.exec(line);
   if (!match) return undefined;
-  return { id: normalizeReference(match[1]!), href: match[2]! };
+  return {
+    id: normalizeReference(match[1]!),
+    href: match[2]!
+  };
 }
-
-function listMarker(line: Line, baseIndent: number): { ordered: boolean; rest: string; markerWidth: number } | undefined {
+function listMarker(line: Line, baseIndent: number): {
+  ordered: boolean;
+  rest: string;
+  markerWidth: number;
+} | undefined {
   if (line.indent < baseIndent) return undefined;
   const current = line.raw.slice(baseIndent);
   const unordered = /^([-*+])\s+(.+)$/.exec(current);
-  if (unordered) return { ordered: false, rest: unordered[2]!, markerWidth: unordered[1]!.length + 1 };
+  if (unordered) return {
+    ordered: false,
+    rest: unordered[2]!,
+    markerWidth: unordered[1]!.length + 1
+  };
   const ordered = /^(\d+[.)])\s+(.+)$/.exec(current);
-  if (ordered) return { ordered: true, rest: ordered[2]!, markerWidth: ordered[1]!.length + 1 };
+  if (ordered) return {
+    ordered: true,
+    rest: ordered[2]!,
+    markerWidth: ordered[1]!.length + 1
+  };
   return undefined;
 }
-
 function thematicBreak(line: string): boolean {
   return /^(?: {0,3})([-*_])(?:\s*\1){2,}\s*$/.test(line);
 }
-
-function heading(line: string): { level: number; text: string } | undefined {
+function heading(line: string): {
+  level: number;
+  text: string;
+} | undefined {
   const match = /^(#{1,6})(?:\s+|$)(.*?)(?:\s+#+\s*)?$/.exec(line);
   if (!match) return undefined;
-  return { level: match[1]!.length, text: match[2]!.trim() };
+  return {
+    level: match[1]!.length,
+    text: match[2]!.trim()
+  };
 }
-
 function setextHeading(line: string): 1 | 2 | undefined {
   if (/^=+\s*$/.test(line)) return 1;
   if (/^-+\s*$/.test(line)) return 2;
   return undefined;
 }
-
 function htmlBlockStart(line: string): boolean {
-  return /^<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/>)/i.test(line)
-    || /^<!--/.test(line)
-    || /^<\?/.test(line)
-    || /^<![A-Z]/.test(line)
-    || /^<!\[CDATA\[/.test(line);
+  return /^<\/?(?:address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul)(?:\s|>|\/>)/i.test(line) || /^<!--/.test(line) || /^<\?/.test(line) || /^<![A-Z]/.test(line) || /^<!\[CDATA\[/.test(line);
 }
-
 function disallowedRawHtmlTag(line: string): boolean {
   return /^<\/?(?:title|textarea|style|xmp|iframe|noembed|noframes|script|plaintext)(?=\s|>|\/>)/i.test(line);
 }
-
 function renderRawHtml(html: string, options: MarkdownOptions): string {
   if (!options.allowRawHtml) return escapeHtml(html);
   return html.replace(/<\/?(?:title|textarea|style|xmp|iframe|noembed|noframes|script|plaintext)(?=\s|>|\/>)/gi, (tag) => `&lt;${tag.slice(1)}`);
 }
-
 function splitTableRow(line: string): string[] {
   const source = line.trim().replace(/^\|/, '').replace(/\|$/, '');
   const cells: string[] = [];
@@ -236,7 +251,6 @@ function splitTableRow(line: string): string[] {
   cells.push(cell.trim());
   return cells;
 }
-
 function parseTableDelimiter(line: string): TableAlign[] | undefined {
   const cells = splitTableRow(line);
   const align: TableAlign[] = [];
@@ -248,8 +262,10 @@ function parseTableDelimiter(line: string): TableAlign[] | undefined {
   }
   return align;
 }
-
-function tableStart(state: ParseState): { align: TableAlign[]; header: string[] } | undefined {
+function tableStart(state: ParseState): {
+  align: TableAlign[];
+  header: string[];
+} | undefined {
   const header = state.lines[state.index];
   const delimiter = state.lines[state.index + 1];
   if (!header || !delimiter || !header.raw.includes('|')) return undefined;
@@ -257,35 +273,25 @@ function tableStart(state: ParseState): { align: TableAlign[]; header: string[] 
   if (!align) return undefined;
   const cells = splitTableRow(header.text);
   if (cells.length !== align.length) return undefined;
-  return { align, header: cells };
+  return {
+    align,
+    header: cells
+  };
 }
-
 function isBlockStart(state: ParseState, baseIndent: number): boolean {
   const line = state.lines[state.index];
   if (!line || line.raw.trim() === '') return true;
   if (line.indent < baseIndent) return true;
   const text = line.raw.slice(baseIndent);
-  return Boolean(
-    referenceDefinition(line.raw)
-      || /^```/.test(text)
-      || heading(text)
-      || thematicBreak(text)
-      || /^> ?/.test(text)
-      || listMarker(line, baseIndent)
-      || htmlBlockStart(text)
-      || tableStart(state),
-  );
+  return Boolean(referenceDefinition(line.raw) || /^```/.test(text) || heading(text) || thematicBreak(text) || /^> ?/.test(text) || listMarker(line, baseIndent) || htmlBlockStart(text) || tableStart(state));
 }
-
 function continuesListAfterBlank(line: Line | undefined, baseIndent: number): boolean {
   if (!line) return false;
   if (listMarker(line, baseIndent)) return true;
   return line.raw.trim() !== '' && line.indent > baseIndent;
 }
-
 function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false): MarkdownNode[] {
   const nodes: MarkdownNode[] = [];
-
   while (state.index < state.lines.length) {
     const line = state.lines[state.index]!;
     if (line.raw.trim() === '') {
@@ -295,14 +301,12 @@ function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false
     }
     if (line.indent < baseIndent) break;
     if (stopOnListMarker && listMarker(line, baseIndent)) break;
-
     const reference = referenceDefinition(line.raw);
     if (reference) {
       state.references[reference.id] = reference.href;
       state.index++;
       continue;
     }
-
     const text = line.raw.slice(baseIndent);
     const fence = /^```(.*)$/.exec(text);
     if (fence) {
@@ -315,23 +319,29 @@ function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false
         state.index++;
       }
       if (state.index < state.lines.length) state.index++;
-      nodes.push({ kind: 'code', lang: info.lang, meta: info.meta, code: code.join('\n') });
+      nodes.push({
+        kind: 'code',
+        lang: info.lang,
+        meta: info.meta,
+        code: code.join('\n')
+      });
       continue;
     }
-
     const atx = heading(text);
     if (atx) {
-      nodes.push({ kind: 'heading', level: atx.level, text: atx.text });
+      nodes.push({
+        kind: 'heading',
+        level: atx.level,
+        text: atx.text
+      });
       state.index++;
       continue;
     }
-
     if (thematicBreak(text)) {
       nodes.push({ kind: 'thematicBreak' });
       state.index++;
       continue;
     }
-
     if (/^> ?/.test(text)) {
       const quoteLines: string[] = [];
       while (state.index < state.lines.length) {
@@ -347,16 +357,17 @@ function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false
         quoteLines.push(marker[1] ?? '');
         state.index++;
       }
-      nodes.push({ kind: 'blockquote', nodes: parseMarkdown(quoteLines.join('\n')).nodes });
+      nodes.push({
+        kind: 'blockquote',
+        nodes: parseMarkdown(quoteLines.join('\n')).nodes
+      });
       continue;
     }
-
     const list = parseList(state, baseIndent);
     if (list) {
       nodes.push(list);
       continue;
     }
-
     const table = tableStart(state);
     if (table) {
       state.index += 2;
@@ -367,20 +378,26 @@ function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false
         rows.push(splitTableRow(current.text));
         state.index++;
       }
-      nodes.push({ kind: 'table', align: table.align, header: table.header, rows });
+      nodes.push({
+        kind: 'table',
+        align: table.align,
+        header: table.header,
+        rows
+      });
       continue;
     }
-
     if (htmlBlockStart(text) || disallowedRawHtmlTag(text)) {
       const html: string[] = [];
       while (state.index < state.lines.length && state.lines[state.index]!.raw.trim() !== '') {
         html.push(state.lines[state.index]!.raw.slice(baseIndent));
         state.index++;
       }
-      nodes.push({ kind: 'htmlBlock', html: html.join('\n') });
+      nodes.push({
+        kind: 'htmlBlock',
+        html: html.join('\n')
+      });
       continue;
     }
-
     const paragraph: string[] = [text.trim()];
     state.index++;
     while (state.index < state.lines.length && !isBlockStart(state, baseIndent)) {
@@ -392,35 +409,36 @@ function parseBlocks(state: ParseState, baseIndent = 0, stopOnListMarker = false
     const next = state.lines[state.index];
     const setext = next && next.indent >= baseIndent ? setextHeading(next.raw.slice(baseIndent)) : undefined;
     if (setext && paragraph.length === 1) {
-      nodes.push({ kind: 'heading', level: setext, text: paragraph[0]! });
+      nodes.push({
+        kind: 'heading',
+        level: setext,
+        text: paragraph[0]!
+      });
       state.index++;
     } else {
-      nodes.push({ kind: 'paragraph', text: paragraph.join('\n') });
+      nodes.push({
+        kind: 'paragraph',
+        text: paragraph.join('\n')
+      });
     }
   }
-
   return nodes;
 }
-
 function parseList(state: ParseState, baseIndent: number): MarkdownNode | undefined {
   const first = state.lines[state.index];
   if (!first) return undefined;
   const marker = listMarker(first, baseIndent);
   if (!marker) return undefined;
-
   const ordered = marker.ordered;
   const items: MarkdownListItem[] = [];
   let loose = false;
-
   while (state.index < state.lines.length) {
     const line = state.lines[state.index]!;
     const current = listMarker(line, baseIndent);
     if (!current || current.ordered !== ordered) break;
-
     const itemIndent = baseIndent + current.markerWidth;
     const itemLines: string[] = [current.rest];
     state.index++;
-
     while (state.index < state.lines.length) {
       const next = state.lines[state.index]!;
       if (next.raw.trim() === '') {
@@ -436,7 +454,6 @@ function parseList(state: ParseState, baseIndent: number): MarkdownNode | undefi
       itemLines.push(next.raw.slice(Math.min(itemIndent, next.raw.length)));
       state.index++;
     }
-
     while (itemLines.length > 0 && itemLines[itemLines.length - 1] === '') itemLines.pop();
     const itemDocument = parseMarkdown(itemLines.join('\n'));
     const item: MarkdownListItem = { nodes: itemDocument.nodes };
@@ -450,52 +467,68 @@ function parseList(state: ParseState, baseIndent: number): MarkdownNode | undefi
     }
     items.push(item);
   }
-
-  return { kind: 'list', ordered, tight: !loose, items };
+  return {
+    kind: 'list',
+    ordered,
+    tight: !loose,
+    items
+  };
 }
-
 /**
- * Parse Markdown into a reusable document tree.
- */
+* Parse Markdown into a reusable document tree.
+*/
 export function parseMarkdown(markdown: string): MarkdownDocument {
-  const scanner = new Scanner(markdown, { encoding: 'utf-8', format: 'markdown' });
+  const scanner = new Scanner(markdown, {
+    encoding: 'utf-8',
+    format: 'markdown'
+  });
   const lines: Line[] = [];
   while (!scanner.done) lines.push(toLine(readLine(scanner) ?? ''));
-  const state: ParseState = { lines, index: 0, references: {} };
-  return { nodes: parseBlocks(state), references: state.references };
+  const state: ParseState = {
+    lines,
+    index: 0,
+    references: {}
+  };
+  return {
+    nodes: parseBlocks(state),
+    references: state.references
+  };
 }
-
 function resolveHref(href: string, label: string, options: MarkdownOptions): string | undefined {
   const resolved = options.resolveLink?.(href, label) ?? href;
   return isSafeHref(resolved, options) ? resolved : undefined;
 }
-
 function renderLink(label: string, href: string, options: MarkdownOptions): string {
   const resolved = resolveHref(href, label, options);
   if (!resolved) return label;
   return `<a href="${escapeAttribute(resolved)}">${label}</a>`;
 }
-
 function renderImage(alt: string, href: string, options: MarkdownOptions): string {
   const resolved = resolveHref(href, alt, options);
   if (!resolved) return escapeHtml(alt);
   return `<img src="${escapeAttribute(resolved)}" alt="${escapeAttribute(alt)}">`;
 }
-
-function trimUrlPunctuation(value: string): { href: string; suffix: string } {
+function trimUrlPunctuation(value: string): {
+  href: string;
+  suffix: string;
+} {
   let href = value;
   let suffix = '';
   while (/[.,;:!?)]$/.test(href)) {
     suffix = href.slice(-1) + suffix;
     href = href.slice(0, -1);
   }
-  return { href, suffix };
+  return {
+    href,
+    suffix
+  };
 }
-
-function readLinkDestination(scanner: Scanner): { href: string; closed: boolean } {
+function readLinkDestination(scanner: Scanner): {
+  href: string;
+  closed: boolean;
+} {
   let href = '';
   let depth = 0;
-
   while (!scanner.done) {
     const char = scanner.eat();
     if (char === '\\' && !scanner.done) {
@@ -508,62 +541,63 @@ function readLinkDestination(scanner: Scanner): { href: string; closed: boolean 
       continue;
     }
     if (char === ')') {
-      if (depth === 0) return { href: href.trim(), closed: true };
+      if (depth === 0) return {
+        href: href.trim(),
+        closed: true
+      };
       depth--;
       href += char;
       continue;
     }
     href += char;
   }
-
-  return { href: href.trim(), closed: false };
+  return {
+    href: href.trim(),
+    closed: false
+  };
 }
-
 /**
- * Render inline Markdown spans without wrapping the result in block elements.
- */
+* Render inline Markdown spans without wrapping the result in block elements.
+*/
 export function renderMarkdownInline(markdown: string, options: MarkdownOptions = {}): string {
   const references = Object.assign({}, options.references ?? {});
-  const scanner = new Scanner(markdown, { encoding: 'utf-8', format: 'markdown-inline' });
+  const scanner = new Scanner(markdown, {
+    encoding: 'utf-8',
+    format: 'markdown-inline'
+  });
   let html = '';
-
   while (!scanner.done) {
     if (scanner.match('\\')) {
       if (!scanner.done) html += escapeHtml(scanner.eat());
       else html += '\\';
       continue;
     }
-
     if (scanner.match('~~')) {
-      const text = scanner.eatUntil((value) => value === 0x7E);
+      const text = scanner.eatUntil((value) => value === 126);
       if (scanner.match('~~')) html += `<del>${renderMarkdownInline(text, options)}</del>`;
       else html += '~~' + escapeHtml(text);
       continue;
     }
-
     if (scanner.match('`')) {
-      const code = scanner.eatUntil((value) => value === 0x60);
+      const code = scanner.eatUntil((value) => value === 96);
       if (scanner.eatChar('`')) html += `<code>${escapeHtml(code)}</code>`;
       else html += '`' + escapeHtml(code);
       continue;
     }
-
     if (scanner.match('**')) {
-      const strong = scanner.eatUntil((value) => value === 0x2A);
+      const strong = scanner.eatUntil((value) => value === 42);
       if (scanner.match('**')) html += `<strong>${renderMarkdownInline(strong, options)}</strong>`;
       else html += '**' + escapeHtml(strong);
       continue;
     }
-
     if (scanner.match('*')) {
-      const emphasis = scanner.eatUntil((value) => value === 0x2A);
+      const emphasis = scanner.eatUntil((value) => value === 42);
       if (scanner.eatChar('*')) html += `<em>${renderMarkdownInline(emphasis, options)}</em>`;
       else html += '*' + escapeHtml(emphasis);
       continue;
     }
-
     if (scanner.match('![')) {
-      const alt = scanner.eatUntil((value) => value === 0x5D);
+      const alt = scanner.eatUntil((value) => value === 93);
       if (scanner.eatChar(']') && scanner.eatChar('(')) {
         const { href, closed } = readLinkDestination(scanner);
         if (closed) {
@@ -576,9 +610,8 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
       html += '![' + escapeHtml(alt);
       continue;
     }
-
     if (scanner.match('[')) {
-      const labelSource = scanner.eatUntil((value) => value === 0x5D);
+      const labelSource = scanner.eatUntil((value) => value === 93);
       if (scanner.eatChar(']')) {
         if (scanner.eatChar('(')) {
           const { href, closed } = readLinkDestination(scanner);
@@ -591,7 +624,7 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
           continue;
         }
         if (scanner.eatChar('[')) {
-          const id = scanner.eatUntil((value) => value === 0x5D);
+          const id = scanner.eatUntil((value) => value === 93);
           if (scanner.eatChar(']')) {
             const href = references[normalizeReference(id || labelSource)];
             if (href) {
@@ -609,7 +642,6 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
       html += '[' + escapeHtml(labelSource);
       continue;
     }
-
     const rawRest = scanner.peek(4096);
     if (rawRest.startsWith('<')) {
       const tag = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?>/.exec(rawRest);
@@ -619,21 +651,17 @@ export function renderMarkdownInline(markdown: string, options: MarkdownOptions 
         continue;
       }
     }
-
     const rest = scanner.peek(8);
     if (rest.startsWith('http://') || rest.startsWith('https://')) {
-      const raw = scanner.eatUntil((value) => value <= 0x20);
+      const raw = scanner.eatUntil((value) => value <= 32);
       const { href, suffix } = trimUrlPunctuation(raw);
       html += renderLink(escapeHtml(href), href, options) + escapeHtml(suffix);
       continue;
     }
-
     html += escapeHtml(scanner.eat());
   }
-
   return html;
 }
-
 function renderNode(node: MarkdownNode, options: MarkdownOptions, inTightList = false): string {
   if (node.kind === 'paragraph') {
     const body = renderMarkdownInline(node.text, options);
@@ -655,7 +683,6 @@ function renderNode(node: MarkdownNode, options: MarkdownOptions, inTightList = 
   const className = node.lang ? ` class="language-${escapeAttribute(node.lang)}"` : '';
   return `<pre><code${className}>${escapeHtml(node.code)}</code></pre>`;
 }
-
 function renderNodes(nodes: MarkdownNode[], options: MarkdownOptions, inTightList = false): string {
   let html = '';
   for (const node of nodes) {
@@ -665,8 +692,9 @@ function renderNodes(nodes: MarkdownNode[], options: MarkdownOptions, inTightLis
   }
   return html;
 }
-
-function renderList(list: Extract<MarkdownNode, { kind: 'list' }>, options: MarkdownOptions): string {
+function renderList(list: Extract<MarkdownNode, {
+  kind: 'list';
+}>, options: MarkdownOptions): string {
   const tag = list.ordered ? 'ol' : 'ul';
   const output = [`<${tag}>`];
   for (const item of list.items) {
@@ -683,9 +711,14 @@ function renderList(list: Extract<MarkdownNode, { kind: 'list' }>, options: Mark
   output.push(`</${tag}>`);
   return output.join('\n') + '\n';
 }
-
-function renderTable(table: Extract<MarkdownNode, { kind: 'table' }>, options: MarkdownOptions): string {
-  const output = ['<table>', '<thead>', '<tr>'];
+function renderTable(table: Extract<MarkdownNode, {
+  kind: 'table';
+}>, options: MarkdownOptions): string {
+  const output = [
+    '<table>',
+    '<thead>',
+    '<tr>'
+  ];
   for (let index = 0; index < table.header.length; index++) {
     const align = table.align[index] ? ` align="${table.align[index]}"` : '';
     output.push(`<th${align}>${renderMarkdownInline(table.header[index] ?? '', options)}</th>`);
@@ -706,12 +739,14 @@ function renderTable(table: Extract<MarkdownNode, { kind: 'table' }>, options: M
   output.push('</table>');
   return output.join('\n') + '\n';
 }
-
 /**
- * Render a Markdown document or source string to HTML.
- */
+* Render a Markdown document or source string to HTML.
+*/
 export function renderMarkdown(markdown: string | MarkdownDocument, options: MarkdownOptions = {}): string {
   const document = typeof markdown === 'string' ? parseMarkdown(markdown) : markdown;
   const references = Object.assign({}, document.references, options.references ?? {});
-  return renderNodes(document.nodes, { ...options, references });
+  return renderNodes(document.nodes, {
+    ...options,
+    references
+  });
 }

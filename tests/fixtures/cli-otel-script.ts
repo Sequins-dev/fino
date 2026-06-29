@@ -1,11 +1,6 @@
-import {
-  getLoggerProvider,
-  getMeterProvider,
-  getTracerProvider,
-} from 'fino:opentelemetry';
+import { getLoggerProvider, getMeterProvider, getTracerProvider } from 'fino:opentelemetry';
 import { argv } from 'fino:process';
 import { runDependency } from './cli-otel-dependency.ts';
-
 async function readBodyText(body: unknown): Promise<string> {
   if (body == null) return '';
   if (typeof body === 'string') return body;
@@ -32,7 +27,6 @@ async function readBodyText(body: unknown): Promise<string> {
   }
   return '';
 }
-
 if (argv[1] !== 'test') {
   globalThis.fetch = async function otelCliFetch(url: string | URL | Request, options: RequestInit = {}) {
     console.log(String(url));
@@ -42,9 +36,7 @@ if (argv[1] !== 'test') {
     return new Response('{}', { status: 200 });
   };
 }
-
 if (getTracerProvider() && getLoggerProvider() && getMeterProvider()) {
   console.log('entry providers ready');
 }
-
 await runDependency();

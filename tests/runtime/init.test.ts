@@ -1,15 +1,12 @@
 /**
- * Integration tests for `fino init`.
- */
-
+* Integration tests for `fino init`.
+*/
 import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Process, chdir, cwd, execPath } from 'fino:process';
 import { PromptSession } from 'fino:tty/prompt';
 import { createInitCommand } from 'internal:commands/init';
-
-const TEST_DIR = '/tmp/fino-init-test-' + Math.floor(Math.random() * 1_000_000);
-
+const TEST_DIR = '/tmp/fino-init-test-' + Math.floor(Math.random() * 1e6);
 interface PackageJsonShape {
   name: string;
   version: string;
@@ -19,11 +16,9 @@ interface PackageJsonShape {
   author: string;
   repository: string;
 }
-
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
 }
-
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);
@@ -34,7 +29,6 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
     return merged;
   }, new Uint8Array(0)));
 }
-
 async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
   try {
     await fs.lstat(path);
@@ -43,9 +37,8 @@ async function exists(fs: DiskFileSystem, path: string): Promise<boolean> {
     return false;
   }
 }
-
 async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
-  if (!(await exists(fs, path))) return;
+  if (!await exists(fs, path)) return;
   const entry = await fs.entry(path);
   if (entry.isDirectory()) {
     const dir = await fs.dir(path);
@@ -55,68 +48,94 @@ async function removeTree(fs: DiskFileSystem, path: string): Promise<void> {
   }
   await fs.unlink(path);
 }
-
-async function runCli(args: string[], cwd: string): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
+async function runCli(args: string[], cwd: string): Promise<{
+  stdout: string;
+  stderr: string;
+  result: Awaited<ReturnType<Process['wait']>>;
+}> {
   const proc = new Process(execPath, args, { cwd });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait(),
+    proc.wait()
   ]);
-  return { stdout, stderr, result };
+  return {
+    stdout,
+    stderr,
+    result
+  };
 }
-
-async function runCliWithEnv(args: string[], cwd: string, env: Record<string, string>): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
-  const proc = new Process(execPath, args, { cwd, env });
+async function runCliWithEnv(args: string[], cwd: string, env: Record<string, string>): Promise<{
+  stdout: string;
+  stderr: string;
+  result: Awaited<ReturnType<Process['wait']>>;
+}> {
+  const proc = new Process(execPath, args, {
+    cwd,
+    env
+  });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait(),
+    proc.wait()
   ]);
-  return { stdout, stderr, result };
+  return {
+    stdout,
+    stderr,
+    result
+  };
 }
-
-async function runCommand(command: string, args: string[], cwd: string, env: Record<string, string> | undefined = undefined): Promise<{ stdout: string; stderr: string; result: Awaited<ReturnType<Process['wait']>> }> {
-  const proc = new Process(command, args, env ? { cwd, env } : { cwd });
+async function runCommand(command: string, args: string[], cwd: string, env: Record<string, string> | undefined = undefined): Promise<{
+  stdout: string;
+  stderr: string;
+  result: Awaited<ReturnType<Process['wait']>>;
+}> {
+  const proc = new Process(command, args, env ? {
+    cwd,
+    env
+  } : { cwd });
   proc.stdin.close();
   const [stdout, stderr, result] = await Promise.all([
     readAll(proc.stdout),
     readAll(proc.stderr),
-    proc.wait(),
+    proc.wait()
   ]);
-  return { stdout, stderr, result };
+  return {
+    stdout,
+    stderr,
+    result
+  };
 }
-
 describe('fino init', () => {
   let fs: DiskFileSystem;
   let appDir: string;
-
   before(async () => {
     fs = new DiskFileSystem();
     await fs.mkdir(TEST_DIR);
     appDir = TEST_DIR + '/app';
     await fs.mkdir(appDir);
   });
-
   after(async () => {
     await removeTree(fs, TEST_DIR);
   });
-
   it('creates package.json from flags in non-interactive mode', async (t) => {
     const run = await runCli([
       'init',
-      '--name', 'demo-app',
-      '--description', 'Demo package',
-      '--license', 'MIT',
-      '--author', 'Fino Team',
-      '--repository', 'https://example.com/repo.git',
+      '--name',
+      'demo-app',
+      '--description',
+      'Demo package',
+      '--license',
+      'MIT',
+      '--author',
+      'Fino Team',
+      '--repository',
+      'https://example.com/repo.git'
     ], appDir);
-
     t.equal(run.result.code, 0, 'init exits successfully');
     t.equal(run.stderr, '', 'init writes no stderr');
-
     const pkg = JSON.parse(await fs.readFile(appDir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.name, 'demo-app', 'writes package name');
     t.equal(pkg.version, '1.0.0', 'writes default version');
@@ -126,21 +145,17 @@ describe('fino init', () => {
     t.equal(pkg.author, 'Fino Team', 'writes author');
     t.equal(pkg.repository, 'https://example.com/repo.git', 'writes repository');
   });
-
   it('fills missing values from defaults in non-interactive mode', async (t) => {
     const secondDir = TEST_DIR + '/needs-prompt';
     const emptyHomeDir = TEST_DIR + '/empty-home';
     await fs.mkdir(secondDir);
     await fs.mkdir(emptyHomeDir);
-
     const run = await runCliWithEnv(['init'], secondDir, {
       HOME: emptyHomeDir,
-      PATH: '/usr/bin:/bin:/usr/local/bin',
+      PATH: '/usr/bin:/bin:/usr/local/bin'
     });
-
     t.equal(run.result.code, 0, 'init succeeds with defaults');
     t.equal(run.stderr, '', 'no stderr for default init');
-
     const pkg = JSON.parse(await fs.readFile(secondDir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.name, 'needs-prompt', 'defaults name from directory');
     t.equal(pkg.version, '1.0.0', 'defaults version');
@@ -149,7 +164,6 @@ describe('fino init', () => {
     t.equal(pkg.author, '', 'defaults author to empty when git config missing');
     t.equal(pkg.repository, '', 'defaults repository to empty when git config missing');
   });
-
   it('fills author and repository from git config defaults when available', async (t) => {
     const thirdDir = TEST_DIR + '/git-defaults';
     const homeDir = TEST_DIR + '/home';
@@ -159,56 +173,69 @@ describe('fino init', () => {
       '[user]',
       '  name = Jane Doe',
       '  email = jane@example.com',
-      '',
+      ''
     ].join('\n'));
-
     let git = await runCommand('/usr/bin/env', ['git', 'init'], thirdDir);
     t.equal(git.result.code, 0, 'git init succeeds');
-
-    git = await runCommand('/usr/bin/env', ['git', 'remote', 'add', 'origin', 'https://example.com/fino/demo.git'], thirdDir);
+    git = await runCommand('/usr/bin/env', [
+      'git',
+      'remote',
+      'add',
+      'origin',
+      'https://example.com/fino/demo.git'
+    ], thirdDir);
     t.equal(git.result.code, 0, 'git remote add succeeds');
-
     const run = await runCliWithEnv(['init'], thirdDir, {
       HOME: homeDir,
-      PATH: '/usr/bin:/bin:/usr/local/bin',
+      PATH: '/usr/bin:/bin:/usr/local/bin'
     });
-
     t.equal(run.result.code, 0, 'init succeeds with git defaults');
     const pkg = JSON.parse(await fs.readFile(thirdDir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.author, 'Jane Doe <jane@example.com>', 'author pulled from git config');
     t.equal(pkg.repository, 'https://example.com/fino/demo.git', 'repository pulled from git remote');
   });
-
   it('rejects existing package.json unless --force is provided', async (t) => {
     const dir = TEST_DIR + '/force';
     await fs.mkdir(dir);
     await fs.writeFile(dir + '/package.json', JSON.stringify({ name: 'old' }) + '\n');
-
     const rejected = await runCli(['init', '--yes'], dir);
     t.notEqual(rejected.result.code, 0, 'existing package causes non-zero exit');
     t.ok(rejected.stderr.includes('package.json already exists'), 'existing package error is reported');
-
-    const forced = await runCli(['init', '--yes', '--force', '--name', 'forced-app'], dir);
+    const forced = await runCli([
+      'init',
+      '--yes',
+      '--force',
+      '--name',
+      'forced-app'
+    ], dir);
     t.equal(forced.result.code, 0, 'force exits successfully');
     const pkg = JSON.parse(await fs.readFile(dir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.name, 'forced-app', 'force overwrites existing package');
   });
-
   it('rejects invalid package names before writing', async (t) => {
     const dir = TEST_DIR + '/invalid-name';
     await fs.mkdir(dir);
-
-    const run = await runCli(['init', '--name', 'Invalid Name'], dir);
+    const run = await runCli([
+      'init',
+      '--name',
+      'Invalid Name'
+    ], dir);
     t.notEqual(run.result.code, 0, 'invalid name causes non-zero exit');
     t.ok(run.stderr.includes('Package name must contain only lowercase'), 'invalid name error is reported');
     t.equal(await exists(fs, dir + '/package.json'), false, 'package.json is not written');
   });
-
   it('uses an injected interactive prompt for missing fields', async (t) => {
     const dir = TEST_DIR + '/prompted';
     await fs.mkdir(dir);
     const originalCwd = cwd();
-    const answers = ['prompted-app', '2.0.0', 'Prompted package', 'Apache-2.0', 'Ada', 'https://example.com/prompted.git'];
+    const answers = [
+      'prompted-app',
+      '2.0.0',
+      'Prompted package',
+      'Apache-2.0',
+      'Ada',
+      'https://example.com/prompted.git'
+    ];
     const prompts: string[] = [];
     const prompt = new PromptSession({
       isInteractive: true,
@@ -217,16 +244,14 @@ describe('fino init', () => {
         return answers.shift() ?? '';
       },
       write: async () => {},
-      writeError: async () => {},
+      writeError: async () => {}
     });
-
     try {
       chdir(dir);
       await createInitCommand().parse([], { prompt });
     } finally {
       chdir(originalCwd);
     }
-
     const pkg = JSON.parse(await fs.readFile(dir + '/package.json')) as PackageJsonShape;
     t.equal(pkg.name, 'prompted-app', 'name came from prompt');
     t.equal(pkg.version, '2.0.0', 'version came from prompt');

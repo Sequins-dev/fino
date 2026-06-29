@@ -1,164 +1,138 @@
 /**
- * fino:ai/model — provider-neutral messages, streams, and model adapters.
- *
- * This module defines the narrow contract that the rest of `fino:ai` builds
- * on. Providers adapt remote APIs into `Model`, agents consume `Model` without
- * provider-specific branches, tools use the shared message and content-part
- * shapes, and evals can run against any compatible implementation, including
- * optional local llama.cpp models.
- *
- * ## Design
- *
- * `Model.stream()` is the canonical path for agent execution. Provider adapters
- * emit normalized `StreamEvent` values for text, tool-call deltas, usage, stop
- * reasons, and errors; `assembleResult()` folds those events into the same
- * `GenerateResult` shape returned by `Model.generate()`. Embeddings use the
- * separate `EmbeddingModel` contract so chat-only providers and tests do not
- * need fake embedding methods.
- *
- * This module does not hide provider capabilities. Adapters expose `id`,
- * `provider`, and optional `capabilities` so higher layers can make explicit
- * choices, such as using native structured-output transport only when a model
- * declares support for it. Provider registries can also discover available
- * model ids from OpenAI-compatible and Anthropic endpoints before constructing
- * a concrete `Model`.
- *
- * ```ts no_run
- * import { assembleResult, modelRegistry, openaiProvider } from 'fino:ai/model';
- *
- * const registry = modelRegistry([
- *   openaiProvider({ baseUrl: 'https://api.openai.com/v1' }),
- * ]);
- * const [info] = await registry.list();
- * const model = await info.create({ temperature: 0.2 });
- * const stream = model.stream({
- *   messages: [{ role: 'user', content: 'Say hello in one sentence.' }],
- * });
- *
- * const result = await assembleResult(stream);
- * console.log(result.text, result.usage);
- * ```
- */
-
-import {
-  assembleResult as sharedAssembleResult,
-  ModelError as SharedModelError,
-  ModelListingUnsupportedError as SharedModelListingUnsupportedError,
-} from 'internal:ai/shared';
-import {
-  anthropic as anthropicFactory,
-  anthropicProvider as createAnthropicProvider,
-} from 'internal:ai/model/anthropic';
-import {
-  openai as openaiFactory,
-  openaiProvider as createOpenAIProvider,
-} from 'internal:ai/model/openai';
-import {
-  hasLlamaCpp as localHasLlamaCpp,
-  local as localFactory,
-  localProvider as createLocalProvider,
-  LocalModelLibraryError as SharedLocalModelLibraryError,
-  LocalModelUnsupportedError as SharedLocalModelUnsupportedError,
-} from 'internal:ai/model/local';
-
+* fino:ai/model — provider-neutral messages, streams, and model adapters.
+*
+* This module defines the narrow contract that the rest of `fino:ai` builds
+* on. Providers adapt remote APIs into `Model`, agents consume `Model` without
+* provider-specific branches, tools use the shared message and content-part
+* shapes, and evals can run against any compatible implementation, including
+* optional local llama.cpp models.
+*
+* ## Design
+*
+* `Model.stream()` is the canonical path for agent execution. Provider adapters
+* emit normalized `StreamEvent` values for text, tool-call deltas, usage, stop
+* reasons, and errors; `assembleResult()` folds those events into the same
+* `GenerateResult` shape returned by `Model.generate()`. Embeddings use the
+* separate `EmbeddingModel` contract so chat-only providers and tests do not
+* need fake embedding methods.
+*
+* This module does not hide provider capabilities. Adapters expose `id`,
+* `provider`, and optional `capabilities` so higher layers can make explicit
+* choices, such as using native structured-output transport only when a model
+* declares support for it. Provider registries can also discover available
+* model ids from OpenAI-compatible and Anthropic endpoints before constructing
+* a concrete `Model`.
+*
+* ```ts no_run
+* import { assembleResult, modelRegistry, openaiProvider } from 'fino:ai/model';
+*
+* const registry = modelRegistry([
+*   openaiProvider({ baseUrl: 'https://api.openai.com/v1' }),
+* ]);
+* const [info] = await registry.list();
+* const model = await info.create({ temperature: 0.2 });
+* const stream = model.stream({
+*   messages: [{ role: 'user', content: 'Say hello in one sentence.' }],
+* });
+*
+* const result = await assembleResult(stream);
+* console.log(result.text, result.usage);
+* ```
+*/
+import { assembleResult as sharedAssembleResult, ModelError as SharedModelError, ModelListingUnsupportedError as SharedModelListingUnsupportedError } from 'internal:ai/shared';
+import { anthropic as anthropicFactory, anthropicProvider as createAnthropicProvider } from 'internal:ai/model/anthropic';
+import { openai as openaiFactory, openaiProvider as createOpenAIProvider } from 'internal:ai/model/openai';
+import { hasLlamaCpp as localHasLlamaCpp, local as localFactory, localProvider as createLocalProvider, LocalModelLibraryError as SharedLocalModelLibraryError, LocalModelUnsupportedError as SharedLocalModelUnsupportedError } from 'internal:ai/model/local';
 /**
- * Chat message role understood by all providers.
- */
+* Chat message role understood by all providers.
+*/
 export type Role = 'user' | 'assistant' | 'system';
-
 /**
- * Text content part.
- */
+* Text content part.
+*/
 export interface TextPart {
   type: 'text';
   text: string;
   cache?: true;
 }
-
 /**
- * Inline image content part.
- *
- * `data` is base64-encoded bytes without a data URI prefix.
- */
+* Inline image content part.
+*
+* `data` is base64-encoded bytes without a data URI prefix.
+*/
 export interface ImagePart {
   type: 'image';
   mediaType: string;
   data: string;
 }
-
 /**
- * Model-requested tool call content part.
- */
+* Model-requested tool call content part.
+*/
 export interface ToolUsePart {
   type: 'tool_use';
   id: string;
   name: string;
   args: unknown;
 }
-
 /**
- * Tool result content part sent back to the model.
- */
+* Tool result content part sent back to the model.
+*/
 export interface ToolResultPart {
   type: 'tool_result';
   toolCallId: string;
   content: string | ContentPart[];
   isError?: boolean;
 }
-
 /**
- * Inline document content part.
- *
- * `data` is base64-encoded bytes without a data URI prefix. Providers may map
- * this to files, documents, or other native document upload fields.
- */
+* Inline document content part.
+*
+* `data` is base64-encoded bytes without a data URI prefix. Providers may map
+* this to files, documents, or other native document upload fields.
+*/
 export interface DocumentPart {
   type: 'document';
   mediaType: string;
   data: string;
   name?: string;
 }
-
 /**
- * Content part accepted in a model message.
- */
+* Content part accepted in a model message.
+*/
 export type ContentPart = TextPart | ImagePart | ToolUsePart | ToolResultPart | DocumentPart;
-
 /**
- * Native structured response format request.
- */
+* Native structured response format request.
+*/
 export interface ResponseFormat {
   type: 'json_schema';
   name?: string;
   schema: Record<string, unknown>;
   strict?: boolean;
 }
-
 /**
- * Provider-neutral chat message.
- */
+* Provider-neutral chat message.
+*/
 export interface ModelMessage {
   role: Role;
   content: string | ContentPart[];
 }
-
 /**
- * Provider-neutral tool definition sent with model requests.
- */
+* Provider-neutral tool definition sent with model requests.
+*/
 export interface ToolDefinition {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
 }
-
 /**
- * Provider-neutral generation request.
- */
+* Provider-neutral generation request.
+*/
 export interface GenerateRequest {
   messages: ModelMessage[];
   system?: string | TextPart[];
   tools?: ToolDefinition[];
-  toolChoice?: 'auto' | 'any' | 'none' | { name: string };
+  toolChoice?: 'auto' | 'any' | 'none' | {
+    name: string;
+  };
   maxTokens?: number;
   temperature?: number;
   topP?: number;
@@ -168,34 +142,30 @@ export interface GenerateRequest {
   providerOptions?: Record<string, unknown>;
   signal?: AbortSignal;
 }
-
 /**
- * Token usage reported by a provider.
- */
+* Token usage reported by a provider.
+*/
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
 }
-
 /**
- * Reason a model stopped generating.
- */
+* Reason a model stopped generating.
+*/
 export type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 'error' | 'refusal' | 'content_filter';
-
 /**
- * Assembled tool call returned by `generate()` or `ModelStream.result()`.
- */
+* Assembled tool call returned by `generate()` or `ModelStream.result()`.
+*/
 export interface ToolCall {
   id: string;
   name: string;
   args: unknown;
 }
-
 /**
- * Complete non-streamed model result.
- */
+* Complete non-streamed model result.
+*/
 export interface GenerateResult {
   text: string;
   toolCalls: ToolCall[];
@@ -204,14 +174,13 @@ export interface GenerateResult {
   warnings?: string[];
   providerMetadata?: Record<string, unknown>;
 }
-
 /**
- * Feature metadata exposed by chat model adapters.
- *
- * Capabilities are semantic flags, not provider names. Agent code uses these
- * fields to decide whether to request tools, native JSON Schema output,
- * multimodal input, and optional sampling controls.
- */
+* Feature metadata exposed by chat model adapters.
+*
+* Capabilities are semantic flags, not provider names. Agent code uses these
+* fields to decide whether to request tools, native JSON Schema output,
+* multimodal input, and optional sampling controls.
+*/
 export interface ModelCapabilities {
   streaming?: boolean;
   toolCalling?: boolean;
@@ -239,65 +208,78 @@ export interface ModelCapabilities {
   };
   local?: boolean;
 }
-
 /**
- * Feature metadata exposed by embedding model adapters.
- */
+* Feature metadata exposed by embedding model adapters.
+*/
 export interface EmbeddingCapabilities {
   dimensions?: number;
   maxBatchSize?: number;
   maxInputTokens?: number;
 }
-
 /**
- * Streaming event emitted by provider adapters.
- */
-export type StreamEvent =
-  | { type: 'text_delta'; index: number; text: string }
-  | { type: 'tool_call_start'; index: number; id: string; name: string }
-  | { type: 'tool_call_delta'; index: number; json: string }
-  | { type: 'tool_call_end'; index: number }
-  | { type: 'usage'; usage: Usage }
-  | { type: 'stop'; reason: StopReason }
-  | { type: 'error'; message: string };
-
+* Streaming event emitted by provider adapters.
+*/
+export type StreamEvent = {
+  type: 'text_delta';
+  index: number;
+  text: string;
+} | {
+  type: 'tool_call_start';
+  index: number;
+  id: string;
+  name: string;
+} | {
+  type: 'tool_call_delta';
+  index: number;
+  json: string;
+} | {
+  type: 'tool_call_end';
+  index: number;
+} | {
+  type: 'usage';
+  usage: Usage;
+} | {
+  type: 'stop';
+  reason: StopReason;
+} | {
+  type: 'error';
+  message: string;
+};
 /**
- * Async stream of model events.
- */
+* Async stream of model events.
+*/
 export interface ModelStream extends AsyncIterable<StreamEvent> {
   result(): Promise<GenerateResult>;
 }
-
 /**
- * Provider-neutral chat model adapter.
- */
+* Provider-neutral chat model adapter.
+*/
 export interface ChatModel {
   /**
-   * Stable model identifier used for provider requests and telemetry.
-   *
-   * Provider implementations set this explicitly. `name` remains available as
-   * a compatibility alias for local test doubles and older call sites.
-   */
+  * Stable model identifier used for provider requests and telemetry.
+  *
+  * Provider implementations set this explicitly. `name` remains available as
+  * a compatibility alias for local test doubles and older call sites.
+  */
   readonly id?: string;
   readonly name: string;
   /**
-   * Provider identifier such as `openai` or `anthropic`.
-   *
-   * Agent code uses this for telemetry and feature decisions instead of
-   * guessing from the model id.
-   */
+  * Provider identifier such as `openai` or `anthropic`.
+  *
+  * Agent code uses this for telemetry and feature decisions instead of
+  * guessing from the model id.
+  */
   readonly provider?: string;
   /**
-   * Optional provider features that affect request construction.
-   */
+  * Optional provider features that affect request construction.
+  */
   readonly capabilities?: ModelCapabilities;
   stream(req: GenerateRequest): ModelStream;
   generate(req: GenerateRequest): Promise<GenerateResult>;
 }
-
 /**
- * Provider-neutral embedding model adapter.
- */
+* Provider-neutral embedding model adapter.
+*/
 export interface EmbeddingModel {
   readonly id: string;
   readonly name: string;
@@ -306,108 +288,105 @@ export interface EmbeddingModel {
   readonly dimensions: number;
   embed(texts: string[]): Promise<Float32Array[]>;
 }
-
 /**
- * Provider-neutral model adapter used by chat and agent APIs.
- *
- * Providers may also implement `EmbeddingModel`; memory and semantic eval APIs
- * depend on that narrower embedding contract instead of requiring every chat
- * model to expose embeddings.
- */
+* Provider-neutral model adapter used by chat and agent APIs.
+*
+* Providers may also implement `EmbeddingModel`; memory and semantic eval APIs
+* depend on that narrower embedding contract instead of requiring every chat
+* model to expose embeddings.
+*/
 export type Model = ChatModel;
-
 /**
- * Options applied when constructing a `Model` from a provider or registry.
- */
+* Options applied when constructing a `Model` from a provider or registry.
+*/
 export interface ModelCreateOptions {
   /**
-   * Default maximum output token count for models created from the provider.
-   */
+  * Default maximum output token count for models created from the provider.
+  */
   maxTokens?: number;
   /**
-   * Default sampling temperature for models created from the provider.
-   */
+  * Default sampling temperature for models created from the provider.
+  */
   temperature?: number;
   topP?: number;
   seed?: number;
   providerOptions?: Record<string, unknown>;
   /**
-   * Embedding vector dimensions for providers that support embeddings.
-   */
+  * Embedding vector dimensions for providers that support embeddings.
+  */
   dimensions?: number;
   /**
-   * Additional provider headers merged with the provider's configured headers.
-   */
+  * Additional provider headers merged with the provider's configured headers.
+  */
   headers?: Record<string, string>;
 }
-
 /**
- * Discovered model entry returned by a `ModelProvider`.
- *
- * `create()` constructs a provider-neutral `Model` for this exact model id
- * using the provider configuration that discovered it.
- */
+* Discovered model entry returned by a `ModelProvider`.
+*
+* `create()` constructs a provider-neutral `Model` for this exact model id
+* using the provider configuration that discovered it.
+*/
 export interface ModelInfo {
   /**
-   * Provider model id used in generation requests.
-   */
+  * Provider model id used in generation requests.
+  */
   readonly id: string;
   /**
-   * Provider identifier such as `openai` or `anthropic`.
-   */
+  * Provider identifier such as `openai` or `anthropic`.
+  */
   readonly provider: string;
   /**
-   * Human-readable name returned by the provider, when available.
-   */
+  * Human-readable name returned by the provider, when available.
+  */
   readonly displayName?: string;
   /**
-   * Provider-reported creation timestamp, when available.
-   */
+  * Provider-reported creation timestamp, when available.
+  */
   readonly createdAt?: number;
   /**
-   * Owner or organization returned by OpenAI-compatible endpoints.
-   */
+  * Owner or organization returned by OpenAI-compatible endpoints.
+  */
   readonly ownedBy?: string;
   /**
-   * Capabilities inferred by the provider adapter for this model.
-   */
+  * Capabilities inferred by the provider adapter for this model.
+  */
   readonly capabilities?: Model['capabilities'];
   /**
-   * Raw provider metadata for callers that need provider-specific fields.
-   */
+  * Raw provider metadata for callers that need provider-specific fields.
+  */
   readonly metadata?: Record<string, unknown>;
   /**
-   * Construct a `Model` for this discovered model id.
-   *
-   * Model construction is always async so remote and local providers share one
-   * call shape. Remote providers usually resolve immediately, while local
-   * providers may need filesystem or cache work.
-   */
+  * Construct a `Model` for this discovered model id.
+  *
+  * Model construction is always async so remote and local providers share one
+  * call shape. Remote providers usually resolve immediately, while local
+  * providers may need filesystem or cache work.
+  */
   create(opts?: ModelCreateOptions): Promise<Model>;
 }
-
 /**
- * Provider that can discover available model ids and construct `Model`
- * adapters for those ids.
- */
+* Provider that can discover available model ids and construct `Model`
+* adapters for those ids.
+*/
 export interface ModelProvider {
   /**
-   * Stable provider name used in `ModelInfo.provider` and registry filters.
-   */
+  * Stable provider name used in `ModelInfo.provider` and registry filters.
+  */
   readonly provider: string;
   /**
-   * Fetch available models from the provider endpoint.
-   */
-  listModels(opts?: { signal?: AbortSignal }): Promise<ModelInfo[]>;
+  * Fetch available models from the provider endpoint.
+  */
+  listModels(opts?: {
+    signal?: AbortSignal;
+  }): Promise<ModelInfo[]>;
   /**
-   * Construct a model by provider model id.
-   */
+  * Construct a model by provider model id.
+  */
   createModel(id: string, opts?: ModelCreateOptions): Promise<Model>;
 }
-
 /**
- * Common provider options accepted by bundled providers.
- */
+* Common provider options accepted by bundled providers.
+*/
 export interface ProviderOptions {
   apiKey?: string;
   baseUrl?: string;
@@ -433,59 +412,55 @@ export interface ProviderOptions {
   providerOptions?: Record<string, unknown>;
   dimensions?: number;
 }
-
-export type {
-  LocalModelOptions,
-  LocalProviderOptions,
-  LocalModelSource,
-  LocalModelProviderEntry,
-} from 'internal:ai/model/local';
-
+export type { LocalModelOptions, LocalProviderOptions, LocalModelSource, LocalModelProviderEntry } from 'internal:ai/model/local';
 /**
- * Registry for discovering and constructing provider-neutral models.
- *
- * The registry caches `listModels()` results per provider instance. Pass
- * `refresh: true` to bypass the cache for a call.
- */
+* Registry for discovering and constructing provider-neutral models.
+*
+* The registry caches `listModels()` results per provider instance. Pass
+* `refresh: true` to bypass the cache for a call.
+*/
 export class ModelRegistry {
   #providers: ModelProvider[];
   #cache = new Map<ModelProvider, ModelInfo[]>();
-
   /**
-   * Create a registry with an optional initial provider list.
-   */
+  * Create a registry with an optional initial provider list.
+  */
   constructor(providers: ModelProvider[] = []) {
     this.#providers = [...providers];
   }
-
   /**
-   * Add a provider and return this registry for chaining.
-   */
+  * Add a provider and return this registry for chaining.
+  */
   add(provider: ModelProvider): this {
     this.#providers.push(provider);
     this.#cache.delete(provider);
     return this;
   }
-
   /**
-   * List discovered models across all providers or one provider.
-   */
-  async list(opts: { provider?: string; refresh?: boolean; signal?: AbortSignal } = {}): Promise<ModelInfo[]> {
+  * List discovered models across all providers or one provider.
+  */
+  async list(opts: {
+    provider?: string;
+    refresh?: boolean;
+    signal?: AbortSignal;
+  } = {}): Promise<ModelInfo[]> {
     const providers = this.#matchingProviders(opts.provider);
     const out: ModelInfo[] = [];
     for (const provider of providers) {
       if (opts.refresh || !this.#cache.has(provider)) {
         this.#cache.set(provider, await provider.listModels({ signal: opts.signal }));
       }
-      out.push(...(this.#cache.get(provider) ?? []));
+      out.push(...this.#cache.get(provider) ?? []);
     }
     return out;
   }
-
   /**
-   * Find a model by id, or return `null` when no provider reports it.
-   */
-  async get(id: string, opts: { provider?: string; refresh?: boolean } = {}): Promise<ModelInfo | null> {
+  * Find a model by id, or return `null` when no provider reports it.
+  */
+  async get(id: string, opts: {
+    provider?: string;
+    refresh?: boolean;
+  } = {}): Promise<ModelInfo | null> {
     const matches = (await this.list(opts)).filter((model) => model.id === id);
     if (matches.length === 0) return null;
     if (matches.length > 1) {
@@ -493,17 +468,21 @@ export class ModelRegistry {
     }
     return matches[0]!;
   }
-
   /**
-   * Construct a `Model` by discovered id.
-   */
-  async create(id: string, opts: ModelCreateOptions & { provider?: string; refresh?: boolean } = {}): Promise<Model> {
+  * Construct a `Model` by discovered id.
+  */
+  async create(id: string, opts: ModelCreateOptions & {
+    provider?: string;
+    refresh?: boolean;
+  } = {}): Promise<Model> {
     const { provider, refresh, ...createOpts } = opts;
-    const info = await this.get(id, { provider, refresh });
+    const info = await this.get(id, {
+      provider,
+      refresh
+    });
     if (!info) throw new Error(`Model "${id}" not found`);
     return info.create(createOpts);
   }
-
   #matchingProviders(providerName: string | undefined): ModelProvider[] {
     if (providerName === undefined) return this.#providers;
     const providers = this.#providers.filter((provider) => provider.provider === providerName);
@@ -511,102 +490,89 @@ export class ModelRegistry {
     return providers;
   }
 }
-
 /**
- * Create a model registry from one or more providers.
- */
+* Create a model registry from one or more providers.
+*/
 export function modelRegistry(providers: ModelProvider[] = []): ModelRegistry {
   return new ModelRegistry(providers);
 }
-
 /**
- * Assemble streamed provider events into a complete `GenerateResult`.
- */
+* Assemble streamed provider events into a complete `GenerateResult`.
+*/
 export function assembleResult(events: AsyncIterable<StreamEvent>): Promise<GenerateResult> {
   return sharedAssembleResult(events);
 }
-
 /**
- * Error thrown for provider HTTP failures.
- */
+* Error thrown for provider HTTP failures.
+*/
 export const ModelError = SharedModelError;
-
 /**
- * Error thrown when a provider endpoint does not support model listing.
- */
+* Error thrown when a provider endpoint does not support model listing.
+*/
 export const ModelListingUnsupportedError = SharedModelListingUnsupportedError;
-
 /**
- * Create an Anthropic-backed `Model`.
- *
- * `apiKey` defaults to `ANTHROPIC_API_KEY`.
- */
+* Create an Anthropic-backed `Model`.
+*
+* `apiKey` defaults to `ANTHROPIC_API_KEY`.
+*/
 export function anthropic(opts: ProviderOptions = {}): Model {
   return anthropicFactory(opts);
 }
-
 /**
- * Create an Anthropic provider that can list and construct models.
- *
- * `apiKey` defaults to `ANTHROPIC_API_KEY`.
- */
+* Create an Anthropic provider that can list and construct models.
+*
+* `apiKey` defaults to `ANTHROPIC_API_KEY`.
+*/
 export function anthropicProvider(opts: ProviderOptions = {}): ModelProvider {
   return createAnthropicProvider(opts);
 }
-
 /**
- * Create an OpenAI-backed `Model`.
- *
- * `apiKey` defaults to `OPENAI_API_KEY`.
- */
+* Create an OpenAI-backed `Model`.
+*
+* `apiKey` defaults to `OPENAI_API_KEY`.
+*/
 export function openai(opts: ProviderOptions = {}): Model {
   return openaiFactory(opts);
 }
-
 /**
- * Create an OpenAI-compatible provider that can list and construct models.
- *
- * `apiKey` defaults to `OPENAI_API_KEY`.
- */
+* Create an OpenAI-compatible provider that can list and construct models.
+*
+* `apiKey` defaults to `OPENAI_API_KEY`.
+*/
 export function openaiProvider(opts: ProviderOptions = {}): ModelProvider {
   return createOpenAIProvider(opts);
 }
-
 /**
- * Whether a default system `libllama` was found when this module was evaluated.
- *
- * This is a capability gate for optional local model support. It reflects only
- * default lookup paths such as `LLAMA_CPP_LIBRARY` and `FINO_LLAMA_LIBRARY`;
- * callers can still pass an explicit `libraryPath` to `local()`.
- */
+* Whether a default system `libllama` was found when this module was evaluated.
+*
+* This is a capability gate for optional local model support. It reflects only
+* default lookup paths such as `LLAMA_CPP_LIBRARY` and `FINO_LLAMA_LIBRARY`;
+* callers can still pass an explicit `libraryPath` to `local()`.
+*/
 export const hasLlamaCpp = localHasLlamaCpp;
-
 /**
- * Error thrown when local llama.cpp support is requested but no usable
- * `libllama` library is available.
- */
+* Error thrown when local llama.cpp support is requested but no usable
+* `libllama` library is available.
+*/
 export const LocalModelLibraryError = SharedLocalModelLibraryError;
-
 /**
- * Error thrown for local model request features that the llama.cpp adapter does
- * not implement.
- */
+* Error thrown for local model request features that the llama.cpp adapter does
+* not implement.
+*/
 export const LocalModelUnsupportedError = SharedLocalModelUnsupportedError;
-
 /**
- * Create a local llama.cpp-backed `Model`.
- *
- * The model source can be a local GGUF path or an explicit Hugging Face GGUF
- * file. Construction is async because Hugging Face sources may need to be
- * downloaded into the local cache before llama.cpp opens them.
- */
+* Create a local llama.cpp-backed `Model`.
+*
+* The model source can be a local GGUF path or an explicit Hugging Face GGUF
+* file. Construction is async because Hugging Face sources may need to be
+* downloaded into the local cache before llama.cpp opens them.
+*/
 export const local = localFactory;
-
 /**
- * Create a local provider for configured GGUF models.
- *
- * Local providers do not discover remote model catalogs. `listModels()` returns
- * the configured entries so registries can present local and remote models
- * through one interface.
- */
+* Create a local provider for configured GGUF models.
+*
+* Local providers do not discover remote model catalogs. `listModels()` returns
+* the configured entries so registries can present local and remote models
+* through one interface.
+*/
 export const localProvider = createLocalProvider;

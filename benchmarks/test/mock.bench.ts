@@ -1,12 +1,10 @@
 /**
- * Benchmarks for fino:test/mock
- *
- * Run with: cargo run -- bench benchmarks/test/mock.bench.ts
- */
-
+* Benchmarks for fino:test/mock
+*
+* Run with: cargo run -- bench benchmarks/test/mock.bench.ts
+*/
 import { MockFetchScope } from 'fino:test/mock';
 import { bench } from 'fino:bench';
-
 bench('test/mock', (b) => {
   b.measure('scope expectation', () => {
     const scope = new MockFetchScope('https://example.test');

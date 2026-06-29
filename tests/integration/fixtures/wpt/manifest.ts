@@ -2,7 +2,6 @@ export interface WptManifestSubtest {
   name: string;
   kind: 'test' | 'promise_test' | 'async_test';
 }
-
 export interface WptManifestEntry {
   path: string;
   category: string;
@@ -14,7 +13,6 @@ export interface WptManifestEntry {
   reason: string | null;
   subtests: WptManifestSubtest[];
 }
-
 export interface WptManifest {
   generatedFrom: string;
   categories: string[];

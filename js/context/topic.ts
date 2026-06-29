@@ -1,55 +1,51 @@
 /**
- * fino:topic - Named pub/sub channels with Context binding.
- *
- * A `Topic` is a named pub/sub channel. When a `Context` is bound to a Topic,
- * calling `topic.runWithValue(msg, fn)` automatically derives and installs the
- * bound context value for the duration of `fn`. This separates the concerns of
- * *publishing* (the library/framework) from *consuming* context (application code).
- *
- * ```ts no_run
- *   import { topic } from 'fino:context/topic';
- *   import { Context } from 'fino:context';
- *
- *   const requestCtx = new Context('request');
- *   const httpTopic = topic('http.request');
- *
- *   httpTopic.bindContext(requestCtx, (req) => req);
- *
- *   // In a handler:
- *   httpTopic.runWithValue(request, () => {
- *     // requestCtx.get() === request here, and in any awaited code
- *     handleRequest();
- *   });
- * ```
- */
-
+* fino:topic - Named pub/sub channels with Context binding.
+*
+* A `Topic` is a named pub/sub channel. When a `Context` is bound to a Topic,
+* calling `topic.runWithValue(msg, fn)` automatically derives and installs the
+* bound context value for the duration of `fn`. This separates the concerns of
+* *publishing* (the library/framework) from *consuming* context (application code).
+*
+* ```ts no_run
+*   import { topic } from 'fino:context/topic';
+*   import { Context } from 'fino:context';
+*
+*   const requestCtx = new Context('request');
+*   const httpTopic = topic('http.request');
+*
+*   httpTopic.bindContext(requestCtx, (req) => req);
+*
+*   // In a handler:
+*   httpTopic.runWithValue(request, () => {
+*     // requestCtx.get() === request here, and in any awaited code
+*     handleRequest();
+*   });
+* ```
+*/
 import type { Context } from './index.ts';
-
 // ---------------------------------------------------------------------------
 // Global topic registry (get-or-create by name)
 // ---------------------------------------------------------------------------
-
 const registry = new Map<string, Topic<any>>();
 const topicCreationSubscribers = new Map<symbol, (name: string, topic: Topic<unknown>) => void>();
-
 /**
- * Get or create a named `Topic`. Topics with the same name share state across
- * all imports - useful for cross-cutting bindings between libraries.
- *
- * A new topic starts with no subscribers and no context bindings. The function
- * never returns `null`; invalid or empty names are accepted as ordinary map
- * keys, so choose stable names such as `package:event`.
- *
- * ```ts no_run
- * import { topic } from 'fino:context/topic';
- *
- * const requests = topic<{ id: string }>('http:request');
- * requests.publish({ id: 'req-1' });
- * ```
- *
- * @param {string} name
- * @returns {Topic}
- */
+* Get or create a named `Topic`. Topics with the same name share state across
+* all imports - useful for cross-cutting bindings between libraries.
+*
+* A new topic starts with no subscribers and no context bindings. The function
+* never returns `null`; invalid or empty names are accepted as ordinary map
+* keys, so choose stable names such as `package:event`.
+*
+* ```ts no_run
+* import { topic } from 'fino:context/topic';
+*
+* const requests = topic<{ id: string }>('http:request');
+* requests.publish({ id: 'req-1' });
+* ```
+*
+* @param {string} name
+* @returns {Topic}
+*/
 export function topic<T = unknown>(name: string): Topic<T> {
   let t = registry.get(name);
   if (t === undefined) {
@@ -59,297 +55,293 @@ export function topic<T = unknown>(name: string): Topic<T> {
   }
   return t;
 }
-
 /**
- * Subscribe to all existing and future topics whose names match `matcher`.
- *
- * Returns a handle that removes every attached subscription when disposed.
- * The matcher is evaluated for topics already in the registry and for each
- * topic created later. Callback errors are handled by the matched topic's
- * normal `publish()` error path.
- *
- * ```ts no_run
- * import { subscribeMatching, topic } from 'fino:context/topic';
- *
- * const handle = subscribeMatching(
- *   (name) => name.startsWith('audit:'),
- *   (event, topicName) => console.log(topicName, event),
- * );
- * topic('audit:login').publish({ user: 'ana' });
- * handle.dispose();
- * ```
- *
- * @param matcher Returns `true` for topic names that should be subscribed.
- * @param fn Receives each published message and the matching topic name.
- * @returns A disposable handle for every attached and future subscription.
- */
-export function subscribeMatching<T = unknown>(
-  matcher: (name: string) => boolean,
-  fn: (msg: T, topicName: string) => void,
-): SubscriptionHandle {
+* Subscribe to all existing and future topics whose names match `matcher`.
+*
+* Returns a handle that removes every attached subscription when disposed.
+* The matcher is evaluated for topics already in the registry and for each
+* topic created later. Callback errors are handled by the matched topic's
+* normal `publish()` error path.
+*
+* ```ts no_run
+* import { subscribeMatching, topic } from 'fino:context/topic';
+*
+* const handle = subscribeMatching(
+*   (name) => name.startsWith('audit:'),
+*   (event, topicName) => console.log(topicName, event),
+* );
+* topic('audit:login').publish({ user: 'ana' });
+* handle.dispose();
+* ```
+*
+* @param matcher Returns `true` for topic names that should be subscribed.
+* @param fn Receives each published message and the matching topic name.
+* @returns A disposable handle for every attached and future subscription.
+*/
+export function subscribeMatching<T = unknown>(matcher: (name: string) => boolean, fn: (msg: T, topicName: string) => void): SubscriptionHandle {
   const handles = new Map<string, SubscriptionHandle>();
-
   function attach(name: string, currentTopic: Topic<unknown>) {
     if (!matcher(name) || handles.has(name)) return;
-    handles.set(
-      name,
-      currentTopic.subscribe((msg) => {
-        fn(msg as T, name);
-      }),
-    );
+    handles.set(name, currentTopic.subscribe((msg) => {
+      fn(msg as T, name);
+    }));
   }
-
   for (const [name, currentTopic] of registry.entries()) attach(name, currentTopic);
-
   const creationId = Symbol();
   topicCreationSubscribers.set(creationId, attach);
-
   return new SubscriptionHandle(function unsubscribeMatching() {
     topicCreationSubscribers.delete(creationId);
     for (const handle of handles.values()) handle.dispose();
     handles.clear();
   });
 }
-
 // ---------------------------------------------------------------------------
 // Topic
 // ---------------------------------------------------------------------------
-
 /**
- * Named publish/subscribe channel that can bind messages into async contexts.
- *
- * Topics deliver messages synchronously to current subscribers. Use
- * `runWithValue()` when subscribers and a callback should execute with context
- * values derived from the message.
- *
- * ```ts no_run
- * import { topic } from 'fino:context/topic';
- *
- * const updates = topic<string>('status:update');
- * updates.subscribe((message) => console.log(message));
- * updates.publish('ready');
- * ```
- */
+* Named publish/subscribe channel that can bind messages into async contexts.
+*
+* Topics deliver messages synchronously to current subscribers. Use
+* `runWithValue()` when subscribers and a callback should execute with context
+* values derived from the message.
+*
+* ```ts no_run
+* import { topic } from 'fino:context/topic';
+*
+* const updates = topic<string>('status:update');
+* updates.subscribe((message) => console.log(message));
+* updates.publish('ready');
+* ```
+*/
 export class Topic<T = unknown> {
   /**
-   * Private property `#name` used by `Topic`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #name = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#name;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
+  * Private property `#name` used by `Topic`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * @example
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #name = undefined;
+  *
+  *   readInternalState() {
+  *     return this.#name;
+  *   }
+  * }
+  * ```
+  *
+  * @internal
+  */
   #name: string;
   /**
-   * Private property `#subscribers` used by `Topic`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #subscribers = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#subscribers;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
+  * Private property `#subscribers` used by `Topic`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * @example
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #subscribers = undefined;
+  *
+  *   readInternalState() {
+  *     return this.#subscribers;
+  *   }
+  * }
+  * ```
+  *
+  * @internal
+  */
   #subscribers: Map<symbol, (msg: T) => void> = new Map();
   /**
-   * Private property `#bindings` used by `Topic`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #bindings = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#bindings;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #bindings: Array<{ ctx: { runWithValue<R>(val: any, fn: () => R): R }; transform: (msg: T) => unknown }> = [];
-
+  * Private property `#bindings` used by `Topic`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * @example
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #bindings = undefined;
+  *
+  *   readInternalState() {
+  *     return this.#bindings;
+  *   }
+  * }
+  * ```
+  *
+  * @internal
+  */
+  #bindings: Array<{
+    ctx: {
+      runWithValue<R>(val: any, fn: () => R): R;
+    };
+    transform: (msg: T) => unknown;
+  }> = [];
   /**
-   * Create an unregistered topic instance.
-   *
-   * Direct construction is useful for private channels. Use `topic(name)` when
-   * other modules should retrieve the same shared instance by name.
-   *
-   * ```ts no_run
-   * import { Topic } from 'fino:context/topic';
-   *
-   * const privateTopic = new Topic<number>('local:count');
-   * privateTopic.publish(1);
-   * ```
-   *
-   * @param {string} name Topic name exposed through the `name` getter.
-   */
+  * Create an unregistered topic instance.
+  *
+  * Direct construction is useful for private channels. Use `topic(name)` when
+  * other modules should retrieve the same shared instance by name.
+  *
+  * ```ts no_run
+  * import { Topic } from 'fino:context/topic';
+  *
+  * const privateTopic = new Topic<number>('local:count');
+  * privateTopic.publish(1);
+  * ```
+  *
+  * @param {string} name Topic name exposed through the `name` getter.
+  */
   constructor(name: string) {
     this.#name = name;
   }
-
   /**
-   * Read the topic name.
-   *
-   * The name is not required to be globally unique for directly constructed
-   * topics, but registry-created topics use it as their lookup key.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * console.log(topic('metrics:tick').name);
-   * ```
-   */
+  * Read the topic name.
+  *
+  * The name is not required to be globally unique for directly constructed
+  * topics, but registry-created topics use it as their lookup key.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * console.log(topic('metrics:tick').name);
+  * ```
+  */
   get name(): string {
     return this.#name;
   }
-
   /**
-   * Report whether the topic currently has one or more subscribers.
-   *
-   * This is a synchronous snapshot. It may be used to avoid constructing
-   * expensive messages, but a subscriber can still be added or disposed
-   * immediately after the check.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * const events = topic('metrics:event');
-   * if (events.hasSubscribers) events.publish({ count: 1 });
-   * ```
-   */
+  * Report whether the topic currently has one or more subscribers.
+  *
+  * This is a synchronous snapshot. It may be used to avoid constructing
+  * expensive messages, but a subscriber can still be added or disposed
+  * immediately after the check.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * const events = topic('metrics:event');
+  * if (events.hasSubscribers) events.publish({ count: 1 });
+  * ```
+  */
   get hasSubscribers(): boolean {
     return this.#subscribers.size > 0;
   }
-
   // -------------------------------------------------------------------------
   // Subscriptions
   // -------------------------------------------------------------------------
-
   /**
-   * Register a subscriber callback. Returns a `SubscriptionHandle` with a
-   * `dispose()` method to remove the subscription.
-   *
-   * The same function can be subscribed multiple times; each call returns an
-   * independent handle.
-   *
-   * Delivery is synchronous during `publish()` and `runWithValue()`. A thrown
-   * subscriber error is forwarded to the `execution-flow:error` topic and does
-   * not prevent later subscribers from receiving the same message.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * const messages = topic<string>('chat:message');
-   * const handle = messages.subscribe((message) => console.log(message));
-   * handle.dispose();
-   * ```
-   *
-   * @param {(msg: any) => void} fn
-   * @returns {SubscriptionHandle}
-   */
+  * Register a subscriber callback. Returns a `SubscriptionHandle` with a
+  * `dispose()` method to remove the subscription.
+  *
+  * The same function can be subscribed multiple times; each call returns an
+  * independent handle.
+  *
+  * Delivery is synchronous during `publish()` and `runWithValue()`. A thrown
+  * subscriber error is forwarded to the `execution-flow:error` topic and does
+  * not prevent later subscribers from receiving the same message.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * const messages = topic<string>('chat:message');
+  * const handle = messages.subscribe((message) => console.log(message));
+  * handle.dispose();
+  * ```
+  *
+  * @param {(msg: any) => void} fn
+  * @returns {SubscriptionHandle}
+  */
   subscribe(fn: (msg: T) => void): SubscriptionHandle {
     const id = Symbol();
     this.#subscribers.set(id, fn);
     const subscribers = this.#subscribers;
-    return new SubscriptionHandle(function unsubscribe() { subscribers.delete(id); });
+    return new SubscriptionHandle(function unsubscribe() {
+      subscribers.delete(id);
+    });
   }
-
   /**
-   * Remove a subscription via its handle.
-   *
-   * This is equivalent to calling `handle.dispose()`. Passing a handle from a
-   * different topic is harmless when the handle itself is still valid because
-   * handles close over their own removal logic.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * const events = topic('app:event');
-   * const handle = events.subscribe(() => {});
-   * events.unsubscribe(handle);
-   * ```
-   *
-   * @param {SubscriptionHandle} handle
-   */
+  * Remove a subscription via its handle.
+  *
+  * This is equivalent to calling `handle.dispose()`. Passing a handle from a
+  * different topic is harmless when the handle itself is still valid because
+  * handles close over their own removal logic.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * const events = topic('app:event');
+  * const handle = events.subscribe(() => {});
+  * events.unsubscribe(handle);
+  * ```
+  *
+  * @param {SubscriptionHandle} handle
+  */
   unsubscribe(handle: SubscriptionHandle): void {
     handle.dispose();
   }
-
   /**
-   * Async iterator - consume published messages with `for await`.
-   *
-   * Each `for await` call creates an independent iterator with its own
-   * internal queue. Messages published while the consumer is busy are
-   * buffered in order and delivered on the next `next()` call. Breaking
-   * out of the loop (or calling `return()` on the iterator) disposes the
-   * subscription automatically.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * const events = topic<string>('worker:event');
-   * for await (const event of events) {
-   *   console.log('received', event);
-   *   break; // disposes the subscription
-   * }
-   * ```
-   *
-   * @returns An async iterator that yields messages until `return()` is called.
-   */
+  * Async iterator - consume published messages with `for await`.
+  *
+  * Each `for await` call creates an independent iterator with its own
+  * internal queue. Messages published while the consumer is busy are
+  * buffered in order and delivered on the next `next()` call. Breaking
+  * out of the loop (or calling `return()` on the iterator) disposes the
+  * subscription automatically.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * const events = topic<string>('worker:event');
+  * for await (const event of events) {
+  *   console.log('received', event);
+  *   break; // disposes the subscription
+  * }
+  * ```
+  *
+  * @returns An async iterator that yields messages until `return()` is called.
+  */
   [Symbol.asyncIterator](): AsyncIterator<T> {
     const queue: T[] = [];
     let pending: ((result: IteratorResult<T>) => void) | null = null;
     let done = false;
-
     const handle = this.subscribe(function onTopicMessage(msg) {
       if (pending !== null) {
         const resolve = pending;
         pending = null;
-        resolve({ value: msg, done: false });
+        resolve({
+          value: msg,
+          done: false
+        });
       } else {
         queue.push(msg);
       }
     });
-
     return {
       next(): Promise<IteratorResult<T>> {
         if (queue.length > 0) {
-          return Promise.resolve({ value: queue.shift()!, done: false });
+          return Promise.resolve({
+            value: queue.shift()!,
+            done: false
+          });
         }
         if (done) {
-          return Promise.resolve({ value: undefined as unknown as T, done: true });
+          return Promise.resolve({
+            value: (undefined as unknown) as T,
+            done: true
+          });
         }
-        return new Promise(function waitForMessage(resolve) { pending = resolve; });
+        return new Promise(function waitForMessage(resolve) {
+          pending = resolve;
+        });
       },
       return(): Promise<IteratorResult<T>> {
         done = true;
@@ -358,34 +350,39 @@ export class Topic<T = unknown> {
         if (pending !== null) {
           const resolve = pending;
           pending = null;
-          resolve({ value: undefined as unknown as T, done: true });
+          resolve({
+            value: (undefined as unknown) as T,
+            done: true
+          });
         }
-        return Promise.resolve({ value: undefined as unknown as T, done: true });
-      },
+        return Promise.resolve({
+          value: (undefined as unknown) as T,
+          done: true
+        });
+      }
     };
   }
-
   /**
-   * Fire all subscribers with `msg`. Each subscriber runs in its own
-   * try/catch; errors are forwarded to the `"execution-flow:error"` topic so
-   * a failing subscriber never blocks delivery to others.
-   *
-   * Note: does NOT enter bound context scopes. Use `runWithValue()` for that.
-   *
-   * Publishing to a topic with no subscribers is a no-op. Messages are passed
-   * by reference; mutating an object in one subscriber affects later
-   * subscribers that receive the same object.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * const events = topic<{ ok: boolean }>('service:event');
-   * events.subscribe((event) => console.log(event.ok));
-   * events.publish({ ok: true });
-   * ```
-   *
-   * @param {*} msg
-   */
+  * Fire all subscribers with `msg`. Each subscriber runs in its own
+  * try/catch; errors are forwarded to the `"execution-flow:error"` topic so
+  * a failing subscriber never blocks delivery to others.
+  *
+  * Note: does NOT enter bound context scopes. Use `runWithValue()` for that.
+  *
+  * Publishing to a topic with no subscribers is a no-op. Messages are passed
+  * by reference; mutating an object in one subscriber affects later
+  * subscribers that receive the same object.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * const events = topic<{ ok: boolean }>('service:event');
+  * events.subscribe((event) => console.log(event.ok));
+  * events.publish({ ok: true });
+  * ```
+  *
+  * @param {*} msg
+  */
   publish(msg: T): void {
     if (!this.hasSubscribers) return;
     for (const fn of this.#subscribers.values()) {
@@ -396,41 +393,42 @@ export class Topic<T = unknown> {
           try {
             topic('execution-flow:error').publish({
               error: err instanceof Error ? err : new Error(String(err)),
-              topicName: this.#name,
+              topicName: this.#name
             });
-          } catch (_) {
-            // swallow to prevent infinite recursion
-          }
+          } catch (_) {}
         }
       }
     }
   }
-
   // -------------------------------------------------------------------------
   // Context bindings
   // -------------------------------------------------------------------------
-
   /**
-   * Declare that when this topic fires via `runWithValue()`, `ctx` should
-   * be set to `transform(msg)` for the duration of the call. Multiple bindings
-   * are entered in registration order (outermost first) and restored in reverse.
-   *
-   * @param {Context} ctx
-   * @param {(msg: any) => any} transform
-   * @returns {BindingHandle}
-   *
-   * ```ts no_run
-   * import { Context } from 'fino:context';
-   * import { topic } from 'fino:context/topic';
-   *
-   * const requestId = new Context<string>('requestId');
-   * const requests = topic<{ id: string }>('http:request');
-   * const binding = requests.bindContext(requestId, (request) => request.id);
-   * binding.dispose();
-   * ```
-   */
-  bindContext<C>(ctx: { runWithValue<R>(val: C, fn: () => R): R }, transform: (msg: T) => C): BindingHandle {
-    const binding = { ctx, transform };
+  * Declare that when this topic fires via `runWithValue()`, `ctx` should
+  * be set to `transform(msg)` for the duration of the call. Multiple bindings
+  * are entered in registration order (outermost first) and restored in reverse.
+  *
+  * @param {Context} ctx
+  * @param {(msg: any) => any} transform
+  * @returns {BindingHandle}
+  *
+  * ```ts no_run
+  * import { Context } from 'fino:context';
+  * import { topic } from 'fino:context/topic';
+  *
+  * const requestId = new Context<string>('requestId');
+  * const requests = topic<{ id: string }>('http:request');
+  * const binding = requests.bindContext(requestId, (request) => request.id);
+  * binding.dispose();
+  * ```
+  */
+  bindContext<C>(ctx: {
+    runWithValue<R>(val: C, fn: () => R): R;
+  }, transform: (msg: T) => C): BindingHandle {
+    const binding = {
+      ctx,
+      transform
+    };
     this.#bindings.push(binding);
     const bindings = this.#bindings;
     return new BindingHandle(function removeBinding() {
@@ -438,78 +436,75 @@ export class Topic<T = unknown> {
       if (i !== -1) bindings.splice(i, 1);
     });
   }
-
   /**
-   * Remove a context binding via its handle.
-   *
-   * This is equivalent to calling `handle.dispose()`. Once removed, future
-   * `runWithValue()` calls no longer enter the associated context.
-   *
-   * ```ts no_run
-   * import { Context } from 'fino:context';
-   * import { topic } from 'fino:context/topic';
-   *
-   * const ctx = new Context<string>('tenant');
-   * const events = topic<{ tenant: string }>('tenant:event');
-   * const handle = events.bindContext(ctx, (event) => event.tenant);
-   * events.unbindContext(handle);
-   * ```
-   *
-   * @param {BindingHandle} handle
-   */
+  * Remove a context binding via its handle.
+  *
+  * This is equivalent to calling `handle.dispose()`. Once removed, future
+  * `runWithValue()` calls no longer enter the associated context.
+  *
+  * ```ts no_run
+  * import { Context } from 'fino:context';
+  * import { topic } from 'fino:context/topic';
+  *
+  * const ctx = new Context<string>('tenant');
+  * const events = topic<{ tenant: string }>('tenant:event');
+  * const handle = events.bindContext(ctx, (event) => event.tenant);
+  * events.unbindContext(handle);
+  * ```
+  *
+  * @param {BindingHandle} handle
+  */
   unbindContext(handle: BindingHandle): void {
     handle.dispose();
   }
-
   /**
-   * Enter all bound context scopes (in registration order), publish `msg` to
-   * subscribers, then run `fn` - all within those scopes. Context values are
-   * derived by calling each binding's `transform(msg)`. Scopes are restored in
-   * reverse order after `fn` returns or throws.
-   *
-   * @param {*}        msg
-   * @param {Function} fn
-   * @returns The return value of `fn`.
-   *
-   * ```ts no_run
-   * import { Context } from 'fino:context';
-   * import { topic } from 'fino:context/topic';
-   *
-   * const ctx = new Context<string>('requestId');
-   * const requests = topic<{ id: string }>('http:request');
-   * requests.bindContext(ctx, (request) => request.id);
-   * requests.runWithValue({ id: 'req-1' }, () => console.log(ctx.get()));
-   * ```
-   */
+  * Enter all bound context scopes (in registration order), publish `msg` to
+  * subscribers, then run `fn` - all within those scopes. Context values are
+  * derived by calling each binding's `transform(msg)`. Scopes are restored in
+  * reverse order after `fn` returns or throws.
+  *
+  * @param {*}        msg
+  * @param {Function} fn
+  * @returns The return value of `fn`.
+  *
+  * ```ts no_run
+  * import { Context } from 'fino:context';
+  * import { topic } from 'fino:context/topic';
+  *
+  * const ctx = new Context<string>('requestId');
+  * const requests = topic<{ id: string }>('http:request');
+  * requests.bindContext(ctx, (request) => request.id);
+  * requests.runWithValue({ id: 'req-1' }, () => console.log(ctx.get()));
+  * ```
+  */
   runWithValue<R>(msg: T, fn: () => R): R {
     return this.#runWithBindings(msg, 0, fn);
   }
-
   // Enter bindings[index..] recursively so that each binding's runWithValue
   // restores cleanly even when fn throws.
   /**
-   * Private method `#runWithBindings` used by `Topic`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #runWithBindings() {
-   *     return 'runWithBindings';
-   *   }
-   *
-   *   useInternalMethod() {
-   *     return this.#runWithBindings();
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
+  * Private method `#runWithBindings` used by `Topic`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * @example
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #runWithBindings() {
+  *     return 'runWithBindings';
+  *   }
+  *
+  *   useInternalMethod() {
+  *     return this.#runWithBindings();
+  *   }
+  * }
+  * ```
+  *
+  * @internal
+  */
   #runWithBindings<R>(msg: T, index: number, fn: () => R): R {
     if (index >= this.#bindings.length) {
       this.publish(msg);
@@ -524,160 +519,153 @@ export class Topic<T = unknown> {
     });
   }
 }
-
 // ---------------------------------------------------------------------------
 // Handle types
 // ---------------------------------------------------------------------------
-
 /**
- * Disposable handle returned from topic subscriptions.
- *
- * Disposing removes the callback from the topic that created the handle. The
- * current implementation tolerates repeated disposal.
- *
- * ```ts no_run
- * import { topic } from 'fino:context/topic';
- *
- * const handle = topic('logs').subscribe((line) => console.log(line));
- * handle.dispose();
- * ```
- */
+* Disposable handle returned from topic subscriptions.
+*
+* Disposing removes the callback from the topic that created the handle. The
+* current implementation tolerates repeated disposal.
+*
+* ```ts no_run
+* import { topic } from 'fino:context/topic';
+*
+* const handle = topic('logs').subscribe((line) => console.log(line));
+* handle.dispose();
+* ```
+*/
 export class SubscriptionHandle {
   /**
-   * Private property `#dispose` used by `SubscriptionHandle`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #dispose = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#dispose;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
+  * Private property `#dispose` used by `SubscriptionHandle`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * @example
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #dispose = undefined;
+  *
+  *   readInternalState() {
+  *     return this.#dispose;
+  *   }
+  * }
+  * ```
+  *
+  * @internal
+  */
   #dispose: () => void;
-
   /**
-   * Create a subscription handle from a disposal callback.
-   *
-   * Application code normally receives handles from `Topic.subscribe()` or
-   * `subscribeMatching()`. The callback is called every time `dispose()` is
-   * invoked, so make custom callbacks idempotent.
-   *
-   * ```ts no_run
-   * import { SubscriptionHandle } from 'fino:context/topic';
-   *
-   * const handle = new SubscriptionHandle(() => console.log('disposed'));
-   * handle.dispose();
-   * ```
-   *
-   * @param disposeFn Function that removes the subscription.
-   */
+  * Create a subscription handle from a disposal callback.
+  *
+  * Application code normally receives handles from `Topic.subscribe()` or
+  * `subscribeMatching()`. The callback is called every time `dispose()` is
+  * invoked, so make custom callbacks idempotent.
+  *
+  * ```ts no_run
+  * import { SubscriptionHandle } from 'fino:context/topic';
+  *
+  * const handle = new SubscriptionHandle(() => console.log('disposed'));
+  * handle.dispose();
+  * ```
+  *
+  * @param disposeFn Function that removes the subscription.
+  */
   constructor(disposeFn: () => void) {
     this.#dispose = disposeFn;
   }
-
   /**
-   * Remove the subscription.
-   *
-   * Calling more than once is safe for handles created by this module. Custom
-   * handles depend on the callback passed to the constructor.
-   *
-   * ```ts no_run
-   * import { topic } from 'fino:context/topic';
-   *
-   * const handle = topic('events').subscribe(() => {});
-   * handle.dispose();
-   * ```
-   */
+  * Remove the subscription.
+  *
+  * Calling more than once is safe for handles created by this module. Custom
+  * handles depend on the callback passed to the constructor.
+  *
+  * ```ts no_run
+  * import { topic } from 'fino:context/topic';
+  *
+  * const handle = topic('events').subscribe(() => {});
+  * handle.dispose();
+  * ```
+  */
   dispose(): void {
     this.#dispose();
   }
 }
-
 /**
- * Disposable handle returned from context bindings.
- *
- * Disposing removes one registered binding from a topic. Other bindings and
- * subscriptions remain active.
- *
- * ```ts no_run
- * import { Context } from 'fino:context';
- * import { topic } from 'fino:context/topic';
- *
- * const ctx = new Context<string>('trace');
- * const handle = topic<{ trace: string }>('trace:event')
- *   .bindContext(ctx, (event) => event.trace);
- * handle.dispose();
- * ```
- */
+* Disposable handle returned from context bindings.
+*
+* Disposing removes one registered binding from a topic. Other bindings and
+* subscriptions remain active.
+*
+* ```ts no_run
+* import { Context } from 'fino:context';
+* import { topic } from 'fino:context/topic';
+*
+* const ctx = new Context<string>('trace');
+* const handle = topic<{ trace: string }>('trace:event')
+*   .bindContext(ctx, (event) => event.trace);
+* handle.dispose();
+* ```
+*/
 export class BindingHandle {
   /**
-   * Private property `#dispose` used by `BindingHandle`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #dispose = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#dispose;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
+  * Private property `#dispose` used by `BindingHandle`.
+  *
+  * This implementation detail is included when documentation is built with
+  * `--include-private`. It describes state or helper behavior used by the
+  * owning module rather than a stable application-facing contract. Prefer the
+  * public API around the owning type unless you are maintaining this runtime.
+  *
+  * @example
+  * ```ts no_run
+  * class IncludePrivateExample {
+  *   #dispose = undefined;
+  *
+  *   readInternalState() {
+  *     return this.#dispose;
+  *   }
+  * }
+  * ```
+  *
+  * @internal
+  */
   #dispose: () => void;
-
   /**
-   * Create a binding handle from a disposal callback.
-   *
-   * Application code normally receives handles from `Topic.bindContext()`.
-   * Custom callbacks should be idempotent if callers may dispose repeatedly.
-   *
-   * ```ts no_run
-   * import { BindingHandle } from 'fino:context/topic';
-   *
-   * const handle = new BindingHandle(() => console.log('unbound'));
-   * handle.dispose();
-   * ```
-   *
-   * @param disposeFn Function that removes the binding.
-   */
+  * Create a binding handle from a disposal callback.
+  *
+  * Application code normally receives handles from `Topic.bindContext()`.
+  * Custom callbacks should be idempotent if callers may dispose repeatedly.
+  *
+  * ```ts no_run
+  * import { BindingHandle } from 'fino:context/topic';
+  *
+  * const handle = new BindingHandle(() => console.log('unbound'));
+  * handle.dispose();
+  * ```
+  *
+  * @param disposeFn Function that removes the binding.
+  */
   constructor(disposeFn: () => void) {
     this.#dispose = disposeFn;
   }
-
   /**
-   * Remove the context binding.
-   *
-   * Calling more than once is safe for handles created by this module. After
-   * disposal, future `Topic.runWithValue()` calls skip the removed binding.
-   *
-   * ```ts no_run
-   * import { Context } from 'fino:context';
-   * import { topic } from 'fino:context/topic';
-   *
-   * const ctx = new Context<string>('trace');
-   * const handle = topic<string>('trace').bindContext(ctx, (trace) => trace);
-   * handle.dispose();
-   * ```
-   */
+  * Remove the context binding.
+  *
+  * Calling more than once is safe for handles created by this module. After
+  * disposal, future `Topic.runWithValue()` calls skip the removed binding.
+  *
+  * ```ts no_run
+  * import { Context } from 'fino:context';
+  * import { topic } from 'fino:context/topic';
+  *
+  * const ctx = new Context<string>('trace');
+  * const handle = topic<string>('trace').bindContext(ctx, (trace) => trace);
+  * handle.dispose();
+  * ```
+  */
   dispose(): void {
     this.#dispose();
   }

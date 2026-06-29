@@ -1,14 +1,13 @@
 /**
- * Benchmarks for fino:context/topic
- *
- * Run with: cargo run -- bench benchmarks/context/topic.bench.ts
- */
-
+* Benchmarks for fino:context/topic
+*
+* Run with: cargo run -- bench benchmarks/context/topic.bench.ts
+*/
 import { topic } from 'fino:context/topic';
 import { bench } from 'fino:bench';
-
-const messages = topic<{ value: number }>('bench:topic');
-
+const messages = topic<{
+  value: number;
+}>('bench:topic');
 bench('Topic publish/subscribe', (b) => {
   b.measure('topic lookup', () => topic('bench:topic'));
   b.measure('subscribe/unsubscribe', () => {

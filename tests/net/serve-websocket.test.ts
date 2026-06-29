@@ -1,23 +1,19 @@
 /**
- * Tests for WebSocket upgrade through serve().
- *
- * Verifies that a serve() handler can return a WebSocketConnection obtained
- * from WebSocketConnection.accept(req), and that the same server also handles
- * plain HTTP requests correctly.
- */
-
+* Tests for WebSocket upgrade through serve().
+*
+* Verifies that a serve() handler can return a WebSocketConnection obtained
+* from WebSocketConnection.accept(req), and that the same server also handles
+* plain HTTP requests correctly.
+*/
 import { describe, it } from 'fino:test/test';
 import { serve, serveHttp } from 'fino:net/http/server';
 import { WebSocketConnection, MessageEvent, CloseEvent } from 'fino:net/http/websocket';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
-
 // ---------------------------------------------------------------------------
 // Helper: wait for a named event on an EventTarget
 // ---------------------------------------------------------------------------
-
 import * as loop from 'internal:runtime/loop';
-
-function waitForEvent<T extends Event>(target: EventTarget, name: string, timeoutMs = 5000): Promise<T> {
+function waitForEvent<T extends Event>(target: EventTarget, name: string, timeoutMs = 5e3): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = loop.timeout(timeoutMs);
     t.then(() => {
@@ -30,11 +26,9 @@ function waitForEvent<T extends Event>(target: EventTarget, name: string, timeou
     }, { once: true });
   });
 }
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
 describe('serve() WebSocket upgrade', () => {
   it('handler returns WebSocketConnection.accept(req) — server sends, client receives', async (t) => {
     const server = serve({ port: 0 }, async (incoming) => {
@@ -48,58 +42,49 @@ describe('serve() WebSocket upgrade', () => {
       }
       await incoming.reject(new Response('not a ws upgrade', { status: 400 }));
     });
-
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/ws`);
-
       // Wait for the client message — open will have fired before message arrives.
-      const msgEvt = await waitForEvent<MessageEvent>(client as unknown as EventTarget, 'message');
+      const msgEvt = await waitForEvent<MessageEvent>((client as unknown) as EventTarget, 'message');
       t.equal(client.readyState, WebSocketConnection.OPEN, 'client is OPEN after handshake');
       t.equal((msgEvt as MessageEvent).data, 'hello from server', 'client received server message');
-
       // Close cleanly from client side.
       // Register the close listener before initiating close so we don't miss it.
-      const closePromise = waitForEvent<CloseEvent>(client as unknown as EventTarget, 'close');
-      await client.close(1000, 'done');
+      const closePromise = waitForEvent<CloseEvent>((client as unknown) as EventTarget, 'close');
+      await client.close(1e3, 'done');
       const closeEvt = await closePromise;
       t.ok(closeEvt.wasClean, 'client close was clean');
     } finally {
       await server.close();
     }
   });
-
   it('server closes the connection first — client receives close event', async (t) => {
     const server = serve({ port: 0 }, async (incoming) => {
       if (incoming.kind === 'websocket') {
         const ws = await incoming.accept();
         ws.addEventListener('open', async () => {
           await ws.send('goodbye');
-          await ws.close(1000, 'server done');
+          await ws.close(1e3, 'server done');
         });
         return;
       }
       await incoming.reject(new Response('not ws', { status: 400 }));
     });
-
     try {
       const client = WebSocketConnection.connect(`ws://127.0.0.1:${server.port}/`);
-
-      const msgEvt = await waitForEvent<MessageEvent>(client as unknown as EventTarget, 'message');
+      const msgEvt = await waitForEvent<MessageEvent>((client as unknown) as EventTarget, 'message');
       t.equal((msgEvt as MessageEvent).data, 'goodbye', 'client received server message before close');
-
-      const closeEvt = await waitForEvent<CloseEvent>(client as unknown as EventTarget, 'close');
+      const closeEvt = await waitForEvent<CloseEvent>((client as unknown) as EventTarget, 'close');
       t.ok(closeEvt.wasClean, 'close was clean (code 1000)');
-      t.equal(closeEvt.code, 1000, 'close code is 1000');
+      t.equal(closeEvt.code, 1e3, 'close code is 1000');
     } finally {
       await server.close();
     }
   });
-
   it('non-WebSocket request still works on same server', async (t) => {
     const server = serveHttp({ port: 0 }, (req) => {
       return new Response('ok');
     });
-
     try {
       const resp = await fetch(`http://127.0.0.1:${server.port}/`);
       t.equal(resp.status, 200, 'HTTP GET returned 200');
