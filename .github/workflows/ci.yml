@@ -8,28 +8,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-matrix:
-    name: Test Matrix
-    runs-on: ubuntu-latest
-    outputs:
-      include: ${{ steps.matrix.outputs.include }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Export matrix
-        id: matrix
-        run: |
-          ruby <<'RUBY'
-          require 'json'
-          require 'yaml'
-
-          matrix = YAML.load_file('.github/test-matrix.yml')
-          File.open(ENV.fetch('GITHUB_OUTPUT'), 'a') do |output|
-            output.puts("include=#{JSON.generate(matrix.fetch('include'))}")
-          end
-          RUBY
-
   fmt:
     name: Format Checks
     runs-on: ubuntu-latest
@@ -159,15 +137,33 @@ jobs:
           if-no-files-found: error
 
   linux-tests:
-    name: Linux Tests (${{ matrix.subsystem }})
+    name: Linux Tests (${{ matrix.path }})
     runs-on: ubuntu-latest
-    needs:
-      - linux-build
-      - test-matrix
+    needs: linux-build
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.test-matrix.outputs.include) }}
+        path: &test-paths
+          - "tests/*.test.ts"
+          - tests/ai
+          - tests/archive
+          - tests/async-runtime
+          - tests/cluster
+          - tests/commands
+          - tests/file
+          - tests/format
+          - tests/integration
+          - tests/internal
+          - tests/messaging
+          - tests/net
+          - tests/process
+          - tests/realm
+          - tests/runtime
+          - tests/security
+          - tests/test
+          - tests/tty
+          - tests/util
+          - tests/workflow
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -201,18 +197,16 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test ${{ matrix.paths }}
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test ${{ matrix.path }}
 
   macos-tests:
-    name: macOS Tests (${{ matrix.subsystem }})
+    name: macOS Tests (${{ matrix.path }})
     runs-on: macos-latest
-    needs:
-      - macos-build
-      - test-matrix
+    needs: macos-build
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.test-matrix.outputs.include) }}
+        path: *test-paths
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -230,4 +224,4 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run subsystem tests
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test ${{ matrix.paths }}
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test ${{ matrix.path }}
