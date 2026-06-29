@@ -26,20 +26,21 @@ describe('embedded realm shares async executor', () => {
       result: 'i32',
       async: true
     } });
+    const sleepUs = 1e6;
     const sequential = await elapsed(async () => {
       const realm = new Realm<typeof asyncFfiChild>({ entry: ENTRY });
-      await realm.call(1e5);
-      await libAsync.symbols.usleep(1e5);
+      await realm.call(sleepUs);
+      await libAsync.symbols.usleep(sleepUs);
     });
     const realm = new Realm<typeof asyncFfiChild>({ entry: ENTRY });
     let childPid = 0;
     const concurrent = await elapsed(async () => {
-      const [pid] = await Promise.all([realm.call(1e5), libAsync.symbols.usleep(1e5)]);
+      const [pid] = await Promise.all([realm.call(sleepUs), libAsync.symbols.usleep(sleepUs)]);
       childPid = pid;
     });
     t.ok(typeof childPid === 'number' && childPid > 0, 'child returned valid pid');
     t.ok(sequential > 0, 'sequential baseline completed');
-    t.ok(concurrent < sequential, `concurrent parent+child took ${concurrent}ms vs ${sequential}ms sequential`);
+    t.ok(concurrent < sequential * .85, `concurrent parent+child took ${concurrent}ms vs ${sequential}ms sequential`);
   });
   it('multiple embedded children complete async FFI concurrently', async (t) => {
     const sequential = await elapsed(async () => {
@@ -81,13 +82,14 @@ describe('thread realm has its own async executor', () => {
       result: 'i32',
       async: true
     } });
+    const sleepUs = 1e6;
     const sequential = await elapsed(async () => {
       const realm = new Realm<typeof asyncFfiChild>({
         thread: true,
         entry: ENTRY
       });
-      await realm.call(1e5);
-      await libAsync.symbols.usleep(1e5);
+      await realm.call(sleepUs);
+      await libAsync.symbols.usleep(sleepUs);
     });
     const realm = new Realm<typeof asyncFfiChild>({
       thread: true,
@@ -95,11 +97,11 @@ describe('thread realm has its own async executor', () => {
     });
     let childPid = 0;
     const concurrent = await elapsed(async () => {
-      const [pid] = await Promise.all([realm.call(1e5), libAsync.symbols.usleep(1e5)]);
+      const [pid] = await Promise.all([realm.call(sleepUs), libAsync.symbols.usleep(sleepUs)]);
       childPid = pid;
     });
     t.ok(typeof childPid === 'number' && childPid > 0, 'thread realm returned valid pid');
     t.ok(sequential > 0, 'sequential baseline completed');
-    t.ok(concurrent < sequential, `parent+thread realm concurrent took ${concurrent}ms vs ${sequential}ms sequential`);
+    t.ok(concurrent < sequential * .85, `parent+thread realm concurrent took ${concurrent}ms vs ${sequential}ms sequential`);
   });
 });
