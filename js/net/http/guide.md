@@ -1,7 +1,7 @@
 ---
 weight: 10
 ---
-# HTTP Guide
+# Introduction
 
 fino's HTTP subsystem is built around the global Fetch-compatible `Request`, `Response`, and `Headers` objects. All server and client logic lives in `fino:` modules. `WebSocket` and `EventSource` are globals; no import is needed to use them in application code.
 

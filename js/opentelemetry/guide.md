@@ -1,7 +1,7 @@
 ---
 weight: 18
 ---
-# OpenTelemetry
+# Introduction
 
 Fino includes a full OpenTelemetry implementation covering traces, metrics, logs, OTLP/HTTP JSON export, W3C propagation, and runtime instrumentations for HTTP servers, outgoing fetch, DNS, socket, and TLS. The subsystem is built as ordinary JS modules on top of fino's async context and topic primitives.
 

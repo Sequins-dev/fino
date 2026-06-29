@@ -1,7 +1,7 @@
 ---
 weight: 10
 ---
-# Realm
+# Introduction
 
 A realm is a self-contained JavaScript execution context: its own module graph, its own global object, its own microtask queue. Code running inside a realm cannot reach objects in the parent except through explicit channels — ports, facades, or broadcast. The parent chooses what imports the child can make, so the capability surface is controlled at construction time.
 
