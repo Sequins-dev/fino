@@ -664,7 +664,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     async function drainH2Writes() {
       const chunks: Uint8Array[] = [];
       do {
-        const bytes = await session.flush();
+        const bytes = session.flush();
         if (bytes && bytes.byteLength > 0) {
           chunks.push(bytes);
         } else {
@@ -1120,7 +1120,7 @@ async function _recvLoop(reader: BufferedBytesReader, writer: BytesWriter, sessi
   let sendFinalGoaway = true;
   async function processValidatedBytes(bytes: Uint8Array | null): Promise<boolean> {
     if (!bytes || bytes.byteLength === 0) return true;
-    const n = await session.recv(bytes);
+    const n = session.recv(bytes);
     if (n < 0) {
       try {
         await drainWrite();

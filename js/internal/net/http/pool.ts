@@ -343,7 +343,7 @@ export class H2PoolEntry {
     const drainH2PoolWrites = async () => {
       if (this.#closed) return;
       while (this.#session.wantWrite()) {
-        const bytes = await this.#session.flush();
+        const bytes = this.#session.flush();
         if (bytes && bytes.byteLength > 0) await this.#writer.write(bytes);
       }
       await this.#writer.flush();
@@ -478,7 +478,7 @@ export class H2PoolEntry {
     try {
       for await (const chunk of reader) {
         if (this.#closed) break;
-        await this.#session.recv(chunk);
+        this.#session.recv(chunk);
         await this.drainWrite();
       }
     } catch {} finally {

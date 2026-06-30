@@ -122,7 +122,7 @@ export class H2ClientDriver implements ClientDriver {
     function drainWrite(): Promise<void> {
       async function drainH2Writes() {
         do {
-          const bytes = await session.flush();
+          const bytes = session.flush();
           if (bytes && bytes.byteLength > 0) await writer.write(bytes);
           else break;
         } while (session.wantWrite());
@@ -251,7 +251,7 @@ export class H2ClientDriver implements ClientDriver {
     async function receiveResponse(): Promise<void> {
       try {
         for await (const chunk of reader) {
-          await session.recv(chunk);
+          session.recv(chunk);
           await drainWrite();
           // Check if our stream finished.
           const s = streams.get(streamId);

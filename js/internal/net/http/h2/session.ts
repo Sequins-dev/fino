@@ -693,7 +693,7 @@ export class Nghttp2Session {
   * ```ts no_run
   * import { Nghttp2Session } from 'internal:net/http/h2/session';
   * const session = Nghttp2Session.createClient(callbacks);
-  * await session.recv(new Uint8Array());
+  * session.recv(new Uint8Array());
   * ```
   */
   recv(bytes: Uint8Array): number {
@@ -715,7 +715,7 @@ export class Nghttp2Session {
   * ```ts no_run
   * import { Nghttp2Session } from 'internal:net/http/h2/session';
   * const session = Nghttp2Session.createClient(callbacks);
-  * const bytes = await session.flush();
+  * const bytes = session.flush();
   * bytes?.byteLength;
   * ```
   */
