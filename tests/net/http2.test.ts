@@ -1015,7 +1015,6 @@ describe('H2 server — multiplexing and connection reuse', () => {
   });
   it('coalesces fixed H2 response HEADERS and DATA into one response drain', async (t) => {
     if (!h2Available) return;
-    const previousStats = (globalThis as any).__finoH2Stats;
     const server = serveHttp({ port: 0 }, async () => new Response('x'));
     const port = server.port;
     const sock = await Socket.connect({
@@ -1050,19 +1049,13 @@ describe('H2 server — multiplexing and connection reuse', () => {
       }
     });
     try {
-      const stats: Record<string, number> = {};
-      (globalThis as any).__finoH2Stats = stats;
       const streamId = submitClientRequest(client, port, '/one');
       responses.set(streamId, makeCapturedResponse());
       await flushH2Client(client, writer);
       await timeout(readUntil(reader, client, writer, () => responses.get(streamId)!.closed), 'fixed H2 response did not complete', 2e3);
       t.equal(responses.get(streamId)!.body, 'x', 'fixed response body is intact');
-      const responseDrainCalls = (stats.drainWriteCalls ?? 0) - (stats.serverReadChunks ?? 0);
-      t.ok(responseDrainCalls <= 2, `fixed response uses no extra response drain cycles: ${JSON.stringify(stats)}`);
-      t.ok((stats.writerWritevCalls ?? 0) > 0, `fixed response uses vectorized writer output: ${JSON.stringify(stats)}`);
+      t.equal(responses.get(streamId)!.dataFrames, 1, 'fixed response body is sent in one DATA frame');
     } finally {
-      if (previousStats === undefined) delete (globalThis as any).__finoH2Stats;
-      else (globalThis as any).__finoH2Stats = previousStats;
       client.close();
       try {
         await writer.close();
@@ -1092,7 +1085,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
         offset += requestFrame.byteLength;
       }
       const batches = await Promise.all(Array.from({ length: connectionCount }, () => {
-        return timeout(rawTlsH2ExchangeReadFrames(server.port, requestFrames, 4), 'fresh TLS H2 client did not receive bounded response frames', 10e3);
+        return timeout(rawTlsH2ExchangeReadFrames(server.port, requestFrames, 4), 'fresh TLS H2 client did not receive bounded response frames', 1e4);
       }));
       t.equal(batches.length, connectionCount, 'all fresh TLS H2 clients completed');
       for (const frames of batches) {

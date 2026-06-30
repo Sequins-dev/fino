@@ -50,27 +50,6 @@ import { sym, FfiCallback, Pointer, h2Available, NGHTTP2_FRAME_TYPE_HEADERS, NGH
 * @internal
 */
 export { buildNvArray, buildSettingsArray };
-type H2StatsRecord = Record<string, number>;
-function _h2Stats(): H2StatsRecord | null {
-  const stats = (globalThis as typeof globalThis & {
-    __finoH2Stats?: unknown;
-  }).__finoH2Stats;
-  return stats !== null && typeof stats === 'object' ? stats as H2StatsRecord : null;
-}
-/**
-* Increment an optional HTTP/2 diagnostics counter.
-*
-* Counters are active only when `globalThis.__finoH2Stats` is an object. This
-* keeps the normal runtime path free of persistent diagnostics state while
-* allowing local benchmark harnesses to opt in.
-*
-* @internal
-*/
-export function _bumpH2Stat(name: string, amount = 1): void {
-  const stats = _h2Stats();
-  if (stats === null) return;
-  stats[name] = (stats[name] ?? 0) + amount;
-}
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -382,7 +361,6 @@ export class Nghttp2Session {
   private constructor(sessionHandle: ArrayBuffer, cb: H2StreamCallbacks) {
     this.#sessionHandle = sessionHandle;
     this.#cb = cb;
-    _bumpH2Stat('sessionsCreated');
   }
   /**
   * Create a server-mode nghttp2 session.
@@ -685,10 +663,8 @@ export class Nghttp2Session {
       ],
       result: 'isize'
     }, function nghttp2DataProviderReadCallback(_session: ArrayBuffer, streamId: number, bufPtrBuf: ArrayBuffer, length: bigint, dataFlagsPtrBuf: ArrayBuffer, _source: ArrayBuffer, _userData: ArrayBuffer): number {
-      _bumpH2Stat('dataProviderCalls');
       const slot = streamDataSlots.get(streamId);
       if (!slot) {
-        _bumpH2Stat('dataProviderDeferred');
         return NGHTTP2_ERR_DEFERRED;
       }
       if (!slot.bytes) {
@@ -698,19 +674,15 @@ export class Nghttp2Session {
           Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
           slot.eof = false;
           slot.noEndStream = false;
-          _bumpH2Stat('dataProviderEof');
           return 0;
         }
-        _bumpH2Stat('dataProviderDeferred');
         return NGHTTP2_ERR_DEFERRED;
       }
       const chunk = slot.bytes;
       const toWrite = Math.min(chunk.byteLength, Number(length));
       Pointer.copyTo(bufPtrBuf, chunk.subarray(0, toWrite));
-      _bumpH2Stat('dataProviderBytes', toWrite);
       if (toWrite < chunk.byteLength) {
         slot.bytes = chunk.subarray(toWrite);
-        _bumpH2Stat('dataProviderPartial');
       } else {
         slot.bytes = undefined;
         if (slot.eof) {
@@ -719,7 +691,6 @@ export class Nghttp2Session {
           Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
           slot.eof = false;
           slot.noEndStream = false;
-          _bumpH2Stat('dataProviderEofWithBytes');
         }
       }
       return toWrite;
@@ -800,14 +771,10 @@ export class Nghttp2Session {
     const self = this;
     return this.#lock(function recvLocked() {
       if (self.#closed) return 0;
-      _bumpH2Stat('sessionRecvCalls');
-      _bumpH2Stat('sessionRecvBytes', bytes.byteLength);
       const n = sym!.nghttp2_session_mem_recv2(self.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
       while (self.#pendingConsumedData.length > 0) {
         const [streamId, size] = self.#pendingConsumedData.shift()!;
         sym!.nghttp2_session_consume(self.#sessionHandle, streamId, size);
-        _bumpH2Stat('sessionConsumedDataCalls');
-        _bumpH2Stat('sessionConsumedDataBytes', size);
       }
       return Number(n);
     });
@@ -830,15 +797,12 @@ export class Nghttp2Session {
     const self = this;
     return this.#lock(function flushLocked() {
       if (self.#closed) return null;
-      _bumpH2Stat('sessionFlushCalls');
       const outPtrHandle = new ArrayBuffer(8);
       const n = sym!.nghttp2_session_mem_send2(self.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
       const nBytes = Number(n);
       if (nBytes <= 0) {
-        _bumpH2Stat('sessionFlushEmpty');
         return null;
       }
-      _bumpH2Stat('sessionFlushBytes', nBytes);
       return Pointer.copyFrom(outPtrHandle, nBytes) as Uint8Array;
     });
   }
@@ -1041,9 +1005,6 @@ export class Nghttp2Session {
     endStream?: boolean;
     noEndStream?: boolean;
   }): void {
-    _bumpH2Stat('setStreamDataCalls');
-    if (bytes === null) _bumpH2Stat('setStreamDataEof');
-    else _bumpH2Stat('setStreamDataBytes', bytes.byteLength);
     let slot = this.#streamDataSlots.get(streamId);
     if (!slot) {
       slot = {};
@@ -1076,7 +1037,6 @@ export class Nghttp2Session {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    _bumpH2Stat('sessionsClosed');
     sym!.nghttp2_session_del(this.#sessionHandle);
     for (const cb of this.#callbacks) cb.close();
     this.#callbacks.length = 0;
