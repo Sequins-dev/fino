@@ -164,13 +164,11 @@ const _SYMBOLS = {
       'pointer',
       'usize'
     ],
-    result: 'isize',
-    async: true
+    result: 'isize'
   },
   nghttp2_session_mem_send2: {
     parameters: ['pointer', 'pointer'],
-    result: 'isize',
-    async: true
+    result: 'isize'
   },
   nghttp2_session_want_read: {
     parameters: ['pointer'],
@@ -1090,25 +1088,21 @@ export function buildNvArray(headers: Array<[string, string]>): {
   nv: number;
 } {
   const count = headers.length;
-  // Each nv entry: 40 bytes. Data follows after all entries.
-  const dataBlobs: Uint8Array[] = headers.map(function encodeHeaderBlob([n, v]) {
-    const nb = _enc.encode(n.toLowerCase());
-    const vb = _enc.encode(v);
-    const blob = new Uint8Array(nb.length + vb.length);
-    blob.set(nb, 0);
-    blob.set(vb, nb.length);
-    return blob;
+  const encoded = headers.map(function encodeHeader([name, value]) {
+    return {
+      name: _enc.encode(name.toLowerCase()),
+      value: _enc.encode(value)
+    };
   });
-  const totalData = dataBlobs.reduce(function sumHeaderBlobBytes(s, b) {
-    return s + b.length;
+  // Each nv entry: 40 bytes. Data follows after all entries.
+  const totalData = encoded.reduce(function sumHeaderBytes(s, entry) {
+    return s + entry.name.length + entry.value.length;
   }, 0);
   const buf = new Uint8Array(count * NV_ENTRY_SIZE + totalData);
   let dataOffset = count * NV_ENTRY_SIZE;
   const dv = new DataView(buf.buffer);
   for (let i = 0; i < count; i++) {
-    const [name, value] = headers[i]!;
-    const nb = _enc.encode(name.toLowerCase());
-    const vb = _enc.encode(value);
+    const { name: nb, value: vb } = encoded[i]!;
     const base = i * NV_ENTRY_SIZE;
     const nameAddr = (Pointer.addr(buf) as bigint) + BigInt(dataOffset);
     const valueAddr = nameAddr + BigInt(nb.length);

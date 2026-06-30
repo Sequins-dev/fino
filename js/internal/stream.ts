@@ -1687,7 +1687,8 @@ export abstract class BytesWriter extends Writer<Uint8Array> {
 * Small writes accumulate in an internal buffer and are emitted by `doFlush()`
 * when the buffer fills, when `flush()` is called, or before `close()`
 * completes. Writes at least as large as the buffer bypass coalescing after
-* pending bytes are flushed.
+* pending bytes are flushed. `writev()` accumulates small vector batches through
+* the same coalescing buffer without routing each vector through `write()`.
 *
 * ```js
 * import { BufferedBytesWriter, BytesWriter } from 'fino:stream';
@@ -1862,6 +1863,40 @@ export abstract class BufferedBytesWriter extends BytesWriter {
     }
     this.#buf.set(buf, this.#pending);
     this.#pending += buf.byteLength;
+  }
+  /**
+  * Write multiple byte buffers through the coalescing buffer.
+  *
+  * Small vectors are accumulated synchronously and flushed only when the
+  * buffer fills. A vector at least as large as the coalesce buffer flushes
+  * pending bytes first and then bypasses accumulation.
+  *
+  * ```js
+  * import { BufferedBytesWriter } from 'fino:stream';
+  * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
+  * await new Sink().writev([new Uint8Array([1]), new Uint8Array([2])]);
+  * ```
+  *
+  * @param vecs Byte vectors to write.
+  * @param count Number of vectors from `vecs` to consider. Defaults to all.
+  * @returns A promise that resolves after all selected vectors are buffered or flushed.
+  * @internal
+  */
+  async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
+    if (this.closed) throw new Error('Writer is closed');
+    for (let i = 0; i < count; i++) {
+      const v = vecs[i];
+      if (!v || v.byteLength === 0) continue;
+      if (v.byteLength >= this.#buf.byteLength) {
+        await this.flush();
+        await this.doFlush(v);
+        continue;
+      }
+      if (!this._directAccumulate(v)) {
+        await this.flush();
+        this._directAccumulate(v);
+      }
+    }
   }
   /**
   * Synchronously copy `buf` into the coalesce buffer.

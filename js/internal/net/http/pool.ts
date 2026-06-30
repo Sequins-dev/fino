@@ -137,6 +137,7 @@ export class H2PoolEntry {
   * @internal
   */
   readonly #writer: BytesWriter;
+  readonly #reader: BufferedBytesReader;
   /**
   * Private property `#streams` used by `H2PoolEntry`.
   *
@@ -247,6 +248,7 @@ export class H2PoolEntry {
   * @internal
   */
   #drainChain: Promise<void> = Promise.resolve();
+  #closePromise: Promise<void> | null = null;
   /**
   * Private property `#idleTimer` used by `H2PoolEntry`.
   *
@@ -284,6 +286,7 @@ export class H2PoolEntry {
   */
   constructor(session: Nghttp2Session, reader: BufferedBytesReader, writer: BytesWriter, options: H2PoolEntryOptions = {}) {
     this.#session = session;
+    this.#reader = reader;
     this.#writer = writer;
     this.#idleMs = options.idleMs ?? IDLE_MS;
     // Start the background recv loop (fire and forget - errors are handled inside).
@@ -337,14 +340,15 @@ export class H2PoolEntry {
   * ```
   */
   drainWrite(): Promise<void> {
-    this.#drainChain = this.#drainChain.then(async () => {
+    const drainH2PoolWrites = async () => {
       if (this.#closed) return;
       while (this.#session.wantWrite()) {
         const bytes = await this.#session.flush();
         if (bytes && bytes.byteLength > 0) await this.#writer.write(bytes);
       }
       await this.#writer.flush();
-    });
+    };
+    this.#drainChain = this.#drainChain.then(drainH2PoolWrites, drainH2PoolWrites);
     return this.#drainChain;
   }
   // -------------------------------------------------------------------------
@@ -618,7 +622,7 @@ export class H2PoolEntry {
         this.#streams.delete(activeStreamId);
       }
     }
-    if (this.#streams.size === 0) this.close();
+    if (this.#streams.size === 0) void this.close();
   }
   /**
   * Apply transport failure teardown to this entry.
@@ -638,7 +642,7 @@ export class H2PoolEntry {
   * Begin graceful close of the pooled connection.
   *
   * The entry marks itself going away, submits GOAWAY, drains pending output,
-  * closes the nghttp2 session, and closes the writer. Repeated calls are
+  * closes the nghttp2 session, and closes both split I/O halves. Repeated calls are
   * ignored after the first close path starts.
   *
   * ```ts no_run
@@ -647,21 +651,26 @@ export class H2PoolEntry {
   * entry.close();
   * ```
   */
-  close(): void {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#closed) return Promise.resolve();
     this.#goingAway = true;
     this.#clearIdleTimer();
     try {
       this.#session.submitGoaway(0, 0);
     } catch {}
-    this.drainWrite().then(() => {
-      this.#closed = true;
-      this.#session.close();
-      this.#writer.close().catch(() => {});
-    }).catch(() => {
-      this.#closed = true;
-      this.#session.close();
-    });
+    async function closeH2PoolEntry(entry: H2PoolEntry): Promise<void> {
+      try {
+        await entry.drainWrite();
+      } catch {}
+      entry.#closed = true;
+      try {
+        entry.#session.close();
+      } catch {}
+      await entry.#closeHalves();
+    }
+    this.#closePromise = closeH2PoolEntry(this);
+    return this.#closePromise;
   }
   [Symbol.dispose](): void {
     this.close();
@@ -712,7 +721,7 @@ export class H2PoolEntry {
       trailers: s.trailerHeaders
     } as any));
     this.#streams.delete(s.streamId);
-    if (this.#goingAway && this.#streams.size === 0) this.close();
+    if (this.#goingAway && this.#streams.size === 0) void this.close();
   }
   /**
   * Private method `#teardown` used by `H2PoolEntry`.
@@ -738,6 +747,7 @@ export class H2PoolEntry {
   * @internal
   */
   #teardown(err: Error): void {
+    if (this.#closed) return;
     this.#closed = true;
     this.#goingAway = true;
     this.#clearIdleTimer();
@@ -751,9 +761,17 @@ export class H2PoolEntry {
     try {
       this.#session.close();
     } catch {}
+    void this.#closeHalves();
+  }
+  async #closeHalves(): Promise<void> {
+    const closes: Promise<void>[] = [];
     try {
-      this.#writer.close().catch(() => {});
+      closes.push(this.#writer.close());
     } catch {}
+    try {
+      closes.push(this.#reader.close());
+    } catch {}
+    await Promise.allSettled(closes);
   }
   /**
   * Private method `#resetIdleTimer` used by `H2PoolEntry`.
@@ -780,10 +798,11 @@ export class H2PoolEntry {
   */
   #resetIdleTimer(): void {
     this.#clearIdleTimer();
+    if (this.#closed || this.#goingAway) return;
     if (this.#streams.size > 0) return;
     this.#idleTimer = setTimeout(() => {
       this.#goingAway = true;
-      this.close();
+      void this.close();
     }, this.#idleMs);
   }
   /**
@@ -917,12 +936,13 @@ export class H2ConnectionPool {
   * pool.evict('https://example.test:443');
   * ```
   */
-  evict(origin: string): void {
+  evict(origin: string): Promise<void> {
     const e = this.#entries.get(origin);
     if (e) {
-      e.close();
       this.#entries.delete(origin);
+      return e.close();
     }
+    return Promise.resolve();
   }
   /**
   * Close and remove every pooled entry.
@@ -936,11 +956,13 @@ export class H2ConnectionPool {
   * pool.closeAll();
   * ```
   */
-  closeAll(): void {
+  async closeAll(): Promise<void> {
+    const closes: Promise<void>[] = [];
     for (const [origin, e] of this.#entries) {
-      e.close();
+      closes.push(e.close());
       this.#entries.delete(origin);
     }
+    await Promise.allSettled(closes);
   }
 }
 // ---------------------------------------------------------------------------

@@ -508,6 +508,7 @@ class H3PoolEntry {
   #conn: QuicConnection | null = null;
   #session: H3ClientSession | null = null;
   #ready: Promise<H3ClientSession> | null = null;
+  #closePromise: Promise<void> | null = null;
   #closed = false;
   #stage = 'new';
   constructor(origin: string, target: AltSvcEntry, tls?: FetchInit['tls'], handshakeTimeoutMs: number | null = null) {
@@ -523,8 +524,8 @@ class H3PoolEntry {
     this.#ready = (async () => {
       this.#stage = 'resolve';
       const target = await _resolveH3Target(this.#target.host, this.#target.port);
-      this.#stage = `connect ${target.address.ip}:${target.address.port}`;
-      const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+        this.#stage = `connect ${target.address.ip}:${target.address.port}`;
+        const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
       this.#endpoint = endpoint;
       try {
         const conn = await endpoint.connect({
@@ -539,7 +540,7 @@ class H3PoolEntry {
         this.#stage = 'create h3 session';
         conn.addEventListener('close', () => {
           _h3Pool.delete(this.#origin);
-          this.close();
+          void this.close();
         }, { once: true });
         this.#session = await H3ClientSession.create(conn);
         this.#stage = 'ready';
@@ -568,19 +569,26 @@ class H3PoolEntry {
   setStage(stage: string): void {
     this.#stage = stage;
   }
-  close(): void {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#closed) return Promise.resolve();
     this.#closed = true;
-    try {
-      this.#session?.close();
-    } catch (_) {}
-    try {
-      this.#conn?.close();
-    } catch (_) {}
-    void this.#endpoint?.close();
-    this.#session = null;
-    this.#conn = null;
-    this.#endpoint = null;
+    async function closeH3PoolEntry(entry: H3PoolEntry): Promise<void> {
+      try {
+        entry.#session?.close();
+      } catch (_) {}
+      try {
+        entry.#conn?.close();
+      } catch (_) {}
+      try {
+        await entry.#endpoint?.close();
+      } catch (_) {}
+      entry.#session = null;
+      entry.#conn = null;
+      entry.#endpoint = null;
+    }
+    this.#closePromise = closeH3PoolEntry(this);
+    return this.#closePromise;
   }
 }
 const _altSvcCache = new Map<string, AltSvcEntry>();
@@ -695,7 +703,7 @@ function _evictH3(origin: string): void {
   const entry = _h3Pool.get(origin);
   if (entry !== undefined) {
     _h3Pool.delete(origin);
-    entry.close();
+    void entry.close();
   }
 }
 async function _singleFetchH3(url: string, method: string, headers: Headers, body: FetchBody, tls: FetchInit['tls'] | undefined, target: AltSvcEntry, trailers?: Headers | (() => Headers | Promise<Headers>)): Promise<Response> {
@@ -1594,10 +1602,10 @@ export function _fetchH2PoolHas(origin: string): boolean {
 *
 * @internal
 */
-export function _closeFetchH2PoolEntry(origin: string): boolean {
+export async function _closeFetchH2PoolEntry(origin: string): Promise<boolean> {
   const entry = _h2Pool.get(origin);
   if (entry === undefined) return false;
-  entry.close();
+  await entry.close();
   return true;
 }
 /**
@@ -1605,7 +1613,7 @@ export function _closeFetchH2PoolEntry(origin: string): boolean {
 *
 * @internal
 */
-export function _closeFetchH2PoolEntryForTest(origin: string): boolean {
+export function _closeFetchH2PoolEntryForTest(origin: string): Promise<boolean> {
   return _closeFetchH2PoolEntry(origin);
 }
 /**
@@ -1615,8 +1623,8 @@ export function _closeFetchH2PoolEntryForTest(origin: string): boolean {
 *
 * @internal
 */
-export function _resetFetchH2Pool(): void {
-  _h2Pool.closeAll();
+export function _resetFetchH2Pool(): Promise<void> {
+  return _h2Pool.closeAll();
 }
 /**
 * Return whether the internal global fetch HTTP/3 pool has a live entry.
@@ -1631,9 +1639,11 @@ export function _fetchH3PoolHas(origin: string): boolean {
 *
 * @internal
 */
-export function _resetFetchH3Pool(): void {
-  for (const [, entry] of _h3Pool) entry.close();
+export async function _resetFetchH3Pool(): Promise<void> {
+  const closes: Promise<void>[] = [];
+  for (const [, entry] of _h3Pool) closes.push(entry.close());
   _h3Pool.clear();
+  await Promise.allSettled(closes);
 }
 /**
 * Override automatic fetch HTTP/3 handshake timeout for deterministic tests.
@@ -1663,7 +1673,7 @@ export function _fetchAltSvcHas(origin: string): boolean {
 *
 * @internal
 */
-export function _resetFetchAltSvc(): void {
+export async function _resetFetchAltSvc(): Promise<void> {
   _altSvcCache.clear();
-  _resetFetchH3Pool();
+  await _resetFetchH3Pool();
 }

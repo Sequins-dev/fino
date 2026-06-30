@@ -288,7 +288,7 @@ const lib = dlopen(LIBC, {
       'buffer',
       'buffer',
       'buffer',
-      'pointer',
+      'buffer',
       'buffer',
       'buffer'
     ],
@@ -300,6 +300,35 @@ const lib = dlopen(LIBC, {
   },
   posix_spawn_file_actions_destroy: {
     parameters: ['buffer'],
+    result: 'i32'
+  },
+  posix_spawnattr_init: {
+    parameters: ['buffer'],
+    result: 'i32'
+  },
+  posix_spawnattr_destroy: {
+    parameters: ['buffer'],
+    result: 'i32'
+  },
+  posix_spawnattr_setsigdefault: {
+    parameters: [
+      'buffer',
+      'buffer'
+    ],
+    result: 'i32'
+  },
+  posix_spawnattr_setsigmask: {
+    parameters: [
+      'buffer',
+      'buffer'
+    ],
+    result: 'i32'
+  },
+  posix_spawnattr_setflags: {
+    parameters: [
+      'buffer',
+      'u16'
+    ],
     result: 'i32'
   },
   posix_spawn_file_actions_adddup2: {
@@ -374,12 +403,26 @@ function setNonblocking(fd: number): void {
 // Opaque libc storage for posix_spawn_file_actions_t. The exact struct differs
 // by platform; this is intentionally larger than current Linux/macOS layouts.
 const POSIX_SPAWN_FILE_ACTIONS_BYTES = 512;
+// Opaque storage for posix_spawnattr_t. Darwin stores a pointer here while
+// glibc stores an inline struct, so keep this generously sized.
+const POSIX_SPAWN_ATTR_BYTES = 512;
+const SIGSET_BYTES = 128;
+const POSIX_SPAWN_SETSIGDEF = 0x0004;
+const POSIX_SPAWN_SETSIGMASK = 0x0008;
 function addSpawnAction(rc: number, action: string): void {
   if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);
 }
 function addCloseIfNeeded(actions: ArrayBuffer, fd: number, targetFd: number): void {
   if (fd === targetFd) return;
   addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_addclose(actions, fd)), `posix_spawn_file_actions_addclose(${fd})`);
+}
+function addSignalToSet(set: ArrayBuffer, signo: number): void {
+  if (signo <= 0) return;
+  const bit = signo - 1;
+  const byteOffset = bit >> 3;
+  if (byteOffset >= set.byteLength) return;
+  const bytes = new Uint8Array(set);
+  bytes[byteOffset] |= 1 << (bit & 7);
 }
 // ---------------------------------------------------------------------------
 // Process-level APIs
@@ -694,6 +737,7 @@ const _signalNumbers: Record<string, number> = {
   SIGTERM,
   SIGCHLD
 };
+const _childDefaultSignals = Object.values(_signalNumbers).filter((signo) => signo !== SIGKILL);
 /** Set of signal names already registered with the event loop. */
 const _registeredSignals = new Set<string>();
 /**
@@ -915,11 +959,21 @@ export class Process {
     const commandBuf = cstr(command);
     const cwdBuf = opts.cwd != null ? cstr(opts.cwd) : null;
     const actions = new ArrayBuffer(POSIX_SPAWN_FILE_ACTIONS_BYTES);
+    const attrs = new ArrayBuffer(POSIX_SPAWN_ATTR_BYTES);
+    const childDefaultSignals = new ArrayBuffer(SIGSET_BYTES);
+    const childSignalMask = new ArrayBuffer(SIGSET_BYTES);
+    for (const signo of _childDefaultSignals) addSignalToSet(childDefaultSignals, signo);
     let actionsInitialized = false;
+    let attrsInitialized = false;
     let childPid = -1;
     try {
       addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_init(actions)), 'posix_spawn_file_actions_init');
       actionsInitialized = true;
+      addSpawnAction(Number(lib.symbols.posix_spawnattr_init(attrs)), 'posix_spawnattr_init');
+      attrsInitialized = true;
+      addSpawnAction(Number(lib.symbols.posix_spawnattr_setsigdefault(attrs, childDefaultSignals)), 'posix_spawnattr_setsigdefault');
+      addSpawnAction(Number(lib.symbols.posix_spawnattr_setsigmask(attrs, childSignalMask)), 'posix_spawnattr_setsigmask');
+      addSpawnAction(Number(lib.symbols.posix_spawnattr_setflags(attrs, POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)), 'posix_spawnattr_setflags');
       addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stdinR, 0)), 'posix_spawn_file_actions_adddup2(stdin)');
       addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stdoutW, 1)), 'posix_spawn_file_actions_adddup2(stdout)');
       addSpawnAction(Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stderrW, 2)), 'posix_spawn_file_actions_adddup2(stderr)');
@@ -936,7 +990,7 @@ export class Process {
         addSpawnAction(Number(spawnChdirLib.symbols.posix_spawn_file_actions_addchdir_np(actions, cwdBuf)), 'posix_spawn_file_actions_addchdir_np');
       }
       const pidBuf = new ArrayBuffer(4);
-      const spawnRc = Number(lib.symbols.posix_spawnp(pidBuf, commandBuf, actions, Pointer.null(), argvBuf, envpBuf));
+      const spawnRc = Number(lib.symbols.posix_spawnp(pidBuf, commandBuf, actions, attrs, argvBuf, envpBuf));
       if (spawnRc !== 0) throw new Error(`posix_spawnp('${command}') failed: errno ${spawnRc}`);
       childPid = new DataView(pidBuf).getInt32(0, true);
     } catch (err) {
@@ -950,6 +1004,9 @@ export class Process {
     } finally {
       if (actionsInitialized) {
         lib.symbols.posix_spawn_file_actions_destroy(actions);
+      }
+      if (attrsInitialized) {
+        lib.symbols.posix_spawnattr_destroy(attrs);
       }
     }
     // ---- Parent process -------------------------------------------------

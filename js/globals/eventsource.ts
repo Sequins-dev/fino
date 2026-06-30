@@ -410,6 +410,7 @@ export class EventSource extends EventTarget {
   #currentReader: {
     close(): void;
   } | null;
+  #retryTimer: loop.CancelablePromise | null;
   /**
   * Private property `#onopen` used by `EventSource`.
   *
@@ -497,6 +498,7 @@ export class EventSource extends EventTarget {
     this.#tlsOptions = init?.tls;
     this.#withCredentials = init?.withCredentials === true;
     this.#currentReader = null;
+    this.#retryTimer = null;
     this.#onopen = null;
     this.#onmessage = null;
     this.#onerror = null;
@@ -617,6 +619,10 @@ export class EventSource extends EventTarget {
   close() {
     if (this.#readyState === CLOSED) return;
     this.#readyState = CLOSED;
+    if (this.#retryTimer !== null) {
+      this.#retryTimer.cancel();
+      this.#retryTimer = null;
+    }
     // Closing the reader (if active) causes the next read() to return null,
     // which terminates the body iterator and unwinds the connection loop.
     if (this.#currentReader) {
@@ -753,7 +759,7 @@ export class EventSource extends EventTarget {
         if (RETRIABLE_STATUSES.has(status)) {
           this.#fireError();
           if (this.#readyState === CLOSED) return;
-          await loop.timeout(this.#retryInterval);
+          if (!await this.#waitForRetry()) return;
           continue;
         }
         // ---- Fatal: wrong status or content-type -----------------------------
@@ -771,7 +777,7 @@ export class EventSource extends EventTarget {
         if (response.body === null) {
           this.#readyState = CONNECTING;
           this.#fireError();
-          await loop.timeout(this.#retryInterval);
+          if (!await this.#waitForRetry()) return;
           continue;
         }
         const esReader = new EventSourceReader(response.body);
@@ -787,13 +793,13 @@ export class EventSource extends EventTarget {
         if (this.#readyState === CLOSED) return;
         this.#readyState = CONNECTING;
         this.#fireError();
-        await loop.timeout(this.#retryInterval);
+        if (!await this.#waitForRetry()) return;
       } catch (_err) {
         // ---- Network / connection error: reconnect ---------------------------
         if (this.#readyState === CLOSED) return;
         this.#readyState = CONNECTING;
         this.#fireError();
-        await loop.timeout(this.#retryInterval);
+        if (!await this.#waitForRetry()) return;
       } finally {
         // Clean up the current reader reference; close socket if still open.
         if (this.#currentReader === reader) this.#currentReader = null;
@@ -804,6 +810,16 @@ export class EventSource extends EventTarget {
         }
       }
     }
+  }
+  async #waitForRetry(): Promise<boolean> {
+    const timer = loop.timeout(this.#retryInterval);
+    this.#retryTimer = timer;
+    try {
+      await timer;
+    } finally {
+      if (this.#retryTimer === timer) this.#retryTimer = null;
+    }
+    return this.#readyState !== CLOSED;
   }
   // ---------------------------------------------------------------------------
   // Internal: event dispatching

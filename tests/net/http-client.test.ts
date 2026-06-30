@@ -130,7 +130,7 @@ describe('HttpClient over HTTP/1.1', () => {
 });
 describe('HttpClient protocol sessions', () => {
   it('HTTPS requests reuse the H2 pool and expose h2 protocol metadata', { skip: skipH2 }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     let count = 0;
     const server = serveHttp({
       port: 0,
@@ -160,7 +160,7 @@ describe('HttpClient protocol sessions', () => {
     } finally {
       await client.close();
       await server.close();
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
     }
   });
   it('explicit H3 session performs requests and reconnect preserves session identity', { skip: skipH3 }, async (t) => {

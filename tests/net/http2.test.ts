@@ -10,6 +10,7 @@ import { Nghttp2Session } from '../../js/internal/net/http/h2/session.ts';
 import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
+import * as loop from 'internal:runtime/loop';
 import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.ts';
 import { NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_FRAME_TYPE_HEADERS } from '../../js/internal/net/http/h2/bindings.ts';
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
@@ -214,6 +215,10 @@ const H2_GET_ROOT_LOCALHOST = hexBytes(
   115,
   116
 );
+const H2_GET_ROOT_LOCALHOST_PAYLOAD = H2_GET_ROOT_LOCALHOST.subarray(9);
+function h2GetRootLocalhostFrame(streamId: number): Uint8Array {
+  return frame(1, 5, streamId, H2_GET_ROOT_LOCALHOST_PAYLOAD);
+}
 // GET / HPACK block with :method, :path, and :authority, but no :scheme.
 const H2_GET_ROOT_LOCALHOST_NO_SCHEME = hexBytes(130, 132, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
 // HEADERS frame for POST / (stream 1, END_HEADERS only — body follows)
@@ -431,7 +436,7 @@ describe('H2 server — request bodies', () => {
     ];
     streamId = client.submitRequest(requestHeaders, true);
     await flushClient();
-    await Promise.race([entered, new Promise<void>((_, reject) => setTimeout(() => reject(new Error('handler did not enter before END_STREAM')), 250))]);
+    await timeout(entered, 'handler did not enter before END_STREAM', 250);
     client.setStreamData(streamId, _enc.encode('live-body'));
     await flushClient();
     client.setStreamData(streamId, null);
@@ -537,7 +542,7 @@ describe('H2ClientDriver', () => {
     let res: Response | null = null;
     let text = '';
     try {
-      res = await Promise.race([responsePromise, new Promise<Response>((_, reject) => setTimeout(() => reject(new Error('response did not resolve before body completion')), 250))]);
+      res = await timeout(responsePromise, 'response did not resolve before body completion', 250);
       t.equal(res.status, 200, 'status is available before body completion');
     } finally {
       releaseBody?.();
@@ -764,7 +769,15 @@ function submitClientRequest(client: any, port: number, path: string, options: {
   ], options.hasBody ?? false);
 }
 function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> {
-  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const guard = new Promise<T>((_, reject) => {
+    timer = setTimeout(function rejectTimedOutOperation() {
+      reject(new Error(message));
+    }, ms);
+  });
+  return Promise.race([promise, guard]).finally(function clearTimeoutGuard() {
+    if (timer !== null) clearTimeout(timer);
+  });
 }
 interface CapturedH2Response {
   status: number;
@@ -1000,7 +1013,67 @@ describe('H2 server — multiplexing and connection reuse', () => {
       await server.close();
     }
   });
-  it('accepts HTTP/1.1 after a burst of fresh TLS H2 connections', { skip: skipTlsH2 }, async (t) => {
+  it('coalesces fixed H2 response HEADERS and DATA into one response drain', async (t) => {
+    if (!h2Available) return;
+    const previousStats = (globalThis as any).__finoH2Stats;
+    const server = serveHttp({ port: 0 }, async () => new Response('x'));
+    const port = server.port;
+    const sock = await Socket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port
+    });
+    const [reader, writer] = sock.split();
+    const responses = new Map<number, CapturedH2Response>();
+    const client = await openClientSession(writer, {
+      onBeginHeaders() {},
+      onHeader(streamId: number, name: string, value: string) {
+        const response = responses.get(streamId);
+        if (response && name === ':status') response.status = Number(value);
+      },
+      onFrameRecv(streamId: number, frameType: number) {
+        const response = responses.get(streamId);
+        if (!response) return;
+        if (frameType === NGHTTP2_FRAME_TYPE_HEADERS) response.headerFrames++;
+        if (frameType === NGHTTP2_FRAME_TYPE_DATA) response.dataFrames++;
+      },
+      onDataChunk(streamId: number, data: Uint8Array) {
+        const response = responses.get(streamId);
+        if (response) response.body += _dec.decode(data);
+      },
+      onStreamClose(streamId: number, errorCode: number) {
+        const response = responses.get(streamId);
+        if (response) {
+          response.closed = true;
+          response.errorCode = errorCode;
+        }
+      }
+    });
+    try {
+      const stats: Record<string, number> = {};
+      (globalThis as any).__finoH2Stats = stats;
+      const streamId = submitClientRequest(client, port, '/one');
+      responses.set(streamId, makeCapturedResponse());
+      await flushH2Client(client, writer);
+      await timeout(readUntil(reader, client, writer, () => responses.get(streamId)!.closed), 'fixed H2 response did not complete', 2e3);
+      t.equal(responses.get(streamId)!.body, 'x', 'fixed response body is intact');
+      const responseDrainCalls = (stats.drainWriteCalls ?? 0) - (stats.serverReadChunks ?? 0);
+      t.ok(responseDrainCalls <= 2, `fixed response uses no extra response drain cycles: ${JSON.stringify(stats)}`);
+      t.ok((stats.writerWritevCalls ?? 0) > 0, `fixed response uses vectorized writer output: ${JSON.stringify(stats)}`);
+    } finally {
+      if (previousStats === undefined) delete (globalThis as any).__finoH2Stats;
+      else (globalThis as any).__finoH2Stats = previousStats;
+      client.close();
+      try {
+        await writer.close();
+      } catch {}
+      try {
+        await reader.close();
+      } catch {}
+      await server.close();
+    }
+  });
+  it('accepts fresh TLS handshakes after H2 connection churn', { skip: skipTlsH2 }, async (t) => {
     const server = serveHttp({
       port: 0,
       tls: {
@@ -1009,21 +1082,37 @@ describe('H2 server — multiplexing and connection reuse', () => {
       }
     }, async (req) => new Response(new URL(req.url).pathname));
     try {
-      const count = 24;
-      const batches = await Promise.all(Array.from({ length: count }, () => {
-        return timeout(rawTlsH2ExchangeReadFrames(server.port, H2_GET_ROOT_LOCALHOST, 4), 'fresh TLS H2 client did not receive bounded response frames', 5e3);
+      const connectionCount = 100;
+      const streamsPerConnection = 8;
+      const requestFrameParts = Array.from({ length: streamsPerConnection }, (_, i) => h2GetRootLocalhostFrame(1 + i * 2));
+      const requestFrames = new Uint8Array(requestFrameParts.reduce((n, f) => n + f.byteLength, 0));
+      let offset = 0;
+      for (const requestFrame of requestFrameParts) {
+        requestFrames.set(requestFrame, offset);
+        offset += requestFrame.byteLength;
+      }
+      const batches = await Promise.all(Array.from({ length: connectionCount }, () => {
+        return timeout(rawTlsH2ExchangeReadFrames(server.port, requestFrames, 4), 'fresh TLS H2 client did not receive bounded response frames', 10e3);
       }));
-      t.equal(batches.length, count, 'all fresh TLS H2 clients completed');
+      t.equal(batches.length, connectionCount, 'all fresh TLS H2 clients completed');
       for (const frames of batches) {
         t.ok(findFrame(frames, 1, 1) !== null, 'fresh TLS H2 client received response HEADERS');
       }
+      const controller = new AbortController();
+      const fetchTimer = setTimeout(function abortSlowFetch() {
+        controller.abort(new Error('HTTP/1.1 request after H2 burst timed out'));
+      }, 5e3);
       const response = await fetch(`https://127.0.0.1:${server.port}/after-h2-burst`, {
-        signal: AbortSignal.timeout(5e3),
+        signal: controller.signal,
         tls: { rejectUnauthorized: false },
         protocol: 'http/1.1'
-      } as any);
+      } as any).finally(function clearFetchTimeout() {
+        clearTimeout(fetchTimer);
+      });
       t.equal(response.status, 200, 'HTTP/1.1 request after H2 burst succeeds');
       t.equal(await response.text(), '/after-h2-burst', 'HTTP/1.1 response body after H2 burst is intact');
+      const h2Frames = await timeout(rawTlsH2ExchangeReadFrames(server.port, H2_GET_ROOT_LOCALHOST, 4), 'fresh TLS H2 client after churn did not receive response frames', 5e3);
+      t.ok(findFrame(h2Frames, 1, 1) !== null, 'HTTP/2 request after H2 burst succeeds');
     } finally {
       await server.close();
     }
@@ -1781,15 +1870,8 @@ describe('H2 server — robustness', () => {
     await writer.flush();
     cs.close();
     await writer.close();
-    // server.close() with a timeout guard — if the server hangs, the test
-    // will time out at the test runner level. Using a racing promise to give
-    // a better diagnostic.
-    let timedOut = false;
-    await Promise.race([server.close(), new Promise<void>((r) => setTimeout(() => {
-      timedOut = true;
-      r();
-    }, 2e3))]);
-    t.ok(!timedOut, 'server.close() resolved within 2 s (no hang after RST_STREAM)');
+    await timeout(server.close(), 'server.close() timed out after RST_STREAM', 2e3);
+    t.ok(true, 'server.close() resolved within 2 s (no hang after RST_STREAM)');
   });
   it('server sends MAX_CONCURRENT_STREAMS in SETTINGS', async (t) => {
     if (!h2Available) return;
@@ -1855,5 +1937,11 @@ describe('H2 server — robustness', () => {
     }
     t.ok(gotEof, 'server closed connection after malformed frame');
     await server.close();
+  });
+});
+describe('H2 server — cleanup', () => {
+  it('does not leave runtime loop handles alive after closed H2 sessions', (t) => {
+    if (!h2Available) return;
+    t.equal(loop.alive(), false, 'closed H2 sessions leave no live runtime loop handles');
   });
 });

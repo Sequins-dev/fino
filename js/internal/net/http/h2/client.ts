@@ -120,14 +120,15 @@ export class H2ClientDriver implements ClientDriver {
     // Serialize all drainWrite calls - same race as server.ts.
     let drainChain: Promise<void> = Promise.resolve();
     function drainWrite(): Promise<void> {
-      drainChain = drainChain.then(async () => {
+      async function drainH2Writes() {
         do {
           const bytes = await session.flush();
           if (bytes && bytes.byteLength > 0) await writer.write(bytes);
           else break;
         } while (session.wantWrite());
         await writer.flush();
-      });
+      }
+      drainChain = drainChain.then(drainH2Writes, drainH2Writes);
       return drainChain;
     }
     const callbacks: H2StreamCallbacks = {

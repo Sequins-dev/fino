@@ -23,9 +23,9 @@
 *
 * ## Threading
 *
-* session_mem_recv2 / session_mem_send2 are `async: true` -> blocking pool.
-* FfiCallbacks fire from pool threads -> condvar bridge -> V8 thread -> JS.
-* Never call blocking-FFI inside a FfiCallback (deadlocks pool thread).
+* session_mem_recv2 / session_mem_send2 are synchronous in-memory nghttp2
+* operations. FfiCallbacks fire inline on the V8 thread, so submit operations
+* cannot race the native session while parsing or serializing frames.
 *
 * ## GC pinning
 *
@@ -50,6 +50,27 @@ import { sym, FfiCallback, Pointer, h2Available, NGHTTP2_FRAME_TYPE_HEADERS, NGH
 * @internal
 */
 export { buildNvArray, buildSettingsArray };
+type H2StatsRecord = Record<string, number>;
+function _h2Stats(): H2StatsRecord | null {
+  const stats = (globalThis as typeof globalThis & {
+    __finoH2Stats?: unknown;
+  }).__finoH2Stats;
+  return stats !== null && typeof stats === 'object' ? stats as H2StatsRecord : null;
+}
+/**
+* Increment an optional HTTP/2 diagnostics counter.
+*
+* Counters are active only when `globalThis.__finoH2Stats` is an object. This
+* keeps the normal runtime path free of persistent diagnostics state while
+* allowing local benchmark harnesses to opt in.
+*
+* @internal
+*/
+export function _bumpH2Stat(name: string, amount = 1): void {
+  const stats = _h2Stats();
+  if (stats === null) return;
+  stats[name] = (stats[name] ?? 0) + amount;
+}
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -361,6 +382,7 @@ export class Nghttp2Session {
   private constructor(sessionHandle: ArrayBuffer, cb: H2StreamCallbacks) {
     this.#sessionHandle = sessionHandle;
     this.#cb = cb;
+    _bumpH2Stat('sessionsCreated');
   }
   /**
   * Create a server-mode nghttp2 session.
@@ -663,8 +685,12 @@ export class Nghttp2Session {
       ],
       result: 'isize'
     }, function nghttp2DataProviderReadCallback(_session: ArrayBuffer, streamId: number, bufPtrBuf: ArrayBuffer, length: bigint, dataFlagsPtrBuf: ArrayBuffer, _source: ArrayBuffer, _userData: ArrayBuffer): number {
+      _bumpH2Stat('dataProviderCalls');
       const slot = streamDataSlots.get(streamId);
-      if (!slot) return NGHTTP2_ERR_DEFERRED;
+      if (!slot) {
+        _bumpH2Stat('dataProviderDeferred');
+        return NGHTTP2_ERR_DEFERRED;
+      }
       if (!slot.bytes) {
         if (slot.eof) {
           let flags = NGHTTP2_DATA_FLAG_EOF;
@@ -672,15 +698,19 @@ export class Nghttp2Session {
           Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
           slot.eof = false;
           slot.noEndStream = false;
+          _bumpH2Stat('dataProviderEof');
           return 0;
         }
+        _bumpH2Stat('dataProviderDeferred');
         return NGHTTP2_ERR_DEFERRED;
       }
       const chunk = slot.bytes;
       const toWrite = Math.min(chunk.byteLength, Number(length));
       Pointer.copyTo(bufPtrBuf, chunk.subarray(0, toWrite));
+      _bumpH2Stat('dataProviderBytes', toWrite);
       if (toWrite < chunk.byteLength) {
         slot.bytes = chunk.subarray(toWrite);
+        _bumpH2Stat('dataProviderPartial');
       } else {
         slot.bytes = undefined;
         if (slot.eof) {
@@ -689,6 +719,7 @@ export class Nghttp2Session {
           Pointer.writeU32(dataFlagsPtrBuf, 0, flags);
           slot.eof = false;
           slot.noEndStream = false;
+          _bumpH2Stat('dataProviderEofWithBytes');
         }
       }
       return toWrite;
@@ -732,7 +763,7 @@ export class Nghttp2Session {
   *
   * @internal
   */
-  #lock<T>(fn: () => Promise<T>): Promise<T> {
+  #lock<T>(fn: () => T | Promise<T>): Promise<T> {
     let unlock!: () => void;
     const release = new Promise<void>(function createSessionLockRelease(r) {
       unlock = r;
@@ -740,12 +771,17 @@ export class Nghttp2Session {
     const prev = this.#mu;
     this.#mu = release;
     function runLockedSessionTask(): Promise<T> {
-      return fn().finally(unlock);
+      try {
+        return Promise.resolve(fn()).finally(unlock);
+      } catch (err) {
+        unlock();
+        return Promise.reject(err);
+      }
     }
     return prev.then(runLockedSessionTask, runLockedSessionTask);
   }
   // ---------------------------------------------------------------------------
-  // I/O pumps (async - run on blocking pool, fire FfiCallbacks)
+  // I/O pumps
   // ---------------------------------------------------------------------------
   /**
   * Feed incoming bytes into the nghttp2 session.
@@ -762,12 +798,16 @@ export class Nghttp2Session {
   */
   recv(bytes: Uint8Array): Promise<number> {
     const self = this;
-    return this.#lock(async function recvLocked() {
+    return this.#lock(function recvLocked() {
       if (self.#closed) return 0;
-      const n = await sym!.nghttp2_session_mem_recv2(self.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
+      _bumpH2Stat('sessionRecvCalls');
+      _bumpH2Stat('sessionRecvBytes', bytes.byteLength);
+      const n = sym!.nghttp2_session_mem_recv2(self.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
       while (self.#pendingConsumedData.length > 0) {
         const [streamId, size] = self.#pendingConsumedData.shift()!;
         sym!.nghttp2_session_consume(self.#sessionHandle, streamId, size);
+        _bumpH2Stat('sessionConsumedDataCalls');
+        _bumpH2Stat('sessionConsumedDataBytes', size);
       }
       return Number(n);
     });
@@ -788,12 +828,17 @@ export class Nghttp2Session {
   */
   flush(): Promise<Uint8Array | null> {
     const self = this;
-    return this.#lock(async function flushLocked() {
+    return this.#lock(function flushLocked() {
       if (self.#closed) return null;
+      _bumpH2Stat('sessionFlushCalls');
       const outPtrHandle = new ArrayBuffer(8);
-      const n = await sym!.nghttp2_session_mem_send2(self.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
+      const n = sym!.nghttp2_session_mem_send2(self.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
       const nBytes = Number(n);
-      if (nBytes <= 0) return null;
+      if (nBytes <= 0) {
+        _bumpH2Stat('sessionFlushEmpty');
+        return null;
+      }
+      _bumpH2Stat('sessionFlushBytes', nBytes);
       return Pointer.copyFrom(outPtrHandle, nBytes) as Uint8Array;
     });
   }
@@ -996,6 +1041,9 @@ export class Nghttp2Session {
     endStream?: boolean;
     noEndStream?: boolean;
   }): void {
+    _bumpH2Stat('setStreamDataCalls');
+    if (bytes === null) _bumpH2Stat('setStreamDataEof');
+    else _bumpH2Stat('setStreamDataBytes', bytes.byteLength);
     let slot = this.#streamDataSlots.get(streamId);
     if (!slot) {
       slot = {};
@@ -1028,6 +1076,7 @@ export class Nghttp2Session {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    _bumpH2Stat('sessionsClosed');
     sym!.nghttp2_session_del(this.#sessionHandle);
     for (const cb of this.#callbacks) cb.close();
     this.#callbacks.length = 0;

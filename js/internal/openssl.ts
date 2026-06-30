@@ -819,8 +819,7 @@ const _sslSymbols = {
   },
   SSL_accept: {
     parameters: ['pointer'],
-    result: 'i32',
-    async: true
+    result: 'i32'
   },
   SSL_CTX_set_alpn_select_cb: {
     parameters: [

@@ -46,6 +46,21 @@ function makeReq(url: string, method = 'GET', body?: string): Request {
     body: body !== undefined ? new TextEncoder().encode(body).buffer : undefined
   });
 }
+async function fetchWithTimeout(input: string, init: Record<string, unknown>, ms = 5e3): Promise<Response> {
+  const controller = new AbortController();
+  const timer = loop.timeout(ms);
+  timer.then(function abortTimedOutFetch() {
+    controller.abort(new Error('fetch timed out'));
+  }, () => {});
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal
+    } as any);
+  } finally {
+    timer.cancel();
+  }
+}
 // ---------------------------------------------------------------------------
 // Pool entry — basic request/response
 // ---------------------------------------------------------------------------
@@ -61,7 +76,7 @@ describe('H2PoolEntry — basic request/response', () => {
       t.equal(res.status, 200, 'status 200');
       t.equal(text, 'hello pool', 'response body correct');
     } finally {
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -79,7 +94,7 @@ describe('H2PoolEntry — basic request/response', () => {
       t.equal(res.status, 201, 'status 201');
       t.equal(text, 'echo:pool-body', 'echoed correctly');
     } finally {
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -105,7 +120,7 @@ describe('H2PoolEntry — concurrent streams', () => {
       for (const r of responses) t.equal(r.status, 200, 'status 200');
       for (const text of texts) t.ok(text.startsWith('reply-'), `body: ${text}`);
     } finally {
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -118,7 +133,7 @@ describe('H2PoolEntry — concurrent streams', () => {
       await entry.send(makeReq(`http://127.0.0.1:${port}/`));
       t.ok(!entry.goingAway, 'still not going away after request');
     } finally {
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -131,7 +146,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     const port = server.port;
     const entry = await connectPoolEntry(port);
-    entry.close();
+    await entry.close();
     await new Promise<void>((r) => setTimeout(r, 20));
     t.ok(entry.goingAway, 'goingAway after close()');
     let threw = false;
@@ -152,7 +167,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
       t.ok(entry.goingAway, 'idle timeout marks entry goingAway');
       await t.rejects(() => entry.send(makeReq(`http://127.0.0.1:${port}/`)), /going away/i, 'idle entry rejects new sends');
     } finally {
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -178,7 +193,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
       t.equal(await res.text(), 'finished', 'stream at lastStreamId completes');
     } finally {
       release();
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -204,7 +219,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
       t.equal(await res.text(), 'late', 'stream at or below lastStreamId completes');
     } finally {
       release();
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -227,7 +242,7 @@ describe('H2PoolEntry — close and GOAWAY', () => {
       t.ok(entry.goingAway, 'transport failure marks entry goingAway');
     } finally {
       release();
-      entry.close();
+      await entry.close();
       await server.close();
     }
   });
@@ -248,8 +263,8 @@ describe('H2ConnectionPool — eviction', () => {
     const entry = await connectPoolEntry(port);
     pool.add(origin, entry);
     t.ok(pool.get(origin) === entry, 'pool.get() returns entry');
-    entry.close();
-    pool.evict(origin);
+    await entry.close();
+    await pool.evict(origin);
     t.ok(pool.get(origin) === undefined, 'pool.get() returns undefined after evict');
     await server.close();
   });
@@ -323,7 +338,7 @@ function httpsOrigin(port: number): string {
 }
 describe('global fetch() — HTTPS H2 pool', () => {
   it('creates and reuses an ALPN-negotiated H2 pool entry', { skip: skipHttps }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     let requests = 0;
     const server = serveHttp({
       port: 0,
@@ -342,12 +357,12 @@ describe('global fetch() — HTTPS H2 pool', () => {
       t.ok(_fetchH2PoolHas(origin), 'pool entry remains reusable');
       t.equal(requests, 2, 'server handled both requests');
     } finally {
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
       await server.close();
     }
   });
   it('handles concurrent requests on one ALPN-negotiated H2 session', { skip: skipHttps }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     const seen = new Set<string>();
     const server = serveHttp({
       port: 0,
@@ -372,11 +387,10 @@ describe('global fetch() — HTTPS H2 pool', () => {
 
       const count = 32;
       const responses = await Promise.all(Array.from({ length: count }, (_, i) => {
-        return fetch(`${origin}/batch?id=${i}`, {
-          signal: AbortSignal.timeout(5e3),
+        return fetchWithTimeout(`${origin}/batch?id=${i}`, {
           tls: { rejectUnauthorized: false },
           protocol: 'h2'
-        } as any);
+        });
       }));
       const bodies = await Promise.all(responses.map((response) => response.json()));
       for (const response of responses) {
@@ -387,12 +401,12 @@ describe('global fetch() — HTTPS H2 pool', () => {
       t.equal(seen.size, count + 1, 'server handled warm-up plus every concurrent request');
       t.ok(_fetchH2PoolHas(origin), 'pooled H2 entry remains reusable after concurrent requests');
     } finally {
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
       await server.close();
     }
   });
   it('keys pooled entries by origin port', { skip: skipHttps }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     const serverA = serveHttp({
       port: 0,
       tls: {
@@ -417,13 +431,13 @@ describe('global fetch() — HTTPS H2 pool', () => {
       t.ok(_fetchH2PoolHas(originA), 'first origin remains pooled');
       t.ok(_fetchH2PoolHas(originB), 'second origin gets its own entry');
     } finally {
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
       await serverA.close();
       await serverB.close();
     }
   });
   it('evicts the pooled entry after server close tears down transport', { skip: skipHttps }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     const server = serveHttp({
       port: 0,
       tls: {
@@ -437,18 +451,18 @@ describe('global fetch() — HTTPS H2 pool', () => {
     try {
       t.equal(await (await fetch(`${origin}/`, { tls: { rejectUnauthorized: false } } as any)).text(), 'ok');
       t.ok(_fetchH2PoolHas(origin), 'pool entry exists before close');
-      t.ok(_closeFetchH2PoolEntryForTest(origin), 'pool entry close is initiated');
+      t.ok(await _closeFetchH2PoolEntryForTest(origin), 'pool entry close is initiated');
       await server.close();
       t.ok(!_fetchH2PoolHas(origin), 'pool entry is evicted after transport close');
     } finally {
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
       try {
         await server.close();
       } catch {}
     }
   });
   it('carries response and request trailers over pooled H2', { skip: skipHttps }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     let capturedRequestTrailer: string | null = null;
     const server = serveHttp({
       port: 0,
@@ -476,16 +490,16 @@ describe('global fetch() — HTTPS H2 pool', () => {
       t.equal(capturedRequestTrailer, 'abc123', 'server received pooled request trailer');
       t.equal((await res.trailers).get('x-response-trailer'), 'pooled', 'client received pooled response trailer');
     } finally {
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
       await server.close();
     }
   });
 });
 describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
   it('discovers Alt-Svc and reuses one H3 session for later requests', { skip: skipGlobalH3 }, async (t) => {
-    _resetFetchH2Pool();
-    _resetFetchH3Pool();
-    _resetFetchAltSvc();
+    await _resetFetchH2Pool();
+    await _resetFetchH3Pool();
+    await _resetFetchAltSvc();
     _setFetchH3HandshakeTimeoutForTest(50);
     let tlsRequests = 0;
     let h3Requests = 0;
@@ -525,16 +539,16 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.equal(h3Requests, 2, 'later requests reached H3 server');
     } finally {
       _setFetchH3HandshakeTimeoutForTest(null);
-      _resetFetchH3Pool();
-      _resetFetchAltSvc();
-      _resetFetchH2Pool();
+      await _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH2Pool();
       await server.close();
     }
   });
   it('multiplexes concurrent requests over one discovered H3 session', { skip: skipGlobalH3 }, async (t) => {
-    _resetFetchH2Pool();
-    _resetFetchH3Pool();
-    _resetFetchAltSvc();
+    await _resetFetchH2Pool();
+    await _resetFetchH3Pool();
+    await _resetFetchAltSvc();
     let h3Requests = 0;
     const server = serve({
       port: 0,
@@ -567,16 +581,16 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.equal(h3Requests, 2, 'both concurrent requests reached H3');
       t.ok(_fetchH3PoolHas(origin), 'one H3 pool entry remains');
     } finally {
-      _resetFetchH3Pool();
-      _resetFetchAltSvc();
-      _resetFetchH2Pool();
+      await _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH2Pool();
       await server.close();
     }
   });
   it('falls back and evicts broken automatic H3 alternatives', { skip: skipGlobalH3 }, async (t) => {
-    _resetFetchH2Pool();
-    _resetFetchH3Pool();
-    _resetFetchAltSvc();
+    await _resetFetchH2Pool();
+    await _resetFetchH3Pool();
+    await _resetFetchAltSvc();
     _setFetchH3HandshakeTimeoutForTest(50);
     let tlsRequests = 0;
     const tls = serveHttp({
@@ -598,16 +612,16 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.ok(!_fetchH3PoolHas(origin), 'broken H3 pool entry is not retained');
     } finally {
       _setFetchH3HandshakeTimeoutForTest(null);
-      _resetFetchH3Pool();
-      _resetFetchAltSvc();
-      _resetFetchH2Pool();
+      await _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH2Pool();
       await tls.close();
     }
   });
   it('honors Alt-Svc clear and ma=0 eviction', { skip: skipGlobalH3 }, async (t) => {
-    _resetFetchH2Pool();
-    _resetFetchH3Pool();
-    _resetFetchAltSvc();
+    await _resetFetchH2Pool();
+    await _resetFetchH3Pool();
+    await _resetFetchAltSvc();
     const h3 = await h3Serve({
       port: 0,
       hostname: '127.0.0.1',
@@ -651,17 +665,17 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       } as any)).text();
       t.ok(!_fetchAltSvcHas(origin), 'ma=0 evicts cached Alt-Svc');
     } finally {
-      _resetFetchH3Pool();
-      _resetFetchAltSvc();
-      _resetFetchH2Pool();
+      await _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH2Pool();
       await tls.close();
       await h3.close();
     }
   });
   it('protocol override controls automatic H3 and explicit H3 fallback', { skip: skipGlobalH3 }, async (t) => {
-    _resetFetchH2Pool();
-    _resetFetchH3Pool();
-    _resetFetchAltSvc();
+    await _resetFetchH2Pool();
+    await _resetFetchH3Pool();
+    await _resetFetchAltSvc();
     _setFetchH3HandshakeTimeoutForTest(50);
     let tlsRequests = 0;
     const server = serve({
@@ -696,8 +710,8 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
         protocol: 'h3',
         tls: { rejectUnauthorized: false }
       } as any)).text(), 'h3:/forced', 'h3 override uses cached Alt-Svc');
-      _resetFetchAltSvc();
-      _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH3Pool();
       t.equal(await (await fetch(`https://127.0.0.1:${server.port}/direct`, {
         protocol: 'h3',
         tls: { rejectUnauthorized: false }
@@ -709,16 +723,16 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.equal(tlsRequests, 2, 'failed explicit h3 did not fall back to TLS');
     } finally {
       _setFetchH3HandshakeTimeoutForTest(null);
-      _resetFetchH3Pool();
-      _resetFetchAltSvc();
-      _resetFetchH2Pool();
+      await _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH2Pool();
       await server.close();
     }
   });
   it('keeps non-replayable request bodies on H1/H2 despite cached Alt-Svc', { skip: skipGlobalH3 }, async (t) => {
-    _resetFetchH2Pool();
-    _resetFetchH3Pool();
-    _resetFetchAltSvc();
+    await _resetFetchH2Pool();
+    await _resetFetchH3Pool();
+    await _resetFetchAltSvc();
     let h3Requests = 0;
     const h3 = await h3Serve({
       port: 0,
@@ -754,9 +768,9 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       t.equal(await response.text(), 'tls:POST:stream-body', 'streaming body stayed on HTTPS H1/H2 path');
       t.equal(h3Requests, 0, 'H3 was not attempted for non-replayable body');
     } finally {
-      _resetFetchH3Pool();
-      _resetFetchAltSvc();
-      _resetFetchH2Pool();
+      await _resetFetchH3Pool();
+      await _resetFetchAltSvc();
+      await _resetFetchH2Pool();
       await tls.close();
       await h3.close();
     }
@@ -764,7 +778,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
 });
 describe('global fetch() — protocol override', () => {
   it('forces H2 when available and fails when ALPN does not negotiate h2', { skip: skipHttps }, async (t) => {
-    _resetFetchH2Pool();
+    await _resetFetchH2Pool();
     const h2Server = serveHttp({
       port: 0,
       tls: {
@@ -786,7 +800,7 @@ describe('global fetch() — protocol override', () => {
         tls: { rejectUnauthorized: false }
       } as any), /h2|ALPN/i, 'forced H2 fails instead of downgrading to HTTP/1.1');
     } finally {
-      _resetFetchH2Pool();
+      await _resetFetchH2Pool();
       await h2Server.close();
       await h1Server.close();
     }

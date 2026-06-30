@@ -64,7 +64,7 @@ import { Request, Response, Headers } from '../../../../net/http/index.ts';
 import { Scanner } from '../../../../parsing/scanner.ts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.ts';
 import { NGHTTP2_FLAG_END_STREAM, NGHTTP2_FLAG_END_HEADERS, NGHTTP2_FLAG_PADDED, NGHTTP2_FRAME_TYPE_HEADERS, NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_FRAME_TYPE_PRIORITY, NGHTTP2_FRAME_TYPE_RST_STREAM, NGHTTP2_FRAME_TYPE_SETTINGS, NGHTTP2_FRAME_TYPE_PUSH_PROMISE, NGHTTP2_FRAME_TYPE_PING, NGHTTP2_FRAME_TYPE_GOAWAY, NGHTTP2_FRAME_TYPE_WINDOW_UPDATE, NGHTTP2_FRAME_TYPE_CONTINUATION, NGHTTP2_INTERNAL_ERROR, NGHTTP2_PROTOCOL_ERROR, NGHTTP2_REFUSED_STREAM, NGHTTP2_STREAM_CLOSED, NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE } from './bindings.ts';
-import { Nghttp2Session } from './session.ts';
+import { Nghttp2Session, _bumpH2Stat } from './session.ts';
 import type { H2StreamCallbacks } from './session.ts';
 // ---------------------------------------------------------------------------
 // Per-stream state
@@ -179,6 +179,7 @@ const NGHTTP2_FLOW_CONTROL_ERROR = 3;
 const _DEFAULT_MAX_FRAME_SIZE = 16 * 1024;
 const _INITIAL_FLOW_CONTROL_WINDOW = 65535;
 const _MAX_FLOW_CONTROL_WINDOW = 2147483647;
+const _MAX_WRITEV_CHUNKS = 16;
 const _H2_PREFACE = new Uint8Array([
   80,
   82,
@@ -660,19 +661,35 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
   // Set by setSession() before any closure runs.
   let session = (null as unknown) as Nghttp2Session;
   function drainWrite(): Promise<void> {
-    drainChain = drainChain.then(async function drainH2Writes() {
+    async function drainH2Writes() {
+      _bumpH2Stat('drainWriteCalls');
+      const chunks: Uint8Array[] = [];
       do {
         const bytes = await session.flush();
         if (bytes && bytes.byteLength > 0) {
-          await writer.write(bytes);
+          _bumpH2Stat('writerWriteCalls');
+          _bumpH2Stat('writerWriteBytes', bytes.byteLength);
+          chunks.push(bytes);
         } else {
           // flow-control window exhausted: nghttp2 wants to write but can't.
           // Break so _recvLoop can process the next incoming WINDOW_UPDATE.
           break;
         }
       } while (session.wantWrite());
+      for (let i = 0; i < chunks.length; i += _MAX_WRITEV_CHUNKS) {
+        const count = Math.min(_MAX_WRITEV_CHUNKS, chunks.length - i);
+        const batch = chunks.slice(i, i + count);
+        let total = 0;
+        for (const bytes of batch) total += bytes.byteLength;
+        _bumpH2Stat('writerWritevCalls');
+        _bumpH2Stat('writerWritevVectors', count);
+        _bumpH2Stat('writerWritevBytes', total);
+        await writer.writev(batch, count);
+      }
+      _bumpH2Stat('writerFlushCalls');
       await writer.flush();
-    });
+    }
+    drainChain = drainChain.then(drainH2Writes, drainH2Writes);
     return drainChain;
   }
   function resetMalformedBody(stream: H2ServerStream, message: string): void {
@@ -747,16 +764,20 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       const hasStreamingBody = bodyBytes === null && responseBody !== null;
       const hasBody = bodyBytes !== null || hasStreamingBody || hasTrailers;
       session.submitResponse(streamId, responseHeaders, hasBody);
-      await drainWrite();
       if (bodyBytes) {
+        // Queue fixed bodies before the first response drain so nghttp2 can
+        // emit HEADERS and DATA through one send pass.
         session.setStreamData(streamId, bodyBytes, { endStream: !hasTrailers });
         await drainWrite();
-      } else if (hasStreamingBody) {
-        for await (const chunk of (responseBody as any) as AsyncIterable<Uint8Array>) {
-          if (stream.cancelled) return;
-          if (chunk.byteLength === 0) continue;
-          session.setStreamData(streamId, chunk);
-          await drainWrite();
+      } else {
+        await drainWrite();
+        if (hasStreamingBody) {
+          for await (const chunk of (responseBody as any) as AsyncIterable<Uint8Array>) {
+            if (stream.cancelled) return;
+            if (chunk.byteLength === 0) continue;
+            session.setStreamData(streamId, chunk);
+            await drainWrite();
+          }
         }
       }
       if (hasTrailers) {
@@ -1098,6 +1119,8 @@ async function _recvLoop(reader: BufferedBytesReader, writer: BytesWriter, sessi
   let sendFinalGoaway = true;
   async function processValidatedBytes(bytes: Uint8Array | null): Promise<boolean> {
     if (!bytes || bytes.byteLength === 0) return true;
+    _bumpH2Stat('validatedInputChunks');
+    _bumpH2Stat('validatedInputBytes', bytes.byteLength);
     const n = await session.recv(bytes);
     if (n < 0) {
       try {
@@ -1120,7 +1143,11 @@ async function _recvLoop(reader: BufferedBytesReader, writer: BytesWriter, sessi
     if (action.kind === 'goaway') {
       sendFinalGoaway = false;
       try {
-        await writer.write(_buildRawGoaway(action.errorCode ?? NGHTTP2_PROTOCOL_ERROR));
+        const bytes = _buildRawGoaway(action.errorCode ?? NGHTTP2_PROTOCOL_ERROR);
+        _bumpH2Stat('rawWriterWriteCalls');
+        _bumpH2Stat('rawWriterWriteBytes', bytes.byteLength);
+        await writer.write(bytes);
+        _bumpH2Stat('rawWriterFlushCalls');
         await writer.flush();
       } catch {}
       return false;
@@ -1128,7 +1155,11 @@ async function _recvLoop(reader: BufferedBytesReader, writer: BytesWriter, sessi
     if (action.kind === 'rst') {
       cancelStream(action.streamId ?? 0);
       try {
-        await writer.write(_buildRawRstStream(action.streamId ?? 0, action.errorCode ?? NGHTTP2_PROTOCOL_ERROR));
+        const bytes = _buildRawRstStream(action.streamId ?? 0, action.errorCode ?? NGHTTP2_PROTOCOL_ERROR);
+        _bumpH2Stat('rawWriterWriteCalls');
+        _bumpH2Stat('rawWriterWriteBytes', bytes.byteLength);
+        await writer.write(bytes);
+        _bumpH2Stat('rawWriterFlushCalls');
         await writer.flush();
       } catch {}
       return true;
@@ -1137,6 +1168,8 @@ async function _recvLoop(reader: BufferedBytesReader, writer: BytesWriter, sessi
   }
   try {
     for await (const chunk of reader) {
+      _bumpH2Stat('serverReadChunks');
+      _bumpH2Stat('serverReadBytes', chunk.byteLength);
       const validated = validator.push(chunk);
       if (!await processValidatedBytes(validated.feed)) break;
       let keepReading = true;

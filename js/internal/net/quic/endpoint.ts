@@ -2884,6 +2884,7 @@ export class QuicEndpoint extends EventTarget {
   #closed = false;
   #createdAt = Date.now();
   #destroyedAt: number | null = null;
+  #routeCleanupTimers = new Set<QuicTimerHandle>();
   #options: ResolvedQuicOptions;
   readonly cidTable = new CidRoutingTable();
   readonly alpnProtocols: string[];
@@ -3232,6 +3233,7 @@ export class QuicEndpoint extends EventTarget {
     });
     this.#closed = true;
     this.#destroyedAt = Date.now();
+    this.#clearRouteCleanupTimers();
     for (const listener of this.#listeners.slice()) await listener.close();
     for (const connection of Array.from(this.#connections)) connection.destroy(new Error('QUIC endpoint is closed'));
     await Promise.allSettled(Array.from(this.#connections, (connection) => connection.closed));
@@ -3257,6 +3259,7 @@ export class QuicEndpoint extends EventTarget {
     });
     this.#closed = true;
     this.#destroyedAt = Date.now();
+    this.#clearRouteCleanupTimers();
     for (const listener of this.#listeners.slice()) await listener.close();
     await Promise.allSettled(Array.from(this.#connections, (connection) => connection.close(options)));
     this.cidTable.clear();
@@ -3297,7 +3300,12 @@ export class QuicEndpoint extends EventTarget {
     });
     connection.addEventListener('close', () => {
       const routeCids = connection.routeCids.slice();
+      let timer: QuicTimerHandle | null = null;
       const untrack = () => {
+        if (timer !== null) {
+          this.#routeCleanupTimers.delete(timer);
+          timer = null;
+        }
         this.#connections.delete(connection);
         for (const cid of routeCids) {
           if (this.cidTable.get(cid) === connection) this.cidTable.delete(cid);
@@ -3306,9 +3314,14 @@ export class QuicEndpoint extends EventTarget {
       if (this.#closed) {
         untrack();
       } else {
-        this.#runtime.setTimer(connection._drainingRetentionMsForRouting(), untrack);
+        timer = this.#runtime.setTimer(connection._drainingRetentionMsForRouting(), untrack);
+        this.#routeCleanupTimers.add(timer);
       }
     }, { once: true });
+  }
+  #clearRouteCleanupTimers(): void {
+    for (const timer of this.#routeCleanupTimers) timer.cancel();
+    this.#routeCleanupTimers.clear();
   }
   _forgetConnectionRoutes(connection: QuicConnection): void {
     this.#connections.delete(connection);

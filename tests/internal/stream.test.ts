@@ -220,6 +220,13 @@ class RecordingBufferedWriter extends BufferedBytesWriter {
     this.chunks.push(buf.slice());
   }
 }
+class CountingWriteBufferedWriter extends RecordingBufferedWriter {
+  writeCalls = 0;
+  override async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+    this.writeCalls++;
+    await super.write(data);
+  }
+}
 describe('BytesReader', () => {
   it('readAtMost limits returned bytes and preserves the remainder', async (t) => {
     const reader = new MemoryBytesReader([new Uint8Array([
@@ -398,6 +405,19 @@ describe('BufferedBytesWriter', () => {
       5,
       6
     ]], 'large write preserves ordering around short pending write');
+  });
+  it('writev coalesces small vectors without per-vector public writes', async (t) => {
+    const writer = new CountingWriteBufferedWriter(8);
+    await writer.writev([
+      new Uint8Array([1]),
+      new Uint8Array([]),
+      new Uint8Array([2, 3]),
+      new Uint8Array([4])
+    ]);
+    t.equal(writer.writeCalls, 0, 'writev uses the buffered vector path directly');
+    t.deepEqual(writer.chunks, [], 'small vectors remain buffered before flush');
+    await writer.flush();
+    t.deepEqual(writer.chunks.map((chunk) => [...chunk]), [[1, 2, 3, 4]], 'small vectors flush as one coalesced chunk');
   });
 });
 describe('FdReader / FdWriter', () => {

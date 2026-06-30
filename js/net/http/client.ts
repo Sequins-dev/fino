@@ -686,7 +686,7 @@ export class HttpSession {
     if (this.#state === 'closed') return;
     this.#state = 'closed';
     await this.#closeH3Transport();
-    if (this.protocol === 'h2') _closeFetchH2PoolEntry(this.origin);
+    if (this.protocol === 'h2') await _closeFetchH2PoolEntry(this.origin);
     this.#events.push({
       type: 'closed',
       session: this,

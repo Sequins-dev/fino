@@ -2,12 +2,23 @@
 * Tests for fino:process — process info APIs and child process spawning.
 */
 import { describe, it } from 'fino:test/test';
-import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, Process } from 'fino:process';
+import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
+import * as loop from 'internal:runtime/loop';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const childEnv = Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)) as Record<string, string>;
 const fs = new DiskFileSystem();
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const timer = loop.timeout(ms);
+  try {
+    return await Promise.race([promise, timer.then(() => {
+      throw new Error(`${label} timed out after ${ms}ms`);
+    })]);
+  } finally {
+    timer.cancel();
+  }
+}
 function joinChunks(chunks: Uint8Array[]): string {
   return decodeUtf8(chunks.reduce((acc: Uint8Array, c: Uint8Array) => {
     const merged = new Uint8Array(acc.byteLength + c.byteLength);
@@ -218,6 +229,26 @@ describe('Process class', () => {
     const { code, signal } = await proc.wait();
     t.equal(code, null);
     t.ok(signal !== null, 'child was signalled');
+  });
+  it('spawned children do not inherit runtime signal handling', async (t) => {
+    const topic = signal('SIGTERM');
+    const handle = topic.subscribe(() => {});
+    handle.dispose();
+    const proc = new Process('/bin/sleep', ['60']);
+    const waiting = proc.wait();
+    proc.kill();
+    let result: Awaited<ReturnType<Process['wait']>>;
+    try {
+      result = await withTimeout(waiting, 1e3, 'child SIGTERM wait');
+    } catch (err) {
+      try {
+        proc.kill(SIGKILL);
+      } catch {}
+      await waiting.catch(() => {});
+      throw err;
+    }
+    t.equal(result.code, null);
+    t.ok(result.signal !== null, 'child used default signal disposition');
   });
   it('wait() rejects when called more than once', async (t) => {
     const proc = new Process('/bin/sh', ['-c', 'true']);

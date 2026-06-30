@@ -257,6 +257,11 @@ export class TlsReader extends BufferedBytesReader {
   get fd(): number {
     return this.#fd;
   }
+  override async close(): Promise<void> {
+    loop.removeRead(this.#fd);
+    loop.removeWrite(this.#fd);
+    await super.close();
+  }
   /**
   * Generated-doc-visible method `doPull`.
   *
