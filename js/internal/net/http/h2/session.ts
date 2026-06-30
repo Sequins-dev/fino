@@ -297,32 +297,6 @@ export class Nghttp2Session {
   * @internal
   */
   #dpBuf!: Uint8Array;
-  // Async mutex: nghttp2 is not thread-safe. recv() and flush() both dispatch
-  // to the blocking pool; if they run on different pool threads concurrently
-  // they race on the nghttp2_session*. Serialise all pool-bound operations
-  // through this promise chain.
-  /**
-  * Private property `#mu` used by `Nghttp2Session`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #mu = undefined;
-  *
-  *   readInternalState() {
-  *     return this.#mu;
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #mu: Promise<void> = Promise.resolve();
   /**
   * Private readonly property `#cb` used by `Nghttp2Session`.
   *
@@ -707,58 +681,13 @@ export class Nghttp2Session {
     this.#dpBuf = dpBuf;
   }
   // ---------------------------------------------------------------------------
-  // Session-level async mutex
-  // ---------------------------------------------------------------------------
-  // Serialise all blocking-pool calls (recv2 / send2) so they never run
-  // concurrently on different pool threads - nghttp2 is not thread-safe.
-  /**
-  * Private method `#lock` used by `Nghttp2Session`.
-  *
-  * This implementation detail is included when documentation is built with
-  * `--include-private`. It describes state or helper behavior used by the
-  * owning module rather than a stable application-facing contract. Prefer the
-  * public API around the owning type unless you are maintaining this runtime.
-  *
-  * @example
-  * ```ts no_run
-  * class IncludePrivateExample {
-  *   #lock() {
-  *     return 'lock';
-  *   }
-  *
-  *   useInternalMethod() {
-  *     return this.#lock();
-  *   }
-  * }
-  * ```
-  *
-  * @internal
-  */
-  #lock<T>(fn: () => T | Promise<T>): Promise<T> {
-    let unlock!: () => void;
-    const release = new Promise<void>(function createSessionLockRelease(r) {
-      unlock = r;
-    });
-    const prev = this.#mu;
-    this.#mu = release;
-    function runLockedSessionTask(): Promise<T> {
-      try {
-        return Promise.resolve(fn()).finally(unlock);
-      } catch (err) {
-        unlock();
-        return Promise.reject(err);
-      }
-    }
-    return prev.then(runLockedSessionTask, runLockedSessionTask);
-  }
-  // ---------------------------------------------------------------------------
   // I/O pumps
   // ---------------------------------------------------------------------------
   /**
   * Feed incoming bytes into the nghttp2 session.
   *
-  * The call is serialized with `flush()` through the session mutex. It resolves
-  * with the number of bytes consumed, returns `0` after close, or rejects when
+  * The call synchronously feeds bytes to the in-memory nghttp2 parser. It
+  * returns the number of bytes consumed, returns `0` after close, or throws when
   * the native FFI call fails.
   *
   * ```ts no_run
@@ -767,24 +696,21 @@ export class Nghttp2Session {
   * await session.recv(new Uint8Array());
   * ```
   */
-  recv(bytes: Uint8Array): Promise<number> {
-    const self = this;
-    return this.#lock(function recvLocked() {
-      if (self.#closed) return 0;
-      const n = sym!.nghttp2_session_mem_recv2(self.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
-      while (self.#pendingConsumedData.length > 0) {
-        const [streamId, size] = self.#pendingConsumedData.shift()!;
-        sym!.nghttp2_session_consume(self.#sessionHandle, streamId, size);
-      }
-      return Number(n);
-    });
+  recv(bytes: Uint8Array): number {
+    if (this.#closed) return 0;
+    const n = sym!.nghttp2_session_mem_recv2(this.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
+    while (this.#pendingConsumedData.length > 0) {
+      const [streamId, size] = this.#pendingConsumedData.shift()!;
+      sym!.nghttp2_session_consume(this.#sessionHandle, streamId, size);
+    }
+    return Number(n);
   }
   /**
   * Drain pending outgoing bytes from the session.
   * Returns a Uint8Array to write, or null if nothing to send.
   *
-  * The call is serialized with `recv()` because nghttp2 sessions are not
-  * thread-safe. After close, it resolves to `null`.
+  * The call synchronously serializes pending nghttp2 output. After close, it
+  * returns `null`.
   *
   * ```ts no_run
   * import { Nghttp2Session } from 'internal:net/http/h2/session';
@@ -793,18 +719,15 @@ export class Nghttp2Session {
   * bytes?.byteLength;
   * ```
   */
-  flush(): Promise<Uint8Array | null> {
-    const self = this;
-    return this.#lock(function flushLocked() {
-      if (self.#closed) return null;
-      const outPtrHandle = new ArrayBuffer(8);
-      const n = sym!.nghttp2_session_mem_send2(self.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
-      const nBytes = Number(n);
-      if (nBytes <= 0) {
-        return null;
-      }
-      return Pointer.copyFrom(outPtrHandle, nBytes) as Uint8Array;
-    });
+  flush(): Uint8Array | null {
+    if (this.#closed) return null;
+    const outPtrHandle = new ArrayBuffer(8);
+    const n = sym!.nghttp2_session_mem_send2(this.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
+    const nBytes = Number(n);
+    if (nBytes <= 0) {
+      return null;
+    }
+    return Pointer.copyFrom(outPtrHandle, nBytes) as Uint8Array;
   }
   /**
   * Return whether nghttp2 wants the caller to write bytes.
