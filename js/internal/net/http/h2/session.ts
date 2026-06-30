@@ -698,12 +698,12 @@ export class Nghttp2Session {
   */
   recv(bytes: Uint8Array): number {
     if (this.#closed) return 0;
-    const n = sym!.nghttp2_session_mem_recv2(this.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
+    const n = sym!.nghttp2_session_mem_recv2(this.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as number;
     while (this.#pendingConsumedData.length > 0) {
       const [streamId, size] = this.#pendingConsumedData.shift()!;
       sym!.nghttp2_session_consume(this.#sessionHandle, streamId, size);
     }
-    return Number(n);
+    return n;
   }
   /**
   * Drain pending outgoing bytes from the session.
@@ -722,8 +722,7 @@ export class Nghttp2Session {
   flush(): Uint8Array | null {
     if (this.#closed) return null;
     const outPtrHandle = new ArrayBuffer(8);
-    const n = sym!.nghttp2_session_mem_send2(this.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
-    const nBytes = Number(n);
+    const nBytes = sym!.nghttp2_session_mem_send2(this.#sessionHandle, Pointer.of(outPtrHandle)) as number;
     if (nBytes <= 0) {
       return null;
     }

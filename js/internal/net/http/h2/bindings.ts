@@ -164,11 +164,11 @@ const _SYMBOLS = {
       'pointer',
       'usize'
     ],
-    result: 'isize'
+    result: 'i32'
   },
   nghttp2_session_mem_send2: {
     parameters: ['pointer', 'pointer'],
-    result: 'isize'
+    result: 'i32'
   },
   nghttp2_session_want_read: {
     parameters: ['pointer'],
