@@ -222,7 +222,9 @@ interface H2RawValidationResult {
 function _concatBytes(parts: Uint8Array[]): Uint8Array | null {
   if (parts.length === 0) return null;
   if (parts.length === 1) return parts[0]!;
-  const total = parts.reduce((n, p) => n + p.byteLength, 0);
+  const total = parts.reduce(function sumByteLength(n, p) {
+    return n + p.byteLength;
+  }, 0);
   const out = new Uint8Array(total);
   let off = 0;
   for (const p of parts) {
@@ -658,7 +660,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
   // Set by setSession() before any closure runs.
   let session = (null as unknown) as Nghttp2Session;
   function drainWrite(): Promise<void> {
-    drainChain = drainChain.then(async () => {
+    drainChain = drainChain.then(async function drainH2Writes() {
       do {
         const bytes = await session.flush();
         if (bytes && bytes.byteLength > 0) {
@@ -792,9 +794,11 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     if (stream.cancelled) return;
     stream.dispatched = true;
     // Absorb errors so Promise.all(inFlight) in the finally block never rejects.
-    const done = dispatchStream(stream).catch(() => {});
+    const done = dispatchStream(stream).catch(function ignoreDispatchError() {});
     inFlight.add(done);
-    done.finally(() => inFlight.delete(done));
+    done.finally(function removeInflightDispatch() {
+      inFlight.delete(done);
+    });
   }
   const callbacks: H2StreamCallbacks = {
     onBeginHeaders(streamId: number, isTrailers: boolean): void {
@@ -1077,9 +1081,11 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     drainStreams,
     cancelStream,
     startDispatch,
-    goawayReceived: () => receivedGoaway,
+    goawayReceived: function isGoawayReceived() {
+      return receivedGoaway;
+    },
     callbacks,
-    setSession: (s: Nghttp2Session) => {
+    setSession: function setH2Session(s: Nghttp2Session) {
       session = s;
     }
   };

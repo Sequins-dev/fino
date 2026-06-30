@@ -1091,7 +1091,7 @@ export function buildNvArray(headers: Array<[string, string]>): {
 } {
   const count = headers.length;
   // Each nv entry: 40 bytes. Data follows after all entries.
-  const dataBlobs: Uint8Array[] = headers.map(([n, v]) => {
+  const dataBlobs: Uint8Array[] = headers.map(function encodeHeaderBlob([n, v]) {
     const nb = _enc.encode(n.toLowerCase());
     const vb = _enc.encode(v);
     const blob = new Uint8Array(nb.length + vb.length);
@@ -1099,7 +1099,9 @@ export function buildNvArray(headers: Array<[string, string]>): {
     blob.set(vb, nb.length);
     return blob;
   });
-  const totalData = dataBlobs.reduce((s, b) => s + b.length, 0);
+  const totalData = dataBlobs.reduce(function sumHeaderBlobBytes(s, b) {
+    return s + b.length;
+  }, 0);
   const buf = new Uint8Array(count * NV_ENTRY_SIZE + totalData);
   let dataOffset = count * NV_ENTRY_SIZE;
   const dv = new DataView(buf.buffer);

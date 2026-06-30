@@ -514,6 +514,8 @@ export class Nghttp2Session {
   #installCallbacks(cbsHandle: ArrayBuffer): void {
     const cb = this.#cb;
     const streamHasData = this.#streamHasData;
+    const pendingConsumedData = this.#pendingConsumedData;
+    const streamDataSlots = this.#streamDataSlots;
     // on_begin_headers: fires at the start of a HEADERS frame.
     const onBeginHeaders = new FfiCallback({
       parameters: [
@@ -522,7 +524,7 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'i32'
-    }, (_session: ArrayBuffer, frame: ArrayBuffer, _userData: ArrayBuffer) => {
+    }, function nghttp2OnBeginHeadersCallback(_session: ArrayBuffer, frame: ArrayBuffer, _userData: ArrayBuffer) {
       const { streamId, type } = readFrameHd(frame);
       if (streamId === 0 || type !== NGHTTP2_FRAME_TYPE_HEADERS) return 0;
       const isTrailers = streamHasData.has(streamId);
@@ -544,7 +546,7 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'i32'
-    }, (_session: ArrayBuffer, frame: ArrayBuffer, namePtrBuf: ArrayBuffer, nameLen: bigint, valuePtrBuf: ArrayBuffer, valueLen: bigint, flags: number, _userData: ArrayBuffer) => {
+    }, function nghttp2OnHeaderCallback(_session: ArrayBuffer, frame: ArrayBuffer, namePtrBuf: ArrayBuffer, nameLen: bigint, valuePtrBuf: ArrayBuffer, valueLen: bigint, flags: number, _userData: ArrayBuffer) {
       // Read name/value before returning - C retains ownership of the memory.
       const nameBytes = Pointer.copyFrom(namePtrBuf, Number(nameLen)) as Uint8Array;
       const valueBytes = Pointer.copyFrom(valuePtrBuf, Number(valueLen)) as Uint8Array;
@@ -562,7 +564,7 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'i32'
-    }, (_session: ArrayBuffer, frame: ArrayBuffer, _userData: ArrayBuffer) => {
+    }, function nghttp2OnFrameRecvCallback(_session: ArrayBuffer, frame: ArrayBuffer, _userData: ArrayBuffer) {
       const { streamId, type, flags } = readFrameHd(frame);
       if (type === NGHTTP2_FRAME_TYPE_DATA) streamHasData.add(streamId);
       cb.onFrameRecv(streamId, type, flags);
@@ -581,10 +583,10 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'i32'
-    }, (_session: ArrayBuffer, _flags: number, streamId: number, dataPtrBuf: ArrayBuffer, len: bigint, _userData: ArrayBuffer) => {
+    }, function nghttp2OnDataChunkCallback(_session: ArrayBuffer, _flags: number, streamId: number, dataPtrBuf: ArrayBuffer, len: bigint, _userData: ArrayBuffer) {
       const bytes = Pointer.copyFrom(dataPtrBuf, Number(len)) as Uint8Array;
       cb.onDataChunk(streamId, bytes);
-      if (bytes.byteLength > 0) this.#pendingConsumedData.push([streamId, bytes.byteLength]);
+      if (bytes.byteLength > 0) pendingConsumedData.push([streamId, bytes.byteLength]);
       return 0;
     });
     sym!.nghttp2_session_callbacks_set_on_data_chunk_recv_callback(cbsHandle, onDataChunk.pointer);
@@ -598,9 +600,9 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'i32'
-    }, (_session: ArrayBuffer, streamId: number, errorCode: number, _userData: ArrayBuffer) => {
+    }, function nghttp2OnStreamCloseCallback(_session: ArrayBuffer, streamId: number, errorCode: number, _userData: ArrayBuffer) {
       streamHasData.delete(streamId);
-      this.#streamDataSlots.delete(streamId);
+      streamDataSlots.delete(streamId);
       cb.onStreamClose(streamId, errorCode);
       return 0;
     });
@@ -616,7 +618,7 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'i32'
-    }, (_session: ArrayBuffer, errCode: number, _msgPtr: ArrayBuffer, _msgLen: bigint, _userData: ArrayBuffer) => {
+    }, function nghttp2ErrorCallback(_session: ArrayBuffer, errCode: number, _msgPtr: ArrayBuffer, _msgLen: bigint, _userData: ArrayBuffer) {
       return 0;
     });
     sym!.nghttp2_session_callbacks_set_error_callback2(cbsHandle, onError.pointer);
@@ -648,6 +650,7 @@ export class Nghttp2Session {
   #installDataProvider(): void {
     // The shared data-provider callback. Looks up per-stream state from
     // #streamDataSlots and returns bytes / DEFERRED / EOF to nghttp2.
+    const streamDataSlots = this.#streamDataSlots;
     const dataCb = new FfiCallback({
       parameters: [
         'pointer',
@@ -659,8 +662,8 @@ export class Nghttp2Session {
         'pointer'
       ],
       result: 'isize'
-    }, (_session: ArrayBuffer, streamId: number, bufPtrBuf: ArrayBuffer, length: bigint, dataFlagsPtrBuf: ArrayBuffer, _source: ArrayBuffer, _userData: ArrayBuffer): number => {
-      const slot = this.#streamDataSlots.get(streamId);
+    }, function nghttp2DataProviderReadCallback(_session: ArrayBuffer, streamId: number, bufPtrBuf: ArrayBuffer, length: bigint, dataFlagsPtrBuf: ArrayBuffer, _source: ArrayBuffer, _userData: ArrayBuffer): number {
+      const slot = streamDataSlots.get(streamId);
       if (!slot) return NGHTTP2_ERR_DEFERRED;
       if (!slot.bytes) {
         if (slot.eof) {
@@ -731,10 +734,15 @@ export class Nghttp2Session {
   */
   #lock<T>(fn: () => Promise<T>): Promise<T> {
     let unlock!: () => void;
-    const release = new Promise<void>((r) => unlock = r);
+    const release = new Promise<void>(function createSessionLockRelease(r) {
+      unlock = r;
+    });
     const prev = this.#mu;
     this.#mu = release;
-    return prev.then(() => fn().finally(unlock), () => fn().finally(unlock));
+    function runLockedSessionTask(): Promise<T> {
+      return fn().finally(unlock);
+    }
+    return prev.then(runLockedSessionTask, runLockedSessionTask);
   }
   // ---------------------------------------------------------------------------
   // I/O pumps (async - run on blocking pool, fire FfiCallbacks)
@@ -753,12 +761,13 @@ export class Nghttp2Session {
   * ```
   */
   recv(bytes: Uint8Array): Promise<number> {
-    return this.#lock(async () => {
-      if (this.#closed) return 0;
-      const n = await sym!.nghttp2_session_mem_recv2(this.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
-      while (this.#pendingConsumedData.length > 0) {
-        const [streamId, size] = this.#pendingConsumedData.shift()!;
-        sym!.nghttp2_session_consume(this.#sessionHandle, streamId, size);
+    const self = this;
+    return this.#lock(async function recvLocked() {
+      if (self.#closed) return 0;
+      const n = await sym!.nghttp2_session_mem_recv2(self.#sessionHandle, Pointer.of(bytes), bytes.byteLength) as bigint;
+      while (self.#pendingConsumedData.length > 0) {
+        const [streamId, size] = self.#pendingConsumedData.shift()!;
+        sym!.nghttp2_session_consume(self.#sessionHandle, streamId, size);
       }
       return Number(n);
     });
@@ -778,10 +787,11 @@ export class Nghttp2Session {
   * ```
   */
   flush(): Promise<Uint8Array | null> {
-    return this.#lock(async () => {
-      if (this.#closed) return null;
+    const self = this;
+    return this.#lock(async function flushLocked() {
+      if (self.#closed) return null;
       const outPtrHandle = new ArrayBuffer(8);
-      const n = await sym!.nghttp2_session_mem_send2(this.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
+      const n = await sym!.nghttp2_session_mem_send2(self.#sessionHandle, Pointer.of(outPtrHandle)) as bigint;
       const nBytes = Number(n);
       if (nBytes <= 0) return null;
       return Pointer.copyFrom(outPtrHandle, nBytes) as Uint8Array;
