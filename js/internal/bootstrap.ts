@@ -264,7 +264,7 @@ export function driveLoop(isDone: () => boolean, onDone: () => void, opts?: Driv
     const loopAlive = alive();
     const hasChildren = opts?.childrenAlive?.() ?? false;
     if (isDone() && !loopAlive && !hasChildren) return false;
-    const timeout = opts?.nonBlocking ? 0 : emptyTicks >= 3 ? 50 : 0;
+    const timeout = opts?.nonBlocking ? 0 : emptyTicks >= 3 ? 25 : 0;
     const count = tick(timeout);
     _flushPorts();
     drainMicrotasks();
