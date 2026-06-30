@@ -346,6 +346,51 @@ describe('global fetch() — HTTPS H2 pool', () => {
       await server.close();
     }
   });
+  it('handles concurrent requests on one ALPN-negotiated H2 session', { skip: skipHttps }, async (t) => {
+    _resetFetchH2Pool();
+    const seen = new Set<string>();
+    const server = serveHttp({
+      port: 0,
+      tls: {
+        cert: CERT_PATH,
+        key: KEY_PATH
+      }
+    }, async (req) => {
+      const url = new URL(req.url);
+      const id = url.searchParams.get('id') ?? '';
+      seen.add(id);
+      return Response.json({ id, path: url.pathname });
+    });
+    const origin = httpsOrigin(server.port);
+    try {
+      const warm = await fetch(`${origin}/warm`, {
+        tls: { rejectUnauthorized: false },
+        protocol: 'h2'
+      } as any);
+      t.equal(await warm.text(), JSON.stringify({ id: '', path: '/warm' }), 'warm-up response completes');
+      t.ok(_fetchH2PoolHas(origin), 'warm-up request created a pooled H2 entry');
+
+      const count = 32;
+      const responses = await Promise.all(Array.from({ length: count }, (_, i) => {
+        return fetch(`${origin}/batch?id=${i}`, {
+          signal: AbortSignal.timeout(5e3),
+          tls: { rejectUnauthorized: false },
+          protocol: 'h2'
+        } as any);
+      }));
+      const bodies = await Promise.all(responses.map((response) => response.json()));
+      for (const response of responses) {
+        t.equal(response.status, 200, 'concurrent response status is 200');
+      }
+      const ids = bodies.map((body) => body.id).sort((a, b) => Number(a) - Number(b));
+      t.deepEqual(ids, Array.from({ length: count }, (_, i) => String(i)), 'all concurrent responses complete with the expected ids');
+      t.equal(seen.size, count + 1, 'server handled warm-up plus every concurrent request');
+      t.ok(_fetchH2PoolHas(origin), 'pooled H2 entry remains reusable after concurrent requests');
+    } finally {
+      _resetFetchH2Pool();
+      await server.close();
+    }
+  });
   it('keys pooled entries by origin port', { skip: skipHttps }, async (t) => {
     _resetFetchH2Pool();
     const serverA = serveHttp({
