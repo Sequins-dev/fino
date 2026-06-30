@@ -744,6 +744,219 @@ async function openClientSession(writer: any, callbacks: any): Promise<any> {
   await writer.flush();
   return s;
 }
+async function flushH2Client(client: any, writer: any): Promise<void> {
+  while (client.wantWrite()) {
+    const bytes = await client.flush();
+    if (bytes && bytes.byteLength > 0) await writer.write(bytes);
+  }
+  await writer.flush();
+}
+function submitClientRequest(client: any, port: number, path: string, options: {
+  method?: string;
+  hasBody?: boolean;
+} = {}): number {
+  return client.submitRequest([
+    [':method', options.method ?? 'GET'],
+    [':path', path],
+    [':scheme', 'http'],
+    [':authority', `127.0.0.1:${port}`]
+  ], options.hasBody ?? false);
+}
+function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> {
+  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new Error(message)), ms))]);
+}
+interface CapturedH2Response {
+  status: number;
+  body: string;
+  closed: boolean;
+  errorCode: number | null;
+}
+function makeCapturedResponse(): CapturedH2Response {
+  return {
+    status: 0,
+    body: '',
+    closed: false,
+    errorCode: null
+  };
+}
+async function readUntil(reader: any, client: any, writer: any, done: () => boolean): Promise<void> {
+  for await (const chunk of reader as any) {
+    await client.recv(chunk);
+    await flushH2Client(client, writer);
+    if (done()) break;
+  }
+}
+describe('H2 server — multiplexing and connection reuse', () => {
+  it('completes a fast stream while another response body is blocked', async (t) => {
+    if (!h2Available) return;
+    let releaseSlow: (() => void) | null = null;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const server = serveHttp({ port: 0 }, async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/slow') {
+        async function* body() {
+          await slowGate;
+          yield _enc.encode('slow');
+        }
+        return new Response(body());
+      }
+      return new Response('fast');
+    });
+    const port = server.port;
+    const sock = await Socket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port
+    });
+    const [reader, writer] = sock.split();
+    const responses = new Map<number, CapturedH2Response>();
+    const client = await openClientSession(writer, {
+      onBeginHeaders() {},
+      onHeader(streamId: number, name: string, value: string) {
+        const response = responses.get(streamId);
+        if (response && name === ':status') response.status = Number(value);
+      },
+      onFrameRecv() {},
+      onDataChunk(streamId: number, data: Uint8Array) {
+        const response = responses.get(streamId);
+        if (response) response.body += _dec.decode(data);
+      },
+      onStreamClose(streamId: number, errorCode: number) {
+        const response = responses.get(streamId);
+        if (response) {
+          response.closed = true;
+          response.errorCode = errorCode;
+        }
+      }
+    });
+    const slowId = submitClientRequest(client, port, '/slow');
+    responses.set(slowId, makeCapturedResponse());
+    const fastId = submitClientRequest(client, port, '/fast');
+    responses.set(fastId, makeCapturedResponse());
+    await flushH2Client(client, writer);
+    try {
+      await timeout(readUntil(reader, client, writer, () => responses.get(fastId)!.closed), 'fast H2 stream did not complete while slow stream was blocked');
+      t.equal(responses.get(fastId)!.status, 200, 'fast stream status is 200');
+      t.equal(responses.get(fastId)!.body, 'fast', 'fast stream body completed');
+      t.equal(responses.get(slowId)!.closed, false, 'slow stream remains open while fast stream completes');
+      releaseSlow?.();
+      await timeout(readUntil(reader, client, writer, () => responses.get(slowId)!.closed), 'slow H2 stream did not complete after release');
+      t.equal(responses.get(slowId)!.status, 200, 'slow stream status is 200');
+      t.equal(responses.get(slowId)!.body, 'slow', 'slow stream body completed after release');
+    } finally {
+      releaseSlow?.();
+      client.close();
+      try {
+        await writer.close();
+      } catch {}
+      try {
+        await reader.close();
+      } catch {}
+      await server.close();
+    }
+  });
+  it('keeps a concurrent stream alive after the client resets a pending stream', async (t) => {
+    if (!h2Available) return;
+    let waitHandlerEntered: (() => void) | null = null;
+    const entered = new Promise<void>((resolve) => {
+      waitHandlerEntered = resolve;
+    });
+    const server = serveHttp({ port: 0 }, async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/wait') {
+        waitHandlerEntered?.();
+        try {
+          await req.text();
+        } catch {}
+        return new Response('cancelled');
+      }
+      return new Response('ok');
+    });
+    const port = server.port;
+    const sock = await Socket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port
+    });
+    const [reader, writer] = sock.split();
+    const responses = new Map<number, CapturedH2Response>();
+    const client = await openClientSession(writer, {
+      onBeginHeaders() {},
+      onHeader(streamId: number, name: string, value: string) {
+        const response = responses.get(streamId);
+        if (response && name === ':status') response.status = Number(value);
+      },
+      onFrameRecv() {},
+      onDataChunk(streamId: number, data: Uint8Array) {
+        const response = responses.get(streamId);
+        if (response) response.body += _dec.decode(data);
+      },
+      onStreamClose(streamId: number, errorCode: number) {
+        const response = responses.get(streamId);
+        if (response) {
+          response.closed = true;
+          response.errorCode = errorCode;
+        }
+      }
+    });
+    const waitId = submitClientRequest(client, port, '/wait', {
+      method: 'POST',
+      hasBody: true
+    });
+    responses.set(waitId, makeCapturedResponse());
+    const okId = submitClientRequest(client, port, '/ok');
+    responses.set(okId, makeCapturedResponse());
+    await flushH2Client(client, writer);
+    try {
+      await timeout(entered, 'pending stream handler did not start');
+      client.submitRstStream(waitId, 0);
+      await flushH2Client(client, writer);
+      await timeout(readUntil(reader, client, writer, () => responses.get(okId)!.closed), 'concurrent H2 stream did not complete after reset');
+      t.equal(responses.get(okId)!.status, 200, 'concurrent stream status is 200');
+      t.equal(responses.get(okId)!.body, 'ok', 'concurrent stream body completed');
+      t.equal(responses.get(okId)!.errorCode, 0, 'concurrent stream closed normally');
+    } finally {
+      client.close();
+      try {
+        await writer.close();
+      } catch {}
+      try {
+        await reader.close();
+      } catch {}
+      await server.close();
+    }
+  });
+  it('accepts HTTP/1.1 after a burst of fresh TLS H2 connections', { skip: skipTlsH2 }, async (t) => {
+    const server = serveHttp({
+      port: 0,
+      tls: {
+        cert: CERT_PATH,
+        key: KEY_PATH
+      }
+    }, async (req) => new Response(new URL(req.url).pathname));
+    try {
+      const count = 24;
+      const batches = await Promise.all(Array.from({ length: count }, () => {
+        return timeout(rawTlsH2ExchangeReadFrames(server.port, H2_GET_ROOT_LOCALHOST, 4), 'fresh TLS H2 client did not receive bounded response frames', 5e3);
+      }));
+      t.equal(batches.length, count, 'all fresh TLS H2 clients completed');
+      for (const frames of batches) {
+        t.ok(findFrame(frames, 1, 1) !== null, 'fresh TLS H2 client received response HEADERS');
+      }
+      const response = await fetch(`https://127.0.0.1:${server.port}/after-h2-burst`, {
+        signal: AbortSignal.timeout(5e3),
+        tls: { rejectUnauthorized: false },
+        protocol: 'http/1.1'
+      } as any);
+      t.equal(response.status, 200, 'HTTP/1.1 request after H2 burst succeeds');
+      t.equal(await response.text(), '/after-h2-burst', 'HTTP/1.1 response body after H2 burst is intact');
+    } finally {
+      await server.close();
+    }
+  });
+});
 describe('H2 server — robustness', () => {
   it('accepts a DATA frame exactly at the default 16 KiB max frame size', async (t) => {
     if (!h2Available) return;
