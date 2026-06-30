@@ -210,6 +210,7 @@ export class TlsReader extends BufferedBytesReader {
   * @internal
   */
   #fd: number;
+  #needsReadable = false;
   /**
   * Private property `#readBuf` used by `TlsReader`.
   *
@@ -285,8 +286,14 @@ export class TlsReader extends BufferedBytesReader {
   protected async doPull(): Promise<Uint8Array | null> {
     while (true) {
       if (this.closed) return null;
+      if (this.#needsReadable && openssl.sslPending(this.#ssl) <= 0) {
+        await loop.readable(this.#fd);
+        if (this.closed) return null;
+      }
+      this.#needsReadable = false;
       const n = openssl.sslRead(this.#ssl, this.#readBuf, 65536);
       if (n > 0) {
+        this.#needsReadable = openssl.sslPending(this.#ssl) <= 0;
         const out = new Uint8Array(n);
         out.set(new Uint8Array(this.#readBuf, 0, n));
         return out;
@@ -295,8 +302,7 @@ export class TlsReader extends BufferedBytesReader {
       const err = openssl.sslGetError(this.#ssl, n);
       if (err === openssl.SSL_ERROR_ZERO_RETURN) return null;
       if (err === openssl.SSL_ERROR_WANT_READ) {
-        await loop.readable(this.#fd);
-        if (this.closed) return null;
+        this.#needsReadable = true;
         continue;
       }
       if (err === openssl.SSL_ERROR_WANT_WRITE) {
