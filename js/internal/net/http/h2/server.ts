@@ -1044,6 +1044,16 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
     onStreamClose(streamId: number, _errorCode: number): void {
       const s = streams.get(streamId);
       if (s) {
+        if (_errorCode === 0) {
+          s.bodyDone = true;
+          s.body.close();
+          if (s.triggerDispatch !== null) {
+            s.triggerDispatch();
+            s.triggerDispatch = null;
+          }
+          streams.delete(streamId);
+          return;
+        }
         // Always mark cancelled so dispatchStream returns early even if it
         // has not yet awaited triggerDispatch (bodyDone was true at dispatch
         // time - e.g. RST_STREAM arriving before the async handler runs).
