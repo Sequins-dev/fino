@@ -411,7 +411,7 @@ export class H2PoolEntry {
     });
     await this.drainWrite();
     if (bodyBytes) {
-      this.#session.setStreamData(streamId, bodyBytes);
+      this.#session.setStreamData(streamId, bodyBytes, { endStream: !hasTrailers });
       await this.drainWrite();
     }
     if (hasTrailers) {
@@ -438,7 +438,7 @@ export class H2PoolEntry {
         this.#session.setStreamData(streamId, null);
         await this.drainWrite();
       }
-    } else if (hasBody) {
+    } else if (hasBody && bodyBytes === null) {
       this.#session.setStreamData(streamId, null);
       await this.drainWrite();
     }

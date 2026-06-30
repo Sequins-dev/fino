@@ -749,7 +749,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       session.submitResponse(streamId, responseHeaders, hasBody);
       await drainWrite();
       if (bodyBytes) {
-        session.setStreamData(streamId, bodyBytes);
+        session.setStreamData(streamId, bodyBytes, { endStream: !hasTrailers });
         await drainWrite();
       } else if (hasStreamingBody) {
         for await (const chunk of (responseBody as any) as AsyncIterable<Uint8Array>) {
@@ -783,7 +783,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
           session.setStreamData(streamId, null);
           await drainWrite();
         }
-      } else if (hasBody) {
+      } else if (hasBody && bodyBytes === null) {
         session.setStreamData(streamId, null);
         await drainWrite();
       }

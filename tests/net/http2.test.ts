@@ -11,6 +11,7 @@ import { serveHttp } from 'fino:net/http/server';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import { _parseH2ContentLength, _parseH2StatusHeader } from '../../js/internal/net/http/h2/server.ts';
+import { NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_FRAME_TYPE_HEADERS } from '../../js/internal/net/http/h2/bindings.ts';
 if (!h2Available && (globalThis as any).process?.env?.FINO_REQUIRE_H2 === '1') {
   throw new Error('FINO_REQUIRE_H2=1 but libnghttp2 is not available');
 }
@@ -770,13 +771,17 @@ interface CapturedH2Response {
   body: string;
   closed: boolean;
   errorCode: number | null;
+  dataFrames: number;
+  headerFrames: number;
 }
 function makeCapturedResponse(): CapturedH2Response {
   return {
     status: 0,
     body: '',
     closed: false,
-    errorCode: null
+    errorCode: null,
+    dataFrames: 0,
+    headerFrames: 0
   };
 }
 async function readUntil(reader: any, client: any, writer: any, done: () => boolean): Promise<void> {
@@ -917,6 +922,73 @@ describe('H2 server — multiplexing and connection reuse', () => {
       t.equal(responses.get(okId)!.status, 200, 'concurrent stream status is 200');
       t.equal(responses.get(okId)!.body, 'ok', 'concurrent stream body completed');
       t.equal(responses.get(okId)!.errorCode, 0, 'concurrent stream closed normally');
+    } finally {
+      client.close();
+      try {
+        await writer.close();
+      } catch {}
+      try {
+        await reader.close();
+      } catch {}
+      await server.close();
+    }
+  });
+  it('sends one DATA frame for each fixed tiny response in sustained stream churn', async (t) => {
+    if (!h2Available) return;
+    const total = 128;
+    const batchSize = 32;
+    const server = serveHttp({ port: 0 }, async () => new Response('x'));
+    const port = server.port;
+    const sock = await Socket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port
+    });
+    const [reader, writer] = sock.split();
+    const responses = new Map<number, CapturedH2Response>();
+    const streamIds: number[] = [];
+    const client = await openClientSession(writer, {
+      onBeginHeaders() {},
+      onHeader(streamId: number, name: string, value: string) {
+        const response = responses.get(streamId);
+        if (response && name === ':status') response.status = Number(value);
+      },
+      onFrameRecv(streamId: number, frameType: number) {
+        const response = responses.get(streamId);
+        if (!response) return;
+        if (frameType === NGHTTP2_FRAME_TYPE_HEADERS) response.headerFrames++;
+        if (frameType === NGHTTP2_FRAME_TYPE_DATA) response.dataFrames++;
+      },
+      onDataChunk(streamId: number, data: Uint8Array) {
+        const response = responses.get(streamId);
+        if (response) response.body += _dec.decode(data);
+      },
+      onStreamClose(streamId: number, errorCode: number) {
+        const response = responses.get(streamId);
+        if (response) {
+          response.closed = true;
+          response.errorCode = errorCode;
+        }
+      }
+    });
+    try {
+      for (let start = 0; start < total; start += batchSize) {
+        const batchIds: number[] = [];
+        for (let i = start; i < start + batchSize; i++) {
+          const streamId = submitClientRequest(client, port, `/tiny/${i}`);
+          responses.set(streamId, makeCapturedResponse());
+          streamIds.push(streamId);
+          batchIds.push(streamId);
+        }
+        await flushH2Client(client, writer);
+        await timeout(readUntil(reader, client, writer, () => batchIds.every((streamId) => responses.get(streamId)!.closed)), 'tiny H2 response batch did not complete', 2e3);
+      }
+      const allResponses = streamIds.map((streamId) => responses.get(streamId)!);
+      t.ok(allResponses.every((response) => response.status === 200), 'all tiny response statuses are 200');
+      t.ok(allResponses.every((response) => response.body === 'x'), 'all tiny response bodies are intact');
+      t.ok(allResponses.every((response) => response.errorCode === 0), 'all tiny response streams close normally');
+      t.equal(allResponses.reduce((n, response) => n + response.headerFrames, 0), total, 'each tiny response has one HEADERS frame');
+      t.equal(allResponses.reduce((n, response) => n + response.dataFrames, 0), total, 'each tiny fixed response uses one DATA frame with END_STREAM');
     } finally {
       client.close();
       try {

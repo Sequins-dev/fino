@@ -244,9 +244,7 @@ export class H2ClientDriver implements ClientDriver {
     await drainWrite();
     // Feed request body if any.
     if (hasBody && bodyBytes) {
-      session.setStreamData(streamId, bodyBytes);
-      await drainWrite();
-      session.setStreamData(streamId, null);
+      session.setStreamData(streamId, bodyBytes, { endStream: true });
       await drainWrite();
     }
     async function receiveResponse(): Promise<void> {

@@ -978,8 +978,9 @@ export class Nghttp2Session {
   /**
   * Feed the next body chunk for `streamId`.
   * Pass `null` to signal EOF; the data provider will set the EOF flag on next call.
-  * Use `{ noEndStream: true }` when trailer HEADERS will be submitted after
-  * the data provider reports EOF.
+  * Use `{ endStream: true }` when `bytes` is the final body chunk. Use
+  * `{ noEndStream: true }` when trailer HEADERS will be submitted after the
+  * data provider reports EOF.
   *
   * The bytes are held by the session until the data provider consumes them.
   * Passing another chunk before the previous one is fully consumed replaces the
@@ -992,6 +993,7 @@ export class Nghttp2Session {
   * ```
   */
   setStreamData(streamId: number, bytes: Uint8Array | null, options?: {
+    endStream?: boolean;
     noEndStream?: boolean;
   }): void {
     let slot = this.#streamDataSlots.get(streamId);
@@ -1003,9 +1005,9 @@ export class Nghttp2Session {
       slot.eof = true;
     } else {
       slot.bytes = bytes;
-      slot.eof = false;
+      slot.eof = options?.endStream === true;
     }
-    slot.noEndStream = bytes === null && options?.noEndStream === true;
+    slot.noEndStream = slot.eof === true && options?.noEndStream === true;
     this.resumeData(streamId);
   }
   // ---------------------------------------------------------------------------
