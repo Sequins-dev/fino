@@ -269,6 +269,7 @@ export const NGHTTP3_H3_MESSAGE_ERROR = 270n;
 // ---------------------------------------------------------------------------
 const _enc = new _TextEncoder();
 const _dec = new _TextDecoder();
+let _rcbufScratch = new Uint8Array(256);
 const _encodedHeaderNames = new Map<string, Uint8Array>();
 function encodedHeaderName(name: string): Uint8Array {
   const lower = name.toLowerCase();
@@ -297,7 +298,14 @@ export function readRcbuf(rcbufPtr: ArrayBuffer): string {
   if (!basePtr) return '';
   const len = Number(Pointer.readU64(rcbufPtr, 16) as bigint);
   if (len === 0) return '';
-  return _dec.decode(Pointer.copyFrom(basePtr, len) as Uint8Array);
+  if (len > _rcbufScratch.byteLength) {
+    let nextSize = _rcbufScratch.byteLength;
+    while (nextSize < len) nextSize *= 2;
+    _rcbufScratch = new Uint8Array(nextSize);
+  }
+  const out = _rcbufScratch.subarray(0, len);
+  Pointer.copyFromInto(out, basePtr, len);
+  return _dec.decode(out);
 }
 export function buildNvArray(headers: Array<[string, string]>): {
   buf: Uint8Array;

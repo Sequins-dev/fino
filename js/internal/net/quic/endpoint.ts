@@ -17,7 +17,8 @@ import { BytesReader, BytesWriter } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
 import { topic } from '../../../context/topic.ts';
 import { lib as fileLib, cstr as fileCstr, O_APPEND, O_CREAT, O_TRUNC, O_WRONLY } from '../../file/bindings.ts';
-import { AF_INET, AF_INET6, EAGAIN, IPPROTO_IP, IPPROTO_IPV6, IPPROTO_UDP, IPV6_UNICAST_HOPS, IPV6_RECVTCLASS, IPV6_V6ONLY, IP_RECVTOS, IP_TTL, SOL_SOCKET, SO_RCVBUF, SO_REUSEPORT, SO_SNDBUF, SOCK_DGRAM, bind as socketBind, close as socketClose, decodeAddr, encodeAddr, getsockname, recvmsgEcn, recvmmsgBatch, recvfrom, sendmmsgBatch, sendmsgEcn, sendto, setNonblocking, setsockopt, socket } from '../../../net/socket.ts';
+import { AF_INET, AF_INET6, EAGAIN, IPPROTO_IP, IPPROTO_IPV6, IPPROTO_UDP, IPV6_UNICAST_HOPS, IPV6_RECVTCLASS, IPV6_V6ONLY, IP_RECVTOS, IP_TTL, SOL_SOCKET, SO_RCVBUF, SO_REUSEPORT, SO_SNDBUF, SOCK_DGRAM, bind as socketBind, close as socketClose, createDatagramRecvBatch, decodeAddr, encodeAddr, getsockname, recvmsgEcn, recvfrom, sendmmsgBatch, sendmsgEcn, sendto, setNonblocking, setsockopt, socket } from '../../../net/socket.ts';
+import type { DatagramRecvBatch } from '../../../net/socket.ts';
 import { randBytes } from '../../openssl.ts';
 import { CB_ACKED_STREAM_DATA_OFFSET, CB_ACK_DATAGRAM, CB_CLIENT_INITIAL, CB_DELETE_CRYPTO_AEAD_CTX, CB_DELETE_CRYPTO_CIPHER_CTX, CB_DECRYPT, CB_ENCRYPT, CB_EXTEND_MAX_LOCAL_STREAMS_BIDI, CB_EXTEND_MAX_LOCAL_STREAMS_UNI, CB_EXTEND_MAX_STREAM_DATA, CB_GET_NEW_CONNECTION_ID, CB_GET_NEW_CONNECTION_ID2, CB_GET_PATH_CHALLENGE_DATA, CB_GET_PATH_CHALLENGE_DATA2, CB_HANDSHAKE_COMPLETED, CB_HANDSHAKE_CONFIRMED, CB_HP_MASK, CB_BEGIN_PATH_VALIDATION, CB_DCID_STATUS, CB_DCID_STATUS2, CB_EARLY_DATA_REJECTED, CB_LOST_DATAGRAM, CB_PATH_VALIDATION, CB_RAND, CB_REMOVE_CONNECTION_ID, CB_RECV_DATAGRAM, CB_RECV_CLIENT_INITIAL, CB_RECV_CRYPTO_DATA, CB_RECV_NEW_TOKEN, CB_RECV_RETRY, CB_RECV_RX_KEY, CB_RECV_STATELESS_RESET, CB_RECV_STATELESS_RESET2, CB_RECV_STREAM_DATA, CB_RECV_TX_KEY, CB_RECV_VERSION_NEGOTIATION, CB_STREAM_CLOSE, CB_STREAM_OPEN, CB_STREAM_RESET, CB_STREAM_STOP_SENDING, CB_SELECT_PREFERRED_ADDR, CB_UPDATE_KEY, CB_VERSION_NEGOTIATION, CONN_INFO_BYTES_IN_FLIGHT, CONN_INFO_BYTES_LOST, CONN_INFO_BYTES_RECV, CONN_INFO_BYTES_SENT, CONN_INFO_CWND, CONN_INFO_LATEST_RTT, CONN_INFO_MIN_RTT, CONN_INFO_PING_RECV, CONN_INFO_PKT_DISCARDED, CONN_INFO_PKT_LOST, CONN_INFO_PKT_RECV, CONN_INFO_PKT_SENT, CONN_INFO_RTTVAR, CONN_INFO_SMOOTHED_RTT, CONN_INFO_SSTHRESH, ADDR_ADDR, ADDR_ADDRLEN, CCERR_TYPE, CCERR_ERROR_CODE, CCERR_REASON, CCERR_REASONLEN, CID_DATA, CID_DATALEN, NGTCP2_CALLBACKS_SIZE, NGTCP2_CALLBACKS_VERSION, NGTCP2_CCERR_SIZE, NGTCP2_CONN_INFO_SIZE, NGTCP2_CONN_INFO_VERSION, NGTCP2_CONNECTION_ID_STATUS_TYPE_ACTIVATE, NGTCP2_CONNECTION_ID_STATUS_TYPE_DEACTIVATE, NGTCP2_CID_SIZE, NGTCP2_CRYPTO_ERROR, NGTCP2_ERR_CLOSING, NGTCP2_ERR_CALLBACK_FAILURE, NGTCP2_ERR_CRYPTO, NGTCP2_ERR_DRAINING, NGTCP2_ERR_DROP_CONN, NGTCP2_ERR_IDLE_CLOSE, NGTCP2_ERR_NOBUF, NGTCP2_ERR_PKT_NUM_EXHAUSTED, NGTCP2_ERR_RECV_VERSION_NEGOTIATION, NGTCP2_ERR_RETRY, NGTCP2_ERR_STREAM_ID_BLOCKED, NGTCP2_ERR_STREAM_DATA_BLOCKED, NGTCP2_ERR_STREAM_SHUT_WR, NGTCP2_ERR_STREAM_NOT_FOUND, NGTCP2_ERR_VERSION_NEGOTIATION, NGTCP2_ERR_WRITE_MORE, NGTCP2_DEFAULT_MAX_RECV_UDP_PAYLOAD_SIZE, NGTCP2_MAX_CIDLEN, NGTCP2_MAX_UDP_PAYLOAD_SIZE, NGTCP2_ERR_INVALID_STATE, NGTCP2_WRITE_STREAM_FLAG_MORE, NGTCP2_PATH_SIZE, PATH_LOCAL, PATH_REMOTE, PATH_USER_DATA, SETTINGS_AVAILABLE_VERSIONS, SETTINGS_AVAILABLE_VERSIONSLEN, SETTINGS_ACK_THRESH, SETTINGS_CC_ALGO, SETTINGS_HANDSHAKE_TIMEOUT, SETTINGS_INITIAL_TS, SETTINGS_INITIAL_RTT, SETTINGS_MAX_TX_UDP_PAYLOAD_SIZE, SETTINGS_MAX_STREAM_WINDOW, SETTINGS_MAX_WINDOW, SETTINGS_NO_TX_UDP_PAYLOAD_SIZE_SHAPING, SETTINGS_NO_PMTUD, SETTINGS_ORIGINAL_VERSION, SETTINGS_PREFERRED_VERSIONS, SETTINGS_PREFERRED_VERSIONSLEN, SETTINGS_QLOG_WRITE, SETTINGS_TOKEN, SETTINGS_TOKENLEN, SETTINGS_TOKEN_TYPE } from './ngtcp2/bindings.ts';
 import { NGTCP2_PKT_HD_SIZE, NGTCP2_PKT_INFO_VERSION, NGTCP2_PKT_INFO_SIZE, NGTCP2_ECN_NOT_ECT, NGTCP2_ECN_ECT_0, NGTCP2_ECN_MASK, PKT_INFO_ECN, NGTCP2_PROTO_VER_V2, NGTCP2_PROTO_VER_V1, NGTCP2_SETTINGS_SIZE, NGTCP2_SETTINGS_VERSION, NGTCP2_TRANSPORT_PARAMS_SIZE, NGTCP2_TRANSPORT_PARAMS_VERSION, NGTCP2_VERSION_CID_SIZE, NGTCP2_VEC_SIZE, NGTCP2_DATAGRAM_FLAG_0RTT, NGTCP2_WRITE_DATAGRAM_FLAG_NONE, NGTCP2_WRITE_STREAM_FLAG_FIN, TP_ACTIVE_CONNECTION_ID_LIMIT, TP_ACK_DELAY_EXPONENT, TP_DISABLE_ACTIVE_MIGRATION, TP_INITIAL_MAX_DATA, TP_INITIAL_MAX_STREAMS_BIDI, TP_INITIAL_MAX_STREAMS_UNI, TP_INITIAL_MAX_STREAM_DATA_BIDI_LOCAL, TP_INITIAL_MAX_STREAM_DATA_BIDI_REMOTE, TP_INITIAL_MAX_STREAM_DATA_UNI, TP_INITIAL_SCID, TP_INITIAL_SCID_PRESENT, TP_MAX_IDLE_TIMEOUT, TP_MAX_ACK_DELAY, TP_MAX_DATAGRAM_FRAME_SIZE, TP_MAX_UDP_PAYLOAD_SIZE, TP_ORIGINAL_DCID, TP_ORIGINAL_DCID_PRESENT, TP_RETRY_SCID, TP_RETRY_SCID_PRESENT, TP_PREFERRED_ADDR, TP_PREFERRED_ADDR_CID, TP_PREFERRED_ADDR_IPV4, TP_PREFERRED_ADDR_IPV4_PRESENT, TP_PREFERRED_ADDR_IPV6, TP_PREFERRED_ADDR_IPV6_PRESENT, TP_PREFERRED_ADDR_PRESENT, TP_PREFERRED_ADDR_STATELESS_RESET_TOKEN, TP_STATELESS_RESET_TOKEN, TP_STATELESS_RESET_TOKEN_PRESENT, VEC_BASE, VEC_LEN, PKT_HD_DCID, PKT_HD_SCID, PKT_HD_TOKEN, PKT_HD_TOKENLEN, PKT_HD_VERSION, VERSION_CID_DCID, VERSION_CID_DCIDLEN, VERSION_CID_SCID, VERSION_CID_SCIDLEN, VERSION_CID_VERSION, NGTCP2_TOKEN_TYPE_RETRY, NGTCP2_TOKEN_TYPE_NEW_TOKEN, NGTCP2_TOKEN_TYPE_UNKNOWN, NGTCP2_PATH_VALIDATION_FLAG_NEW_TOKEN, NGTCP2_PATH_VALIDATION_FLAG_PREFERRED_ADDR, NGTCP2_PATH_VALIDATION_RESULT_ABORTED, NGTCP2_PATH_VALIDATION_RESULT_FAILURE, NGTCP2_PATH_VALIDATION_RESULT_SUCCESS, FfiCallback, Pointer, ngtcp2Available, ngtcp2ConnResetStreamAt, ngtcp2ResetStreamAtAvailable, ngtcp2PktWriteStatelessReset, ptr as ngtcp2Ptr, readCStr, requireNgtcp2, sym as ngtcp2Sym } from './ngtcp2/bindings.ts';
@@ -836,6 +837,9 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
   #fd: number;
   #ecn: boolean;
   #closed = false;
+  #recvBatch: DatagramRecvBatch | null = null;
+  #recvBatchPackets = 0;
+  #recvBatchBytes = 0;
   constructor(fd: number, address: QuicAddress, ecn = false) {
     this.#fd = fd;
     this.#ecn = ecn;
@@ -871,24 +875,35 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
     addr: QuicAddress;
     ecn?: number;
   }> {
-    const received = recvmmsgBatch(this.#fd, maxPackets, maxBytes);
+    if (this.#recvBatch === null || this.#recvBatchPackets !== maxPackets || this.#recvBatchBytes !== maxBytes) {
+      this.#recvBatch = createDatagramRecvBatch(maxPackets, maxBytes);
+      this.#recvBatchPackets = maxPackets;
+      this.#recvBatchBytes = maxBytes;
+    }
+    const received = this.#recvBatch?.recv(this.#fd) ?? null;
     if (received !== null) {
       if (typeof received === 'number') {
         if (received === EAGAIN) return [];
         throw new Error(`QUIC UDP recvmmsg failed: ${received}`);
       }
-      return received.flatMap((packet) => {
+      const packets: Array<{
+        data: Uint8Array;
+        addr: QuicAddress;
+        ecn?: number;
+      }> = [];
+      for (const packet of received) {
         const addr = packet.addr;
-        if (addr.family !== 'ipv4' && addr.family !== 'ipv6') return [];
-        return [packet.ecn === undefined ? {
+        if (addr.family !== 'ipv4' && addr.family !== 'ipv6') continue;
+        packets.push(packet.ecn === undefined ? {
           data: packet.data,
           addr
         } : {
           data: packet.data,
           addr,
           ecn: packet.ecn
-        }];
-      });
+        });
+      }
+      return packets;
     }
     const packets: Array<{
       data: Uint8Array;
@@ -3842,7 +3857,7 @@ export class QuicListener {
   async #runTransportLoop(transport: QuicDatagramTransport): Promise<void> {
     while (!this.#closed && !transport.closed) {
       try {
-        const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, 65536);
+        const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
         if (batch !== undefined) {
           for (const received of batch) {
             this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
@@ -3854,7 +3869,7 @@ export class QuicListener {
         } else {
           let packets = 0;
           for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
-            const received = transport.recvNow(65536);
+            const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
             if (received === null) break;
             this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
           }
@@ -3949,6 +3964,8 @@ export class QuicConnection extends EventTarget {
   #pendingDatagrams: PendingDatagram[] = [];
   #writeVecBuf = new ArrayBuffer(NGTCP2_VEC_SIZE);
   #writeDataLenBuf = new ArrayBuffer(8);
+  #writePacketScratch: Uint8Array[] = [];
+  #writePacketScratchSize = 0;
   #localStreamCreditWaiters = {
     bidirectional: [] as QueueResolver<void>[],
     unidirectional: [] as QueueResolver<void>[]
@@ -4001,6 +4018,11 @@ export class QuicConnection extends EventTarget {
   #earlyDataReady = false;
   #earlyDataAttempted = false;
   #earlyDataAccepted = false;
+  #earlyDataDecision: {
+    accepted: boolean;
+    reason: string;
+  } | null = null;
+  #earlyDataDecisionDispatched = false;
   #earlyDataMaxBytes = 0;
   #earlyDataQueuedBytes = 0;
   #writeDrainScheduled = false;
@@ -4105,6 +4127,18 @@ export class QuicConnection extends EventTarget {
   #ptrOf(source: ArrayBuffer | ArrayBufferView, slot: number): Uint8Array {
     Pointer.of(source, this.#ptrArena, slot * _PTR_SIZE);
     return this.#ptrSlots[slot]!;
+  }
+  #writePacketBuffer(index: number, size: number): Uint8Array {
+    if (this.#writePacketScratchSize !== size) {
+      this.#writePacketScratch = [];
+      this.#writePacketScratchSize = size;
+    }
+    let out = this.#writePacketScratch[index];
+    if (out === undefined) {
+      out = new Uint8Array(size);
+      this.#writePacketScratch[index] = out;
+    }
+    return out;
   }
   #dispatch(event: Event): void {
     deferAfterNativeCallback(() => this.dispatchEvent(event));
@@ -4751,10 +4785,43 @@ export class QuicConnection extends EventTarget {
     this.#scheduleHandshakeTimeout();
     this.#scheduleWriteDrain();
   }
+  addEventListener(type: string, callback: any, options?: any): void {
+    super.addEventListener(type, callback, options);
+    if (String(type) !== 'earlydata' || callback === null) return;
+    if (typeof callback !== 'function' && typeof callback?.handleEvent !== 'function') return;
+    if (options != null && typeof options === 'object' && options.signal?.aborted) return;
+    const decision = this.#earlyDataDecision;
+    if (!this.#earlyDataDecisionDispatched || decision === null) return;
+    const once = options != null && typeof options === 'object' ? Boolean(options.once) : false;
+    const capture = typeof options === 'boolean' ? options : Boolean(options?.capture);
+    const signal = options != null && typeof options === 'object' ? options.signal : undefined;
+    this.#runtime.defer(() => {
+      if (this.#closed || signal?.aborted) return;
+      const event = new QuicEarlyDataEvent('earlydata', {
+        accepted: decision.accepted,
+        rejected: !decision.accepted,
+        reason: decision.reason
+      });
+      try {
+        if (typeof callback === 'function') {
+          callback.call(this, event);
+        } else {
+          callback.handleEvent(event);
+        }
+      } catch (_) {}
+      if (once) this.removeEventListener('earlydata', callback, { capture });
+    });
+  }
   _scheduleEarlyDataEvent(accepted: boolean, reason: string): void {
+    this.#earlyDataDecision = {
+      accepted,
+      reason
+    };
+    this.#earlyDataDecisionDispatched = false;
     this.#runtime.defer(() => {
       this.#runtime.setTimer(0, () => {
         if (this.#closed) return;
+        this.#earlyDataDecisionDispatched = true;
         this.dispatchEvent(new QuicEarlyDataEvent('earlydata', {
           accepted,
           rejected: !accepted,
@@ -5356,7 +5423,7 @@ export class QuicConnection extends EventTarget {
   async #runSocketLoop(transport: QuicDatagramTransport, localAddress: QuicAddress): Promise<void> {
     while (!this.#closed && this.#clientTransports.has(transport.id)) {
       try {
-        const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, 65536);
+        const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
         if (batch !== undefined) {
           for (const received of batch) {
             this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn);
@@ -5368,7 +5435,7 @@ export class QuicConnection extends EventTarget {
         } else {
           let packets = 0;
           for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
-            const received = transport.recvNow(65536);
+            const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
             if (received === null) break;
             this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn);
           }
@@ -5508,7 +5575,7 @@ export class QuicConnection extends EventTarget {
       const outPath = makeOutputPath(this.#activeLocalAddress, remoteAddress, this.#fd);
       for (; packets < packetBudget; packets++) {
         let n = 0;
-        const out = new Uint8Array(writeBufferSize);
+        const out = this.#writePacketBuffer(packets, writeBufferSize);
         const pktInfo = this.#options.transport.ecn ? makePacketInfo() : null;
         const pktInfoPtr = pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO);
         const outPathPtr = this.#ptrOf(outPath.path, _QUIC_PTR_PATH);

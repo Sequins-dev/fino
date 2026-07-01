@@ -105,6 +105,15 @@ function hasInvalidRequestControlData(st: H3ServerStream): boolean {
   if (st.protocol && st.method !== 'CONNECT') return true;
   return false;
 }
+function trustedHeaders(headers: Array<[string, string]>, authority: string): Headers {
+  const out = new Headers();
+  for (const [name, value] of headers) {
+    if (authority && name === 'host') continue;
+    out._appendTrusted(name, value);
+  }
+  if (authority) out._appendTrusted('host', authority);
+  return out;
+}
 export class H3ServerDriver {
   async run(conn: QuicConnection, handler: H3Handler, options: H3ServerDriverOptions = {}): Promise<void> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
@@ -266,8 +275,7 @@ export class H3ServerDriver {
         }
         if (options.onWebTransport !== undefined) {
           const url = `${st.scheme || 'https'}://${st.authority || 'localhost'}${st.path || '/'}`;
-          const reqHeaders = new Headers(st.headers);
-          if (st.authority) reqHeaders.set('host', st.authority);
+          const reqHeaders = trustedHeaders(st.headers, st.authority);
           const request = new Request(url, {
             method: 'GET',
             headers: reqHeaders
@@ -317,8 +325,7 @@ export class H3ServerDriver {
         return;
       }
       const url = `${st.scheme || 'https'}://${st.authority || 'localhost'}${st.path}`;
-      const reqHeaders = new Headers(st.headers);
-      if (st.authority) reqHeaders.set('host', st.authority);
+      const reqHeaders = trustedHeaders(st.headers, st.authority);
       let req: Request;
       try {
         const body = st.method === 'GET' || st.method === 'HEAD' ? null : st.body;
@@ -326,6 +333,7 @@ export class H3ServerDriver {
           version: 'HTTP/3',
           method: st.method,
           url,
+          path: st.path,
           headers: reqHeaders,
           body: body as any
         });

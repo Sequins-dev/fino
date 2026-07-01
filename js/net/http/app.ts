@@ -532,6 +532,13 @@ async function compose(ctx: HttpContext, stack: StackItem[], handler: Handler): 
   return res;
 }
 function pathFromRequest(req: Request): string {
+  const trusted = (req as {
+    _trustedPath?: () => string | null;
+  })._trustedPath?.();
+  if (trusted !== undefined && trusted !== null) {
+    const query = trusted.indexOf('?');
+    return query < 0 ? trusted : trusted.slice(0, query);
+  }
   try {
     return new URL(req.url).pathname;
   } catch {

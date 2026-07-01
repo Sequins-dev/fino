@@ -1231,6 +1231,32 @@ export type SendmsgBatchPacket = {
   ecn?: number;
 };
 /**
+* Datagram packet returned by a reusable batch receive helper.
+*
+* `data` is a view over helper-owned storage and remains valid only until the
+* next receive call on the same helper.
+*
+* @internal
+*/
+export type RecvmsgBatchPacket = {
+  /** Received datagram bytes. */
+  data: Uint8Array;
+  /** Peer address reported by the platform socket API. */
+  addr: Address | UnknownAddress;
+  /** Optional ECN bits when ancillary data was present. */
+  ecn?: number;
+};
+/**
+* Reusable datagram receive batch for hot UDP loops.
+*
+* Packet byte views are valid until the next `recv()` call on this batch.
+*
+* @internal
+*/
+export interface DatagramRecvBatch {
+  recv(fd: number, flags?: number): RecvmsgBatchPacket[] | number;
+}
+/**
 * Send a batch of UDP datagrams with the platform batch-send primitive.
 *
 * Linux uses `sendmmsg(2)`. macOS uses Darwin `sendmsg_x`. Returns `null` on
@@ -1462,116 +1488,144 @@ export function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number =
   addr: Address | UnknownAddress;
   ecn?: number;
 }> | number | null {
-  if (isDarwin) return recvmsgXBatch(fd, maxPackets, maxBytes, flags);
-  if (!isLinux) return null;
-  if (maxPackets <= 0) return [];
-  const fn = (lib.symbols as any).recvmmsg;
-  if (typeof fn !== 'function') return null;
-  const msgvec = new ArrayBuffer(MMSGHDR_SIZE * maxPackets);
-  const msg = new DataView(msgvec);
-  const dataBufs: ArrayBuffer[] = [];
-  const addrBufs: ArrayBuffer[] = [];
-  const controlBufs: ArrayBuffer[] = [];
-  const iovBufs: ArrayBuffer[] = [];
-  const timeoutBuf = new ArrayBuffer(16);
-  for (let i = 0; i < maxPackets; i++) {
-    const dataBuf = new ArrayBuffer(maxBytes);
-    const addrBuf = new ArrayBuffer(128);
-    const controlBuf = new ArrayBuffer(CMSG_SPACE);
-    const iovBuf = new ArrayBuffer(IOVEC_SIZE);
-    const iov = new DataView(iovBuf);
-    const base = i * MMSGHDR_SIZE + MMSG_HDR;
-    dataBufs.push(dataBuf);
-    addrBufs.push(addrBuf);
-    controlBufs.push(controlBuf);
-    iovBufs.push(iovBuf);
-    writePtrValue(iov, IOVEC_BASE, dataBuf);
-    iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
-    writePtrValue(msg, base + MSG_NAME, addrBuf);
-    msg.setUint32(base + MSG_NAMELEN, addrBuf.byteLength, true);
-    writePtrValue(msg, base + MSG_IOV, iovBuf);
-    writeSize(msg, base + MSG_IOVLEN, 1);
-    writePtrValue(msg, base + MSG_CONTROL, controlBuf);
-    writeSize(msg, base + MSG_CONTROLLEN, controlBuf.byteLength);
-    msg.setInt32(base + MSG_FLAGS, 0, true);
-  }
-  const rc = Number(fn(fd, msgvec, maxPackets, flags, timeoutBuf));
-  if (rc < 0) return -getErrno();
-  const packets: Array<{
-    data: Uint8Array;
-    addr: Address | UnknownAddress;
-    ecn?: number;
-  }> = [];
-  for (let i = 0; i < rc; i++) {
-    const base = i * MMSGHDR_SIZE + MMSG_HDR;
-    const n = msg.getUint32(i * MMSGHDR_SIZE + MMSG_LEN, true);
-    const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
-    const controlLen = readSize(msg, base + MSG_CONTROLLEN);
-    const ecn = readCmsgEcn(controlBufs[i]!, controlLen);
-    packets.push({
-      data: new Uint8Array(dataBufs[i]!, 0, n),
-      addr: decodeAddr(addrBufs[i]!.slice(0, addrLen)),
-      ...ecn === undefined ? {} : { ecn }
-    });
-  }
-  return packets;
+  const batch = createDatagramRecvBatch(maxPackets, maxBytes);
+  return batch === null ? null : batch.recv(fd, flags);
 }
-function recvmsgXBatch(fd: number, maxPackets: number, maxBytes: number, flags: number): Array<{
-  data: Uint8Array;
-  addr: Address | UnknownAddress;
-  ecn?: number;
-}> | number | null {
-  if (maxPackets <= 0) return [];
-  const fn = (lib.symbols as any).recvmsg_x;
-  if (typeof fn !== 'function') return null;
-  const msgvec = new ArrayBuffer(MSGHDR_X_SIZE * maxPackets);
-  const msg = new DataView(msgvec);
-  const dataBufs: ArrayBuffer[] = [];
-  const addrBufs: ArrayBuffer[] = [];
-  const controlBufs: ArrayBuffer[] = [];
-  const iovBufs: ArrayBuffer[] = [];
-  for (let i = 0; i < maxPackets; i++) {
-    const dataBuf = new ArrayBuffer(maxBytes);
-    const addrBuf = new ArrayBuffer(128);
-    const controlBuf = new ArrayBuffer(CMSG_SPACE);
-    const iovBuf = new ArrayBuffer(IOVEC_SIZE);
-    const iov = new DataView(iovBuf);
-    const base = i * MSGHDR_X_SIZE;
-    dataBufs.push(dataBuf);
-    addrBufs.push(addrBuf);
-    controlBufs.push(controlBuf);
-    iovBufs.push(iovBuf);
-    writePtrValue(iov, IOVEC_BASE, dataBuf);
-    iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
-    writePtrValue(msg, base + MSG_NAME, addrBuf);
-    msg.setUint32(base + MSG_NAMELEN, addrBuf.byteLength, true);
-    writePtrValue(msg, base + MSG_IOV, iovBuf);
-    writeSize(msg, base + MSG_IOVLEN, 1);
-    writePtrValue(msg, base + MSG_CONTROL, controlBuf);
-    writeSize(msg, base + MSG_CONTROLLEN, controlBuf.byteLength);
-    msg.setInt32(base + MSG_FLAGS, 0, true);
-    msg.setBigUint64(base + MSGHDR_X_DATALEN, 0n, true);
+class LinuxDatagramRecvBatch implements DatagramRecvBatch {
+  #maxPackets: number;
+  #msgvec: ArrayBuffer;
+  #msg: DataView;
+  #dataBufs: ArrayBuffer[] = [];
+  #addrBufs: ArrayBuffer[] = [];
+  #controlBufs: ArrayBuffer[] = [];
+  #iovBufs: ArrayBuffer[] = [];
+  #timeoutBuf = new ArrayBuffer(16);
+  #timeout = new DataView(this.#timeoutBuf);
+  constructor(maxPackets: number, maxBytes: number) {
+    this.#maxPackets = maxPackets;
+    this.#msgvec = new ArrayBuffer(MMSGHDR_SIZE * maxPackets);
+    this.#msg = new DataView(this.#msgvec);
+    for (let i = 0; i < maxPackets; i++) {
+      const dataBuf = new ArrayBuffer(maxBytes);
+      const addrBuf = new ArrayBuffer(128);
+      const controlBuf = new ArrayBuffer(CMSG_SPACE);
+      const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+      const iov = new DataView(iovBuf);
+      const base = i * MMSGHDR_SIZE + MMSG_HDR;
+      this.#dataBufs.push(dataBuf);
+      this.#addrBufs.push(addrBuf);
+      this.#controlBufs.push(controlBuf);
+      this.#iovBufs.push(iovBuf);
+      writePtrValue(iov, IOVEC_BASE, dataBuf);
+      iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
+      writePtrValue(this.#msg, base + MSG_NAME, addrBuf);
+      writePtrValue(this.#msg, base + MSG_IOV, iovBuf);
+      writeSize(this.#msg, base + MSG_IOVLEN, 1);
+      writePtrValue(this.#msg, base + MSG_CONTROL, controlBuf);
+    }
   }
-  const rc = Number(fn(fd, msgvec, maxPackets, flags));
-  if (rc < 0) return -getErrno();
-  const packets: Array<{
-    data: Uint8Array;
-    addr: Address | UnknownAddress;
-    ecn?: number;
-  }> = [];
-  for (let i = 0; i < rc; i++) {
-    const base = i * MSGHDR_X_SIZE;
-    const n = Number(msg.getBigUint64(base + MSGHDR_X_DATALEN, true));
-    const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
-    const controlLen = readSize(msg, base + MSG_CONTROLLEN);
-    const ecn = readCmsgEcn(controlBufs[i]!, controlLen);
-    packets.push({
-      data: new Uint8Array(dataBufs[i]!, 0, n),
-      addr: decodeAddr(addrBufs[i]!.slice(0, addrLen)),
-      ...ecn === undefined ? {} : { ecn }
-    });
+  recv(fd: number, flags: number = 0): RecvmsgBatchPacket[] | number {
+    const fn = (lib.symbols as any).recvmmsg;
+    const msg = this.#msg;
+    for (let i = 0; i < this.#maxPackets; i++) {
+      const base = i * MMSGHDR_SIZE + MMSG_HDR;
+      msg.setUint32(base + MSG_NAMELEN, 128, true);
+      writeSize(msg, base + MSG_CONTROLLEN, CMSG_SPACE);
+      msg.setInt32(base + MSG_FLAGS, 0, true);
+    }
+    this.#timeout.setBigUint64(0, 0n, true);
+    this.#timeout.setBigUint64(8, 0n, true);
+    const rc = Number(fn(fd, this.#msgvec, this.#maxPackets, flags, this.#timeoutBuf));
+    if (rc < 0) return -getErrno();
+    const packets: RecvmsgBatchPacket[] = [];
+    for (let i = 0; i < rc; i++) {
+      const base = i * MMSGHDR_SIZE + MMSG_HDR;
+      const n = msg.getUint32(i * MMSGHDR_SIZE + MMSG_LEN, true);
+      const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
+      const controlLen = readSize(msg, base + MSG_CONTROLLEN);
+      const ecn = readCmsgEcn(this.#controlBufs[i]!, controlLen);
+      packets.push({
+        data: new Uint8Array(this.#dataBufs[i]!, 0, n),
+        addr: decodeAddr(this.#addrBufs[i]!.slice(0, addrLen)),
+        ...ecn === undefined ? {} : { ecn }
+      });
+    }
+    return packets;
   }
-  return packets;
+}
+class DarwinDatagramRecvBatch implements DatagramRecvBatch {
+  #maxPackets: number;
+  #msgvec: ArrayBuffer;
+  #msg: DataView;
+  #dataBufs: ArrayBuffer[] = [];
+  #addrBufs: ArrayBuffer[] = [];
+  #controlBufs: ArrayBuffer[] = [];
+  #iovBufs: ArrayBuffer[] = [];
+  constructor(maxPackets: number, maxBytes: number) {
+    this.#maxPackets = maxPackets;
+    this.#msgvec = new ArrayBuffer(MSGHDR_X_SIZE * maxPackets);
+    this.#msg = new DataView(this.#msgvec);
+    for (let i = 0; i < maxPackets; i++) {
+      const dataBuf = new ArrayBuffer(maxBytes);
+      const addrBuf = new ArrayBuffer(128);
+      const controlBuf = new ArrayBuffer(CMSG_SPACE);
+      const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+      const iov = new DataView(iovBuf);
+      const base = i * MSGHDR_X_SIZE;
+      this.#dataBufs.push(dataBuf);
+      this.#addrBufs.push(addrBuf);
+      this.#controlBufs.push(controlBuf);
+      this.#iovBufs.push(iovBuf);
+      writePtrValue(iov, IOVEC_BASE, dataBuf);
+      iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
+      writePtrValue(this.#msg, base + MSG_NAME, addrBuf);
+      writePtrValue(this.#msg, base + MSG_IOV, iovBuf);
+      writeSize(this.#msg, base + MSG_IOVLEN, 1);
+      writePtrValue(this.#msg, base + MSG_CONTROL, controlBuf);
+    }
+  }
+  recv(fd: number, flags: number = 0): RecvmsgBatchPacket[] | number {
+    const fn = (lib.symbols as any).recvmsg_x;
+    const msg = this.#msg;
+    for (let i = 0; i < this.#maxPackets; i++) {
+      const base = i * MSGHDR_X_SIZE;
+      msg.setUint32(base + MSG_NAMELEN, 128, true);
+      writeSize(msg, base + MSG_CONTROLLEN, CMSG_SPACE);
+      msg.setInt32(base + MSG_FLAGS, 0, true);
+      msg.setBigUint64(base + MSGHDR_X_DATALEN, 0n, true);
+    }
+    const rc = Number(fn(fd, this.#msgvec, this.#maxPackets, flags));
+    if (rc < 0) return -getErrno();
+    const packets: RecvmsgBatchPacket[] = [];
+    for (let i = 0; i < rc; i++) {
+      const base = i * MSGHDR_X_SIZE;
+      const n = Number(msg.getBigUint64(base + MSGHDR_X_DATALEN, true));
+      const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
+      const controlLen = readSize(msg, base + MSG_CONTROLLEN);
+      const ecn = readCmsgEcn(this.#controlBufs[i]!, controlLen);
+      packets.push({
+        data: new Uint8Array(this.#dataBufs[i]!, 0, n),
+        addr: decodeAddr(this.#addrBufs[i]!.slice(0, addrLen)),
+        ...ecn === undefined ? {} : { ecn }
+      });
+    }
+    return packets;
+  }
+}
+/**
+* Create a reusable batch datagram receiver for hot UDP loops.
+*
+* Returned packet byte views are overwritten by the next `recv()` call.
+*
+* @internal
+*/
+export function createDatagramRecvBatch(maxPackets: number, maxBytes: number = 65536): DatagramRecvBatch | null {
+  if (maxPackets <= 0) return { recv() {
+    return [];
+  } };
+  if (isDarwin) return typeof (lib.symbols as any).recvmsg_x === 'function' ? new DarwinDatagramRecvBatch(maxPackets, maxBytes) : null;
+  if (isLinux) return typeof (lib.symbols as any).recvmmsg === 'function' ? new LinuxDatagramRecvBatch(maxPackets, maxBytes) : null;
+  return null;
 }
 /**
 * Shut down part or all of a socket connection.

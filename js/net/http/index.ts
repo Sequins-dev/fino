@@ -179,6 +179,7 @@ interface WireRequestInit {
   version?: string;
   method: string;
   url: string;
+  path?: string;
   headers: Headers;
   body: AsyncIterable<Uint8Array> | null;
   inTrailers?: Promise<Headers> | null;
@@ -1874,6 +1875,7 @@ export class Request {
   * @internal
   */
   #version: string;
+  #wirePath: string | null = null;
   /**
   * Private property `#headers` used by `Request`.
   *
@@ -2021,6 +2023,7 @@ export class Request {
     if (input === INTERNAL) {
       this.#method = init.method;
       this.#url = init.url;
+      this.#wirePath = typeof init.path === 'string' ? init.path : null;
       this.#version = init.version;
       this.#headers = init.headers;
       this.#unsafeHeaders = new Headers(init.headers);
@@ -2440,6 +2443,14 @@ export class Request {
   get version() {
     return this.#version;
   }
+  /**
+  * Return the already-parsed wire path when a protocol driver supplied one.
+  *
+  * @internal
+  */
+  _trustedPath(): string | null {
+    return this.#wirePath;
+  }
   /** True if the request has a body.
   *
   * ```ts no_run
@@ -2600,6 +2611,7 @@ export class Request {
       return new Request(INTERNAL, {
         method: this.#method,
         url: this.#url,
+        path: this.#wirePath ?? undefined,
         version: this.#version,
         headers: new Headers(this.#headers),
         body: _emptyBody,
@@ -2615,6 +2627,7 @@ export class Request {
     const cloned = new Request(INTERNAL, {
       method: this.#method,
       url: this.#url,
+      path: this.#wirePath ?? undefined,
       version: this.#version,
       headers: new Headers(this.#headers),
       body: b,
@@ -3978,10 +3991,11 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): {
 *
 * @internal
 */
-export function buildWireRequest({ version, method, url, headers, body, inTrailers, signal }: WireRequestInit): Request {
+export function buildWireRequest({ version, method, url, path, headers, body, inTrailers, signal }: WireRequestInit): Request {
   return new Request(INTERNAL, {
     method,
     url,
+    path,
     version: version || 'HTTP/1.1',
     headers,
     body: body ?? _emptyBody,
