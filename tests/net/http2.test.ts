@@ -779,11 +779,7 @@ function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> 
     if (timer !== null) clearTimeout(timer);
   });
 }
-async function waitForRuntimeLoopIdle(turns = 16): Promise<boolean> {
-  return await waitForRuntimeLoopAtOrBelow(runtimeLoopHandleBaseline, turns);
-}
 type RuntimeLoopHandleSnapshot = ReturnType<typeof loop._activeHandleCounts>;
-const runtimeLoopHandleBaseline: RuntimeLoopHandleSnapshot = loop._activeHandleCounts();
 function runtimeLoopHandlesAtOrBelow(baseline: RuntimeLoopHandleSnapshot): boolean {
   const counts = loop._activeHandleCounts();
   return counts.reads <= baseline.reads && counts.writes <= baseline.writes && counts.timers <= baseline.timers && counts.procs <= baseline.procs && counts.completions <= baseline.completions && counts.vnodes <= baseline.vnodes && counts.atomicsWaiters <= baseline.atomicsWaiters;
@@ -1963,6 +1959,10 @@ describe('H2 server — robustness', () => {
 describe('H2 server — cleanup', () => {
   it('does not leave runtime loop handles alive after closed H2 sessions', async (t) => {
     if (!h2Available) return;
-    t.equal(await waitForRuntimeLoopIdle(), true, `closed H2 sessions leave no additional runtime loop handles: current=${runtimeLoopHandleCounts()} baseline=${runtimeLoopHandleCounts(runtimeLoopHandleBaseline)}`);
+    const baseline = loop._activeHandleCounts();
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    await rawH2Exchange(server.port, H2_GET_ROOT_LOCALHOST);
+    await server.close();
+    t.equal(await waitForRuntimeLoopAtOrBelow(baseline), true, `closed H2 sessions leave no additional runtime loop handles: current=${runtimeLoopHandleCounts()} baseline=${runtimeLoopHandleCounts(baseline)}`);
   });
 });
