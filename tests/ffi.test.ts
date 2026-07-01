@@ -44,6 +44,37 @@ describe('Pointer helpers', () => {
     const addr1 = new DataView(off).getBigUint64(0, true);
     t.equal(addr1 - addr0, 16n, 'offset by 16 bytes');
   });
+  it('Pointer.copyFromInto copies native bytes into an ArrayBufferView', (t) => {
+    const source = new Uint8Array([
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ]);
+    const dest = new Uint8Array([
+      9,
+      9,
+      9,
+      9,
+      9,
+      9,
+      9,
+      9
+    ]);
+    Pointer.copyFromInto(dest.subarray(2, 6), Pointer.of(source.subarray(1)), 4);
+    t.deepEqual(Array.from(dest), [
+      9,
+      9,
+      2,
+      3,
+      4,
+      5,
+      9,
+      9
+    ], 'copies into the view byte range');
+  });
 });
 const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
   malloc: {

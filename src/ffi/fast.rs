@@ -39,7 +39,7 @@ use v8::fast_api::{
 
 use super::SymbolData;
 use super::library::FfiSymbol;
-use super::types::NativeType;
+use super::types::{NativeType, NativeValue};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FastCallKind {
@@ -317,6 +317,36 @@ unsafe fn fast_dispatch_pointer(sym: &FfiSymbol, args: &[u64]) -> u64 {
     }
 
     unsafe { call_direct(sym.code_ptr.0, &raw[..n]) }
+}
+
+#[inline(always)]
+pub(crate) unsafe fn dispatch_native_values(sym: &FfiSymbol, values: &[NativeValue]) -> u64 {
+    let n = values.len();
+    let mut raw = [0u64; 16];
+    for i in 0..n {
+        raw[i] = unsafe { native_value_to_u64(values[i], &sym.param_types[i]) };
+    }
+    unsafe { call_direct(sym.code_ptr.0, &raw[..n]) }
+}
+
+#[inline(always)]
+unsafe fn native_value_to_u64(value: NativeValue, ty: &NativeType) -> u64 {
+    match ty {
+        NativeType::Bool | NativeType::U8 => unsafe { value.u8_val as u64 },
+        NativeType::I8 => unsafe { value.i8_val as i64 as u64 },
+        NativeType::U16 => unsafe { value.u16_val as u64 },
+        NativeType::I16 => unsafe { value.i16_val as i64 as u64 },
+        NativeType::U32 => unsafe { value.u32_val as u64 },
+        NativeType::I32 => unsafe { value.i32_val as i64 as u64 },
+        NativeType::U64 => unsafe { value.u64_val },
+        NativeType::I64 => unsafe { value.i64_val as u64 },
+        NativeType::USize => unsafe { value.usize_val as u64 },
+        NativeType::ISize => unsafe { value.isize_val as i64 as u64 },
+        NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => unsafe {
+            value.ptr_val as u64
+        },
+        NativeType::Void | NativeType::F32 | NativeType::F64 | NativeType::Struct(_) => 0,
+    }
 }
 
 #[inline(always)]

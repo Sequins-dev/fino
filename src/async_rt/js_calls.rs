@@ -10,6 +10,7 @@ use std::ffi::c_void;
 use std::sync::{Arc, Condvar, Mutex};
 
 use ::v8;
+use smallvec::SmallVec;
 
 use crate::async_rt::bridge::{JsValueRepr, promise_to_future};
 use crate::ffi::types::NativeType;
@@ -185,38 +186,47 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Invoke a registered callback immediately on the V8 thread.
+/// Invoke a registered callback immediately from raw libffi C argument slots.
 ///
-/// This is used by synchronous FFI calls whose C stack invokes an
-/// `FfiCallback` before returning. Promise-returning callbacks are rejected in
-/// this path because the V8 thread cannot synchronously block waiting for its
-/// own microtasks to run.
-pub fn invoke_registered_callback_sync(
+/// Same-thread callbacks are common for synchronous FFI calls that invoke C
+/// libraries with JS callback hooks. This avoids first serialising arguments
+/// into a temporary [`SendArg`] vector only to immediately turn them back into
+/// V8 values on the same stack.
+///
+/// # Safety
+/// `args` must be the libffi callback argument array for `param_types`.
+pub unsafe fn invoke_registered_callback_sync_from_c_args(
     scope: &mut v8::HandleScope,
-    callback_id: usize,
-    args: &[SendArg],
+    func_global: &v8::Global<v8::Function>,
+    args: *const *const c_void,
     param_types: &[NativeType],
 ) -> Result<CallResult, String> {
-    let func_local = CALLBACK_TABLE.with(|t| {
-        t.borrow()
-            .get(callback_id)
-            .and_then(|o| o.as_ref())
-            .map(|g| v8::Local::new(scope, g))
-    });
+    let mut js_args: SmallVec<[v8::Local<v8::Value>; 8]> = SmallVec::new();
+    for (i, ty) in param_types.iter().enumerate() {
+        let arg_ptr = unsafe { *args.add(i) };
+        js_args.push(unsafe { c_arg_to_v8(scope, arg_ptr, ty) });
+    }
 
-    let Some(func) = func_local else {
-        return Err("FfiCallback: callback has been closed".into());
-    };
+    call_global_callback_sync(scope, func_global, &js_args)
+}
 
-    let js_args: Vec<v8::Local<v8::Value>> = args
-        .iter()
-        .zip(param_types.iter())
-        .map(|(arg, ty)| send_arg_to_v8(scope, arg, ty))
-        .collect();
+fn call_global_callback_sync(
+    scope: &mut v8::HandleScope,
+    func_global: &v8::Global<v8::Function>,
+    js_args: &[v8::Local<v8::Value>],
+) -> Result<CallResult, String> {
+    let func = v8::Local::new(scope, func_global);
+    call_local_callback_sync(scope, func, js_args)
+}
 
+fn call_local_callback_sync(
+    scope: &mut v8::HandleScope,
+    func: v8::Local<v8::Function>,
+    js_args: &[v8::Local<v8::Value>],
+) -> Result<CallResult, String> {
     let this: v8::Local<v8::Value> = v8::undefined(scope).into();
     let tc = &mut v8::TryCatch::new(scope);
-    let call_result = func.call(tc, this, &js_args);
+    let call_result = func.call(tc, this, js_args);
 
     if tc.has_caught() {
         let msg = caught_exception_message!(tc);
@@ -253,6 +263,74 @@ fn send_arg_to_v8<'s>(
         SendArg::Float(f) => v8::Number::new(scope, *f).into(),
         SendArg::Pointer(addr) => crate::ffi::pointer::into_js(scope, *addr as *mut c_void),
         SendArg::Ignored => v8::undefined(scope).into(),
+    }
+}
+
+unsafe fn c_arg_to_v8<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    arg_ptr: *const c_void,
+    ty: &NativeType,
+) -> v8::Local<'s, v8::Value> {
+    match ty {
+        NativeType::Void => v8::undefined(scope).into(),
+        NativeType::Bool => {
+            let value = unsafe { *(arg_ptr as *const u8) } != 0;
+            v8::Boolean::new(scope, value).into()
+        }
+        NativeType::U8 => {
+            let value = unsafe { *(arg_ptr as *const u8) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::I8 => {
+            let value = unsafe { *(arg_ptr as *const i8) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::U16 => {
+            let value = unsafe { *(arg_ptr as *const u16) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::I16 => {
+            let value = unsafe { *(arg_ptr as *const i16) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::U32 => {
+            let value = unsafe { *(arg_ptr as *const u32) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::I32 => {
+            let value = unsafe { *(arg_ptr as *const i32) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::U64 => {
+            let value = unsafe { *(arg_ptr as *const u64) };
+            v8::BigInt::new_from_u64(scope, value).into()
+        }
+        NativeType::I64 => {
+            let value = unsafe { *(arg_ptr as *const i64) };
+            v8::BigInt::new_from_i64(scope, value).into()
+        }
+        NativeType::USize => {
+            let value = unsafe { *(arg_ptr as *const usize) };
+            v8::BigInt::new_from_u64(scope, value as u64).into()
+        }
+        NativeType::ISize => {
+            let value = unsafe { *(arg_ptr as *const isize) };
+            v8::BigInt::new_from_i64(scope, value as i64).into()
+        }
+        NativeType::F32 => {
+            let value = unsafe { *(arg_ptr as *const f32) };
+            v8::Number::new(scope, value as f64).into()
+        }
+        NativeType::F64 => {
+            let value = unsafe { *(arg_ptr as *const f64) };
+            v8::Number::new(scope, value).into()
+        }
+        NativeType::Pointer | NativeType::Buffer => {
+            let ptr_val = unsafe { *(arg_ptr as *const *const c_void) };
+            crate::ffi::pointer::into_js(scope, ptr_val as *mut c_void)
+        }
+        NativeType::IgnoredPointer => v8::undefined(scope).into(),
+        NativeType::Struct(_) => v8::undefined(scope).into(),
     }
 }
 

@@ -44,6 +44,7 @@ impl AsyncFfiWork {
 use super::library::FfiSymbol;
 use super::pointer;
 use super::types::{NativeType, NativeValue};
+use crate::ffi::fast::FastCallKind;
 
 pub struct CallScratch {
     storage: SmallVec<[NativeValue; 8]>,
@@ -110,6 +111,10 @@ pub fn ffi_call<'s>(
                 return None;
             }
         }
+    }
+
+    if !matches!(symbol.fast_call_kind, FastCallKind::None) {
+        return unsafe { direct_dispatch_and_convert(scope, symbol, &scratch.storage) };
     }
 
     let ffi_args: SmallVec<[Arg<'_>; 8]> = scratch
@@ -756,6 +761,41 @@ unsafe fn dispatch_and_convert<'s>(
             let exc = v8::Exception::type_error(scope, msg);
             scope.throw_exception(exc);
             return None;
+        }
+    })
+}
+
+/// Directly call a fast-eligible symbol from the normal API callback fallback.
+///
+/// V8 does not always take the Fast API overload for every call site. For the
+/// same integer/pointer-only signatures that are safe for fast calls, this
+/// avoids rebuilding libffi argument descriptors and `ffi_call_SYSV`.
+unsafe fn direct_dispatch_and_convert<'s>(
+    scope: &mut v8::HandleScope<'s>,
+    symbol: &FfiSymbol,
+    values: &[NativeValue],
+) -> Option<v8::Local<'s, v8::Value>> {
+    let raw = unsafe { crate::ffi::fast::dispatch_native_values(symbol, values) };
+    Some(match &symbol.result_type {
+        NativeType::Void => v8::undefined(scope).into(),
+        NativeType::Bool => v8::Boolean::new(scope, (raw as u8) != 0).into(),
+        NativeType::U8 => v8::Number::new(scope, raw as u8 as f64).into(),
+        NativeType::I8 => v8::Number::new(scope, raw as u8 as i8 as f64).into(),
+        NativeType::U16 => v8::Number::new(scope, raw as u16 as f64).into(),
+        NativeType::I16 => v8::Number::new(scope, raw as u16 as i16 as f64).into(),
+        NativeType::U32 => v8::Number::new(scope, raw as u32 as f64).into(),
+        NativeType::I32 => v8::Number::new(scope, raw as u32 as i32 as f64).into(),
+        NativeType::U64 => v8::BigInt::new_from_u64(scope, raw).into(),
+        NativeType::I64 => v8::BigInt::new_from_i64(scope, raw as i64).into(),
+        NativeType::USize => v8::Number::new(scope, raw as usize as f64).into(),
+        NativeType::ISize => v8::Number::new(scope, raw as isize as f64).into(),
+        NativeType::Pointer
+        | NativeType::IgnoredPointer
+        | NativeType::Buffer
+        | NativeType::F32
+        | NativeType::F64
+        | NativeType::Struct(_) => {
+            unreachable!("direct dispatch is only used for fast-eligible signatures")
         }
     })
 }

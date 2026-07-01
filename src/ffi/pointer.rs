@@ -115,6 +115,7 @@ pub fn namespace<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Objec
     set_method!("writeF64", write_f64);
     set_method!("writePointer", write_pointer);
     set_method!("copyFrom", copy_from);
+    set_method!("copyFromInto", copy_from_into);
     set_method!("copyTo", copy_to);
 
     obj
@@ -183,6 +184,63 @@ fn copy_to(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv
     if len > 0 && !src_ptr.is_null() && !ptr.is_null() {
         // SAFETY: caller guarantees ptr is a valid C buffer of at least `len` bytes.
         unsafe { std::ptr::copy_nonoverlapping(src_ptr, ptr as *mut u8, len) };
+    }
+}
+
+/// `Pointer.copyFromInto(dest, ptr, len?)` — copy bytes from the address in
+/// `ptr` into an existing ArrayBuffer or ArrayBufferView.
+fn copy_from_into(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let dest_val = args.get(0);
+    let (dest_ptr, dest_len): (*mut u8, usize) =
+        if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(dest_val) {
+            (abv.data() as *mut u8, abv.byte_length())
+        } else if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(dest_val) {
+            let bs = ab.get_backing_store();
+            let p = bs
+                .data()
+                .map(|d| d.as_ptr() as *mut u8)
+                .unwrap_or(std::ptr::null_mut());
+            (p, bs.byte_length())
+        } else {
+            throw_type_error(
+                scope,
+                "Pointer.copyFromInto: expected ArrayBuffer or ArrayBufferView as first argument",
+            );
+            return;
+        };
+
+    let Some(src_ptr) = from_js(scope, args.get(1)) else {
+        return;
+    };
+
+    let len = if args.get(2).is_undefined() {
+        dest_len
+    } else {
+        let raw = args.get(2).integer_value(scope).unwrap_or(0);
+        if raw < 0 {
+            throw_type_error(scope, "Pointer.copyFromInto: length must be non-negative");
+            return;
+        }
+        raw as usize
+    };
+
+    if len > dest_len {
+        throw_type_error(scope, "Pointer.copyFromInto: destination too small");
+        return;
+    }
+
+    if len > 0 {
+        if dest_ptr.is_null() || src_ptr.is_null() {
+            throw_type_error(scope, "Pointer.copyFromInto: null pointer");
+            return;
+        }
+        // SAFETY: destination bounds are checked above; caller guarantees
+        // source points to at least `len` readable bytes.
+        unsafe { std::ptr::copy_nonoverlapping(src_ptr as *const u8, dest_ptr, len) };
     }
 }
 

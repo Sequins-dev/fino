@@ -31,6 +31,7 @@ struct CallbackData {
     param_types: Vec<NativeType>,
     result_type: NativeType,
     context: v8::Global<v8::Context>,
+    func: v8::Global<v8::Function>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
     wake_write: RawFd,
 }
@@ -52,17 +53,6 @@ unsafe extern "C" fn trampoline(
     let data = userdata;
     let result_ptr: *mut c_void = result as *mut c_void;
 
-    // Read C arguments.
-    let send_args: Vec<SendArg> = data
-        .param_types
-        .iter()
-        .enumerate()
-        .map(|(i, ty)| {
-            let arg_ptr: *const c_void = unsafe { *args.add(i) };
-            unsafe { js_calls::read_c_arg(arg_ptr, ty) }
-        })
-        .collect();
-
     if crate::async_rt::is_v8_thread() {
         let isolate = unsafe { v8__Isolate__GetCurrent() };
         if isolate.is_null() {
@@ -79,15 +69,28 @@ unsafe extern "C" fn trampoline(
         let cb_scope = &mut unsafe { v8::CallbackScope::new(&mut *isolate) };
         let context = v8::Local::new(cb_scope, &data.context);
         let scope = &mut v8::ContextScope::new(cb_scope, context);
-        let outcome = js_calls::invoke_registered_callback_sync(
-            scope,
-            data.callback_id,
-            &send_args,
-            &data.param_types,
-        );
+        let outcome = unsafe {
+            js_calls::invoke_registered_callback_sync_from_c_args(
+                scope,
+                &data.func,
+                args,
+                &data.param_types,
+            )
+        };
         unsafe { js_calls::write_c_result(result_ptr, &data.result_type, outcome) };
         return;
     }
+
+    // Read C arguments for the cross-thread bridge.
+    let send_args: Vec<SendArg> = data
+        .param_types
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let arg_ptr: *const c_void = unsafe { *args.add(i) };
+            unsafe { js_calls::read_c_arg(arg_ptr, ty) }
+        })
+        .collect();
 
     // Create a condvar slot for the result.
     let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
@@ -175,6 +178,8 @@ pub fn new_callback(
     let (js_call_requests, wake_write) =
         crate::async_rt::js_call_handle().ok_or("FfiCallback: runtime not initialised")?;
 
+    let func_local = v8::Local::new(scope, &func_global);
+    let func = v8::Global::new(scope, func_local);
     let callback_id = js_calls::register_callback(func_global);
 
     // Build the libffi CIF.
@@ -191,6 +196,7 @@ pub fn new_callback(
         param_types: param_types.clone(),
         result_type,
         context,
+        func,
         js_call_requests,
         wake_write,
     });

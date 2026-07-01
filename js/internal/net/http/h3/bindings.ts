@@ -269,6 +269,15 @@ export const NGHTTP3_H3_MESSAGE_ERROR = 270n;
 // ---------------------------------------------------------------------------
 const _enc = new _TextEncoder();
 const _dec = new _TextDecoder();
+const _encodedHeaderNames = new Map<string, Uint8Array>();
+function encodedHeaderName(name: string): Uint8Array {
+  const lower = name.toLowerCase();
+  const cached = _encodedHeaderNames.get(lower);
+  if (cached !== undefined) return cached;
+  const encoded = _enc.encode(lower);
+  _encodedHeaderNames.set(lower, encoded);
+  return encoded;
+}
 export function readCStr(ptr: ArrayBuffer): string {
   const bytes: number[] = [];
   let i = 0;
@@ -297,7 +306,7 @@ export function buildNvArray(headers: Array<[string, string]>): {
   const count = headers.length;
   const nameLens: number[] = [];
   const dataBlobs: Uint8Array[] = headers.map(([n, v]) => {
-    const nb = _enc.encode(n.toLowerCase());
+    const nb = encodedHeaderName(n);
     const vb = _enc.encode(v);
     nameLens.push(nb.length);
     const blob = new Uint8Array(nb.length + vb.length);

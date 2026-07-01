@@ -175,6 +175,15 @@ interface WireResponseInit {
   outTrailers?: OutTrailers | null;
   inTrailers?: Promise<Headers> | null;
 }
+interface WireRequestInit {
+  version?: string;
+  method: string;
+  url: string;
+  headers: Headers;
+  body: AsyncIterable<Uint8Array> | null;
+  inTrailers?: Promise<Headers> | null;
+  signal?: AbortSignal;
+}
 type AsyncByteSource = AsyncIterable<Uint8Array | ArrayBuffer>;
 type AsyncByteIterable = AsyncIterable<Uint8Array>;
 type BodyFraming = {
@@ -3949,6 +3958,36 @@ export function connectionParser(source: AsyncIterable<Uint8Array>): {
       return raw === null ? null : _requestFromRaw(raw);
     }
   };
+}
+/**
+* Build a Request from already-prepared wire components.
+* Used by HTTP protocol drivers after request-line or pseudo-header validation
+* so they can bypass spec-style URL and header normalization.
+*
+* Missing `version` defaults to HTTP/1.1, and missing body becomes a bodyless
+* request.
+*
+* ```ts no_run
+* const wire = buildWireRequest({
+*   method: 'GET',
+*   url: 'https://example.test/',
+*   headers: new Headers(),
+*   body: null
+* });
+* ```
+*
+* @internal
+*/
+export function buildWireRequest({ version, method, url, headers, body, inTrailers, signal }: WireRequestInit): Request {
+  return new Request(INTERNAL, {
+    method,
+    url,
+    version: version || 'HTTP/1.1',
+    headers,
+    body: body ?? _emptyBody,
+    inTrailers: inTrailers ?? null,
+    signal
+  });
 }
 /**
 * Build a Response from already-prepared wire components.

@@ -780,14 +780,32 @@ function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> 
   });
 }
 async function waitForRuntimeLoopIdle(turns = 16): Promise<boolean> {
+  return await waitForRuntimeLoopAtOrBelow(runtimeLoopHandleBaseline, turns);
+}
+type RuntimeLoopHandleSnapshot = ReturnType<typeof loop._activeHandleCounts>;
+const runtimeLoopHandleBaseline: RuntimeLoopHandleSnapshot = loop._activeHandleCounts();
+function runtimeLoopHandlesAtOrBelow(baseline: RuntimeLoopHandleSnapshot): boolean {
+  const counts = loop._activeHandleCounts();
+  return counts.reads <= baseline.reads && counts.writes <= baseline.writes && counts.timers <= baseline.timers && counts.procs <= baseline.procs && counts.completions <= baseline.completions && counts.vnodes <= baseline.vnodes && counts.atomicsWaiters <= baseline.atomicsWaiters;
+}
+async function waitForRuntimeLoopAtOrBelow(baseline: RuntimeLoopHandleSnapshot, turns = 16): Promise<boolean> {
   for (let i = 0; i < turns; i++) {
-    const counts = loop._activeHandleCounts();
-    if (counts.reads === 0 && counts.writes === 0 && counts.timers === 0 && counts.procs === 0 && counts.completions === 0 && counts.vnodes === 0 && counts.atomicsWaiters === 0) return true;
+    if (runtimeLoopHandlesAtOrBelow(baseline)) return true;
     loop.tick(0);
     await Promise.resolve();
   }
-  const counts = loop._activeHandleCounts();
-  return counts.reads === 0 && counts.writes === 0 && counts.timers === 0 && counts.procs === 0 && counts.completions === 0 && counts.vnodes === 0 && counts.atomicsWaiters === 0;
+  return runtimeLoopHandlesAtOrBelow(baseline);
+}
+function runtimeLoopHandleCounts(counts = loop._activeHandleCounts()): string {
+  return JSON.stringify({
+    reads: counts.reads,
+    writes: counts.writes,
+    timers: counts.timers,
+    procs: counts.procs,
+    completions: counts.completions,
+    vnodes: counts.vnodes,
+    atomicsWaiters: counts.atomicsWaiters
+  });
 }
 interface CapturedH2Response {
   status: number;
@@ -1945,6 +1963,6 @@ describe('H2 server — robustness', () => {
 describe('H2 server — cleanup', () => {
   it('does not leave runtime loop handles alive after closed H2 sessions', async (t) => {
     if (!h2Available) return;
-    t.equal(await waitForRuntimeLoopIdle(), true, 'closed H2 sessions leave no live runtime loop handles');
+    t.equal(await waitForRuntimeLoopIdle(), true, `closed H2 sessions leave no additional runtime loop handles: current=${runtimeLoopHandleCounts()} baseline=${runtimeLoopHandleCounts(runtimeLoopHandleBaseline)}`);
   });
 });

@@ -18,6 +18,7 @@ import { h3Available } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import { WebTransport } from '../../../../net/http/webtransport.ts';
+import { buildWireRequest } from '../../../../net/http/index.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 export type H3Handler = (request: Request) => Response | Promise<Response>;
 export type H3WebTransportHandler = (request: Request, session: WebTransport) => WebTransport | Response | Promise<WebTransport | Response>;
@@ -38,6 +39,11 @@ const _FORBIDDEN_REQ = new Set([
   'transfer-encoding',
   'upgrade'
 ]);
+const _PSEUDO_AUTHORITY = 1 << 0;
+const _PSEUDO_METHOD = 1 << 1;
+const _PSEUDO_PATH = 1 << 2;
+const _PSEUDO_SCHEME = 1 << 3;
+const _PSEUDO_PROTOCOL = 1 << 4;
 interface H3ServerStream {
   streamId: bigint;
   method: string;
@@ -54,8 +60,24 @@ interface H3ServerStream {
   badRequest: boolean;
   dispatched: boolean;
   dispatchDone: boolean;
-  seenPseudos: Set<string>;
+  seenPseudos: number;
   seenRegular: boolean;
+}
+function pseudoHeaderBit(token: number, name: string): number {
+  switch (token) {
+    case 0: return _PSEUDO_AUTHORITY;
+    case 1: return _PSEUDO_METHOD;
+    case 8: return _PSEUDO_PATH;
+    case 9: return _PSEUDO_SCHEME;
+    case 1007: return _PSEUDO_PROTOCOL;
+    default:
+      if (name === ':authority') return _PSEUDO_AUTHORITY;
+      if (name === ':method') return _PSEUDO_METHOD;
+      if (name === ':path') return _PSEUDO_PATH;
+      if (name === ':scheme') return _PSEUDO_SCHEME;
+      if (name === ':protocol') return _PSEUDO_PROTOCOL;
+      return 0;
+  }
 }
 function makeStream(streamId: bigint): H3ServerStream {
   return {
@@ -74,7 +96,7 @@ function makeStream(streamId: bigint): H3ServerStream {
     badRequest: false,
     dispatched: false,
     dispatchDone: false,
-    seenPseudos: new Set(),
+    seenPseudos: 0,
     seenRegular: false
   };
 }
@@ -98,7 +120,7 @@ export class H3ServerDriver {
       onBeginHeaders(streamId) {
         if (!streams.has(streamId)) streams.set(streamId, makeStream(streamId));
       },
-      onRecvHeader(streamId, _token, name, value) {
+      onRecvHeader(streamId, token, name, value) {
         const st = streams.get(streamId);
         if (!st || st.cancelled) return;
         if (st.inTrailers) {
@@ -106,21 +128,18 @@ export class H3ServerDriver {
           return;
         }
         if (name.startsWith(':')) {
-          if (st.seenRegular || st.seenPseudos.has(name)) {
+          const pseudo = pseudoHeaderBit(token, name);
+          if (pseudo === 0 || st.seenRegular || (st.seenPseudos & pseudo) !== 0) {
             st.cancelled = true;
             st.badRequest = true;
             return;
           }
-          st.seenPseudos.add(name);
-          if (name === ':method') st.method = value;
-          else if (name === ':path') st.path = value;
-          else if (name === ':scheme') st.scheme = value;
-          else if (name === ':authority') st.authority = value;
-          else if (name === ':protocol') st.protocol = value;
-          else {
-            st.badRequest = true;
-            return;
-          }
+          st.seenPseudos |= pseudo;
+          if (pseudo === _PSEUDO_METHOD) st.method = value;
+          else if (pseudo === _PSEUDO_PATH) st.path = value;
+          else if (pseudo === _PSEUDO_SCHEME) st.scheme = value;
+          else if (pseudo === _PSEUDO_AUTHORITY) st.authority = value;
+          else st.protocol = value;
         } else {
           const lc = name.toLowerCase();
           if (lc !== name) {
@@ -202,7 +221,6 @@ export class H3ServerDriver {
           st.body.error(new Error(`H3 stream reset with error 0x${appErrorCode.toString(16)}`));
         }
       },
-      onAckedStreamData() {},
       onRecvSettings() {
         resolvePeerSettingsReceived?.();
         resolvePeerSettingsReceived = null;
@@ -224,7 +242,7 @@ export class H3ServerDriver {
       if (!st.bodyDone || !st.dispatchDone) return;
       st.cancelled = true;
       st.bodyDone = true;
-      st.seenPseudos.clear();
+      st.seenPseudos = 0;
       st.body.close();
       streams.delete(st.streamId);
     }
@@ -303,9 +321,11 @@ export class H3ServerDriver {
       if (st.authority) reqHeaders.set('host', st.authority);
       let req: Request;
       try {
-        const body = st.method === 'GET' || st.method === 'HEAD' ? undefined : st.body;
-        req = new Request(url, {
+        const body = st.method === 'GET' || st.method === 'HEAD' ? null : st.body;
+        req = buildWireRequest({
+          version: 'HTTP/3',
           method: st.method,
+          url,
           headers: reqHeaders,
           body: body as any
         });

@@ -1227,12 +1227,15 @@ class QuicBytesWriter extends BytesWriter {
     }
     let total = 0;
     for (const chunk of this.#pending) total += chunk.byteLength;
-    const data = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of this.#pending) {
-      data.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    const data = this.#pending.length === 1 ? this.#pending[0]! : (() => {
+      const combined = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of this.#pending) {
+        combined.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return combined;
+    })();
     this.#pending = [];
     const fin = this.#fin;
     this.#fin = false;
@@ -2250,14 +2253,14 @@ function ensureCallbackTable(): ArrayBuffer {
     return connectionFromUserData(userData)?.nativeHandle ?? null;
   }));
   const handshakeCompleted = new FfiCallback({
-    parameters: ['pointer', 'pointer'],
+    parameters: ['ignoredPointer', 'pointer'],
     result: 'i32'
   }, (_conn: ArrayBuffer, userData: ArrayBuffer | null) => withNativeCallback(() => {
     connectionFromUserData(userData)?._onHandshakeCompleted();
     return 0;
   }));
   const handshakeConfirmed = new FfiCallback({
-    parameters: ['pointer', 'pointer'],
+    parameters: ['ignoredPointer', 'pointer'],
     result: 'i32'
   }, (_conn: ArrayBuffer, userData: ArrayBuffer | null) => withNativeCallback(() => {
     connectionFromUserData(userData)?._onHandshakeConfirmed();
@@ -2265,14 +2268,14 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const recvStreamData = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u32',
       'i64',
       'u64',
       'pointer',
       'usize',
       'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn: ArrayBuffer, flags: number, streamId: bigint, offset: bigint, data: ArrayBuffer | null, datalen: bigint, userData: ArrayBuffer | null) => withNativeCallback(() => {
@@ -2281,7 +2284,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const recvDatagram = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u32',
       'pointer',
       'usize',
@@ -2294,7 +2297,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const streamOpen = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i64',
       'pointer'
     ],
@@ -2305,12 +2308,12 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const streamClose = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u32',
       'i64',
       'u64',
       'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn, _flags, streamId, _appCode, userData) => withNativeCallback(() => {
@@ -2319,12 +2322,12 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const streamReset = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i64',
       'u64',
       'u64',
       'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn, streamId, _finalSize, appCode, userData) => withNativeCallback(() => {
@@ -2333,12 +2336,12 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const acked = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i64',
       'u64',
       'u64',
       'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn, streamId, offset, datalen, userData) => withNativeCallback(() => {
@@ -2347,7 +2350,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const extendStreamsBidi = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u64',
       'pointer'
     ],
@@ -2358,7 +2361,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const extendStreamsUni = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u64',
       'pointer'
     ],
@@ -2369,11 +2372,11 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const extendMaxStreamData = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i64',
       'u64',
       'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn, streamId, maxData, userData) => withNativeCallback(() => {
@@ -2382,11 +2385,11 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const stopSending = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i64',
       'u64',
       'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn, streamId, appCode, userData) => withNativeCallback(() => {
@@ -2397,7 +2400,7 @@ function ensureCallbackTable(): ArrayBuffer {
     parameters: [
       'pointer',
       'usize',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'void'
   }, (dest: ArrayBuffer | null, len: bigint) => withNativeCallback(() => {
@@ -2405,9 +2408,9 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const getPathChallengeData = new FfiCallback({
     parameters: [
+      'ignoredPointer',
       'pointer',
-      'pointer',
-      'pointer'
+      'ignoredPointer'
     ],
     result: 'i32'
   }, (_conn, data) => withNativeCallback(() => {
@@ -2417,7 +2420,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const getNewConnectionId = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'pointer',
       'pointer',
       'usize',
@@ -2434,7 +2437,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const removeConnectionId = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'pointer',
       'pointer'
     ],
@@ -2445,7 +2448,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const dcidStatus = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i32',
       'u64',
       'pointer',
@@ -2459,7 +2462,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const recvNewToken = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'pointer',
       'usize',
       'pointer'
@@ -2471,7 +2474,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const ackDatagram = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u64',
       'pointer'
     ],
@@ -2482,7 +2485,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const lostDatagram = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u64',
       'pointer'
     ],
@@ -2493,7 +2496,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const recvKey = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'i32',
       'pointer'
     ],
@@ -2504,7 +2507,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const recvVersionNegotiation = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'pointer',
       'pointer',
       'usize',
@@ -2516,7 +2519,7 @@ function ensureCallbackTable(): ArrayBuffer {
     return 0;
   }));
   const earlyDataRejected = new FfiCallback({
-    parameters: ['pointer', 'pointer'],
+    parameters: ['ignoredPointer', 'pointer'],
     result: 'i32'
   }, (_conn, userData) => withNativeCallback(() => {
     connectionFromUserData(userData)?._onEarlyDataRejected();
@@ -2524,8 +2527,8 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const recvStatelessReset = new FfiCallback({
     parameters: [
-      'pointer',
-      'pointer',
+      'ignoredPointer',
+      'ignoredPointer',
       'pointer'
     ],
     result: 'i32'
@@ -2535,7 +2538,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const beginPathValidation = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u32',
       'pointer',
       'pointer',
@@ -2548,7 +2551,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const pathValidation = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'u32',
       'pointer',
       'pointer',
@@ -2562,7 +2565,7 @@ function ensureCallbackTable(): ArrayBuffer {
   }));
   const selectPreferredAddress = new FfiCallback({
     parameters: [
-      'pointer',
+      'ignoredPointer',
       'pointer',
       'pointer',
       'pointer'
@@ -3944,6 +3947,8 @@ export class QuicConnection extends EventTarget {
   #peerStreamActivity = new Map<number, bigint>();
   #pendingWrites: PendingWrite[] = [];
   #pendingDatagrams: PendingDatagram[] = [];
+  #writeVecBuf = new ArrayBuffer(NGTCP2_VEC_SIZE);
+  #writeDataLenBuf = new ArrayBuffer(8);
   #localStreamCreditWaiters = {
     bidirectional: [] as QueueResolver<void>[],
     unidirectional: [] as QueueResolver<void>[]
@@ -5499,12 +5504,11 @@ export class QuicConnection extends EventTarget {
       const ts = now(this.#runtime);
       let packets = 0;
       const packetBudget = this.#writePacketBudget();
-      const writeBuffers = Array.from({ length: packetBudget }, () => new Uint8Array(writeBufferSize));
       const packetBatch: PendingSendPacket[] = [];
       const outPath = makeOutputPath(this.#activeLocalAddress, remoteAddress, this.#fd);
       for (; packets < packetBudget; packets++) {
         let n = 0;
-        const out = writeBuffers[packets]!;
+        const out = new Uint8Array(writeBufferSize);
         const pktInfo = this.#options.transport.ecn ? makePacketInfo() : null;
         const pktInfoPtr = pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO);
         const outPathPtr = this.#ptrOf(outPath.path, _QUIC_PTR_PATH);
@@ -5512,11 +5516,11 @@ export class QuicConnection extends EventTarget {
         const isCoalescingRetry = (code: number): boolean => code === NGTCP2_ERR_WRITE_MORE || code === NGTCP2_ERR_STREAM_DATA_BLOCKED || code === NGTCP2_ERR_STREAM_NOT_FOUND || code === NGTCP2_ERR_STREAM_SHUT_WR;
         if (this.#pendingWrites.length > 0) {
           let coalescing = false;
-          const blockedStreamIds = new Set<number>();
+          let blockedStreamIds: Set<number> | null = null;
           const nextPendingIndex = (): number => {
             for (let i = 0; i < this.#pendingWrites.length; i++) {
               const candidate = this.#pendingWrites[i];
-              if (!blockedStreamIds.has(candidate.streamId)) return i;
+              if (blockedStreamIds === null || !blockedStreamIds.has(candidate.streamId)) return i;
             }
             return -1;
           };
@@ -5532,10 +5536,10 @@ export class QuicConnection extends EventTarget {
               break;
             }
             const remaining = pending.data.subarray(pending.offset);
-            const vec = new ArrayBuffer(NGTCP2_VEC_SIZE);
+            const vec = this.#writeVecBuf;
             writeAddress(vec, VEC_BASE, Pointer.addr(remaining) as bigint);
             writeU64(vec, VEC_LEN, BigInt(remaining.byteLength));
-            const dataLen = new ArrayBuffer(8);
+            const dataLen = this.#writeDataLenBuf;
             writeI64(dataLen, 0, -1n);
             const flags = (pending.fin ? NGTCP2_WRITE_STREAM_FLAG_FIN : 0) | NGTCP2_WRITE_STREAM_FLAG_MORE;
             coalescing = true;
@@ -5578,6 +5582,7 @@ export class QuicConnection extends EventTarget {
                 streamId: pending.streamId
               });
               stream?._blockedFromConnection();
+              blockedStreamIds ??= new Set<number>();
               blockedStreamIds.add(pending.streamId);
               if (coalescing || nextPendingIndex() !== -1) continue;
               break;

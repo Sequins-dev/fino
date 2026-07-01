@@ -24,7 +24,7 @@ export interface H3SessionCallbacks {
   onEndStream(streamId: bigint): void;
   onStreamClose(streamId: bigint, appErrorCode: bigint): void;
   onResetStream(streamId: bigint, appErrorCode: bigint): void;
-  onAckedStreamData(streamId: bigint, datalen: bigint): void;
+  onAckedStreamData?(streamId: bigint, datalen: bigint): void;
   onShutdown?(lastStreamId: bigint): void;
   onRecvSettings?(settings: ReadonlyMap<number, number>): void;
 }
@@ -50,6 +50,32 @@ const _PTR_VEC = 3;
 const _PTR_NV = 4;
 const _PTR_DR = 5;
 const _PTR_TRAILERS = 6;
+function nameForQpackToken(token: number): string | null {
+  switch (token) {
+    case 0: return ':authority';
+    case 1: return ':method';
+    case 8: return ':path';
+    case 9: return ':scheme';
+    case 11: return ':status';
+    case 25: return 'accept';
+    case 27: return 'accept-encoding';
+    case 28: return 'accept-language';
+    case 45: return 'authorization';
+    case 55: return 'content-length';
+    case 57: return 'content-type';
+    case 68: return 'cookie';
+    case 91: return 'user-agent';
+    case 1e3: return 'host';
+    case 1001: return 'connection';
+    case 1002: return 'keep-alive';
+    case 1003: return 'proxy-connection';
+    case 1004: return 'transfer-encoding';
+    case 1005: return 'upgrade';
+    case 1006: return 'te';
+    case 1007: return ':protocol';
+    default: return null;
+  }
+}
 function protoSettingsToMap(settingsPtr: ArrayBuffer | null): Map<number, number> {
   const settings = new Map<number, number>();
   if (settingsPtr === null) return settings;
@@ -76,6 +102,15 @@ export class Nghttp3Session {
   #drBuf: Uint8Array;
   #ptrArena = new ArrayBuffer(_PTR_SIZE * 8);
   #ptrSlots = Array.from({ length: 8 }, (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE));
+  #writeStreamIdBuf = new ArrayBuffer(8);
+  #writeStreamIdView = new DataView(this.#writeStreamIdBuf);
+  #writeFinBuf = new ArrayBuffer(4);
+  #writeFinView = new DataView(this.#writeFinBuf);
+  #writeVecBuf = new Uint8Array(_VEC_BUF_SIZE);
+  #writeVecView = new DataView(this.#writeVecBuf.buffer);
+  #vecAddrBuf = new ArrayBuffer(8);
+  #vecAddrView = new DataView(this.#vecAddrBuf);
+  #singleVecScratch = new Uint8Array(16 * 1024);
   #bodySlots = new Map<bigint, BodySlot>();
   #pendingTrailers = new Map<bigint, Array<[string, string]>>();
   #yieldedBytes = new Map<bigint, Uint8Array>();
@@ -148,22 +183,24 @@ export class Nghttp3Session {
   // -------------------------------------------------------------------------
   #installCallbacks(cbsBuf: Uint8Array): void {
     const cb = this.#cb;
-    // acked_stream_data: nghttp3 no longer needs the body bytes.
-    const ackedStreamData = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'usize',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, (_conn: ArrayBuffer, streamId: bigint, datalen: bigint) => {
-      cb.onAckedStreamData(streamId, datalen);
-      return 0;
-    });
-    writeCbPtr(cbsBuf, CB_ACKED_STREAM_DATA, ackedStreamData);
-    this.#callbacks.push(ackedStreamData);
+    if (cb.onAckedStreamData !== undefined) {
+      // acked_stream_data: nghttp3 no longer needs the body bytes.
+      const ackedStreamData = new FfiCallback({
+        parameters: [
+          'ignoredPointer',
+          'i64',
+          'usize',
+          'ignoredPointer',
+          'ignoredPointer'
+        ],
+        result: 'i32'
+      }, (_conn: ArrayBuffer, streamId: bigint, datalen: bigint) => {
+        cb.onAckedStreamData!(streamId, datalen);
+        return 0;
+      });
+      writeCbPtr(cbsBuf, CB_ACKED_STREAM_DATA, ackedStreamData);
+      this.#callbacks.push(ackedStreamData);
+    }
     // stream_close: stream finished (cleanly or with error).
     const streamClose = new FfiCallback({
       parameters: [
@@ -202,18 +239,6 @@ export class Nghttp3Session {
     });
     writeCbPtr(cbsBuf, CB_RECV_DATA, recvData);
     this.#callbacks.push(recvData);
-    const deferredConsume = new FfiCallback({
-      parameters: [
-        'ignoredPointer',
-        'i64',
-        'usize',
-        'ignoredPointer',
-        'ignoredPointer'
-      ],
-      result: 'i32'
-    }, () => 0);
-    writeCbPtr(cbsBuf, CB_DEFERRED_CONSUME, deferredConsume);
-    this.#callbacks.push(deferredConsume);
     // begin_headers: start of a request or response header block.
     const beginHeaders = new FfiCallback({
       parameters: [
@@ -244,7 +269,7 @@ export class Nghttp3Session {
       ],
       result: 'i32'
     }, (_conn: ArrayBuffer, streamId: bigint, token: number, nameRcbuf: ArrayBuffer, valueRcbuf: ArrayBuffer, flags: number) => {
-      const name = readRcbuf(nameRcbuf);
+      const name = nameForQpackToken(token) ?? readRcbuf(nameRcbuf);
       const value = readRcbuf(valueRcbuf);
       cb.onRecvHeader(streamId, token, name, value, flags);
       return 0;
@@ -295,7 +320,7 @@ export class Nghttp3Session {
       ],
       result: 'i32'
     }, (_conn: ArrayBuffer, streamId: bigint, token: number, nameRcbuf: ArrayBuffer, valueRcbuf: ArrayBuffer, flags: number) => {
-      cb.onRecvTrailer(streamId, token, readRcbuf(nameRcbuf), readRcbuf(valueRcbuf), flags);
+      cb.onRecvTrailer(streamId, token, nameForQpackToken(token) ?? readRcbuf(nameRcbuf), readRcbuf(valueRcbuf), flags);
       return 0;
     });
     writeCbPtr(cbsBuf, CB_RECV_TRAILER, recvTrailer);
@@ -587,15 +612,30 @@ export class Nghttp3Session {
   drainWrites(): void {
     this.#withLock(() => this.#drainWritesInnerSync());
   }
+  #copyVecBytesInto(dest: Uint8Array, baseAddr: bigint, vecLen: number): void {
+    this.#vecAddrView.setBigUint64(0, baseAddr, true);
+    Pointer.copyFromInto(dest, this.#vecAddrBuf, vecLen);
+  }
+  #copyVecBytesToScratch(baseAddr: bigint, vecLen: number): Uint8Array {
+    if (vecLen > this.#singleVecScratch.byteLength) {
+      let nextSize = this.#singleVecScratch.byteLength;
+      while (nextSize < vecLen) nextSize *= 2;
+      this.#singleVecScratch = new Uint8Array(nextSize);
+    }
+    const out = this.#singleVecScratch.subarray(0, vecLen);
+    this.#copyVecBytesInto(out, baseAddr, vecLen);
+    return out;
+  }
   #drainWritesInnerSync(): void {
-    const pStreamId = new ArrayBuffer(8);
-    const pfin = new ArrayBuffer(4);
-    const vecBuf = new Uint8Array(_VEC_BUF_SIZE);
+    const pStreamId = this.#writeStreamIdBuf;
+    const pfin = this.#writeFinBuf;
+    const vecBuf = this.#writeVecBuf;
+    const dvVec = this.#writeVecView;
     while (true) {
-      new DataView(pStreamId).setBigInt64(0, -1n, true);
+      this.#writeStreamIdView.setBigInt64(0, -1n, true);
       const n = sym!.nghttp3_conn_writev_stream(this.#conn, this.#ptrOf(pStreamId, _PTR_STREAM_ID), this.#ptrOf(pfin, _PTR_FIN), this.#ptrOf(vecBuf, _PTR_VEC), _MAX_VECS) as number;
-      const sid = new DataView(pStreamId).getBigInt64(0, true);
-      const isFin = new DataView(pfin).getInt32(0, true) !== 0;
+      const sid = this.#writeStreamIdView.getBigInt64(0, true);
+      const isFin = this.#writeFinView.getInt32(0, true) !== 0;
       if (n < 0) {
         if (n === NGHTTP3_ERR_WOULDBLOCK) break;
         this.close();
@@ -620,26 +660,28 @@ export class Nghttp3Session {
       }
       // Break only when truly nothing left — not when we just queued trailer frames.
       if (n === 0 && sid === -1n && !submittedTrailers) break;
-      // Collect bytes from all returned vecs.
+      // Collect bytes from all returned vecs. nghttp3 owns these buffers, so
+      // copy before calling add_write_offset or returning to the event loop.
       let totalBytes = 0;
-      const parts: Uint8Array[] = [];
-      const dvVec = new DataView(vecBuf.buffer);
+      let nonEmptyVecs = 0;
+      let singleBaseAddr = 0n;
+      let singleVecLen = 0;
       for (let i = 0; i < n; i++) {
         const baseAddr = dvVec.getBigUint64(i * VEC_ENTRY_SIZE, true);
         const vecLen = Number(dvVec.getBigUint64(i * VEC_ENTRY_SIZE + 8, true));
         if (vecLen === 0) continue;
-        // Reconstruct a C-pointer ArrayBuffer from the raw address bigint.
-        const addrBuf = new ArrayBuffer(8);
-        new DataView(addrBuf).setBigUint64(0, baseAddr, true);
-        parts.push(Pointer.copyFrom(addrBuf, vecLen) as Uint8Array);
+        if (nonEmptyVecs === 0) {
+          singleBaseAddr = baseAddr;
+          singleVecLen = vecLen;
+        }
+        nonEmptyVecs++;
         totalBytes += vecLen;
       }
-      // Release the GC pin now that Pointer.copyFrom has copied the raw bytes.
-      this.#yieldedBytes.delete(sid);
       // Write to the QUIC stream and report consumed bytes to nghttp3.
       if (sid !== -1n) {
         const entry = this.#quicStreams.get(sid);
         if (!entry) {
+          this.#yieldedBytes.delete(sid);
           if (totalBytes > 0) {
             // Writer is gone but nghttp3 still has data queued — close the stream so
             // nghttp3 stops producing for it. Without this, add_write_offset(0) would
@@ -654,13 +696,23 @@ export class Nghttp3Session {
         }
         let consumed = 0;
         if (totalBytes > 0 && entry) {
-          const combined = new Uint8Array(totalBytes);
-          let off = 0;
-          for (const p of parts) {
-            combined.set(p, off);
-            off += p.length;
+          let outgoing: Uint8Array;
+          if (nonEmptyVecs === 1) {
+            outgoing = this.#copyVecBytesToScratch(singleBaseAddr, singleVecLen);
+          } else {
+            outgoing = new Uint8Array(totalBytes);
+            let off = 0;
+            for (let i = 0; i < n; i++) {
+              const baseAddr = dvVec.getBigUint64(i * VEC_ENTRY_SIZE, true);
+              const vecLen = Number(dvVec.getBigUint64(i * VEC_ENTRY_SIZE + 8, true));
+              if (vecLen === 0) continue;
+              this.#copyVecBytesInto(outgoing.subarray(off, off + vecLen), baseAddr, vecLen);
+              off += vecLen;
+            }
           }
-          const outgoing = this.#patchOutgoingStreamBytes(sid, combined);
+          // Release the GC pin now that the nghttp3 bytes have been copied.
+          this.#yieldedBytes.delete(sid);
+          outgoing = this.#patchOutgoingStreamBytes(sid, outgoing);
           if (entry.writer.writeSync === undefined) {
             throw new Error('H3 stream writer does not support synchronous writes');
           }
