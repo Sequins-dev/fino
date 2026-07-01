@@ -603,6 +603,7 @@ type QuicDatagramPacket = {
   ecn?: number;
   path?: QuicDatagramPathMetadata;
 };
+type QuicDatagramPacketCallback = (data: Uint8Array, addr: QuicAddress | undefined, ecn: number | undefined, path: QuicDatagramPathMetadata | undefined) => void;
 /**
 * Bound datagram transport used by the ngtcp2 endpoint driver.
 *
@@ -624,6 +625,8 @@ export interface QuicDatagramTransport {
   recvNow(maxBytes: number): QuicDatagramPacket | null;
   /** Read up to `maxPackets` packets if available, or return an empty array. */
   recvBatch?(maxPackets: number, maxBytes: number): QuicDatagramPacket[];
+  /** Read up to `maxPackets` packets and invoke `callback` for each packet. */
+  recvBatchEach?(maxPackets: number, maxBytes: number, callback: QuicDatagramPacketCallback): number;
   /** Resolve once the transport may have data to read. */
   waitReadable(): Promise<void>;
   /** Try to send one datagram immediately, returning bytes written or errno. */
@@ -843,6 +846,7 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
   #closed = false;
   #localSockaddr: ArrayBuffer;
   #localSockaddrLen: number;
+  #recvPath: QuicDatagramPathMetadata;
   #recvBatch: DatagramRecvBatch | null = null;
   #recvBatchPackets = 0;
   #recvBatchBytes = 0;
@@ -854,6 +858,12 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
     const encoded = encodeAddr(address);
     this.#localSockaddr = encoded.buf;
     this.#localSockaddrLen = encoded.len;
+    this.#recvPath = {
+      localSockaddr: this.#localSockaddr,
+      localSockaddrLen: this.#localSockaddrLen,
+      remoteSockaddr: this.#localSockaddr,
+      remoteSockaddrLen: this.#localSockaddrLen
+    };
   }
   get closed(): boolean {
     return this.#closed;
@@ -915,6 +925,32 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
       const packet = this.recvNow(maxBytes);
       if (packet === null) break;
       packets.push(packet);
+    }
+    return packets;
+  }
+  recvBatchEach(maxPackets: number, maxBytes: number, callback: QuicDatagramPacketCallback): number {
+    if (this.#recvBatch === null || this.#recvBatchPackets !== maxPackets || this.#recvBatchBytes !== maxBytes) {
+      this.#recvBatch = createDatagramRecvBatch(maxPackets, maxBytes);
+      this.#recvBatchPackets = maxPackets;
+      this.#recvBatchBytes = maxBytes;
+    }
+    const received = this.#recvBatch?.recvRawEach(this.#fd, (data, addrBuffer, addrLen, ecn) => {
+      this.#recvPath.remoteSockaddr = addrBuffer;
+      this.#recvPath.remoteSockaddrLen = addrLen;
+      callback(data, undefined, ecn, this.#recvPath);
+    }) ?? null;
+    if (received !== null) {
+      if (received < 0) {
+        if (received === EAGAIN) return 0;
+        throw new Error(`QUIC UDP recvmmsg failed: ${received}`);
+      }
+      return received;
+    }
+    let packets = 0;
+    for (; packets < maxPackets; packets++) {
+      const packet = this.recvNow(maxBytes);
+      if (packet === null) break;
+      callback(packet.data, packet.addr, packet.ecn, packet.path);
     }
     return packets;
   }
@@ -3909,25 +3945,35 @@ export class QuicListener {
   async #runTransportLoop(transport: QuicDatagramTransport): Promise<void> {
     while (!this.#closed && !transport.closed) {
       try {
-        const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
-        if (batch !== undefined) {
-          for (const received of batch) {
-            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn, received.path);
-          }
-          if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
+        const batchCount = transport.recvBatchEach?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE, (data, addr, ecn, path) => {
+          this.endpoint._handleDatagram(this, transport, transport.address, data, addr, ecn, path);
+        });
+        if (batchCount !== undefined) {
+          if (batchCount >= MAX_BATCH_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.endpoint._quicRuntime(), 0);
             continue;
           }
         } else {
-          let packets = 0;
-          for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
-            const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
-            if (received === null) break;
-            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn, received.path);
-          }
-          if (packets >= MAX_READ_PACKETS_PER_TURN) {
-            await runtimeDelay(this.endpoint._quicRuntime(), 0);
-            continue;
+          const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
+          if (batch !== undefined) {
+            for (const received of batch) {
+              this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn, received.path);
+            }
+            if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
+              await runtimeDelay(this.endpoint._quicRuntime(), 0);
+              continue;
+            }
+          } else {
+            let packets = 0;
+            for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
+              const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
+              if (received === null) break;
+              this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn, received.path);
+            }
+            if (packets >= MAX_READ_PACKETS_PER_TURN) {
+              await runtimeDelay(this.endpoint._quicRuntime(), 0);
+              continue;
+            }
           }
         }
         await transport.waitReadable();
@@ -5511,25 +5557,35 @@ export class QuicConnection extends EventTarget {
   async #runSocketLoop(transport: QuicDatagramTransport, localAddress: QuicAddress): Promise<void> {
     while (!this.#closed && this.#clientTransports.has(transport.id)) {
       try {
-        const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
-        if (batch !== undefined) {
-          for (const received of batch) {
-            this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
-          }
-          if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
+        const batchCount = transport.recvBatchEach?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE, (data, addr, ecn, path) => {
+          this.#endpoint._handleDatagram(null, transport, localAddress, data, addr, ecn, path);
+        });
+        if (batchCount !== undefined) {
+          if (batchCount >= MAX_BATCH_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.#runtime, 0);
             continue;
           }
         } else {
-          let packets = 0;
-          for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
-            const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
-            if (received === null) break;
-            this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
-          }
-          if (packets >= MAX_READ_PACKETS_PER_TURN) {
-            await runtimeDelay(this.#runtime, 0);
-            continue;
+          const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
+          if (batch !== undefined) {
+            for (const received of batch) {
+              this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
+            }
+            if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
+              await runtimeDelay(this.#runtime, 0);
+              continue;
+            }
+          } else {
+            let packets = 0;
+            for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
+              const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
+              if (received === null) break;
+              this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
+            }
+            if (packets >= MAX_READ_PACKETS_PER_TURN) {
+              await runtimeDelay(this.#runtime, 0);
+              continue;
+            }
           }
         }
         await transport.waitReadable();

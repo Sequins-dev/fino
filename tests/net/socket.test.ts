@@ -199,6 +199,28 @@ describe('TCP / UDP loopback', () => {
         if (!Array.isArray(rawPackets)) throw new Error('expected raw-address batch results');
         t.equal(rawPackets.some((packet: any) => Object.hasOwn(packet, 'addr')), false, 'raw-address batch receive skips decoded addresses');
         t.deepEqual(rawPackets.map((packet: any) => decodeUtf8(packet.data)).sort(), ['raw-one', 'raw-two'], 'raw-address batch payloads match');
+        const sentEach = sock.sendmmsgBatch(client, [{
+          data: encodeUtf8('each-one'),
+          dest
+        }, {
+          data: encodeUtf8('each-two'),
+          dest
+        }]);
+        t.ok(sentEach !== null && sentEach.sent === 2, 'sendmmsgBatch accepted callback-mode datagrams');
+        await loop.readable(server);
+        const recvRawEach = (rawBatch as any).recvRawEach;
+        t.equal(typeof recvRawEach, 'function', 'batch receive exposes callback raw-address mode');
+        if (typeof recvRawEach !== 'function') return;
+        const eachPayloads: string[] = [];
+        const eachAddrLens: number[] = [];
+        const eachCount = recvRawEach.call(rawBatch, server, (data: Uint8Array, addrBuffer: ArrayBuffer, addrLen: number) => {
+          t.ok(addrBuffer instanceof ArrayBuffer, 'callback raw-address receive exposes sockaddr storage');
+          eachPayloads.push(decodeUtf8(data));
+          eachAddrLens.push(addrLen);
+        });
+        t.equal(eachCount, 2, 'callback raw-address batch receive reports datagram count');
+        t.deepEqual(eachPayloads.sort(), ['each-one', 'each-two'], 'callback raw-address batch payloads match');
+        t.equal(eachAddrLens.every((len) => Number.isInteger(len) && len > 0), true, 'callback raw-address batch reports address lengths');
       }
     } finally {
       sock.close(server);
