@@ -180,6 +180,26 @@ describe('TCP / UDP loopback', () => {
           t.equal(decoded.port, packet.addr.port, 'raw sockaddr decodes to the reported IPv4 port');
         }
       }
+      const rawBatch = sock.createDatagramRecvBatch(2, 64);
+      if (rawBatch !== null) {
+        const sentRaw = sock.sendmmsgBatch(client, [{
+          data: encodeUtf8('raw-one'),
+          dest
+        }, {
+          data: encodeUtf8('raw-two'),
+          dest
+        }]);
+        t.ok(sentRaw !== null && sentRaw.sent === 2, 'sendmmsgBatch accepted raw-mode datagrams');
+        await loop.readable(server);
+        const recvRaw = (rawBatch as any).recvRaw;
+        t.equal(typeof recvRaw, 'function', 'batch receive exposes a raw-address mode');
+        if (typeof recvRaw !== 'function') return;
+        const rawPackets = recvRaw.call(rawBatch, server);
+        t.ok(Array.isArray(rawPackets), 'raw-address batch receive returned datagrams');
+        if (!Array.isArray(rawPackets)) throw new Error('expected raw-address batch results');
+        t.equal(rawPackets.some((packet: any) => Object.hasOwn(packet, 'addr')), false, 'raw-address batch receive skips decoded addresses');
+        t.deepEqual(rawPackets.map((packet: any) => decodeUtf8(packet.data)).sort(), ['raw-one', 'raw-two'], 'raw-address batch payloads match');
+      }
     } finally {
       sock.close(server);
       sock.close(client);

@@ -1251,6 +1251,25 @@ export type RecvmsgBatchPacket = {
   ecn?: number;
 };
 /**
+* Datagram packet returned by raw reusable batch receive helpers.
+*
+* The packet carries raw sockaddr storage but intentionally does not decode it
+* to an address object. This lets protocol hot paths avoid formatting peer
+* addresses when routing already identified the packet.
+*
+* @internal
+*/
+export type RecvmsgBatchRawPacket = {
+  /** Received datagram bytes. */
+  data: Uint8Array;
+  /** Raw sockaddr storage reported by the platform socket API. */
+  addrBuffer: ArrayBuffer;
+  /** Number of valid bytes in `addrBuffer`. */
+  addrLen: number;
+  /** Optional ECN bits when ancillary data was present. */
+  ecn?: number;
+};
+/**
 * Reusable datagram receive batch for hot UDP loops.
 *
 * Packet byte and address views are valid until the next `recv()` call on this
@@ -1260,6 +1279,7 @@ export type RecvmsgBatchPacket = {
 */
 export interface DatagramRecvBatch {
   recv(fd: number, flags?: number): RecvmsgBatchPacket[] | number;
+  recvRaw(fd: number, flags?: number): RecvmsgBatchRawPacket[] | number;
 }
 /**
 * Send a batch of UDP datagrams with the platform batch-send primitive.
@@ -1526,6 +1546,12 @@ class LinuxDatagramRecvBatch implements DatagramRecvBatch {
     }
   }
   recv(fd: number, flags: number = 0): RecvmsgBatchPacket[] | number {
+    return this.#recv(fd, flags, true) as RecvmsgBatchPacket[] | number;
+  }
+  recvRaw(fd: number, flags: number = 0): RecvmsgBatchRawPacket[] | number {
+    return this.#recv(fd, flags, false) as RecvmsgBatchRawPacket[] | number;
+  }
+  #recv(fd: number, flags: number, decodeAddress: boolean): Array<RecvmsgBatchPacket | RecvmsgBatchRawPacket> | number {
     const fn = (lib.symbols as any).recvmmsg;
     const msg = this.#msg;
     for (let i = 0; i < this.#maxPackets; i++) {
@@ -1538,7 +1564,7 @@ class LinuxDatagramRecvBatch implements DatagramRecvBatch {
     this.#timeout.setBigUint64(8, 0n, true);
     const rc = Number(fn(fd, this.#msgvec, this.#maxPackets, flags, this.#timeoutBuf));
     if (rc < 0) return -getErrno();
-    const packets: RecvmsgBatchPacket[] = [];
+    const packets: Array<RecvmsgBatchPacket | RecvmsgBatchRawPacket> = [];
     for (let i = 0; i < rc; i++) {
       const base = i * MMSGHDR_SIZE + MMSG_HDR;
       const n = msg.getUint32(i * MMSGHDR_SIZE + MMSG_LEN, true);
@@ -1546,13 +1572,16 @@ class LinuxDatagramRecvBatch implements DatagramRecvBatch {
       const controlLen = readSize(msg, base + MSG_CONTROLLEN);
       const ecn = readCmsgEcn(this.#controlBufs[i]!, controlLen);
       const addrBuffer = this.#addrBufs[i]!;
-      packets.push({
+      const packet = {
         data: new Uint8Array(this.#dataBufs[i]!, 0, n),
-        addr: decodeAddr(addrBuffer.slice(0, addrLen)),
         addrBuffer,
         addrLen,
         ...ecn === undefined ? {} : { ecn }
-      });
+      };
+      packets.push(decodeAddress ? {
+        ...packet,
+        addr: decodeAddr(addrBuffer.slice(0, addrLen))
+      } : packet);
     }
     return packets;
   }
@@ -1589,6 +1618,12 @@ class DarwinDatagramRecvBatch implements DatagramRecvBatch {
     }
   }
   recv(fd: number, flags: number = 0): RecvmsgBatchPacket[] | number {
+    return this.#recv(fd, flags, true) as RecvmsgBatchPacket[] | number;
+  }
+  recvRaw(fd: number, flags: number = 0): RecvmsgBatchRawPacket[] | number {
+    return this.#recv(fd, flags, false) as RecvmsgBatchRawPacket[] | number;
+  }
+  #recv(fd: number, flags: number, decodeAddress: boolean): Array<RecvmsgBatchPacket | RecvmsgBatchRawPacket> | number {
     const fn = (lib.symbols as any).recvmsg_x;
     const msg = this.#msg;
     for (let i = 0; i < this.#maxPackets; i++) {
@@ -1600,7 +1635,7 @@ class DarwinDatagramRecvBatch implements DatagramRecvBatch {
     }
     const rc = Number(fn(fd, this.#msgvec, this.#maxPackets, flags));
     if (rc < 0) return -getErrno();
-    const packets: RecvmsgBatchPacket[] = [];
+    const packets: Array<RecvmsgBatchPacket | RecvmsgBatchRawPacket> = [];
     for (let i = 0; i < rc; i++) {
       const base = i * MSGHDR_X_SIZE;
       const n = Number(msg.getBigUint64(base + MSGHDR_X_DATALEN, true));
@@ -1608,13 +1643,16 @@ class DarwinDatagramRecvBatch implements DatagramRecvBatch {
       const controlLen = readSize(msg, base + MSG_CONTROLLEN);
       const ecn = readCmsgEcn(this.#controlBufs[i]!, controlLen);
       const addrBuffer = this.#addrBufs[i]!;
-      packets.push({
+      const packet = {
         data: new Uint8Array(this.#dataBufs[i]!, 0, n),
-        addr: decodeAddr(addrBuffer.slice(0, addrLen)),
         addrBuffer,
         addrLen,
         ...ecn === undefined ? {} : { ecn }
-      });
+      };
+      packets.push(decodeAddress ? {
+        ...packet,
+        addr: decodeAddr(addrBuffer.slice(0, addrLen))
+      } : packet);
     }
     return packets;
   }
@@ -1628,9 +1666,14 @@ class DarwinDatagramRecvBatch implements DatagramRecvBatch {
 * @internal
 */
 export function createDatagramRecvBatch(maxPackets: number, maxBytes: number = 65536): DatagramRecvBatch | null {
-  if (maxPackets <= 0) return { recv() {
-    return [];
-  } };
+  if (maxPackets <= 0) return {
+    recv() {
+      return [];
+    },
+    recvRaw() {
+      return [];
+    }
+  };
   if (isDarwin) return typeof (lib.symbols as any).recvmsg_x === 'function' ? new DarwinDatagramRecvBatch(maxPackets, maxBytes) : null;
   if (isLinux) return typeof (lib.symbols as any).recvmmsg === 'function' ? new LinuxDatagramRecvBatch(maxPackets, maxBytes) : null;
   return null;
