@@ -34,7 +34,7 @@
 * @internal
 */
 import { TextDecoder as _TextDecoder } from '../../../../globals/encoding.ts';
-import { sym, FfiCallback, Pointer, h2Available, NGHTTP2_FRAME_TYPE_HEADERS, NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_DATA_FLAG_EOF, NGHTTP2_DATA_FLAG_NO_END_STREAM, NGHTTP2_ERR_DEFERRED, NGHTTP2_NV_FLAG_NONE, DP2_SOURCE, DP2_READ_CALLBACK, readFrameHd, buildNvArray, buildSettingsArray } from './bindings.ts';
+import { sym, FfiCallback, Pointer, h2Available, NGHTTP2_FRAME_TYPE_HEADERS, NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_DATA_FLAG_EOF, NGHTTP2_DATA_FLAG_NO_END_STREAM, NGHTTP2_ERR_DEFERRED, NGHTTP2_NV_FLAG_NONE, DP2_SOURCE, DP2_READ_CALLBACK, FRAME_HD_STREAM_ID, readFrameHd, buildNvArray, buildSettingsArray } from './bindings.ts';
 /**
 * Re-export helpers for building nghttp2 name/value and settings arrays.
 *
@@ -141,6 +141,20 @@ interface DataSlot {
   noEndStream?: boolean;
 }
 const _dec = new _TextDecoder();
+// Reused scratch for decoding header name/value bytes out of nghttp2-owned
+// memory. The on_header callback fires synchronously on the main thread, so a
+// single growable buffer avoids allocating two Uint8Arrays per header.
+let _hdrScratch = new Uint8Array(512);
+function _decodeFromPtr(ptr: ArrayBuffer, len: number): string {
+  if (len === 0) return '';
+  if (len > _hdrScratch.byteLength) {
+    let size = _hdrScratch.byteLength;
+    while (size < len) size *= 2;
+    _hdrScratch = new Uint8Array(size);
+  }
+  Pointer.copyFromInto(_hdrScratch, ptr, len);
+  return _dec.decode(_hdrScratch.subarray(0, len));
+}
 // ---------------------------------------------------------------------------
 // Nghttp2Session
 // ---------------------------------------------------------------------------
@@ -522,10 +536,12 @@ export class Nghttp2Session {
       result: 'i32'
     }, function nghttp2OnHeaderCallback(_session: ArrayBuffer, frame: ArrayBuffer, namePtrBuf: ArrayBuffer, nameLen: bigint, valuePtrBuf: ArrayBuffer, valueLen: bigint, flags: number, _userData: ArrayBuffer) {
       // Read name/value before returning - C retains ownership of the memory.
-      const nameBytes = Pointer.copyFrom(namePtrBuf, Number(nameLen)) as Uint8Array;
-      const valueBytes = Pointer.copyFrom(valuePtrBuf, Number(valueLen)) as Uint8Array;
-      const { streamId } = readFrameHd(frame);
-      cb.onHeader(streamId, _dec.decode(nameBytes), _dec.decode(valueBytes), flags);
+      // Decode straight from a reused scratch buffer and read only the stream
+      // id field to avoid allocating per header.
+      const name = _decodeFromPtr(namePtrBuf, Number(nameLen));
+      const value = _decodeFromPtr(valuePtrBuf, Number(valueLen));
+      const streamId = Pointer.readI32(frame, FRAME_HD_STREAM_ID) as number;
+      cb.onHeader(streamId, name, value, flags);
       return 0;
     });
     sym!.nghttp2_session_callbacks_set_on_header_callback(cbsHandle, onHeader.pointer);
