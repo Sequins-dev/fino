@@ -63,7 +63,7 @@ import { isConnectionTakeover } from 'internal:net/http/driver';
 import { Request, Response, Headers } from '../../../../net/http/index.ts';
 import { Scanner } from '../../../../parsing/scanner.ts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.ts';
-import { NGHTTP2_FLAG_END_STREAM, NGHTTP2_FLAG_END_HEADERS, NGHTTP2_FLAG_PADDED, NGHTTP2_FRAME_TYPE_HEADERS, NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_FRAME_TYPE_PRIORITY, NGHTTP2_FRAME_TYPE_RST_STREAM, NGHTTP2_FRAME_TYPE_SETTINGS, NGHTTP2_FRAME_TYPE_PUSH_PROMISE, NGHTTP2_FRAME_TYPE_PING, NGHTTP2_FRAME_TYPE_GOAWAY, NGHTTP2_FRAME_TYPE_WINDOW_UPDATE, NGHTTP2_FRAME_TYPE_CONTINUATION, NGHTTP2_INTERNAL_ERROR, NGHTTP2_PROTOCOL_ERROR, NGHTTP2_REFUSED_STREAM, NGHTTP2_STREAM_CLOSED, NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE } from './bindings.ts';
+import { NGHTTP2_FLAG_END_STREAM, NGHTTP2_FLAG_END_HEADERS, NGHTTP2_FLAG_PADDED, NGHTTP2_FRAME_TYPE_HEADERS, NGHTTP2_FRAME_TYPE_DATA, NGHTTP2_FRAME_TYPE_PRIORITY, NGHTTP2_FRAME_TYPE_RST_STREAM, NGHTTP2_FRAME_TYPE_SETTINGS, NGHTTP2_FRAME_TYPE_PUSH_PROMISE, NGHTTP2_FRAME_TYPE_PING, NGHTTP2_FRAME_TYPE_GOAWAY, NGHTTP2_FRAME_TYPE_WINDOW_UPDATE, NGHTTP2_FRAME_TYPE_CONTINUATION, NGHTTP2_INTERNAL_ERROR, NGHTTP2_PROTOCOL_ERROR, NGHTTP2_REFUSED_STREAM, NGHTTP2_STREAM_CLOSED, NGHTTP2_ENHANCE_YOUR_CALM, NGHTTP2_SETTINGS_MAX_CONCURRENT_STREAMS, NGHTTP2_SETTINGS_MAX_HEADER_LIST_SIZE } from './bindings.ts';
 import { Nghttp2Session } from './session.ts';
 import type { H2StreamCallbacks } from './session.ts';
 // ---------------------------------------------------------------------------
@@ -177,6 +177,13 @@ const _FORBIDDEN_HEADERS = new Set([
 const NGHTTP2_FRAME_SIZE_ERROR = 6;
 const NGHTTP2_FLOW_CONTROL_ERROR = 3;
 const _DEFAULT_MAX_FRAME_SIZE = 16 * 1024;
+// Upper bound on the total bytes of a single HEADERS + CONTINUATION block held
+// while waiting for END_HEADERS. A client can otherwise stream CONTINUATION
+// frames indefinitely without ever setting END_HEADERS, forcing unbounded
+// buffering before nghttp2 ever sees (and could reject) the block — the
+// HTTP/2 CONTINUATION-flood denial of service. This matches the advertised
+// SETTINGS_MAX_HEADER_LIST_SIZE; a legitimate header block never exceeds it.
+const _MAX_HEADER_BLOCK_BYTES = 65536;
 const _INITIAL_FLOW_CONTROL_WINDOW = 65535;
 const _MAX_FLOW_CONTROL_WINDOW = 2147483647;
 const _MAX_WRITEV_CHUNKS = 16;
@@ -279,6 +286,7 @@ class H2ServerFrameValidator {
   #lastClientStreamId = 0;
   #continuationStream = 0;
   #heldHeaderBlock: Uint8Array[] = [];
+  #heldHeaderBytes = 0;
   #streams = new Map<number, H2RawStream>();
   #halfClosedInCurrentPush = new Set<number>();
   #openStreams = 0;
@@ -373,6 +381,7 @@ class H2ServerFrameValidator {
       if (action !== null) {
         feedParts.length = 0;
         this.#heldHeaderBlock = [];
+        this.#heldHeaderBytes = 0;
         actions.push(action);
         this.#buffer = this.#buffer.subarray(pos);
         return {
@@ -383,12 +392,31 @@ class H2ServerFrameValidator {
       const frameBytes = this.#buffer.subarray(frameStart, frameEnd);
       if (type === NGHTTP2_FRAME_TYPE_HEADERS && (flags & NGHTTP2_FLAG_END_HEADERS) === 0) {
         this.#heldHeaderBlock = [frameBytes];
+        this.#heldHeaderBytes = frameBytes.byteLength;
       } else if (type === NGHTTP2_FRAME_TYPE_CONTINUATION) {
         this.#heldHeaderBlock.push(frameBytes);
+        this.#heldHeaderBytes += frameBytes.byteLength;
+        if (this.#heldHeaderBytes > _MAX_HEADER_BLOCK_BYTES) {
+          // CONTINUATION flood: the peer keeps extending the header block
+          // without END_HEADERS. Refuse before buffering grows further.
+          feedParts.length = 0;
+          this.#heldHeaderBlock = [];
+          this.#heldHeaderBytes = 0;
+          this.#buffer = this.#buffer.subarray(pos);
+          actions.push({
+            kind: 'goaway',
+            errorCode: NGHTTP2_ENHANCE_YOUR_CALM
+          });
+          return {
+            feed: _concatBytes(feedParts),
+            actions
+          };
+        }
         if (this.#continuationStream === 0) {
           const complete = _concatBytes(this.#heldHeaderBlock);
           if (complete) feedParts.push(complete);
           this.#heldHeaderBlock = [];
+          this.#heldHeaderBytes = 0;
         }
       } else {
         feedParts.push(frameBytes);

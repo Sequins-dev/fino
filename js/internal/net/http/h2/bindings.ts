@@ -766,6 +766,18 @@ export const NGHTTP2_STREAM_CLOSED = 5;
 */
 export const NGHTTP2_REFUSED_STREAM = 7;
 /**
+* HTTP/2 ENHANCE_YOUR_CALM code (RFC 9113 §7). Sent when a peer exhibits
+* behavior that could cause excessive load, such as a CONTINUATION flood.
+*
+* ```ts
+* import { NGHTTP2_ENHANCE_YOUR_CALM } from 'internal:net/http/h2/bindings';
+* NGHTTP2_ENHANCE_YOUR_CALM;
+* ```
+*
+* @internal
+*/
+export const NGHTTP2_ENHANCE_YOUR_CALM = 11;
+/**
 * HTTP/2 NO_ERROR code.
 *
 * ```ts
