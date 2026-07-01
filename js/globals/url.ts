@@ -166,7 +166,14 @@ function _stripURLTabsAndNewlines(value: string): string {
 * @internal
 */
 export function _resolveObjectURL(url: string): Blob | null {
-  const parsed = _parseURL(String(url), null);
+  // Only blob: URLs can resolve to an object; skip the full parse otherwise.
+  // Request URLs are already-serialized hrefs, so a scheme prefix check is
+  // sufficient and avoids a URL parse on every non-blob request.
+  const s = String(url);
+  if (s.length < 5 || (s.charCodeAt(0) | 32) !== 98 || !/^blob:/i.test(s)) {
+    return null;
+  }
+  const parsed = _parseURL(s, null);
   if (parsed === null || parsed.scheme !== 'blob') return null;
   return _blobUrlStore.get(_objectUrlWithoutFragment(_serialize(parsed))) ?? null;
 }
@@ -198,6 +205,18 @@ function _pctEncodeCP(cp: number): string {
 // Existing valid %XX sequences are passed through unchanged (no double-encoding).
 // Any char in the encode set, any non-ASCII char, or any C0/DEL control is encoded.
 function _percentEncode(str: string, encodeSet: string): string {
+  // Fast path: most components (ASCII paths/queries with no reserved chars or
+  // existing escapes) need no encoding at all. Scan once and return the input
+  // unchanged, avoiding per-char string building.
+  let needsEncoding = false;
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code <= 31 || code === 37 || code > 126 || encodeSet.indexOf(str[i]!) >= 0) {
+      needsEncoding = true;
+      break;
+    }
+  }
+  if (!needsEncoding) return str;
   let result = '';
   for (let i = 0; i < str.length; i++) {
     const c = str[i];
@@ -905,6 +924,17 @@ function _punycodeLabel(label: string): string {
   return 'xn--' + output;
 }
 function _normalizeDomain(host: string): string {
+  // Fast path: a purely ASCII host needs no IDNA/punycode processing, only
+  // lowercasing. This avoids splitting into labels and allocating a code-point
+  // array per label for the common case (e.g. "localhost", "example.com").
+  let ascii = true;
+  for (let i = 0; i < host.length; i++) {
+    if (host.charCodeAt(i) > 127) {
+      ascii = false;
+      break;
+    }
+  }
+  if (ascii) return host.toLowerCase();
   return host.split('.').map(_punycodeLabel).join('.').toLowerCase();
 }
 function _parseIPv4Number(part: string): number | null {
