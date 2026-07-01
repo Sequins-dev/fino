@@ -370,11 +370,11 @@ fn raw_to_v8<'s>(
             let v = i64::from_le_bytes(b);
             v8::BigInt::new_from_i64(scope, v).into()
         }
-        NativeType::USize => {
+        NativeType::USize | NativeType::USizeBig => {
             let v = usize::from_le_bytes(b);
             v8::BigInt::new_from_u64(scope, v as u64).into()
         }
-        NativeType::ISize => {
+        NativeType::ISize | NativeType::ISizeBig => {
             let v = isize::from_le_bytes(b);
             v8::BigInt::new_from_i64(scope, v as i64).into()
         }

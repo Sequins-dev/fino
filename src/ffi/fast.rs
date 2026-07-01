@@ -118,8 +118,8 @@ fn native_to_ctype(ty: &NativeType) -> CTypeInfo {
         }
         NativeType::U32 => Type::Uint32,
         // 64-bit int types → Uint64/Int64 (BigInt in JS)
-        NativeType::U64 | NativeType::USize => Type::Uint64,
-        NativeType::I64 | NativeType::ISize => Type::Int64,
+        NativeType::U64 | NativeType::USize | NativeType::USizeBig => Type::Uint64,
+        NativeType::I64 | NativeType::ISize | NativeType::ISizeBig => Type::Int64,
         // Buffer and Pointer → V8Value (raw Local<Value> pointer passed in-register).
         // For Buffer: V8 passes a TypedArray/ArrayBuffer; we extract the backing store ptr.
         // For Pointer: V8 passes an 8-byte ArrayBuffer; we read its contents as a u64 address.
@@ -286,8 +286,8 @@ unsafe fn fast_dispatch(sym: &FfiSymbol, args: &[u64]) -> u64 {
         NativeType::I16 => r as u16 as i16 as i64 as u64,
         NativeType::U32 => r as u32 as u64,
         NativeType::I32 => r as u32 as i32 as i64 as u64,
-        NativeType::U64 | NativeType::USize => r,
-        NativeType::I64 | NativeType::ISize => r,
+        NativeType::U64 | NativeType::USize | NativeType::USizeBig => r,
+        NativeType::I64 | NativeType::ISize | NativeType::ISizeBig => r,
         NativeType::Pointer
         | NativeType::IgnoredPointer
         | NativeType::Buffer
@@ -340,8 +340,8 @@ unsafe fn native_value_to_u64(value: NativeValue, ty: &NativeType) -> u64 {
         NativeType::I32 => unsafe { value.i32_val as i64 as u64 },
         NativeType::U64 => unsafe { value.u64_val },
         NativeType::I64 => unsafe { value.i64_val as u64 },
-        NativeType::USize => unsafe { value.usize_val as u64 },
-        NativeType::ISize => unsafe { value.isize_val as i64 as u64 },
+        NativeType::USize | NativeType::USizeBig => unsafe { value.usize_val as u64 },
+        NativeType::ISize | NativeType::ISizeBig => unsafe { value.isize_val as i64 as u64 },
         NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => unsafe {
             value.ptr_val as u64
         },

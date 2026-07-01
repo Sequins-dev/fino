@@ -95,6 +95,8 @@ await lib.symbols.usleep(1000);          // → Promise (async)
 
 **FFI types:** `u8 i8 u16 i16 u32 i32 u64 i64 usize isize f32 f64 bool void pointer buffer`
 
+`usize`/`isize` return values are JS `number`s (f64), which lose precision above 2^53. Use `usizeBig`/`isizeBig` (ABI-identical) when a return needs the full 64-bit range as a `BigInt`.
+
 **`async: true`** on a symbol definition offloads the call to a thread pool and returns a Promise. Only scalar params are supported (no `pointer`/`buffer` for async symbols — the GC may collect the ArrayBuffer before the call completes).
 
 ### Realm / Facade system

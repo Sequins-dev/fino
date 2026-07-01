@@ -133,8 +133,8 @@ pub fn ffi_call<'s>(
                 NativeType::I64 => arg(&val.i64_val),
                 NativeType::F32 => arg(&val.f32_val),
                 NativeType::F64 => arg(&val.f64_val),
-                NativeType::USize => arg(&val.usize_val),
-                NativeType::ISize => arg(&val.isize_val),
+                NativeType::USize | NativeType::USizeBig => arg(&val.usize_val),
+                NativeType::ISize | NativeType::ISizeBig => arg(&val.isize_val),
                 NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
                     arg(&val.ptr_val)
                 }
@@ -188,10 +188,10 @@ fn js_to_native<'s>(
         NativeType::F64 => NativeValue {
             f64_val: val.number_value(scope)?,
         },
-        NativeType::USize => NativeValue {
+        NativeType::USize | NativeType::USizeBig => NativeValue {
             usize_val: js_to_i128(scope, val)? as usize,
         },
-        NativeType::ISize => NativeValue {
+        NativeType::ISize | NativeType::ISizeBig => NativeValue {
             isize_val: js_to_i128(scope, val)? as isize,
         },
         NativeType::Pointer | NativeType::IgnoredPointer => NativeValue {
@@ -244,8 +244,12 @@ impl OwnedArg {
                 NativeType::I32 => bytes[..4].copy_from_slice(&val.i32_val.to_le_bytes()),
                 NativeType::U64 => bytes.copy_from_slice(&val.u64_val.to_le_bytes()),
                 NativeType::I64 => bytes.copy_from_slice(&val.i64_val.to_le_bytes()),
-                NativeType::USize => bytes.copy_from_slice(&val.usize_val.to_le_bytes()),
-                NativeType::ISize => bytes.copy_from_slice(&val.isize_val.to_le_bytes()),
+                NativeType::USize | NativeType::USizeBig => {
+                    bytes.copy_from_slice(&val.usize_val.to_le_bytes())
+                }
+                NativeType::ISize | NativeType::ISizeBig => {
+                    bytes.copy_from_slice(&val.isize_val.to_le_bytes())
+                }
                 NativeType::F32 => bytes[..4].copy_from_slice(&val.f32_val.to_le_bytes()),
                 NativeType::F64 => bytes.copy_from_slice(&val.f64_val.to_le_bytes()),
                 NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
@@ -304,10 +308,10 @@ impl OwnedArg {
             NativeType::I64 => NativeValue {
                 i64_val: i64::from_le_bytes(*b),
             },
-            NativeType::USize => NativeValue {
+            NativeType::USize | NativeType::USizeBig => NativeValue {
                 usize_val: usize::from_le_bytes(*b),
             },
-            NativeType::ISize => NativeValue {
+            NativeType::ISize | NativeType::ISizeBig => NativeValue {
                 isize_val: isize::from_le_bytes(*b),
             },
             NativeType::F32 => NativeValue {
@@ -437,8 +441,8 @@ fn call_scalar_sync(
                 NativeType::I64 => arg(&val.i64_val),
                 NativeType::F32 => arg(&val.f32_val),
                 NativeType::F64 => arg(&val.f64_val),
-                NativeType::USize => arg(&val.usize_val),
-                NativeType::ISize => arg(&val.isize_val),
+                NativeType::USize | NativeType::USizeBig => arg(&val.usize_val),
+                NativeType::ISize | NativeType::ISizeBig => arg(&val.isize_val),
                 NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
                     arg(&val.ptr_val)
                 }
@@ -489,11 +493,11 @@ fn call_scalar_sync(
                 let v: i64 = cif.call(code_ptr, &ffi_args);
                 bytes.copy_from_slice(&v.to_le_bytes());
             }
-            NativeType::USize => {
+            NativeType::USize | NativeType::USizeBig => {
                 let v: usize = cif.call(code_ptr, &ffi_args);
                 bytes.copy_from_slice(&v.to_le_bytes());
             }
-            NativeType::ISize => {
+            NativeType::ISize | NativeType::ISizeBig => {
                 let v: isize = cif.call(code_ptr, &ffi_args);
                 bytes.copy_from_slice(&v.to_le_bytes());
             }
@@ -718,6 +722,14 @@ unsafe fn dispatch_and_convert<'s>(
             let v: isize = unsafe { symbol.cif.call(cp, ffi_args) };
             v8::Number::new(scope, v as f64).into()
         }
+        NativeType::USizeBig => {
+            let v: usize = unsafe { symbol.cif.call(cp, ffi_args) };
+            v8::BigInt::new_from_u64(scope, v as u64).into()
+        }
+        NativeType::ISizeBig => {
+            let v: isize = unsafe { symbol.cif.call(cp, ffi_args) };
+            v8::BigInt::new_from_i64(scope, v as i64).into()
+        }
         NativeType::F32 => {
             let v: f32 = unsafe { symbol.cif.call(cp, ffi_args) };
             v8::Number::new(scope, v as f64).into()
@@ -789,6 +801,8 @@ unsafe fn direct_dispatch_and_convert<'s>(
         NativeType::I64 => v8::BigInt::new_from_i64(scope, raw as i64).into(),
         NativeType::USize => v8::Number::new(scope, raw as usize as f64).into(),
         NativeType::ISize => v8::Number::new(scope, raw as isize as f64).into(),
+        NativeType::USizeBig => v8::BigInt::new_from_u64(scope, raw).into(),
+        NativeType::ISizeBig => v8::BigInt::new_from_i64(scope, raw as i64).into(),
         NativeType::Pointer
         | NativeType::IgnoredPointer
         | NativeType::Buffer

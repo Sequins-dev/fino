@@ -309,11 +309,11 @@ unsafe fn c_arg_to_v8<'s>(
             let value = unsafe { *(arg_ptr as *const i64) };
             v8::BigInt::new_from_i64(scope, value).into()
         }
-        NativeType::USize => {
+        NativeType::USize | NativeType::USizeBig => {
             let value = unsafe { *(arg_ptr as *const usize) };
             v8::BigInt::new_from_u64(scope, value as u64).into()
         }
-        NativeType::ISize => {
+        NativeType::ISize | NativeType::ISizeBig => {
             let value = unsafe { *(arg_ptr as *const isize) };
             v8::BigInt::new_from_i64(scope, value as i64).into()
         }
@@ -347,8 +347,12 @@ fn int_to_v8<'s>(
         NativeType::I16 => v8::Number::new(scope, (n as i16) as f64).into(),
         NativeType::U32 => v8::Number::new(scope, (n as u32) as f64).into(),
         NativeType::I32 => v8::Number::new(scope, (n as i32) as f64).into(),
-        NativeType::U64 | NativeType::USize => v8::BigInt::new_from_u64(scope, n as u64).into(),
-        NativeType::I64 | NativeType::ISize => v8::BigInt::new_from_i64(scope, n).into(),
+        NativeType::U64 | NativeType::USize | NativeType::USizeBig => {
+            v8::BigInt::new_from_u64(scope, n as u64).into()
+        }
+        NativeType::I64 | NativeType::ISize | NativeType::ISizeBig => {
+            v8::BigInt::new_from_i64(scope, n).into()
+        }
         _ => v8::Number::new(scope, n as f64).into(),
     }
 }
@@ -468,8 +472,12 @@ pub unsafe fn read_c_arg(arg_ptr: *const c_void, ty: &NativeType) -> SendArg {
             NativeType::I32 => SendArg::Integer(*(arg_ptr as *const i32) as i64),
             NativeType::U64 => SendArg::Integer(*(arg_ptr as *const u64) as i64),
             NativeType::I64 => SendArg::Integer(*(arg_ptr as *const i64)),
-            NativeType::USize => SendArg::Integer(*(arg_ptr as *const usize) as i64),
-            NativeType::ISize => SendArg::Integer(*(arg_ptr as *const isize) as i64),
+            NativeType::USize | NativeType::USizeBig => {
+                SendArg::Integer(*(arg_ptr as *const usize) as i64)
+            }
+            NativeType::ISize | NativeType::ISizeBig => {
+                SendArg::Integer(*(arg_ptr as *const isize) as i64)
+            }
             NativeType::F32 => SendArg::Float(*(arg_ptr as *const f32) as f64),
             NativeType::F64 => SendArg::Float(*(arg_ptr as *const f64)),
             NativeType::Pointer | NativeType::Buffer => {
@@ -518,10 +526,10 @@ pub unsafe fn write_c_result(
             NativeType::I32 => {
                 *(result_ptr as *mut i32) = call_result_to_i64(&call_result) as i32;
             }
-            NativeType::U64 | NativeType::USize => {
+            NativeType::U64 | NativeType::USize | NativeType::USizeBig => {
                 *(result_ptr as *mut u64) = call_result_to_i64(&call_result) as u64;
             }
-            NativeType::I64 | NativeType::ISize => {
+            NativeType::I64 | NativeType::ISize | NativeType::ISizeBig => {
                 *(result_ptr as *mut i64) = call_result_to_i64(&call_result);
             }
             NativeType::F32 => {

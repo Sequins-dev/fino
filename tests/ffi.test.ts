@@ -246,3 +246,25 @@ describe('StructType', () => {
     t.ok(Number(lib.symbols.memcmp(a, b, 3)) < 0);
   });
 });
+describe('usizeBig / isizeBig return types', () => {
+  const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
+  const libNum = dlopen(LIBC, { strlen: { parameters: ['buffer'], result: 'usize' } });
+  const libUBig = dlopen(LIBC, { strlen: { parameters: ['buffer'], result: 'usizeBig' } });
+  const libIBig = dlopen(LIBC, { strlen: { parameters: ['buffer'], result: 'isizeBig' } });
+  const cstr = new TextEncoder().encode('hello\0');
+  it('usize returns a JS number', (t) => {
+    const n = libNum.symbols.strlen(cstr);
+    t.equal(typeof n, 'number', 'usize -> number');
+    t.equal(n, 5, 'strlen("hello") === 5');
+  });
+  it('usizeBig returns a JS bigint', (t) => {
+    const n = libUBig.symbols.strlen(cstr);
+    t.equal(typeof n, 'bigint', 'usizeBig -> bigint');
+    t.equal(n, 5n, 'strlen("hello") === 5n');
+  });
+  it('isizeBig returns a JS bigint', (t) => {
+    const n = libIBig.symbols.strlen(cstr);
+    t.equal(typeof n, 'bigint', 'isizeBig -> bigint');
+    t.equal(n, 5n, 'strlen("hello") === 5n');
+  });
+});

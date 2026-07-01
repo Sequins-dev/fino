@@ -18,6 +18,13 @@ pub enum NativeType {
     I64,
     USize,
     ISize,
+    /// Pointer-sized unsigned integer marshalled as a JS `BigInt` in both
+    /// directions. ABI-identical to `USize`; use when the full 64-bit range
+    /// matters and `USize`'s `number` (f64) return would lose precision.
+    USizeBig,
+    /// Pointer-sized signed integer marshalled as a JS `BigInt`. ABI-identical
+    /// to `ISize`; the `BigInt` counterpart of `ISize`.
+    ISizeBig,
     F32,
     F64,
     /// Opaque C pointer (`void*`). Represented in JS as a `FinoPointer` object or `null`.
@@ -45,6 +52,8 @@ impl NativeType {
             "i64" => Ok(Self::I64),
             "usize" => Ok(Self::USize),
             "isize" => Ok(Self::ISize),
+            "usizeBig" => Ok(Self::USizeBig),
+            "isizeBig" => Ok(Self::ISizeBig),
             "f32" => Ok(Self::F32),
             "f64" => Ok(Self::F64),
             "pointer" => Ok(Self::Pointer),
@@ -65,8 +74,8 @@ impl NativeType {
             Self::I32 => FfiType::i32(),
             Self::U64 => FfiType::u64(),
             Self::I64 => FfiType::i64(),
-            Self::USize => FfiType::usize(),
-            Self::ISize => FfiType::isize(),
+            Self::USize | Self::USizeBig => FfiType::usize(),
+            Self::ISize | Self::ISizeBig => FfiType::isize(),
             Self::F32 => FfiType::f32(),
             Self::F64 => FfiType::f64(),
             // Both pointer and buffer are passed as a C pointer.
@@ -82,9 +91,13 @@ impl NativeType {
             Self::U16 | Self::I16 => 2,
             Self::U32 | Self::I32 | Self::F32 => 4,
             Self::U64 | Self::I64 | Self::F64 => 8,
-            Self::USize | Self::ISize | Self::Pointer | Self::IgnoredPointer | Self::Buffer => {
-                std::mem::size_of::<usize>()
-            }
+            Self::USize
+            | Self::ISize
+            | Self::USizeBig
+            | Self::ISizeBig
+            | Self::Pointer
+            | Self::IgnoredPointer
+            | Self::Buffer => std::mem::size_of::<usize>(),
             Self::Struct(layout) => layout.size,
         }
     }
@@ -95,9 +108,13 @@ impl NativeType {
             Self::U16 | Self::I16 => 2,
             Self::U32 | Self::I32 | Self::F32 => 4,
             Self::U64 | Self::I64 | Self::F64 => 8,
-            Self::USize | Self::ISize | Self::Pointer | Self::IgnoredPointer | Self::Buffer => {
-                std::mem::align_of::<usize>()
-            }
+            Self::USize
+            | Self::ISize
+            | Self::USizeBig
+            | Self::ISizeBig
+            | Self::Pointer
+            | Self::IgnoredPointer
+            | Self::Buffer => std::mem::align_of::<usize>(),
             Self::Struct(layout) => layout.align,
         }
     }

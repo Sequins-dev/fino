@@ -847,14 +847,14 @@ fn struct_get<'s>(
             NativeType::I64 => rv.set(
                 v8::BigInt::new_from_i64(scope, std::ptr::read_unaligned(ptr as *const i64)).into(),
             ),
-            NativeType::USize => rv.set(
+            NativeType::USize | NativeType::USizeBig => rv.set(
                 v8::BigInt::new_from_u64(
                     scope,
                     std::ptr::read_unaligned(ptr as *const usize) as u64,
                 )
                 .into(),
             ),
-            NativeType::ISize => rv.set(
+            NativeType::ISize | NativeType::ISizeBig => rv.set(
                 v8::BigInt::new_from_i64(
                     scope,
                     std::ptr::read_unaligned(ptr as *const isize) as i64,
@@ -939,11 +939,11 @@ fn struct_set<'s>(
             NativeType::I64 => {
                 std::ptr::write_unaligned(ptr as *mut i64, value.integer_value(scope).unwrap_or(0))
             }
-            NativeType::USize => std::ptr::write_unaligned(
+            NativeType::USize | NativeType::USizeBig => std::ptr::write_unaligned(
                 ptr as *mut usize,
                 value.integer_value(scope).unwrap_or(0) as usize,
             ),
-            NativeType::ISize => std::ptr::write_unaligned(
+            NativeType::ISize | NativeType::ISizeBig => std::ptr::write_unaligned(
                 ptr as *mut isize,
                 value.integer_value(scope).unwrap_or(0) as isize,
             ),
