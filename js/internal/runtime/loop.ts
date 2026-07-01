@@ -239,6 +239,35 @@ export function alive(): boolean {
   return _reads.size > 0 || _writes.size > 0 || _timers.size > 0 || _procs.size > 0 || _completions.size > 0 || _vnodes.size > 0 || hasPendingV8Tasks() || _atomicsWaiters > 0;
 }
 /**
+* Return active runtime loop handle counts for diagnostics and tests.
+*
+* Unlike `alive()`, this separates native loop handles from V8 background-task
+* liveness so cleanup tests can assert the resource they actually own.
+*
+* @internal
+*/
+export function _activeHandleCounts(): {
+  reads: number;
+  writes: number;
+  timers: number;
+  procs: number;
+  completions: number;
+  vnodes: number;
+  atomicsWaiters: number;
+  pendingV8Tasks: boolean;
+} {
+  return {
+    reads: _reads.size,
+    writes: _writes.size,
+    timers: _timers.size,
+    procs: _procs.size,
+    completions: _completions.size,
+    vnodes: _vnodes.size,
+    atomicsWaiters: _atomicsWaiters,
+    pendingV8Tasks: hasPendingV8Tasks()
+  };
+}
+/**
 * Track one pending `Atomics.waitAsync` waiter.
 *
 * This keeps the runtime alive while the waiter can still settle.

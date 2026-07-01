@@ -779,6 +779,16 @@ function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> 
     if (timer !== null) clearTimeout(timer);
   });
 }
+async function waitForRuntimeLoopIdle(turns = 16): Promise<boolean> {
+  for (let i = 0; i < turns; i++) {
+    const counts = loop._activeHandleCounts();
+    if (counts.reads === 0 && counts.writes === 0 && counts.timers === 0 && counts.procs === 0 && counts.completions === 0 && counts.vnodes === 0 && counts.atomicsWaiters === 0) return true;
+    loop.tick(0);
+    await Promise.resolve();
+  }
+  const counts = loop._activeHandleCounts();
+  return counts.reads === 0 && counts.writes === 0 && counts.timers === 0 && counts.procs === 0 && counts.completions === 0 && counts.vnodes === 0 && counts.atomicsWaiters === 0;
+}
 interface CapturedH2Response {
   status: number;
   body: string;
@@ -1933,8 +1943,8 @@ describe('H2 server — robustness', () => {
   });
 });
 describe('H2 server — cleanup', () => {
-  it('does not leave runtime loop handles alive after closed H2 sessions', (t) => {
+  it('does not leave runtime loop handles alive after closed H2 sessions', async (t) => {
     if (!h2Available) return;
-    t.equal(loop.alive(), false, 'closed H2 sessions leave no live runtime loop handles');
+    t.equal(await waitForRuntimeLoopIdle(), true, 'closed H2 sessions leave no live runtime loop handles');
   });
 });
