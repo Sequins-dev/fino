@@ -8,7 +8,7 @@ import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { createRootCommand } from 'internal:commands/root';
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
-const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|ms|s|m|h)\b`;
+const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|us|ms|s|m|h)\b`;
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);

@@ -1,9 +1,12 @@
 import { describe, it } from 'fino:test/test';
 import { formatDurationMs, formatDurationNs } from 'internal:duration';
 describe('internal duration formatting', () => {
-  it('uses nanoseconds below one millisecond', (t) => {
+  it('uses nanoseconds below one microsecond', (t) => {
     t.equal(formatDurationNs(42), '42ns');
-    t.equal(formatDurationMs(.5), '500000ns');
+  });
+  it('uses microseconds between nanoseconds and milliseconds', (t) => {
+    t.equal(formatDurationNs(1500), '1.50us');
+    t.equal(formatDurationMs(.5), '500.00us');
   });
   it('uses milliseconds, seconds, minutes, and hours at scale', (t) => {
     t.equal(formatDurationNs(15e5), '1.50ms');
