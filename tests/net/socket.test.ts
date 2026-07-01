@@ -168,6 +168,18 @@ describe('TCP / UDP loopback', () => {
       }
       t.equal(received.length, 2, 'recvmmsgBatch received both datagrams');
       t.deepEqual(received.map((packet) => decodeUtf8(packet.data)).sort(), ['batch-one', 'batch-two'], 'batch payloads match');
+      for (const packet of received) {
+        const raw = packet as any;
+        t.ok(raw.addrBuffer instanceof ArrayBuffer, 'batch receive exposes raw sockaddr storage for hot paths');
+        t.ok(Number.isInteger(raw.addrLen) && raw.addrLen > 0, 'batch receive reports raw sockaddr length');
+        if (!(raw.addrBuffer instanceof ArrayBuffer) || !Number.isInteger(raw.addrLen) || raw.addrLen <= 0) continue;
+        const decoded = sock.decodeAddr(raw.addrBuffer.slice(0, raw.addrLen));
+        t.equal(decoded.family, packet.addr.family, 'raw sockaddr decodes to the reported address family');
+        if (decoded.family === 'ipv4' && packet.addr.family === 'ipv4') {
+          t.equal(decoded.ip, packet.addr.ip, 'raw sockaddr decodes to the reported IPv4 address');
+          t.equal(decoded.port, packet.addr.port, 'raw sockaddr decodes to the reported IPv4 port');
+        }
+      }
     } finally {
       sock.close(server);
       sock.close(client);

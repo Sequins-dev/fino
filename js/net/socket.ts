@@ -1233,8 +1233,8 @@ export type SendmsgBatchPacket = {
 /**
 * Datagram packet returned by a reusable batch receive helper.
 *
-* `data` is a view over helper-owned storage and remains valid only until the
-* next receive call on the same helper.
+* `data` and `addrBuffer` are views over helper-owned storage and remain valid
+* only until the next receive call on the same helper.
 *
 * @internal
 */
@@ -1243,13 +1243,18 @@ export type RecvmsgBatchPacket = {
   data: Uint8Array;
   /** Peer address reported by the platform socket API. */
   addr: Address | UnknownAddress;
+  /** Raw sockaddr storage reported by the platform socket API. */
+  addrBuffer: ArrayBuffer;
+  /** Number of valid bytes in `addrBuffer`. */
+  addrLen: number;
   /** Optional ECN bits when ancillary data was present. */
   ecn?: number;
 };
 /**
 * Reusable datagram receive batch for hot UDP loops.
 *
-* Packet byte views are valid until the next `recv()` call on this batch.
+* Packet byte and address views are valid until the next `recv()` call on this
+* batch.
 *
 * @internal
 */
@@ -1483,11 +1488,7 @@ function readCmsgEcn(controlBuf: ArrayBuffer, controlLen: number): number | unde
 * Returns `null` on platforms without `recvmmsg`, a negative errno when no
 * packet was received, or an array of datagrams with optional ECN metadata.
 */
-export function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number = 65536, flags: number = 0): Array<{
-  data: Uint8Array;
-  addr: Address | UnknownAddress;
-  ecn?: number;
-}> | number | null {
+export function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number = 65536, flags: number = 0): RecvmsgBatchPacket[] | number | null {
   const batch = createDatagramRecvBatch(maxPackets, maxBytes);
   return batch === null ? null : batch.recv(fd, flags);
 }
@@ -1544,9 +1545,12 @@ class LinuxDatagramRecvBatch implements DatagramRecvBatch {
       const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
       const controlLen = readSize(msg, base + MSG_CONTROLLEN);
       const ecn = readCmsgEcn(this.#controlBufs[i]!, controlLen);
+      const addrBuffer = this.#addrBufs[i]!;
       packets.push({
         data: new Uint8Array(this.#dataBufs[i]!, 0, n),
-        addr: decodeAddr(this.#addrBufs[i]!.slice(0, addrLen)),
+        addr: decodeAddr(addrBuffer.slice(0, addrLen)),
+        addrBuffer,
+        addrLen,
         ...ecn === undefined ? {} : { ecn }
       });
     }
@@ -1603,9 +1607,12 @@ class DarwinDatagramRecvBatch implements DatagramRecvBatch {
       const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
       const controlLen = readSize(msg, base + MSG_CONTROLLEN);
       const ecn = readCmsgEcn(this.#controlBufs[i]!, controlLen);
+      const addrBuffer = this.#addrBufs[i]!;
       packets.push({
         data: new Uint8Array(this.#dataBufs[i]!, 0, n),
-        addr: decodeAddr(this.#addrBufs[i]!.slice(0, addrLen)),
+        addr: decodeAddr(addrBuffer.slice(0, addrLen)),
+        addrBuffer,
+        addrLen,
         ...ecn === undefined ? {} : { ecn }
       });
     }
@@ -1615,7 +1622,8 @@ class DarwinDatagramRecvBatch implements DatagramRecvBatch {
 /**
 * Create a reusable batch datagram receiver for hot UDP loops.
 *
-* Returned packet byte views are overwritten by the next `recv()` call.
+* Returned packet byte and address views are overwritten by the next `recv()`
+* call.
 *
 * @internal
 */

@@ -591,6 +591,12 @@ export interface QuicRuntime {
   /** Run a callback after the current native callback or scheduling turn. */
   defer(callback: () => void): void;
 }
+type QuicDatagramPathMetadata = {
+  localSockaddr: ArrayBuffer;
+  localSockaddrLen: number;
+  remoteSockaddr: ArrayBuffer;
+  remoteSockaddrLen: number;
+};
 /**
 * Bound datagram transport used by the ngtcp2 endpoint driver.
 *
@@ -613,12 +619,14 @@ export interface QuicDatagramTransport {
     data: Uint8Array;
     addr: QuicAddress;
     ecn?: number;
+    path?: QuicDatagramPathMetadata;
   } | null;
   /** Read up to `maxPackets` packets if available, or return an empty array. */
   recvBatch?(maxPackets: number, maxBytes: number): Array<{
     data: Uint8Array;
     addr: QuicAddress;
     ecn?: number;
+    path?: QuicDatagramPathMetadata;
   }>;
   /** Resolve once the transport may have data to read. */
   waitReadable(): Promise<void>;
@@ -837,6 +845,8 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
   #fd: number;
   #ecn: boolean;
   #closed = false;
+  #localSockaddr: ArrayBuffer;
+  #localSockaddrLen: number;
   #recvBatch: DatagramRecvBatch | null = null;
   #recvBatchPackets = 0;
   #recvBatchBytes = 0;
@@ -845,6 +855,9 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
     this.#ecn = ecn;
     this.id = fd;
     this.address = address;
+    const encoded = encodeAddr(address);
+    this.#localSockaddr = encoded.buf;
+    this.#localSockaddrLen = encoded.len;
   }
   get closed(): boolean {
     return this.#closed;
@@ -890,17 +903,26 @@ class RealQuicDatagramTransport implements QuicDatagramTransport {
         data: Uint8Array;
         addr: QuicAddress;
         ecn?: number;
+        path?: QuicDatagramPathMetadata;
       }> = [];
       for (const packet of received) {
         const addr = packet.addr;
         if (addr.family !== 'ipv4' && addr.family !== 'ipv6') continue;
+        const path = {
+          localSockaddr: this.#localSockaddr,
+          localSockaddrLen: this.#localSockaddrLen,
+          remoteSockaddr: packet.addrBuffer,
+          remoteSockaddrLen: packet.addrLen
+        };
         packets.push(packet.ecn === undefined ? {
           data: packet.data,
-          addr
+          addr,
+          path
         } : {
           data: packet.data,
           addr,
-          ecn: packet.ecn
+          ecn: packet.ecn,
+          path
         });
       }
       return packets;
@@ -1278,6 +1300,9 @@ function normalizeAddress(address?: QuicAddress): QuicAddress {
 }
 function addressKey(address: QuicAddress): string {
   return `${address.family}:${address.ip}:${address.port}`;
+}
+function sameAddress(a: QuicAddress, b: QuicAddress): boolean {
+  return a.family === b.family && a.ip === b.ip && a.port === b.port;
 }
 function decodeHexDatagram(input: string): Uint8Array {
   const text = input.trim();
@@ -1966,6 +1991,28 @@ function makePath(localAddress: QuicAddress, remoteAddress: QuicAddress, fd = 0)
     fd
   };
 }
+function makePathFromSockaddrs(localSockaddr: ArrayBuffer, localSockaddrLen: number, remoteSockaddr: ArrayBuffer, remoteSockaddrLen: number, fd = 0): NativePath | null {
+  if (localSockaddrLen <= 0 || localSockaddrLen > SOCKADDR_UNION_SIZE || remoteSockaddrLen <= 0 || remoteSockaddrLen > SOCKADDR_UNION_SIZE) return null;
+  const local = new ArrayBuffer(SOCKADDR_UNION_SIZE);
+  const remote = new ArrayBuffer(SOCKADDR_UNION_SIZE);
+  const userData = new ArrayBuffer(8);
+  new Uint8Array(local).set(new Uint8Array(localSockaddr, 0, localSockaddrLen));
+  new Uint8Array(remote).set(new Uint8Array(remoteSockaddr, 0, remoteSockaddrLen));
+  writeU64(userData, 0, BigInt(Math.max(0, fd)));
+  const path = new ArrayBuffer(NGTCP2_PATH_SIZE);
+  writeAddress(path, PATH_LOCAL + ADDR_ADDR, Pointer.addr(local) as bigint);
+  writeU32(path, PATH_LOCAL + ADDR_ADDRLEN, localSockaddrLen);
+  writeAddress(path, PATH_REMOTE + ADDR_ADDR, Pointer.addr(remote) as bigint);
+  writeU32(path, PATH_REMOTE + ADDR_ADDRLEN, remoteSockaddrLen);
+  writeAddress(path, PATH_USER_DATA, Pointer.addr(userData) as bigint);
+  return {
+    path,
+    local,
+    remote,
+    userData,
+    fd
+  };
+}
 function makeOutputPath(localAddress: QuicAddress, remoteAddress: QuicAddress, fd = 0): NativePath {
   return makePath(localAddress, remoteAddress, fd);
 }
@@ -2018,7 +2065,7 @@ function pathFromSnapshot(snapshot: PathSnapshot | null): QuicPath | null {
 }
 function pathSnapshotsDiffer(a: PathSnapshot | null, b: PathSnapshot | null): boolean {
   if (a === null || b === null) return false;
-  return a.fd !== b.fd || addressKey(a.localAddress) !== addressKey(b.localAddress) || addressKey(a.remoteAddress) !== addressKey(b.remoteAddress);
+  return a.fd !== b.fd || !sameAddress(a.localAddress, b.localAddress) || !sameAddress(a.remoteAddress, b.remoteAddress);
 }
 function pathValidationResultName(result: number): QuicPathValidationResult {
   if (result === NGTCP2_PATH_VALIDATION_RESULT_SUCCESS) return 'success';
@@ -3455,7 +3502,7 @@ export class QuicEndpoint extends EventTarget {
       this.#rejectedInitialCids.delete(oldest);
     }
   }
-  _handleDatagram(listener: QuicListener | null, transportOrFd: QuicDatagramTransport | number, localAddress: QuicAddress, packet: Uint8Array, remoteAddress: QuicAddress, packetEcn?: number): void {
+  _handleDatagram(listener: QuicListener | null, transportOrFd: QuicDatagramTransport | number, localAddress: QuicAddress, packet: Uint8Array, remoteAddress: QuicAddress, packetEcn?: number, pathMetadata?: QuicDatagramPathMetadata): void {
     const transport = this.#coerceTransport(transportOrFd, localAddress);
     if (listener !== null && !this.#allowsSource(listener, remoteAddress)) {
       this.#blockPacket('source');
@@ -3508,10 +3555,10 @@ export class QuicEndpoint extends EventTarget {
         }
         this.#forgetSupersededValidationStats(existing);
         existing._closeForCompatibleVersionUpgrade();
-        this.#acceptInitial(listener, transport, localAddress, remoteAddress, packet, decoded, packetEcn);
+        this.#acceptInitial(listener, transport, localAddress, remoteAddress, packet, decoded, packetEcn, pathMetadata);
         return;
       }
-      existing._receivePacket(packet, remoteAddress, localAddress, transport, packetEcn);
+      existing._receivePacket(packet, remoteAddress, localAddress, transport, packetEcn, pathMetadata);
       return;
     }
     if ((packet[0] & 128) === 0 && this.#handleStatelessReset(packet)) return;
@@ -3534,7 +3581,7 @@ export class QuicEndpoint extends EventTarget {
     if ((packet[0] & 64) === 0) return;
     const connecting = this.#connectingServerConnection(listener, remoteAddress);
     if (connecting !== null && connecting._wireVersionForRouting() === version) {
-      connecting._receivePacket(packet, remoteAddress, localAddress, transport, packetEcn);
+      connecting._receivePacket(packet, remoteAddress, localAddress, transport, packetEcn, pathMetadata);
       return;
     }
     const replacement = connecting !== null && connecting._wireVersionForRouting() !== version ? connecting : null;
@@ -3545,7 +3592,7 @@ export class QuicEndpoint extends EventTarget {
     }
     if (replacement !== null) this.#forgetSupersededValidationStats(replacement);
     replacement?._closeForCompatibleVersionUpgrade();
-    this.#acceptInitial(listener, transport, localAddress, remoteAddress, packet, decoded, packetEcn);
+    this.#acceptInitial(listener, transport, localAddress, remoteAddress, packet, decoded, packetEcn, pathMetadata);
   }
   #forgetSupersededValidationStats(connection: QuicConnection): void {
     const tokenType = connection._validationTokenTypeForRouting();
@@ -3694,7 +3741,7 @@ export class QuicEndpoint extends EventTarget {
       tokenType: NGTCP2_TOKEN_TYPE_NEW_TOKEN
     };
   }
-  #acceptInitial(listener: QuicListener, transport: QuicDatagramTransport, localAddress: QuicAddress, remoteAddress: QuicAddress, packet: Uint8Array, decoded: ArrayBuffer, packetEcn?: number): void {
+  #acceptInitial(listener: QuicListener, transport: QuicDatagramTransport, localAddress: QuicAddress, remoteAddress: QuicAddress, packet: Uint8Array, decoded: ArrayBuffer, packetEcn?: number, pathMetadata?: QuicDatagramPathMetadata): void {
     const parsedInitial = parseInitialTokenHeader(packet);
     if (parsedInitial !== null && parsedInitial.token.byteLength > 0 && !isRetryToken(parsedInitial.token)) {
       const parsedHd = packetHeaderFromParsedInitial(parsedInitial);
@@ -3772,7 +3819,7 @@ export class QuicEndpoint extends EventTarget {
     const connection = new QuicConnection('server', this, listener, localAddress, remoteAddress, listener.alpnProtocols, transport, null, tls, originalDcid, listener.options);
     connection._initServer(clientScid, serverScid, version, retry?.retryScid ?? null, retry?.token ?? addressToken?.token ?? null, retry?.tokenType ?? addressToken?.tokenType ?? NGTCP2_TOKEN_TYPE_UNKNOWN);
     this._track(connection);
-    const rc = connection._receivePacket(packet, remoteAddress, localAddress, transport, packetEcn);
+    const rc = connection._receivePacket(packet, remoteAddress, localAddress, transport, packetEcn, pathMetadata);
     if (rc === NGTCP2_ERR_RETRY) {
       this.#writeRetry(listener, transport, remoteAddress, hd, packet.byteLength);
     }
@@ -3860,7 +3907,7 @@ export class QuicListener {
         const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
         if (batch !== undefined) {
           for (const received of batch) {
-            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
+            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn, received.path);
           }
           if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.endpoint._quicRuntime(), 0);
@@ -3871,7 +3918,7 @@ export class QuicListener {
           for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
             const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
             if (received === null) break;
-            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
+            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn, received.path);
           }
           if (packets >= MAX_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.endpoint._quicRuntime(), 0);
@@ -4120,6 +4167,16 @@ export class QuicConnection extends EventTarget {
     let path = this.#pathCache.get(key);
     if (path === undefined) {
       path = makePath(localAddress, remoteAddress, fd);
+      this.#pathCache.set(key, path);
+    }
+    return path;
+  }
+  #retainPathFromMetadata(localAddress: QuicAddress, remoteAddress: QuicAddress, fd: number, metadata: QuicDatagramPathMetadata | undefined): NativePath {
+    if (metadata === undefined) return this.#retainPath(localAddress, remoteAddress, fd);
+    const key = `${addressKey(localAddress)}>${addressKey(remoteAddress)}@${fd}`;
+    let path = this.#pathCache.get(key);
+    if (path === undefined) {
+      path = makePathFromSockaddrs(metadata.localSockaddr, metadata.localSockaddrLen, metadata.remoteSockaddr, metadata.remoteSockaddrLen, fd) ?? makePath(localAddress, remoteAddress, fd);
       this.#pathCache.set(key, path);
     }
     return path;
@@ -4541,7 +4598,7 @@ export class QuicConnection extends EventTarget {
   }
   #queueWrittenPacket(batch: PendingSendPacket[], n: number, outPath: NativePath, fallbackRemoteAddress: QuicAddress, out: Uint8Array, ts: bigint, pktInfo: ArrayBuffer | null): void {
     if (n <= 0) return;
-    const output = this.#outputFromPath(outPath.path, fallbackRemoteAddress);
+    const output = this.#outputFromPathForPacket(outPath, fallbackRemoteAddress);
     batch.push({
       fd: output.fd,
       data: out.subarray(0, n),
@@ -5133,6 +5190,23 @@ export class QuicConnection extends EventTarget {
       remoteAddress
     };
   }
+  #outputFromPathForPacket(outPath: NativePath, fallbackRemoteAddress: QuicAddress): {
+    fd: number;
+    remoteAddress: QuicAddress;
+  } {
+    const fd = fdFromPath(outPath.path, this.#fd);
+    if (fd === this.#fd && this.#activePathValidations.length === 0) {
+      return {
+        fd,
+        remoteAddress: fallbackRemoteAddress
+      };
+    }
+    const output = this.#outputFromPath(outPath.path, fallbackRemoteAddress);
+    return {
+      fd: output.fd,
+      remoteAddress: output.remoteAddress
+    };
+  }
   #transportById(id: number): QuicDatagramTransport | null {
     return this.#endpoint._transportById(id) ?? null;
   }
@@ -5144,7 +5218,7 @@ export class QuicConnection extends EventTarget {
   #syncActivePathSnapshot(snapshot: PathSnapshot | null): boolean {
     if (snapshot === null) return false;
     const { localAddress, remoteAddress, fd } = snapshot;
-    const changed = fd !== this.#fd || addressKey(localAddress) !== addressKey(this.#activeLocalAddress) || addressKey(remoteAddress) !== addressKey(this.remoteAddress);
+    const changed = fd !== this.#fd || !sameAddress(localAddress, this.#activeLocalAddress) || !sameAddress(remoteAddress, this.remoteAddress);
     const path = this.#retainPath(localAddress, remoteAddress, fd);
     this.remoteAddress = remoteAddress;
     this.#activeLocalAddress = localAddress;
@@ -5426,7 +5500,7 @@ export class QuicConnection extends EventTarget {
         const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, NGTCP2_MAX_UDP_PAYLOAD_SIZE);
         if (batch !== undefined) {
           for (const received of batch) {
-            this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn);
+            this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
           }
           if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.#runtime, 0);
@@ -5437,7 +5511,7 @@ export class QuicConnection extends EventTarget {
           for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
             const received = transport.recvNow(NGTCP2_MAX_UDP_PAYLOAD_SIZE);
             if (received === null) break;
-            this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn);
+            this.#endpoint._handleDatagram(null, transport, localAddress, received.data, received.addr, received.ecn, received.path);
           }
           if (packets >= MAX_READ_PACKETS_PER_TURN) {
             await runtimeDelay(this.#runtime, 0);
@@ -5450,12 +5524,12 @@ export class QuicConnection extends EventTarget {
       }
     }
   }
-  _receivePacket(packet: Uint8Array, remoteAddress: QuicAddress, localAddress: QuicAddress = this.localAddress, transport: QuicDatagramTransport | null = this.#transportById(this.#fd), packetEcn?: number): number {
+  _receivePacket(packet: Uint8Array, remoteAddress: QuicAddress, localAddress: QuicAddress = this.localAddress, transport: QuicDatagramTransport | null = this.#transportById(this.#fd), packetEcn?: number, pathMetadata?: QuicDatagramPathMetadata): number {
     if (this.#closed) return this.#receiveClosingPacket(transport?.id ?? this.#fd, remoteAddress);
     this.#stats.packetsReceived++;
     this.#stats.bytesReceived += packet.byteLength;
     const fd = transport?.id ?? this.#fd;
-    const packetPath = this.#retainPath(localAddress, remoteAddress, fd);
+    const packetPath = this.#retainPathFromMetadata(localAddress, remoteAddress, fd, pathMetadata);
     const packetVersion = longHeaderVersion(packet);
     if (this.#role === 'client' && this.#state === 'connecting' && packetVersion !== null && packetVersion !== 0 && packetVersion !== this.#wireVersion && this.#options.versions.map(versionToWire).includes(packetVersion) && ngtcp2Sym!.ngtcp2_is_supported_version(packetVersion) !== 0) {
       this.#retryVersionNegotiation(packetVersion);
@@ -5497,7 +5571,9 @@ export class QuicConnection extends EventTarget {
       return rc;
     }
     this.#endpoint._recordDatagramReceived(packet.byteLength);
-    this.#syncActivePathFromNative();
+    if (fd !== this.#fd || !sameAddress(localAddress, this.#activeLocalAddress) || !sameAddress(remoteAddress, this.remoteAddress) || this.#activePathValidations.length > 0) {
+      this.#syncActivePathFromNative();
+    }
     this.#scheduleTimer();
     this.#scheduleWriteDrain(remoteAddress);
     return rc;
@@ -5572,7 +5648,7 @@ export class QuicConnection extends EventTarget {
       let packets = 0;
       const packetBudget = this.#writePacketBudget();
       const packetBatch: PendingSendPacket[] = [];
-      const outPath = makeOutputPath(this.#activeLocalAddress, remoteAddress, this.#fd);
+      const outPath = this.#retainPath(this.#activeLocalAddress, remoteAddress, this.#fd);
       for (; packets < packetBudget; packets++) {
         let n = 0;
         const out = this.#writePacketBuffer(packets, writeBufferSize);
