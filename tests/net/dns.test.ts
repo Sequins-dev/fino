@@ -897,6 +897,14 @@ describe('Integration', () => {
     t.equal(result.family, 4, 'family = 4');
     t.ok(/^\d+\.\d+\.\d+\.\d+$/.test(result.address), 'address is IPv4');
   });
+  it('lookup — localhost resolves without DNS I/O', async (t) => {
+    const result = await lookup('localhost');
+    t.equal(result.address, '127.0.0.1', 'default lookup returns IPv4 loopback');
+    t.equal(result.family, 4, 'default localhost family is IPv4');
+    const ipv6 = await lookup('localhost', { family: 6 });
+    t.equal(ipv6.address, '::1', 'family 6 lookup returns IPv6 loopback');
+    t.equal(ipv6.family, 6, 'IPv6 localhost family is 6');
+  });
   it('lookup — IPv6 literal family 6', async (t) => {
     const result = await lookup('2001:4860:4860::8888', { family: 6 });
     t.ok(typeof result.address === 'string', 'has address');

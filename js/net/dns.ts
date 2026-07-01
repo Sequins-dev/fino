@@ -1944,6 +1944,16 @@ let _defaultResolver: Resolver | null = null;
 */
 export async function lookup(hostname: string, opts: LookupOptions = {}): Promise<LookupResult> {
   const family = opts.family ?? 4;
+  const normalizedHostname = hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
+  if (normalizedHostname.toLowerCase() === 'localhost') {
+    return family === 6 ? {
+      address: '::1',
+      family: 6
+    } : {
+      address: '127.0.0.1',
+      family: 4
+    };
+  }
   // If hostname is already an IP literal, return it directly without DNS lookup.
   if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
     return {
