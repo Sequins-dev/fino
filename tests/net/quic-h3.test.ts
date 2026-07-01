@@ -156,7 +156,7 @@ async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, h
         while (true) {
           const bytes = await stream.reader.read() as Uint8Array | null;
           const fin = bytes === null;
-          await clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+          clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
           if (fin) break;
         }
       } catch {}
@@ -174,7 +174,8 @@ async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, h
   ]) clientSession.addQuicStream(BigInt(s.id), s.writer);
   clientSession.bindControlStream(BigInt(ctrl.id));
   clientSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
-  await pipe.pumpUntil(clientSession.drainWrites());
+  clientSession.drainWrites();
+  await pipe.runUntilSettled();
   const requestStream = await pipe.pumpUntil(clientConn.openBidirectionalStream()) as QuicStream;
   const requestSid = BigInt(requestStream.id);
   clientSession.addQuicStream(requestSid, requestStream.writer);
@@ -183,13 +184,14 @@ async function rawH3RequestOutcome(pipe: QuicPipe, clientConn: QuicConnection, h
       while (true) {
         const bytes = await requestStream.reader.read() as Uint8Array | null;
         const fin = bytes === null;
-        await clientSession.readStream(requestSid, bytes ?? new Uint8Array(0), fin);
+        clientSession.readStream(requestSid, bytes ?? new Uint8Array(0), fin);
         if (fin) break;
       }
     } catch {}
   })();
   clientSession.submitRequest(requestSid, headers);
-  await pipe.pumpUntil(clientSession.drainWrites());
+  clientSession.drainWrites();
+  await pipe.runUntilSettled();
   try {
     await pipe.pumpUntil(responsePromise, maxTurns);
   } catch (error) {
@@ -352,7 +354,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
           void (async () => {
             try {
               serverSession.submitResponse(sid, [[':status', '200']]);
-              await serverSession.drainWrites();
+              serverSession.drainWrites();
             } catch {}
           })();
         },
@@ -374,7 +376,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {}
@@ -393,7 +395,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       const clientSessionPromise = H3ClientSession.create(clientConn);
-      await pipe.pumpUntil(serverSession.drainWrites());
+      serverSession.drainWrites();
+      await pipe.runUntilSettled();
       const clientSession = await pipe.pumpUntil(clientSessionPromise);
       await t.rejects(() => pipe.pumpUntil(clientSession.webtransport('https://example.test/wt')), /SETTINGS|WebTransport readiness/, 'client rejects before sending extended CONNECT');
       t.equal(receivedWebTransportConnect, false, 'server does not receive WebTransport CONNECT');
@@ -1320,7 +1323,21 @@ describe('HTTP/3 (h3 ALPN)', () => {
       [':authority', 'localhost']
     ]), /session closed/, 'submitRequest throws after close');
     t.throws(() => session.submitTrailers(0n, [['x-done', '1']]), /session closed/, 'submitTrailers throws after close');
-    await t.rejects(() => session.drainWrites(), /session closed/, 'drainWrites rejects after close');
+    t.throws(() => session.readStream(0n, new Uint8Array(0), false), /session closed/, 'readStream throws synchronously after close');
+    t.throws(() => session.drainWrites(), /session closed/, 'drainWrites throws synchronously after close');
+  });
+  it('QUIC stream writers expose explicit synchronous capabilities', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client } = await h3Handshake(pipe);
+      const stream = await pipe.pumpUntil(client.openBidirectionalStream()) as QuicStream;
+      t.equal(typeof stream.writer.writeSync, 'function', 'writer exposes writeSync as an explicit capability');
+      t.equal(typeof stream.writer.closeSync, 'function', 'writer exposes closeSync as an explicit capability');
+      client.destroy();
+    } finally {
+      await pipe.close();
+    }
   });
   it('run() releases nghttp3 session when connection closes during setup', async (t) => {
     if (!available) return;
@@ -1764,7 +1781,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
           void (async () => {
             try {
               serverSession.submitResponse(sid, [[':status', '200']]);
-              await serverSession.drainWrites();
+              serverSession.drainWrites();
             } catch {}
           })();
         },
@@ -1788,7 +1805,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {}
@@ -1809,7 +1826,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       // Create the client session before pumping server drainWrites so its 'stream'
       // listener is attached before the server's SETTINGS arrive on stream 3.
       const clientSessionPromise = H3ClientSession.create(clientConn);
-      await pipe.pumpUntil(serverSession.drainWrites());
+      serverSession.drainWrites();
+      await pipe.runUntilSettled();
       const clientSession = await pipe.pumpUntil(clientSessionPromise);
       // Complete request 1 (stream 0) — server's onEndHeaders responds with 200.
       const req1 = await pipe.pumpUntil(clientSession.request('https://localhost/'));
@@ -1844,7 +1862,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
           void (async () => {
             try {
               serverSession.submitResponse(sid, [[':status', '200']]);
-              await serverSession.drainWrites();
+              serverSession.drainWrites();
             } catch {}
           })();
         },
@@ -1874,7 +1892,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {}
@@ -1893,7 +1911,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       const clientSessionPromise = H3ClientSession.create(clientConn);
-      await pipe.pumpUntil(serverSession.drainWrites());
+      serverSession.drainWrites();
+      await pipe.runUntilSettled();
       const clientSession = await pipe.pumpUntil(clientSessionPromise);
       const [resetResult, okResult] = await pipe.pumpUntil(Promise.allSettled([clientSession.request('https://localhost/reset'), clientSession.request('https://localhost/ok')]));
       t.equal(resetResult.status, 'rejected', 'stream 0 reset by server rejects that request');
@@ -1953,7 +1972,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {}
@@ -1972,7 +1991,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       ]) clientSession.addQuicStream(BigInt(s.id), s.writer);
       clientSession.bindControlStream(BigInt(ctrl.id));
       clientSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
-      await pipe.pumpUntil(clientSession.drainWrites());
+      clientSession.drainWrites();
+      await pipe.runUntilSettled();
       // Open the CONNECT stream and read the server's 405 response.
       const connectStream = await pipe.pumpUntil(clientConn.openBidirectionalStream()) as QuicStream;
       const connectSid = BigInt(connectStream.id);
@@ -1982,14 +2002,15 @@ describe('HTTP/3 (h3 ALPN)', () => {
           while (true) {
             const bytes = await connectStream.reader.read() as Uint8Array | null;
             const fin = bytes === null;
-            await clientSession.readStream(connectSid, bytes ?? new Uint8Array(0), fin);
+            clientSession.readStream(connectSid, bytes ?? new Uint8Array(0), fin);
             if (fin) break;
           }
         } catch {}
       })();
       // Submit CONNECT with only :method and :authority (RFC 9114 §4.4).
       clientSession.submitRequest(connectSid, [[':method', 'CONNECT'], [':authority', 'localhost:443']]);
-      await pipe.pumpUntil(clientSession.drainWrites());
+      clientSession.drainWrites();
+      await pipe.runUntilSettled();
       await pipe.pumpUntil(connectResponsePromise);
       t.equal(connectStatus, '405', 'server rejects CONNECT with 405');
       t.ok(!clientSession.isClosed, 'nghttp3 client session remains open after 405');
@@ -2071,7 +2092,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
           void (async () => {
             try {
               serverSession.submitResponse(sid, [[':status', '200']]);
-              await serverSession.drainWrites();
+              serverSession.drainWrites();
             } catch {}
           })();
         },
@@ -2095,7 +2116,7 @@ describe('HTTP/3 (h3 ALPN)', () => {
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {}
@@ -2114,7 +2135,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       serverSession.bindControlStream(BigInt(ctrl.id));
       serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
       const clientSessionPromise = H3ClientSession.create(clientConn);
-      await pipe.pumpUntil(serverSession.drainWrites());
+      serverSession.drainWrites();
+      await pipe.runUntilSettled();
       const clientSession = await pipe.pumpUntil(clientSessionPromise);
       // Step 1: reqA (stream 0) completes.
       const reqA = clientSession.request('https://localhost/a');

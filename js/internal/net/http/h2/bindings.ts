@@ -6,10 +6,10 @@
 * Tries candidate paths in order; sets `h2Available` accordingly.
 * Homebrew paths are first so macOS users get the right build.
 *
-* All symbols that can invoke FfiCallbacks (session_mem_recv2,
-* session_mem_send2) are marked async:true so they run on the blocking
-* pool - FfiCallback trampolines block their calling thread, and that
-* thread must not be the V8 thread.
+* The in-memory session pump symbols (`session_mem_recv2` and
+* `session_mem_send2`) are intentionally synchronous. They do not perform
+* socket I/O, and running them on the V8 thread keeps nghttp2 callbacks and
+* submit operations serialized against the same native session.
 *
 * ## Example
 *

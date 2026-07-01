@@ -232,7 +232,7 @@ export class H3ServerDriver {
       if (st.badRequest) {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
-          session.drainWritesSync();
+          session.drainWrites();
         } catch {}
         return;
       }
@@ -242,7 +242,7 @@ export class H3ServerDriver {
         if (!session.peerWebTransportReady) {
           try {
             session.submitResponse(st.streamId, [[':status', '400'], ['content-type', 'text/plain']], new TextEncoder().encode('WebTransport over HTTP/3 requires complete peer SETTINGS'));
-            session.drainWritesSync();
+            session.drainWrites();
           } catch {}
           return;
         }
@@ -271,30 +271,30 @@ export class H3ServerDriver {
             webTransports.set(st.streamId, result);
             result.closed.finally(() => webTransports.delete(st.streamId)).catch(() => {});
             session.submitResponse(st.streamId, [[':status', '200']], keepConnectOpenBody());
-            session.drainWritesSync();
+            session.drainWrites();
             return;
           }
           session.submitResponse(st.streamId, [[':status', String(result.status)]], (result as any)._extractBytes?.() ?? result.body as any ?? undefined);
-          session.drainWritesSync();
+          session.drainWrites();
           return;
         }
         try {
           session.submitResponse(st.streamId, [[':status', '501'], ['content-type', 'text/plain']], new TextEncoder().encode('WebTransport over HTTP/3 is not available yet'));
-          session.drainWritesSync();
+          session.drainWrites();
         } catch {}
         return;
       }
       if (st.method === 'CONNECT') {
         try {
           session.submitResponse(st.streamId, [[':status', '405'], ['allow', 'GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH']]);
-          session.drainWritesSync();
+          session.drainWrites();
         } catch {}
         return;
       }
       if (!st.method || !st.path) {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
-          session.drainWritesSync();
+          session.drainWrites();
         } catch {}
         return;
       }
@@ -312,7 +312,7 @@ export class H3ServerDriver {
       } catch {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
-          session.drainWritesSync();
+          session.drainWrites();
         } catch {}
         return;
       }
@@ -359,7 +359,7 @@ export class H3ServerDriver {
         respBody = (response as any)._extractBytes?.() ?? response.body as any ?? undefined;
       }
       session.submitResponse(st.streamId, respHeaders, respBody, respTrailers);
-      session.drainWritesSync();
+      session.drainWrites();
       st.dispatchDone = true;
       cleanupStream(st);
     }
@@ -377,14 +377,14 @@ export class H3ServerDriver {
               while (true) {
                 const bytes = await stream.reader.read() as Uint8Array | null;
                 const fin = bytes === null;
-                session.readStreamSync(sid, bytes ?? new Uint8Array(0), fin);
+                session.readStream(sid, bytes ?? new Uint8Array(0), fin);
                 if (fin) break;
               }
               return;
             }
             const routed = await readWebTransportPrefix(stream.reader);
             if (routed.buffer === null) {
-              session.readStreamSync(sid, new Uint8Array(0), true);
+              session.readStream(sid, new Uint8Array(0), true);
               return;
             }
             first = routed.buffer;
@@ -398,11 +398,11 @@ export class H3ServerDriver {
             if (stream.direction === 'bidirectional') {
               session.addQuicStream(sid, stream.writer);
             }
-            session.readStreamSync(sid, first, false);
+            session.readStream(sid, first, false);
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              session.readStreamSync(sid, bytes ?? new Uint8Array(0), fin);
+              session.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {
@@ -439,7 +439,7 @@ export class H3ServerDriver {
       }
       session.bindControlStream(BigInt(controlStream.id));
       session.bindQpackStreams(BigInt(qencStream.id), BigInt(qdecStream.id));
-      session.drainWritesSync();
+      session.drainWrites();
       // Wait for connection close.
       await new Promise<void>((resolve) => {
         conn.addEventListener('close', () => resolve(), { once: true });

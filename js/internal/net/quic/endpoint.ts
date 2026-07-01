@@ -1168,7 +1168,7 @@ class QuicBytesWriter extends BytesWriter {
   }
   writeSync(data: ArrayBuffer | ArrayBufferView): void {
     this.#stream._assertWritableSide();
-    if (this.closed) throw new Error('writer closed');
+    if (this.closed) throw new Error('Writer is closed');
     const buf = data instanceof Uint8Array ? data : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
     this.#writeChunk(buf);
     this.#flushPending();
@@ -3840,14 +3840,14 @@ export class QuicListener {
     while (!this.#closed && !transport.closed) {
       try {
         const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, 65536);
-          if (batch !== undefined) {
-            for (const received of batch) {
-              this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
-            }
-            if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
-              await runtimeDelay(this.endpoint._quicRuntime(), 0);
-              continue;
-            }
+        if (batch !== undefined) {
+          for (const received of batch) {
+            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
+          }
+          if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
+            await runtimeDelay(this.endpoint._quicRuntime(), 0);
+            continue;
+          }
         } else {
           let packets = 0;
           for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {

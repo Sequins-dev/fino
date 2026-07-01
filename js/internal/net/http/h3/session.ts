@@ -532,7 +532,11 @@ export class Nghttp3Session {
         if (rc !== 0) {
           slot.error = new Error(`nghttp3_conn_resume_stream failed: ${rc}`);
         }
-        void this.drainWrites().catch(() => {});
+        try {
+          this.drainWrites();
+        } catch {
+          this.close();
+        }
       }
     }, (error) => {
       slot.pulling = false;
@@ -540,14 +544,18 @@ export class Nghttp3Session {
       if (!this.#closed && this.#bodySlots.get(streamId) === slot) {
         const rc = sym!.nghttp3_conn_resume_stream(this.#conn, streamId) as number;
         if (rc !== 0) this.close();
-        void this.drainWrites().catch(() => {});
+        try {
+          this.drainWrites();
+        } catch {
+          this.close();
+        }
       }
     });
   }
   // -------------------------------------------------------------------------
   // Read: feed QUIC stream bytes into nghttp3.
   // -------------------------------------------------------------------------
-  readStreamSync(streamId: bigint, data: Uint8Array, fin: boolean): void {
+  readStream(streamId: bigint, data: Uint8Array, fin: boolean): void {
     if (this.#closed) throw new Error('session closed');
     this.#withLock(() => {
       if (this.#closed) throw new Error('session closed');
@@ -573,16 +581,10 @@ export class Nghttp3Session {
       this.#drainWritesInnerSync();
     });
   }
-  async readStream(streamId: bigint, data: Uint8Array, fin: boolean): Promise<void> {
-    this.readStreamSync(streamId, data, fin);
-  }
   // -------------------------------------------------------------------------
   // Write drain: pull nghttp3 output and push to QUIC streams.
   // -------------------------------------------------------------------------
-  async drainWrites(): Promise<void> {
-    this.drainWritesSync();
-  }
-  drainWritesSync(): void {
+  drainWrites(): void {
     this.#withLock(() => this.#drainWritesInnerSync());
   }
   #drainWritesInnerSync(): void {
@@ -659,11 +661,10 @@ export class Nghttp3Session {
             off += p.length;
           }
           const outgoing = this.#patchOutgoingStreamBytes(sid, combined);
-          if (entry.writer.writeSync !== undefined) {
-            entry.writer.writeSync(outgoing);
-          } else {
+          if (entry.writer.writeSync === undefined) {
             throw new Error('H3 stream writer does not support synchronous writes');
           }
+          entry.writer.writeSync(outgoing);
           if (this.#closed) return;
           consumed = totalBytes;
         }
@@ -673,8 +674,10 @@ export class Nghttp3Session {
           throw new Error(`nghttp3_conn_add_write_offset failed: ${arc}`);
         }
         if (isFin && entry && sid !== this.#controlStreamId) {
-          if (entry.writer.closeSync !== undefined) entry.writer.closeSync();
-          else void entry.writer.close();
+          if (entry.writer.closeSync === undefined) {
+            throw new Error('H3 stream writer does not support synchronous close');
+          }
+          entry.writer.closeSync();
           this.#quicStreams.delete(sid);
         }
       }
@@ -749,7 +752,7 @@ export class Nghttp3Session {
         const src = sym!.nghttp3_conn_shutdown(this.#conn) as number;
         if (src === 0) {
           try {
-            this.drainWritesSync();
+            this.drainWrites();
           } catch {}
         }
       }

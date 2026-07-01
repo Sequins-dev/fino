@@ -867,12 +867,12 @@ fn struct_get<'s>(
             NativeType::F64 => {
                 rv.set(v8::Number::new(scope, std::ptr::read_unaligned(ptr as *const f64)).into())
             }
-            NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => rv.set(
-                pointer::into_js(
+            NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
+                rv.set(pointer::into_js(
                     scope,
                     std::ptr::read_unaligned(ptr as *const *mut std::ffi::c_void),
-                ),
-            ),
+                ))
+            }
             NativeType::Struct(layout) => {
                 let ab = v8::ArrayBuffer::new(scope, layout.size);
                 if let Some(dst) = ab.get_backing_store().data() {
@@ -954,10 +954,12 @@ fn struct_set<'s>(
             NativeType::F64 => {
                 std::ptr::write_unaligned(ptr as *mut f64, value.number_value(scope).unwrap_or(0.0))
             }
-            NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => std::ptr::write_unaligned(
-                ptr as *mut *mut std::ffi::c_void,
-                pointer::from_js(scope, value).unwrap_or(std::ptr::null_mut()),
-            ),
+            NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
+                std::ptr::write_unaligned(
+                    ptr as *mut *mut std::ffi::c_void,
+                    pointer::from_js(scope, value).unwrap_or(std::ptr::null_mut()),
+                )
+            }
             NativeType::Struct(layout) => {
                 let Some((src, src_len, _src_pin)) = js_buffer_bytes(scope, value) else {
                     return;

@@ -1511,6 +1511,27 @@ export abstract class Writer<T> {
   */
   abstract write(value: T): Promise<void>;
   /**
+  * Write one value synchronously when the writer supports synchronous
+  * acceptance.
+  *
+  * This method is an optional capability for hot paths that must not yield
+  * between producing bytes and updating native state. Implementations should
+  * either accept the value completely before returning or throw. The base
+  * `Writer` does not provide a fallback because calling async `write()` from a
+  * sync-only path would hide an ordering bug.
+  *
+  * ```js
+  * import { Writer } from 'fino:stream';
+  * function writeNow(writer, value) {
+  *   if (writer.writeSync === undefined) throw new Error('sync writes unavailable');
+  *   writer.writeSync(value);
+  * }
+  * ```
+  *
+  * @internal
+  */
+  writeSync?(value: T): void;
+  /**
   * Consume an async iterable and write each value in order.
   *
   * The method awaits each `write()` before reading the next source value,
@@ -1573,6 +1594,25 @@ export abstract class Writer<T> {
     this.#closed = true;
     await this.#onClose();
   }
+  /**
+  * Close the writer synchronously when the writer supports synchronous close.
+  *
+  * This optional capability is for callers that need close state to be visible
+  * immediately. Implementations should mark the writer closed before returning
+  * and perform only synchronous cleanup. Callers that can yield should continue
+  * to use `close()`.
+  *
+  * ```js
+  * import { Writer } from 'fino:stream';
+  * function closeNow(writer) {
+  *   if (writer.closeSync === undefined) throw new Error('sync close unavailable');
+  *   writer.closeSync();
+  * }
+  * ```
+  *
+  * @internal
+  */
+  closeSync?(): void;
   [Symbol.asyncDispose](): Promise<void> {
     return this.close();
   }

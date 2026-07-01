@@ -217,14 +217,14 @@ export class H3ClientSession {
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              session.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
             return;
           }
           const routed = await readWebTransportPrefix(stream.reader);
           if (routed.buffer === null) {
-            await session.readStream(sid, new Uint8Array(0), true);
+            session.readStream(sid, new Uint8Array(0), true);
             return;
           }
           if (routed.prefix?.kind === stream.direction && routed.prefix.sessionId !== undefined) {
@@ -235,11 +235,11 @@ export class H3ClientSession {
             }
           }
           if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
-          await session.readStream(sid, routed.buffer, false);
+          session.readStream(sid, routed.buffer, false);
           while (true) {
             const bytes = await stream.reader.read() as Uint8Array | null;
             const fin = bytes === null;
-            await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+            session.readStream(sid, bytes ?? new Uint8Array(0), fin);
             if (fin) break;
           }
         } catch {}
@@ -261,7 +261,7 @@ export class H3ClientSession {
       }
       session.bindControlStream(BigInt(controlStream.id));
       session.bindQpackStreams(BigInt(qencStream.id), BigInt(qdecStream.id));
-      await session.drainWrites();
+      session.drainWrites();
     } catch (e) {
       session.close();
       throw e;
@@ -313,7 +313,7 @@ export class H3ClientSession {
         while (true) {
           const bytes = await quicStream.reader.read() as Uint8Array | null;
           const fin = bytes === null;
-          await this.#session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+          this.#session.readStream(sid, bytes ?? new Uint8Array(0), fin);
           if (fin) break;
         }
       } catch {
@@ -357,11 +357,15 @@ export class H3ClientSession {
     });
     try {
       this.#session.submitRequest(sid, reqHeaders, body, init?.trailers);
-      await this.#session.drainWrites();
+      this.#session.drainWrites();
     } catch (e) {
       const pending = this.#pending.get(sid);
       this.#pending.delete(sid);
-      const message = typeof (e as { message?: unknown })?.message === 'string' ? (e as { message: string }).message : String(e);
+      const message = typeof (e as {
+        message?: unknown;
+      })?.message === 'string' ? (e as {
+        message: string;
+      }).message : String(e);
       if (message.includes(`failed: ${NGHTTP3_ERR_CONN_CLOSING}`)) {
         const error = new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId ?? 'unknown'})`);
         pending?.body.error(error);
