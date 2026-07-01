@@ -6,7 +6,7 @@
 //!
 //! # Design
 //!
-//! A small set of pre-compiled trampoline functions (one per arity, 0–8)
+//! A small set of pre-compiled trampoline functions (one per arity, 0–16)
 //! handle all fast-eligible signatures.  At `dlopen` time a `CFunctionInfo`
 //! is built dynamically with the exact V8 types for each symbol, paired with
 //! the appropriate arity trampoline.
@@ -26,7 +26,7 @@
 //!  - All params are integer/pointer/buffer types (no f32/f64 — different
 //!    register class incompatible with the `u64` trampolines).
 //!  - Return type is integer/pointer/void (no buffer/f32/f64).
-//!  - Arity ≤ 8.
+//!  - Arity ≤ 16.
 //!
 //! Ineligible symbols fall back to the normal slow callback unchanged.
 
@@ -59,7 +59,7 @@ pub enum FastCallKind {
 /// `SymbolData` itself (leaked via `Box::into_raw`).
 pub fn build_fast_cfunction(sym: &FfiSymbol) -> Option<CFunction> {
     let arity = sym.param_types.len();
-    if matches!(sym.fast_call_kind, FastCallKind::None) || arity > 8 {
+    if matches!(sym.fast_call_kind, FastCallKind::None) || arity > 16 {
         return None;
     }
 
@@ -87,7 +87,7 @@ pub fn build_fast_cfunction(sym: &FfiSymbol) -> Option<CFunction> {
 }
 
 pub fn classify_fast_call(param_types: &[NativeType], result_type: &NativeType) -> FastCallKind {
-    if param_types.len() > 8 || !result_type.is_fast_return() {
+    if param_types.len() > 16 || !result_type.is_fast_return() {
         return FastCallKind::None;
     }
 
@@ -123,7 +123,7 @@ fn native_to_ctype(ty: &NativeType) -> CTypeInfo {
         // Buffer and Pointer → V8Value (raw Local<Value> pointer passed in-register).
         // For Buffer: V8 passes a TypedArray/ArrayBuffer; we extract the backing store ptr.
         // For Pointer: V8 passes an 8-byte ArrayBuffer; we read its contents as a u64 address.
-        NativeType::Buffer | NativeType::Pointer => Type::V8Value,
+        NativeType::Buffer | NativeType::Pointer | NativeType::IgnoredPointer => Type::V8Value,
         // Floats and structs are not fast-eligible — should not reach here.
         NativeType::F32 | NativeType::F64 | NativeType::Struct(_) => Type::Void,
     };
@@ -146,6 +146,14 @@ fn select_trampoline(arity: usize, is_void: bool) -> Option<*const c_void> {
             6 => trampoline_void_6 as _,
             7 => trampoline_void_7 as _,
             8 => trampoline_void_8 as _,
+            9 => trampoline_void_9 as _,
+            10 => trampoline_void_10 as _,
+            11 => trampoline_void_11 as _,
+            12 => trampoline_void_12 as _,
+            13 => trampoline_void_13 as _,
+            14 => trampoline_void_14 as _,
+            15 => trampoline_void_15 as _,
+            16 => trampoline_void_16 as _,
             _ => return None,
         }
     } else {
@@ -159,6 +167,14 @@ fn select_trampoline(arity: usize, is_void: bool) -> Option<*const c_void> {
             6 => trampoline_6 as _,
             7 => trampoline_7 as _,
             8 => trampoline_8 as _,
+            9 => trampoline_9 as _,
+            10 => trampoline_10 as _,
+            11 => trampoline_11 as _,
+            12 => trampoline_12 as _,
+            13 => trampoline_13 as _,
+            14 => trampoline_14 as _,
+            15 => trampoline_15 as _,
+            16 => trampoline_16 as _,
             _ => return None,
         }
     })
@@ -246,8 +262,8 @@ unsafe fn v8value_to_ptr_contents(raw: u64) -> *mut c_void {
 /// Dispatch through the symbol's native code pointer without libffi.
 ///
 /// On ARM64 (AAPCS64) and x86-64 (SysV AMD64), all integer/pointer-class
-/// arguments map 1-to-1 to general-purpose argument registers (x0-x7 /
-/// rdi-rsi-rdx-rcx-r8-r9 + stack). Calling a C function that expects fewer
+/// arguments map 1-to-1 to general-purpose argument registers and then stack
+/// slots. Calling a C function that expects fewer
 /// or differently-sized integer args is safe: the callee reads only the low
 /// bits it declared; unused registers/stack slots are harmless. Fast-eligible
 /// symbols never have float params, so the GPR-only calling convention holds.
@@ -273,6 +289,7 @@ unsafe fn fast_dispatch(sym: &FfiSymbol, args: &[u64]) -> u64 {
         NativeType::U64 | NativeType::USize => r,
         NativeType::I64 | NativeType::ISize => r,
         NativeType::Pointer
+        | NativeType::IgnoredPointer
         | NativeType::Buffer
         | NativeType::F32
         | NativeType::F64
@@ -288,11 +305,13 @@ unsafe fn fast_dispatch_scalar(sym: &FfiSymbol, args: &[u64]) -> u64 {
 #[inline(always)]
 unsafe fn fast_dispatch_pointer(sym: &FfiSymbol, args: &[u64]) -> u64 {
     let n = args.len();
-    let mut raw = [0u64; 8];
+    let mut raw = [0u64; 16];
     for i in 0..n {
         raw[i] = match sym.param_types[i] {
             NativeType::Buffer => (unsafe { v8value_to_ptr(args[i]) }) as u64,
-            NativeType::Pointer => (unsafe { v8value_to_ptr_contents(args[i]) }) as u64,
+            NativeType::Pointer | NativeType::IgnoredPointer => {
+                (unsafe { v8value_to_ptr_contents(args[i]) }) as u64
+            }
             _ => args[i],
         };
     }
@@ -353,6 +372,166 @@ unsafe fn call_direct(code_ptr: *mut c_void, args: &[u64]) -> u64 {
                 )
             }
         }
+        9 => {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7], args[8],
+                )
+            }
+        }
+        10 => {
+            let f: unsafe extern "C" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64 =
+                unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9],
+                )
+            }
+        }
+        11 => {
+            let f: unsafe extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> u64 = unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9], args[10],
+                )
+            }
+        }
+        12 => {
+            let f: unsafe extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> u64 = unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9], args[10], args[11],
+                )
+            }
+        }
+        13 => {
+            let f: unsafe extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> u64 = unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9], args[10], args[11], args[12],
+                )
+            }
+        }
+        14 => {
+            let f: unsafe extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> u64 = unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9], args[10], args[11], args[12], args[13],
+                )
+            }
+        }
+        15 => {
+            let f: unsafe extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> u64 = unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9], args[10], args[11], args[12], args[13], args[14],
+                )
+            }
+        }
+        16 => {
+            let f: unsafe extern "C" fn(
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+                u64,
+            ) -> u64 = unsafe { std::mem::transmute(code_ptr) };
+            unsafe {
+                f(
+                    args[0], args[1], args[2], args[3], args[4], args[5], args[6], args[7],
+                    args[8], args[9], args[10], args[11], args[12], args[13], args[14], args[15],
+                )
+            }
+        }
         _ => 0,
     }
 }
@@ -383,6 +562,94 @@ trampoline!(trampoline_5, a0, a1, a2, a3, a4);
 trampoline!(trampoline_6, a0, a1, a2, a3, a4, a5);
 trampoline!(trampoline_7, a0, a1, a2, a3, a4, a5, a6);
 trampoline!(trampoline_8, a0, a1, a2, a3, a4, a5, a6, a7);
+trampoline!(trampoline_9, a0, a1, a2, a3, a4, a5, a6, a7, a8);
+trampoline!(trampoline_10, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+trampoline!(trampoline_11, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+trampoline!(
+    trampoline_12,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11
+);
+trampoline!(
+    trampoline_13,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12
+);
+trampoline!(
+    trampoline_14,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12,
+    a13
+);
+trampoline!(
+    trampoline_15,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12,
+    a13,
+    a14
+);
+trampoline!(
+    trampoline_16,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12,
+    a13,
+    a14,
+    a15
+);
 
 // ---------------------------------------------------------------------------
 // Per-arity trampolines — void return
@@ -410,3 +677,104 @@ trampoline_void!(trampoline_void_5, a0, a1, a2, a3, a4);
 trampoline_void!(trampoline_void_6, a0, a1, a2, a3, a4, a5);
 trampoline_void!(trampoline_void_7, a0, a1, a2, a3, a4, a5, a6);
 trampoline_void!(trampoline_void_8, a0, a1, a2, a3, a4, a5, a6, a7);
+trampoline_void!(trampoline_void_9, a0, a1, a2, a3, a4, a5, a6, a7, a8);
+trampoline_void!(trampoline_void_10, a0, a1, a2, a3, a4, a5, a6, a7, a8, a9);
+trampoline_void!(
+    trampoline_void_11,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10
+);
+trampoline_void!(
+    trampoline_void_12,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11
+);
+trampoline_void!(
+    trampoline_void_13,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12
+);
+trampoline_void!(
+    trampoline_void_14,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12,
+    a13
+);
+trampoline_void!(
+    trampoline_void_15,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12,
+    a13,
+    a14
+);
+trampoline_void!(
+    trampoline_void_16,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    a7,
+    a8,
+    a9,
+    a10,
+    a11,
+    a12,
+    a13,
+    a14,
+    a15
+);

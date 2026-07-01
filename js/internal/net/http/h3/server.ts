@@ -53,6 +53,7 @@ interface H3ServerStream {
   cancelled: boolean;
   badRequest: boolean;
   dispatched: boolean;
+  dispatchDone: boolean;
   seenPseudos: Set<string>;
   seenRegular: boolean;
 }
@@ -72,6 +73,7 @@ function makeStream(streamId: bigint): H3ServerStream {
     cancelled: false,
     badRequest: false,
     dispatched: false,
+    dispatchDone: false,
     seenPseudos: new Set(),
     seenRegular: false
   };
@@ -217,11 +219,20 @@ export class H3ServerDriver {
       });
       inFlight.add(p);
     }
+    function cleanupStream(st: H3ServerStream): void {
+      if (streams.get(st.streamId) !== st) return;
+      if (!st.bodyDone || !st.dispatchDone) return;
+      st.cancelled = true;
+      st.bodyDone = true;
+      st.seenPseudos.clear();
+      st.body.close();
+      streams.delete(st.streamId);
+    }
     async function dispatch(st: H3ServerStream): Promise<void> {
       if (st.badRequest) {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
-          await session.drainWrites();
+          session.drainWritesSync();
         } catch {}
         return;
       }
@@ -231,7 +242,7 @@ export class H3ServerDriver {
         if (!session.peerWebTransportReady) {
           try {
             session.submitResponse(st.streamId, [[':status', '400'], ['content-type', 'text/plain']], new TextEncoder().encode('WebTransport over HTTP/3 requires complete peer SETTINGS'));
-            await session.drainWrites();
+            session.drainWritesSync();
           } catch {}
           return;
         }
@@ -260,30 +271,30 @@ export class H3ServerDriver {
             webTransports.set(st.streamId, result);
             result.closed.finally(() => webTransports.delete(st.streamId)).catch(() => {});
             session.submitResponse(st.streamId, [[':status', '200']], keepConnectOpenBody());
-            await session.drainWrites();
+            session.drainWritesSync();
             return;
           }
           session.submitResponse(st.streamId, [[':status', String(result.status)]], (result as any)._extractBytes?.() ?? result.body as any ?? undefined);
-          await session.drainWrites();
+          session.drainWritesSync();
           return;
         }
         try {
           session.submitResponse(st.streamId, [[':status', '501'], ['content-type', 'text/plain']], new TextEncoder().encode('WebTransport over HTTP/3 is not available yet'));
-          await session.drainWrites();
+          session.drainWritesSync();
         } catch {}
         return;
       }
       if (st.method === 'CONNECT') {
         try {
           session.submitResponse(st.streamId, [[':status', '405'], ['allow', 'GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH']]);
-          await session.drainWrites();
+          session.drainWritesSync();
         } catch {}
         return;
       }
       if (!st.method || !st.path) {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
-          await session.drainWrites();
+          session.drainWritesSync();
         } catch {}
         return;
       }
@@ -301,7 +312,7 @@ export class H3ServerDriver {
       } catch {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
-          await session.drainWrites();
+          session.drainWritesSync();
         } catch {}
         return;
       }
@@ -348,7 +359,9 @@ export class H3ServerDriver {
         respBody = (response as any)._extractBytes?.() ?? response.body as any ?? undefined;
       }
       session.submitResponse(st.streamId, respHeaders, respBody, respTrailers);
-      await session.drainWrites();
+      session.drainWritesSync();
+      st.dispatchDone = true;
+      cleanupStream(st);
     }
     try {
       // Attach stream listener early so bidirectional streams from the client
@@ -364,14 +377,14 @@ export class H3ServerDriver {
               while (true) {
                 const bytes = await stream.reader.read() as Uint8Array | null;
                 const fin = bytes === null;
-                await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+                session.readStreamSync(sid, bytes ?? new Uint8Array(0), fin);
                 if (fin) break;
               }
               return;
             }
             const routed = await readWebTransportPrefix(stream.reader);
             if (routed.buffer === null) {
-              await session.readStream(sid, new Uint8Array(0), true);
+              session.readStreamSync(sid, new Uint8Array(0), true);
               return;
             }
             first = routed.buffer;
@@ -385,11 +398,11 @@ export class H3ServerDriver {
             if (stream.direction === 'bidirectional') {
               session.addQuicStream(sid, stream.writer);
             }
-            await session.readStream(sid, first, false);
+            session.readStreamSync(sid, first, false);
             while (true) {
               const bytes = await stream.reader.read() as Uint8Array | null;
               const fin = bytes === null;
-              await session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              session.readStreamSync(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
             }
           } catch {
@@ -426,7 +439,7 @@ export class H3ServerDriver {
       }
       session.bindControlStream(BigInt(controlStream.id));
       session.bindQpackStreams(BigInt(qencStream.id), BigInt(qdecStream.id));
-      await session.drainWrites();
+      session.drainWritesSync();
       // Wait for connection close.
       await new Promise<void>((resolve) => {
         conn.addEventListener('close', () => resolve(), { once: true });

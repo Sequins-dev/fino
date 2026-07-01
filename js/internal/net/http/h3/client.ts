@@ -12,7 +12,7 @@
 import { Nghttp3Session } from './session.ts';
 import type { H3BodySource, H3SessionCallbacks } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
-import { h3Available } from './bindings.ts';
+import { h3Available, NGHTTP3_ERR_CONN_CLOSING } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import { WebTransport } from '../../../../net/http/webtransport.ts';
@@ -70,11 +70,16 @@ export class H3ClientSession {
   #webTransports = new Map<bigint, WebTransport>();
   #closed = false;
   #goawayLastStreamId: bigint | null = null;
+  #goawayReceived: Promise<void>;
+  #resolveGoawayReceived: (() => void) | null = null;
   #peerSettingsReceived: Promise<void>;
   #resolvePeerSettingsReceived: (() => void) | null = null;
   private constructor(conn: QuicConnection, session: Nghttp3Session) {
     this.#conn = conn;
     this.#session = session;
+    this.#goawayReceived = new Promise((resolve) => {
+      this.#resolveGoawayReceived = resolve;
+    });
     this.#peerSettingsReceived = new Promise((resolve) => {
       this.#resolvePeerSettingsReceived = resolve;
     });
@@ -166,6 +171,8 @@ export class H3ClientSession {
         if (instance.#goawayLastStreamId === null || lastStreamId < instance.#goawayLastStreamId) {
           instance.#goawayLastStreamId = lastStreamId;
         }
+        instance.#resolveGoawayReceived?.();
+        instance.#resolveGoawayReceived = null;
         for (const [sid, req] of instance.#pending) {
           if (sid > lastStreamId) {
             if (!req.done) {
@@ -352,7 +359,16 @@ export class H3ClientSession {
       this.#session.submitRequest(sid, reqHeaders, body, init?.trailers);
       await this.#session.drainWrites();
     } catch (e) {
+      const pending = this.#pending.get(sid);
       this.#pending.delete(sid);
+      const message = typeof (e as { message?: unknown })?.message === 'string' ? (e as { message: string }).message : String(e);
+      if (message.includes(`failed: ${NGHTTP3_ERR_CONN_CLOSING}`)) {
+        const error = new Error(`H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId ?? 'unknown'})`);
+        pending?.body.error(error);
+        pending?.trailerReject?.(error);
+        pending?.reject?.(error);
+        throw error;
+      }
       throw e;
     }
     return responsePromise;
@@ -404,6 +420,10 @@ export class H3ClientSession {
   async #waitForPeerSettings(): Promise<void> {
     if (this.#session.peerSettingsReceived) return;
     await this.#peerSettingsReceived;
+  }
+  _waitForGoawayForTest(): Promise<void> {
+    if (this.#goawayLastStreamId !== null) return Promise.resolve();
+    return this.#goawayReceived;
   }
   #resolveResponse(streamId: bigint): void {
     const pending = this.#pending.get(streamId);

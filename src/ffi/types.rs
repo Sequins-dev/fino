@@ -22,6 +22,8 @@ pub enum NativeType {
     F64,
     /// Opaque C pointer (`void*`). Represented in JS as a `FinoPointer` object or `null`.
     Pointer,
+    /// Callback-only pointer parameter that is intentionally not materialized in JS.
+    IgnoredPointer,
     /// A JS `ArrayBuffer` / typed array passed as a `void*` to its backing data.
     Buffer,
     /// A C aggregate passed or returned by value.
@@ -46,6 +48,7 @@ impl NativeType {
             "f32" => Ok(Self::F32),
             "f64" => Ok(Self::F64),
             "pointer" => Ok(Self::Pointer),
+            "ignoredPointer" => Ok(Self::IgnoredPointer),
             "buffer" => Ok(Self::Buffer),
             _ => Err(format!("Unknown FFI type: '{s}'")),
         }
@@ -67,7 +70,7 @@ impl NativeType {
             Self::F32 => FfiType::f32(),
             Self::F64 => FfiType::f64(),
             // Both pointer and buffer are passed as a C pointer.
-            Self::Pointer | Self::Buffer => FfiType::pointer(),
+            Self::Pointer | Self::IgnoredPointer | Self::Buffer => FfiType::pointer(),
             Self::Struct(layout) => layout.to_ffi_type(),
         }
     }
@@ -79,7 +82,7 @@ impl NativeType {
             Self::U16 | Self::I16 => 2,
             Self::U32 | Self::I32 | Self::F32 => 4,
             Self::U64 | Self::I64 | Self::F64 => 8,
-            Self::USize | Self::ISize | Self::Pointer | Self::Buffer => {
+            Self::USize | Self::ISize | Self::Pointer | Self::IgnoredPointer | Self::Buffer => {
                 std::mem::size_of::<usize>()
             }
             Self::Struct(layout) => layout.size,
@@ -92,7 +95,7 @@ impl NativeType {
             Self::U16 | Self::I16 => 2,
             Self::U32 | Self::I32 | Self::F32 => 4,
             Self::U64 | Self::I64 | Self::F64 => 8,
-            Self::USize | Self::ISize | Self::Pointer | Self::Buffer => {
+            Self::USize | Self::ISize | Self::Pointer | Self::IgnoredPointer | Self::Buffer => {
                 std::mem::align_of::<usize>()
             }
             Self::Struct(layout) => layout.align,
@@ -107,7 +110,10 @@ impl NativeType {
     /// Whether this type can be used as a V8 Fast API call parameter.
     /// Excludes floats (different register class) and void.
     pub fn is_fast_param(&self) -> bool {
-        !matches!(self, Self::Void | Self::F32 | Self::F64 | Self::Struct(_))
+        !matches!(
+            self,
+            Self::Void | Self::IgnoredPointer | Self::F32 | Self::F64 | Self::Struct(_)
+        )
     }
 
     /// Whether this type can be used as a V8 Fast API call return type.
@@ -116,7 +122,12 @@ impl NativeType {
     pub fn is_fast_return(&self) -> bool {
         !matches!(
             self,
-            Self::Buffer | Self::Pointer | Self::F32 | Self::F64 | Self::Struct(_)
+            Self::Buffer
+                | Self::Pointer
+                | Self::IgnoredPointer
+                | Self::F32
+                | Self::F64
+                | Self::Struct(_)
         )
     }
 }

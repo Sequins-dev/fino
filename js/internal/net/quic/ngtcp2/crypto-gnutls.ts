@@ -162,8 +162,7 @@ const _CRYPTO_SYMBOLS = {
       'pointer',
       'usize'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_crypto_write_connection_close: {
     parameters: [
@@ -370,13 +369,11 @@ const _GNUTLS_SYMBOLS = {
       'i32',
       'pointer'
     ],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   gnutls_session_get_data2: {
     parameters: ['pointer', 'pointer'],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   gnutls_session_set_data: {
     parameters: [
@@ -384,8 +381,7 @@ const _GNUTLS_SYMBOLS = {
       'buffer',
       'usize'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   gnutls_session_get_random: {
     parameters: [
@@ -405,8 +401,7 @@ const _GNUTLS_SYMBOLS = {
       'usize',
       'buffer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   gnutls_session_set_keylog_function: {
     parameters: ['pointer', 'pointer'],
@@ -426,8 +421,7 @@ const _GNUTLS_SYMBOLS = {
       'u32',
       'u32'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   gnutls_record_set_max_early_data_size: {
     parameters: ['pointer', 'usize'],
@@ -447,8 +441,7 @@ const _GNUTLS_SYMBOLS = {
   },
   gnutls_anti_replay_set_add_function: {
     parameters: ['pointer', 'pointer'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   gnutls_anti_replay_set_ptr: {
     parameters: ['pointer', 'pointer'],
@@ -456,8 +449,7 @@ const _GNUTLS_SYMBOLS = {
   },
   gnutls_anti_replay_enable: {
     parameters: ['pointer', 'pointer'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   gnutls_memset: {
     parameters: [
@@ -481,8 +473,7 @@ const _GNUTLS_SYMBOLS = {
       'buffer',
       'pointer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   gnutls_certificate_get_peers: {
     parameters: ['pointer', 'pointer'],

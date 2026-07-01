@@ -1818,7 +1818,8 @@ describe('HTTP/3 (h3 ALPN)', () => {
       // Pump the GOAWAY through to the client. After this returns, onShutdown has
       // fired and #goawayLastStreamId is set — so request() throws before opening
       // a new stream, regardless of the conservative lastStreamId value nghttp3 sent.
-      await pipe.pumpUntil(serverSession.closeWhenIdle());
+      await serverSession.closeWhenIdle();
+      await pipe.pumpUntil(clientSession._waitForGoawayForTest());
       await t.rejects(() => clientSession.request('https://localhost/'), /GOAWAY/, 'request after GOAWAY is rejected');
       serverConn.destroy();
       clientConn.destroy();

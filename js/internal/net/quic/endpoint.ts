@@ -27,6 +27,11 @@ export type QuicAddress = {
   ip: string;
   port: number;
 };
+const _PTR_SIZE = 8;
+const _QUIC_PTR_PATH = 0;
+const _QUIC_PTR_PKT_INFO = 1;
+const _QUIC_PTR_DATA_LEN = 2;
+const _QUIC_PTR_VEC = 3;
 /** Local and remote socket addresses associated with a QUIC network path. */
 export type QuicPath = {
   /** Local UDP socket address used for the path. */
@@ -1161,7 +1166,17 @@ class QuicBytesWriter extends BytesWriter {
     this.#stream._assertWritableSide();
     await super.write(data);
   }
+  writeSync(data: ArrayBuffer | ArrayBufferView): void {
+    this.#stream._assertWritableSide();
+    if (this.closed) throw new Error('writer closed');
+    const buf = data instanceof Uint8Array ? data : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+    this.#writeChunk(buf);
+    this.#flushPending();
+  }
   protected async doWrite(buf: Uint8Array): Promise<void> {
+    this.#writeChunk(buf);
+  }
+  #writeChunk(buf: Uint8Array): void {
     const copy = buf.slice();
     this.#stream._reserveWrite(copy);
     this.#pending.push(copy);
@@ -1181,6 +1196,16 @@ class QuicBytesWriter extends BytesWriter {
     this.#fin = true;
     this.#flushPending();
     await super.close();
+  }
+  closeSync(): void {
+    if (this.closed) return;
+    if (!this.#stream._hasWritableSide()) {
+      void super.close();
+      return;
+    }
+    this.#fin = true;
+    this.#flushPending();
+    void super.close();
   }
   #scheduleFlush(): void {
     if (this.#flushScheduled) return;
@@ -3815,14 +3840,14 @@ export class QuicListener {
     while (!this.#closed && !transport.closed) {
       try {
         const batch = transport.recvBatch?.(MAX_BATCH_READ_PACKETS_PER_TURN, 65536);
-        if (batch !== undefined) {
-          for (const received of batch) {
-            this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
-          }
-          if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
-            await runtimeDelay(this.endpoint._quicRuntime(), 0);
-            continue;
-          }
+          if (batch !== undefined) {
+            for (const received of batch) {
+              this.endpoint._handleDatagram(this, transport, transport.address, received.data, received.addr, received.ecn);
+            }
+            if (batch.length >= MAX_BATCH_READ_PACKETS_PER_TURN) {
+              await runtimeDelay(this.endpoint._quicRuntime(), 0);
+              continue;
+            }
         } else {
           let packets = 0;
           for (; packets < MAX_READ_PACKETS_PER_TURN; packets++) {
@@ -3910,6 +3935,8 @@ export class QuicConnection extends EventTarget {
   #path: ArrayBuffer;
   #localSockaddr: ArrayBuffer;
   #remoteSockaddr: ArrayBuffer;
+  #ptrArena = new ArrayBuffer(_PTR_SIZE * 8);
+  #ptrSlots = Array.from({ length: 8 }, (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE));
   #pathCache = new Map<string, NativePath>();
   #streamQueue = new AsyncQueue<QuicStream>('QUIC connection is closed');
   #datagramQueue = new ByteQueue();
@@ -4069,6 +4096,10 @@ export class QuicConnection extends EventTarget {
       this.#pathCache.set(key, path);
     }
     return path;
+  }
+  #ptrOf(source: ArrayBuffer | ArrayBufferView, slot: number): Uint8Array {
+    Pointer.of(source, this.#ptrArena, slot * _PTR_SIZE);
+    return this.#ptrSlots[slot]!;
   }
   #dispatch(event: Event): void {
     deferAfterNativeCallback(() => this.dispatchEvent(event));
@@ -5362,7 +5393,7 @@ export class QuicConnection extends EventTarget {
     let rc = 0;
     try {
       const pktInfo = this.#options.transport.ecn ? makePacketInfo(packetEcn ?? NGTCP2_ECN_NOT_ECT) : null;
-      rc = ngtcp2Sym!.ngtcp2_conn_read_pkt_versioned(this.#conn, Pointer.of(packetPath.path), NGTCP2_PKT_INFO_VERSION, pktInfo === null ? null : Pointer.of(pktInfo), packet, packet.byteLength, now(this.#runtime)) as number;
+      rc = ngtcp2Sym!.ngtcp2_conn_read_pkt_versioned(this.#conn, this.#ptrOf(packetPath.path, _QUIC_PTR_PATH), NGTCP2_PKT_INFO_VERSION, pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO), packet, packet.byteLength, now(this.#runtime)) as number;
     } finally {
       this.#readingPacketStartedConnecting = previousReadingPacketStartedConnecting;
     }
@@ -5470,13 +5501,14 @@ export class QuicConnection extends EventTarget {
       const packetBudget = this.#writePacketBudget();
       const writeBuffers = Array.from({ length: packetBudget }, () => new Uint8Array(writeBufferSize));
       const packetBatch: PendingSendPacket[] = [];
+      const outPath = makeOutputPath(this.#activeLocalAddress, remoteAddress, this.#fd);
       for (; packets < packetBudget; packets++) {
         let n = 0;
         const out = writeBuffers[packets]!;
-        const outPath = makeOutputPath(this.#activeLocalAddress, remoteAddress, this.#fd);
         const pktInfo = this.#options.transport.ecn ? makePacketInfo() : null;
-        const pktInfoPtr = pktInfo === null ? null : Pointer.of(pktInfo);
-        const writeNoStreamData = (): number => Number(ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, null, 0, -1n, null, 0n, ts));
+        const pktInfoPtr = pktInfo === null ? null : this.#ptrOf(pktInfo, _QUIC_PTR_PKT_INFO);
+        const outPathPtr = this.#ptrOf(outPath.path, _QUIC_PTR_PATH);
+        const writeNoStreamData = (): number => Number(ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(this.#conn, outPathPtr, NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, null, 0, -1n, null, 0n, ts));
         const isCoalescingRetry = (code: number): boolean => code === NGTCP2_ERR_WRITE_MORE || code === NGTCP2_ERR_STREAM_DATA_BLOCKED || code === NGTCP2_ERR_STREAM_NOT_FOUND || code === NGTCP2_ERR_STREAM_SHUT_WR;
         if (this.#pendingWrites.length > 0) {
           let coalescing = false;
@@ -5507,7 +5539,7 @@ export class QuicConnection extends EventTarget {
             writeI64(dataLen, 0, -1n);
             const flags = (pending.fin ? NGTCP2_WRITE_STREAM_FLAG_FIN : 0) | NGTCP2_WRITE_STREAM_FLAG_MORE;
             coalescing = true;
-            n = Number(ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, Pointer.of(dataLen), flags, BigInt(pending.streamId), Pointer.of(vec), 1n, ts));
+            n = Number(ngtcp2Sym!.ngtcp2_conn_writev_stream_versioned(this.#conn, outPathPtr, NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, this.#ptrOf(dataLen, _QUIC_PTR_DATA_LEN), flags, BigInt(pending.streamId), this.#ptrOf(vec, _QUIC_PTR_VEC), 1n, ts));
             const consumed = Number(readI64(dataLen, 0));
             const packetAccepted = n > 0 || n === NGTCP2_ERR_WRITE_MORE;
             const acceptedStreamData = consumed > 0 && packetAccepted;
@@ -5556,7 +5588,7 @@ export class QuicConnection extends EventTarget {
         } else if (this.#hasPendingDatagrams()) {
           n = this.#nextDatagramOnlyPacket(outPath, out, ts, pktInfo);
         } else {
-          n = Number(ngtcp2Sym!.ngtcp2_conn_write_pkt_versioned(this.#conn, Pointer.of(outPath.path), NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, ts));
+          n = Number(ngtcp2Sym!.ngtcp2_conn_write_pkt_versioned(this.#conn, outPathPtr, NGTCP2_PKT_INFO_VERSION, pktInfoPtr, out, out.byteLength, ts));
         }
         if (n > 0) {
           this.#queueWrittenPacket(packetBatch, n, outPath, remoteAddress, out, ts, pktInfo);
@@ -6047,9 +6079,30 @@ export class QuicConnection extends EventTarget {
   _onAckedStreamDataOffset(streamId: number, offset: number, datalen: number): void {
     (this.#streams.get(streamId) ?? this.#closedStreams.get(streamId))?._recordAck(offset, datalen);
     const end = offset + datalen;
-    this.#outstandingStreamData = this.#outstandingStreamData.filter((entry) => {
-      return entry.streamId !== streamId || !(offset <= entry.start && entry.end <= end);
-    });
+    const outstanding: OutstandingStreamData[] = [];
+    for (const entry of this.#outstandingStreamData) {
+      if (entry.streamId !== streamId || end <= entry.start || offset >= entry.end) {
+        outstanding.push(entry);
+        continue;
+      }
+      if (offset > entry.start) {
+        outstanding.push({
+          streamId,
+          start: entry.start,
+          end: offset,
+          data: entry.data.subarray(0, offset - entry.start)
+        });
+      }
+      if (end < entry.end) {
+        outstanding.push({
+          streamId,
+          start: end,
+          end: entry.end,
+          data: entry.data.subarray(end - entry.start)
+        });
+      }
+    }
+    this.#outstandingStreamData = outstanding;
     if (!this.#outstandingStreamData.some((entry) => entry.streamId === streamId)) {
       this.#closedStreams.delete(streamId);
     }

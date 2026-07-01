@@ -197,8 +197,7 @@ const _SYMBOLS = {
       'pointer',
       'pointer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_server_new_versioned: {
     parameters: [
@@ -216,8 +215,7 @@ const _SYMBOLS = {
       'pointer',
       'pointer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_del: {
     parameters: ['pointer'],
@@ -233,8 +231,7 @@ const _SYMBOLS = {
       'usize',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_write_pkt_versioned: {
     parameters: [
@@ -246,8 +243,7 @@ const _SYMBOLS = {
       'usize',
       'u64'
     ],
-    result: 'isize',
-    fast: false
+    result: 'isize'
   },
   ngtcp2_conn_writev_stream_versioned: {
     parameters: [
@@ -264,8 +260,7 @@ const _SYMBOLS = {
       'usize',
       'u64'
     ],
-    result: 'isize',
-    fast: false
+    result: 'isize'
   },
   ngtcp2_conn_write_datagram_versioned: {
     parameters: [
@@ -295,13 +290,11 @@ const _SYMBOLS = {
       'pointer',
       'u64'
     ],
-    result: 'isize',
-    fast: false
+    result: 'isize'
   },
   ngtcp2_conn_initiate_key_update: {
     parameters: ['pointer', 'u64'],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_initiate_immediate_migration: {
     parameters: [
@@ -309,8 +302,7 @@ const _SYMBOLS = {
       'pointer',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_initiate_migration: {
     parameters: [
@@ -318,18 +310,15 @@ const _SYMBOLS = {
       'pointer',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_set_local_addr: {
     parameters: ['pointer', 'pointer'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_set_path_user_data: {
     parameters: ['pointer', 'pointer'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_get_ccerr: {
     parameters: ['pointer'],
@@ -345,18 +334,15 @@ const _SYMBOLS = {
   },
   ngtcp2_conn_handle_expiry: {
     parameters: ['pointer', 'u64'],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_set_keep_alive_timeout: {
     parameters: ['pointer', 'u64'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_update_pkt_tx_time: {
     parameters: ['pointer', 'u64'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_get_send_quantum: {
     parameters: ['pointer'],
@@ -372,8 +358,7 @@ const _SYMBOLS = {
   },
   ngtcp2_conn_tls_handshake_completed: {
     parameters: ['pointer'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_get_tls_alert: {
     parameters: ['pointer'],
@@ -389,13 +374,11 @@ const _SYMBOLS = {
   },
   ngtcp2_conn_set_tls_error: {
     parameters: ['pointer', 'i32'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_set_tls_native_handle: {
     parameters: ['pointer', 'pointer'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_get_tls_native_handle: {
     parameters: ['pointer'],
@@ -407,8 +390,7 @@ const _SYMBOLS = {
       'i32',
       'pointer'
     ],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_set_local_transport_params_versioned: {
     parameters: [
@@ -416,8 +398,7 @@ const _SYMBOLS = {
       'pointer',
       'i32'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_get_local_transport_params: {
     parameters: ['pointer'],
@@ -433,8 +414,7 @@ const _SYMBOLS = {
       'pointer',
       'usize'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_encode_0rtt_transport_params: {
     parameters: [
@@ -442,8 +422,7 @@ const _SYMBOLS = {
       'buffer',
       'usize'
     ],
-    result: 'isize',
-    fast: false
+    result: 'isize'
   },
   ngtcp2_conn_decode_and_set_0rtt_transport_params: {
     parameters: [
@@ -451,8 +430,7 @@ const _SYMBOLS = {
       'buffer',
       'usize'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_encode_local_transport_params: {
     parameters: [
@@ -460,8 +438,7 @@ const _SYMBOLS = {
       'pointer',
       'usize'
     ],
-    result: 'isize',
-    fast: false
+    result: 'isize'
   },
   ngtcp2_conn_get_active_dcid: {
     parameters: ['pointer', 'pointer'],
@@ -485,8 +462,7 @@ const _SYMBOLS = {
       'pointer',
       'pointer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_open_uni_stream: {
     parameters: [
@@ -494,8 +470,7 @@ const _SYMBOLS = {
       'pointer',
       'pointer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_get_streams_bidi_left: {
     parameters: ['pointer'],
@@ -511,8 +486,7 @@ const _SYMBOLS = {
       'i64',
       'pointer'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_shutdown_stream: {
     parameters: [
@@ -521,8 +495,7 @@ const _SYMBOLS = {
       'i64',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_shutdown_stream_read: {
     parameters: [
@@ -531,8 +504,7 @@ const _SYMBOLS = {
       'i64',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_shutdown_stream_write: {
     parameters: [
@@ -541,8 +513,7 @@ const _SYMBOLS = {
       'i64',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_extend_max_stream_offset: {
     parameters: [
@@ -550,23 +521,19 @@ const _SYMBOLS = {
       'i64',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_extend_max_offset: {
     parameters: ['pointer', 'u64'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_extend_max_streams_bidi: {
     parameters: ['pointer', 'usize'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_extend_max_streams_uni: {
     parameters: ['pointer', 'usize'],
-    result: 'void',
-    fast: false
+    result: 'void'
   },
   ngtcp2_conn_submit_crypto_data: {
     parameters: [
@@ -575,8 +542,7 @@ const _SYMBOLS = {
       'buffer',
       'usize'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_conn_submit_new_token: {
     parameters: [
@@ -584,8 +550,7 @@ const _SYMBOLS = {
       'buffer',
       'usize'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   },
   ngtcp2_is_bidi_stream: {
     parameters: ['i64'],
@@ -613,8 +578,7 @@ function tryOpenResetStreamAt(path: string): ResetStreamAtWriter | null {
       'u64',
       'u64'
     ],
-    result: 'i32',
-    fast: false
+    result: 'i32'
   } as const;
   try {
     const lib = dlopen(path, { ngtcp2_conn_shutdown_stream_at: signature });

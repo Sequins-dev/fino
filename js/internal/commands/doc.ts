@@ -98,6 +98,7 @@ interface ModuleDoc {
   path: string;
   name: string;
   sourceModule?: string;
+  outputPath?: string;
   doc: DocBlock;
   exports: DocExport[];
 }
@@ -213,6 +214,7 @@ interface CurrentDocFile {
   path: string;
   file: string;
   kind: DocFileKind;
+  outputPath?: string;
   mtimeMs: number;
   size: number;
 }
@@ -483,6 +485,11 @@ async function expandInputs(rawFiles: unknown): Promise<string[]> {
 interface DocInputs {
   sourceFiles: string[];
   guideFiles: string[];
+  outputPaths: Record<string, string>;
+}
+interface ExpandedDocFile {
+  file: string;
+  outputPath?: string;
 }
 async function expandDocInput(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
@@ -507,16 +514,29 @@ async function expandDocInput(arg: string): Promise<string[]> {
   }
   return [...new Set(files)].sort();
 }
+async function expandDocInputFiles(arg: string): Promise<ExpandedDocFile[]> {
+  const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
+  const absolute = normalizePath(arg);
+  const dir = !isGlob && await isDirectory(absolute);
+  const files = await expandDocInput(arg);
+  if (!dir) return files.map((file) => ({ file }));
+  return files.map((file) => ({
+    file,
+    outputPath: docPathRelativeToBase(file, absolute)
+  }));
+}
 async function expandDocInputs(rawFiles: unknown): Promise<DocInputs> {
   const files = Array.isArray(rawFiles) ? rawFiles.map(String) : [];
-  const expanded: string[] = [];
-  for (const file of files) expanded.push(...await expandDocInput(file));
-  return splitDocInputs([...new Set(expanded)].sort());
+  const expanded: ExpandedDocFile[] = [];
+  for (const file of files) expanded.push(...await expandDocInputFiles(file));
+  return splitDocInputs(expanded);
 }
-function splitDocInputs(files: string[]): DocInputs {
+function splitDocInputs(files: ExpandedDocFile[]): DocInputs {
   const sourceFiles: string[] = [];
   const guideFiles: string[] = [];
-  for (const file of files) {
+  const outputPaths: Record<string, string> = {};
+  for (const entry of files) {
+    const file = entry.file;
     const path = normalizeDocPath(file);
     if (isDocsOutputPath(path)) continue;
     if (isMarkdownPath(path)) {
@@ -524,11 +544,22 @@ function splitDocInputs(files: string[]): DocInputs {
     } else if (isSourcePath(path)) {
       sourceFiles.push(file);
     }
+    if (entry.outputPath !== undefined && (isMarkdownPath(path) || isSourcePath(path))) {
+      outputPaths[path] = entry.outputPath;
+    }
   }
   return {
-    sourceFiles,
-    guideFiles
+    sourceFiles: [...new Set(sourceFiles)].sort(compareAscii),
+    guideFiles: [...new Set(guideFiles)].sort(compareAscii),
+    outputPaths
   };
+}
+function docPathRelativeToBase(file: string, base: string): string {
+  const path = normalizeDocPath(file);
+  const root = normalizeDocPath(base).replace(/\/+$/, '');
+  if (!root || root === '.') return path;
+  if (path === root) return basename(path);
+  return path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
 }
 function isDocsOutputPath(path: string): boolean {
   return path === DOCS_DIR_NAME || path.startsWith(`${DOCS_DIR_NAME}/`) || path.includes(`/${DOCS_DIR_NAME}/`);
@@ -549,7 +580,7 @@ function signaturesOf(item: {
   if (Array.isArray(item.signatures) && item.signatures.length > 0) return item.signatures;
   return item.signature ? [item.signature] : [];
 }
-async function extractModuleFromSource(path: string, includePrivate: boolean): Promise<ParsedModuleDoc> {
+async function extractModulesFromSource(path: string, includePrivate: boolean): Promise<ParsedModuleDoc[]> {
   const source = String(await fs.readFile(path));
   const parsed = parseTypeScript(source, {
     filename: path,
@@ -560,6 +591,11 @@ async function extractModuleFromSource(path: string, includePrivate: boolean): P
   }
   const comments = parsed.comments;
   const body = Array.isArray(parsed.ast?.body) ? parsed.ast.body as AstNode[] : [];
+  const ambientModules = collectAmbientModules(path, body, comments, source, includePrivate);
+  if (ambientModules.length > 0) return ambientModules;
+  return [extractModuleFromBody(path, body, comments, source, includePrivate)];
+}
+function extractModuleFromBody(path: string, body: AstNode[], comments: ParseComment[], source: string, includePrivate: boolean): ParsedModuleDoc {
   const locals = collectLocalBindings(body, comments, source, includePrivate);
   const exports: DocExport[] = [];
   const reExports: ReExportSpec[] = [];
@@ -589,6 +625,54 @@ async function extractModuleFromSource(path: string, includePrivate: boolean): P
   groupOverloads(moduleDoc.exports);
   assignDocIds(moduleDoc);
   return moduleDoc;
+}
+function collectAmbientModules(path: string, body: AstNode[], comments: ParseComment[], source: string, includePrivate: boolean): ParsedModuleDoc[] {
+  const modules: ParsedModuleDoc[] = [];
+  for (const statement of body) {
+    if (statement.type !== 'TSModuleDeclaration') continue;
+    const specifier = ambientModuleSpecifier(statement);
+    const moduleBody = Array.isArray(statement.body?.body) ? statement.body.body as AstNode[] : [];
+    if (!specifier || moduleBody.length === 0) continue;
+    const moduleName = ambientModuleDocName(specifier);
+    const moduleDocBlock = docForSpan(comments, statement.start, source) ?? emptyDoc();
+    if (!includePrivate && hasDocTag(moduleDocBlock, 'internal')) {
+      modules.push({
+        id: `module:${moduleName}`,
+        path: projectRelativePath(path),
+        name: moduleName,
+        sourceModule: specifier,
+        outputPath: ambientModuleOutputPath(specifier),
+        doc: moduleDocBlock,
+        exports: [],
+        internal: true,
+        reExports: []
+      });
+      continue;
+    }
+    const moduleDoc = extractModuleFromBody(path, moduleBody, comments, source, includePrivate);
+    moduleDoc.id = `module:${moduleName}`;
+    moduleDoc.path = projectRelativePath(path);
+    moduleDoc.name = moduleName;
+    moduleDoc.sourceModule = specifier;
+    moduleDoc.outputPath = ambientModuleOutputPath(specifier);
+    moduleDoc.doc = moduleDocBlock;
+    moduleDoc.internal = hasDocTag(moduleDocBlock, 'internal');
+    assignDocIds(moduleDoc);
+    modules.push(moduleDoc);
+  }
+  return modules;
+}
+function ambientModuleSpecifier(statement: AstNode): string | undefined {
+  const id = statement.id;
+  const value = id?.value;
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+function ambientModuleDocName(specifier: string): string {
+  if (specifier.startsWith('fino:')) return specifier.slice('fino:'.length);
+  return specifier.replace(/:/g, '/');
+}
+function ambientModuleOutputPath(specifier: string): string {
+  return ambientModuleDocName(specifier).replace(/[^A-Za-z0-9_./-]+/g, '-');
 }
 function collectLocalBindings(body: AstNode[], comments: ParseComment[], source: string, includePrivate: boolean): Map<string, DocExport> {
   const locals = new Map<string, DocExport>();
@@ -1738,11 +1822,11 @@ function normalizeDocPath(path: string): string {
   return projectRelativePath(path).replace(/\\/g, '/').replace(/\/\.\//g, '/').replace(/^\.\//, '');
 }
 function moduleHref(moduleDoc: ModuleDoc): string {
-  const path = foldedModulePath(moduleDoc.path);
+  const path = moduleDoc.outputPath ? normalizeDocPath(moduleDoc.outputPath) : foldedModulePath(moduleDoc.path);
   return `${path || moduleDoc.name}.html`;
 }
 function foldedModulePath(path: string): string {
-  const withoutExtension = normalizeDocPath(path).replace(/\.(m?ts|m?js)$/i, '');
+  const withoutExtension = normalizeDocPath(path).replace(/\.d\.ts$/i, '').replace(/\.(m?ts|m?js)$/i, '');
   return withoutExtension.replace(/\/index$/i, '');
 }
 function symbolAnchor(symbol: FlatSymbol): string {
@@ -2290,8 +2374,7 @@ async function readApi(path: string): Promise<ApiDoc> {
 async function extractApi(files: string[], includePrivate: boolean = false): Promise<ApiDoc> {
   const modules: ParsedModuleDoc[] = [];
   for (const file of files) {
-    const moduleDoc = await extractModuleFromSource(String(file), includePrivate);
-    modules.push(moduleDoc);
+    modules.push(...await extractModulesFromSource(String(file), includePrivate));
   }
   disambiguateModules(modules);
   resolveReExports(modules, includePrivate);
@@ -2301,13 +2384,30 @@ async function extractApi(files: string[], includePrivate: boolean = false): Pro
     modules: visibleModules.map(stripParsedModuleFields)
   };
 }
-async function extractDocs(sourceFiles: string[], guideFiles: string[], includePrivate: boolean = false): Promise<ApiDoc> {
-  const api = await extractApi(sourceFiles, includePrivate);
-  api.guides = await extractGuides(guideFiles);
-  return api;
+async function extractDocs(inputs: DocInputs, includePrivate: boolean = false): Promise<ApiDoc> {
+  const parsedModules: ParsedModuleDoc[] = [];
+  const guides: GuideDoc[] = [];
+  for (const file of await currentDocFiles(inputs)) {
+    const parsed = await parseCurrentDocFile(file, includePrivate);
+    if (file.kind === 'source') {
+      const modules = parsed as ParsedModuleDoc[];
+      applySourceOutputPaths(modules, file);
+      parsedModules.push(...modules);
+    } else {
+      guides.push(parsed as GuideDoc);
+    }
+  }
+  disambiguateModules(parsedModules);
+  resolveReExports(parsedModules, includePrivate);
+  const visibleModules = includePrivate ? parsedModules : parsedModules.filter((moduleDoc) => !moduleDoc.internal);
+  return {
+    schemaVersion: 4,
+    modules: visibleModules.map(stripParsedModuleFields),
+    guides: guides.sort((a, b) => compareAscii(a.href, b.href))
+  };
 }
 async function extractDocsCached(inputs: DocInputs, includePrivate: boolean = false, options: DocCacheOptions = {}): Promise<ApiDoc> {
-  if (!sqlite.sqliteAvailable) return extractDocs(inputs.sourceFiles, inputs.guideFiles, includePrivate);
+  if (!sqlite.sqliteAvailable) return extractDocs(inputs, includePrivate);
   const db = await openDocsDb();
   try {
     await ensureDocsCacheSchema(db);
@@ -2349,7 +2449,11 @@ async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, include
     }
     if (json === undefined) continue;
     const parsed = JSON.parse(json);
-    if (file.kind === 'source') parsedModules.push(parsed as ParsedModuleDoc);
+    if (file.kind === 'source') {
+      const modules = Array.isArray(parsed) ? parsed as ParsedModuleDoc[] : [parsed as ParsedModuleDoc];
+      applySourceOutputPaths(modules, file);
+      parsedModules.push(...modules);
+    }
     else guides.push(parsed as GuideDoc);
   }
   disambiguateModules(parsedModules);
@@ -2363,33 +2467,43 @@ async function extractDocsFromCache(db: DocsDatabase, inputs: DocInputs, include
 }
 async function currentDocFiles(inputs: DocInputs): Promise<CurrentDocFile[]> {
   const files: CurrentDocFile[] = [];
-  for (const file of inputs.sourceFiles) files.push(await currentDocFile(file, 'source'));
-  for (const file of inputs.guideFiles) files.push(await currentDocFile(file, 'guide'));
+  for (const file of inputs.sourceFiles) files.push(await currentDocFile(file, 'source', inputs.outputPaths[normalizeDocPath(file)]));
+  for (const file of inputs.guideFiles) files.push(await currentDocFile(file, 'guide', inputs.outputPaths[normalizeDocPath(file)]));
   return files.sort((a, b) => compareAscii(a.path, b.path) || compareAscii(a.kind, b.kind));
 }
-async function currentDocFile(file: string, kind: DocFileKind): Promise<CurrentDocFile> {
+async function currentDocFile(file: string, kind: DocFileKind, outputPath?: string): Promise<CurrentDocFile> {
   const stat = await fs.lstat(file);
-  return {
+  const current: CurrentDocFile = {
     path: normalizeDocPath(file),
     file,
     kind,
     mtimeMs: stat.mtimeMs,
     size: stat.size
   };
+  if (outputPath !== undefined) current.outputPath = outputPath;
+  return current;
 }
-async function parseCurrentDocFile(file: CurrentDocFile, includePrivate: boolean): Promise<ParsedModuleDoc | GuideDoc> {
-  if (file.kind === 'source') return extractModuleFromSource(file.file, includePrivate);
+async function parseCurrentDocFile(file: CurrentDocFile, includePrivate: boolean): Promise<ParsedModuleDoc[] | GuideDoc> {
+  if (file.kind === 'source') return extractModulesFromSource(file.file, includePrivate);
   const parsed = parseGuideMarkdown(file.path, String(await fs.readFile(file.file)));
+  const guidePath = parsed.virtualPath ?? file.outputPath ?? file.path;
   const guide: GuideDoc = {
     id: guideId(file.path),
     path: file.path,
-    href: guideHref(parsed.virtualPath ?? file.path),
+    href: guideHref(guidePath),
     title: guideTitle(file.path, parsed.text),
     summary: guideSummary(parsed.text),
     text: parsed.text
   };
   if (parsed.weight !== undefined) guide.weight = parsed.weight;
   return guide;
+}
+function applySourceOutputPaths(modules: ParsedModuleDoc[], file: CurrentDocFile): void {
+  if (file.outputPath === undefined) return;
+  const outputPath = foldedModulePath(file.outputPath);
+  for (const moduleDoc of modules) {
+    if (moduleDoc.outputPath === undefined) moduleDoc.outputPath = outputPath;
+  }
 }
 async function readCachedDocFiles(db: DocsDatabase, includePrivate: boolean): Promise<Map<string, CachedDocFile>> {
   const stmt = db.prepare('SELECT path, kind, include_private, mtime_ms, size, json FROM doc_files WHERE include_private = ?');
@@ -2889,6 +3003,13 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   const includePrivate = input['include-private'] === true;
   const written: string[] = [];
   const inputs = await expandDocInputs(input.files);
+  const typeInputs = await expandDocInputs(input.types);
+  inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(compareAscii);
+  inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(compareAscii);
+  inputs.outputPaths = {
+    ...inputs.outputPaths,
+    ...typeInputs.outputPaths
+  };
   if (inputs.sourceFiles.length === 0 && inputs.guideFiles.length === 0) throw new Error('fino doc: no source files specified');
   await ensureDir(outDir);
   const api = await extractDocsCached(inputs, includePrivate);
@@ -3340,6 +3461,12 @@ function buildOptions() {
       flags: '--include-private',
       type: 'boolean' as const,
       description: 'Include private and internal members'
+    },
+    {
+      flags: '--types',
+      type: 'string' as const,
+      multiple: true,
+      description: 'Additional declaration files, directories, or globs to merge into the API docs'
     }
   ];
 }

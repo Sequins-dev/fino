@@ -554,6 +554,26 @@ if (isLinux) {
     result: 'i32'
   };
 }
+if (isDarwin) {
+  _defs.sendmsg_x = {
+    parameters: [
+      'i32',
+      'buffer',
+      'u32',
+      'i32'
+    ],
+    result: 'i32'
+  };
+  _defs.recvmsg_x = {
+    parameters: [
+      'i32',
+      'buffer',
+      'u32',
+      'i32'
+    ],
+    result: 'i32'
+  };
+}
 const lib = dlopen(LIBC, _defs);
 const errnoPtr = lib.symbols[errnoFn]!() as ArrayBuffer;
 function getErrno(): number {
@@ -577,6 +597,8 @@ const CMSG_TYPE = isDarwin ? 8 : 12;
 const CMSG_DATA = isDarwin ? 12 : 16;
 const CMSG_SPACE = 32;
 const CMSG_DATA_LEN = 4;
+const MSGHDR_X_SIZE = 56;
+const MSGHDR_X_DATALEN = 48;
 const MMSGHDR_SIZE = 64;
 const MMSG_HDR = 0;
 const MMSG_LEN = MSGHDR_SIZE;
@@ -1209,20 +1231,23 @@ export type SendmsgBatchPacket = {
   ecn?: number;
 };
 /**
-* Send a batch of UDP datagrams with Linux `sendmmsg(2)`.
+* Send a batch of UDP datagrams with the platform batch-send primitive.
 *
-* Returns `null` on platforms without `sendmmsg`, otherwise returns the number
-* of messages accepted by the kernel or a negative errno when none were sent.
-* Per-message ECN values are carried as ancillary traffic-class data.
+* Linux uses `sendmmsg(2)`. macOS uses Darwin `sendmsg_x`. Returns `null` on
+* platforms without a batch primitive, otherwise returns the number of messages
+* accepted by the kernel or a negative errno when none were sent. Per-message
+* ECN values are carried as ancillary traffic-class data.
 */
 export function sendmmsgBatch(fd: number, packets: SendmsgBatchPacket[], flags: number = 0): {
   sent: number;
   errno: number | null;
 } | null {
-  if (!isLinux || packets.length === 0) return isLinux ? {
+  if (packets.length === 0) return isLinux || isDarwin ? {
     sent: 0,
     errno: null
   } : null;
+  if (isDarwin) return sendmsgXBatch(fd, packets, flags);
+  if (!isLinux) return null;
   const fn = (lib.symbols as any).sendmmsg;
   if (typeof fn !== 'function') return null;
   const msgvec = new ArrayBuffer(MMSGHDR_SIZE * packets.length);
@@ -1248,6 +1273,64 @@ export function sendmmsgBatch(fd: number, packets: SendmsgBatchPacket[], flags: 
     writePtrValue(msg, base + MSG_IOV, iovBuf);
     writeSize(msg, base + MSG_IOVLEN, 1);
     msg.setInt32(base + MSG_FLAGS, 0, true);
+    if (packet.ecn !== undefined) {
+      const controlBuf = new ArrayBuffer(CMSG_SPACE);
+      const control = new DataView(controlBuf);
+      const cmsgLen = CMSG_DATA + CMSG_DATA_LEN;
+      const family = packet.dest.family === 'ipv6' ? IPPROTO_IPV6 : IPPROTO_IP;
+      const type = packet.dest.family === 'ipv6' ? IPV6_TCLASS : IP_TOS;
+      writeSize(control, CMSG_LEN, cmsgLen);
+      control.setInt32(CMSG_LEVEL, family, true);
+      control.setInt32(CMSG_TYPE, type, true);
+      control.setInt32(CMSG_DATA, packet.ecn & 3, true);
+      controls.push(controlBuf);
+      writePtrValue(msg, base + MSG_CONTROL, controlBuf);
+      writeSize(msg, base + MSG_CONTROLLEN, CMSG_SPACE);
+    } else {
+      writePtrValue(msg, base + MSG_CONTROL, null);
+      writeSize(msg, base + MSG_CONTROLLEN, 0);
+    }
+  }
+  const rc = Number(fn(fd, msgvec, packets.length, flags));
+  if (rc < 0) return {
+    sent: 0,
+    errno: -getErrno()
+  };
+  return {
+    sent: rc,
+    errno: null
+  };
+}
+function sendmsgXBatch(fd: number, packets: SendmsgBatchPacket[], flags: number): {
+  sent: number;
+  errno: number | null;
+} | null {
+  const fn = (lib.symbols as any).sendmsg_x;
+  if (typeof fn !== 'function') return null;
+  const msgvec = new ArrayBuffer(MSGHDR_X_SIZE * packets.length);
+  const msg = new DataView(msgvec);
+  const addrs: ArrayBuffer[] = [];
+  const iovs: ArrayBuffer[] = [];
+  const controls: ArrayBuffer[] = [];
+  const datas: Uint8Array[] = [];
+  for (let i = 0; i < packets.length; i++) {
+    const packet = packets[i]!;
+    const data = packet.data instanceof ArrayBuffer ? new Uint8Array(packet.data) : packet.data;
+    const { buf: addrBuf, len: addrLen } = encodeAddr(packet.dest);
+    const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+    const iov = new DataView(iovBuf);
+    const base = i * MSGHDR_X_SIZE;
+    addrs.push(addrBuf);
+    iovs.push(iovBuf);
+    datas.push(data);
+    writePtrValue(iov, IOVEC_BASE, data);
+    iov.setBigUint64(IOVEC_LEN, BigInt(data.byteLength), true);
+    writePtrValue(msg, base + MSG_NAME, addrBuf);
+    msg.setUint32(base + MSG_NAMELEN, addrLen, true);
+    writePtrValue(msg, base + MSG_IOV, iovBuf);
+    writeSize(msg, base + MSG_IOVLEN, 1);
+    msg.setInt32(base + MSG_FLAGS, 0, true);
+    msg.setBigUint64(base + MSGHDR_X_DATALEN, BigInt(data.byteLength), true);
     if (packet.ecn !== undefined) {
       const controlBuf = new ArrayBuffer(CMSG_SPACE);
       const control = new DataView(controlBuf);
@@ -1379,6 +1462,7 @@ export function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number =
   addr: Address | UnknownAddress;
   ecn?: number;
 }> | number | null {
+  if (isDarwin) return recvmsgXBatch(fd, maxPackets, maxBytes, flags);
   if (!isLinux) return null;
   if (maxPackets <= 0) return [];
   const fn = (lib.symbols as any).recvmmsg;
@@ -1421,6 +1505,63 @@ export function recvmmsgBatch(fd: number, maxPackets: number, maxBytes: number =
   for (let i = 0; i < rc; i++) {
     const base = i * MMSGHDR_SIZE + MMSG_HDR;
     const n = msg.getUint32(i * MMSGHDR_SIZE + MMSG_LEN, true);
+    const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
+    const controlLen = readSize(msg, base + MSG_CONTROLLEN);
+    const ecn = readCmsgEcn(controlBufs[i]!, controlLen);
+    packets.push({
+      data: new Uint8Array(dataBufs[i]!, 0, n),
+      addr: decodeAddr(addrBufs[i]!.slice(0, addrLen)),
+      ...ecn === undefined ? {} : { ecn }
+    });
+  }
+  return packets;
+}
+function recvmsgXBatch(fd: number, maxPackets: number, maxBytes: number, flags: number): Array<{
+  data: Uint8Array;
+  addr: Address | UnknownAddress;
+  ecn?: number;
+}> | number | null {
+  if (maxPackets <= 0) return [];
+  const fn = (lib.symbols as any).recvmsg_x;
+  if (typeof fn !== 'function') return null;
+  const msgvec = new ArrayBuffer(MSGHDR_X_SIZE * maxPackets);
+  const msg = new DataView(msgvec);
+  const dataBufs: ArrayBuffer[] = [];
+  const addrBufs: ArrayBuffer[] = [];
+  const controlBufs: ArrayBuffer[] = [];
+  const iovBufs: ArrayBuffer[] = [];
+  for (let i = 0; i < maxPackets; i++) {
+    const dataBuf = new ArrayBuffer(maxBytes);
+    const addrBuf = new ArrayBuffer(128);
+    const controlBuf = new ArrayBuffer(CMSG_SPACE);
+    const iovBuf = new ArrayBuffer(IOVEC_SIZE);
+    const iov = new DataView(iovBuf);
+    const base = i * MSGHDR_X_SIZE;
+    dataBufs.push(dataBuf);
+    addrBufs.push(addrBuf);
+    controlBufs.push(controlBuf);
+    iovBufs.push(iovBuf);
+    writePtrValue(iov, IOVEC_BASE, dataBuf);
+    iov.setBigUint64(IOVEC_LEN, BigInt(maxBytes), true);
+    writePtrValue(msg, base + MSG_NAME, addrBuf);
+    msg.setUint32(base + MSG_NAMELEN, addrBuf.byteLength, true);
+    writePtrValue(msg, base + MSG_IOV, iovBuf);
+    writeSize(msg, base + MSG_IOVLEN, 1);
+    writePtrValue(msg, base + MSG_CONTROL, controlBuf);
+    writeSize(msg, base + MSG_CONTROLLEN, controlBuf.byteLength);
+    msg.setInt32(base + MSG_FLAGS, 0, true);
+    msg.setBigUint64(base + MSGHDR_X_DATALEN, 0n, true);
+  }
+  const rc = Number(fn(fd, msgvec, maxPackets, flags));
+  if (rc < 0) return -getErrno();
+  const packets: Array<{
+    data: Uint8Array;
+    addr: Address | UnknownAddress;
+    ecn?: number;
+  }> = [];
+  for (let i = 0; i < rc; i++) {
+    const base = i * MSGHDR_X_SIZE;
+    const n = Number(msg.getBigUint64(base + MSGHDR_X_DATALEN, true));
     const addrLen = msg.getUint32(base + MSG_NAMELEN, true);
     const controlLen = readSize(msg, base + MSG_CONTROLLEN);
     const ecn = readCmsgEcn(controlBufs[i]!, controlLen);

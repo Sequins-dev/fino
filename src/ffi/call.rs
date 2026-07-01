@@ -130,7 +130,9 @@ pub fn ffi_call<'s>(
                 NativeType::F64 => arg(&val.f64_val),
                 NativeType::USize => arg(&val.usize_val),
                 NativeType::ISize => arg(&val.isize_val),
-                NativeType::Pointer | NativeType::Buffer => arg(&val.ptr_val),
+                NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
+                    arg(&val.ptr_val)
+                }
                 NativeType::Struct(_) => arg_from_ptr(val.ptr_val as *const u8),
                 NativeType::Void => unreachable!("void is not a valid param type"),
             }
@@ -187,7 +189,7 @@ fn js_to_native<'s>(
         NativeType::ISize => NativeValue {
             isize_val: js_to_i128(scope, val)? as isize,
         },
-        NativeType::Pointer => NativeValue {
+        NativeType::Pointer | NativeType::IgnoredPointer => NativeValue {
             ptr_val: pointer::from_js(scope, val)?,
         },
         NativeType::Buffer => NativeValue {
@@ -241,7 +243,7 @@ impl OwnedArg {
                 NativeType::ISize => bytes.copy_from_slice(&val.isize_val.to_le_bytes()),
                 NativeType::F32 => bytes[..4].copy_from_slice(&val.f32_val.to_le_bytes()),
                 NativeType::F64 => bytes.copy_from_slice(&val.f64_val.to_le_bytes()),
-                NativeType::Pointer | NativeType::Buffer => {
+                NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
                     bytes.copy_from_slice(&(val.ptr_val as usize).to_le_bytes());
                 }
                 NativeType::Struct(_) => {}
@@ -274,7 +276,7 @@ impl OwnedArg {
         };
         match ty {
             NativeType::Void => NativeValue { u8_val: 0 },
-            NativeType::Pointer | NativeType::Buffer => NativeValue {
+            NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => NativeValue {
                 ptr_val: usize::from_le_bytes(*b) as *mut c_void,
             },
             NativeType::Bool | NativeType::U8 => NativeValue { u8_val: b[0] },
@@ -432,7 +434,9 @@ fn call_scalar_sync(
                 NativeType::F64 => arg(&val.f64_val),
                 NativeType::USize => arg(&val.usize_val),
                 NativeType::ISize => arg(&val.isize_val),
-                NativeType::Pointer | NativeType::Buffer => arg(&val.ptr_val),
+                NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
+                    arg(&val.ptr_val)
+                }
                 NativeType::Struct(_) => match ty {
                     OwnedArg::Struct { bytes, .. } => arg_from_ptr(bytes.as_ptr()),
                     _ => unreachable!("struct args are owned as struct bytes"),
@@ -496,7 +500,7 @@ fn call_scalar_sync(
                 let v: f64 = cif.call(code_ptr, &ffi_args);
                 bytes.copy_from_slice(&v.to_le_bytes());
             }
-            NativeType::Pointer => {
+            NativeType::Pointer | NativeType::IgnoredPointer => {
                 let v: *mut c_void = cif.call(code_ptr, &ffi_args);
                 bytes.copy_from_slice(&(v as usize).to_le_bytes());
             }
@@ -717,7 +721,7 @@ unsafe fn dispatch_and_convert<'s>(
             let v: f64 = unsafe { symbol.cif.call(cp, ffi_args) };
             v8::Number::new(scope, v).into()
         }
-        NativeType::Pointer => {
+        NativeType::Pointer | NativeType::IgnoredPointer => {
             let v: *mut c_void = unsafe { symbol.cif.call(cp, ffi_args) };
             pointer::into_js(scope, v)
         }

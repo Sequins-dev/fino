@@ -259,6 +259,7 @@ export const NGHTTP3_H3_REQUEST_INCOMPLETE = 269n;
 // Library error codes.
 // ---------------------------------------------------------------------------
 export const NGHTTP3_ERR_WOULDBLOCK = -103;
+export const NGHTTP3_ERR_CONN_CLOSING = -111;
 export const NGHTTP3_ERR_MALFORMED_HTTP_HEADER = -105;
 export const NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING = -107;
 export const NGHTTP3_ERR_FATAL = -900;

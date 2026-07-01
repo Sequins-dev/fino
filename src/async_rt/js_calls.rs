@@ -68,6 +68,8 @@ pub enum SendArg {
     Float(f64),
     /// Raw pointer address; converted to a fino pointer ArrayBuffer on the V8 thread.
     Pointer(usize),
+    /// Native pointer argument intentionally omitted from the JS callback.
+    Ignored,
 }
 
 /// A pending JS callback invocation.
@@ -250,6 +252,7 @@ fn send_arg_to_v8<'s>(
         SendArg::Integer(n) => int_to_v8(scope, *n, ty),
         SendArg::Float(f) => v8::Number::new(scope, *f).into(),
         SendArg::Pointer(addr) => crate::ffi::pointer::into_js(scope, *addr as *mut c_void),
+        SendArg::Ignored => v8::undefined(scope).into(),
     }
 }
 
@@ -396,6 +399,7 @@ pub unsafe fn read_c_arg(arg_ptr: *const c_void, ty: &NativeType) -> SendArg {
                 let ptr_val = *(arg_ptr as *const *const c_void);
                 SendArg::Pointer(ptr_val as usize)
             }
+            NativeType::IgnoredPointer => SendArg::Ignored,
             NativeType::Struct(_) => SendArg::Integer(0),
         }
     }
@@ -448,7 +452,7 @@ pub unsafe fn write_c_result(
             NativeType::F64 => {
                 *(result_ptr as *mut f64) = call_result_to_f64(&call_result);
             }
-            NativeType::Pointer | NativeType::Buffer => {
+            NativeType::Pointer | NativeType::IgnoredPointer | NativeType::Buffer => {
                 let ptr = match &call_result {
                     CallResult::Bytes(bytes) if bytes.len() >= 8 => {
                         let mut raw = [0u8; 8];

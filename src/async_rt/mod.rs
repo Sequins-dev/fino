@@ -400,7 +400,7 @@ fn raw_to_v8<'s>(
             }
             ab.into()
         }
-        NativeType::Pointer => {
+        NativeType::Pointer | NativeType::IgnoredPointer => {
             let v = usize::from_le_bytes(b) as *mut std::ffi::c_void;
             crate::ffi::pointer::into_js(scope, v)
         }
