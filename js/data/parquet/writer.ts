@@ -1,9 +1,9 @@
 /**
 * Parquet writer: Arrow → Parquet file bytes.
 *
-* This milestone writes one row group of flat columns using PLAIN-encoded
-* DATA_PAGE (v1) pages with optional page compression. Definition levels encode
-* nulls for optional columns. Dictionary and delta encodings are a later phase.
+* Writes one row group of flat columns as DATA_PAGE v1 or v2, with PLAIN,
+* dictionary, RLE (boolean), the DELTA family, or BYTE_STREAM_SPLIT value
+* encodings, definition levels for nulls, and page compression.
 *
 * @internal
 */
@@ -11,6 +11,7 @@ import { Table, RecordBatch, Schema, Vector } from 'fino:data/arrow';
 import { PType, Encoding, Compression, PageType, ParquetError } from './types.ts';
 import { arrowSchemaToParquet, type ColumnDescriptor } from './schema.ts';
 import { encodePlain } from './encoding.ts';
+import { encodeDeltaBinaryPacked, encodeDeltaByteArray, encodeByteStreamSplit } from './delta.ts';
 import { encodeDefinitionLevels, encodeRleHybrid, bitWidthForMax } from './levels.ts';
 import { compressPage, isCodecSupported } from './compression.ts';
 import { writePageHeader, writeFileMetaData, type FileMetaData, type RowGroup, type ColumnChunk, type ColumnMetaData, type PageHeader } from './metadata.ts';
@@ -26,6 +27,11 @@ export interface ParquetWriteOptions {
   compression?: 'uncompressed' | 'snappy' | 'gzip' | 'zstd' | 'brotli';
   /** Dictionary-encode column values (default false — PLAIN pages). */
   dictionary?: boolean;
+  /** Value encoding for non-dictionary pages (default 'plain'). Applied per
+  * type where valid, falling back to PLAIN otherwise. */
+  encoding?: 'plain' | 'delta' | 'byte-stream-split' | 'rle';
+  /** Data page format version (default 1). */
+  pageVersion?: 1 | 2;
 }
 const CODEC_BY_NAME: Record<string, number> = {
   uncompressed: Compression.UNCOMPRESSED,
@@ -49,12 +55,14 @@ export function writeParquet(source: Table | RecordBatch, options?: ParquetWrite
   push(MAGIC);
   // One row group per table (concatenating the table's columns across batches).
   const useDictionary = options?.dictionary ?? false;
+  const dataEncoding = options?.encoding ?? 'plain';
+  const pageVersion = options?.pageVersion ?? 1;
   const columnChunks: ColumnChunk[] = [];
   let totalUncompressed = 0n;
   for (let c = 0; c < columns.length; c++) {
     const descriptor = columns[c]!;
     const chunkVectors = table.batches.map((b) => b.columns[c]!);
-    const chunk = writeColumnChunk(descriptor, chunkVectors, codec, useDictionary, offset, push);
+    const chunk = writeColumnChunk(descriptor, chunkVectors, codec, useDictionary, dataEncoding, pageVersion, offset, push);
     columnChunks.push(chunk.columnChunk);
     totalUncompressed += chunk.uncompressedSize;
   }
@@ -84,7 +92,7 @@ export function writeParquet(source: Table | RecordBatch, options?: ParquetWrite
   }
   return out;
 }
-function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec: number, useDictionary: boolean, startOffset: number, push: (bytes: Uint8Array) => void): {
+function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec: number, useDictionary: boolean, dataEncoding: string, pageVersion: number, startOffset: number, push: (bytes: Uint8Array) => void): {
   columnChunk: ColumnChunk;
   uncompressedSize: bigint;
 } {
@@ -92,14 +100,12 @@ function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec
   const values: unknown[] = [];
   const defLevels: number[] = [];
   let numRows = 0;
-  const utf8 = descriptor.arrowField.type.kind === 'utf8';
   for (const vec of vectors) {
     for (let i = 0; i < vec.length; i++) {
       numRows++;
       if (vec.isValid(i)) {
         defLevels.push(descriptor.maxDefinitionLevel);
-        const v = vec.get(i);
-        values.push(utf8 ? String(v) : v);
+        values.push(descriptor.encode(vec.get(i)));
       } else {
         defLevels.push(0);
       }
@@ -176,25 +182,55 @@ function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec
       uncompressedSize: BigInt(uncompressedTotal)
     };
   }
-  // PLAIN data page.
-  const valueBytes = encodePlain(descriptor.physicalType, values, descriptor.typeLength);
-  const uncompressed = concat([defBytes, valueBytes]);
-  const compressed = compressPage(codec, uncompressed);
-  const header = writePageHeader({
-    type: PageType.DATA_PAGE,
-    uncompressedPageSize: uncompressed.byteLength,
-    compressedPageSize: compressed.byteLength,
-    dataPageHeader: {
-      numValues: numRows,
-      encoding: Encoding.PLAIN,
-      definitionLevelEncoding: Encoding.RLE,
-      repetitionLevelEncoding: Encoding.RLE
-    }
-  });
+  // Non-dictionary data page (PLAIN by default, or the requested encoding).
+  const encoded = encodeValues(dataEncoding, descriptor, values);
+  encodings[1] = encoded.encoding;
+  const valueBytes = encoded.bytes;
+  let header: Uint8Array;
+  let pageBody: Uint8Array;
+  let uncompressedPageSize: number;
+  if (pageVersion === 2) {
+    // DATA_PAGE_V2: uncompressed levels (no length prefix) + compressed values.
+    const defRaw = descriptor.maxDefinitionLevel > 0 ? encodeRleHybrid(defLevels, bitWidthForMax(descriptor.maxDefinitionLevel)) : new Uint8Array(0);
+    const nonNull = values.length;
+    const compressedValues = compressPage(codec, valueBytes);
+    pageBody = concat([defRaw, compressedValues]);
+    uncompressedPageSize = defRaw.byteLength + valueBytes.byteLength;
+    header = writePageHeader({
+      type: PageType.DATA_PAGE_V2,
+      uncompressedPageSize,
+      compressedPageSize: pageBody.byteLength,
+      dataPageHeaderV2: {
+        numValues: numRows,
+        numNulls: numRows - nonNull,
+        numRows,
+        encoding: encoded.encoding,
+        definitionLevelsByteLength: defRaw.byteLength,
+        repetitionLevelsByteLength: 0,
+        isCompressed: codec !== Compression.UNCOMPRESSED
+      }
+    });
+  } else {
+    const uncompressed = concat([defBytes, valueBytes]);
+    pageBody = compressPage(codec, uncompressed);
+    uncompressedPageSize = uncompressed.byteLength;
+    header = writePageHeader({
+      type: PageType.DATA_PAGE,
+      uncompressedPageSize,
+      compressedPageSize: pageBody.byteLength,
+      dataPageHeader: {
+        numValues: numRows,
+        encoding: encoded.encoding,
+        definitionLevelEncoding: Encoding.RLE,
+        repetitionLevelEncoding: Encoding.RLE
+      }
+    });
+  }
   const dataPageOffset = offset;
   push(header);
-  push(compressed);
-  uncompressedTotal = header.byteLength + uncompressed.byteLength;
+  push(pageBody);
+  const compressed = pageBody;
+  uncompressedTotal = header.byteLength + uncompressedPageSize;
   const meta: ColumnMetaData = {
     type: descriptor.physicalType,
     encodings,
@@ -211,6 +247,49 @@ function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec
       metaData: meta
     },
     uncompressedSize: BigInt(uncompressedTotal)
+  };
+}
+const _encoder = new TextEncoder();
+function toU8(value: unknown): Uint8Array {
+  return value instanceof Uint8Array ? value : _encoder.encode(String(value));
+}
+function encodeRleBool(values: unknown[]): Uint8Array {
+  const bits = values.map((v) => v ? 1 : 0);
+  const hybrid = encodeRleHybrid(bits, 1);
+  const out = new Uint8Array(4 + hybrid.byteLength);
+  new DataView(out.buffer).setUint32(0, hybrid.byteLength, true);
+  out.set(hybrid, 4);
+  return out;
+}
+// Select and apply the value encoding for a non-dictionary page.
+function encodeValues(encoding: string, descriptor: ColumnDescriptor, values: unknown[]): {
+  bytes: Uint8Array;
+  encoding: number;
+} {
+  const pt = descriptor.physicalType;
+  if (encoding === 'delta') {
+    if (pt === PType.INT32 || pt === PType.INT64) return {
+      bytes: encodeDeltaBinaryPacked(values as (number | bigint)[]),
+      encoding: Encoding.DELTA_BINARY_PACKED
+    };
+    if (pt === PType.BYTE_ARRAY) return {
+      bytes: encodeDeltaByteArray(values.map(toU8)),
+      encoding: Encoding.DELTA_BYTE_ARRAY
+    };
+  } else if (encoding === 'byte-stream-split') {
+    if (pt === PType.FLOAT || pt === PType.DOUBLE) return {
+      bytes: encodeByteStreamSplit(values, pt),
+      encoding: Encoding.BYTE_STREAM_SPLIT
+    };
+  } else if (encoding === 'rle') {
+    if (pt === PType.BOOLEAN) return {
+      bytes: encodeRleBool(values),
+      encoding: Encoding.RLE
+    };
+  }
+  return {
+    bytes: encodePlain(pt, values, descriptor.typeLength),
+    encoding: Encoding.PLAIN
   };
 }
 function buildDictionary(values: unknown[]): {

@@ -316,6 +316,205 @@ describe('parquet dictionary encoding', () => {
     t.deepEqual(table.getChild('s')!.toArray(), values, 'compressed dictionary values');
   });
 });
+describe('parquet extended types', () => {
+  function rt(type: arrow.DataType, values: unknown[], nullable = true): unknown[] {
+    const schema = nullable ? arrow.Schema.from({ c: type }) : new arrow.Schema([new Field('c', type, false)]);
+    const batch = new arrow.RecordBatch(schema, [arrow.vectorFromArray(values, type)]);
+    return readParquet(writeParquet(batch, { compression: 'uncompressed' })).getChild('c')!.toArray();
+  }
+  it('round-trips fixedSizeBinary', (t) => {
+    const type = arrow.fixedSizeBinary(4);
+    const values = [
+      new Uint8Array([
+        1,
+        2,
+        3,
+        4
+      ]),
+      new Uint8Array([
+        5,
+        6,
+        7,
+        8
+      ]),
+      null
+    ];
+    const out = rt(type, values) as (Uint8Array | null)[];
+    t.deepEqual(out.map((v) => v === null ? null : Array.from(v)), values.map((v) => v === null ? null : Array.from(v as Uint8Array)), 'FLBA');
+  });
+  it('round-trips float16', (t) => {
+    const out = rt(arrow.float16(), [
+      1,
+      .5,
+      2,
+      null
+    ]) as (number | null)[];
+    t.deepEqual(out, [
+      1,
+      .5,
+      2,
+      null
+    ], 'float16');
+  });
+  it('round-trips decimal128 (FLBA-backed)', (t) => {
+    const type = arrow.decimal(20, 4, 128);
+    const values = [
+      12345n,
+      -67890n,
+      0n,
+      null
+    ];
+    t.deepEqual(rt(type, values), values, 'decimal128');
+  });
+  it('round-trips decimal32 (INT32-backed)', (t) => {
+    const type = arrow.decimal(9, 2, 32);
+    const values = [
+      100n,
+      -250n,
+      999999n
+    ];
+    t.deepEqual(rt(type, values, false), values, 'decimal32');
+  });
+  it('round-trips decimal64 (INT64-backed)', (t) => {
+    const type = arrow.decimal(18, 3, 64);
+    const values = [
+      1000n,
+      -2000n,
+      123456789012n
+    ];
+    t.deepEqual(rt(type, values, false), values, 'decimal64');
+  });
+  it('round-trips time32 and time64', (t) => {
+    t.deepEqual(rt(arrow.time32(arrow.TimeUnit.MILLISECOND), [
+      0,
+      36e5,
+      null
+    ]), [
+      0,
+      36e5,
+      null
+    ], 'time32');
+    t.deepEqual(rt(arrow.time64(arrow.TimeUnit.MICROSECOND), [
+      0n,
+      3600000000n,
+      null
+    ]), [
+      0n,
+      3600000000n,
+      null
+    ], 'time64');
+  });
+  it('round-trips timestamp units', (t) => {
+    t.deepEqual(rt(arrow.timestamp(arrow.TimeUnit.MILLISECOND, 'UTC'), [
+      0n,
+      1700000000000n,
+      null
+    ]), [
+      0n,
+      1700000000000n,
+      null
+    ], 'ts millis');
+    t.deepEqual(rt(arrow.timestamp(arrow.TimeUnit.NANOSECOND, null), [
+      0n,
+      1700000000000000000n,
+      null
+    ]), [
+      0n,
+      1700000000000000000n,
+      null
+    ], 'ts nanos');
+  });
+});
+describe('parquet value encodings', () => {
+  function rt(type: arrow.DataType, values: unknown[], encoding: 'delta' | 'byte-stream-split' | 'rle'): unknown[] {
+    const batch = new arrow.RecordBatch(new arrow.Schema([new Field('c', type, false)]), [arrow.vectorFromArray(values, type)]);
+    return readParquet(writeParquet(batch, {
+      compression: 'uncompressed',
+      encoding
+    })).getChild('c')!.toArray();
+  }
+  it('round-trips DELTA_BINARY_PACKED int32', (t) => {
+    const values = Array.from({ length: 500 }, (_, i) => i * 3 - 700);
+    t.deepEqual(rt(arrow.int32(), values, 'delta'), values, 'delta int32');
+  });
+  it('round-trips DELTA_BINARY_PACKED int64', (t) => {
+    const values = Array.from({ length: 300 }, (_, i) => BigInt(i) * 1000000000n - 5n);
+    t.deepEqual(rt(arrow.int64(), values, 'delta'), values, 'delta int64');
+  });
+  it('round-trips DELTA_BYTE_ARRAY utf8', (t) => {
+    const values = [
+      'apple',
+      'apricot',
+      'apricots',
+      'banana',
+      'band',
+      'bandana'
+    ];
+    t.deepEqual(rt(arrow.utf8(), values, 'delta'), values, 'delta byte array');
+  });
+  it('round-trips BYTE_STREAM_SPLIT float/double', (t) => {
+    const f = Array.from({ length: 100 }, (_, i) => i * 1.25);
+    t.deepEqual(rt(arrow.float64(), f, 'byte-stream-split'), f, 'bss double');
+    const g = [
+      1.5,
+      2.5,
+      3.5,
+      4.5
+    ];
+    t.deepEqual((rt(arrow.float32(), g, 'byte-stream-split') as number[]).map((x) => Math.round(x * 10) / 10), g, 'bss float');
+  });
+  it('round-trips RLE boolean', (t) => {
+    const values = [
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ];
+    t.deepEqual(rt(arrow.bool(), values, 'rle'), values, 'rle bool');
+  });
+});
+describe('parquet DATA_PAGE_V2', () => {
+  function rtV2(type: arrow.DataType, values: unknown[], opts: {
+    encoding?: 'plain' | 'delta';
+    compression?: 'uncompressed' | 'zstd';
+  } = {}): unknown[] {
+    const batch = new arrow.RecordBatch(arrow.Schema.from({ c: type }), [arrow.vectorFromArray(values, type)]);
+    return readParquet(writeParquet(batch, {
+      pageVersion: 2,
+      compression: opts.compression ?? 'uncompressed',
+      encoding: opts.encoding
+    })).getChild('c')!.toArray();
+  }
+  it('round-trips v2 pages with nulls', (t) => {
+    const values = [
+      1,
+      2,
+      null,
+      4,
+      null,
+      6
+    ];
+    t.deepEqual(rtV2(arrow.int32(), values), values, 'v2 int32 with nulls');
+  });
+  it('round-trips v2 + zstd compression', (t) => {
+    if (!zstdAvailable) {
+      t.ok(true, 'zstd unavailable');
+      return;
+    }
+    const values = Array.from({ length: 500 }, (_, i) => `s${i % 30}`);
+    t.deepEqual(rtV2(arrow.utf8(), values, { compression: 'zstd' }), values, 'v2 compressed strings');
+  });
+  it('round-trips v2 + delta encoding', (t) => {
+    const values = Array.from({ length: 200 }, (_, i) => BigInt(i * 7 - 300));
+    t.deepEqual(rtV2(arrow.int64(), values, { encoding: 'delta' }), values, 'v2 delta int64');
+  });
+});
 describe('parquet errors', () => {
   it('rejects non-Parquet input', (t) => {
     t.throws(() => readParquet(new Uint8Array([

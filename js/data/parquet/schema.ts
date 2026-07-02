@@ -1,18 +1,21 @@
 /**
-* Mapping between a Parquet schema (a flat list of `SchemaElement`s describing a
-* tree) and an Arrow schema, plus the per-column descriptors the reader/writer
-* need (physical type, logical/converted type, and max definition/repetition
-* levels).
+* Mapping between a Parquet schema and an Arrow schema, plus per-column
+* descriptors (physical type, max levels) and the value converters that bridge
+* Parquet physical representations and Arrow JS values.
 *
-* This milestone covers flat (non-nested) schemas: the common physical types
-* with their integer width/sign, string, date, and timestamp logical types.
-* Nested group columns raise a clear error pending the nesting phase.
+* Flat columns are handled here; nested group columns are handled by
+* `nested.ts` (which reuses `arrowTypeToParquet`/`parquetLeafToArrow`).
 *
 * @internal
 */
-import { Field, Schema, TimeUnit, type DataType, bool, int8, int16, int32, int64, uint8, uint16, uint32, uint64, float32, float64, utf8, binary, date32, timestamp } from 'fino:data/arrow';
-import { PType, ConvertedType, Repetition, TimeUnitId, ParquetError } from './types.ts';
+import { Field, Schema, TimeUnit, type DataType, bool, int8, int16, int32, int64, uint8, uint16, uint32, uint64, float16, float32, float64, utf8, binary, date32, timestamp, time32, time64, decimal, fixedSizeBinary } from 'fino:data/arrow';
+import { PType, ConvertedType, Repetition, TimeUnitId, LogicalTypeId, ParquetError } from './types.ts';
 import type { SchemaElement, LogicalType } from './metadata.ts';
+import { decimalBytesToBigInt, bigIntToDecimalBytes, int96ToEpochNanos, float16BytesToNumber, numberToFloat16Bytes } from './convert.ts';
+const _decoder = new TextDecoder();
+/** Convert a decoded physical value to the Arrow JS value, or the reverse. @internal */
+export type ValueConverter = (value: unknown) => unknown;
+const identity: ValueConverter = (v) => v;
 /** A single leaf column: how to encode/decode it and where it sits. @internal */
 export interface ColumnDescriptor {
   name: string;
@@ -22,82 +25,170 @@ export interface ColumnDescriptor {
   maxDefinitionLevel: number;
   maxRepetitionLevel: number;
   arrowField: Field;
+  /** Parquet physical value → Arrow JS value. */
+  decode: ValueConverter;
+  /** Arrow JS value → Parquet physical value (for PLAIN/dictionary encode). */
+  encode: ValueConverter;
 }
 // --- Arrow -> Parquet ------------------------------------------------------
-interface ParquetTypeInfo {
+/** Physical + logical typing plus converters for an Arrow leaf type. @internal */
+export interface ParquetTypeInfo {
   physicalType: number;
   convertedType?: number;
   logicalType?: LogicalType;
   typeLength?: number;
+  decode: ValueConverter;
+  encode: ValueConverter;
 }
-function arrowTypeToParquet(type: DataType): ParquetTypeInfo {
+/** Map an Arrow leaf type to its Parquet physical/logical typing + converters. @internal */
+export function arrowTypeToParquet(type: DataType): ParquetTypeInfo {
   switch (type.kind) {
-    case 'bool': return { physicalType: PType.BOOLEAN };
-    case 'int':
-      switch (type.bitWidth) {
-        case 8: return {
-          physicalType: PType.INT32,
-          convertedType: type.signed ? ConvertedType.INT_8 : ConvertedType.UINT_8,
-          logicalType: {
-            kind: 'integer',
-            integer: {
-              bitWidth: 8,
-              isSigned: type.signed
-            }
+    case 'bool': return {
+      physicalType: PType.BOOLEAN,
+      decode: identity,
+      encode: identity
+    };
+    case 'int': {
+      const p8 = type.bitWidth <= 32 ? PType.INT32 : PType.INT64;
+      const converted = intConverted(type.bitWidth, type.signed);
+      return {
+        physicalType: p8,
+        convertedType: converted,
+        logicalType: {
+          kind: 'integer',
+          integer: {
+            bitWidth: type.bitWidth,
+            isSigned: type.signed
           }
-        };
-        case 16: return {
-          physicalType: PType.INT32,
-          convertedType: type.signed ? ConvertedType.INT_16 : ConvertedType.UINT_16,
-          logicalType: {
-            kind: 'integer',
-            integer: {
-              bitWidth: 16,
-              isSigned: type.signed
-            }
-          }
-        };
-        case 32: return {
-          physicalType: PType.INT32,
-          convertedType: type.signed ? ConvertedType.INT_32 : ConvertedType.UINT_32,
-          logicalType: {
-            kind: 'integer',
-            integer: {
-              bitWidth: 32,
-              isSigned: type.signed
-            }
-          }
-        };
-        case 64: return {
-          physicalType: PType.INT64,
-          convertedType: type.signed ? ConvertedType.INT_64 : ConvertedType.UINT_64,
-          logicalType: {
-            kind: 'integer',
-            integer: {
-              bitWidth: 64,
-              isSigned: type.signed
-            }
-          }
-        };
-      }
-      break;
+        },
+        decode: identity,
+        encode: identity
+      };
+    }
     case 'float':
-      if (type.precision === 1) return { physicalType: PType.FLOAT };
-      if (type.precision === 2) return { physicalType: PType.DOUBLE };
-      break;
+      if (type.precision === 0) return {
+        physicalType: PType.FIXED_LEN_BYTE_ARRAY,
+        typeLength: 2,
+        logicalType: { kind: 'float16' },
+        decode: (v) => float16BytesToNumber(v as Uint8Array),
+        encode: (v) => numberToFloat16Bytes(v as number)
+      };
+      if (type.precision === 1) return {
+        physicalType: PType.FLOAT,
+        decode: identity,
+        encode: identity
+      };
+      return {
+        physicalType: PType.DOUBLE,
+        decode: identity,
+        encode: identity
+      };
+    case 'decimal': {
+      const bytesToBig = (v: unknown) => typeof v === 'bigint' ? v : typeof v === 'number' ? BigInt(v) : decimalBytesToBigInt(v as Uint8Array);
+      if (type.bitWidth === 32) return {
+        physicalType: PType.INT32,
+        convertedType: ConvertedType.DECIMAL,
+        logicalType: {
+          kind: 'decimal',
+          decimal: {
+            scale: type.scale,
+            precision: type.precision
+          }
+        },
+        scale: type.scale,
+        precision: type.precision,
+        decode: bytesToBig,
+        encode: (v) => Number(v as bigint)
+      } as ParquetTypeInfo & {
+        scale: number;
+        precision: number;
+      };
+      if (type.bitWidth === 64) return {
+        physicalType: PType.INT64,
+        convertedType: ConvertedType.DECIMAL,
+        logicalType: {
+          kind: 'decimal',
+          decimal: {
+            scale: type.scale,
+            precision: type.precision
+          }
+        },
+        decode: bytesToBig,
+        encode: (v) => v as bigint
+      };
+      const len = type.bitWidth === 256 ? 32 : 16;
+      return {
+        physicalType: PType.FIXED_LEN_BYTE_ARRAY,
+        typeLength: len,
+        convertedType: ConvertedType.DECIMAL,
+        logicalType: {
+          kind: 'decimal',
+          decimal: {
+            scale: type.scale,
+            precision: type.precision
+          }
+        },
+        decode: (v) => decimalBytesToBigInt(v as Uint8Array),
+        encode: (v) => bigIntToDecimalBytes(v as bigint, len)
+      };
+    }
     case 'utf8': return {
       physicalType: PType.BYTE_ARRAY,
       convertedType: ConvertedType.UTF8,
-      logicalType: { kind: 'string' }
+      logicalType: { kind: 'string' },
+      decode: (v) => _decoder.decode(v as Uint8Array),
+      encode: identity
     };
-    case 'binary': return { physicalType: PType.BYTE_ARRAY };
+    case 'binary': return {
+      physicalType: PType.BYTE_ARRAY,
+      decode: identity,
+      encode: identity
+    };
+    case 'fixedsizebinary': return {
+      physicalType: PType.FIXED_LEN_BYTE_ARRAY,
+      typeLength: type.byteWidth,
+      decode: identity,
+      encode: identity
+    };
     case 'date':
       if (type.unit === 0) return {
         physicalType: PType.INT32,
         convertedType: ConvertedType.DATE,
-        logicalType: { kind: 'date' }
+        logicalType: { kind: 'date' },
+        decode: identity,
+        encode: identity
       };
       break;
+    case 'time': {
+      const unitId = type.unit === TimeUnit.MILLISECOND ? TimeUnitId.MILLIS : type.unit === TimeUnit.NANOSECOND ? TimeUnitId.NANOS : TimeUnit.SECOND === type.unit ? -1 : TimeUnitId.MICROS;
+      if (unitId === -1) break;
+      if (type.bitWidth === 32) return {
+        physicalType: PType.INT32,
+        convertedType: ConvertedType.TIME_MILLIS,
+        logicalType: {
+          kind: 'time',
+          time: {
+            isAdjustedToUTC: false,
+            unit: { unit: unitId }
+          }
+        },
+        decode: identity,
+        encode: identity
+      };
+      return {
+        physicalType: PType.INT64,
+        convertedType: unitId === TimeUnitId.MICROS ? ConvertedType.TIME_MICROS : undefined,
+        logicalType: {
+          kind: 'time',
+          time: {
+            isAdjustedToUTC: false,
+            unit: { unit: unitId }
+          }
+        },
+        decode: identity,
+        encode: identity
+      };
+    }
     case 'timestamp': {
       const isUtc = type.timezone !== null;
       const unitId = type.unit === TimeUnit.MILLISECOND ? TimeUnitId.MILLIS : type.unit === TimeUnit.NANOSECOND ? TimeUnitId.NANOS : TimeUnitId.MICROS;
@@ -111,15 +202,45 @@ function arrowTypeToParquet(type: DataType): ParquetTypeInfo {
             isAdjustedToUTC: isUtc,
             unit: { unit: unitId }
           }
-        }
+        },
+        decode: identity,
+        encode: identity
       };
     }
   }
-  throw new ParquetError(`cannot map Arrow type ${type.kind} to Parquet in this milestone`);
+  throw new ParquetError(`cannot map Arrow type ${type.kind} to Parquet`);
+}
+function intConverted(bitWidth: number, signed: boolean): number {
+  if (signed) return bitWidth === 8 ? ConvertedType.INT_8 : bitWidth === 16 ? ConvertedType.INT_16 : bitWidth === 32 ? ConvertedType.INT_32 : ConvertedType.INT_64;
+  return bitWidth === 8 ? ConvertedType.UINT_8 : bitWidth === 16 ? ConvertedType.UINT_16 : bitWidth === 32 ? ConvertedType.UINT_32 : ConvertedType.UINT_64;
+}
+/** Build the Parquet element + descriptor for one Arrow field (flat). @internal */
+export function arrowFieldToElement(field: Field): {
+  element: SchemaElement;
+  info: ParquetTypeInfo;
+} {
+  const info = arrowTypeToParquet(field.type);
+  return {
+    element: {
+      name: field.name,
+      type: info.physicalType,
+      typeLength: info.typeLength,
+      repetitionType: field.nullable ? Repetition.OPTIONAL : Repetition.REQUIRED,
+      convertedType: info.convertedType,
+      scale: (info as {
+        scale?: number;
+      }).scale,
+      precision: (info as {
+        precision?: number;
+      }).precision,
+      logicalType: info.logicalType
+    },
+    info
+  };
 }
 /**
 * Build the Parquet `SchemaElement` list (root + leaves) and column descriptors
-* for an Arrow schema. Flat schemas only.
+* for a flat Arrow schema.
 */
 export function arrowSchemaToParquet(schema: Schema): {
   elements: SchemaElement[];
@@ -131,16 +252,8 @@ export function arrowSchemaToParquet(schema: Schema): {
   }];
   const columns: ColumnDescriptor[] = [];
   for (const field of schema.fields) {
-    const info = arrowTypeToParquet(field.type);
-    const repetition = field.nullable ? Repetition.OPTIONAL : Repetition.REQUIRED;
-    elements.push({
-      name: field.name,
-      type: info.physicalType,
-      typeLength: info.typeLength,
-      repetitionType: repetition,
-      convertedType: info.convertedType,
-      logicalType: info.logicalType
-    });
+    const { element, info } = arrowFieldToElement(field);
+    elements.push(element);
     columns.push({
       name: field.name,
       path: [field.name],
@@ -148,7 +261,9 @@ export function arrowSchemaToParquet(schema: Schema): {
       typeLength: info.typeLength,
       maxDefinitionLevel: field.nullable ? 1 : 0,
       maxRepetitionLevel: 0,
-      arrowField: field
+      arrowField: field,
+      decode: info.decode,
+      encode: info.encode
     });
   }
   return {
@@ -157,30 +272,148 @@ export function arrowSchemaToParquet(schema: Schema): {
   };
 }
 // --- Parquet -> Arrow ------------------------------------------------------
-function parquetTypeToArrow(el: SchemaElement): DataType {
+/** Map a Parquet leaf `SchemaElement` to an Arrow type + converters. @internal */
+export function parquetLeafToArrow(el: SchemaElement): {
+  type: DataType;
+  decode: ValueConverter;
+  encode: ValueConverter;
+} {
   const logical = el.logicalType;
   const converted = el.convertedType;
+  const isDecimal = logical?.kind === 'decimal' || converted === ConvertedType.DECIMAL;
   switch (el.type) {
-    case PType.BOOLEAN: return bool();
+    case PType.BOOLEAN: return {
+      type: bool(),
+      decode: identity,
+      encode: identity
+    };
     case PType.INT32:
-      if (logical?.kind === 'date' || converted === ConvertedType.DATE) return date32();
-      if (logical?.kind === 'integer') return intFromWidth(logical.integer!.bitWidth, logical.integer!.isSigned);
-      if (converted !== undefined) return intFromConverted(converted);
-      return int32();
+      if (isDecimal) return {
+        type: decimal(el.precision ?? logical?.decimal?.precision ?? 9, el.scale ?? logical?.decimal?.scale ?? 0, 32),
+        decode: (v) => BigInt(v as number),
+        encode: (v) => Number(v as bigint)
+      };
+      if (logical?.kind === 'date' || converted === ConvertedType.DATE) return {
+        type: date32(),
+        decode: identity,
+        encode: identity
+      };
+      if (logical?.kind === 'time' || converted === ConvertedType.TIME_MILLIS) return {
+        type: time32(TimeUnit.MILLISECOND),
+        decode: identity,
+        encode: identity
+      };
+      if (logical?.kind === 'integer') return {
+        type: intFromWidth(logical.integer!.bitWidth, logical.integer!.isSigned),
+        decode: identity,
+        encode: identity
+      };
+      if (converted !== undefined) return {
+        type: intFromConverted(converted),
+        decode: identity,
+        encode: identity
+      };
+      return {
+        type: int32(),
+        decode: identity,
+        encode: identity
+      };
     case PType.INT64:
-      if (logical?.kind === 'timestamp') return timestampFromUnit(logical.timestamp!.unit.unit, logical.timestamp!.isAdjustedToUTC);
-      if (converted === ConvertedType.TIMESTAMP_MILLIS) return timestamp(TimeUnit.MILLISECOND, 'UTC');
-      if (converted === ConvertedType.TIMESTAMP_MICROS) return timestamp(TimeUnit.MICROSECOND, 'UTC');
-      if (logical?.kind === 'integer') return intFromWidth(logical.integer!.bitWidth, logical.integer!.isSigned);
-      if (converted === ConvertedType.UINT_64) return uint64();
-      if (converted === ConvertedType.INT_64) return int64();
-      return int64();
-    case PType.FLOAT: return float32();
-    case PType.DOUBLE: return float64();
+      if (isDecimal) return {
+        type: decimal(el.precision ?? logical?.decimal?.precision ?? 18, el.scale ?? logical?.decimal?.scale ?? 0, 64),
+        decode: identity,
+        encode: identity
+      };
+      if (logical?.kind === 'timestamp') return {
+        type: timestampFromUnit(logical.timestamp!.unit.unit, logical.timestamp!.isAdjustedToUTC),
+        decode: identity,
+        encode: identity
+      };
+      if (converted === ConvertedType.TIMESTAMP_MILLIS) return {
+        type: timestamp(TimeUnit.MILLISECOND, 'UTC'),
+        decode: identity,
+        encode: identity
+      };
+      if (converted === ConvertedType.TIMESTAMP_MICROS) return {
+        type: timestamp(TimeUnit.MICROSECOND, 'UTC'),
+        decode: identity,
+        encode: identity
+      };
+      if (logical?.kind === 'time') return {
+        type: time64(logical.time!.unit.unit === TimeUnitId.NANOS ? TimeUnit.NANOSECOND : TimeUnit.MICROSECOND),
+        decode: identity,
+        encode: identity
+      };
+      if (converted === ConvertedType.TIME_MICROS) return {
+        type: time64(TimeUnit.MICROSECOND),
+        decode: identity,
+        encode: identity
+      };
+      if (logical?.kind === 'integer') return {
+        type: intFromWidth(logical.integer!.bitWidth, logical.integer!.isSigned),
+        decode: identity,
+        encode: identity
+      };
+      if (converted === ConvertedType.UINT_64) return {
+        type: uint64(),
+        decode: identity,
+        encode: identity
+      };
+      return {
+        type: int64(),
+        decode: identity,
+        encode: identity
+      };
+    case PType.INT96: return {
+      type: timestamp(TimeUnit.NANOSECOND, null),
+      decode: (v) => int96ToEpochNanos(v as Uint8Array),
+      encode: identity
+    };
+    case PType.FLOAT: return {
+      type: float32(),
+      decode: identity,
+      encode: identity
+    };
+    case PType.DOUBLE: return {
+      type: float64(),
+      decode: identity,
+      encode: identity
+    };
     case PType.BYTE_ARRAY:
-      if (logical?.kind === 'string' || converted === ConvertedType.UTF8) return utf8();
-      return binary();
-    default: throw new ParquetError(`Parquet physical type ${el.type} is not supported in this milestone`);
+      if (isDecimal) return {
+        type: decimal(el.precision ?? 38, el.scale ?? 0, 128),
+        decode: (v) => decimalBytesToBigInt(v as Uint8Array),
+        encode: (v) => bigIntToDecimalBytes(v as bigint, 16)
+      };
+      if (logical?.kind === 'string' || converted === ConvertedType.UTF8 || converted === ConvertedType.ENUM || converted === ConvertedType.JSON) return {
+        type: utf8(),
+        decode: (v) => _decoder.decode(v as Uint8Array),
+        encode: identity
+      };
+      return {
+        type: binary(),
+        decode: identity,
+        encode: identity
+      };
+    case PType.FIXED_LEN_BYTE_ARRAY: {
+      const len = el.typeLength ?? 0;
+      if (logical?.kind === 'float16') return {
+        type: float16(),
+        decode: (v) => float16BytesToNumber(v as Uint8Array),
+        encode: (v) => numberToFloat16Bytes(v as number)
+      };
+      if (isDecimal) return {
+        type: decimal(el.precision ?? logical?.decimal?.precision ?? 38, el.scale ?? logical?.decimal?.scale ?? 0, len > 16 ? 256 : 128),
+        decode: (v) => decimalBytesToBigInt(v as Uint8Array),
+        encode: (v) => bigIntToDecimalBytes(v as bigint, len)
+      };
+      return {
+        type: fixedSizeBinary(len),
+        decode: identity,
+        encode: identity
+      };
+    }
+    default: throw new ParquetError(`Parquet physical type ${el.type} is not supported`);
   }
 }
 function intFromWidth(bitWidth: number, signed: boolean): DataType {
@@ -204,7 +437,7 @@ function timestampFromUnit(unitId: number, isUtc: boolean): DataType {
 }
 /**
 * Build the Arrow schema and column descriptors from a Parquet `SchemaElement`
-* list. Flat schemas only; nested group columns raise `ParquetError`.
+* list. Flat schemas; nested group columns are dispatched to `nested.ts`.
 */
 export function parquetSchemaToArrow(elements: SchemaElement[]): {
   schema: Schema;
@@ -219,10 +452,10 @@ export function parquetSchemaToArrow(elements: SchemaElement[]): {
   for (let c = 0; c < numChildren; c++) {
     const el = elements[i];
     if (el === undefined) throw new ParquetError('truncated Parquet schema');
-    if ((el.numChildren ?? 0) > 0) throw new ParquetError(`nested column '${el.name}' is not supported in this milestone`);
-    const arrowType = parquetTypeToArrow(el);
+    if ((el.numChildren ?? 0) > 0) throw new ParquetError(`nested column '${el.name}' requires the nested reader`);
+    const { type, decode, encode } = parquetLeafToArrow(el);
     const nullable = el.repetitionType !== Repetition.REQUIRED;
-    const field = new Field(el.name, arrowType, nullable);
+    const field = new Field(el.name, type, nullable);
     fields.push(field);
     columns.push({
       name: el.name,
@@ -231,7 +464,9 @@ export function parquetSchemaToArrow(elements: SchemaElement[]): {
       typeLength: el.typeLength,
       maxDefinitionLevel: nullable ? 1 : 0,
       maxRepetitionLevel: 0,
-      arrowField: field
+      arrowField: field,
+      decode,
+      encode
     });
     i++;
   }
@@ -240,3 +475,4 @@ export function parquetSchemaToArrow(elements: SchemaElement[]): {
     columns
   };
 }
+void LogicalTypeId;

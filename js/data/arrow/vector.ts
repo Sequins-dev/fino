@@ -738,6 +738,43 @@ export function vectorFromArray(values: unknown[], type?: DataType): Vector {
         children
       });
     }
+    case 'decimal': {
+      const width = dt.bitWidth / 8;
+      const data = new Uint8Array(length * width);
+      for (let i = 0; i < length; i++) {
+        const v = values[i];
+        if (v === null || v === undefined) continue;
+        let n = v as bigint;
+        if (n < 0n) n += 1n << BigInt(width * 8);
+        for (let b = 0; b < width; b++) {
+          data[i * width + b] = Number(n & 255n);
+          n >>= 8n;
+        }
+      }
+      return makeVector({
+        type: dt,
+        length,
+        validity,
+        nullCount,
+        values: data
+      });
+    }
+    case 'fixedsizebinary': {
+      const width = dt.byteWidth;
+      const data = new Uint8Array(length * width);
+      for (let i = 0; i < length; i++) {
+        const v = values[i];
+        if (v === null || v === undefined) continue;
+        data.set((v as Uint8Array).subarray(0, width), i * width);
+      }
+      return makeVector({
+        type: dt,
+        length,
+        validity,
+        nullCount,
+        values: data
+      });
+    }
     default: throw new ArrowError(`vectorFromArray does not support building ${dt.kind}; use makeVector with raw buffers`);
   }
 }
