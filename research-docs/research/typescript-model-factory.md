@@ -118,11 +118,13 @@ runtime as it exists today:
   data.
 - **Binary-format primitives exist.** `fino:format/flatbuffers` is a
   schema-less FlatBuffers reader/writer (the wire format Arrow IPC metadata
-  is encoded in), and `fino:parsing/scanner` handles incremental binary
-  scanning with hex-dump diagnostics.
+  is encoded in), `fino:data/arrow` is the full Arrow columnar/IPC/C-Data
+  stack, and `fino:parsing/scanner` handles incremental binary scanning with
+  hex-dump diagnostics.
 - **The supporting stack is broad**: full HTTP/1-2-3 + TLS for hub clients
   and serving, `fino:database/sqlite` (with JS VFS and vector helpers),
-  `fino:compress`, `fino:workflow` (durable checkpointed runs),
+  `fino:compress` (gzip/deflate/brotli/zstd/lz4), `fino:workflow` (durable
+  checkpointed runs),
   `fino:opentelemetry` + `fino:profiler`, `fino:ui` JSX, the V8 inspector
   REPL infrastructure, and the `fino:ai` agent/model/memory/eval family.
 
@@ -172,13 +174,10 @@ set, artifact loading, and a training loop that works for modest models.
 
 ## 5. Standards To Anchor On
 
-- **Apache Arrow** is the in-memory tabular representation: a
-  language-agnostic, standardized columnar format
-  (https://arrow.apache.org/overview/). The **C Data Interface** is
-  especially relevant — a small, ABI-stable set of C struct definitions for
-  zero-copy sharing between independent runtimes in the same process
-  (https://arrow.apache.org/docs/format/CDataInterface.html), a natural fit
-  for `fino:ffi`'s `structType`.
+- **Apache Arrow** is the in-memory tabular representation and is already
+  implemented as `fino:data/arrow` — the columnar format, IPC, and the C Data
+  Interface (the ABI-stable zero-copy bridge to native libraries). Downstream
+  work anchors on it rather than re-selecting a tabular standard.
 - **DLPack** is the tensor interchange boundary — a stable in-memory tensor
   structure supporting CPU, CUDA, Metal, Vulkan, ROCm, and others
   (https://dmlc.github.io/dlpack/latest/). It is the boundary format for
@@ -590,23 +589,16 @@ semantics, and every public rule has an acceptance-test shape.
 
 ## 12. The Data Stack
 
-Data is Arrow-first and streaming-first. Three modules, chosen so that
-exactly one heavyweight native dependency exists and everything else is
-TypeScript.
+Data is Arrow-first and streaming-first. `fino:data/arrow` already provides the
+Arrow substrate (below); the remaining pieces are a query/Parquet engine and a
+Dataset/DataLoader, each of which builds on it.
 
-- **`fino:data/arrow` — pure-TS Arrow (shipped).** Full columnar type coverage
-  (every Arrow logical type: primitives incl. f16, all decimals, utf8/binary
-  and their large/view variants, temporal and interval types, list/large-list/
-  list-view/fixed-size-list, struct, map, sparse/dense union, dictionary with
-  delta/replacement, run-end-encoded, and the extension mechanism), the Arrow
-  IPC stream and file formats (with LZ4/ZSTD body compression via
-  `fino:compress`) built on the generic `fino:format/flatbuffers`, and the
-  **Arrow C Data Interface** (`fino:data/arrow/cdata`) — `ArrowSchema`/
-  `ArrowArray` structs via `structType` with a complete format-string codec,
-  aliasing native memory through `Pointer.view`. (libarrow is a C++ giant with
-  a separate GLib C layer; nanoarrow is designed to be vendored — neither is a
-  sane dlopen target. The struct layouts themselves are the standard; Fino
-  speaks them directly.)
+- **`fino:data/arrow` — Arrow (exists).** The columnar in-memory format (all
+  logical types), the IPC stream and file formats (with LZ4/ZSTD body
+  compression), and the Arrow C Data Interface (`fino:data/arrow/cdata`) are
+  implemented and tested. It is the tabular interchange the rest of the data
+  stack consumes and produces: `column.toTensor()`, `RecordBatch`/`Table`, and
+  zero-copy hand-off to native libraries via `Pointer.view`.
 - **`fino:database/duckdb` + `fino:data/frame` — DuckDB via dlopen (planned).** `libduckdb`
   (plain C API, brew/apt installable) is the one big dependency, and it pays
   for Parquet (read *and* write), CSV/JSON readers, remote/S3 ranged reads,
@@ -617,7 +609,7 @@ TypeScript.
   compiles to SQL (the ibis/polars-lazy approach — predicate and projection
   pushdown for free), materializing as Arrow record batches. Binding style
   and dispose conventions mirror `js/database/sqlite.ts`.
-- **`fino:data` — Dataset/DataLoader.** `Dataset` (random access) and
+- **`fino:data` — Dataset/DataLoader (planned).** `Dataset` (random access) and
   `IterableDataset` (async iterable) with `map/filter/shuffle(buffer)/batch/
   take/split/interleave`; sources from CSV/JSONL (existing modules), Arrow
   IPC, Parquet/SQL (DuckDB), sqlite, HTTP, and the hub. `DataLoader` runs the
@@ -751,9 +743,9 @@ substrate:
   Linux/NVIDIA box (bind ~25 driver
   symbols through `cuGetProcAddress`, NVRTC → cubin → launch round-trip,
   measure launch dispatch — target under ~3 µs/op, validate event-wait →
-  wake-pipe readback end to end). The data track starts here too, in
-  parallel: DuckDB binding, Arrow core, hub client, tokenizer — none of it
-  waits on the engine.
+  wake-pipe readback end to end). The data track continues here too, in
+  parallel (Arrow already exists): DuckDB binding, hub client, tokenizer —
+  none of it waits on the engine.
 - **Phase 1 — the credibility slice.** CUDA-direct core (driver, NVRTC +
   two-tier cache, cuBLASLt with epilogues, memory pool, two streams, ~30
   template kernels, bf16+fp32) + the ggml adapter (Metal parity, fast CPU) +
