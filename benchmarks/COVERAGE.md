@@ -64,6 +64,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:security/jwk` | `benchmarks/security/jwk.bench.ts` |
 | `fino:security/jwt` | `benchmarks/security/jwt.bench.ts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.ts` |
+| `fino:format/flatbuffers` | `benchmarks/format/flatbuffers.bench.ts` |
 | `fino:format/typescript` | `benchmarks/format/typescript.bench.ts` |
 | `fino:format/toml` | `benchmarks/format/toml.bench.ts` |
 | `fino:format/xml` | `benchmarks/format/xml.bench.ts` |
