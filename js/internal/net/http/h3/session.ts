@@ -616,13 +616,16 @@ export class Nghttp3Session {
     this.#vecAddrView.setBigUint64(0, baseAddr, true);
     Pointer.copyFromInto(dest, this.#vecAddrBuf, vecLen);
   }
-  #copyVecBytesToScratch(baseAddr: bigint, vecLen: number): Uint8Array {
-    if (vecLen > this.#singleVecScratch.byteLength) {
+  #ensureVecScratch(size: number): Uint8Array {
+    if (size > this.#singleVecScratch.byteLength) {
       let nextSize = this.#singleVecScratch.byteLength;
-      while (nextSize < vecLen) nextSize *= 2;
+      while (nextSize < size) nextSize *= 2;
       this.#singleVecScratch = new Uint8Array(nextSize);
     }
-    const out = this.#singleVecScratch.subarray(0, vecLen);
+    return this.#singleVecScratch.subarray(0, size);
+  }
+  #copyVecBytesToScratch(baseAddr: bigint, vecLen: number): Uint8Array {
+    const out = this.#ensureVecScratch(vecLen);
     this.#copyVecBytesInto(out, baseAddr, vecLen);
     return out;
   }
@@ -700,7 +703,10 @@ export class Nghttp3Session {
           if (nonEmptyVecs === 1) {
             outgoing = this.#copyVecBytesToScratch(singleBaseAddr, singleVecLen);
           } else {
-            outgoing = new Uint8Array(totalBytes);
+            // Reuse the same growable scratch as the single-vec path: writeSync
+            // copies synchronously (#writeChunk does buf.slice()), so the buffer
+            // is free to reuse on the next iteration.
+            outgoing = this.#ensureVecScratch(totalBytes);
             let off = 0;
             for (let i = 0; i < n; i++) {
               const baseAddr = dvVec.getBigUint64(i * VEC_ENTRY_SIZE, true);
