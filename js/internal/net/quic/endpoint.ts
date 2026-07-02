@@ -4099,6 +4099,10 @@ export class QuicConnection extends EventTarget {
   #peerCertificate: Uint8Array | null = null;
   #peerVerification: QuicPeerVerification | null = null;
   #timer: any = null;
+  // Targets the currently-armed #timer, for coalescing redundant re-arms.
+  // -1n means "nothing armed via #timer".
+  #armedExpiry: bigint = -1n;
+  #armedIdleDeadline: bigint | null = null;
   #handshakeTimer: any = null;
   #immediateTimerScheduled = false;
   #handshakeWaiters: QueueResolver<void>[] = [];
@@ -4740,6 +4744,8 @@ export class QuicConnection extends EventTarget {
     }
     this.#closed = true;
     if (this.#timer !== null) this.#timer.cancel?.();
+    this.#timer = null;
+    this.#armedExpiry = -1n;
     if (this.#handshakeTimer !== null) this.#handshakeTimer.cancel?.();
     this.#handshakeTimer = null;
     if (this.#role === 'client' && this.#tls !== null && this.#tls.backend === 'ossl' && this.#sessionKey !== null && this.#options.sessionStore !== undefined) {
@@ -5231,15 +5237,15 @@ export class QuicConnection extends EventTarget {
     this.#dispatch(new QuicErrorEvent('error', { error }));
     this.#closeFromTransport(0, '', error);
   }
-  #writeBufferSize(): number {
-    const maxPayload = Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
-    return maxPayload > 0 ? Math.min(65536, Math.max(NGTCP2_MAX_UDP_PAYLOAD_SIZE, maxPayload)) : NGTCP2_MAX_UDP_PAYLOAD_SIZE;
+  #writeBufferSize(maxPayload?: number): number {
+    const mp = maxPayload ?? Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
+    return mp > 0 ? Math.min(65536, Math.max(NGTCP2_MAX_UDP_PAYLOAD_SIZE, mp)) : NGTCP2_MAX_UDP_PAYLOAD_SIZE;
   }
-  #writePacketBudget(): number {
+  #writePacketBudget(maxPayload?: number): number {
     const quantum = Number(ngtcp2Sym!.ngtcp2_conn_get_send_quantum(this.#conn) as bigint | number);
-    const maxPayload = Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
-    if (quantum <= 0 || maxPayload <= 0) return MAX_WRITE_PACKETS_PER_DRAIN;
-    return Math.max(1, Math.min(MAX_WRITE_PACKETS_PER_DRAIN, Math.floor(quantum / maxPayload) || 1));
+    const mp = maxPayload ?? Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
+    if (quantum <= 0 || mp <= 0) return MAX_WRITE_PACKETS_PER_DRAIN;
+    return Math.max(1, Math.min(MAX_WRITE_PACKETS_PER_DRAIN, Math.floor(quantum / mp) || 1));
   }
   #outputFromPath(path: ArrayBuffer, fallbackRemoteAddress: QuicAddress, fallbackFd: number = this.#fd): {
     fd: number;
@@ -5724,10 +5730,13 @@ export class QuicConnection extends EventTarget {
         this.#scheduleBlockedSendRetry();
         return;
       }
-      const writeBufferSize = this.#writeBufferSize();
+      // Read the max UDP payload size once and share it with both helpers below
+      // (each would otherwise make its own get_max_tx_udp_payload_size FFI call).
+      const maxPayload = Number(ngtcp2Sym!.ngtcp2_conn_get_max_tx_udp_payload_size(this.#conn) as bigint | number);
+      const writeBufferSize = this.#writeBufferSize(maxPayload);
       const ts = now(this.#runtime);
       let packets = 0;
-      const packetBudget = this.#writePacketBudget();
+      const packetBudget = this.#writePacketBudget(maxPayload);
       const packetBatch: PendingSendPacket[] = [];
       const outPath = this.#activeOutputPath(remoteAddress);
       for (; packets < packetBudget; packets++) {
@@ -5876,24 +5885,40 @@ export class QuicConnection extends EventTarget {
   }
   #scheduleTimer(): void {
     if (this.#closed) return;
+    const expiry = ngtcp2Sym!.ngtcp2_conn_get_expiry(this.#conn) as bigint;
+    const idleDeadline = this.#nextStreamIdleDeadline();
+    // Coalesce: the #timer is a one-shot armed to fire at an absolute time
+    // (min of expiry and the stream-idle deadline). #scheduleTimer runs on every
+    // received packet and every write drain, but those targets usually don't
+    // move between calls, so re-arming would only churn a Promise, a closure, a
+    // Map entry, two kqueue changelist entries, and a get_expiry FFI for no
+    // change in when the timer fires. Skip when an armed timer already matches.
+    if (this.#timer !== null && expiry === this.#armedExpiry && idleDeadline === this.#armedIdleDeadline) {
+      return;
+    }
     if (this.#timer !== null) this.#timer.cancel?.();
     this.#timer = null;
-    const expiry = ngtcp2Sym!.ngtcp2_conn_get_expiry(this.#conn) as bigint;
+    this.#armedExpiry = expiry;
+    this.#armedIdleDeadline = idleDeadline;
     const current = now(this.#runtime);
-    const streamIdleDelayMs = this.#nextStreamIdleDelayMs(current);
     if (expiry === NGTCP2_NO_EXPIRY) {
-      if (streamIdleDelayMs !== null) {
-        this.#timer = this.#runtime.setTimer(streamIdleDelayMs, () => this.#handleTimerExpiry());
+      if (idleDeadline !== null) {
+        const delayMs = idleDeadline <= current ? 1 : Math.max(1, Number((idleDeadline - current) / 1000000n));
+        this.#timer = this.#runtime.setTimer(delayMs, () => this.#handleTimerExpiry());
       }
       return;
     }
     if (expiry <= current) {
+      // Nothing armed via #timer; force re-evaluation on the next call.
+      this.#armedExpiry = -1n;
       this.#scheduleImmediateTimerExpiry();
       return;
     }
-    const deltaNs = expiry - current;
-    let delayMs = Math.max(1, Number(deltaNs / 1000000n));
-    if (streamIdleDelayMs !== null) delayMs = Math.min(delayMs, streamIdleDelayMs);
+    let delayMs = Math.max(1, Number((expiry - current) / 1000000n));
+    if (idleDeadline !== null) {
+      const idleMs = idleDeadline <= current ? 1 : Math.max(1, Number((idleDeadline - current) / 1000000n));
+      delayMs = Math.min(delayMs, idleMs);
+    }
     this.#timer = this.#runtime.setTimer(delayMs, () => this.#handleTimerExpiry());
   }
   #scheduleImmediateTimerExpiry(): void {
@@ -5927,7 +5952,7 @@ export class QuicConnection extends EventTarget {
       this.#checkStreamIdleTimeout(current);
     }
   }
-  #nextStreamIdleDelayMs(current: bigint): number | null {
+  #nextStreamIdleDeadline(): bigint | null {
     const timeout = this.#options.connection.streamIdleTimeout;
     if (timeout <= 0n || this.#peerStreamActivity.size === 0) return null;
     let nextDue: bigint | null = null;
@@ -5935,9 +5960,7 @@ export class QuicConnection extends EventTarget {
       const due = lastActivity + timeout;
       if (nextDue === null || due < nextDue) nextDue = due;
     }
-    if (nextDue === null) return null;
-    if (nextDue <= current) return 1;
-    return Math.max(1, Number((nextDue - current) / 1000000n));
+    return nextDue;
   }
   #recordPeerStreamActivity(streamId: number): void {
     if (this.#streamInitiatedByLocal(streamId)) return;
