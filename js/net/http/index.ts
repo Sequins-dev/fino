@@ -3437,26 +3437,17 @@ export class Response {
     if (arguments.length < 1) throw new TypeError('Response.json requires 1 argument');
     const body = JSON.stringify(data);
     if (body === undefined) throw new TypeError('Response.json: data is not JSON serializable');
-    const status = init && init.status != null ? Number(init.status) : 200;
-    const statusText = init && init.statusText != null ? String(init.statusText) : '';
-    _validateResponseStatus(status);
-    _validateResponseStatusText(statusText);
-    if (_isNullBodyStatus(status)) {
+    const headers = new Headers(init && init.headers ? init.headers : {});
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+    const status = init && init.status != null ? init.status : 200;
+    const statusText = init && init.statusText != null ? init.statusText : '';
+    if (status === 204 || status === 205 || status === 304) {
       throw new TypeError('Response.json: status must allow a body');
     }
-    const headers = new Headers(init && init.headers ? init.headers : undefined);
-    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
-    headers._setGuard('response');
-    // Construct via the INTERNAL path to hand off the Headers built above
-    // without the spec constructor re-copying them (avoids a second Headers +
-    // #sorted() per response on the hot server path).
-    return new Response(INTERNAL, {
-      version: '',
+    return new Response(body, {
       status,
       statusText,
-      headers,
-      body: _toBytes(body),
-      outTrailers: init && init.trailers != null ? init.trailers : null
+      headers
     });
   }
   /**
