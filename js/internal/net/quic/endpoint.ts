@@ -1129,15 +1129,16 @@ class ByteQueue {
   }
   push(chunk: Uint8Array): void {
     if (this.#closed) return;
-    const copy = new Uint8Array(chunk.byteLength);
-    copy.set(chunk);
+    // The chunk is already a private, immutable JS buffer (materialized by
+    // copyFromPtr in the ngtcp2 recv_stream_data callback); nothing mutates it
+    // after this point, so store it by reference instead of copying again.
     const waiter = this.#waiters.shift();
     if (waiter) {
-      this.#chunks.push(copy);
+      this.#chunks.push(chunk);
       waiter.cleanup();
       waiter.resolve(this.#take(waiter.maxBytes)!);
     } else {
-      this.#chunks.push(copy);
+      this.#chunks.push(chunk);
     }
   }
   read(maxBytes = 65536, signal?: AbortSignal | null): Promise<Uint8Array | null> {
@@ -1218,20 +1219,22 @@ class QuicBytesWriter extends BytesWriter {
     this.#stream._assertWritableSide();
     await super.write(data);
   }
-  writeSync(data: ArrayBuffer | ArrayBufferView): void {
+  writeSync(data: ArrayBuffer | ArrayBufferView, owned = false): void {
     this.#stream._assertWritableSide();
     if (this.closed) throw new Error('Writer is closed');
     const buf = data instanceof Uint8Array ? data : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
-    this.#writeChunk(buf);
+    // `owned` means the caller handed us a fresh buffer it will not reuse (the
+    // H3 drain allocates one per write), so we can retain it without slicing.
+    this.#writeChunk(buf, owned);
     this.#flushPending();
   }
   protected async doWrite(buf: Uint8Array): Promise<void> {
-    this.#writeChunk(buf);
+    this.#writeChunk(buf, false);
   }
-  #writeChunk(buf: Uint8Array): void {
-    const copy = buf.slice();
-    this.#stream._reserveWrite(copy);
-    this.#pending.push(copy);
+  #writeChunk(buf: Uint8Array, owned: boolean): void {
+    const chunk = owned ? buf : buf.slice();
+    this.#stream._reserveWrite(chunk);
+    this.#pending.push(chunk);
     this.#scheduleFlush();
   }
   _closeFromStopSending(): void {

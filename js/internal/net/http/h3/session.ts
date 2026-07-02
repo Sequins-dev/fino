@@ -110,7 +110,6 @@ export class Nghttp3Session {
   #writeVecView = new DataView(this.#writeVecBuf.buffer);
   #vecAddrBuf = new ArrayBuffer(8);
   #vecAddrView = new DataView(this.#vecAddrBuf);
-  #singleVecScratch = new Uint8Array(16 * 1024);
   #bodySlots = new Map<bigint, BodySlot>();
   #pendingTrailers = new Map<bigint, Array<[string, string]>>();
   #yieldedBytes = new Map<bigint, Uint8Array>();
@@ -118,7 +117,7 @@ export class Nghttp3Session {
   #quicStreams = new Map<bigint, {
     writer: {
       write(b: Uint8Array): Promise<void>;
-      writeSync?(b: Uint8Array): void;
+      writeSync?(b: Uint8Array, owned?: boolean): void;
       close(): Promise<void>;
       closeSync?(): void;
     };
@@ -479,7 +478,7 @@ export class Nghttp3Session {
   // Register a QUIC stream writer so drainWrites can write to it.
   addQuicStream(streamId: bigint, writer: {
     write(b: Uint8Array): Promise<void>;
-    writeSync?(b: Uint8Array): void;
+    writeSync?(b: Uint8Array, owned?: boolean): void;
     close(): Promise<void>;
     closeSync?(): void;
   }): void {
@@ -581,9 +580,10 @@ export class Nghttp3Session {
   // Read: feed QUIC stream bytes into nghttp3.
   // -------------------------------------------------------------------------
   readStream(streamId: bigint, data: Uint8Array, fin: boolean): void {
+    if (this.#locked) throw new Error('nghttp3 session operation re-entered');
     if (this.#closed) throw new Error('session closed');
-    this.#withLock(() => {
-      if (this.#closed) throw new Error('session closed');
+    this.#locked = true;
+    try {
       if (this.#webTransport && data.byteLength > 0) {
         const buffered = this.#bufferWebTransportSettingsPrefix(streamId, data);
         const settings = readWebTransportSettings(buffered);
@@ -604,30 +604,26 @@ export class Nghttp3Session {
         throw new Error(`nghttp3_conn_read_stream2 error: ${consumed}`);
       }
       this.#drainWritesInnerSync();
-    });
+    } finally {
+      this.#locked = false;
+    }
   }
   // -------------------------------------------------------------------------
   // Write drain: pull nghttp3 output and push to QUIC streams.
   // -------------------------------------------------------------------------
   drainWrites(): void {
-    this.#withLock(() => this.#drainWritesInnerSync());
+    if (this.#locked) throw new Error('nghttp3 session operation re-entered');
+    if (this.#closed) throw new Error('session closed');
+    this.#locked = true;
+    try {
+      this.#drainWritesInnerSync();
+    } finally {
+      this.#locked = false;
+    }
   }
   #copyVecBytesInto(dest: Uint8Array, baseAddr: bigint, vecLen: number): void {
     this.#vecAddrView.setBigUint64(0, baseAddr, true);
     Pointer.copyFromInto(dest, this.#vecAddrBuf, vecLen);
-  }
-  #ensureVecScratch(size: number): Uint8Array {
-    if (size > this.#singleVecScratch.byteLength) {
-      let nextSize = this.#singleVecScratch.byteLength;
-      while (nextSize < size) nextSize *= 2;
-      this.#singleVecScratch = new Uint8Array(nextSize);
-    }
-    return this.#singleVecScratch.subarray(0, size);
-  }
-  #copyVecBytesToScratch(baseAddr: bigint, vecLen: number): Uint8Array {
-    const out = this.#ensureVecScratch(vecLen);
-    this.#copyVecBytesInto(out, baseAddr, vecLen);
-    return out;
   }
   #drainWritesInnerSync(): void {
     const pStreamId = this.#writeStreamIdBuf;
@@ -699,14 +695,14 @@ export class Nghttp3Session {
         }
         let consumed = 0;
         if (totalBytes > 0 && entry) {
-          let outgoing: Uint8Array;
+          // Copy nghttp3's vecs once into a fresh, owned buffer. Handing an owned
+          // buffer to writeSync lets it skip its defensive slice(), so the body
+          // bytes are copied once here instead of twice (was: copy to reused
+          // scratch, then writeSync slices).
+          let outgoing = new Uint8Array(totalBytes);
           if (nonEmptyVecs === 1) {
-            outgoing = this.#copyVecBytesToScratch(singleBaseAddr, singleVecLen);
+            this.#copyVecBytesInto(outgoing, singleBaseAddr, singleVecLen);
           } else {
-            // Reuse the same growable scratch as the single-vec path: writeSync
-            // copies synchronously (#writeChunk does buf.slice()), so the buffer
-            // is free to reuse on the next iteration.
-            outgoing = this.#ensureVecScratch(totalBytes);
             let off = 0;
             for (let i = 0; i < n; i++) {
               const baseAddr = dvVec.getBigUint64(i * VEC_ENTRY_SIZE, true);
@@ -722,7 +718,7 @@ export class Nghttp3Session {
           if (entry.writer.writeSync === undefined) {
             throw new Error('H3 stream writer does not support synchronous writes');
           }
-          entry.writer.writeSync(outgoing);
+          entry.writer.writeSync(outgoing, true);
           if (this.#closed) return;
           consumed = totalBytes;
         }
@@ -744,16 +740,6 @@ export class Nghttp3Session {
   // -------------------------------------------------------------------------
   // Mutex helper
   // -------------------------------------------------------------------------
-  #withLock<T>(fn: () => T): T {
-    if (this.#locked) throw new Error('nghttp3 session operation re-entered');
-    this.#locked = true;
-    try {
-      if (this.#closed) throw new Error('session closed');
-      return fn();
-    } finally {
-      this.#locked = false;
-    }
-  }
   // -------------------------------------------------------------------------
   // Lifecycle
   // -------------------------------------------------------------------------
