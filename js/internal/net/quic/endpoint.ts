@@ -1077,6 +1077,13 @@ class AsyncQueue<T> {
       });
     });
   }
+  // Remove and return all currently-buffered items without awaiting. Used to
+  // hand a backlog to a consumer switching from the queue to a direct callback,
+  // so items pushed before the callback was installed are not lost.
+  drainBuffered(): T[] {
+    if (this.#items.length === 0) return [];
+    return this.#items.splice(0);
+  }
   close(error: Error = this.#closeError): void {
     if (this.#closed) return;
     this.#closed = true;
@@ -4069,6 +4076,7 @@ export class QuicConnection extends EventTarget {
   #ptrSlots = Array.from({ length: 8 }, (_, i) => new Uint8Array(this.#ptrArena, i * _PTR_SIZE, _PTR_SIZE));
   #pathCache = new Map<string, NativePath>();
   #streamQueue = new AsyncQueue<QuicStream>('QUIC connection is closed');
+  #incomingStreamHook: ((stream: QuicStream) => void) | null = null;
   #datagramQueue = new ByteQueue();
   #streams = new Map<number, QuicStream>();
   #peerStreamActivity = new Map<number, bigint>();
@@ -4454,6 +4462,22 @@ export class QuicConnection extends EventTarget {
   }
   acceptStream(): Promise<QuicStream> {
     return this.#streamQueue.shift();
+  }
+  // Internal fast path for the h3 drivers: when set, incoming streams are handed
+  // straight to this callback (deferred past the native callback) instead of
+  // allocating a QuicStreamEvent, dispatching through EventTarget, and buffering
+  // in #streamQueue (which the h3 drivers never drain via acceptStream). Setting
+  // it drains any streams that were queued before installation so none are lost.
+  // The public 'stream' event + acceptStream() path is used only when unset.
+  get _onIncomingStream(): ((stream: QuicStream) => void) | null {
+    return this.#incomingStreamHook;
+  }
+  set _onIncomingStream(hook: ((stream: QuicStream) => void) | null) {
+    this.#incomingStreamHook = hook;
+    if (hook !== null) {
+      const backlog = this.#streamQueue.drainBuffered();
+      for (const stream of backlog) hook(stream);
+    }
   }
   _isLocalUnidirectionalStream(streamId: number): boolean {
     return this.#streamIsUnidirectional(streamId) && this.#streamInitiatedByLocal(streamId);
@@ -6311,6 +6335,14 @@ export class QuicConnection extends EventTarget {
             ngtcp2Sym!.ngtcp2_conn_shutdown_stream(this.#conn, 0, BigInt(streamId), 0n);
             this.#scheduleWriteDrain();
           }
+          return stream;
+        }
+        if (this.#incomingStreamHook !== null) {
+          // Direct hook (h3 drivers): no QuicStreamEvent, no EventTarget
+          // dispatch, no #streamQueue buffering. Preserve the "run after the
+          // native callback unwinds" ordering the event path guarantees.
+          const hook = this.#incomingStreamHook;
+          deferAfterNativeCallback(() => hook(stream));
           return stream;
         }
         if (inNativeCallback()) {

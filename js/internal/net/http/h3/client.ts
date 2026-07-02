@@ -205,10 +205,11 @@ export class H3ClientSession {
       instance.#pending.clear();
       void instance.#session.closeWhenIdle();
     }, { once: true });
-    // Attach stream listener early so remote control/QPACK and WebTransport
-    // streams are captured as soon as they arrive.
-    conn.addEventListener('stream', (event) => {
-      const stream = (event as QuicStreamEvent).stream;
+    // Install the incoming-stream hook early so remote control/QPACK and
+    // WebTransport streams are captured as soon as they arrive. The hook bypasses
+    // the QuicStreamEvent/EventTarget/#streamQueue path (the session is the sole
+    // consumer of incoming streams here) and drains any pre-installation backlog.
+    conn._onIncomingStream = (stream) => {
       const sid = BigInt(stream.id);
       void (async () => {
         try {
@@ -244,7 +245,7 @@ export class H3ClientSession {
           }
         } catch {}
       })();
-    });
+    };
     // Bind the 3 mandatory local unidirectional streams.
     try {
       const [controlStream, qencStream, qdecStream] = await Promise.all([

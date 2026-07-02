@@ -392,10 +392,12 @@ export class H3ServerDriver {
       cleanupStream(st);
     }
     try {
-      // Attach stream listener early so bidirectional streams from the client
-      // are captured even if they arrive during local setup.
-      conn.addEventListener('stream', (event) => {
-        const stream = (event as QuicStreamEvent).stream;
+      // Install the incoming-stream hook early so bidirectional streams from the
+      // client are captured even if they arrive during local setup. The hook
+      // bypasses the QuicStreamEvent/EventTarget/#streamQueue path (the driver is
+      // the sole consumer of incoming streams here) and drains any streams that
+      // arrived before installation.
+      conn._onIncomingStream = (stream) => {
         const sid = BigInt(stream.id);
         void (async () => {
           let first: Uint8Array | null = null;
@@ -451,7 +453,7 @@ export class H3ServerDriver {
             }
           }
         })();
-      });
+      };
       // Open the 3 mandatory local unidirectional streams.
       const [controlStream, qencStream, qdecStream] = await Promise.all([
         conn.openUnidirectionalStream(),
