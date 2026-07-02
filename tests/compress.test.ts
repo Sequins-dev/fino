@@ -263,3 +263,77 @@ describe('fino:compress release contract', () => {
     t.equal(str(restored), str(input), 'expanded payload roundtrips');
   });
 });
+import { zstdAvailable, lz4Available } from 'fino:compress';
+const LOREM = bytes('the quick brown fox jumps over the lazy dog. '.repeat(200));
+for (const format of ['zstd', 'lz4'] as const) {
+  const available = format === 'zstd' ? zstdAvailable : lz4Available;
+  describe(`fino:compress — ${format}`, () => {
+    if (!available) {
+      it(`skips: ${format} backend not available`, (t) => {
+        t.ok(true, `${format} library not installed`);
+      });
+      return;
+    }
+    it('one-shot round-trips', (t) => {
+      const packed = compress(LOREM, { format });
+      t.ok(packed.byteLength < LOREM.byteLength, 'compresses the payload');
+      t.equal(str(decompress(packed, { format })), str(LOREM), 'round-trips');
+    });
+    it('round-trips an empty input', (t) => {
+      const packed = compress(new Uint8Array(0), { format });
+      t.equal(decompress(packed, { format }).byteLength, 0, 'empty round-trips');
+    });
+    it('round-trips binary data with all byte values', (t) => {
+      const input = new Uint8Array(1024);
+      for (let i = 0; i < input.length; i++) input[i] = i * 7 & 255;
+      const packed = compress(input, { format });
+      t.deepEqual(Array.from(decompress(packed, { format })), Array.from(input), 'binary round-trips');
+    });
+    it('streams via write/finish across chunks', (t) => {
+      const c = createCompressor({ format });
+      const parts: Uint8Array[] = [];
+      parts.push(...c.write(bytes('part one ')));
+      parts.push(...c.write(bytes('part two ')));
+      parts.push(...c.write(bytes('part three')));
+      parts.push(...c.finish());
+      c.close();
+      const packed = concat(parts);
+      t.equal(str(decompress(packed, { format })), 'part one part two part three', 'chunked compress round-trips');
+    });
+    it('streams via async transform', async (t) => {
+      const c = createCompressor({ format });
+      const packed = await collect(c.transform(asAsyncIterable([
+        bytes('alpha '),
+        bytes('beta '),
+        bytes('gamma')
+      ]) as AsyncIterable<Uint8Array>));
+      c.close();
+      const d = createDecompressor({ format });
+      const restored = await collect(d.transform(asAsyncIterable([packed]) as AsyncIterable<Uint8Array>));
+      d.close();
+      t.equal(str(restored), 'alpha beta gamma', 'transform round-trips');
+    });
+    it('decodes output fed one byte at a time', (t) => {
+      const packed = compress(LOREM, { format });
+      const d = createDecompressor({ format });
+      const parts: Uint8Array[] = [];
+      for (let i = 0; i < packed.byteLength; i++) parts.push(...d.write(packed.subarray(i, i + 1)));
+      parts.push(...d.finish());
+      d.close();
+      t.equal(str(concat(parts)), str(LOREM), 'byte-drip decompress round-trips');
+    });
+    it('honors a compression level', (t) => {
+      const high = compress(LOREM, {
+        format,
+        level: format === 'zstd' ? 19 : 9
+      });
+      t.equal(str(decompress(high, { format })), str(LOREM), 'leveled compress round-trips');
+    });
+  });
+}
+describe('fino:compress — availability flags', () => {
+  it('exposes zstd and lz4 availability booleans', (t) => {
+    t.equal(typeof zstdAvailable, 'boolean', 'zstdAvailable is boolean');
+    t.equal(typeof lz4Available, 'boolean', 'lz4Available is boolean');
+  });
+});

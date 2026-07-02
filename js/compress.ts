@@ -3,16 +3,19 @@
 *
 * This module exposes the compression formats commonly used by HTTP payloads,
 * archive formats, and data interchange tools: gzip, zlib-wrapped deflate,
-* raw deflate, and Brotli. The one-shot helpers are convenient when the entire
-* input already fits in memory. The `Compressor` and `Decompressor` classes
-* support incremental writes and async iterable transforms for pipelines that
-* produce or consume chunks over time.
+* raw deflate, Brotli, Zstandard, and LZ4. The one-shot helpers are convenient
+* when the entire input already fits in memory. The `Compressor` and
+* `Decompressor` classes support incremental writes and async iterable
+* transforms for pipelines that produce or consume chunks over time.
 *
 * Format names map to the wire formats rather than implementation details:
 *   - `gzip`: RFC 1952 gzip member format.
 *   - `deflate`: RFC 1950 zlib wrapper around RFC 1951 DEFLATE data.
 *   - `deflate-raw`: raw RFC 1951 DEFLATE stream with no wrapper.
 *   - `brotli`: RFC 7932 Brotli stream when the runtime Brotli backend is
+*     available.
+*   - `zstd`: Zstandard frame format when `libzstd` is available.
+*   - `lz4`: LZ4 Frame format (`.lz4`, magic `0x184D2204`) when `liblz4` is
 *     available.
 *
 * `compress()` and `decompress()` return a single `Uint8Array`. Streaming
@@ -70,6 +73,8 @@
 import { assertZlibFormat, validateCompressOptions, validateDecompressOptions, type ByteInput, type CompressOptions as InternalCompressOptions, type CompressionTransform, type DecompressOptions } from './internal/compress/common.ts';
 import { zlibCompress, zlibDecompress, ZlibCompressor, ZlibDecompressor } from './internal/compress/zlib.ts';
 import { brotliAvailable as internalBrotliAvailable, brotliCompress, brotliDecompress, BrotliCompressor, BrotliDecompressor } from './internal/compress/brotli.ts';
+import { zstdAvailable as internalZstdAvailable, zstdCompress, zstdDecompress, ZstdCompressor, ZstdDecompressor } from './internal/compress/zstd.ts';
+import { lz4Available as internalLz4Available, lz4Compress, lz4Decompress, Lz4Compressor, Lz4Decompressor } from './internal/compress/lz4.ts';
 export type {
 /**
 * Binary input accepted by compression helpers.
@@ -157,6 +162,37 @@ export type {
 */
 export const brotliAvailable = internalBrotliAvailable;
 /**
+* `true` when the Zstandard backend library (`libzstd`) is available.
+*
+* Use this before selecting `{ format: 'zstd' }` in portable code. When this
+* value is false, Zstandard operations throw from the underlying backend.
+*
+* ```ts no_run
+* import { zstdAvailable, compress } from 'fino:compress';
+*
+* const format = zstdAvailable ? 'zstd' : 'gzip';
+* const bytes = compress(new Uint8Array([1, 2, 3]), { format });
+* console.log(bytes.byteLength);
+* ```
+*/
+export const zstdAvailable = internalZstdAvailable;
+/**
+* `true` when the LZ4 backend library (`liblz4`) is available.
+*
+* Use this before selecting `{ format: 'lz4' }` in portable code. The `lz4`
+* format produces and consumes the interoperable LZ4 Frame format. When this
+* value is false, LZ4 operations throw from the underlying backend.
+*
+* ```ts no_run
+* import { lz4Available, compress } from 'fino:compress';
+*
+* const format = lz4Available ? 'lz4' : 'gzip';
+* const bytes = compress(new Uint8Array([1, 2, 3]), { format });
+* console.log(bytes.byteLength);
+* ```
+*/
+export const lz4Available = internalLz4Available;
+/**
 * Compress one byte buffer and return a single compressed byte array.
 *
 * This one-shot helper keeps both input and output in memory. `options.format`
@@ -178,6 +214,8 @@ export const brotliAvailable = internalBrotliAvailable;
 export function compress(data: ByteInput, options: CompressOptions): Uint8Array {
   const opts = validateCompressOptions(options);
   if (opts.format === 'brotli') return brotliCompress(data, opts);
+  if (opts.format === 'zstd') return zstdCompress(data, opts);
+  if (opts.format === 'lz4') return lz4Compress(data, opts);
   return zlibCompress(data, assertZlibFormat(opts.format), opts);
 }
 /**
@@ -204,6 +242,8 @@ export function compress(data: ByteInput, options: CompressOptions): Uint8Array 
 export function decompress(data: ByteInput, options: DecompressOptions): Uint8Array {
   const opts = validateDecompressOptions(options);
   if (opts.format === 'brotli') return brotliDecompress(data);
+  if (opts.format === 'zstd') return zstdDecompress(data);
+  if (opts.format === 'lz4') return lz4Decompress(data);
   return zlibDecompress(data, assertZlibFormat(opts.format));
 }
 /**
@@ -266,7 +306,7 @@ export class Compressor implements CompressionTransform {
   */
   constructor(options: CompressOptions) {
     const opts = validateCompressOptions(options);
-    this.#impl = opts.format === 'brotli' ? new BrotliCompressor(opts) : new ZlibCompressor(assertZlibFormat(opts.format), opts.level);
+    this.#impl = opts.format === 'brotli' ? new BrotliCompressor(opts) : opts.format === 'zstd' ? new ZstdCompressor(opts) : opts.format === 'lz4' ? new Lz4Compressor(opts) : new ZlibCompressor(assertZlibFormat(opts.format), opts.level);
   }
   /**
   * Compress a chunk and return any output currently available.
@@ -414,7 +454,7 @@ export class Decompressor implements CompressionTransform {
   */
   constructor(options: DecompressOptions) {
     const opts = validateDecompressOptions(options);
-    this.#impl = opts.format === 'brotli' ? new BrotliDecompressor() : new ZlibDecompressor(assertZlibFormat(opts.format));
+    this.#impl = opts.format === 'brotli' ? new BrotliDecompressor() : opts.format === 'zstd' ? new ZstdDecompressor() : opts.format === 'lz4' ? new Lz4Decompressor() : new ZlibDecompressor(assertZlibFormat(opts.format));
   }
   /**
   * Decompress a chunk and return any output currently available.
