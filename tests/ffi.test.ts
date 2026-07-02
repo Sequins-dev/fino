@@ -160,6 +160,59 @@ describe('read/write via malloc', () => {
     asyncLibc.symbols.free(ptr);
   });
 });
+describe('Pointer.view', () => {
+  it('aliases native memory without copying', (t) => {
+    const ptr = libc.symbols.malloc(16);
+    const view = Pointer.view(ptr, 16);
+    t.ok(view instanceof ArrayBuffer, 'returns an ArrayBuffer');
+    t.equal(view.byteLength, 16, 'has the requested length');
+    const mallocAddr = new DataView(ptr as ArrayBuffer).getBigUint64(0, true);
+    t.equal(Pointer.addr(view), mallocAddr, 'backing store is the malloc address (zero-copy)');
+    Pointer.writeU8(ptr, 3, 42);
+    t.equal(new Uint8Array(view)[3], 42, 'native write visible through the view');
+    new Uint8Array(view)[5] = 7;
+    t.equal(Pointer.readU8(ptr, 5), 7, 'view write visible through the pointer');
+    libc.symbols.free(ptr);
+  });
+  it('supports zero-length views', (t) => {
+    const ptr = libc.symbols.malloc(8);
+    const view = Pointer.view(ptr, 0);
+    t.equal(view.byteLength, 0, 'zero-length view');
+    libc.symbols.free(ptr);
+  });
+  it('rejects invalid arguments', (t) => {
+    const buf = new ArrayBuffer(8);
+    const ptr = Pointer.of(buf) as ArrayBuffer;
+    t.throws(() => Pointer.view(null, 8), /null/, 'null pointer rejected');
+    t.throws(() => Pointer.view(ptr, -1), /non-negative/, 'negative length rejected');
+    t.throws(() => Pointer.view(ptr, 8, { onRelease: 42 as never }), /function/, 'non-function onRelease rejected');
+  });
+  it('works with Pointer and struct helpers', (t) => {
+    const ptr = libc.symbols.malloc(8);
+    const view = Pointer.view(ptr, 8);
+    const Point = structType([['x', 'i32'], ['y', 'i32']]);
+    Point.set(view, 'x', 12);
+    Point.set(view, 'y', -3);
+    t.equal(Pointer.readI32(ptr, 0), 12, 'struct write lands in native memory');
+    t.equal(Point.get(view, 'y'), -3, 'struct read from native memory');
+    libc.symbols.free(ptr);
+  });
+  it('fires onRelease exactly once on the JS thread after detach', async (t) => {
+    const { detachArrayBuffer } = await import('internal:serializer');
+    const ptr = libc.symbols.malloc(8);
+    let releases = 0;
+    const view = Pointer.view(ptr, 8, { onRelease: () => {
+      releases += 1;
+      libc.symbols.free(ptr);
+    } });
+    t.equal(releases, 0, 'not released while the buffer is alive');
+    detachArrayBuffer(view);
+    for (let i = 0; i < 100 && releases === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    t.equal(releases, 1, 'onRelease fired exactly once after detach');
+  });
+});
 describe('StructType', () => {
   it('computes C layout and reads/writes scalar fields', (t) => {
     const Inner = structType([['flag', 'u8'], ['value', 'i32']]);

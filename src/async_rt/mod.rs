@@ -51,6 +51,24 @@ pub struct RawFfiResult {
 }
 
 // ---------------------------------------------------------------------------
+// External-view release (from backing-store deleters, any thread)
+// ---------------------------------------------------------------------------
+
+/// A released `Pointer.view` external ArrayBuffer. Backing-store deleters run
+/// on arbitrary threads (GC, background), so they enqueue one of these and
+/// wake the loop; the V8 thread invokes the `onRelease` callback during drain.
+pub struct ViewRelease {
+    /// Slot in the `js_calls` callback table for the JS `onRelease` function,
+    /// if one was supplied to `Pointer.view`.
+    pub callback_id: Option<usize>,
+    /// Byte length of the released view, for external-memory accounting.
+    pub byte_length: usize,
+}
+
+/// Shared queue of pending view releases, cloned into backing-store deleters.
+pub type ViewReleaseQueue = Arc<Mutex<Vec<ViewRelease>>>;
+
+// ---------------------------------------------------------------------------
 // Thread-local resolver table — bridges non-Send v8::Global across threads
 // ---------------------------------------------------------------------------
 
@@ -90,6 +108,9 @@ pub struct IsolateAsyncState {
     pub completions: Arc<Mutex<Vec<FfiCompletion>>>,
     /// Pending cross-thread JS callback invocations (from `FfiCallback` trampolines).
     pub js_call_requests: Arc<Mutex<Vec<js_calls::JsCallRequest>>>,
+    /// Released `Pointer.view` external buffers awaiting their `onRelease`
+    /// callback (fire-and-forget; deleters never block or touch V8).
+    pub view_releases: Arc<Mutex<Vec<ViewRelease>>>,
     /// Read end of the self-pipe. JS registers this with `loop.readable(fd)`
     /// so kqueue/io_uring wakes when an async FFI call completes.
     pub wake_read: RawFd,
@@ -131,6 +152,7 @@ pub fn init() -> RawFd {
             executor: async_executor::LocalExecutor::new(),
             completions: Arc::new(Mutex::new(Vec::new())),
             js_call_requests: Arc::new(Mutex::new(Vec::new())),
+            view_releases: Arc::new(Mutex::new(Vec::new())),
             wake_read,
             wake_write,
         });
@@ -178,6 +200,16 @@ pub fn js_call_handle() -> Option<(Arc<Mutex<Vec<js_calls::JsCallRequest>>>, Raw
     })
 }
 
+/// Get the view-release queue + write fd (for `Pointer.view` backing-store
+/// deleters). Returns None if `init()` hasn't been called on this thread.
+pub fn release_handle() -> Option<(ViewReleaseQueue, RawFd)> {
+    STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| (Arc::clone(&st.view_releases), st.wake_write))
+    })
+}
+
 /// Poll the executor once. Returns true if a task ran.
 pub fn try_tick() -> bool {
     STATE.with(|s| {
@@ -213,8 +245,48 @@ pub fn drain_all(
     let mut progress = false;
     progress |= drain_ffi_completions(scope);
     progress |= drain_js_call_requests(scope);
+    progress |= drain_view_releases(scope);
     progress |= drain_pending_resolutions(scope, state_rc);
     progress
+}
+
+/// Invoke `onRelease` callbacks for external views whose backing stores were
+/// freed, and roll back their external-memory accounting.
+fn drain_view_releases(scope: &mut v8::HandleScope) -> bool {
+    let releases: Vec<ViewRelease> = STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| {
+                let mut q = st.view_releases.lock().unwrap();
+                std::mem::take(&mut *q)
+            })
+            .unwrap_or_default()
+    });
+
+    if releases.is_empty() {
+        return false;
+    }
+
+    for release in releases {
+        scope.adjust_amount_of_external_allocated_memory(-(release.byte_length as i64));
+        let Some(id) = release.callback_id else {
+            continue;
+        };
+        let Some(global) = js_calls::take_callback(id) else {
+            continue;
+        };
+        let func = v8::Local::new(scope, &global);
+        let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
+        let tc = &mut v8::TryCatch::new(scope);
+        if func.call(tc, recv, &[]).is_none() && tc.has_caught() {
+            let msg = tc
+                .exception()
+                .map(|e| e.to_rust_string_lossy(tc))
+                .unwrap_or_else(|| "unknown exception".into());
+            eprintln!("fino: Pointer.view onRelease callback threw: {msg}");
+        }
+    }
+    true
 }
 
 /// Take all pending JS call requests from the queue and process them.

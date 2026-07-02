@@ -117,8 +117,125 @@ pub fn namespace<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Objec
     set_method!("copyFrom", copy_from);
     set_method!("copyFromInto", copy_from_into);
     set_method!("copyTo", copy_to);
+    set_method!("view", ptr_view);
 
     obj
+}
+
+// ---------------------------------------------------------------------------
+// Zero-copy external views over native memory
+// ---------------------------------------------------------------------------
+
+/// Deleter context for a `Pointer.view` backing store. Boxed and handed to V8
+/// as `deleter_data`; reclaimed exactly once when the deleter runs.
+struct ViewCtx {
+    releases: crate::async_rt::ViewReleaseQueue,
+    wake_write: std::os::unix::io::RawFd,
+    callback_id: Option<usize>,
+    byte_length: usize,
+}
+
+/// Backing-store deleter for `Pointer.view` buffers. V8 may invoke this on any
+/// thread (GC or background), so it must not touch V8: it enqueues a release
+/// record and wakes the event loop, where `drain_view_releases` runs the JS
+/// `onRelease` callback.
+unsafe extern "C" fn view_deleter(
+    _data: *mut c_void,
+    _byte_length: usize,
+    deleter_data: *mut c_void,
+) {
+    if deleter_data.is_null() {
+        return;
+    }
+    // SAFETY: deleter_data is the Box<ViewCtx> we leaked in ptr_view; V8 calls
+    // the deleter exactly once per backing store.
+    let ctx = unsafe { Box::from_raw(deleter_data as *mut ViewCtx) };
+    if let Ok(mut queue) = ctx.releases.lock() {
+        queue.push(crate::async_rt::ViewRelease {
+            callback_id: ctx.callback_id,
+            byte_length: ctx.byte_length,
+        });
+    }
+    // SAFETY: wake_write is the isolate's self-pipe; a failed write (e.g.
+    // during shutdown) is harmless because the drain also runs unconditionally.
+    unsafe { libc::write(ctx.wake_write, b"\x01".as_ptr() as *const c_void, 1) };
+}
+
+/// `Pointer.view(ptr, len, opts?)` — create an `ArrayBuffer` that aliases the
+/// native memory at `[ptr, ptr + len)` without copying.
+///
+/// The caller must guarantee the native allocation outlives the buffer unless
+/// `opts.onRelease` owns freeing it: the callback fires exactly once on the JS
+/// thread after V8 frees the backing store (GC of the buffer, or transfer/
+/// detach). Structured clone copies the bytes; transfer detaches and triggers
+/// release.
+fn ptr_view(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(ptr) = from_js(scope, args.get(0)) else {
+        return;
+    };
+    if ptr.is_null() {
+        throw_type_error(scope, "Pointer.view: pointer must not be null");
+        return;
+    }
+
+    let raw_len = args.get(1).integer_value(scope).unwrap_or(-1);
+    if raw_len < 0 {
+        throw_type_error(scope, "Pointer.view: length must be a non-negative integer");
+        return;
+    }
+    let len = raw_len as usize;
+
+    let mut callback_id: Option<usize> = None;
+    let opts_val = args.get(2);
+    if !opts_val.is_null_or_undefined() {
+        let Ok(opts) = v8::Local::<v8::Object>::try_from(opts_val) else {
+            throw_type_error(scope, "Pointer.view: options must be an object");
+            return;
+        };
+        let key = v8::String::new(scope, "onRelease").unwrap();
+        if let Some(cb_val) = opts.get(scope, key.into())
+            && !cb_val.is_null_or_undefined()
+        {
+            let Ok(func) = v8::Local::<v8::Function>::try_from(cb_val) else {
+                throw_type_error(scope, "Pointer.view: onRelease must be a function");
+                return;
+            };
+            let global = v8::Global::new(scope, func);
+            callback_id = Some(crate::async_rt::js_calls::register_callback(global));
+        }
+    }
+
+    let Some((releases, wake_write)) = crate::async_rt::release_handle() else {
+        if let Some(id) = callback_id {
+            crate::async_rt::js_calls::unregister_callback(id);
+        }
+        throw_type_error(scope, "Pointer.view: async runtime not initialized");
+        return;
+    };
+
+    let ctx = Box::new(ViewCtx {
+        releases,
+        wake_write,
+        callback_id,
+        byte_length: len,
+    });
+    // SAFETY: ptr/len describe caller-owned native memory; the deleter runs
+    // exactly once and reclaims the leaked ViewCtx.
+    let store = unsafe {
+        v8::ArrayBuffer::new_backing_store_from_ptr(
+            ptr,
+            len,
+            view_deleter,
+            Box::into_raw(ctx) as *mut c_void,
+        )
+    };
+    let ab = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
+    scope.adjust_amount_of_external_allocated_memory(len as i64);
+    rv.set(ab.into());
 }
 
 // ---------------------------------------------------------------------------

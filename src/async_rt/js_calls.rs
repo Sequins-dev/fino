@@ -108,6 +108,13 @@ pub fn register_callback(func: v8::Global<v8::Function>) -> usize {
     })
 }
 
+/// Take a callback out of the table, freeing its slot. Called from the V8
+/// thread by fire-and-forget consumers that invoke the callback exactly once
+/// (e.g. `Pointer.view` release draining).
+pub fn take_callback(id: usize) -> Option<v8::Global<v8::Function>> {
+    CALLBACK_TABLE.with(|t| t.borrow_mut().get_mut(id)?.take())
+}
+
 /// Release a callback registration. Called from the V8 thread.
 pub fn unregister_callback(id: usize) {
     CALLBACK_TABLE.with(|t| {

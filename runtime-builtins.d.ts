@@ -52,9 +52,86 @@ declare module 'fino:ffi' {
     symbols: NativeBindings<TSymbols>;
   }
   /**
+   * A native pointer value: an 8-byte `ArrayBuffer` holding the address as a
+   * little-endian `u64`, or `null` for the C null pointer.
+   */
+  export type NativePointer = ArrayBuffer | ArrayBufferView | null;
+  /**
    * Namespace of pointer and raw-memory helpers.
    */
-  export const Pointer: any;
+  export const Pointer: {
+    /**
+     * The C null pointer.
+     */
+    null(): null;
+    /**
+     * Backing-store address of a buffer as a `bigint`. For views, `byteOffset`
+     * is applied so the address points at element 0.
+     */
+    addr(source: ArrayBuffer | ArrayBufferView): bigint;
+    /**
+     * Pointer arithmetic: a new pointer advanced by `bytes`.
+     */
+    offset(ptr: NativePointer, bytes: number): NativePointer;
+    /**
+     * Take the address of a buffer's backing store as a pointer value. With an
+     * `arena`, the address is written into `arena` at `byteOffset` with zero
+     * allocation and `undefined` is returned.
+     */
+    of(
+      source: ArrayBuffer | ArrayBufferView,
+      arena?: ArrayBuffer | ArrayBufferView,
+      byteOffset?: number,
+    ): ArrayBuffer | undefined;
+    readU8(ptr: NativePointer, offset?: number): number;
+    readI8(ptr: NativePointer, offset?: number): number;
+    readU16(ptr: NativePointer, offset?: number): number;
+    readI16(ptr: NativePointer, offset?: number): number;
+    readU32(ptr: NativePointer, offset?: number): number;
+    readI32(ptr: NativePointer, offset?: number): number;
+    readU64(ptr: NativePointer, offset?: number): bigint;
+    readI64(ptr: NativePointer, offset?: number): bigint;
+    readF32(ptr: NativePointer, offset?: number): number;
+    readF64(ptr: NativePointer, offset?: number): number;
+    /**
+     * Dereference a pointer-sized field at `ptr + offset`.
+     */
+    readPointer(ptr: NativePointer, offset?: number): NativePointer;
+    writeU8(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeI8(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeU16(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeI16(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeU32(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeI32(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeU64(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeI64(ptr: NativePointer, offset: number, value: number | bigint): void;
+    writeF32(ptr: NativePointer, offset: number, value: number): void;
+    writeF64(ptr: NativePointer, offset: number, value: number): void;
+    writePointer(ptr: NativePointer, offset: number, value: NativePointer): void;
+    /**
+     * Copy `len` bytes from `ptr` into a new `Uint8Array`.
+     */
+    copyFrom(ptr: NativePointer, len: number): Uint8Array;
+    /**
+     * Copy bytes from `ptr` into an existing buffer. `len` defaults to the
+     * destination's byte length.
+     */
+    copyFromInto(dest: ArrayBuffer | ArrayBufferView, ptr: NativePointer, len?: number): void;
+    /**
+     * Copy the bytes of `src` to the native buffer at `ptr`.
+     */
+    copyTo(ptr: NativePointer, src: Uint8Array | ArrayBuffer): void;
+    /**
+     * Create an `ArrayBuffer` that aliases the native memory at
+     * `[ptr, ptr + len)` without copying.
+     *
+     * The native allocation must outlive the buffer unless `onRelease` owns
+     * freeing it: it fires exactly once, on the JS thread, after V8 frees the
+     * backing store (GC of the buffer, or transfer/detach). Structured clone
+     * copies the bytes; transferring detaches the buffer and triggers release.
+     */
+    view(ptr: NativePointer, len: number, opts?: { onRelease?: () => void }): ArrayBuffer;
+  };
   /**
    * Native callback constructor.
    *
