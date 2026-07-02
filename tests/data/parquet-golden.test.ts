@@ -75,4 +75,33 @@ describe('parquet pyarrow golden interop', () => {
     const gz = await readFixture('gzip.parquet');
     if (gz !== null) t.equal(readParquet(gz).getChild('x')!.get(99), 99, 'gzip value');
   });
+  it('reads a pyarrow nested file (list + struct), or skips', async (t) => {
+    const bytes = await readFixture('nested.parquet');
+    if (bytes === null) {
+      t.ok(true, 'SKIP: fixtures not generated');
+      return;
+    }
+    const table = readParquet(bytes);
+    t.deepEqual(table.getChild('tags')!.toArray(), [
+      ['a', 'b'],
+      [],
+      ['c'],
+      null
+    ], 'list column matches pyarrow');
+    t.deepEqual(table.getChild('point')!.toArray(), [
+      {
+        x: 1,
+        y: 2
+      },
+      {
+        x: 3,
+        y: 4
+      },
+      null,
+      {
+        x: 5,
+        y: 6
+      }
+    ], 'struct column matches pyarrow');
+  });
 });

@@ -738,6 +738,29 @@ export function vectorFromArray(values: unknown[], type?: DataType): Vector {
         children
       });
     }
+    case 'map': {
+      const offsets = new Uint8Array((length + 1) * 4);
+      const odv = new DataView(offsets.buffer);
+      const entries: unknown[] = [];
+      for (let i = 0; i < length; i++) {
+        const v = values[i];
+        const pairs = v == null ? [] : v instanceof Map ? [...v] : v as [unknown, unknown][];
+        for (const [k, val] of pairs) entries.push({
+          key: k,
+          value: val
+        });
+        odv.setInt32((i + 1) * 4, entries.length, true);
+      }
+      const child = vectorFromArray(entries, dt.child.type);
+      return makeVector({
+        type: dt,
+        length,
+        validity,
+        nullCount,
+        valueOffsets: offsets,
+        children: [child]
+      });
+    }
     case 'decimal': {
       const width = dt.bitWidth / 8;
       const data = new Uint8Array(length * width);

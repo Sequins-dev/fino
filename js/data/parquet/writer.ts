@@ -1,20 +1,22 @@
 /**
 * Parquet writer: Arrow → Parquet file bytes.
 *
-* Writes one row group of flat columns as DATA_PAGE v1 or v2, with PLAIN,
-* dictionary, RLE (boolean), the DELTA family, or BYTE_STREAM_SPLIT value
-* encodings, definition levels for nulls, and page compression.
+* Writes one row group as DATA_PAGE v1 or v2 with PLAIN, dictionary, RLE
+* (boolean), the DELTA family, or BYTE_STREAM_SPLIT value encodings. Nested
+* columns (list/struct/map) are shredded into per-leaf repetition/definition
+* level streams; flat columns are the degenerate case with no repetition.
 *
 * @internal
 */
-import { Table, RecordBatch, Schema, Vector } from 'fino:data/arrow';
+import { Table, RecordBatch } from 'fino:data/arrow';
 import { PType, Encoding, Compression, PageType, ParquetError } from './types.ts';
-import { arrowSchemaToParquet, type ColumnDescriptor } from './schema.ts';
 import { encodePlain } from './encoding.ts';
 import { encodeDeltaBinaryPacked, encodeDeltaByteArray, encodeByteStreamSplit } from './delta.ts';
-import { encodeDefinitionLevels, encodeRleHybrid, bitWidthForMax } from './levels.ts';
+import { encodeRleHybrid, bitWidthForMax } from './levels.ts';
 import { compressPage, isCodecSupported } from './compression.ts';
-import { writePageHeader, writeFileMetaData, type FileMetaData, type RowGroup, type ColumnChunk, type ColumnMetaData, type PageHeader } from './metadata.ts';
+import { writePageHeader, writeFileMetaData, type FileMetaData, type RowGroup, type ColumnChunk, type ColumnMetaData } from './metadata.ts';
+import { buildNodes, nodesToSchemaElements, collectLeaves, shredColumn, type LeafStream } from './nested.ts';
+import type { ColumnDescriptor } from './schema.ts';
 const MAGIC = new Uint8Array([
   80,
   65,
@@ -40,12 +42,45 @@ const CODEC_BY_NAME: Record<string, number> = {
   zstd: Compression.ZSTD,
   brotli: Compression.BROTLI
 };
+interface WriteConfig {
+  codec: number;
+  useDictionary: boolean;
+  dataEncoding: string;
+  pageVersion: number;
+}
 /** Serialize an Arrow table or batch to Parquet bytes. */
 export function writeParquet(source: Table | RecordBatch, options?: ParquetWriteOptions): Uint8Array {
   const table = source instanceof Table ? source : Table.from([source]);
   const codec = CODEC_BY_NAME[options?.compression ?? 'snappy'] ?? Compression.SNAPPY;
   if (!isCodecSupported(codec)) throw new ParquetError(`compression '${options?.compression}' is not supported`);
-  const { elements, columns } = arrowSchemaToParquet(table.schema);
+  const config: WriteConfig = {
+    codec,
+    useDictionary: options?.dictionary ?? false,
+    dataEncoding: options?.encoding ?? 'plain',
+    pageVersion: options?.pageVersion ?? 1
+  };
+  const nodes = buildNodes(table.schema);
+  const elements = nodesToSchemaElements(nodes);
+  // Shred each top column (across batches) into per-leaf streams, in leaf order.
+  const leafStreams: LeafStream[] = [];
+  nodes.forEach((node, columnIndex) => {
+    const leaves = collectLeaves(node);
+    const acc: LeafStream[] = leaves.map((d) => ({
+      descriptor: d,
+      values: [],
+      defLevels: [],
+      repLevels: []
+    }));
+    for (const batch of table.batches) {
+      const partial = shredColumn(node, batch.columns[columnIndex]!, batch.numRows);
+      for (let i = 0; i < leaves.length; i++) {
+        acc[i]!.values.push(...partial[i]!.values);
+        acc[i]!.defLevels.push(...partial[i]!.defLevels);
+        acc[i]!.repLevels.push(...partial[i]!.repLevels);
+      }
+    }
+    leafStreams.push(...acc);
+  });
   const parts: Uint8Array[] = [];
   let offset = 0;
   const push = (bytes: Uint8Array): void => {
@@ -53,29 +88,22 @@ export function writeParquet(source: Table | RecordBatch, options?: ParquetWrite
     offset += bytes.byteLength;
   };
   push(MAGIC);
-  // One row group per table (concatenating the table's columns across batches).
-  const useDictionary = options?.dictionary ?? false;
-  const dataEncoding = options?.encoding ?? 'plain';
-  const pageVersion = options?.pageVersion ?? 1;
   const columnChunks: ColumnChunk[] = [];
   let totalUncompressed = 0n;
-  for (let c = 0; c < columns.length; c++) {
-    const descriptor = columns[c]!;
-    const chunkVectors = table.batches.map((b) => b.columns[c]!);
-    const chunk = writeColumnChunk(descriptor, chunkVectors, codec, useDictionary, dataEncoding, pageVersion, offset, push);
+  for (const stream of leafStreams) {
+    const chunk = writeLeafChunk(stream, config, offset, push);
     columnChunks.push(chunk.columnChunk);
     totalUncompressed += chunk.uncompressedSize;
   }
-  const rowGroup: RowGroup = {
-    columns: columnChunks,
-    totalByteSize: totalUncompressed,
-    numRows: BigInt(table.numRows)
-  };
   const meta: FileMetaData = {
     version: 2,
     schema: elements,
     numRows: BigInt(table.numRows),
-    rowGroups: [rowGroup],
+    rowGroups: [{
+      columns: columnChunks,
+      totalByteSize: totalUncompressed,
+      numRows: BigInt(table.numRows)
+    } as RowGroup],
     createdBy: 'fino'
   };
   const footer = writeFileMetaData(meta);
@@ -92,34 +120,38 @@ export function writeParquet(source: Table | RecordBatch, options?: ParquetWrite
   }
   return out;
 }
-function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec: number, useDictionary: boolean, dataEncoding: string, pageVersion: number, startOffset: number, push: (bytes: Uint8Array) => void): {
+function lengthPrefixed(levels: number[], maxLevel: number): Uint8Array {
+  if (maxLevel === 0) return new Uint8Array(0);
+  const body = encodeRleHybrid(levels, bitWidthForMax(maxLevel));
+  const out = new Uint8Array(4 + body.byteLength);
+  new DataView(out.buffer).setUint32(0, body.byteLength, true);
+  out.set(body, 4);
+  return out;
+}
+function writeLeafChunk(stream: LeafStream, config: WriteConfig, startOffset: number, push: (bytes: Uint8Array) => void): {
   columnChunk: ColumnChunk;
   uncompressedSize: bigint;
 } {
-  // Gather non-null values + definition levels across the column's chunks.
-  const values: unknown[] = [];
-  const defLevels: number[] = [];
-  let numRows = 0;
-  for (const vec of vectors) {
-    for (let i = 0; i < vec.length; i++) {
-      numRows++;
-      if (vec.isValid(i)) {
-        defLevels.push(descriptor.maxDefinitionLevel);
-        values.push(descriptor.encode(vec.get(i)));
-      } else {
-        defLevels.push(0);
-      }
-    }
-  }
-  const defBytes = encodeDefinitionLevels(defLevels, descriptor.maxDefinitionLevel);
+  const descriptor = stream.descriptor;
+  const maxDef = descriptor.maxDefinitionLevel;
+  const maxRep = descriptor.maxRepetitionLevel;
+  const numLeafSlots = stream.defLevels.length;
+  const numRecords = maxRep > 0 ? stream.repLevels.reduce((n, r) => n + (r === 0 ? 1 : 0), 0) : numLeafSlots;
+  const values = stream.values;
+  const { codec, useDictionary, dataEncoding, pageVersion } = config;
   let offset = startOffset;
   let uncompressedTotal = 0;
   let compressedTotal = 0;
   let dictionaryPageOffset: bigint | undefined;
   const encodings: number[] = [Encoding.RLE, Encoding.PLAIN];
+  // Level bytes shared by both page versions (v1 prefixed, v2 raw).
+  const repRawV2 = maxRep > 0 ? encodeRleHybrid(stream.repLevels, bitWidthForMax(maxRep)) : new Uint8Array(0);
+  const defRawV2 = maxDef > 0 ? encodeRleHybrid(stream.defLevels, bitWidthForMax(maxDef)) : new Uint8Array(0);
+  const levelsV1 = concat([lengthPrefixed(stream.repLevels, maxRep), lengthPrefixed(stream.defLevels, maxDef)]);
+  let valueBytes: Uint8Array;
+  let valueEncoding: number;
   if (useDictionary) {
     const { dictionary, indices } = buildDictionary(values);
-    // Dictionary page: PLAIN-encoded distinct values.
     const dictBody = encodePlain(descriptor.physicalType, dictionary, descriptor.typeLength);
     const dictCompressed = compressPage(codec, dictBody);
     const dictHeader = writePageHeader({
@@ -138,80 +170,47 @@ function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec
     uncompressedTotal += dictHeader.byteLength + dictBody.byteLength;
     compressedTotal += dictHeader.byteLength + dictCompressed.byteLength;
     encodings.push(Encoding.RLE_DICTIONARY);
-    // Data page: definition levels + [bit-width byte][RLE-hybrid indices].
     const bitWidth = bitWidthForMax(Math.max(0, dictionary.length - 1));
     const idxHybrid = encodeRleHybrid(indices, bitWidth);
-    const idxBody = new Uint8Array(1 + idxHybrid.byteLength);
-    idxBody[0] = bitWidth;
-    idxBody.set(idxHybrid, 1);
-    const uncompressed = concat([defBytes, idxBody]);
-    const compressed = compressPage(codec, uncompressed);
-    const dataHeader = writePageHeader({
-      type: PageType.DATA_PAGE,
-      uncompressedPageSize: uncompressed.byteLength,
-      compressedPageSize: compressed.byteLength,
-      dataPageHeader: {
-        numValues: numRows,
-        encoding: Encoding.RLE_DICTIONARY,
-        definitionLevelEncoding: Encoding.RLE,
-        repetitionLevelEncoding: Encoding.RLE
-      }
-    });
-    const dataPageOffset = offset;
-    push(dataHeader);
-    push(compressed);
-    offset += dataHeader.byteLength + compressed.byteLength;
-    uncompressedTotal += dataHeader.byteLength + uncompressed.byteLength;
-    compressedTotal += dataHeader.byteLength + compressed.byteLength;
-    const meta: ColumnMetaData = {
-      type: descriptor.physicalType,
-      encodings,
-      pathInSchema: descriptor.path,
-      codec,
-      numValues: BigInt(numRows),
-      totalUncompressedSize: BigInt(uncompressedTotal),
-      totalCompressedSize: BigInt(compressedTotal),
-      dataPageOffset: BigInt(dataPageOffset),
-      dictionaryPageOffset
-    };
-    return {
-      columnChunk: {
-        fileOffset: dictionaryPageOffset,
-        metaData: meta
-      },
-      uncompressedSize: BigInt(uncompressedTotal)
-    };
+    valueBytes = new Uint8Array(1 + idxHybrid.byteLength);
+    valueBytes[0] = bitWidth;
+    valueBytes.set(idxHybrid, 1);
+    valueEncoding = Encoding.RLE_DICTIONARY;
+  } else {
+    const encoded = encodeValues(dataEncoding, descriptor, values);
+    valueBytes = encoded.bytes;
+    valueEncoding = encoded.encoding;
+    encodings[1] = valueEncoding;
   }
-  // Non-dictionary data page (PLAIN by default, or the requested encoding).
-  const encoded = encodeValues(dataEncoding, descriptor, values);
-  encodings[1] = encoded.encoding;
-  const valueBytes = encoded.bytes;
+  // Emit the data page (v1 or v2).
+  const dataPageOffset = offset;
   let header: Uint8Array;
   let pageBody: Uint8Array;
   let uncompressedPageSize: number;
   if (pageVersion === 2) {
-    // DATA_PAGE_V2: uncompressed levels (no length prefix) + compressed values.
-    const defRaw = descriptor.maxDefinitionLevel > 0 ? encodeRleHybrid(defLevels, bitWidthForMax(descriptor.maxDefinitionLevel)) : new Uint8Array(0);
-    const nonNull = values.length;
     const compressedValues = compressPage(codec, valueBytes);
-    pageBody = concat([defRaw, compressedValues]);
-    uncompressedPageSize = defRaw.byteLength + valueBytes.byteLength;
+    pageBody = concat([
+      repRawV2,
+      defRawV2,
+      compressedValues
+    ]);
+    uncompressedPageSize = repRawV2.byteLength + defRawV2.byteLength + valueBytes.byteLength;
     header = writePageHeader({
       type: PageType.DATA_PAGE_V2,
       uncompressedPageSize,
       compressedPageSize: pageBody.byteLength,
       dataPageHeaderV2: {
-        numValues: numRows,
-        numNulls: numRows - nonNull,
-        numRows,
-        encoding: encoded.encoding,
-        definitionLevelsByteLength: defRaw.byteLength,
-        repetitionLevelsByteLength: 0,
+        numValues: numLeafSlots,
+        numNulls: numLeafSlots - values.length,
+        numRows: numRecords,
+        encoding: valueEncoding,
+        definitionLevelsByteLength: defRawV2.byteLength,
+        repetitionLevelsByteLength: repRawV2.byteLength,
         isCompressed: codec !== Compression.UNCOMPRESSED
       }
     });
   } else {
-    const uncompressed = concat([defBytes, valueBytes]);
+    const uncompressed = concat([levelsV1, valueBytes]);
     pageBody = compressPage(codec, uncompressed);
     uncompressedPageSize = uncompressed.byteLength;
     header = writePageHeader({
@@ -219,31 +218,32 @@ function writeColumnChunk(descriptor: ColumnDescriptor, vectors: Vector[], codec
       uncompressedPageSize,
       compressedPageSize: pageBody.byteLength,
       dataPageHeader: {
-        numValues: numRows,
-        encoding: encoded.encoding,
+        numValues: numLeafSlots,
+        encoding: valueEncoding,
         definitionLevelEncoding: Encoding.RLE,
         repetitionLevelEncoding: Encoding.RLE
       }
     });
   }
-  const dataPageOffset = offset;
   push(header);
   push(pageBody);
-  const compressed = pageBody;
-  uncompressedTotal = header.byteLength + uncompressedPageSize;
+  offset += header.byteLength + pageBody.byteLength;
+  uncompressedTotal += header.byteLength + uncompressedPageSize;
+  compressedTotal += header.byteLength + pageBody.byteLength;
   const meta: ColumnMetaData = {
     type: descriptor.physicalType,
     encodings,
     pathInSchema: descriptor.path,
     codec,
-    numValues: BigInt(numRows),
+    numValues: BigInt(numLeafSlots),
     totalUncompressedSize: BigInt(uncompressedTotal),
-    totalCompressedSize: BigInt(header.byteLength + compressed.byteLength),
-    dataPageOffset: BigInt(dataPageOffset)
+    totalCompressedSize: BigInt(compressedTotal),
+    dataPageOffset: BigInt(dataPageOffset),
+    dictionaryPageOffset
   };
   return {
     columnChunk: {
-      fileOffset: BigInt(dataPageOffset),
+      fileOffset: dictionaryPageOffset ?? BigInt(dataPageOffset),
       metaData: meta
     },
     uncompressedSize: BigInt(uncompressedTotal)
@@ -261,7 +261,6 @@ function encodeRleBool(values: unknown[]): Uint8Array {
   out.set(hybrid, 4);
   return out;
 }
-// Select and apply the value encoding for a non-dictionary page.
 function encodeValues(encoding: string, descriptor: ColumnDescriptor, values: unknown[]): {
   bytes: Uint8Array;
   encoding: number;
@@ -325,4 +324,3 @@ function concat(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
-export { MAGIC };

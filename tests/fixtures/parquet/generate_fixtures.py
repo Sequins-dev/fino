@@ -38,6 +38,11 @@ def main():
     write("gzip.parquet", pa.table({
         "x": pa.array(list(range(100)), pa.int32()),
     }), compression="gzip")
+    write("nested.parquet", pa.table({
+        "tags": pa.array([["a", "b"], [], ["c"], None], pa.list_(pa.string())),
+        "point": pa.array([{"x": 1, "y": 2}, {"x": 3, "y": 4}, None, {"x": 5, "y": 6}],
+                          pa.struct([("x", pa.int32()), ("y", pa.int32())])),
+    }))
     print("wrote parquet fixtures")
 
 

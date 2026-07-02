@@ -515,6 +515,152 @@ describe('parquet DATA_PAGE_V2', () => {
     t.deepEqual(rtV2(arrow.int64(), values, { encoding: 'delta' }), values, 'v2 delta int64');
   });
 });
+describe('parquet nested columns', () => {
+  function rt(field: Field, values: unknown[]): unknown[] {
+    const batch = new arrow.RecordBatch(new arrow.Schema([field]), [arrow.vectorFromArray(values, field.type)]);
+    return readParquet(writeParquet(batch, { compression: 'uncompressed' })).getChild(field.name)!.toArray();
+  }
+  it('round-trips list<int32>', (t) => {
+    const field = new Field('l', arrow.list(new Field('item', arrow.int32(), true)), true);
+    const values = [
+      [1, 2],
+      [],
+      [
+        3,
+        4,
+        5
+      ],
+      null,
+      [6]
+    ];
+    t.deepEqual(rt(field, values), values, 'list values incl empty + null');
+  });
+  it('round-trips list<utf8> with null elements', (t) => {
+    const field = new Field('l', arrow.list(new Field('item', arrow.utf8(), true)), true);
+    const values = [
+      [
+        'a',
+        null,
+        'c'
+      ],
+      [],
+      ['d']
+    ];
+    t.deepEqual(rt(field, values), values, 'list of nullable strings');
+  });
+  it('round-trips struct{a:int32,b:utf8}', (t) => {
+    const field = new Field('s', arrow.struct([new Field('a', arrow.int32(), true), new Field('b', arrow.utf8(), true)]), true);
+    const values = [
+      {
+        a: 1,
+        b: 'x'
+      },
+      {
+        a: 2,
+        b: 'y'
+      },
+      null,
+      {
+        a: 4,
+        b: null
+      }
+    ];
+    t.deepEqual(rt(field, values), values, 'struct with nulls');
+  });
+  it('round-trips list<struct>', (t) => {
+    const struct = arrow.struct([new Field('k', arrow.int32(), true), new Field('v', arrow.utf8(), true)]);
+    const field = new Field('ls', arrow.list(new Field('item', struct, true)), true);
+    const values = [
+      [{
+        k: 1,
+        v: 'a'
+      }, {
+        k: 2,
+        v: 'b'
+      }],
+      [],
+      [{
+        k: 3,
+        v: 'c'
+      }]
+    ];
+    t.deepEqual(rt(field, values), values, 'list of structs');
+  });
+  it('round-trips struct{list}', (t) => {
+    const inner = arrow.list(new Field('item', arrow.int32(), true));
+    const field = new Field('sl', arrow.struct([new Field('nums', inner, true), new Field('name', arrow.utf8(), true)]), true);
+    const values = [
+      {
+        nums: [
+          1,
+          2,
+          3
+        ],
+        name: 'a'
+      },
+      {
+        nums: [],
+        name: 'b'
+      },
+      {
+        nums: null,
+        name: 'c'
+      }
+    ];
+    t.deepEqual(rt(field, values), values, 'struct containing a list');
+  });
+  it('round-trips list<list<int32>>', (t) => {
+    const inner = new Field('item', arrow.list(new Field('item', arrow.int32(), true)), true);
+    const field = new Field('ll', arrow.list(inner), true);
+    const values = [
+      [[1, 2], [3]],
+      [],
+      [[
+        4,
+        5,
+        6
+      ]],
+      [[]]
+    ];
+    t.deepEqual(rt(field, values), values, 'nested lists');
+  });
+  it('round-trips map<utf8,int32>', (t) => {
+    const entries = new Field('entries', arrow.struct([new Field('key', arrow.utf8(), false), new Field('value', arrow.int32(), true)]), false);
+    const field = new Field('m', arrow.map(entries), true);
+    const values = [
+      [['a', 1], ['b', 2]],
+      [],
+      [['c', 3]],
+      null
+    ];
+    t.deepEqual(rt(field, values), values, 'map entries');
+  });
+  it('round-trips list<utf8> with dictionary + v2 pages', (t) => {
+    const field = new Field('l', arrow.list(new Field('item', arrow.utf8(), true)), true);
+    const values = [
+      [
+        'a',
+        'b',
+        'a'
+      ],
+      [],
+      ['b', 'b'],
+      null,
+      ['a']
+    ];
+    const batch = new arrow.RecordBatch(new arrow.Schema([field]), [arrow.vectorFromArray(values, field.type)]);
+    const dict = readParquet(writeParquet(batch, {
+      compression: 'gzip',
+      dictionary: true
+    }));
+    t.deepEqual(dict.getChild('l')!.toArray(), values, 'nested dictionary');
+    const v2 = readParquet(writeParquet(batch, {
+      compression: 'uncompressed',
+      pageVersion: 2
+    }));
+    t.deepEqual(v2.getChild('l')!.toArray(), values, 'nested v2');
+  });
+});
 describe('parquet errors', () => {
   it('rejects non-Parquet input', (t) => {
     t.throws(() => readParquet(new Uint8Array([

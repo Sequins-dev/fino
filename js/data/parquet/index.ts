@@ -8,11 +8,13 @@
 * representation. `readParquet` decodes a file to an Arrow `Table`;
 * `writeParquet` serializes an Arrow `Table`/`RecordBatch` to Parquet bytes.
 *
-* Current coverage: flat (non-nested) columns of the common types
-* (bool/int/uint/float/double/string/binary/date/timestamp), DATA_PAGE v1 with
-* PLAIN or dictionary-encoded values and definition levels for nulls. Nested
-* columns, delta/byte-stream-split encodings, and DATA_PAGE v2 come in later
-* phases and raise a clear `ParquetError` until then.
+* Coverage: the full primitive and logical type system (bool, signed/unsigned
+* ints, float/double/float16, string/binary, fixed-length binary, decimals over
+* every physical backing, date, time, all timestamp units, and INT96); nested
+* columns (list/struct/map and arbitrary nesting) via repetition/definition
+* levels; DATA_PAGE v1 and v2; and every value encoding (PLAIN, dictionary,
+* RLE, the DELTA family, BYTE_STREAM_SPLIT). Compression codecs are those
+* `fino:compress` provides (LZO and raw-block LZ4 excepted).
 *
 * ```ts no_run
 * import { writeParquet, readParquet } from 'fino:data/parquet';
