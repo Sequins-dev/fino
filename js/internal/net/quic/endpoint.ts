@@ -1857,10 +1857,12 @@ function copyFromPtr(ptr: ArrayBuffer | null, len: number): Uint8Array {
   if (ptr === null || len === 0) return new Uint8Array();
   return Pointer.copyFrom(ptr, len) as Uint8Array;
 }
+const _HEX_BYTE: string[] = [];
+for (let i = 0; i < 256; i++) _HEX_BYTE.push(i.toString(16).padStart(2, '0'));
 function cidKey(cid: Uint8Array | string): string {
   if (typeof cid === 'string') return cid;
   let out = '';
-  for (const byte of cid) out += byte.toString(16).padStart(2, '0');
+  for (let i = 0; i < cid.length; i++) out += _HEX_BYTE[cid[i]!];
   return out;
 }
 function makeCid(bytes: Uint8Array): ArrayBuffer {
@@ -2985,6 +2987,14 @@ export class QuicEndpoint extends EventTarget {
   #transports = new Map<number, QuicDatagramTransport>();
   #transportFactory: QuicDatagramTransportFactory;
   #runtime: QuicRuntime;
+  // Reused scratch for per-packet version/CID decoding in _handleDatagram.
+  // _handleDatagram runs synchronously per packet and no callee retains these,
+  // so a single set of buffers avoids allocating on every received datagram.
+  #vcidScratch = new ArrayBuffer(NGTCP2_VERSION_CID_SIZE);
+  #vcidView = new DataView(this.#vcidScratch);
+  #vcidScratchPtr = new Uint8Array(8);
+  #vcidDcidPtrView = new Uint8Array(this.#vcidScratch, VERSION_CID_DCID, 8);
+  #dcidScratch = new Uint8Array(NGTCP2_MAX_CIDLEN);
   #clientBindAddress?: QuicAddress;
   #closed = false;
   #createdAt = Date.now();
@@ -3545,15 +3555,16 @@ export class QuicEndpoint extends EventTarget {
     if (listener !== null && packet.byteLength < 1200 && (packet[0] & 192) === 192 && (packet[0] & 48) === 0) {
       return;
     }
-    const decoded = new ArrayBuffer(NGTCP2_VERSION_CID_SIZE);
-    const rc = ngtcp2Sym!.ngtcp2_pkt_decode_version_cid(Pointer.of(decoded), packet, packet.byteLength, NGTCP2_MAX_CIDLEN) as number;
+    const decoded = this.#vcidScratch;
+    Pointer.of(decoded, this.#vcidScratchPtr.buffer, 0);
+    const rc = ngtcp2Sym!.ngtcp2_pkt_decode_version_cid(this.#vcidScratchPtr, packet, packet.byteLength, NGTCP2_MAX_CIDLEN) as number;
     if (rc !== 0 && rc !== NGTCP2_ERR_VERSION_NEGOTIATION) {
       this.#handleStatelessReset(packet);
       return;
     }
-    const dcidPtr = ptrField(decoded, VERSION_CID_DCID);
-    const dcidLen = Number(readU64(decoded, VERSION_CID_DCIDLEN));
-    const dcid = copyFromPtr(dcidPtr, dcidLen);
+    const dcidLen = Number(this.#vcidView.getBigUint64(VERSION_CID_DCIDLEN, true));
+    const dcid = this.#dcidScratch.subarray(0, dcidLen);
+    if (dcidLen > 0) Pointer.copyFromInto(dcid, this.#vcidDcidPtrView, dcidLen);
     const initialKey = cidKey(dcid);
     if (this.#rejectedInitialCids.has(initialKey)) return;
     const existing = this.cidTable.get(initialKey);
