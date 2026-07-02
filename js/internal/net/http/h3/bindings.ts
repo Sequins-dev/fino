@@ -312,33 +312,37 @@ export function buildNvArray(headers: Array<[string, string]>): {
   nv: number;
 } {
   const count = headers.length;
-  const nameLens: number[] = [];
-  const dataBlobs: Uint8Array[] = headers.map(([n, v]) => {
-    const nb = encodedHeaderName(n);
-    const vb = _enc.encode(v);
-    nameLens.push(nb.length);
-    const blob = new Uint8Array(nb.length + vb.length);
-    blob.set(nb, 0);
-    blob.set(vb, nb.length);
-    return blob;
-  });
-  const totalData = dataBlobs.reduce((s, b) => s + b.length, 0);
-  const buf = new Uint8Array(count * NV_ENTRY_SIZE + totalData);
-  let dataOffset = count * NV_ENTRY_SIZE;
-  const dv = new DataView(buf.buffer);
+  // Encode once up front (names are cached; values vary) so we can size the
+  // output buffer, then write name/value bytes straight into it — no per-header
+  // concat blob, and Pointer.addr() called once instead of per header.
+  const names: Uint8Array[] = [];
+  const values: Uint8Array[] = [];
+  let totalData = 0;
   for (let i = 0; i < count; i++) {
-    const blob = dataBlobs[i]!;
-    const nameLen = nameLens[i]!;
-    const valLen = blob.length - nameLen;
+    const nb = encodedHeaderName(headers[i]![0]);
+    const vb = _enc.encode(headers[i]![1]);
+    names.push(nb);
+    values.push(vb);
+    totalData += nb.length + vb.length;
+  }
+  const buf = new Uint8Array(count * NV_ENTRY_SIZE + totalData);
+  const dv = new DataView(buf.buffer);
+  const bufAddr = Pointer.addr(buf) as bigint;
+  let dataOffset = count * NV_ENTRY_SIZE;
+  for (let i = 0; i < count; i++) {
+    const nb = names[i]!;
+    const vb = values[i]!;
     const base = i * NV_ENTRY_SIZE;
-    const nameAddr = (Pointer.addr(buf) as bigint) + BigInt(dataOffset);
-    const valueAddr = nameAddr + BigInt(nameLen);
-    buf.set(blob, dataOffset);
-    dataOffset += blob.length;
+    const nameAddr = bufAddr + BigInt(dataOffset);
+    buf.set(nb, dataOffset);
+    dataOffset += nb.length;
+    const valueAddr = bufAddr + BigInt(dataOffset);
+    buf.set(vb, dataOffset);
+    dataOffset += vb.length;
     dv.setBigUint64(base + NV_NAME, nameAddr, true);
     dv.setBigUint64(base + NV_VALUE, valueAddr, true);
-    dv.setBigUint64(base + NV_NAMELEN, BigInt(nameLen), true);
-    dv.setBigUint64(base + NV_VALUELEN, BigInt(valLen), true);
+    dv.setBigUint64(base + NV_NAMELEN, BigInt(nb.length), true);
+    dv.setBigUint64(base + NV_VALUELEN, BigInt(vb.length), true);
     buf[base + NV_FLAGS] = NGHTTP3_NV_FLAG_NONE;
   }
   return {
