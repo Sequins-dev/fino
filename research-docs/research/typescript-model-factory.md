@@ -116,6 +116,10 @@ runtime as it exists today:
   the substrate for zero-copy GPU readback from pinned host staging, Arrow
   buffers from native producers, mmap'd safetensors slices, and ggml tensor
   data.
+- **Binary-format primitives exist.** `fino:format/flatbuffers` is a
+  schema-less FlatBuffers reader/writer (the wire format Arrow IPC metadata
+  is encoded in), and `fino:parsing/scanner` handles incremental binary
+  scanning with hex-dump diagnostics.
 - **The supporting stack is broad**: full HTTP/1-2-3 + TLS for hub clients
   and serving, `fino:database/sqlite` (with JS VFS and vector helpers),
   `fino:compress`, `fino:workflow` (durable checkpointed runs),

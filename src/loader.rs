@@ -397,6 +397,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:security/jwt", "security/jwt"),
     // format
     source_builtin!("fino:format/csv", "format/csv"),
+    source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/typescript", "format/typescript"),
     source_builtin!("fino:format/toml", "format/toml"),
     source_builtin!("fino:format/xml", "format/xml"),
