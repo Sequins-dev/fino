@@ -32,7 +32,7 @@
 *
 * @internal
 */
-export type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli' | 'zstd' | 'lz4';
+export type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli' | 'zstd' | 'lz4' | 'snappy';
 /**
 * Compression formats implemented by the zlib backend.
 *
@@ -46,7 +46,7 @@ export type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli' | 
 *
 * @internal
 */
-export type ZlibCompressionFormat = Exclude<CompressionFormat, 'brotli' | 'zstd' | 'lz4'>;
+export type ZlibCompressionFormat = Exclude<CompressionFormat, 'brotli' | 'zstd' | 'lz4' | 'snappy'>;
 /**
 * Binary input accepted by compression helpers.
 *
@@ -242,7 +242,7 @@ export function concat(parts: Uint8Array[], total?: number): Uint8Array {
 * @internal
 */
 export function validateFormat(format: unknown): CompressionFormat {
-  if (format === 'gzip' || format === 'deflate' || format === 'deflate-raw' || format === 'brotli' || format === 'zstd' || format === 'lz4') {
+  if (format === 'gzip' || format === 'deflate' || format === 'deflate-raw' || format === 'brotli' || format === 'zstd' || format === 'lz4' || format === 'snappy') {
     return format;
   }
   throw new TypeError(`unsupported compression format '${String(format)}'`);
@@ -305,7 +305,7 @@ export function validateDecompressOptions(options: DecompressOptions): Decompres
 * @internal
 */
 export function assertZlibFormat(format: CompressionFormat): ZlibCompressionFormat {
-  if (format === 'brotli' || format === 'zstd' || format === 'lz4') {
+  if (format === 'brotli' || format === 'zstd' || format === 'lz4' || format === 'snappy') {
     throw new TypeError(`unsupported zlib compression format '${format}'`);
   }
   return format;

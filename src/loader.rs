@@ -171,6 +171,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:compress/brotli", "internal/compress/brotli"),
     source_builtin!("internal:compress/zstd", "internal/compress/zstd"),
     source_builtin!("internal:compress/lz4", "internal/compress/lz4"),
+    source_builtin!("internal:compress/snappy", "internal/compress/snappy"),
     // internal: stream and openssl
     source_builtin!("internal:stream", "internal/stream"),
     source_builtin!("fino:stream", "stream"),

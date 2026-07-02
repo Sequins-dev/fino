@@ -17,6 +17,9 @@
 *   - `zstd`: Zstandard frame format when `libzstd` is available.
 *   - `lz4`: LZ4 Frame format (`.lz4`, magic `0x184D2204`) when `liblz4` is
 *     available.
+*   - `snappy`: Snappy raw block format (as used by Apache Parquet) when
+*     `libsnappy` is available. A block codec — streaming buffers input and
+*     emits one block on `finish()`.
 *
 * `compress()` and `decompress()` return a single `Uint8Array`. Streaming
 * objects return arrays of output chunks from `write()` and `finish()` because
@@ -75,6 +78,7 @@ import { zlibCompress, zlibDecompress, ZlibCompressor, ZlibDecompressor } from '
 import { brotliAvailable as internalBrotliAvailable, brotliCompress, brotliDecompress, BrotliCompressor, BrotliDecompressor } from './internal/compress/brotli.ts';
 import { zstdAvailable as internalZstdAvailable, zstdCompress, zstdDecompress, ZstdCompressor, ZstdDecompressor } from './internal/compress/zstd.ts';
 import { lz4Available as internalLz4Available, lz4Compress, lz4Decompress, Lz4Compressor, Lz4Decompressor } from './internal/compress/lz4.ts';
+import { snappyAvailable as internalSnappyAvailable, snappyCompress, snappyDecompress, SnappyCompressor, SnappyDecompressor } from './internal/compress/snappy.ts';
 export type {
 /**
 * Binary input accepted by compression helpers.
@@ -193,6 +197,24 @@ export const zstdAvailable = internalZstdAvailable;
 */
 export const lz4Available = internalLz4Available;
 /**
+* `true` when the Snappy backend library (`libsnappy`) is available.
+*
+* Use this before selecting `{ format: 'snappy' }` in portable code. The
+* `snappy` format is the Snappy raw block format (as used by Apache Parquet);
+* it is a block codec, so streaming buffers input and emits one block on
+* `finish()`. When this value is false, Snappy operations throw from the
+* underlying backend.
+*
+* ```ts no_run
+* import { snappyAvailable, compress } from 'fino:compress';
+*
+* const format = snappyAvailable ? 'snappy' : 'gzip';
+* const bytes = compress(new Uint8Array([1, 2, 3]), { format });
+* console.log(bytes.byteLength);
+* ```
+*/
+export const snappyAvailable = internalSnappyAvailable;
+/**
 * Compress one byte buffer and return a single compressed byte array.
 *
 * This one-shot helper keeps both input and output in memory. `options.format`
@@ -216,6 +238,7 @@ export function compress(data: ByteInput, options: CompressOptions): Uint8Array 
   if (opts.format === 'brotli') return brotliCompress(data, opts);
   if (opts.format === 'zstd') return zstdCompress(data, opts);
   if (opts.format === 'lz4') return lz4Compress(data, opts);
+  if (opts.format === 'snappy') return snappyCompress(data);
   return zlibCompress(data, assertZlibFormat(opts.format), opts);
 }
 /**
@@ -244,6 +267,7 @@ export function decompress(data: ByteInput, options: DecompressOptions): Uint8Ar
   if (opts.format === 'brotli') return brotliDecompress(data);
   if (opts.format === 'zstd') return zstdDecompress(data);
   if (opts.format === 'lz4') return lz4Decompress(data);
+  if (opts.format === 'snappy') return snappyDecompress(data);
   return zlibDecompress(data, assertZlibFormat(opts.format));
 }
 /**
@@ -306,7 +330,7 @@ export class Compressor implements CompressionTransform {
   */
   constructor(options: CompressOptions) {
     const opts = validateCompressOptions(options);
-    this.#impl = opts.format === 'brotli' ? new BrotliCompressor(opts) : opts.format === 'zstd' ? new ZstdCompressor(opts) : opts.format === 'lz4' ? new Lz4Compressor(opts) : new ZlibCompressor(assertZlibFormat(opts.format), opts.level);
+    this.#impl = opts.format === 'brotli' ? new BrotliCompressor(opts) : opts.format === 'zstd' ? new ZstdCompressor(opts) : opts.format === 'lz4' ? new Lz4Compressor(opts) : opts.format === 'snappy' ? new SnappyCompressor() : new ZlibCompressor(assertZlibFormat(opts.format), opts.level);
   }
   /**
   * Compress a chunk and return any output currently available.
@@ -454,7 +478,7 @@ export class Decompressor implements CompressionTransform {
   */
   constructor(options: DecompressOptions) {
     const opts = validateDecompressOptions(options);
-    this.#impl = opts.format === 'brotli' ? new BrotliDecompressor() : opts.format === 'zstd' ? new ZstdDecompressor() : opts.format === 'lz4' ? new Lz4Decompressor() : new ZlibDecompressor(assertZlibFormat(opts.format));
+    this.#impl = opts.format === 'brotli' ? new BrotliDecompressor() : opts.format === 'zstd' ? new ZstdDecompressor() : opts.format === 'lz4' ? new Lz4Decompressor() : opts.format === 'snappy' ? new SnappyDecompressor() : new ZlibDecompressor(assertZlibFormat(opts.format));
   }
   /**
   * Decompress a chunk and return any output currently available.

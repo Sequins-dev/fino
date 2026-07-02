@@ -337,3 +337,43 @@ describe('fino:compress — availability flags', () => {
     t.equal(typeof lz4Available, 'boolean', 'lz4Available is boolean');
   });
 });
+import { snappyAvailable } from 'fino:compress';
+describe('fino:compress — snappy', () => {
+  if (!snappyAvailable) {
+    it('skips: snappy backend not available', (t) => {
+      t.ok(true, 'snappy library not installed');
+    });
+  } else {
+    it('one-shot round-trips (raw block)', (t) => {
+      const packed = compress(LOREM, { format: 'snappy' });
+      t.ok(packed.byteLength < LOREM.byteLength, 'compresses the payload');
+      t.equal(str(decompress(packed, { format: 'snappy' })), str(LOREM), 'round-trips');
+    });
+    it('round-trips an empty input', (t) => {
+      const packed = compress(new Uint8Array(0), { format: 'snappy' });
+      t.equal(decompress(packed, { format: 'snappy' }).byteLength, 0, 'empty round-trips');
+    });
+    it('round-trips binary data with all byte values', (t) => {
+      const input = new Uint8Array(1024);
+      for (let i = 0; i < input.length; i++) input[i] = i * 7 & 255;
+      const packed = compress(input, { format: 'snappy' });
+      t.deepEqual(Array.from(decompress(packed, { format: 'snappy' })), Array.from(input), 'binary round-trips');
+    });
+    it('streams as a single block via write/finish', (t) => {
+      const c = createCompressor({ format: 'snappy' });
+      const parts: Uint8Array[] = [];
+      parts.push(...c.write(bytes('part one ')));
+      parts.push(...c.write(bytes('part two ')));
+      parts.push(...c.finish());
+      c.close();
+      t.equal(str(decompress(concat(parts), { format: 'snappy' })), 'part one part two ', 'buffered block round-trips');
+    });
+    it('produces bytes readable by a fresh decompressor block', (t) => {
+      const packed = compress(LOREM, { format: 'snappy' });
+      const d = createDecompressor({ format: 'snappy' });
+      const parts = [...d.write(packed), ...d.finish()];
+      d.close();
+      t.equal(str(concat(parts)), str(LOREM), 'block decompress round-trips');
+    });
+  }
+});
