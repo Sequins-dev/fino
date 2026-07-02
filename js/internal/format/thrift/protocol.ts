@@ -83,6 +83,8 @@ export interface Protocol {
   readBinary(): Uint8Array;
   /** Finished output bytes (writer mode only). */
   bytes(): Uint8Array;
+  /** Reader cursor position in bytes (reader mode); how much has been consumed. */
+  position(): number;
 }
 /**
 * Shared reader/writer plumbing for the concrete protocols.
@@ -110,5 +112,10 @@ export abstract class ProtocolBase {
   bytes(): Uint8Array {
     if (this.writer === undefined) throw new Error('thrift: bytes() called on a reader protocol');
     return this.writer.bytes();
+  }
+
+  /** Reader cursor position in bytes (reader mode). */
+  position(): number {
+    return this.reader === undefined ? 0 : this.reader.position;
   }
 }

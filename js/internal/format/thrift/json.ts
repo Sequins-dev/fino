@@ -133,6 +133,10 @@ export class JSONProtocol implements Protocol {
   bytes(): Uint8Array {
     return _encoder.encode(this.#parts.join(''));
   }
+
+  position(): number {
+    return this.#ip;
+  }
   // --- write helpers -------------------------------------------------------
   #emit = (s: string): void => {
     this.#parts.push(s);
