@@ -1898,7 +1898,9 @@ export class Request {
   * @internal
   */
   #headers: Headers;
-  #unsafeHeaders: Headers;
+  // Null on server (INTERNAL) requests, where it would just duplicate #headers;
+  // reads fall back to #headers. The spec path keeps an eager pre-guard copy.
+  #unsafeHeaders: Headers | null = null;
   /**
   * Private property `#rawBody` used by `Request`.
   *
@@ -2004,7 +2006,9 @@ export class Request {
   * @internal
   */
   #keepalive: boolean = false;
-  #signal: AbortSignal;
+  // Lazily created: server-constructed requests never carry an abort source, so
+  // the synthetic never-aborted signal is only materialized if `.signal` is read.
+  #signal: AbortSignal | null = null;
   /**
   * Create a Request from a URL string, another Request, or the internal parser
   * sentinel.
@@ -2026,12 +2030,14 @@ export class Request {
       this.#wirePath = typeof init.path === 'string' ? init.path : null;
       this.#version = init.version;
       this.#headers = init.headers;
-      this.#unsafeHeaders = new Headers(init.headers);
+      // Left null: on the server path #unsafeHeaders would just mirror #headers
+      // (trusted, unguarded wire headers). _getUnsafeHeader falls back to it.
+      this.#unsafeHeaders = null;
       this.#rawBody = init.body === _emptyBody ? null : init.body;
       this.#inTrailers = init.inTrailers ?? null;
       this.#blobUrlObject = init.blobUrlObject ?? null;
       this.#keepalive = Boolean(init.keepalive);
-      this.#signal = init.signal instanceof AbortSignal ? init.signal : new AbortController().signal;
+      this.#signal = init.signal instanceof AbortSignal ? init.signal : null;
       return;
     }
     // Spec-style construction.
@@ -2048,7 +2054,7 @@ export class Request {
     this.#version = '';
     this.#outTrailers = init && init.trailers != null ? init.trailers : null;
     this.#keepalive = init && 'keepalive' in init ? Boolean(init.keepalive) : inputRequest !== null ? inputRequest.#keepalive : false;
-    this.#signal = init && init.signal instanceof AbortSignal ? init.signal : inputRequest !== null ? inputRequest.#signal : new AbortController().signal;
+    this.#signal = init && init.signal instanceof AbortSignal ? init.signal : inputRequest !== null ? inputRequest.#signal : null;
     const initHasBody = init && init.body != null;
     const initBodyIsStream = initHasBody && _isReadableStreamBody(init.body);
     const inheritedBody = inputRequest !== null && inputRequest.#rawBody !== null;
@@ -2211,11 +2217,13 @@ export class Request {
     const normalizedName = _normalizeHeaderName(name);
     const normalizedValue = _normalizeHeaderValue(value);
     this.#headers._appendTrusted(normalizedName, normalizedValue);
-    this.#unsafeHeaders._appendTrusted(normalizedName, normalizedValue);
+    // When null, #unsafeHeaders mirrors #headers (server path) — the append
+    // above is already visible through the _getUnsafeHeader fallback.
+    this.#unsafeHeaders?._appendTrusted(normalizedName, normalizedValue);
   }
   /** @internal Return an original constructor header hidden by public request guards. */
   _getUnsafeHeader(name: string): string | null {
-    return this.#unsafeHeaders.get(name);
+    return (this.#unsafeHeaders ?? this.#headers).get(name);
   }
   /** The full URL string.
   *
@@ -2392,6 +2400,7 @@ export class Request {
   }
   /** AbortSignal associated with this request. */
   get signal() {
+    if (this.#signal === null) this.#signal = new AbortController().signal;
     return this.#signal;
   }
   /** Streaming request duplex mode.
@@ -3428,17 +3437,26 @@ export class Response {
     if (arguments.length < 1) throw new TypeError('Response.json requires 1 argument');
     const body = JSON.stringify(data);
     if (body === undefined) throw new TypeError('Response.json: data is not JSON serializable');
-    const headers = new Headers(init && init.headers ? init.headers : {});
-    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
-    const status = init && init.status != null ? init.status : 200;
-    const statusText = init && init.statusText != null ? init.statusText : '';
-    if (status === 204 || status === 205 || status === 304) {
+    const status = init && init.status != null ? Number(init.status) : 200;
+    const statusText = init && init.statusText != null ? String(init.statusText) : '';
+    _validateResponseStatus(status);
+    _validateResponseStatusText(statusText);
+    if (_isNullBodyStatus(status)) {
       throw new TypeError('Response.json: status must allow a body');
     }
-    return new Response(body, {
+    const headers = new Headers(init && init.headers ? init.headers : undefined);
+    if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+    headers._setGuard('response');
+    // Construct via the INTERNAL path to hand off the Headers built above
+    // without the spec constructor re-copying them (avoids a second Headers +
+    // #sorted() per response on the hot server path).
+    return new Response(INTERNAL, {
+      version: '',
       status,
       statusText,
-      headers
+      headers,
+      body: _toBytes(body),
+      outTrailers: init && init.trailers != null ? init.trailers : null
     });
   }
   /**
