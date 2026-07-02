@@ -152,7 +152,7 @@ which backends light up.
 | Graph capture/JIT | Very high | Low | None | High | Very high |
 | Arrow tables | Very high | Medium | `fino:data/arrow` (full type coverage) | High | Medium |
 | Arrow IPC + C Data Interface | Very high | Medium | `fino:data/arrow` (stream/file + CDI) | High | Medium/high |
-| Parquet | Very high | Medium | None (DuckDB binding planned) | High | Medium/high |
+| Parquet | Very high | Medium | None (native `fino:data/parquet` planned) | High | Medium/high |
 | Dataset streaming | Very high | Low/medium | CSV only | High | Medium |
 | Safetensors | Very high | Low/medium | None | High | Medium |
 | GGUF loading | Medium/high | Low | llama.cpp adapter only | High | Medium |
@@ -590,8 +590,16 @@ semantics, and every public rule has an acceptance-test shape.
 ## 12. The Data Stack
 
 Data is Arrow-first and streaming-first. `fino:data/arrow` already provides the
-Arrow substrate (below); the remaining pieces are a query/Parquet engine and a
-Dataset/DataLoader, each of which builds on it.
+Arrow substrate (below); the remaining pieces are a native Parquet module, a
+query/DataFrame layer, and a Dataset/DataLoader, each of which builds on it.
+
+The guiding principle here is the same one that produced `fino:format/flatbuffers`
+and the `fino:compress` codecs: **untangle the dependency tree into discrete,
+generalized modules** rather than adopt a bundled engine that re-clusters the
+functionality. The obvious shortcut — dlopen DuckDB as a Parquet + CSV/JSON +
+SQL "workhorse" — is rejected for exactly that reason: it collapses a whole
+cluster back into one opaque internal, which is what this runtime exists to
+avoid. Parquet decomposes cleanly into reusable parts we mostly already have.
 
 - **`fino:data/arrow` — Arrow (exists).** The columnar in-memory format (all
   logical types), the IPC stream and file formats (with LZ4/ZSTD body
@@ -599,20 +607,35 @@ Dataset/DataLoader, each of which builds on it.
   implemented and tested. It is the tabular interchange the rest of the data
   stack consumes and produces: `column.toTensor()`, `RecordBatch`/`Table`, and
   zero-copy hand-off to native libraries via `Pointer.view`.
-- **`fino:database/duckdb` + `fino:data/frame` — DuckDB via dlopen (planned).** `libduckdb`
-  (plain C API, brew/apt installable) is the one big dependency, and it pays
-  for Parquet (read *and* write), CSV/JSON readers, remote/S3 ranged reads,
-  and a vectorized SQL engine — the pandas-plus-polars equivalent in one
-  dylib. Implementing Parquet in TS (thrift metadata, eight encodings, page
-  compression) is a multi-month project DuckDB has already shipped; don't.
-  `fino:data/frame` is a *lazy* DataFrame that builds an expression plan and
-  compiles to SQL (the ibis/polars-lazy approach — predicate and projection
-  pushdown for free), materializing as Arrow record batches. Binding style
-  and dispose conventions mirror `js/database/sqlite.ts`.
+- **`fino:format/thrift` — generic Thrift codec (planned).** Parquet's file
+  metadata (`FileMetaData`, `RowGroup`, `ColumnChunk`, `Statistics`, …) is
+  serialized with Thrift's compact protocol. Like flatbuffers, Thrift is a
+  general-purpose format that belongs in its own module, not buried in a
+  Parquet reader — a schema-less compact-protocol reader/writer that any
+  consumer can use.
+- **`fino:compress` + Snappy (planned).** Parquet's default page codec is
+  Snappy; gzip/brotli/zstd/lz4 (which Parquet also permits) already exist.
+  Snappy is a small, well-specified block format — add it to the existing
+  generic compress module, not to Parquet internals.
+- **`fino:data/parquet` — native Parquet (planned).** Built on
+  `fino:format/thrift` + `fino:compress` + `fino:data/arrow`: read and write
+  the full column layout (the ~8 encodings — plain, RLE/bit-packed dictionary,
+  delta, delta-length/byte-array, byte-stream-split — plus page compression,
+  statistics, and nested/repetition-and-definition levels), producing and
+  consuming Arrow record batches. This is real work, but it is *bounded* work
+  in discrete modules whose generic parts (Thrift, Snappy) are reusable — the
+  opposite of importing a multi-feature engine to get one format.
+- **`fino:data/frame` — DataFrame over Arrow (planned).** A lazy DataFrame that
+  builds an expression plan and executes it with its own small operator set
+  (filter, project, groupBy/agg, join, sort, limit) *directly over Arrow
+  record batches* — vectorized column kernels, not SQL compiled to a foreign
+  engine. Predicate/projection pushdown targets the `fino:data/parquet` reader
+  (skip row groups by statistics, read only needed columns). If a SQL surface
+  is wanted later it parses to the same plan; the execution engine stays ours.
 - **`fino:data` — Dataset/DataLoader (planned).** `Dataset` (random access) and
   `IterableDataset` (async iterable) with `map/filter/shuffle(buffer)/batch/
   take/split/interleave`; sources from CSV/JSONL (existing modules), Arrow
-  IPC, Parquet/SQL (DuckDB), sqlite, HTTP, and the hub. `DataLoader` runs the
+  IPC, `fino:data/parquet`, sqlite, HTTP, and the hub. `DataLoader` runs the
   decode/augment/tokenize pipeline on `fino:realm/pool` workers writing
   collated batches into SharedArrayBuffer slabs (a ring allocator); the
   training realm receives `{sab, offset, shape, dtype}` descriptors —
@@ -621,7 +644,8 @@ Dataset/DataLoader, each of which builds on it.
   `fino:workflow` can checkpoint mid-epoch position.
 
 The flow `Parquet → DataFrame → Arrow batch → column.toTensor() → GPU` is
-pointer-passing at every boundary via `Pointer.view`.
+pointer-passing at every boundary via `Pointer.view`, and every stage is a
+fino module that stands alone rather than a facet of one bundled dependency.
 
 ## 13. The Rest of the Platform
 
@@ -744,8 +768,9 @@ substrate:
   symbols through `cuGetProcAddress`, NVRTC → cubin → launch round-trip,
   measure launch dispatch — target under ~3 µs/op, validate event-wait →
   wake-pipe readback end to end). The data track continues here too, in
-  parallel (Arrow already exists): DuckDB binding, hub client, tokenizer —
-  none of it waits on the engine.
+  parallel (Arrow already exists): `fino:format/thrift`, Snappy in
+  `fino:compress`, `fino:data/parquet`, hub client, tokenizer — none of it
+  waits on the engine.
 - **Phase 1 — the credibility slice.** CUDA-direct core (driver, NVRTC +
   two-tier cache, cuBLASLt with epilogues, memory pool, two streams, ~30
   template kernels, bf16+fp32) + the ggml adapter (Metal parity, fast CPU) +
@@ -800,9 +825,11 @@ These are not wrong goals. They are downstream of a working tensor runtime.
 - **ggml API churn.** The adapter binds a moving C surface maintained by the
   llama.cpp project; pin known-good versions in the candidate-path probe and
   test against brew's current formula.
-- **DuckDB C-API Arrow-export surface varies across 1.x**; validate the
-  function set against the installed version and keep the data-chunk API as
-  fallback.
+- **Native Parquet is bounded but not small.** Full encoding coverage (the ~8
+  encodings, nested repetition/definition levels, statistics) is the effort;
+  keep it honest by building the reusable generics (`fino:format/thrift`,
+  Snappy) first and differentially testing `fino:data/parquet` against files
+  written by pyarrow/parquet-tools, the way Arrow is tested against pyarrow.
 - **GC-invisible device memory** is the sharpest UX edge: scopes
   (`using`/`tidy`) must be the documented norm from the first example, or
   users will OOM the GPU with live-looking JS handles.
@@ -839,7 +866,9 @@ artifacts, and accelerate the hot path without leaving Fino.
 - Apache Arrow overview: https://arrow.apache.org/overview/
 - Apache Arrow C Data Interface: https://arrow.apache.org/docs/format/CDataInterface.html
 - DLPack documentation: https://dmlc.github.io/dlpack/latest/
-- DuckDB C API: https://duckdb.org/docs/api/c/overview
+- Apache Parquet format: https://parquet.apache.org/docs/file-format/
+- Apache Thrift compact protocol: https://github.com/apache/thrift/blob/master/doc/specs/thrift-compact-protocol.md
+- Snappy format: https://github.com/google/snappy/blob/main/format_description.txt
 - Safetensors documentation: https://huggingface.co/docs/safetensors/index
 - ONNX introduction: https://onnx.ai/onnx/intro/
 - ONNX Runtime C API: https://onnxruntime.ai/docs/api/c/
