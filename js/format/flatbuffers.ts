@@ -454,6 +454,13 @@ export class Vector {
     return this.#length;
   }
   /**
+  * The owning `FlatBuffer`, for reading inline-struct members at absolute
+  * positions returned by `structAt`.
+  */
+  get buffer(): FlatBuffer {
+    return this.#fb;
+  }
+  /**
   * Absolute position of element `i`, given the element byte size.
   */
   elemPos(i: number, elemSize: number): number {

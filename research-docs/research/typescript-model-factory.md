@@ -128,8 +128,9 @@ runtime as it exists today:
 
 The missing substrate is equally clear: no tensor object model, no
 dtype/device semantics, no kernels or accelerator backend, no autodiff, no
-Arrow/Parquet layer, no safetensors reader, no tokenizers, no
-optimizer/training-loop/checkpoint API, no notebook story.
+Parquet/query layer, no safetensors reader, no tokenizers, no
+optimizer/training-loop/checkpoint API, no notebook story. (Arrow itself now
+exists as `fino:data/arrow` — the columnar format, IPC, and C Data Interface.)
 
 The binding style throughout what follows is the established idiom: dlopen
 system-installed libraries with candidate-path fallback
@@ -147,8 +148,9 @@ which backends light up.
 | GPU execution | Very high | Medium via WebGPU/TF.js/ORT | None | Critical | Very high |
 | Autodiff | Very high | Low/medium | None | Critical | Very high |
 | Graph capture/JIT | Very high | Low | None | High | Very high |
-| Arrow tables | Very high | Medium | None | High | Medium |
-| Parquet/Arrow IPC | Very high | Medium | None | High | Medium/high |
+| Arrow tables | Very high | Medium | `fino:data/arrow` (full type coverage) | High | Medium |
+| Arrow IPC + C Data Interface | Very high | Medium | `fino:data/arrow` (stream/file + CDI) | High | Medium/high |
+| Parquet | Very high | Medium | None (DuckDB binding planned) | High | Medium/high |
 | Dataset streaming | Very high | Low/medium | CSV only | High | Medium |
 | Safetensors | Very high | Low/medium | None | High | Medium |
 | GGUF loading | Medium/high | Low | llama.cpp adapter only | High | Medium |
@@ -592,17 +594,20 @@ Data is Arrow-first and streaming-first. Three modules, chosen so that
 exactly one heavyweight native dependency exists and everything else is
 TypeScript.
 
-- **`fino:data/arrow` — pure-TS Arrow.** The columnar format is fully
-  specified and the ML-relevant subset (fixed-width primitives including f16,
-  bool, utf8, binary, list/fixed-size-list, struct, dictionary) is tractable
-  in TS; IPC metadata needs only a small flatbuffers reader/writer for the
-  Arrow schema tables. Alongside it, the **Arrow C Data Interface** structs
-  (`ArrowSchema`/`ArrowArray`/`ArrowArrayStream`) are defined via
-  `structType` — the ABI-stable zero-copy bridge to any native producer or
-  consumer. (libarrow is a C++ giant with a separate GLib C layer; nanoarrow
-  is designed to be vendored — neither is a sane dlopen target. The struct
-  layouts themselves are the standard; Fino speaks them directly.)
-- **`fino:data/sql` + `fino:data/frame` — DuckDB via dlopen.** `libduckdb`
+- **`fino:data/arrow` — pure-TS Arrow (shipped).** Full columnar type coverage
+  (every Arrow logical type: primitives incl. f16, all decimals, utf8/binary
+  and their large/view variants, temporal and interval types, list/large-list/
+  list-view/fixed-size-list, struct, map, sparse/dense union, dictionary with
+  delta/replacement, run-end-encoded, and the extension mechanism), the Arrow
+  IPC stream and file formats (with LZ4/ZSTD body compression via
+  `fino:compress`) built on the generic `fino:format/flatbuffers`, and the
+  **Arrow C Data Interface** (`fino:data/arrow/cdata`) — `ArrowSchema`/
+  `ArrowArray` structs via `structType` with a complete format-string codec,
+  aliasing native memory through `Pointer.view`. (libarrow is a C++ giant with
+  a separate GLib C layer; nanoarrow is designed to be vendored — neither is a
+  sane dlopen target. The struct layouts themselves are the standard; Fino
+  speaks them directly.)
+- **`fino:database/duckdb` + `fino:data/frame` — DuckDB via dlopen (planned).** `libduckdb`
   (plain C API, brew/apt installable) is the one big dependency, and it pays
   for Parquet (read *and* write), CSV/JSON readers, remote/S3 ranged reads,
   and a vectorized SQL engine — the pandas-plus-polars equivalent in one

@@ -398,6 +398,21 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:security/jwk", "security/jwk"),
     source_builtin!("fino:security/jwt", "security/jwt"),
     // format
+    source_builtin!("fino:data", "data"),
+    source_builtin!("fino:data/arrow", "data/arrow/index"),
+    source_builtin!("internal:data/arrow/errors", "data/arrow/errors"),
+    source_builtin!("internal:data/arrow/type", "data/arrow/type"),
+    source_builtin!("internal:data/arrow/schema", "data/arrow/schema"),
+    source_builtin!("internal:data/arrow/vector", "data/arrow/vector"),
+    source_builtin!("internal:data/arrow/batch", "data/arrow/batch"),
+    source_builtin!("internal:data/arrow/table", "data/arrow/table"),
+    source_builtin!(
+        "internal:data/arrow/ipc/metadata",
+        "data/arrow/ipc/metadata"
+    ),
+    source_builtin!("internal:data/arrow/ipc/writer", "data/arrow/ipc/writer"),
+    source_builtin!("internal:data/arrow/ipc/reader", "data/arrow/ipc/reader"),
+    source_builtin!("fino:data/arrow/cdata", "data/arrow/cdata"),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/typescript", "format/typescript"),
