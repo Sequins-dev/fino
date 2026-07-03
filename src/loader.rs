@@ -185,6 +185,16 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:database/sqlite/vfs",
         "internal/database/sqlite/vfs"
     ),
+    source_builtin!(
+        "internal:database/postgres/protocol",
+        "internal/database/postgres/protocol"
+    ),
+    source_builtin!(
+        "internal:database/postgres/scram",
+        "internal/database/postgres/scram"
+    ),
+    source_builtin!("fino:database", "database/index"),
+    source_builtin!("fino:database/postgres", "database/postgres"),
     source_builtin!("fino:database/sqlite", "database/sqlite"),
     // internal: file sub-modules
     source_builtin!("internal:file/provider", "internal/file/provider"),
