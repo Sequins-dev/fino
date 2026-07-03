@@ -33,6 +33,36 @@ describe('fino:jobs local mode', () => {
     t.equal(done.status, 'done', 'job completed');
     t.equal(done.result, 42, 'handler result persisted');
   });
+  it('job() tracks one job and stats() reports queue counts', async (t) => {
+    const echo = task({
+      name: 'signal-echo',
+      run: async (input: { value: number }) => input.value
+    });
+    await using jobs = await Jobs.open({
+      path: tempPath(),
+      tasks: [echo],
+      pollIntervalMs: 50
+    });
+    const stats = jobs.stats();
+    const statSnapshots: number[] = [];
+    const disposeStats = stats.subscribe((value) => statSnapshots.push(value.pending));
+    const job = await jobs.push('signal-echo', { value: 7 }, { delay: 200 });
+    const watched = jobs.job(job.id);
+    const statuses: string[] = [];
+    const disposeJob = watched.subscribe((value) => {
+      if (value) statuses.push(value.status);
+    });
+    await loop.timeout(50);
+    t.ok(stats.get().pending >= 1, 'delayed job is counted as pending');
+    const done = await jobs.wait(job.id, { timeoutMs: 10_000 });
+    await loop.timeout(0);
+    t.equal(done.status, 'done', 'job completed');
+    t.equal(watched.get()?.status, 'done', 'job signal retains terminal state');
+    t.ok(statuses.includes('done'), 'job subscriber saw terminal state');
+    t.ok(statSnapshots.some((pending) => pending >= 1), 'stats subscriber saw pending count');
+    disposeJob();
+    disposeStats();
+  });
   it('honors delay before running', async (t) => {
     const stamps: number[] = [];
     const stamp = task({

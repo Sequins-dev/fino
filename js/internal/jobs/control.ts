@@ -130,6 +130,7 @@ export function createJobsControlFacade(): Facade {
     'unschedule',
     'get',
     'list',
+    'stats',
     'schedules',
     'cancel',
     'retry',
@@ -154,6 +155,7 @@ export function createJobsControlFacade(): Facade {
     .handle('unschedule', (name) => requireService().unschedule(name as string))
     .handle('get', (id) => requireService().get(id as string))
     .handle('list', (filter) => requireService().list(filter as never))
+    .handle('stats', (queue) => requireService().stats(queue as string | undefined))
     .handle('schedules', () => requireService().schedules())
     .handle('cancel', (id) => requireService().cancel(id as string))
     .handle('retry', (id) => requireService().retry(id as string))

@@ -40,6 +40,9 @@
 */
 import { Database } from 'fino:database/sqlite';
 import { compile } from 'fino:validate';
+import { topic } from 'fino:context/topic';
+import { lazy } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 let idCounter = 0;
 function newId(): string {
   return `wf_${++idCounter}_${Math.random().toString(36).slice(2)}`;
@@ -118,6 +121,66 @@ export interface WorkflowStore {
     status?: WorkflowStatus;
   }): Promise<WorkflowState[]>;
   delete(runId: string): Promise<void>;
+}
+function workflowRunTopic(runId: string) {
+  return topic<{ runId: string; version: number; deleted?: boolean }>(`fino:workflow:run:${runId}`);
+}
+/**
+* Wrap a workflow store so every save and delete publishes a run update.
+*
+* The wrapped store remains the durable source of truth. Notifications only
+* tell local watchers to reload the run state.
+*/
+export function observableWorkflowStore(inner: WorkflowStore): WorkflowStore {
+  return {
+    async save(state: WorkflowState): Promise<void> {
+      await inner.save(state);
+      workflowRunTopic(state.runId).publish({
+        runId: state.runId,
+        version: state.updatedAt
+      });
+    },
+    load(runId: string): Promise<WorkflowState | null> {
+      return inner.load(runId);
+    },
+    list(filter?: {
+      workflowId?: string;
+      status?: WorkflowStatus;
+    }): Promise<WorkflowState[]> {
+      return inner.list(filter);
+    },
+    async delete(runId: string): Promise<void> {
+      await inner.delete(runId);
+      workflowRunTopic(runId).publish({
+        runId,
+        version: Date.now(),
+        deleted: true
+      });
+    }
+  };
+}
+/**
+* Watch one workflow run in a store.
+*
+* The returned signal starts as `null`, loads the current state asynchronously,
+* and refreshes whenever an `observableWorkflowStore()` wrapper publishes a run
+* update for the same id.
+*/
+export function watchRun(store: WorkflowStore, runId: string): ReadonlySignal<WorkflowState | null> {
+  return lazy<WorkflowState | null>(null, (set) => {
+    let active = true;
+    const refresh = () => {
+      void store.load(runId).then((next) => {
+        if (active) set(next ? cloneState(next) : null);
+      });
+    };
+    refresh();
+    const handle = workflowRunTopic(runId).subscribe(refresh);
+    return () => {
+      active = false;
+      handle.dispose();
+    };
+  });
 }
 /**
 * In-memory store for tests and single-process prototypes.

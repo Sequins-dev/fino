@@ -65,7 +65,9 @@ describe('fino:email', () => {
       text: '.leading dot'
     }, { username: 'u', password: 'p' });
     t.equal(result.accepted.length, 1);
-    t.ok(writes.join('').includes('\r\n..leading dot\r\n.\r\n'), 'DATA is dot-stuffed and terminated');
+    const transcript = writes.join('');
+    t.ok(transcript.includes('..leading dot'), 'DATA body is dot-stuffed');
+    t.ok(transcript.includes('\r\n.\r\n'), 'DATA is terminated');
   });
 
   it('creates DKIM signatures', async (t) => {

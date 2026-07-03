@@ -1,11 +1,13 @@
 /**
-* fino:ui — host-neutral component construction, signals, and rendering.
+* fino:ui — host-neutral component construction and rendering.
 *
 * `fino:ui` is the portable core for JSX-style Fino interfaces. It owns VNode
-* construction, function components, explicit signal subscriptions, batching,
-* and keyed reconciliation into a host adapter. It does not know about the DOM,
-* HTML, terminal cells, input devices, or styling rules. Renderers such as
-* `fino:tty/tui` provide those host details.
+* construction, function components, and keyed reconciliation into a host
+* adapter. It re-exports the reactive primitives from `fino:signals` for
+* compatibility, but the signal kernel itself is shared runtime
+* infrastructure. This module does not know about the DOM, HTML, terminal
+* cells, input devices, or styling rules. Renderers such as `fino:tty/tui`
+* provide those host details.
 *
 * ## Design
 *
@@ -29,6 +31,10 @@
 * });
 * ```
 */
+import { Signal, batch, createSignal } from 'fino:signals';
+export { Signal, batch, createSignal };
+export type { ObservedReads, ReadonlySignal, SignalSetter, SignalSubscriber } from 'fino:signals';
+
 /** Primitive child value accepted by `h()`. */
 export type Child = VNode | string | number | boolean | null | undefined | Child[];
 /** Function component accepted by `h()`. */
@@ -119,95 +125,6 @@ export function h(type: VNodeType, props: Props | null, ...children: Child[]): V
     children: normalizedChildren,
     key: typeof keyValue === 'string' || typeof keyValue === 'number' ? keyValue : null
   };
-}
-type SignalSubscriber<T> = (value: T, previous: T) => void;
-type SignalSetter<T> = T | ((value: T) => T);
-let batchDepth = 0;
-const pendingSignals = new Set<Signal<unknown>>();
-function flushSignals(): void {
-  const pending = Array.from(pendingSignals);
-  pendingSignals.clear();
-  for (const signal of pending) signal.flush();
-}
-/**
-* Run multiple signal writes as one notification pass.
-*
-* Subscribers are called after the outermost batch completes, and each changed
-* signal notifies at most once with its final value.
-*/
-export function batch<T>(fn: () => T): T {
-  batchDepth++;
-  try {
-    return fn();
-  } finally {
-    batchDepth--;
-    if (batchDepth === 0) flushSignals();
-  }
-}
-/**
-* Explicit reactive value used by Fino UI components and renderers.
-*
-* Signals are intentionally independent from component rendering. Call
-* `subscribe()` to schedule a renderer update, use `get()` while building a
-* tree, and use `set()` to replace or derive the next value.
-*/
-export class Signal<T> {
-  #value: T;
-  #previous: T;
-  #dirty = false;
-  #subscribers = new Set<SignalSubscriber<T>>();
-  constructor(initial: T) {
-    this.#value = initial;
-    this.#previous = initial;
-  }
-  /** Return the current signal value. */
-  get(): T {
-    return this.#value;
-  }
-  /**
-  * Replace the value or derive the next value from the current one.
-  *
-  * Subscribers are skipped when `Object.is(previous, next)` is true.
-  */
-  set(next: SignalSetter<T>): void {
-    const previous = this.#value;
-    const value = typeof next === 'function' ? (next as (value: T) => T)(previous) : next;
-    if (Object.is(previous, value)) return;
-    if (!this.#dirty) this.#previous = previous;
-    this.#value = value;
-    this.#dirty = true;
-    if (batchDepth > 0) {
-      pendingSignals.add(this as Signal<unknown>);
-    } else {
-      this.flush();
-    }
-  }
-  /**
-  * Subscribe to value changes.
-  *
-  * The returned function removes the subscriber. Subscriptions do not fire
-  * immediately; they only observe subsequent writes.
-  */
-  subscribe(subscriber: SignalSubscriber<T>): () => void {
-    this.#subscribers.add(subscriber);
-    return () => {
-      this.#subscribers.delete(subscriber);
-    };
-  }
-  /** @internal Flush one pending notification pass. */
-  flush(): void {
-    if (!this.#dirty) return;
-    this.#dirty = false;
-    const previous = this.#previous;
-    const value = this.#value;
-    for (const subscriber of Array.from(this.#subscribers)) subscriber(value, previous);
-  }
-}
-/**
-* Create a signal with explicit `get`, `set`, and `subscribe` methods.
-*/
-export function createSignal<T>(initial: T): Signal<T> {
-  return new Signal(initial);
 }
 /**
 * Host adapter consumed by `createRenderer()`.

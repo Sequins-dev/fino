@@ -25,3 +25,4 @@ export * from './token.ts';
 export * from './password.ts';
 export * from './jwk.ts';
 export * from './jwt.ts';
+export * from './oauth.ts';

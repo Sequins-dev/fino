@@ -44,11 +44,14 @@
 * ```
 */
 import type { Task } from './task.ts';
-import type { JobRecord, JobRetryPolicy, JobStatus, ScheduleRecord } from './internal/jobs/store.ts';
+import type { JobRecord, JobRetryPolicy, JobStatus, QueueStats, ScheduleRecord } from './internal/jobs/store.ts';
 import type { JobsService } from './internal/jobs/service.ts';
 import type { JobsWireCall, JobsWireResult } from './internal/jobs/runner.ts';
 import type { WorkflowState, WorkflowStore } from './workflow.ts';
 import type { RealmOptions } from './realm/index.ts';
+import { lazy } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
+import { subscribeMatching } from 'fino:context/topic';
 
 /**
 * A job that could not complete and should not be retried.
@@ -106,7 +109,24 @@ export interface JobsScheduleOptions {
   catchup?: 'skip' | 'one';
   retry?: Partial<JobRetryPolicy>;
 }
-export type { JobRecord, JobRetryPolicy, JobStatus, ScheduleRecord };
+export type { JobRecord, JobRetryPolicy, JobStatus, QueueStats, ScheduleRecord };
+
+function emptyQueueStats(): QueueStats {
+  return {
+    pending: 0,
+    running: 0,
+    waiting: 0,
+    done: 0,
+    error: 0,
+    dead: 0,
+    cancelled: 0,
+    oldestPendingAt: null
+  };
+}
+
+function isJobsRuntimeTopic(name: string): boolean {
+  return name.startsWith('otel:runtime:jobs:');
+}
 
 interface ControlModule {
   open(opts: Record<string, unknown>): Promise<boolean>;
@@ -115,6 +135,7 @@ interface ControlModule {
   unschedule(name: string): Promise<boolean>;
   get(id: string): Promise<JobRecord | null>;
   list(filter: unknown): Promise<JobRecord[]>;
+  stats(queue?: string): Promise<QueueStats>;
   schedules(): Promise<ScheduleRecord[]>;
   cancel(id: string): Promise<boolean>;
   retry(id: string): Promise<boolean>;
@@ -256,6 +277,60 @@ export class Jobs {
     return this.#requireService().list(filter);
   }
   /**
+  * Watch one job by id.
+  *
+  * The signal is seeded from `get(id)` while subscribed and refreshes when
+  * local jobs runtime events mention the same job. A periodic reconcile also
+  * runs while hot so missed external writes eventually converge.
+  */
+  job(id: string): ReadonlySignal<JobRecord | null> {
+    return lazy<JobRecord | null>(null, (set) => {
+      let active = true;
+      const refresh = () => {
+        void this.get(id).then((job) => {
+          if (active) set(job);
+        });
+      };
+      refresh();
+      const handle = subscribeMatching<Record<string, unknown>>(isJobsRuntimeTopic, (event) => {
+        if (event.jobId === id) refresh();
+      });
+      const timer = setInterval(refresh, 5000);
+      return () => {
+        active = false;
+        clearInterval(timer);
+        handle.dispose();
+      };
+    });
+  }
+  /**
+  * Watch aggregate queue statistics.
+  *
+  * The signal starts when subscribed, refreshes from the jobs store on runtime
+  * job events, and reconciles every five seconds while hot.
+  */
+  stats(queue?: string): ReadonlySignal<QueueStats> {
+    return lazy<QueueStats>(emptyQueueStats(), (set) => {
+      let active = true;
+      const refresh = () => {
+        const source = this.#control !== null ? this.#control.stats(queue) : this.#requireService().stats(queue);
+        void source.then((stats) => {
+          if (active) set(stats);
+        });
+      };
+      refresh();
+      const handle = subscribeMatching<Record<string, unknown>>(isJobsRuntimeTopic, (event) => {
+        if (queue === undefined || event.queue === queue) refresh();
+      });
+      const timer = setInterval(refresh, 5000);
+      return () => {
+        active = false;
+        clearInterval(timer);
+        handle.dispose();
+      };
+    });
+  }
+  /**
   * List schedules.
   */
   schedules(): Promise<ScheduleRecord[]> {
@@ -299,7 +374,27 @@ export class Jobs {
     timeoutMs?: number;
   } = {}): Promise<JobRecord> {
     if (this.#control !== null) return this.#control.waitFor(id, opts);
-    return this.#requireService().waitFor(id, opts);
+    const terminal = new Set<JobStatus>(['done', 'error', 'dead', 'cancelled']);
+    const signal = this.job(id);
+    return new Promise<JobRecord>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        dispose();
+        fn();
+      };
+      const dispose = signal.subscribe((job) => {
+        if (job === null) return;
+        if (terminal.has(job.status)) finish(() => resolve(job));
+      });
+      timer = setTimeout(async () => {
+        const job = await this.get(id);
+        finish(() => reject(new Error(`timed out waiting for job ${id}${job ? ` (status: ${job.status})` : ''}`)));
+      }, opts.timeoutMs ?? 3e4);
+    });
   }
   /**
   * Register this realm as an inline processor for `tasks`: claimed jobs for

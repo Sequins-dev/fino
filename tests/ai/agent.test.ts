@@ -172,6 +172,23 @@ describe('Agent', () => {
     const result = await stream.result;
     t.equal(result.text, 'Hello');
   });
+  it('stream().state folds progress without consuming the reader', async (t) => {
+    const a = agent({ model: scriptModel([endTurn('Hello')]) });
+    const stream = a.stream('hi');
+    const states: string[] = [];
+    stream.state.subscribe((state) => states.push(`${state.status}:${state.text}`));
+    const parts: string[] = [];
+    for await (const chunk of streamText(stream)) {
+      parts.push(chunk);
+    }
+    const result = await stream.result;
+    t.equal(parts.join(''), 'Hello', 'reader still yields text');
+    t.equal(result.text, 'Hello', 'result still resolves');
+    t.equal(stream.state.get().status, 'done', 'state retains terminal status');
+    t.equal(stream.state.get().text, 'Hello', 'state retains folded text');
+    t.equal(stream.state.get().usage.outputTokens, 3, 'state retains usage');
+    t.ok(states.includes('done:Hello'), 'subscriber saw terminal state');
+  });
   it('stream().result() without iteration completes successfully', async (t) => {
     const a = agent({ model: scriptModel([endTurn('OK')]) });
     const result = await a.stream('hi').result;

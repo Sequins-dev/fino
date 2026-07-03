@@ -38,12 +38,14 @@
 */
 import { Database } from 'fino:database/sqlite';
 import { SuspendSignal, runContext } from 'fino:ai/runtime';
+import { createSignal } from 'fino:signals';
 import type { AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { Agent } from 'fino:ai/agent';
 import type { ModelMessage, Usage } from 'fino:ai/model';
 import type { Memory } from 'fino:ai/memory';
 import { MessageHistory } from 'fino:ai/context';
 import type { MessageHistoryEntry, MessageHistoryRevision, MessageHistorySnapshot } from 'fino:ai/context';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * Durable lifecycle state for a session run.
 */
@@ -559,13 +561,29 @@ export class Session {
   #opts: SessionOptions;
   #threadId: string;
   #state: RunState | undefined;
+  #stateSignal;
   private constructor(opts: SessionOptions, loaded?: RunState) {
     this.#opts = opts;
     this.#threadId = loaded?.threadId ?? opts.threadId ?? newId();
     this.#state = loaded;
+    this.#stateSignal = createSignal<RunState | undefined>(loaded ? cloneRunState(loaded) : undefined);
   }
   get state(): RunState | undefined {
     return this.#state;
+  }
+  /**
+  * Watch the latest run state held by this session instance.
+  *
+  * The signal is `undefined` until a run is started or loaded. Once a run
+  * exists, it retains the latest checkpoint or terminal state for reactive UI
+  * consumers in this realm.
+  */
+  watch(): ReadonlySignal<RunState | undefined> {
+    return this.#stateSignal;
+  }
+  #setState(state: RunState): void {
+    this.#state = state;
+    this.#stateSignal.set(cloneRunState(state));
   }
   /**
   * Resume a non-suspended run from its persisted checkpoint.
@@ -690,7 +708,7 @@ export class Session {
       },
       scratch: {}
     };
-    this.#state = state;
+    this.#setState(state);
     return this.#drive(state, signal, history, messages, baseRevisionId);
   }
   /**
@@ -790,7 +808,7 @@ export class Session {
       cost: approval.state.cost,
       historyRevisionId: approvedHistory.revisionId
     };
-    this.#state = approvedState;
+    this.#setState(approvedState);
     const thread = await this.#commit(approvedState, approvedHistory, baseRevisionId);
     return this.#drive(approvedState, signal, approvedHistory, approvedHistory.render(), approvedHistory.revisionId, thread);
   }
@@ -850,7 +868,7 @@ export class Session {
       ...this.#state,
       status: 'cancelled'
     };
-    this.#state = state;
+    this.#setState(state);
     const history = state.historyRevisionId ? await this.#opts.store.loadHistory(state.historyRevisionId) : null;
     if (history) {
       await this.#commit(state, history, state.historyRevisionId);
@@ -883,7 +901,7 @@ export class Session {
             status: 'error',
             error: { message: 'Session exceeded maximum step count' }
           };
-          this.#state = state;
+          this.#setState(state);
           await this.#commit(state, history, baseRevisionId, thread);
           throw new Error('Session exceeded maximum step count');
         }
@@ -905,7 +923,7 @@ export class Session {
               ...state,
               status: 'cancelled'
             };
-            this.#state = state;
+            this.#setState(state);
             await this.#commit(state, history, baseRevisionId, thread);
             throw err;
           }
@@ -917,7 +935,7 @@ export class Session {
               stack: e.stack
             }
           };
-          this.#state = state;
+          this.#setState(state);
           await this.#commit(state, history, baseRevisionId, thread);
           throw err;
         }
@@ -940,7 +958,7 @@ export class Session {
             });
           }
         }
-        this.#state = state;
+        this.#setState(state);
         thread = await this.#commit(state, history, baseRevisionId, thread);
         baseRevisionId = history.revisionId;
         this.#opts.onCheckpoint?.(state);
@@ -955,7 +973,7 @@ export class Session {
               payload: r.suspend.payload
             }
           };
-          this.#state = state;
+          this.#setState(state);
           thread = await this.#commit(state, history, baseRevisionId, thread);
           baseRevisionId = history.revisionId;
           return {
@@ -971,7 +989,7 @@ export class Session {
             status: 'done',
             result: text
           };
-          this.#state = state;
+          this.#setState(state);
           await this.#commit(state, history, baseRevisionId, thread);
           return {
             runId: state.runId,
@@ -1010,7 +1028,7 @@ export class Session {
       ...state,
       historyRevisionId: history.revisionId
     };
-    this.#state = nextState;
+    this.#setState(nextState);
     await this.#opts.store.commitSession({
       run: nextState,
       thread: nextThread,

@@ -43,6 +43,7 @@ import { assembleResult as sharedAssembleResult, ModelError as SharedModelError,
 import { anthropic as anthropicFactory, anthropicProvider as createAnthropicProvider } from 'internal:ai/model/anthropic';
 import { openai as openaiFactory, openaiProvider as createOpenAIProvider } from 'internal:ai/model/openai';
 import { hasLlamaCpp as localHasLlamaCpp, local as localFactory, localProvider as createLocalProvider, LocalModelLibraryError as SharedLocalModelLibraryError, LocalModelUnsupportedError as SharedLocalModelUnsupportedError } from 'internal:ai/model/local';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * Chat message role understood by all providers.
 */
@@ -175,6 +176,20 @@ export interface GenerateResult {
   providerMetadata?: Record<string, unknown>;
 }
 /**
+* Current retained view of a model stream.
+*
+* This is a lossy read model for UIs and progress meters. Use the stream
+* itself when every provider event must be processed.
+*/
+export interface ModelStreamState {
+  /** Text folded from `text_delta` events, ordered by content index. */
+  text: string;
+  /** Latest usage values reported by the provider. */
+  usage: Usage;
+  /** Latest stop reason, or `end_turn` before a stop event arrives. */
+  stopReason: StopReason;
+}
+/**
 * Feature metadata exposed by chat model adapters.
 *
 * Capabilities are semantic flags, not provider names. Agent code uses these
@@ -249,6 +264,8 @@ export type StreamEvent = {
 * Async stream of model events.
 */
 export interface ModelStream extends AsyncIterable<StreamEvent> {
+  /** Retained state folded from events observed so far. */
+  readonly state: ReadonlySignal<ModelStreamState>;
   result(): Promise<GenerateResult>;
 }
 /**

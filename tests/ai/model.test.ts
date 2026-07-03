@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import { assembleResult } from 'fino:ai/model';
+import { ModelStreamImpl } from 'internal:ai/shared';
 import type { StreamEvent } from 'fino:ai/model';
 async function* events(...items: StreamEvent[]) {
   for (const item of items) yield item;
@@ -194,5 +195,36 @@ describe('assembleResult', () => {
     t.equal(result.stopReason, 'end_turn');
     t.equal(result.usage.inputTokens, 0);
     t.equal(result.usage.outputTokens, 0);
+  });
+});
+
+describe('ModelStream.state', () => {
+  it('folds streamed model events while result consumes the stream', async (t) => {
+    const stream = new ModelStreamImpl(events({
+      type: 'text_delta',
+      index: 0,
+      text: 'Hel'
+    }, {
+      type: 'text_delta',
+      index: 0,
+      text: 'lo'
+    }, {
+      type: 'usage',
+      usage: {
+        inputTokens: 2,
+        outputTokens: 1
+      }
+    }, {
+      type: 'stop',
+      reason: 'end_turn'
+    }));
+    const seen: string[] = [];
+    stream.state.subscribe((state) => seen.push(`${state.text}:${state.stopReason}`));
+    const result = await stream.result();
+    t.equal(result.text, 'Hello', 'result still assembles the stream');
+    t.equal(stream.state.get().text, 'Hello', 'state retains final text');
+    t.equal(stream.state.get().usage.inputTokens, 2, 'state retains usage');
+    t.equal(stream.state.get().stopReason, 'end_turn', 'state retains stop reason');
+    t.ok(seen.includes('Hello:end_turn'), 'subscriber saw final folded state');
   });
 });

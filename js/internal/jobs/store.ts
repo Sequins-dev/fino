@@ -78,6 +78,21 @@ export interface JobRecord {
   finishedAt: number | null;
 }
 /**
+* Aggregate queue counts used by live jobs dashboards.
+*
+* @internal
+*/
+export interface QueueStats {
+  pending: number;
+  running: number;
+  waiting: number;
+  done: number;
+  error: number;
+  dead: number;
+  cancelled: number;
+  oldestPendingAt: number | null;
+}
+/**
 * One persisted schedule row.
 *
 * @internal
@@ -754,6 +769,45 @@ export class JobsStore {
     offset?: number;
   } = {}): Promise<JobRecord[]> {
     return this.#op(() => this.#listJobsRaw(filter));
+  }
+  /**
+  * Count jobs by status for one queue or all queues.
+  *
+  * @internal
+  */
+  queueStats(queue?: string): Promise<QueueStats> {
+    return this.#op(() => this.#queueStatsRaw(queue));
+  }
+  async #queueStatsRaw(queue?: string): Promise<QueueStats> {
+    const stats: QueueStats = {
+      pending: 0,
+      running: 0,
+      waiting: 0,
+      done: 0,
+      error: 0,
+      dead: 0,
+      cancelled: 0,
+      oldestPendingAt: null
+    };
+    const params: Record<string, SqlValue> = {};
+    const where = queue === undefined ? '' : 'WHERE queue = :queue';
+    if (queue !== undefined) params.queue = queue;
+    const stmt = this.#db.prepare(`SELECT status, COUNT(*) AS count, MIN(CASE WHEN status = 'pending' THEN run_at ELSE NULL END) AS oldest_pending_at FROM jobs ${where} GROUP BY status`);
+    try {
+      for (const row of await stmt.all(params)) {
+        const status = String(row.status) as JobStatus;
+        const count = toNum(row.count!);
+        if (status === 'claimed') stats.running += count;
+        else if (status in stats && status !== 'oldestPendingAt') (stats as Record<string, number | null>)[status] = count;
+        if (row.oldest_pending_at !== null && row.oldest_pending_at !== undefined) {
+          const oldest = toNum(row.oldest_pending_at);
+          stats.oldestPendingAt = stats.oldestPendingAt === null ? oldest : Math.min(stats.oldestPendingAt, oldest);
+        }
+      }
+    } finally {
+      stmt.finalize();
+    }
+    return stats;
   }
   /**
   * Private method `#listJobsRaw` used by `JobsStore`.

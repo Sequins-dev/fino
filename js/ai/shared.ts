@@ -27,7 +27,8 @@
 */
 import { env } from 'fino:process';
 import { parseEventStream, EventSourceReader } from 'fino:net/http/eventstream';
-import type { StreamEvent, GenerateResult, ModelStream } from 'fino:ai/model';
+import { createSignal } from 'fino:signals';
+import type { StreamEvent, GenerateResult, ModelStream, ModelStreamState } from 'fino:ai/model';
 import type { SchemaBuilder } from 'fino:validate';
 /**
 * Default Anthropic API base URL.
@@ -216,17 +217,96 @@ export async function assembleResult(events: AsyncIterable<StreamEvent>): Promis
   };
 }
 /**
+* Create the initial retained state for a model stream.
+*
+* @internal
+*/
+export function initialModelStreamState(): ModelStreamState {
+  return {
+    text: '',
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0
+    },
+    stopReason: 'end_turn'
+  };
+}
+
+function renderTextByIndex(textByIndex: Map<number, string>): string {
+  return [...textByIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, text]) => text).join('');
+}
+
+/**
+* Incrementally fold one provider event into a retained model stream state.
+*
+* @internal
+*/
+export function foldModelStreamEvent(state: ModelStreamState, event: StreamEvent, textByIndex: Map<number, string>): ModelStreamState {
+  switch (event.type) {
+    case 'text_delta':
+      textByIndex.set(event.index, (textByIndex.get(event.index) ?? '') + event.text);
+      return {
+        ...state,
+        text: renderTextByIndex(textByIndex)
+      };
+    case 'usage':
+      return {
+        ...state,
+        usage: event.usage
+      };
+    case 'stop':
+      return {
+        ...state,
+        stopReason: event.reason
+      };
+    case 'error':
+      return {
+        ...state,
+        stopReason: 'error'
+      };
+    default:
+      return state;
+  }
+}
+/**
 * Basic `ModelStream` implementation backed by an async generator.
 */
 export class ModelStreamImpl implements ModelStream {
   #gen: AsyncGenerator<StreamEvent>;
+  #state = createSignal<ModelStreamState>(initialModelStreamState());
+  #textByIndex = new Map<number, string>();
+
   constructor(gen: AsyncGenerator<StreamEvent>) {
     this.#gen = gen;
   }
+
+  /** Retained state folded from provider events observed so far. */
+  get state() {
+    return this.#state;
+  }
+
+  #fold(event: StreamEvent): void {
+    this.#state.set((state) => foldModelStreamEvent(state, event, this.#textByIndex));
+  }
+
   [Symbol.asyncIterator](): AsyncIterator<StreamEvent> {
-    return this.#gen;
+    const iterator = this.#gen;
+    const fold = (event: StreamEvent) => this.#fold(event);
+    return {
+      async next() {
+        const next = await iterator.next();
+        if (!next.done) fold(next.value);
+        return next;
+      },
+      return: iterator.return?.bind(iterator),
+      throw: iterator.throw?.bind(iterator)
+    };
   }
   result(): Promise<GenerateResult> {
-    return assembleResult(this.#gen);
+    const self = this;
+    async function* folded() {
+      for await (const event of self) yield event;
+    }
+    return assembleResult(folded());
   }
 }

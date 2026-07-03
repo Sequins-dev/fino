@@ -44,7 +44,7 @@ describe('fino:storage', () => {
       clock: () => new Date('2020-01-02T03:04:05Z')
     });
     const head = await client.headObject('a.txt');
-    t.equal(head.size, 5n);
+    t.equal(head.size, 5);
     const got = await client.getObject('a.txt');
     t.equal(await got.text(), 'hello');
     t.equal(calls[0]!.method, 'HEAD');
@@ -63,7 +63,7 @@ describe('fino:storage', () => {
       fetch: async (req) => {
         const key = new URL(req.url).pathname.slice(1);
         if (req.method === 'PUT') {
-          objects.set(key, new TextEncoder().encode(String(req.body ?? '')));
+          objects.set(key, await req.bytes());
           return new Response('');
         }
         if (req.method === 'GET') return new Response(objects.get(key) ?? new Uint8Array());
@@ -77,7 +77,7 @@ describe('fino:storage', () => {
     }));
     await fs.writeFile('/note.txt', 'hello');
     t.equal(await fs.readFile('/note.txt'), 'hello');
-    t.equal((await fs.stat('/note.txt')).size, 5n);
+    t.equal((await fs.stat('/note.txt')).size, 5);
     await fs.unlink('/note.txt');
     await t.rejects(() => fs.stat('/note.txt'), /S3/);
   });

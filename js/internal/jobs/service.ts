@@ -14,7 +14,7 @@
 *
 * @internal
 */
-import { JobsStore, backoffDelayMs, type JobRecord, type JobRetryPolicy, type JobStatus, type ScheduleRecord } from './store.ts';
+import { JobsStore, backoffDelayMs, type JobRecord, type JobRetryPolicy, type JobStatus, type QueueStats, type ScheduleRecord } from './store.ts';
 import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
 import { RealmPool } from '../../realm/pool.ts';
@@ -256,6 +256,14 @@ export class JobsService {
     offset?: number;
   }): Promise<JobRecord[]> {
     return this.#store.listJobs(filter ?? {});
+  }
+  /**
+  * Aggregate queue counts for dashboards and reactive read models.
+  *
+  * @internal
+  */
+  stats(queue?: string): Promise<QueueStats> {
+    return this.#store.queueStats(queue);
   }
   /**
   * List schedules.

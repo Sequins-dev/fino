@@ -1,11 +1,32 @@
 import { describe, it } from 'fino:test/test';
-import { InMemoryWorkflowStore, NonRetryableWorkflowError, SqliteWorkflowStore, WorkflowRun, activity, workflow } from 'fino:workflow';
+import { InMemoryWorkflowStore, NonRetryableWorkflowError, SqliteWorkflowStore, WorkflowRun, activity, observableWorkflowStore, watchRun, workflow } from 'fino:workflow';
 import { v } from 'fino:validate';
 import { DiskFileSystem } from 'fino:file';
 function tmpPath(): string {
   return `/tmp/fino-workflow-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
 describe('fino:workflow', () => {
+  it('watchRun refreshes when an observable store saves a run', async (t) => {
+    const store = observableWorkflowStore(new InMemoryWorkflowStore());
+    const run = watchRun(store, 'observed-run');
+    const statuses: string[] = [];
+    run.subscribe((state) => statuses.push(state?.status ?? 'missing'));
+    await store.save({
+      runId: 'observed-run',
+      workflowId: 'observed',
+      status: 'running',
+      cursor: 0,
+      input: null,
+      steps: [],
+      state: {},
+      signals: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    t.equal(run.get()?.status, 'running', 'watch retains saved state');
+    t.deepEqual(statuses, ['running'], 'subscriber saw store update');
+  });
   it('runs checkpointed steps and skips completed steps on resume', async (t) => {
     const store = new InMemoryWorkflowStore();
     const calls: string[] = [];

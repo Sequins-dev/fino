@@ -14,9 +14,11 @@
 *
 * @internal
 */
-import type { Model, ModelMessage, StreamEvent, StopReason, ToolUsePart, ContentPart, Usage, ToolDefinition, GenerateRequest, ResponseFormat } from 'fino:ai/model';
-import { assembleResult, ModelError, normalizeSchema } from 'internal:ai/shared';
+import type { Model, ModelMessage, StreamEvent, StopReason, ToolUsePart, ContentPart, Usage, ToolDefinition, GenerateRequest, ResponseFormat, ModelStreamState } from 'fino:ai/model';
+import { assembleResult, foldModelStreamEvent, initialModelStreamState, ModelError, normalizeSchema } from 'internal:ai/shared';
 import type { SchemaLike } from 'internal:ai/shared';
+import { createSignal } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 import { Tool, toToolDefinition, SuspendSignal } from 'fino:ai/tool';
 import type { ToolRunContext } from 'fino:ai/tool';
 import { Context } from 'fino:context';
@@ -264,6 +266,24 @@ async function* asyncOf<T>(items: T[]): AsyncGenerator<T> {
 export interface AgentStream {
   reader: Reader<AgentEvent>;
   result: Promise<AgentResult>;
+  state: ReadonlySignal<AgentRunView>;
+}
+/**
+* Retained current view of an agent stream.
+*
+* This signal-shaped read model is intentionally coarse and lossy. Keep using
+* `AgentStream.reader` when every event is significant.
+*/
+export interface AgentRunView {
+  status: 'streaming' | 'tool' | 'suspended' | 'done' | 'error';
+  text: string;
+  currentTool: {
+    id: string;
+    name: string;
+  } | null;
+  usage: Usage;
+  cost?: number;
+  stepIndex: number;
 }
 /**
 * Iterate over only text deltas from an agent stream.
@@ -271,6 +291,84 @@ export interface AgentStream {
 export async function* streamText(stream: AgentStream): AsyncGenerator<string> {
   for await (const ev of stream.reader) {
     if (ev.type === 'model_event' && ev.event.type === 'text_delta') yield ev.event.text;
+  }
+}
+function initialAgentRunView(): AgentRunView {
+  return {
+    status: 'streaming',
+    text: '',
+    currentTool: null,
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0
+    },
+    stepIndex: 0
+  };
+}
+function foldAgentEvent(state: AgentRunView, modelState: ModelStreamState, event: AgentEvent, textByIndex: Map<number, string>): AgentRunView {
+  switch (event.type) {
+    case 'model_event': {
+      const nextModel = foldModelStreamEvent(modelState, event.event, textByIndex);
+      modelState.text = nextModel.text;
+      modelState.usage = nextModel.usage;
+      modelState.stopReason = nextModel.stopReason;
+      return {
+        ...state,
+        status: event.event.type === 'error' ? 'error' : state.status,
+        text: nextModel.text,
+        usage: nextModel.usage
+      };
+    }
+    case 'step_start':
+      return {
+        ...state,
+        status: 'streaming',
+        currentTool: null,
+        stepIndex: event.stepIndex
+      };
+    case 'step_end':
+      return {
+        ...state,
+        status: 'streaming',
+        stepIndex: event.stepIndex + 1
+      };
+    case 'tool_start':
+      return {
+        ...state,
+        status: 'tool',
+        currentTool: {
+          id: event.id,
+          name: event.name
+        },
+        stepIndex: event.stepIndex
+      };
+    case 'tool_result':
+    case 'tool_error':
+      return {
+        ...state,
+        status: event.type === 'tool_error' ? 'error' : 'streaming',
+        currentTool: null,
+        stepIndex: event.stepIndex
+      };
+    case 'suspend':
+      return {
+        ...state,
+        status: 'suspended',
+        currentTool: null,
+        stepIndex: event.stepIndex
+      };
+    case 'final':
+      return {
+        ...state,
+        status: 'done',
+        currentTool: null,
+        text: event.result.text,
+        usage: event.result.usage,
+        cost: event.result.cost,
+        stepIndex: event.result.steps.length
+      };
+    default:
+      return state;
   }
 }
 function providerName(model: Model): string {
@@ -1248,7 +1346,13 @@ export class AgentRuntime {
   stream(input: RunInput): AgentStream {
     const ch = new Channel<AgentEvent>();
     const w = ch.writer;
-    const onEvent = (ev: AgentEvent) => void w.write(ev);
+    const state = createSignal<AgentRunView>(initialAgentRunView());
+    const modelState = initialModelStreamState();
+    const textByIndex = new Map<number, string>();
+    const onEvent = (ev: AgentEvent) => {
+      state.set((current) => foldAgentEvent(current, modelState, ev, textByIndex));
+      void w.write(ev);
+    };
     const result = this.#runWithOutput({
       messages: input.messages,
       stepIndex: 0,
@@ -1258,15 +1362,30 @@ export class AgentRuntime {
       },
       signal: input.signal
     }, onEvent).then((r) => {
+      state.set((current) => current.status === 'done' ? current : {
+        ...current,
+        status: 'done',
+        currentTool: null,
+        text: r.text,
+        usage: r.usage,
+        cost: r.cost,
+        stepIndex: r.steps.length
+      });
       void w.close();
       return r;
     }, (err) => {
+      state.set((current) => ({
+        ...current,
+        status: 'error',
+        currentTool: null
+      }));
       w.fail(err);
       throw err;
     });
     return {
       reader: ch.reader,
-      result
+      result,
+      state
     };
   }
 }

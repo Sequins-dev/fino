@@ -42,6 +42,8 @@
 import { Realm, type RealmOptions, type RealmFn } from './index.ts';
 import { Context } from 'fino:context';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
+import { createSignal } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 const _topicPoolCall = topic(otelRuntimeTopic('realm_pool', 'call', 'start'));
 const _topicPoolCallEnd = topic(otelRuntimeTopic('realm_pool', 'call', 'end'));
 const _topicPoolQueue = topic(otelRuntimeTopic('realm_pool', 'queue', 'start'));
@@ -99,6 +101,19 @@ interface PoolWorker {
   avgLatencyMs: number;
   lastSubmitTime: number;
   completedCount: number;
+}
+/**
+* Retained pool counters for dashboards and status views.
+*/
+export interface RealmPoolStats {
+  /** Configured worker slot count. */
+  size: number;
+  /** In-flight calls across all workers. */
+  pending: number;
+  /** Calls waiting in the exclusive-mode queue. */
+  queued: number;
+  /** Number of worker slot replacements after construction. */
+  restarts: number;
 }
 function estimatedCompletionMs(w: PoolWorker): number {
   if (w.completedCount === 0) return w.activeTasks;
@@ -416,6 +431,13 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   * @internal
   */
   #queue: QueuedCall[] = [];
+  #restarts = 0;
+  #stats = createSignal<RealmPoolStats>({
+    size: 0,
+    pending: 0,
+    queued: 0,
+    restarts: 0
+  });
   /**
   * Create a pool of `size` warm thread-realm workers.
   *
@@ -453,6 +475,18 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     }
     this.#maxQueue = opts.maxQueue ?? Infinity;
     this.#workers = Array.from({ length: size }, (_, i) => this.#spawnWorker(i));
+    this.#publishStats();
+  }
+  #snapshotStats(): RealmPoolStats {
+    return {
+      size: this.size,
+      pending: this.pending,
+      queued: this.queued,
+      restarts: this.#restarts
+    };
+  }
+  #publishStats(): void {
+    this.#stats.set(this.#snapshotStats());
   }
   /**
   * Private method `#spawnWorker` used by `RealmPool`.
@@ -511,6 +545,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
       if (call.timer !== null) clearTimeout(call.timer);
       worker.pending.delete(correlationId);
       worker.activeTasks = Math.max(0, worker.activeTasks - 1);
+      this.#publishStats();
       // Update completion rate / latency EMAs.
       const latencyMs = performance.now() - call.submittedAt;
       worker.avgLatencyMs = worker.completedCount === 0 ? latencyMs : ema(worker.avgLatencyMs, latencyMs);
@@ -558,7 +593,9 @@ export class RealmPool<F extends RealmFn = RealmFn> {
       // already recycled (exclusive mode replaces slots eagerly; the old
       // worker's run() settling must not respawn a second replacement).
       if (!this.#closed && this.#workers[slotIndex] === worker) {
+        this.#restarts++;
         this.#workers[slotIndex] = this.#spawnWorker(slotIndex);
+        this.#publishStats();
         this.#pumpQueue();
       }
     });
@@ -617,6 +654,15 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     return this.#queue.length;
   }
   /**
+  * Retained pool statistics.
+  *
+  * The signal updates when calls are dispatched, completed, queued, rejected,
+  * or when a worker slot is replaced.
+  */
+  get stats(): ReadonlySignal<RealmPoolStats> {
+    return this.#stats;
+  }
+  /**
   * Dispatch `args` to the least-loaded worker and return the result.
   *
   * The current `correlationIdContext` value is propagated as a new correlation
@@ -663,6 +709,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
               enqueuedAt: performance.now(),
               queueStartPublished
             });
+            this.#publishStats();
           }
           return;
         }
@@ -688,12 +735,14 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     }
     worker.lastSubmitTime = now;
     worker.activeTasks++;
+    this.#publishStats();
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (this.#timeout > 0) {
       timer = setTimeout(() => {
         if (!worker.pending.has(correlationId)) return;
         worker.pending.delete(correlationId);
         worker.activeTasks = Math.max(0, worker.activeTasks - 1);
+        this.#publishStats();
         reject(new Error(`RealmPool call timed out after ${this.#timeout}ms`));
         // Exclusive workers are single-occupancy: a timed-out task would
         // wedge its slot forever, so kill the run and recycle the worker.
@@ -747,9 +796,11 @@ export class RealmPool<F extends RealmFn = RealmFn> {
   #recycleWorker(worker: PoolWorker): void {
     const slot = this.#workers.indexOf(worker);
     if (slot === -1 || this.#closed) return;
+    this.#restarts++;
     this.#workers[slot] = this.#spawnWorker(slot);
     worker.realm.terminate();
     worker.realm.port.close();
+    this.#publishStats();
     this.#pumpQueue();
   }
   /**
@@ -765,6 +816,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
       const worker = this.#idleWorker();
       if (worker === undefined) return;
       const queued = this.#queue.shift()!;
+      this.#publishStats();
       if (queued.queueStartPublished || _topicPoolQueueEnd.hasSubscribers) {
         _topicPoolQueueEnd.publish(otelRuntimeEvent('realm_pool', 'queue', 'end', {
           correlationId: queued.correlationId,
@@ -797,6 +849,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
     for (const queued of this.#queue.splice(0)) {
       queued.reject(new Error('RealmPool is closed'));
     }
+    this.#publishStats();
     // Wait for all pending calls to settle (resolve or reject).
     const drains: Promise<unknown>[] = [];
     for (const w of this.#workers) {
@@ -829,6 +882,7 @@ export class RealmPool<F extends RealmFn = RealmFn> {
         }
         w.pending.clear();
       }
+      this.#publishStats();
     }
     for (const w of this.#workers) {
       w.realm.terminate();

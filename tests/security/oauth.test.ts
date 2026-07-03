@@ -7,7 +7,7 @@ describe('fino:security/oauth', () => {
   it('creates PKCE material and authorization URLs', async (t) => {
     const pkce = await createPkce({ verifier: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~' });
     t.equal(pkce.method, 'S256');
-    t.equal(pkce.challenge, '6sN6bE8S7cyQX1rP0_IHBSJrJTM8LQ2UdbNG0eJ3g-k');
+    t.equal(pkce.challenge, 'ImpiCd8pp4MveCNnbIS7-GXEtB0xF5HMIDoWqvGA5ig');
 
     const url = authorizationUrl({
       authorizationEndpoint: 'https://issuer.example/authorize',

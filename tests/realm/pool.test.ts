@@ -45,6 +45,24 @@ describe('RealmPool basics', () => {
     t.equal(c, 'gamma', 'third call echoed');
     await pool.close();
   });
+  it('stats signal follows pending and completed work', async (t) => {
+    const pool = new RealmPool<typeof slowFn>({
+      entry: new URL('./fixtures/slow-fn.ts', import.meta.url).pathname,
+      size: 1
+    });
+    const snapshots: number[] = [];
+    const dispose = pool.stats.subscribe((stats) => snapshots.push(stats.pending));
+    const call = pool.call(50, 'done');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    t.equal(pool.stats.get().size, 1, 'stats retain pool size');
+    t.equal(pool.stats.get().pending, 1, 'stats report pending call');
+    t.equal(await call, 'done', 'call completed');
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    t.equal(pool.stats.get().pending, 0, 'stats report completion');
+    t.ok(snapshots.includes(1), 'subscriber saw pending work');
+    dispose();
+    await pool.close();
+  });
   it('propagates errors thrown inside the worker', async (t) => {
     const pool = new RealmPool<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,

@@ -45,7 +45,7 @@
 * ```
 */
 import { AgentRuntime, streamText as runtimeStreamText } from 'internal:ai/runtime';
-import type { AgentRuntimeOptions, AgentState, StepResult, RunInput, AgentResult, AgentStream, AgentEvent, ToolApprovalRequest } from 'internal:ai/runtime';
+import type { AgentRuntimeOptions, AgentState, StepResult, RunInput, AgentResult, AgentStream, AgentEvent, AgentRunView, ToolApprovalRequest } from 'internal:ai/runtime';
 import { appendOnlyHistoryStrategy } from 'fino:ai/context';
 import type { HistoryStrategy } from 'fino:ai/context';
 import { tool } from 'fino:ai/tool';
@@ -59,7 +59,7 @@ function normalizeInput(input: string | RunInput): RunInput {
   }
   return input;
 }
-export type { AgentState, StepResult, RunInput, AgentResult, AgentStream, AgentEvent };
+export type { AgentState, StepResult, RunInput, AgentResult, AgentStream, AgentEvent, AgentRunView };
 /**
 * Iterate over only text deltas from an agent stream.
 */

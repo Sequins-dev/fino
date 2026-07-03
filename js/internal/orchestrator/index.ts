@@ -25,6 +25,8 @@
 */
 import { Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
 import { createJobsControlFacade } from '../jobs/control.ts';
+import { createSignal } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 
 /**
 * Kind of a managed workload.
@@ -54,6 +56,7 @@ export interface Workload {
 
 let _nextWorkloadId = 0;
 const _workloads = new Map<string, Workload>();
+const _workloadsSignal = createSignal<Workload[]>([]);
 const _services = new Map<string, unknown>();
 const _serviceFactories = new Map<string, () => unknown>();
 
@@ -72,6 +75,15 @@ export function workloads(): Workload[] {
 }
 
 /**
+* Retained signal of the currently managed workloads.
+*
+* @internal
+*/
+export function workloadsSignal(): ReadonlySignal<Workload[]> {
+  return _workloadsSignal;
+}
+
+/**
 * Register a workload with the orchestrator and return its record.
 *
 * Used by orchestrator services (e.g. the jobs service) to attach workloads
@@ -87,6 +99,7 @@ export function registerWorkload(kind: WorkloadKind, handle: unknown): Workload 
     handle
   };
   _workloads.set(workload.id, workload);
+  _workloadsSignal.set(workloads());
   return workload;
 }
 
@@ -100,6 +113,7 @@ export function releaseWorkload(id: string, status: Exclude<WorkloadStatus, 'run
   if (workload === undefined) return;
   workload.status = status;
   _workloads.delete(id);
+  _workloadsSignal.set(workloads());
 }
 
 /**

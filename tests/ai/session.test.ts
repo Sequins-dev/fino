@@ -275,6 +275,24 @@ describe('Session', () => {
       } catch {}
     }
   });
+  it('watch() exposes the current run state and terminal updates', async (t) => {
+    const store = new InMemorySessionStore();
+    const a = agent({
+      model: scriptModel([endTurn('watched')])
+    });
+    const sess = session({ store, agent: a });
+    const states: string[] = [];
+    const watched = sess.watch();
+    watched.subscribe((state) => {
+      if (state) states.push(`${state.status}:${state.stepIndex}`);
+    });
+    const result = await sess.start('go');
+    t.equal(result.status, 'done', 'run completed');
+    t.equal(watched.get()?.status, 'done', 'watch retains terminal state');
+    t.equal(watched.get()?.result, 'watched', 'watch retains result');
+    t.ok(states.includes('running:0'), 'subscriber saw initial running state');
+    t.ok(states.includes('done:1'), 'subscriber saw terminal state');
+  });
   it('crash/restart resume: re-drives from persisted mid-run state', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
