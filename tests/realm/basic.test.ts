@@ -3,6 +3,7 @@
 */
 import { describe, it } from 'fino:test/test';
 import { Realm, ImportMap } from 'fino:realm';
+import type realmDataFn from './fixtures/realm-data-fn.ts';
 describe('Realm lifecycle', () => {
   it('creates and runs a child realm that exits naturally', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
@@ -27,6 +28,22 @@ describe('Realm lifecycle', () => {
     }
     await p;
     t.ok(true, 'disposed realm resolved');
+  });
+  it('keeps RealmOptions.data separate from OTLP endpoint metadata', async (t) => {
+    const realm = new Realm<typeof realmDataFn>({
+      thread: true,
+      entry: new URL('./fixtures/realm-data-fn.ts', import.meta.url).pathname,
+      data: { role: 'worker' },
+      otlpEndpoint: 'http://collector.example:4318/base'
+    });
+    const raw = await realm.call();
+    t.equal(raw, JSON.stringify({ role: 'worker' }), 'child sees only caller-provided data');
+  });
+  it('rejects empty Realm OTLP endpoints', (t) => {
+    t.throws(() => new Realm({
+      entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
+      otlpEndpoint: ''
+    }), /otlpEndpoint must be a non-empty string/, 'empty endpoint is rejected');
   });
 });
 describe('Realm.fromSource', () => {

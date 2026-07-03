@@ -291,8 +291,9 @@ fn create_context(
     let watch_mode = args.get(4).boolean_value(scope);
     let repl_mode = args.get(5).boolean_value(scope);
 
-    // --- Parse optional realm data JSON (7th arg) ---
+    // --- Parse optional realm data JSON (7th arg) and bootstrap metadata (8th arg) ---
     let realm_data = optional_string_arg(scope, args.get(6));
+    let realm_bootstrap_data = optional_string_arg(scope, args.get(7));
 
     // --- Queue the pending create; pre-allocate a Pending slot ---
     let handle_idx = {
@@ -310,6 +311,7 @@ fn create_context(
             watch_mode,
             repl_mode,
             realm_data,
+            realm_bootstrap_data,
         });
         idx
     };
@@ -498,9 +500,11 @@ fn create_thread_context(
 
     let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
-    // --- Parse optional watch flag (4th arg) and realm data JSON (5th arg) ---
+    // --- Parse optional watch flag (4th arg), realm data JSON (5th arg),
+    // and bootstrap metadata (6th arg) ---
     let watch_mode = args.get(3).boolean_value(scope);
     let realm_data = optional_string_arg(scope, args.get(4));
+    let realm_bootstrap_data = optional_string_arg(scope, args.get(5));
 
     // --- Spawn the thread realm ---
     let spawn_config = thread::SpawnConfig {
@@ -510,6 +514,7 @@ fn create_thread_context(
         package_map_json,
         watch_mode,
         realm_data,
+        realm_bootstrap_data,
     };
 
     let handle = match thread::spawn_thread_realm(spawn_config) {
@@ -781,9 +786,10 @@ fn create_process_context(
 
     let package_map_json = resolve_child_package_map(scope, &process_env.root);
 
-    // Optional watch flag (4th arg) and realm data JSON (5th arg)
+    // Optional watch flag (4th arg), realm data JSON (5th arg), and bootstrap metadata (6th arg)
     let watch_mode = args.get(3).boolean_value(scope);
     let realm_data = optional_string_arg(scope, args.get(4));
+    let realm_bootstrap_data = optional_string_arg(scope, args.get(5));
 
     let spawn_args = process::SpawnArgs {
         process_env,
@@ -792,6 +798,7 @@ fn create_process_context(
         package_map_json,
         watch_mode,
         realm_data,
+        realm_bootstrap_data,
     };
     let handle = match process::spawn_process_realm(spawn_args) {
         Ok(h) => h,

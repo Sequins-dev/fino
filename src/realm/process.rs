@@ -184,6 +184,8 @@ pub struct SpawnConfig {
     pub watch_mode: bool,
     #[serde(default)]
     pub realm_data: Option<String>,
+    #[serde(default)]
+    pub realm_bootstrap_data: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +229,7 @@ pub struct SpawnArgs {
     pub package_map_json: Option<String>,
     pub watch_mode: bool,
     pub realm_data: Option<String>,
+    pub realm_bootstrap_data: Option<String>,
 }
 
 /// Spawn a new process realm and return the parent-side handle.
@@ -268,6 +271,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         args: args.process_env.args.clone(),
         watch_mode: args.watch_mode,
         realm_data: args.realm_data,
+        realm_bootstrap_data: args.realm_bootstrap_data,
         env_vars: args.process_env.env_vars.clone(),
         exec_path: args.process_env.exec_path.clone(),
         package_map_json: args.package_map_json,
@@ -466,6 +470,7 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         timing_label: "process-realm",
         watch_mode: config.watch_mode,
         realm_data: config.realm_data,
+        realm_bootstrap_data: config.realm_bootstrap_data,
         reload_requested_signal: None, // process realm uses exit code 75
     });
 

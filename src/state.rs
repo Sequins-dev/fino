@@ -285,6 +285,9 @@ pub struct PendingRealm {
     /// JSON-serialized `RealmOptions.data` payload, exposed to the child via
     /// `internal:realm-bridge.getRealmData()`.
     pub realm_data: Option<String>,
+
+    /// JSON-serialized runtime bootstrap metadata, separate from user data.
+    pub realm_bootstrap_data: Option<String>,
 }
 
 /// Slot in the parent's `child_contexts` Vec.
@@ -448,6 +451,9 @@ pub struct FinoState {
     /// and for children spawned without `data`.
     pub realm_data: Option<String>,
 
+    /// Runtime-owned bootstrap metadata, separate from `RealmOptions.data`.
+    pub realm_bootstrap_data: Option<String>,
+
     /// The pollable fd of this realm's event-loop backend (kqueue fd on macOS,
     /// io_uring ring fd on Linux; -1 when the backend has none). Written by the
     /// child via `internal:realm-bridge.setLoopFd()`; read by the parent via
@@ -533,6 +539,7 @@ impl FinoState {
             watch_mode: false,
             repl_mode: false,
             realm_data: None,
+            realm_bootstrap_data: None,
             loop_fd: None,
             reload_requested_signal: None,
             entry_error: None,
@@ -565,6 +572,7 @@ impl FinoState {
         watch_mode: bool,
         repl_mode: bool,
         realm_data: Option<String>,
+        realm_bootstrap_data: Option<String>,
         reload_requested_signal: Option<Arc<AtomicBool>>,
     ) -> Self {
         Self {
@@ -595,6 +603,7 @@ impl FinoState {
             watch_mode,
             repl_mode,
             realm_data,
+            realm_bootstrap_data,
             loop_fd: None,
             reload_requested_signal,
             entry_error: None,

@@ -171,6 +171,19 @@ export interface SerializedSpawnConfig {
   * ```
   */
   rules: unknown[];
+  /**
+  * Optional runtime bootstrap metadata for the target realm.
+  *
+  * The cluster layer treats this value as opaque JSON. The target node
+  * serializes it for `internal:realm-bridge.getRealmBootstrapData()` when it
+  * creates the child thread realm.
+  *
+  * ```ts
+  * const config = { entry: 'main.ts', root: '.', rules: [], bootstrapData: { cliOtel: { endpoint: 'http://127.0.0.1:4318' } } };
+  * config.bootstrapData;
+  * ```
+  */
+  bootstrapData?: unknown;
 }
 // ---------------------------------------------------------------------------
 // Message union
@@ -419,7 +432,8 @@ function parseSpawnConfig(value: unknown): SerializedSpawnConfig {
   return {
     entry: requireString(value, 'entry'),
     root: requireString(value, 'root'),
-    rules
+    rules,
+    ...'bootstrapData' in value ? { bootstrapData: value.bootstrapData } : {}
   };
 }
 function isIdCode(code: number): boolean {

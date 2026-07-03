@@ -20,6 +20,7 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "getWatchMode",
         "getReplMode",
         "getRealmData",
+        "getRealmBootstrapData",
         "setLoopFd",
     ]
     .iter()
@@ -54,6 +55,7 @@ fn eval_steps<'a>(
     set_fn!("getWatchMode", get_watch_mode);
     set_fn!("getReplMode", get_repl_mode);
     set_fn!("getRealmData", get_realm_data);
+    set_fn!("getRealmBootstrapData", get_realm_bootstrap_data);
     set_fn!("setLoopFd", set_loop_fd);
 
     Some(v8::undefined(scope).into())
@@ -87,6 +89,24 @@ fn get_realm_data(
     let state_rc = get_state(scope);
     let st = state_rc.borrow();
     match &st.realm_data {
+        Some(d) => {
+            let s = v8::String::new(scope, d).unwrap();
+            rv.set(s.into());
+        }
+        None => rv.set(v8::undefined(scope).into()),
+    }
+}
+
+/// Returns the JSON-serialized runtime bootstrap metadata string passed at
+/// creation time, or `undefined` when none was provided.
+fn get_realm_bootstrap_data(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let state_rc = get_state(scope);
+    let st = state_rc.borrow();
+    match &st.realm_bootstrap_data {
         Some(d) => {
             let s = v8::String::new(scope, d).unwrap();
             rv.set(s.into());

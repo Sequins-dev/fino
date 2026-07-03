@@ -1,20 +1,19 @@
 /**
-* internal/commands/test — internal runtime module.
+* fino:commands/test — reusable `fino test` command task.
 *
 * Builds the `fino test` command. Arguments may be direct files, directories,
 * or simple glob patterns. Matching test modules are imported for registration
 * side effects before execution is delegated to `fino:test/test`.
 *
 * ```js
-* import { createTestCommand } from 'internal:commands/test';
-* const command = createTestCommand();
+* import testCommand from 'fino:commands/test';
+* const command = testCommand;
 * console.log(command.name);
 * ```
 *
-* @internal
 */
-import { cwd } from '../../process.ts';
-import { Task } from '../../task.ts';
+import { cwd } from '../process.ts';
+import { Task } from '../task.ts';
 import { DiskFileSystem } from 'fino:file';
 import { allowInternalForTests } from 'internal:loader-hooks';
 function normalizeModuleSpecifier(path: string): string {
@@ -67,16 +66,12 @@ async function expandArg(arg: string): Promise<string[]> {
 * command throws when no files are supplied or expansion finds no test files.
 *
 * ```js
-* import { createTestCommand } from 'internal:commands/test';
-* const test = createTestCommand();
+* import test from 'fino:commands/test';
 * await test.parse(['--filter', 'socket', 'tests/net']);
 * ```
 *
-* @returns A configured `Task` instance for `fino test`.
-* @internal
 */
-export function createTestCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'test',
     description: 'Run test files',
     outputMode: 'both',
@@ -158,5 +153,5 @@ export function createTestCommand(): Task {
         description: 'Test files to import and run'
       }]
     }
-  });
-}
+});
+export { command as default };

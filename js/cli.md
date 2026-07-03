@@ -3,281 +3,49 @@ weight: 30
 ---
 # CLI
 
-The `fino` command runs scripts, tests, benchmarks, package installs, docs, and
-interactive sessions.
+The `fino` command is built from reusable `Task` objects. The executable uses
+the root task from `fino:commands/root`; applications can import individual
+command tasks from `fino:commands/*` when they need to mount the same behavior
+in another CLI, MCP server, agent tool set, or test harness.
 
-## Run a Script
+## Command Map
 
-Run an given entrypoint:
+- [`fino <script>` and `fino run`](./cli/run.md) execute TypeScript or ESM entry
+  modules.
+- [`fino repl`](./cli/repl.md) starts an interactive evaluation session.
+- [`fino test`](./cli/test.md) imports test modules and emits TAP-13.
+- [`fino bench`](./cli/bench.md) runs adaptive benchmark measurements.
+- [`fino task`](./cli/task.md) loads project-local `Task` modules.
+- [`fino init`](./cli/init.md) creates a package manifest.
+- [`fino install`](./cli/install.md) installs npm packages into `.fino/`.
+- [`fino doc`](./cli/doc.md) builds, searches, displays, and tests docs.
+- [`fino fmt`](./cli/fmt.md) formats JS and TS source.
+- [`fino lint`](./cli/lint.md) reports lint diagnostics and safe fixes.
 
-```sh
-fino app.ts
+## Reuse Command Tasks
+
+Each built-in command module default-exports a `Task`:
+
+```ts no_run
+import rootCommand from 'fino:commands/root';
+
+await rootCommand.parse(['test', 'tests']);
 ```
 
-Accepts TypeScript or ESM files.
-
-Arguments after the script path are passed to the script:
-
-```sh
-fino app.ts -- --config ./config.toml
-```
-
-Use `--` before option-like script arguments. Options before `--` belong to
-the Fino command parser. The `run` command follows the same rule:
-
-```sh
-fino run app.ts -- --config ./config.toml
-```
-
-Use watch mode while editing. Fino watches the modules imported by the entry
-program and restarts when one changes:
-
-```sh
-fino --watch app.ts
-```
-
-Enable OpenTelemetry export with an OTLP/HTTP collector endpoint:
-
-```sh
-fino --otlp-endpoint http://127.0.0.1:4318 app.ts
-```
-
-Script inputs are single module specifiers. The root shortcut and `run` command
-do not expand directories or glob patterns.
-
-## Project Tasks
-
-Run app-specific tasks from a project `tasks/` directory:
-
-```sh
-fino task build --name api
-```
-
-Each direct source file in `tasks/` is imported as one task module. Supported
-task file extensions are `.ts`, `.mts`, `.cts`, `.js`, `.mjs`, and `.cjs`.
-Hidden files, declaration files, and subdirectories are ignored in this
-release.
-
-Task files default-export a `Task`:
-
-```ts
-import { task } from 'fino:task';
-
-export default task({
-  name: 'build',
-  cli: {
-    options: [{ flags: '--name', type: 'string', required: true }],
-  },
-  run: async (input: { name: string }, ctx) => {
-    await ctx.writer.writeText(`building ${input.name}\n`);
-  },
-});
-```
-
-Use `--dir` before the task name to load a different task directory:
-
-```sh
-fino task --dir scripts deploy
-```
-
-`fino task --help` imports the configured task directory and lists the loaded
-tasks. `fino task build --help` shows help for the selected project task.
-Duplicate task names, invalid default exports, missing directories, and empty
-task directories are reported as command errors. Importing task files executes
-project code, just like running an entry module.
-
-## Test
-
-Run a test file:
-
-```sh
-fino test tests/app.test.ts
-```
-
-Or many test files:
-
-```sh
-fino test tests/**/*.test.ts
-```
-
-Passing a directory expands to matching `*.test.ts` files:
-
-```sh
-fino test tests/net
-```
-
-Filter registered tests by name:
-
-```sh
-fino test --filter websocket tests/net
-```
-
-Console output is captured by default and printed for failures. Use
-`--show-output=always` for live debugging output or `--show-output=never` to
-suppress captured output in failure details:
-
-```sh
-fino test --show-output=always tests/app.test.ts
-```
-
-Tests emit TAP-13 so the output can be read directly or consumed by TAP
-tooling. The command imports `.test.ts` files from direct file, directory, or
-glob inputs and delegates to Fino's test framework; it is not a Node
-`node:test` compatibility command.
-
-## Bench
-
-Run a benchmark file:
-
-```sh
-fino bench benchmarks/app.bench.mjs
-```
-
-Or many benchmark files:
-
-```sh
-fino bench benchmarks/**/*.bench.mjs
-```
-
-Filter measurements by name:
-
-```sh
-fino bench --filter parse benchmarks
-```
-
-Benchmarks run adaptive measurement loops and print operations-per-second style
-results. Run them in the same environment when comparing performance:
-
-```sh
-fino bench benchmarks
-```
-
-Benchmark output is human, benc.h-style text with comparison lines for groups
-that contain multiple measurements. Use stable machines for numbers you intend
-to compare. `FINO_BENCH_MIN_NS` is an internal test knob for shortening fixture
-runs; the command does not emit JSON, return machine-readable results, or
-provide a CI regression gate.
-
-## Format And Lint
-
-Format JavaScript and TypeScript source:
-
-```sh
-fino fmt src
-fino fmt --check src/**/*.ts
-```
-
-Run lint diagnostics, or apply supported safe fixes:
-
-```sh
-fino lint src
-fino lint --fix src/**/*.ts
-```
-
-When no file inputs are given, both commands recursively scan the current
-working directory. Explicit inputs can be files, directories, or glob patterns.
-Discovery is hardcoded in `internal/tooling/files`: only `.js`, `.mjs`, `.cjs`,
-`.jsx`, `.ts`, `.ts`, `.cts`, and `.tsx` files are selected; paths are sorted
-and de-duplicated; hidden directories and built-in dependency, cache, generated,
-and build-output directories such as `node_modules`, `dist`, `build`, `target`,
-and `coverage` are skipped.
-
-There is no project config file, per-project ignore file, formatter option
-matrix, or linter rule configuration in this release baseline. Missing explicit
-directories and explicit glob patterns that match no supported source files are
-reported as command errors.
-
-## Init
-
-Create a `package.json`:
-
-```sh
-fino init --yes
-```
-
-Set fields explicitly when you do not want the defaults:
-
-```sh
-fino init \
-  --name my-app \
-  --version 0.1.0 \
-  --license MIT
-```
-
-Use `--force` to replace an existing package file.
-
-## Install
-
-Install dependencies into `.fino/` and generate the package map used by the
-module loader:
-
-```sh
-fino install
-fino install some-package
-```
-
-The install command reads `package.json`, fetches packages from the npm
-registry, places package contents under `.fino/packages`, and writes
-`.fino/package-map.json`.
-
-## Docs
-
-Build the generated API and guide documentation:
-
-```sh
-fino doc build src
-```
-
-Set the title shown in generated HTML:
-
-```sh
-fino doc build --title "My API" src
-```
-
-Include private entries when auditing docs coverage:
-
-```sh
-fino doc build --include-private src
-```
-
-Search generated docs from the command line:
-
-```sh
-fino doc search websocket
-```
-
-This provides a list of matching sections or symbols.
-
-To view expanded docs of a specific symbol:
-
-```sh
-fino doc show bench.Group.measure
-```
-
-Run documentation tests:
-
-```sh
-fino doc test src
-```
-
-## REPL
-
-Start an interactive runtime session:
-
-```sh
-fino repl
-```
-
-Use the REPL for small experiments with runtime APIs. Put repeatable examples in
-scripts or tests once they become part of a workflow.
-
-The current REPL is intentionally small. It evaluates input in an embedded
-child realm, supports top-level `await`, continues simple multiline snippets
-until brackets or strings balance, prints JSON-compatible values, and exits on
-`.exit`, Ctrl-C, Ctrl-D, or stdin EOF. Thrown errors are printed without ending
-the session.
-
-It is not Node's `repl` module. There is no persistent history file, completion
-API, raw terminal editing contract, pluggable writer, or PTY-specific behavior
-guarantee yet. Embedded realm REPL mode is also limited to same-process realms;
-`repl: true` is rejected with `thread`, `process`, `remote`, or `watch`.
+Command tasks use the same `Task` model as application tasks from `fino:task`.
+They can be listed, mounted as children, exposed as tools, or invoked directly
+with a custom writer/prompt context. The `internal:commands/*` specifiers remain
+compatibility aliases for the runtime itself; new code should import
+`fino:commands/*`.
+
+## Shared Behavior
+
+`--help` is handled by the task parser and is available on the root command and
+subcommands. Root-level `--otlp-endpoint` enables CLI OpenTelemetry bootstrap for
+script execution, and root-level `--watch` re-runs script workloads when watched
+imports change.
+
+The root command keeps two shortcuts: bare `fino` starts the REPL, and
+`fino app.ts` is equivalent to `fino run app.ts`. Tokens after the script name
+belong to the script, so `fino app.ts --config app.toml` passes `--config` to
+`app.ts`.

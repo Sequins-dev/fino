@@ -5,7 +5,7 @@ import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { chdir, cwd, execPath, Process } from 'fino:process';
 import { Database, sqliteAvailable } from 'fino:database/sqlite';
-import { createRootCommand } from 'internal:commands/root';
+import rootCommand from 'internal:commands/root';
 const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1e6);
 interface DocJsonMember {
   name: string;
@@ -106,7 +106,7 @@ async function runCli(args: string[], nextCwd: string): Promise<{
   const previousCwd = cwd();
   try {
     chdir(nextCwd);
-    const result = await createRootCommand().parse(args);
+    const result = await rootCommand.parse(args);
     return {
       stdout: typeof result === 'string' ? result : '',
       stderr: '',

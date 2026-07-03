@@ -5,7 +5,7 @@ import { after, before, describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Process, chdir, cwd, execPath } from 'fino:process';
 import { PromptSession } from 'fino:tty/prompt';
-import { createInitCommand } from 'internal:commands/init';
+import initCommand from 'internal:commands/init';
 const TEST_DIR = '/tmp/fino-init-test-' + Math.floor(Math.random() * 1e6);
 interface PackageJsonShape {
   name: string;
@@ -248,7 +248,7 @@ describe('fino init', () => {
     });
     try {
       chdir(dir);
-      await createInitCommand().parse([], { prompt });
+      await initCommand.parse([], { prompt });
     } finally {
       chdir(originalCwd);
     }

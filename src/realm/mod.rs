@@ -235,6 +235,7 @@ fn create_child_context(
         watch_mode,
         repl_mode,
         realm_data,
+        realm_bootstrap_data,
     } = pending;
     let total_start = if realm_timing_enabled() {
         Some(Instant::now())
@@ -283,6 +284,7 @@ fn create_child_context(
             watch_mode,
             repl_mode,
             realm_data,
+            realm_bootstrap_data,
             None, // embedded: parent reads reload_requested directly via context-scope
         );
 

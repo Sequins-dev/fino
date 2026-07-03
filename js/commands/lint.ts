@@ -1,5 +1,5 @@
 /**
-* internal/commands/lint — `fino lint` command.
+* fino:commands/lint — reusable `fino lint` command task.
 *
 * This command lints JavaScript and TypeScript-family source files. With no
 * positional inputs it scans the current working directory using the shared
@@ -7,16 +7,14 @@
 * `--fix` applies safe lint fixes only and does not run formatting.
 *
 * ```ts no_run
-* import { createLintCommand } from 'internal:commands/lint';
+* import lintCommand from 'fino:commands/lint';
 *
-* const command = createLintCommand();
-* await command.parse(['--fix', 'src']);
+* await lintCommand.parse(['--fix', 'src']);
 * ```
 *
-* @internal
 */
-import { Task } from '../../task.ts';
-import { runLint } from '../tooling/lint.ts';
+import { Task } from '../task.ts';
+import { runLint } from '../internal/tooling/lint.ts';
 /**
 * Create the `lint` subcommand used by the root Fino CLI.
 *
@@ -24,10 +22,8 @@ import { runLint } from '../tooling/lint.ts';
 * `--json` is requested, and throws after diagnostics so `internal/main.ts`
 * preserves standard CLI exit behavior.
 *
-* @internal
 */
-export function createLintCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'lint',
     description: 'Lint JavaScript and TypeScript source files',
     outputMode: 'both',
@@ -67,5 +63,5 @@ export function createLintCommand(): Task {
         description: 'Files, directories, or globs to lint'
       }]
     }
-  });
-}
+});
+export { command as default };

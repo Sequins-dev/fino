@@ -1,24 +1,24 @@
 /**
-* internal/commands/bench — internal runtime module.
+* fino:commands/bench — reusable `fino bench` command task.
 *
 * Builds the `fino bench` command. The command imports one or more benchmark
 * modules, then delegates execution to `fino:bench`. Paths are normalized to
 * file URLs so direct paths, relative paths, absolute paths, and already
 * canonical specifiers all resolve through the runtime loader.
 *
-* This module is CLI-only and is not intended for application imports.
+* Import this module when another interface needs to mount the built-in
+* benchmark runner as a `Task`.
 *
 * ```js
-* import { createBenchCommand } from 'internal:commands/bench';
-* const command = createBenchCommand();
+* import benchCommand from 'fino:commands/bench';
+* const command = benchCommand;
 * console.log(command.name);
 * ```
 *
-* @internal
 */
-import { cwd } from '../../process.ts';
-import { Task } from '../../task.ts';
-import { DiskFileSystem } from '../../file/fs.ts';
+import { cwd } from '../process.ts';
+import { Task } from '../task.ts';
+import { DiskFileSystem } from '../file/fs.ts';
 function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
   if (path.startsWith('/')) return `file://${path}`;
@@ -63,16 +63,12 @@ async function expandArg(arg: string): Promise<string[]> {
 * otherwise returns the result of the benchmark runner.
 *
 * ```js
-* import { createBenchCommand } from 'internal:commands/bench';
-* const bench = createBenchCommand();
+* import bench from 'fino:commands/bench';
 * await bench.parse(['--filter', 'parser', 'benchmarks/parser.bench.mjs']);
 * ```
 *
-* @returns A configured `Task` instance for `fino bench`.
-* @internal
 */
-export function createBenchCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'bench',
     description: 'Run benchmark files',
     outputMode: 'both',
@@ -126,5 +122,5 @@ export function createBenchCommand(): Task {
         description: 'Benchmark files to import and run'
       }]
     }
-  });
-}
+});
+export { command as default };

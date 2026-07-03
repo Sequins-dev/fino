@@ -15,6 +15,9 @@
 *
 * The import rule list uses last-match-wins semantics. Declare a wildcard
 * first as the baseline and more specific patterns afterwards as overrides.
+* CLI OpenTelemetry bootstrap metadata follows realm construction separately
+* from user data: children inherit a `fino run --otlp-endpoint` endpoint by
+* default, `otlpEndpoint` overrides it for one subtree, and `false` disables it.
 *
 * @example
 * ```ts no_run
@@ -32,6 +35,7 @@
 * ```
 */
 import { createContext, stepContext, terminateChild, getChildLoopFd, createThreadContext, stepThreadContext, threadPortSend, threadPortRecv, getThreadPortWakeReadFd, createProcessContext, stepProcessContext, processPortSend, processPortRecv, getProcessSocketFd } from 'internal:realm-native';
+import { getRealmBootstrapData } from 'internal:realm-bridge';
 import { MessagePort, MessageChannel, ThreadPort, BaseTransportPort, type MessageEvent } from '../globals/messaging.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { serialize as _ser } from 'internal:serializer';
@@ -183,6 +187,36 @@ function serializeRealmData(data: unknown): string | undefined {
     throw new Error('fino:realm — data must be JSON-serializable');
   }
   return json;
+}
+interface RealmBootstrapData {
+  cliOtel?: {
+    endpoint?: string;
+  };
+}
+function currentRealmBootstrapData(): RealmBootstrapData | undefined {
+  const raw = (getRealmBootstrapData as () => string | undefined)();
+  if (raw === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as RealmBootstrapData : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
+  const endpointOption = opts.otlpEndpoint;
+  if (endpointOption === false) return undefined;
+  let endpoint = '';
+  if (typeof endpointOption === 'string') {
+    endpoint = endpointOption.trim();
+    if (!endpoint) throw new Error('fino:realm — otlpEndpoint must be a non-empty string or false');
+  }
+  if (!endpoint) {
+    const inherited = currentRealmBootstrapData()?.cliOtel?.endpoint;
+    endpoint = typeof inherited === 'string' ? inherited.trim() : '';
+  }
+  if (!endpoint) return undefined;
+  return JSON.stringify({ cliOtel: { endpoint } });
 }
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
@@ -1840,9 +1874,9 @@ export interface RealmOptions {
   /**
   * Arbitrary JSON-serializable configuration delivered to the child realm.
   * The child reads it via `internal:realm-bridge.getRealmData()` before the
-  * entry module is imported, so it can shape bootstrap behavior (for example
-  * CLI OpenTelemetry setup or worker configuration). Not supported with
-  * `remote: true`.
+  * entry module is imported, so it can shape application-specific worker
+  * configuration. Runtime bootstrap metadata such as `otlpEndpoint` is stored
+  * separately and does not appear here. Not supported with `remote: true`.
   *
   * ```ts no_run
   * import type { RealmOptions } from 'fino:realm';
@@ -1851,6 +1885,26 @@ export interface RealmOptions {
   * ```
   */
   data?: unknown;
+  /**
+  * OTLP/HTTP collector endpoint for CLI OpenTelemetry bootstrap in this realm.
+  *
+  * When omitted, the child inherits the current realm's CLI endpoint, if one
+  * was seeded by `fino run --otlp-endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT`.
+  * Passing a non-empty string overrides that endpoint for this realm. Passing
+  * `false` disables CLI OpenTelemetry bootstrap for this realm even when the
+  * parent has an endpoint. The endpoint is runtime bootstrap metadata and does
+  * not appear in `RealmOptions.data` or `getRealmData()`.
+  *
+  * ```ts no_run
+  * import { Realm, type RealmOptions } from 'fino:realm';
+  *
+  * const options: RealmOptions = {
+  *   entry: './worker.ts',
+  *   otlpEndpoint: 'http://127.0.0.1:4318',
+  * };
+  * ```
+  */
+  otlpEndpoint?: string | false;
   /**
   * Parent-side MessagePort for communication with the child.
   * Ignored when `thread: true` or `process: true`.
@@ -2643,6 +2697,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
     const serializedData = serializeRealmData(opts.data);
+    const serializedBootstrapData = serializeRealmBootstrapData(opts);
     if (opts.remote && serializedData !== undefined) {
       throw new Error('fino:realm — data is not supported with remote: true');
     }
@@ -2663,7 +2718,8 @@ export class Realm<F extends RealmFn = RealmFn> {
       const config = {
         entry: opts.entry,
         root: opts.root ?? '',
-        rules: JSON.parse(serializedRules)
+        rules: JSON.parse(serializedRules),
+        ...serializedBootstrapData !== undefined ? { bootstrapData: JSON.parse(serializedBootstrapData) } : {}
       };
       this.#spawnPromise = cluster.spawnRemote(portId, config).then((childPortId: string) => {
         clusterPort._setChildPortId(childPortId);
@@ -2671,13 +2727,13 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     } else if (opts.process) {
       this.#kind = 'process';
-      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData) as number;
+      const handle = createProcessContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
     } else if (opts.thread) {
       this.#kind = 'thread';
-      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData) as number;
+      const handle = createThreadContext(opts.root ?? '', opts.entry, serializedRules, watch, serializedData, serializedBootstrapData) as number;
       this.#handle = handle;
       const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
       this.port = new ThreadPort(wakeReadFd, handle);
@@ -2694,7 +2750,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         childPort = channel.port2;
       }
       this.port = parentPort;
-      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl, serializedData) as number;
+      this.#handle = createContext(opts.root ?? '', opts.entry, serializedRules, childPort, watch, repl, serializedData, serializedBootstrapData) as number;
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
@@ -2742,17 +2798,18 @@ export class Realm<F extends RealmFn = RealmFn> {
     const opts = this.#watchOpts!;
     const rules = this.#watchSerializedRules;
     const data = serializeRealmData(opts.data);
+    const bootstrapData = serializeRealmBootstrapData(opts);
     if (opts.process) {
-      const h = createProcessContext(opts.root ?? '', opts.entry, rules, true, data) as number;
+      const h = createProcessContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
       this.#activeChildPort = new ProcessPort(getProcessSocketFd(h) as number, h);
       return h;
     } else if (opts.thread) {
-      const h = createThreadContext(opts.root ?? '', opts.entry, rules, true, data) as number;
+      const h = createThreadContext(opts.root ?? '', opts.entry, rules, true, data, bootstrapData) as number;
       this.#activeChildPort = new ThreadPort(getThreadPortWakeReadFd(h) as number, h);
       return h;
     } else {
       const { port2: childPort } = new MessageChannel();
-      return createContext(opts.root ?? '', opts.entry, rules, childPort, true, false, data) as number;
+      return createContext(opts.root ?? '', opts.entry, rules, childPort, true, false, data, bootstrapData) as number;
     }
   }
   /**

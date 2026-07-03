@@ -1,20 +1,19 @@
 /**
-* internal/commands/install — internal runtime module.
+* fino:commands/install — reusable `fino install` command task.
 *
 * Builds the `fino install` command. The command lazily loads the internal
 * package manager so normal CLI startup does not pay the installer cost unless
 * installation is requested.
 *
 * ```js
-* import { createInstallCommand } from 'internal:commands/install';
-* const command = createInstallCommand();
+* import installCommand from 'fino:commands/install';
+* const command = installCommand;
 * console.log(command.name);
 * ```
 *
-* @internal
 */
-import { Task } from '../../task.ts';
-import { installPackages } from '../package_manager.ts';
+import { Task } from '../task.ts';
+import { installPackages } from '../internal/package_manager.ts';
 /**
 * Create the `install` subcommand used by the root Fino CLI.
 *
@@ -25,16 +24,12 @@ import { installPackages } from '../package_manager.ts';
 * lets installer failures propagate as errors.
 *
 * ```js
-* import { createInstallCommand } from 'internal:commands/install';
-* const install = createInstallCommand();
+* import install from 'fino:commands/install';
 * await install.parse(['@scope/pkg@^1.2.0']);
 * ```
 *
-* @returns A configured `Task` instance for `fino install`.
-* @internal
 */
-export function createInstallCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'install',
     description: 'Install npm packages into .fino and generate a package map',
     outputMode: 'both',
@@ -60,5 +55,5 @@ export function createInstallCommand(): Task {
       multiple: true,
       description: 'Packages to add to package.json before installing'
     }] }
-  });
-}
+});
+export { command as default };

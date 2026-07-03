@@ -1,5 +1,5 @@
 /**
-* internal:commands/doc - API documentation command.
+* fino:commands/doc — reusable API documentation command task.
 *
 * Builds the `fino doc` command tree and contains the source parser, Markdown
 * and HTML renderers, search database generation, and doc-test runner used by
@@ -7,17 +7,17 @@
 * symbol JSDoc, resolves supported re-exports, writes generated documentation
 * under `docs/`, and can execute runnable fenced examples from comments.
 *
-* Use this module from the root CLI command table. Application code should not
-* call the helper functions directly because they assume Fino command context,
-* runtime filesystem APIs, and documentation output conventions.
+* Use this module when another interface needs to mount the built-in docs
+* workflow as a `Task`. Helper functions remain module-private because they
+* assume Fino command context, runtime filesystem APIs, and documentation
+* output conventions.
 *
 * ## Example
 *
 * ```ts no_run
-* import { createDocCommand } from 'internal:commands/doc';
+* import docCommand from 'fino:commands/doc';
 *
-* const doc = createDocCommand();
-* await doc.parse([
+* await docCommand.parse([
 *   'build',
 *   '--format',
 *   'markdown',
@@ -25,17 +25,16 @@
 * ]);
 * ```
 *
-* @internal
 */
-import { DiskFileSystem } from '../../file/fs.ts';
-import { Task, type TaskContext } from '../../task.ts';
-import { cwd } from '../../process.ts';
-import { parseMarkdown, renderMarkdown, renderMarkdownInline, type MarkdownNode, type MarkdownOptions } from '../../format/markdown.ts';
-import { escapeHtml, render as renderTemplate } from '../../template.ts';
-import { format as formatTypeScript, parse as parseTypeScript, type ParseComment, type ParseResult } from '../../format/typescript.ts';
-import { parse as parseYaml } from '../../format/yaml.ts';
-import { Scanner } from '../../parsing/scanner.ts';
-import * as sqlite from '../../database/sqlite.ts';
+import { DiskFileSystem } from '../file/fs.ts';
+import { Task, type TaskContext } from '../task.ts';
+import { cwd } from '../process.ts';
+import { parseMarkdown, renderMarkdown, renderMarkdownInline, type MarkdownNode, type MarkdownOptions } from '../format/markdown.ts';
+import { escapeHtml, render as renderTemplate } from '../template.ts';
+import { format as formatTypeScript, parse as parseTypeScript, type ParseComment, type ParseResult } from '../format/typescript.ts';
+import { parse as parseYaml } from '../format/yaml.ts';
+import { Scanner } from '../parsing/scanner.ts';
+import * as sqlite from '../database/sqlite.ts';
 import { timeout } from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
 const DOCS_DIR_NAME = 'docs';
@@ -3678,16 +3677,12 @@ function filesPositional() {
 * and doc-test failures propagate as command errors.
 *
 * ```js
-* import { createDocCommand } from 'internal:commands/doc';
-* const doc = createDocCommand();
+* import doc from 'fino:commands/doc';
 * await doc.parse(['build', '--format', 'markdown', 'js/internal/stream.ts']);
 * ```
 *
-* @returns A configured `Task` instance for `fino doc`.
-* @internal
 */
-export function createDocCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'doc',
     description: 'Generate, search, and test API docs from commented source files',
     outputMode: 'both',
@@ -3740,5 +3735,5 @@ export function createDocCommand(): Task {
         cli: { positionals: filesPositional() }
       })
     ]
-  });
-}
+});
+export { command as default };

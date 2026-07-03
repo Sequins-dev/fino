@@ -1,5 +1,5 @@
 /**
-* internal/commands/task — project-local task command loader.
+* fino:commands/task — reusable project-local task command loader.
 *
 * The `fino task` command loads application tasks from a directory at runtime.
 * Each direct source file in the directory default-exports one `Task`; the
@@ -7,19 +7,17 @@
 * and delegates the remaining argv to that task tree.
 *
 * ```ts no_run
-* import { createTaskCommand } from 'internal:commands/task';
+* import taskCommand from 'fino:commands/task';
 *
-* const command = createTaskCommand();
-* await command.parse(['build']);
+* await taskCommand.parse(['build']);
 * ```
 *
-* @internal
 */
-import { Task } from '../../task.ts';
-import type { TaskOutputWriter } from '../../task.ts';
-import { cwd, stdout } from '../../process.ts';
-import { DiskFileSystem } from '../../file/fs.ts';
-import { resolve } from '../../file/path.ts';
+import { Task } from '../task.ts';
+import type { TaskOutputWriter } from '../task.ts';
+import { cwd, stdout } from '../process.ts';
+import { DiskFileSystem } from '../file/fs.ts';
+import { resolve } from '../file/path.ts';
 const TASK_EXTENSIONS = new Set([
   '.ts',
   '.mts',
@@ -119,10 +117,8 @@ async function loadTaskRoot(dirPath: string): Promise<Task> {
 * point at another directory, and all remaining argv is delegated to the
 * generated task tree.
 *
-* @internal
 */
-export function createTaskCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'task',
     description: 'Run project-local tasks from a tasks directory',
     outputMode: 'both',
@@ -158,5 +154,5 @@ export function createTaskCommand(): Task {
         prompt: ctx.prompt
       });
     }
-  });
-}
+});
+export { command as default };

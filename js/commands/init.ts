@@ -1,5 +1,5 @@
 /**
-* internal/commands/init — internal runtime module.
+* fino:commands/init — reusable `fino init` command task.
 *
 * Builds the `fino init` command. The command creates a `package.json` in the
 * current working directory, deriving defaults from the directory name and Git
@@ -7,16 +7,15 @@
 * command context supports them and `--yes` is not set.
 *
 * ```js
-* import { createInitCommand } from 'internal:commands/init';
-* const command = createInitCommand();
+* import initCommand from 'fino:commands/init';
+* const command = initCommand;
 * console.log(command.name);
 * ```
 *
-* @internal
 */
-import { Task, type TaskContext } from '../../task.ts';
-import { DiskFileSystem } from '../../file/fs.ts';
-import { cwd, env, Process } from '../../process.ts';
+import { Task, type TaskContext } from '../task.ts';
+import { DiskFileSystem } from '../file/fs.ts';
+import { cwd, env, Process } from '../process.ts';
 const fs = new DiskFileSystem();
 function definedEnv(source: Record<string, string | undefined>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -127,16 +126,12 @@ async function resolveField(ctx: TaskContext, input: Record<string, unknown>, ke
 * writing; invalid input and filesystem failures are reported as thrown errors.
 *
 * ```js
-* import { createInitCommand } from 'internal:commands/init';
-* const init = createInitCommand();
+* import init from 'fino:commands/init';
 * await init.parse(['--yes', '--name', 'fino-app']);
 * ```
 *
-* @returns A configured `Task` instance for `fino init`.
-* @internal
 */
-export function createInitCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'init',
     description: 'Create a package.json for the current project',
     outputMode: 'both',
@@ -251,5 +246,5 @@ export function createInitCommand(): Task {
         description: 'Overwrite an existing package.json'
       }
     ] }
-  });
-}
+});
+export { command as default };

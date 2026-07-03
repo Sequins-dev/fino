@@ -646,7 +646,8 @@ export class ClusterClient {
     t: 'SPAWN';
   }>): Promise<void> {
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
-    const handle = createThreadContext(msg.config.root ?? '', msg.config.entry, JSON.stringify(msg.config.rules)) as number;
+    const bootstrapData = msg.config.bootstrapData === undefined ? undefined : JSON.stringify(msg.config.bootstrapData);
+    const handle = createThreadContext(msg.config.root ?? '', msg.config.entry, JSON.stringify(msg.config.rules), false, undefined, bootstrapData) as number;
     const wakeReadFd = getThreadPortWakeReadFd(handle) as number;
     const relay: RealmRelay = {
       childPortId,

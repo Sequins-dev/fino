@@ -34,12 +34,13 @@ import { tick, alive, loopFd, registerWakeSource, _trackAtomicsWaiter, _untrackA
 import { drainMicrotasks, runLoop } from 'internal:async-context';
 import { wakeFd } from 'internal:async-runtime';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
+import { env } from '../process.ts';
 // Register the async-runtime wake pipe with kqueue so background FFI threads
 // can interrupt the event loop sleep immediately. Does not affect alive().
 registerWakeSource(wakeFd);
 import './loader.ts';
 import { lookupOriginalPosition } from 'internal:loader-hooks';
-import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, setLoopFd } from 'internal:realm-bridge';
+import { getEntryPath, isTerminated, getPort, setEntryError, getLoadedFsPaths, requestReload, getWatchMode, getReplMode, getRealmData, getRealmBootstrapData, setLoopFd } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
 // fino:realm/pool is imported lazily (inside __pool_call handlers only) so that
 // non-pool realms — the vast majority — do not pay the module-evaluation cost.
@@ -393,29 +394,38 @@ if (_childEntry) {
     });
   }
   // CLI OTel providers are context-scoped, so the spawner cannot install them
-  // across the realm boundary — the child must wrap its own entry import.
-  // `RealmOptions.data.cliOtel` carries the endpoint from `fino run`.
+  // across the realm boundary - the child must wrap its own entry import.
+  // Runtime bootstrap metadata carries the endpoint without using user data.
   async function _loadChildEntry(): Promise<{
     default?: unknown;
   }> {
+    let cliOtel: {
+      endpoint?: string;
+      script?: string;
+      debug?: boolean;
+    } | undefined;
+    const bootstrapRaw = (getRealmBootstrapData as () => string | undefined)();
+    if (bootstrapRaw !== undefined) {
+      try {
+        cliOtel = (JSON.parse(bootstrapRaw) as {
+          cliOtel?: typeof cliOtel;
+        }).cliOtel;
+      } catch {}
+    }
     const raw = (getRealmData as () => string | undefined)();
-    if (raw !== undefined) {
-      let cliOtel: {
-        endpoint?: string;
-        script?: string;
-        debug?: boolean;
-      } | undefined;
+    if (cliOtel === undefined && raw !== undefined) {
       try {
         cliOtel = (JSON.parse(raw) as {
           cliOtel?: typeof cliOtel;
         }).cliOtel;
       } catch {}
-      if (cliOtel && typeof cliOtel.endpoint === 'string' && cliOtel.endpoint) {
-        const { createCliOtelRuntime } = await import('internal:opentelemetry/bootstrap');
-        const { runWithTracerProvider, runWithLoggerProvider, runWithMeterProvider } = await import('fino:opentelemetry');
-        const rt = await createCliOtelRuntime(cliOtel.endpoint, cliOtel.script ?? _childEntry!, cliOtel.debug === true);
-        return runWithTracerProvider(rt.tracerProvider, () => runWithLoggerProvider(rt.loggerProvider, () => runWithMeterProvider(rt.meterProvider, () => import(_childEntry!))));
-      }
+    }
+    if (cliOtel && typeof cliOtel.endpoint === 'string' && cliOtel.endpoint) {
+      const { createCliOtelRuntime } = await import('internal:opentelemetry/bootstrap');
+      const { runWithTracerProvider, runWithLoggerProvider, runWithMeterProvider } = await import('fino:opentelemetry');
+      const debug = cliOtel.debug === true || typeof env.FINO_OTEL_DEBUG === 'string' && env.FINO_OTEL_DEBUG.trim() === '1';
+      const rt = await createCliOtelRuntime(cliOtel.endpoint, cliOtel.script ?? _childEntry!, debug);
+      return runWithTracerProvider(rt.tracerProvider, () => runWithLoggerProvider(rt.loggerProvider, () => runWithMeterProvider(rt.meterProvider, () => import(_childEntry!))));
     }
     return import(_childEntry!);
   }

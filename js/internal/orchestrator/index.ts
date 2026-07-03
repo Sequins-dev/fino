@@ -157,6 +157,7 @@ export function resolveService<T>(name: string): T {
 export interface AppOptions {
   entry: string;
   data?: unknown;
+  otlpEndpoint?: RealmOptions['otlpEndpoint'];
   overrides?: RealmOptions['overrides'];
 }
 
@@ -189,6 +190,7 @@ export async function runApp(opts: AppOptions): Promise<unknown> {
   const realm = new Realm({
     entry: opts.entry,
     ...opts.data !== undefined ? { data: opts.data } : {},
+    ...opts.otlpEndpoint !== undefined ? { otlpEndpoint: opts.otlpEndpoint } : {},
     overrides: rules
   });
   const workload = registerWorkload('app', realm);

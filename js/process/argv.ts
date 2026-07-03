@@ -147,6 +147,14 @@ export interface CommandConfig {
   */
   allowUnknown?: boolean;
   /**
+  * Whether option parsing should stop after the first positional token.
+  *
+  * Defaults to `false`. Set this for commands like script runners where every
+  * token after the script path belongs to the script, even if it looks like an
+  * option recognized by the runner itself.
+  */
+  stopOptionsAfterPositionals?: boolean;
+  /**
   * Whether `--help` should be consumed by this command.
   *
   * Defaults to `true`. Set this to `false` for dispatcher commands that need
@@ -859,6 +867,7 @@ export class Command {
   * @internal
   */
   #allowUnknown: boolean = false;
+  #stopOptionsAfterPositionals: boolean = false;
   /**
   * Private property `#allowHelp` used by `Command`.
   *
@@ -1071,6 +1080,7 @@ export class Command {
     this.#name = config.name ?? null;
     this.#description = config.description;
     this.#allowUnknown = config.allowUnknown ?? false;
+    this.#stopOptionsAfterPositionals = config.stopOptionsAfterPositionals ?? false;
     this.#allowHelp = config.allowHelp ?? true;
     this.#runHandler = config.run;
     for (const option of config.options ?? []) this.#registerOption(option);
@@ -1430,6 +1440,9 @@ export class Command {
         stopOptions = true;
         state.index++;
         continue;
+      }
+      if (!stopOptions && this.#stopOptionsAfterPositionals && parsed.rawPositionals.length > 0) {
+        stopOptions = true;
       }
       if (!stopOptions && token === '--help' && this.#allowHelp) {
         parsed.helpRequested = true;

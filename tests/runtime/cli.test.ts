@@ -6,7 +6,7 @@ import type { Assert } from 'fino:test/assert';
 import { chdir, cwd, Process, env, execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
-import { createRootCommand } from 'internal:commands/root';
+import rootCommand from 'internal:commands/root';
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|us|ms|s|m|h)\b`;
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
@@ -110,7 +110,7 @@ async function expectLiveOtelSignal(t: Assert, fixture: string, path: string, la
   t.ok(exportIndex < runningIndex, `${label} export happened before the script finished running`);
 }
 async function parseRoot(args: string[]): Promise<string> {
-  const result = await createRootCommand().parse(args);
+  const result = await rootCommand.parse(args);
   return typeof result === 'string' ? result : '';
 }
 async function runRootInProcess(args: string[], options: {
@@ -126,7 +126,7 @@ async function runRootInProcess(args: string[], options: {
   const previousCwd = cwd();
   try {
     if (options.cwd !== undefined) chdir(options.cwd);
-    const result = await createRootCommand().parse(args);
+    const result = await rootCommand.parse(args);
     return {
       stdout: typeof result === 'string' ? result : '',
       stderr: '',
@@ -243,6 +243,23 @@ describe('CLI commands', () => {
       t.ok(stdout.includes('["argv.ts","--","--user-flag","value"]'), 'argv preserves script and user arguments');
     });
   });
+  it('passes root script arguments without requiring --', async (t) => {
+    await withTempProject({ 'argv.ts': [
+      'import { argv } from \'fino:process\';',
+      'console.log(JSON.stringify(argv.slice(1)));',
+      ''
+    ].join('\n') }, async (dir) => {
+      const { stdout, stderr, result } = await runCli([
+        'argv.ts',
+        '--watch',
+        '--user-flag',
+        'value'
+      ], { cwd: dir });
+      t.equal(result.code, 0, 'root script with direct args exits successfully');
+      t.equal(stderr, '', 'root script with direct args does not write stderr');
+      t.ok(stdout.includes('["argv.ts","--watch","--user-flag","value"]'), 'argv preserves all tokens after the script as script arguments');
+    });
+  });
   it('exposes run command script arguments through process argv after --', async (t) => {
     await withTempProject({ 'argv.ts': [
       'import { argv } from \'fino:process\';',
@@ -259,6 +276,24 @@ describe('CLI commands', () => {
       t.equal(result.code, 0, 'run script with -- args exits successfully');
       t.equal(stderr, '', 'run script with -- args does not write stderr');
       t.ok(stdout.includes('["run","argv.ts","--","--user-flag","value"]'), 'argv preserves run command, script, and user arguments');
+    });
+  });
+  it('passes run command script arguments without requiring --', async (t) => {
+    await withTempProject({ 'argv.ts': [
+      'import { argv } from \'fino:process\';',
+      'console.log(JSON.stringify(argv.slice(1)));',
+      ''
+    ].join('\n') }, async (dir) => {
+      const { stdout, stderr, result } = await runCli([
+        'run',
+        'argv.ts',
+        '--watch',
+        '--user-flag',
+        'value'
+      ], { cwd: dir });
+      t.equal(result.code, 0, 'run script with direct args exits successfully');
+      t.equal(stderr, '', 'run script with direct args does not write stderr');
+      t.ok(stdout.includes('["run","argv.ts","--watch","--user-flag","value"]'), 'argv preserves run command, script, and all script arguments');
     });
   });
   it('prints focused help for each subcommand', async (t) => {
@@ -505,6 +540,56 @@ describe('CLI commands', () => {
       await Promise.all([stdoutDone, stderrDone]);
       t.ok(result.signal !== null || result.code === 0, 'watch child terminates after SIGTERM');
       t.equal(stderrChunks.join(''), '', 'run --watch does not write stderr');
+    });
+  });
+  it('passes --otlp-endpoint into run --watch realms', async (t) => {
+    await withTempProject({
+      'entry.ts': [
+        'import { getTracerProvider } from \'fino:opentelemetry\';',
+        'globalThis.fetch = async (url) => {',
+        '  console.log(\'watch-export:\' + String(url));',
+        '  return new Response(\'{}\', { status: 200 });',
+        '};',
+        'const span = getTracerProvider().getTracer(\'watch.fixture\').startSpan(\'watch-span\');',
+        'span.end();',
+        'await new Promise((resolve) => setTimeout(resolve, 80));',
+        'console.log(\'watch-ready\');',
+        ''
+      ].join('\n')
+    }, async (dir) => {
+      const childEnv: Record<string, string> = {};
+      for (const [key, value] of Object.entries(env)) {
+        if (value !== undefined) childEnv[key] = value;
+      }
+      childEnv.FINO_OTEL_EXPORT_INTERVAL_MS = '20';
+      const proc = new Process(execPath, [
+        'run',
+        '--watch',
+        '--otlp-endpoint',
+        'http://collector.example:4318/watch',
+        'entry.ts'
+      ], {
+        cwd: dir,
+        env: childEnv
+      });
+      proc.stdin.close();
+      const stdoutChunks: string[] = [];
+      const stderrChunks: string[] = [];
+      const stdoutDone = (async () => {
+        for await (const chunk of proc.stdout) stdoutChunks.push(decodeUtf8(chunk));
+      })();
+      const stderrDone = (async () => {
+        for await (const chunk of proc.stderr) stderrChunks.push(decodeUtf8(chunk));
+      })();
+      try {
+        await poll(() => stdoutChunks.join('').includes('watch-export:http://collector.example:4318/watch/v1/traces'), 5e3);
+      } finally {
+        proc.kill();
+      }
+      const result = await proc.wait();
+      await Promise.all([stdoutDone, stderrDone]);
+      t.ok(result.signal !== null || result.code === 0, 'watch OTLP child terminates after SIGTERM');
+      t.equal(stderrChunks.join(''), '', 'run --watch OTLP does not write stderr');
     });
   });
   it('fmt --check reports changed files without writing', async (t) => {
@@ -1104,6 +1189,22 @@ describe('CLI commands', () => {
     t.ok(!enabled.stdout.includes('"scope":{"name":"fetch"}'), 'exporter requests do not emit fetch scope spans');
     t.ok(!enabled.stdout.includes('"scope":{"name":"dns"}'), 'exporter requests do not emit dns scope spans');
     t.ok(!enabled.stdout.includes('"scope":{"name":"socket"}'), 'exporter requests do not emit socket scope spans');
+  });
+  it('passes the CLI OTLP endpoint to constructed realms with overrides', async (t) => {
+    const { stdout, stderr, result } = await runCli([
+      '--otlp-endpoint',
+      'http://collector.example:4318/custom',
+      './tests/fixtures/cli-otel-child-realms.ts'
+    ]);
+    t.equal(result.code, 0, 'child realm fixture exits successfully');
+    t.equal(stderr, '', 'child realm fixture does not write stderr');
+    t.ok(stdout.includes('export:http://collector.example:4318/custom/v1/traces'), 'child realm inherits the CLI endpoint');
+    t.ok(stdout.includes('export:http://override-collector.example:4318/override/v1/traces'), 'child realm can override the endpoint');
+    t.ok(stdout.includes('child:disabled:done'), 'disabled child still runs');
+    const disabledStart = stdout.indexOf('child:override:done');
+    const disabledOutput = disabledStart >= 0 ? stdout.slice(disabledStart) : stdout;
+    t.ok(!disabledOutput.includes('export:http://collector.example:4318/custom/v1/traces'), 'disabled child does not export to inherited endpoint');
+    t.ok(!disabledOutput.includes('export:http://override-collector.example:4318/override/v1/traces'), 'disabled child does not export to override endpoint');
   });
   it('lets --otlp-endpoint override the OTEL base endpoint env var', async (t) => {
     const flagWins = await runCli([

@@ -146,6 +146,7 @@ export interface TaskCliSpec {
   options?: TaskCliOption[];
   positionals?: TaskCliPositional[];
   allowUnknown?: boolean;
+  stopOptionsAfterPositionals?: boolean;
   /**
   * Whether `--help` should be handled by this task's CLI parser.
   *
@@ -475,6 +476,7 @@ export class Task<
       name: this.cli?.name ?? this.name,
       description: this.description,
       allowUnknown: this.cli?.allowUnknown,
+      stopOptionsAfterPositionals: this.cli?.stopOptionsAfterPositionals,
       allowHelp: this.cli?.allowHelp,
       options: commandOptions,
       positionals: cloneCliPositionals(this.cli?.positionals),

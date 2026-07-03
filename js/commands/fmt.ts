@@ -1,5 +1,5 @@
 /**
-* internal/commands/fmt — `fino fmt` command.
+* fino:commands/fmt — reusable `fino fmt` command task.
 *
 * This command formats JavaScript and TypeScript-family source files. With no
 * positional inputs it scans the current working directory using the shared
@@ -8,16 +8,14 @@
 * any file would change.
 *
 * ```ts no_run
-* import { createFmtCommand } from 'internal:commands/fmt';
+* import fmtCommand from 'fino:commands/fmt';
 *
-* const command = createFmtCommand();
-* await command.parse(['--check', 'src/*.ts']);
+* await fmtCommand.parse(['--check', 'src/*.ts']);
 * ```
 *
-* @internal
 */
-import { Task } from '../../task.ts';
-import { runFormat } from '../tooling/format.ts';
+import { Task } from '../task.ts';
+import { runFormat } from '../internal/tooling/format.ts';
 /**
 * Create the `fmt` subcommand used by the root Fino CLI.
 *
@@ -25,10 +23,8 @@ import { runFormat } from '../tooling/format.ts';
 * `--json` is requested, and throws after reportable failures so
 * `internal/main.ts` preserves standard CLI exit behavior.
 *
-* @internal
 */
-export function createFmtCommand(): Task {
-  return new Task({
+const command = new Task({
     name: 'fmt',
     description: 'Format JavaScript and TypeScript source files',
     outputMode: 'both',
@@ -68,5 +64,5 @@ export function createFmtCommand(): Task {
         description: 'Files, directories, or globs to format'
       }]
     }
-  });
-}
+});
+export { command as default };

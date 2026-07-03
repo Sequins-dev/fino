@@ -17,7 +17,7 @@
 */
 import { argv, exit } from '../process.ts';
 import { driveLoop } from 'internal:bootstrap';
-import { createRootCommand } from './commands/root.ts';
+import root from '../commands/root.ts';
 import { runShutdownHooks } from './shutdown.ts';
 // Imported lazily to avoid a hard dependency that breaks when fino:realm is
 // not yet loaded. _stepChildren and _childrenAlive default to no-ops so the
@@ -34,7 +34,6 @@ function normalizeCliArgv(args: string[]): string[] {
   if (args[0] === '--bench') return ['bench', ...args.slice(1)];
   return args;
 }
-const root = createRootCommand();
 let done = false;
 let caughtError: unknown = null;
 let shutdownStarted = false;
