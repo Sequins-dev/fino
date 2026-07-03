@@ -88,9 +88,9 @@ Two structural moves before any module integration:
 
 **Extract the primitive out of the UI layer.** If `fino:jobs` and
 `fino:ai/session` produce signals, they cannot import `fino:ui` — the
-layering is backwards. Proposal: move `Signal`, `createSignal`, `batch`
+layering is backwards. Decision: move `Signal`, `createSignal`, `batch`
 (and the `observeReads` hook from the UI design) into a small standalone
-module — working name `fino:signal` — with `fino:ui` re-exporting them
+module — **`fino:signals`** — with `fino:ui` re-exporting them
 unchanged. The UI core keeps VNodes and reconciliation; the reactive
 primitive becomes runtime infrastructure, which is what this doc is
 arguing it already wants to be.
@@ -131,6 +131,24 @@ call time) and call `return()` on teardown — that is what preserves the
 `hasSubscribers` gating end to end: the topic sees a subscriber only
 while the signal is hot.
 
+There is also deliberately no throttling in the kernel. A fold may
+`set()` per token; that is fine because backpressure is the consumer's
+job and the consumers already have it — the SSE patch path writes through
+buffered writers, so a hot signal's updates coalesce naturally between
+flushes (the region re-renders at the rate the writer drains, reading
+whatever the current value is), and `batch()` covers the synchronous
+case. If a consumer genuinely needs time-based coalescing it can wrap a
+signal in user space; the kernel stays value-semantics only.
+
+**Prefer coarse object signals over decomposed ones.** One
+`ReadonlySignal<RunView>` carrying `{status, text, usage, cost, ...}`,
+not five sibling signals — fewer instances to construct, manage, and
+unsubscribe, and one emission point per state change instead of a
+fan-out. The render-cost argument for fine-grained signals doesn't apply
+here: `fino:ui/web` hash-diffs rendered regions, so a coarse signal that
+fires with an unchanged-relevant field produces zero patches. Decompose
+with `computed()` at the consumer when a narrower view is wanted.
+
 ## 4. Integration points, ranked by leverage
 
 ### 4.1 AI plane — the flagship (highest value)
@@ -148,18 +166,19 @@ maintain its own derived state by draining `AgentEvent`s.
   drives approval UIs; durable sessions make this the perfect partner for
   the `fino:ui/web` snapshot model (reconnect re-reads current state — no
   special case).
-- **`AgentStream` state view.** Keep `reader` for consumers that need
-  every event; add a derived group fed from the same `onEvent` sites:
-  `stream.status` (`'streaming' | 'tool' | 'suspended' | 'done' | 'error'`),
-  `stream.text` (accumulated answer), `stream.currentTool`
-  (`{id, name} | null`), `stream.usage`, `stream.cost`, `stream.steps`.
+- **`AgentStream.state: ReadonlySignal<AgentRunView>`.** Keep `reader`
+  for consumers that need every event; add one coarse object signal fed
+  from the same `onEvent` sites, carrying
+  `{status: 'streaming' | 'tool' | 'suspended' | 'done' | 'error',
+  text, currentTool: {id, name} | null, usage, cost, stepIndex}`.
   The fold logic already exists in `assembleResult` — it just runs lazily
   at the end today instead of incrementally. (Side benefit: an internal
   tee/fold fixes the existing wart where iterating the stream and calling
   `result()` are mutually exclusive because they share one generator.)
-- **`ModelStream.text` / `.usage`** — same fold one level down, for
-  direct model calls without an agent loop. This is the token-streaming
-  demo reduced to its essence: `model stream → signal → patch`.
+- **`ModelStream.state`** — same fold one level down
+  (`{text, usage, stopReason}`), for direct model calls without an agent
+  loop. This is the token-streaming demo reduced to its essence:
+  `model stream → signal → patch`.
 - **`MessageHistory` as a signal of an immutable value.** History is
   already reference-swapped immutably
   (`strategy.history = await history.append(...)`), which is *ideal* for
@@ -229,7 +248,9 @@ pool health, active agent sessions — as an ordinary fino app with no
 external monitoring stack. Host-neutrality makes it `fino top` in a
 terminal and `/admin` in a browser from one component tree. This is a
 direct consequence of signals-as-read-model and probably its best demo
-outside the agent chat.
+outside the agent chat. (Deferred: no dashboard or any other UI ships
+with this line of work — signals land as pure infrastructure, and UI
+built on them waits until `fino:ui/web` is polished.)
 
 ### 4.5 Metrics — signals and gauges are duals
 
