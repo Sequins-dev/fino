@@ -28,6 +28,7 @@ import { Topic, topic } from '../../context/topic.ts';
 import { BaseProvider, OTEL_SCHEMA_VERSION, normalizeScope, nowUnixNano, topicNames, requireNonEmptyName } from './common.ts';
 import type { Attributes, ExemplarRecord, MetricExemplarContext, MetricInstrumentOptions, MetricRecord, MetricView, ObservableMetricRegistration, QuantileValueRecord, ScopeInfo } from './common.ts';
 import { getActiveSpanContext } from './traces.ts';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * MeterProvider class exposed by the OpenTelemetry API.
 *
@@ -700,6 +701,18 @@ export class Meter {
       topic<ObservableMetricRegistration>('otel:metric:observable:unregister').publish(registration);
     } });
   }
+}
+/**
+* Create an observable gauge backed by a signal's latest numeric value.
+*/
+export function gaugeFromSignal(meter: Meter, name: string, signal: ReadonlySignal<number>, options: MetricInstrumentOptions & {
+  attributes?: Attributes;
+} = {}): ObservableGauge {
+  const { attributes = {}, ...instrumentOptions } = options;
+  return meter.createObservableGauge(name, () => ({
+    value: signal.get(),
+    attributes
+  }), instrumentOptions);
 }
 /**
 * cloneMetric function exposed by the OpenTelemetry API.

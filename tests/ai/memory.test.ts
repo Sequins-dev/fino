@@ -128,6 +128,7 @@ describe('SqliteMemory', () => {
       }, 'merge preserves existing keys');
       await mem.setWorkingMemory({ x: 99 }, 'replace');
       t.deepEqual(await mem.getWorkingMemory(), { x: 99 }, 'replace discards prior state');
+      t.deepEqual(mem.workingMemory.get(), { x: 99 }, 'working memory signal retains replacement');
     } finally {
       await mem.close();
       try {
@@ -242,6 +243,29 @@ describe('SqliteMemory', () => {
         t.equal(ctx.recalled.length, 0, 'degrades to empty recalled without semantic');
         t.equal(mem.semanticAvailable, false, 'semanticAvailable flag is false');
       }
+    } finally {
+      await mem.close();
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+  it('ingestProgress signal reports stored chunks', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try {
+      await fs.unlink(path);
+    } catch {}
+    const mem = await SqliteMemory.open({ path, embedder: deterministicEmbedder(4), fs });
+    try {
+      const seen: number[] = [];
+      const dispose = mem.ingestProgress.subscribe((progress) => seen.push(progress.stored));
+      await mem.ingest([{ text: 'alpha beta gamma' }], { chunk: { size: 5, overlap: 1 } });
+      dispose();
+      t.equal(mem.ingestProgress.get().active, false, 'ingest progress ends inactive');
+      t.ok(mem.ingestProgress.get().chunks > 1, 'ingest progress records chunk count');
+      t.equal(mem.ingestProgress.get().stored, mem.ingestProgress.get().chunks, 'all chunks are stored');
+      t.ok(seen.some((stored) => stored > 0), 'subscriber saw stored progress');
     } finally {
       await mem.close();
       try {

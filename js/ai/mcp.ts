@@ -71,6 +71,8 @@ import { parseEventStream } from 'fino:net/http/eventstream';
 import { serveHttp } from 'fino:net/http/server';
 import type { ServeServer } from 'fino:net/http/server';
 import { Channel } from 'internal:stream';
+import { lazy } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
 const CLIENT_INFO = {
   name: 'fino',
@@ -1036,6 +1038,38 @@ export class MCPClient {
   #peer: JsonRpcPeer;
   #connected = false;
   #opts: MCPClientOptions;
+  #toolSetters = new Set<(items: Tool[]) => void>();
+  #resourceSetters = new Set<(items: McpResource[]) => void>();
+  #resourceTemplateSetters = new Set<(items: McpResourceTemplate[]) => void>();
+  #promptSetters = new Set<(items: McpPrompt[]) => void>();
+  #toolsSignal = lazy<Tool[]>([], (set) => {
+    this.#toolSetters.add(set);
+    void this.#refreshTools(set);
+    return () => {
+      this.#toolSetters.delete(set);
+    };
+  });
+  #resourcesSignal = lazy<McpResource[]>([], (set) => {
+    this.#resourceSetters.add(set);
+    void this.#refreshResources(set);
+    return () => {
+      this.#resourceSetters.delete(set);
+    };
+  });
+  #resourceTemplatesSignal = lazy<McpResourceTemplate[]>([], (set) => {
+    this.#resourceTemplateSetters.add(set);
+    void this.#refreshResourceTemplates(set);
+    return () => {
+      this.#resourceTemplateSetters.delete(set);
+    };
+  });
+  #promptsSignal = lazy<McpPrompt[]>([], (set) => {
+    this.#promptSetters.add(set);
+    void this.#refreshPrompts(set);
+    return () => {
+      this.#promptSetters.delete(set);
+    };
+  });
   constructor(opts: MCPClientOptions) {
     this.#opts = opts;
     const service = new JsonRpcService().method('roots/list').handle(async (params) => {
@@ -1055,10 +1089,16 @@ export class MCPClient {
       if (!opts.elicitation) throw new JsonRpcError('Elicitation is not configured', INVALID_REQUEST);
       return await opts.elicitation(params as McpElicitationRequest);
     }).method('notifications/tools/list_changed').handle(async () => {
+      void this.#refreshTools();
       await opts.onToolsChanged?.();
     }).method('notifications/resources/list_changed').handle(async () => {
+      void Promise.all([
+        this.#refreshResources(),
+        this.#refreshResourceTemplates()
+      ]);
       await opts.onResourcesChanged?.();
     }).method('notifications/prompts/list_changed').handle(async () => {
+      void this.#refreshPrompts();
       await opts.onPromptsChanged?.();
     }).method('notifications/resources/updated').handle(async (params) => {
       if (!isRecord(params) || typeof params.uri !== 'string') {
@@ -1067,6 +1107,46 @@ export class MCPClient {
       await opts.onResourceUpdated?.(params.uri);
     });
     this.#peer = new JsonRpcPeer(opts.transport, service);
+  }
+  /** Retained first-page list of remote tools. */
+  get tools(): ReadonlySignal<Tool[]> {
+    return this.#toolsSignal;
+  }
+  /** Retained first-page list of remote resources. */
+  get resources(): ReadonlySignal<McpResource[]> {
+    return this.#resourcesSignal;
+  }
+  /** Retained first-page list of remote resource templates. */
+  get resourceTemplates(): ReadonlySignal<McpResourceTemplate[]> {
+    return this.#resourceTemplatesSignal;
+  }
+  /** Retained first-page list of remote prompts. */
+  get prompts(): ReadonlySignal<McpPrompt[]> {
+    return this.#promptsSignal;
+  }
+  async #refreshTools(one?: (items: Tool[]) => void): Promise<void> {
+    if (!this.#connected) return;
+    const items = await this.listTools();
+    if (one) one(items);
+    else for (const set of this.#toolSetters) set(items);
+  }
+  async #refreshResources(one?: (items: McpResource[]) => void): Promise<void> {
+    if (!this.#connected) return;
+    const items = await this.listResources();
+    if (one) one(items);
+    else for (const set of this.#resourceSetters) set(items);
+  }
+  async #refreshResourceTemplates(one?: (items: McpResourceTemplate[]) => void): Promise<void> {
+    if (!this.#connected) return;
+    const items = await this.listResourceTemplates();
+    if (one) one(items);
+    else for (const set of this.#resourceTemplateSetters) set(items);
+  }
+  async #refreshPrompts(one?: (items: McpPrompt[]) => void): Promise<void> {
+    if (!this.#connected) return;
+    const items = await this.listPrompts();
+    if (one) one(items);
+    else for (const set of this.#promptSetters) set(items);
   }
   async connect(): Promise<void> {
     const capabilities: Record<string, unknown> = {};

@@ -22,5 +22,5 @@
 * See OpenTelemetry metrics:
 * https://opentelemetry.io/docs/concepts/signals/metrics/
 */
-export { Counter, Gauge, Histogram, HistogramInstrument, Meter, MeterProvider, ObservableCounter, ObservableGauge, ObservableUpDownCounter, UpDownCounter, accumulateMetric, applyMetricView, attributesKey, cloneMetric, getMeterProvider, metricInstrumentKey, metricSeriesKey, normalizeMetricKind, runWithMeterProvider, runWithoutMeterProvider, setMeterProvider, zeroMetric } from '../internal/opentelemetry/metrics.ts';
+export { Counter, Gauge, Histogram, HistogramInstrument, Meter, MeterProvider, ObservableCounter, ObservableGauge, ObservableUpDownCounter, UpDownCounter, accumulateMetric, applyMetricView, attributesKey, cloneMetric, gaugeFromSignal, getMeterProvider, metricInstrumentKey, metricSeriesKey, normalizeMetricKind, runWithMeterProvider, runWithoutMeterProvider, setMeterProvider, zeroMetric } from '../internal/opentelemetry/metrics.ts';
 export type { ExemplarRecord, ExponentialBuckets, MetricAggregationType, MetricExemplarContext, MetricInstrumentOptions, MetricRecord, MetricTemporality, MetricView, ObservableMetricObservation, ObservableMetricRegistration, QuantileValueRecord } from '../internal/opentelemetry/common.ts';

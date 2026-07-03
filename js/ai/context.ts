@@ -38,6 +38,8 @@
 * ```
 */
 import type { ModelMessage, Usage, Model } from 'fino:ai/model';
+import { createSignal } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 // ── Interfaces ────────────────────────────────────────────────────────────────
 /**
 * Optional metadata attached to a history entry.
@@ -86,6 +88,41 @@ export interface HistoryStrategy {
     history: MessageHistory;
     messages: ModelMessage[];
   }>;
+}
+/**
+* Wrap a history strategy with a retained signal of its current history.
+*
+* The wrapper delegates all behavior to `inner` and publishes after `onAppend`,
+* after `onRead`, and after direct assignments to `strategy.history`.
+*/
+export function signalHistoryStrategy(inner: HistoryStrategy): {
+  strategy: HistoryStrategy;
+  history: ReadonlySignal<MessageHistory>;
+} {
+  const history = createSignal(inner.history);
+  const publish = () => history.set(inner.history);
+  const strategy: HistoryStrategy = {
+    get history() {
+      return inner.history;
+    },
+    set history(value: MessageHistory) {
+      inner.history = value;
+      publish();
+    },
+    async onAppend(message: ModelMessage, ctx: HistoryAppendContext): Promise<void> {
+      await inner.onAppend(message, ctx);
+      publish();
+    },
+    async onRead(ctx: HistoryReadContext): Promise<{
+      history: MessageHistory;
+      messages: ModelMessage[];
+    }> {
+      const result = await inner.onRead(ctx);
+      publish();
+      return result;
+    }
+  };
+  return { strategy, history };
 }
 /**
 * Immutable message entry stored by `MessageHistory`.

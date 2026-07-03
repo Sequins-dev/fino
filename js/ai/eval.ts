@@ -38,6 +38,8 @@ import { OtelSDK, BatchSpanProcessor, TraceTopicInstrumentation, PeriodicExporti
 import type { Resource } from 'fino:opentelemetry/sdk';
 import { getLoggerProvider, LogRecordBuilder, SeverityNumber } from 'fino:opentelemetry/logs';
 import { getMeterProvider } from 'fino:opentelemetry/metrics';
+import { createSignal } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * One evaluation case.
 */
@@ -89,6 +91,16 @@ export interface EvalSummary {
   total: number;
 }
 /**
+* Retained progress for an evaluation suite.
+*/
+export interface EvalProgress {
+  name: string;
+  passed: number;
+  total: number;
+  completed: number;
+  mean: number;
+}
+/**
 * JSON-serializable evaluation report.
 */
 export interface JsonEvalReport {
@@ -127,6 +139,58 @@ export abstract class EvalReporter {
   }): Promise<void> {}
   async onCase(_r: EvalCaseReport): Promise<void> {}
   async onFinish(_summary: EvalSummary): Promise<void> {}
+}
+/**
+* Reporter that exposes evaluation progress as a signal.
+*/
+export class EvalProgressReporter extends EvalReporter {
+  #progress = createSignal<EvalProgress>({
+    name: '',
+    passed: 0,
+    total: 0,
+    completed: 0,
+    mean: 0
+  });
+  #scores: number[] = [];
+
+  get progress(): ReadonlySignal<EvalProgress> {
+    return this.#progress;
+  }
+
+  async onStart(suite: {
+    name: string;
+    cases: number;
+  }): Promise<void> {
+    this.#scores = [];
+    this.#progress.set({
+      name: suite.name,
+      passed: 0,
+      total: suite.cases,
+      completed: 0,
+      mean: 0
+    });
+  }
+
+  async onCase(r: EvalCaseReport): Promise<void> {
+    this.#scores.push(r.score);
+    const current = this.#progress.get();
+    this.#progress.set({
+      ...current,
+      passed: current.passed + (r.pass ? 1 : 0),
+      completed: this.#scores.length,
+      mean: this.#scores.reduce((a, b) => a + b, 0) / this.#scores.length
+    });
+  }
+
+  async onFinish(summary: EvalSummary): Promise<void> {
+    this.#progress.set({
+      name: summary.name,
+      passed: summary.passed,
+      total: summary.total,
+      completed: summary.total,
+      mean: summary.mean
+    });
+  }
 }
 /**
 * Eval reporter that stores deterministic JSON-friendly reports.

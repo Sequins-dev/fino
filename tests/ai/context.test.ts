@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { MessageHistory, appendOnlyHistoryStrategy, summarizingHistoryStrategy, selectiveSummaryHistoryStrategy, estimateTokens, PRICING, costOf, maxTokens, maxCost } from 'fino:ai/context';
+import { MessageHistory, appendOnlyHistoryStrategy, signalHistoryStrategy, summarizingHistoryStrategy, selectiveSummaryHistoryStrategy, estimateTokens, PRICING, costOf, maxTokens, maxCost } from 'fino:ai/context';
 import type { ModelMessage, Usage } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { agent } from 'fino:ai/agent';
@@ -344,6 +344,14 @@ describe('maxCost', () => {
 });
 // ── HistoryStrategy ──────────────────────────────────────────────────────────
 describe('HistoryStrategy', () => {
+  it('signalHistoryStrategy tracks strategy history replacements', async (t) => {
+    const wrapped = signalHistoryStrategy(appendOnlyHistoryStrategy());
+    const revisions: number[] = [];
+    wrapped.history.subscribe((history) => revisions.push(history.refs().length));
+    await wrapped.strategy.onAppend(userMsg('hello'), {});
+    t.equal(wrapped.history.get().refs().length, 1, 'history signal retains appended message');
+    t.deepEqual(revisions, [1], 'subscriber saw history replacement');
+  });
   it('summarizingHistoryStrategy compacts lazily on read', async (t) => {
     const summaryModel = scriptGenerateModel(['lazy summary']);
     const strategy = summarizingHistoryStrategy({

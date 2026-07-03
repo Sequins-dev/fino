@@ -1304,6 +1304,53 @@ export function staleSearchChanged(): string {
     const incremental = json.modules.find((item) => item.name === 'incremental-new')!;
     t.ok(incremental.exports.some((item) => item.name === 'staleSearchChanged'), 'api.json includes changed-file symbol');
   });
+  it('refreshes search within the original build input roots', async (t) => {
+    const rootDir = TEST_DIR + '/doc-input-roots';
+    const jsDir = rootDir + '/js';
+    const brokenDir = rootDir + '/third_party';
+    await removeTree(fs, rootDir);
+    await ensureDir(fs, jsDir);
+    await ensureDir(fs, brokenDir);
+    await fs.writeFile(jsDir + '/initial.ts', `/**
+ * Initial scoped docs module.
+ */
+
+/**
+ * Initial scoped symbol.
+ */
+export function scopedInitial(): string {
+  return 'initial';
+}
+`);
+    await fs.writeFile(brokenDir + '/broken.js', 'export const = ;\n');
+    const initial = await runCli([
+      'doc',
+      'build',
+      './js',
+      '--format',
+      'markdown'
+    ], rootDir);
+    t.equal(initial.result.code, 0, 'initial scoped build exits successfully');
+    await fs.writeFile(jsDir + '/later.ts', `/**
+ * Later scoped docs module.
+ */
+
+/**
+ * Later scoped symbol.
+ */
+export function scopedLater(): string {
+  return 'later';
+}
+`);
+    const found = await runCli([
+      'doc',
+      'search',
+      'scopedLater'
+    ], rootDir);
+    t.equal(found.result.code, 0, 'search refresh exits successfully without scanning broken sibling directories');
+    t.equal(found.stderr, '', 'search refresh writes no stderr');
+    t.ok(found.stdout.includes('later.scopedLater'), 'search finds new symbol under original build root');
+  });
   it('refreshes re-exported symbols and removes deleted cached files', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';

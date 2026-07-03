@@ -629,6 +629,56 @@ describe('fino:ai/mcp — MCPClient', () => {
     t.deepEqual(seen, [], 'unsubscribed resources no longer receive updates');
     await client.close();
   });
+  it('client list signals seed and refresh from list change notifications', async (t) => {
+    const [clientTransport, serverTransport] = loopbackPair();
+    let tools = [tool({
+      name: 'first',
+      description: 'First',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => 'ok'
+    })];
+    let resources = [{ uri: 'memo://one' }];
+    let prompts = [{ name: 'p1' }];
+    const server = mcpServer({
+      tools: () => tools,
+      resources: () => resources,
+      prompts: () => prompts,
+      listChanged: { tools: true, resources: true, prompts: true }
+    });
+    void server.serve(serverTransport);
+    const seen: string[] = [];
+    const client = new MCPClient({ transport: clientTransport });
+    await client.connect();
+    const disposeTools = client.tools.subscribe((items) => seen.push(`tools:${items.map((item) => item.name).join(',')}`));
+    const disposeResources = client.resources.subscribe((items) => seen.push(`resources:${items.map((item) => item.uri).join(',')}`));
+    const disposePrompts = client.prompts.subscribe((items) => seen.push(`prompts:${items.map((item) => item.name).join(',')}`));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    t.equal(client.tools.get()[0]?.name, 'first', 'tools signal seeds from remote list');
+    t.equal(client.resources.get()[0]?.uri, 'memo://one', 'resources signal seeds from remote list');
+    t.equal(client.prompts.get()[0]?.name, 'p1', 'prompts signal seeds from remote list');
+    tools = [tool({
+      name: 'second',
+      description: 'Second',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => 'ok'
+    })];
+    resources = [{ uri: 'memo://two' }];
+    prompts = [{ name: 'p2' }];
+    await server.notifyToolsChanged();
+    await server.notifyResourcesChanged();
+    await server.notifyPromptsChanged();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    t.equal(client.tools.get()[0]?.name, 'second', 'tools signal refreshes on notification');
+    t.equal(client.resources.get()[0]?.uri, 'memo://two', 'resources signal refreshes on notification');
+    t.equal(client.prompts.get()[0]?.name, 'p2', 'prompts signal refreshes on notification');
+    t.ok(seen.includes('tools:second'), 'tools subscriber saw refreshed list');
+    t.ok(seen.includes('resources:memo://two'), 'resources subscriber saw refreshed list');
+    t.ok(seen.includes('prompts:p2'), 'prompts subscriber saw refreshed list');
+    disposeTools();
+    disposeResources();
+    disposePrompts();
+    await client.close();
+  });
   it('routes resource update notifications to the matching custom transport subscription', async (t) => {
     const server = mcpServer({
       resources: [{ uri: 'memo://one' }, { uri: 'memo://two' }],

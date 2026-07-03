@@ -35,6 +35,8 @@ import { applyLogLimits } from './logs.ts';
 import { accumulateMetric, applyMetricView, attributesKey, cloneMetric, metricInstrumentKey, metricSeriesKey, zeroMetric } from './metrics.ts';
 import { AlwaysOnSampler, Sampler, applySpanLimits } from './traces.ts';
 import { W3CTraceContextPropagator } from './common.ts';
+import { lazy } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * InMemoryExporter class exposed by the OpenTelemetry API.
 *
@@ -391,6 +393,23 @@ export class ManualMetricReader extends MetricReader {
     this.#batch = [];
     return out;
   }
+}
+/**
+* Create a cold signal that periodically collects a manual metric reader.
+*/
+export function metricsSignal(reader: ManualMetricReader, options: {
+  intervalMs?: number;
+} = {}): ReadonlySignal<MetricRecord[]> {
+  const intervalMs = options.intervalMs ?? 1000;
+  return lazy<MetricRecord[]>([], (set) => {
+    const collect = () => {
+      const metrics = reader.collect();
+      if (metrics.length > 0) set(metrics);
+    };
+    collect();
+    const timer = setInterval(collect, intervalMs);
+    return () => clearInterval(timer);
+  });
 }
 /**
 * BatchSpanProcessor class exposed by the OpenTelemetry API.

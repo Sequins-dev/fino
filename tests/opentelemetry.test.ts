@@ -2,12 +2,13 @@ import { after, describe, it } from 'fino:test/test';
 import { mockFetch } from 'fino:test/mock';
 import type { MockFetchCall } from 'fino:test/mock';
 import { topic } from 'fino:context/topic';
-import { Baggage, BatchLogRecordProcessor, BatchSpanProcessor, Counter, DnsInstrumentation, FetchInstrumentation, HttpServerInstrumentation, Histogram, HistogramInstrument, InMemoryExporter, LogRecordBuilder, LoggerProvider, ManualMetricReader, PeriodicMetricReader, PeriodicExportingMetricReader, MeterProvider, OTEL_SCHEMA_VERSION, OTEL_TOPIC_SUFFIXES, OTLPHttpJsonExporter, OtelSDK, Propagation, Resource, Sampler, SocketInstrumentation, Span, TlsInstrumentation, TraceTopicInstrumentation, TracerProvider, SeverityNumber, W3CTraceContextPropagator, getActiveSpan, getActiveBaggage, getLoggerProvider, getMeterProvider, getActiveSpanContext, getTracerProvider, otelTopic, otelRuntimeEvent, otelRuntimeTopic, runWithActiveSpan, runWithActiveContext, runWithBaggage, runWithLoggerProvider, runWithMeterProvider, runWithTracerProvider, setLoggerProvider, setMeterProvider, setTracerProvider } from 'fino:opentelemetry';
+import { Baggage, BatchLogRecordProcessor, BatchSpanProcessor, Counter, DnsInstrumentation, FetchInstrumentation, HttpServerInstrumentation, Histogram, HistogramInstrument, InMemoryExporter, LogRecordBuilder, LoggerProvider, ManualMetricReader, PeriodicMetricReader, PeriodicExportingMetricReader, MeterProvider, OTEL_SCHEMA_VERSION, OTEL_TOPIC_SUFFIXES, OTLPHttpJsonExporter, OtelSDK, Propagation, Resource, Sampler, SocketInstrumentation, Span, TlsInstrumentation, TraceTopicInstrumentation, TracerProvider, SeverityNumber, W3CTraceContextPropagator, gaugeFromSignal, getActiveSpan, getActiveBaggage, getLoggerProvider, getMeterProvider, getActiveSpanContext, getTracerProvider, metricsSignal, otelTopic, otelRuntimeEvent, otelRuntimeTopic, runWithActiveSpan, runWithActiveContext, runWithBaggage, runWithLoggerProvider, runWithMeterProvider, runWithTracerProvider, setLoggerProvider, setMeterProvider, setTracerProvider } from 'fino:opentelemetry';
 import type { CarrierApi, Instrumentation, LogRecord, LogRecordProcessor, MetricRecord, SpanRecord } from 'fino:opentelemetry';
 import { getTracerProvider as getTraceProviderFromTraces, Span as SplitSpan } from 'fino:opentelemetry/traces';
 import { getMeterProvider as getMeterProviderFromMetrics, Counter as SplitCounter } from 'fino:opentelemetry/metrics';
 import { getLoggerProvider as getLoggerProviderFromLogs, SeverityNumber as SplitSeverityNumber } from 'fino:opentelemetry/logs';
 import { OtelSDK as SplitOtelSDK, InMemoryExporter as SplitInMemoryExporter } from 'fino:opentelemetry/sdk';
+import { createSignal } from 'fino:signals';
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -712,6 +713,30 @@ describe('fino:opentelemetry', () => {
     observableUpDownCounter.dispose();
     observableGauge.dispose();
     await sdk.shutdown();
+  });
+  it('bridges signals to observable gauges and manual reader collections', async (t) => {
+    const reader = new ManualMetricReader();
+    const provider = new MeterProvider();
+    const sdk = new OtelSDK({ meterProvider: provider, metricReaders: [reader] }).start();
+    const meter = provider.getMeter('signal.metrics');
+    const value = createSignal(3);
+    const handle = gaugeFromSignal(meter, 'signal.depth', value, { attributes: { queue: 'default' } });
+    const collected = metricsSignal(reader, { intervalMs: 5 });
+    const seen: number[] = [];
+    const dispose = collected.subscribe((metrics) => {
+      const metric = metrics.find((item) => item.name === 'signal.depth');
+      if (metric) seen.push(metric.value ?? 0);
+    });
+    await sdk.flush();
+    await delay(20);
+    value.set(7);
+    await sdk.flush();
+    await delay(20);
+    dispose();
+    handle.dispose();
+    await sdk.shutdown();
+    t.ok(seen.includes(3), 'metrics signal collected initial gauge value');
+    t.ok(seen.includes(7), 'metrics signal collected updated gauge value');
   });
   it('supports manual metric readers, views, and cardinality limits', async (t) => {
     const reader = new ManualMetricReader({ temporality: 'delta' });

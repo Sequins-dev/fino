@@ -96,6 +96,8 @@ import { encodeUtf8, decodeUtf8 } from './globals/encoding.ts';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
 import { topic, Topic } from './context/topic.ts';
+import { lazy } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * Options for spawning a child process.
 *
@@ -210,6 +212,18 @@ export { os, arch, env, execPath };
 * ```
 */
 export { args as argv };
+/**
+* Best-effort runtime statistics for the current process.
+*/
+export interface ProcessStats {
+  pid: number;
+  rssBytes: number;
+  heapUsedBytes?: number;
+  heapTotalBytes?: number;
+  externalBytes?: number;
+  eventLoopLagMs: number;
+  timestamp: number;
+}
 // ---------------------------------------------------------------------------
 // Platform constants
 // ---------------------------------------------------------------------------
@@ -342,6 +356,10 @@ const lib = dlopen(LIBC, {
   posix_spawn_file_actions_addclose: {
     parameters: ['buffer', 'i32'],
     result: 'i32'
+  },
+  getrusage: {
+    parameters: ['i32', 'buffer'],
+    result: 'i32'
   }
 });
 const spawnChdirLib = (() => {
@@ -354,6 +372,8 @@ const spawnChdirLib = (() => {
     return null;
   }
 })();
+const RUSAGE_SELF = 0;
+let lastEventLoopLagMs = 0;
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -424,9 +444,48 @@ function addSignalToSet(set: ArrayBuffer, signo: number): void {
   const bytes = new Uint8Array(set);
   bytes[byteOffset] |= 1 << (bit & 7);
 }
+function currentRssBytes(): number {
+  const buf = new ArrayBuffer(256);
+  const rc = Number(lib.symbols.getrusage(RUSAGE_SELF, buf));
+  if (rc !== 0) return 1;
+  const maxrss = Number(new DataView(buf).getBigInt64(16, true));
+  if (!Number.isFinite(maxrss) || maxrss <= 0) return 1;
+  return isLinux ? maxrss * 1024 : maxrss;
+}
 // ---------------------------------------------------------------------------
 // Process-level APIs
 // ---------------------------------------------------------------------------
+/**
+* Return best-effort current process statistics.
+*
+* RSS is read from `getrusage(RUSAGE_SELF)`. Heap fields are present only when
+* the runtime has a heap-stat source for the active platform.
+*/
+export function processStats(): ProcessStats {
+  return {
+    pid,
+    rssBytes: currentRssBytes(),
+    eventLoopLagMs: lastEventLoopLagMs,
+    timestamp: Date.now()
+  };
+}
+/**
+* Cold signal of process statistics sampled on an interval.
+*/
+export function processStatsSignal(intervalMs = 1000): ReadonlySignal<ProcessStats> {
+  return lazy(processStats(), (set) => {
+    let expected = Date.now() + intervalMs;
+    const sample = () => {
+      const now = Date.now();
+      lastEventLoopLagMs = Math.max(0, now - expected);
+      expected = now + intervalMs;
+      set(processStats());
+    };
+    const timer = setInterval(sample, intervalMs);
+    sample();
+    return () => clearInterval(timer);
+  });
+}
 /**
 * Current process ID.
 *

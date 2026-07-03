@@ -7,9 +7,9 @@
 > declarative attributes, and the server pushes HTML fragments over SSE
 > that selectively morph DOM elements by id. Nothing here is committed;
 > the point of this doc is to iterate on the shape before building it.
-> Companion: `runtime-signals.md` explores exposing runtime state
-> (sessions, jobs, pools, workflows) as signals so live regions render it
-> with zero glue.
+> Runtime read-model signals now exist across sessions, jobs, pools,
+> workflows, MCP, metrics, and process stats so live regions can render
+> current runtime state with minimal glue.
 
 ## 1. Thesis
 

@@ -2,7 +2,7 @@
 * Tests for fino:process — process info APIs and child process spawning.
 */
 import { describe, it } from 'fino:test/test';
-import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process } from 'fino:process';
+import { os, arch, argv, env, execPath, pid, ppid, cwd, chdir, kill, signal, SIGKILL, Process, processStats, processStatsSignal } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -28,6 +28,20 @@ function joinChunks(chunks: Uint8Array[]): string {
   }, new Uint8Array(0)));
 }
 describe('Platform info', () => {
+  it('reports process stats and exposes a retained stats signal', async (t) => {
+    const stats = processStats();
+    t.equal(stats.pid, pid, 'stats use current pid');
+    t.ok(stats.rssBytes > 0, 'rss is positive');
+    t.ok(stats.timestamp > 0, 'timestamp is set');
+    t.ok(stats.eventLoopLagMs >= 0, 'event loop lag is non-negative');
+    const sig = processStatsSignal(5);
+    const seen: number[] = [];
+    const dispose = sig.subscribe((next) => seen.push(next.timestamp));
+    await loop.timeout(20);
+    dispose();
+    t.ok(seen.length > 0, 'stats signal emits while subscribed');
+    t.ok(sig.get().timestamp >= stats.timestamp, 'signal retains latest stats');
+  });
   it('os is a non-empty string', (t) => {
     t.equal(typeof os, 'string');
     t.ok(os.length > 0, 'os is non-empty');

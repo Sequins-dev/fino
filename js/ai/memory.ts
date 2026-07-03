@@ -38,6 +38,8 @@
 */
 import { Database, vec, vecDecode } from 'fino:database/sqlite';
 import type { ModelMessage } from 'fino:ai/model';
+import { createSignal } from 'fino:signals';
+import type { ReadonlySignal } from 'fino:signals';
 /**
 * Embedding provider used by `SqliteMemory`.
 */
@@ -89,6 +91,16 @@ export interface RecalledContext {
   workingMemory: Record<string, unknown> | null;
 }
 /**
+* Retained progress for the most recent `Memory.ingest()` call.
+*/
+export interface MemoryIngestProgress {
+  active: boolean;
+  documents: number;
+  chunks: number;
+  embedded: number;
+  stored: number;
+}
+/**
 * Query helper over `Memory.recall()`.
 */
 export interface Retriever {
@@ -107,6 +119,8 @@ export interface ChunkOptions {
 export interface Memory {
   readonly threadId: string;
   readonly semanticAvailable: boolean;
+  readonly workingMemory: ReadonlySignal<Record<string, unknown> | null>;
+  readonly ingestProgress: ReadonlySignal<MemoryIngestProgress>;
   append(msg: Omit<MemoryMessage, 'id' | 'createdAt' | 'threadId'>): Promise<MemoryMessage>;
   history(opts?: {
     last?: number;
@@ -201,6 +215,14 @@ export class SqliteMemory implements Memory {
   #dim: number;
   #semantic: boolean;
   #historyTokenBudget: number | undefined;
+  #workingMemorySignal = createSignal<Record<string, unknown> | null>(null);
+  #ingestProgress = createSignal<MemoryIngestProgress>({
+    active: false,
+    documents: 0,
+    chunks: 0,
+    embedded: 0,
+    stored: 0
+  });
   private constructor(db: Database, ownsDb: boolean, opts: {
     threadId: string;
     resourceId?: string;
@@ -223,6 +245,12 @@ export class SqliteMemory implements Memory {
   }
   get semanticAvailable(): boolean {
     return this.#semantic;
+  }
+  get workingMemory(): ReadonlySignal<Record<string, unknown> | null> {
+    return this.#workingMemorySignal;
+  }
+  get ingestProgress(): ReadonlySignal<MemoryIngestProgress> {
+    return this.#ingestProgress;
   }
   static async open(opts: SqliteMemoryOptions): Promise<SqliteMemory> {
     const db = await Database.open(opts.path, { fs: opts.fs as never });
@@ -390,12 +418,25 @@ export class SqliteMemory implements Memory {
   }): Promise<void> {
     const { scope = 'thread', chunk: chunkOpts } = opts ?? {};
     const scopeId = scope === 'resource' ? this.#resourceId ?? this.#threadId : this.#threadId;
+    const chunkCounts = docs.map((doc) => chunkText(doc.text, chunkOpts).length);
+    const totalChunks = chunkCounts.reduce((a, b) => a + b, 0);
+    this.#ingestProgress.set({
+      active: true,
+      documents: docs.length,
+      chunks: totalChunks,
+      embedded: 0,
+      stored: 0
+    });
     const insertChunk = this.#db.prepare(`INSERT OR IGNORE INTO chunks(id, scope_id, text, metadata, embedding) VALUES(?, ?, ?, ?, ?)`);
     const insertVec = this.#semantic ? this.#db.prepare(`INSERT INTO chunk_vectors(rowid, embedding) VALUES(?, ?)`) : null;
     try {
       for (const doc of docs) {
         const chunks = chunkText(doc.text, chunkOpts);
         const embeddings = await this.#embedder.embed(chunks);
+        this.#ingestProgress.set((progress) => ({
+          ...progress,
+          embedded: progress.embedded + embeddings.length
+        }));
         for (let i = 0; i < chunks.length; i++) {
           const id = newId();
           const embedding = embeddings[i] ?? new Float32Array(this.#dim);
@@ -404,11 +445,19 @@ export class SqliteMemory implements Memory {
           if (insertVec && result.changes > 0) {
             await insertVec.run(result.lastInsertRowid, vec(embedding));
           }
+          this.#ingestProgress.set((progress) => ({
+            ...progress,
+            stored: progress.stored + (result.changes > 0 ? 1 : 0)
+          }));
         }
       }
     } finally {
       insertChunk.finalize();
       insertVec?.finalize();
+      this.#ingestProgress.set((progress) => ({
+        ...progress,
+        active: false
+      }));
     }
   }
   async getWorkingMemory(): Promise<Record<string, unknown> | null> {
@@ -436,6 +485,7 @@ export class SqliteMemory implements Memory {
        ON CONFLICT(thread_id) DO UPDATE SET data = excluded.data`);
     try {
       await stmt.run(this.#threadId, JSON.stringify(data));
+      this.#workingMemorySignal.set(JSON.parse(JSON.stringify(data)) as Record<string, unknown>);
     } finally {
       stmt.finalize();
     }

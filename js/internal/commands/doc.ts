@@ -220,6 +220,10 @@ interface CurrentDocFile {
 interface DocCacheOptions {
   shouldParseChanged?: (file: CurrentDocFile) => Promise<boolean>;
 }
+interface DocInputMetadata {
+  files: string[];
+  types: string[];
+}
 type AstNode = Record<string, any>;
 interface HighlightSpan {
   start: number;
@@ -446,6 +450,11 @@ function normalizePath(path: string): string {
   if (path.startsWith('./') || path.startsWith('../')) return joinPath(cwd(), path);
   return path;
 }
+async function normalizeDirectoryGlobEntry(path: string, base: string): Promise<string> {
+  if (path.startsWith('/')) return path;
+  if (await exists(path)) return joinPath(cwd(), path);
+  return joinPath(base, path);
+}
 function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
   if (path.startsWith('/')) return `file://${path}`;
@@ -463,14 +472,15 @@ async function expandInput(arg: string): Promise<string[]> {
     '**/*.ts',
     '**/*.js',
     '**/*.mjs'
-  ].map((pattern) => joinPath(absolute, pattern)) : [arg];
+  ] : [arg];
   const files: string[] = [];
   for (const pattern of patterns) {
     for await (const entry of fs.glob(pattern, {
-      cwd: cwd(),
+      cwd: dir ? absolute : cwd(),
       onlyFiles: true
     })) {
-      files.push(entry.path.toString());
+      const path = entry.path.toString();
+      files.push(dir ? await normalizeDirectoryGlobEntry(path, absolute) : path);
     }
   }
   return [...new Set(files)].sort();
@@ -501,14 +511,15 @@ async function expandDocInput(arg: string): Promise<string[]> {
     '**/*.js',
     '**/*.mjs',
     '**/*.md'
-  ].map((pattern) => joinPath(absolute, pattern)) : [arg];
+  ] : [arg];
   const files: string[] = [];
   for (const pattern of patterns) {
     for await (const entry of fs.glob(pattern, {
-      cwd: cwd(),
+      cwd: dir ? absolute : cwd(),
       onlyFiles: true
     })) {
-      files.push(entry.path.toString());
+      const path = entry.path.toString();
+      files.push(dir ? await normalizeDirectoryGlobEntry(path, absolute) : path);
     }
   }
   return [...new Set(files)].sort();
@@ -529,6 +540,25 @@ async function expandDocInputs(rawFiles: unknown): Promise<DocInputs> {
   const expanded: ExpandedDocFile[] = [];
   for (const file of files) expanded.push(...await expandDocInputFiles(file));
   return splitDocInputs(expanded);
+}
+async function docDiscoveryRoots(rawFiles: unknown): Promise<string[]> {
+  const files = Array.isArray(rawFiles) ? rawFiles.map(String) : [];
+  const roots: string[] = [];
+  for (const file of files) {
+    const isGlob = file.includes('*') || file.includes('?') || file.includes('{');
+    if (isGlob) {
+      roots.push(file);
+      continue;
+    }
+    const absolute = normalizePath(file);
+    if (await isDirectory(absolute)) {
+      roots.push(file);
+      continue;
+    }
+    const dir = dirname(file);
+    roots.push(dir === '' ? '.' : dir);
+  }
+  return [...new Set(roots)].sort(compareAscii);
 }
 function splitDocInputs(files: ExpandedDocFile[]): DocInputs {
   const sourceFiles: string[] = [];
@@ -2419,6 +2449,41 @@ async function openDocsDb(): Promise<DocsDatabase> {
   await ensureDir(docsDir());
   return sqlite.Database.open(docsDbPath()) as Promise<DocsDatabase>;
 }
+async function readDocInputMetadata(): Promise<DocInputMetadata | undefined> {
+  if (!sqlite.sqliteAvailable || !await exists(docsDbPath())) return undefined;
+  const db = await sqlite.Database.open(docsDbPath()) as DocsDatabase;
+  try {
+    await ensureDocsCacheSchema(db);
+    const stmt = db.prepare('SELECT key, value FROM doc_meta WHERE key IN (?, ?)');
+    try {
+      const rows = await stmt.all('input_roots', 'type_roots');
+      const byKey = new Map(rows.map((row) => [String(row.key), String(row.value)]));
+      const files = JSON.parse(byKey.get('input_roots') ?? '[]') as unknown;
+      const types = JSON.parse(byKey.get('type_roots') ?? '[]') as unknown;
+      if (!Array.isArray(files)) return undefined;
+      if (!Array.isArray(types)) return undefined;
+      return {
+        files: files.map(String),
+        types: types.map(String)
+      };
+    } finally {
+      stmt.finalize();
+    }
+  } finally {
+    await db.close();
+  }
+}
+async function writeDocInputMetadata(files: string[], types: string[]): Promise<void> {
+  if (!sqlite.sqliteAvailable) return;
+  const db = await openDocsDb();
+  try {
+    await ensureDocsCacheSchema(db);
+    await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'input_roots', JSON.stringify(files));
+    await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'type_roots', JSON.stringify(types));
+  } finally {
+    await db.close();
+  }
+}
 async function ensureDocsCacheSchema(db: DocsDatabase): Promise<void> {
   for (const statement of DOCS_CACHE_SCHEMA_STATEMENTS) await db.exec(statement);
   await runDocsStatement(db, 'INSERT OR REPLACE INTO doc_meta VALUES (?, ?)', 'cache_schema_version', '1');
@@ -2820,7 +2885,16 @@ function rewriteSymbolIds(moduleDoc: ModuleDoc, oldName: string, newName: string
   }
 }
 async function discoverProjectDocInputs(): Promise<DocInputs> {
-  return expandDocInputs(['.']);
+  const metadata = await readDocInputMetadata();
+  const inputs = await expandDocInputs(metadata?.files ?? ['.']);
+  const typeInputs = await expandDocInputs(metadata?.types ?? []);
+  inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(compareAscii);
+  inputs.guideFiles = [...new Set([...inputs.guideFiles, ...typeInputs.guideFiles])].sort(compareAscii);
+  inputs.outputPaths = {
+    ...inputs.outputPaths,
+    ...typeInputs.outputPaths
+  };
+  return inputs;
 }
 async function ensureApiJson(): Promise<ApiDoc> {
   const path = apiJsonPath();
@@ -3009,6 +3083,8 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   const title = ctx.optionProvided?.('title') ? String(input.title ?? '') : await inferDocsTitle();
   const includePrivate = input['include-private'] === true;
   const written: string[] = [];
+  const inputRoots = await docDiscoveryRoots(input.files);
+  const typeRoots = await docDiscoveryRoots(input.types);
   const inputs = await expandDocInputs(input.files);
   const typeInputs = await expandDocInputs(input.types);
   inputs.sourceFiles = [...new Set([...inputs.sourceFiles, ...typeInputs.sourceFiles])].sort(compareAscii);
@@ -3070,6 +3146,7 @@ async function runBuildCommand(input: Record<string, unknown>, ctx: TaskContext)
   written.push(await writeSqliteIndex(api, docsDbPath()));
   await pruneGeneratedOutputs(expectedOutputs);
   await writeOutputManifest(expectedOutputs);
+  await writeDocInputMetadata(inputRoots, typeRoots);
   const message = written.join('\n');
   if (ctx.writer.mode === 'json') {
     const result = {

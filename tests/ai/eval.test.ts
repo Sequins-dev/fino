@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { evaluate, exactMatch, contains, schemaScorer, llmJudge, semanticSimilarity, EvalReporter, JsonEvalReporter, OpenTelemetryReporter } from 'fino:ai/eval';
+import { evaluate, exactMatch, contains, schemaScorer, llmJudge, semanticSimilarity, EvalReporter, EvalProgressReporter, JsonEvalReporter, OpenTelemetryReporter } from 'fino:ai/eval';
 import type { EvalCaseReport, EvalSummary, ScoreResult } from 'fino:ai/eval';
 import { OtelSDK, InMemoryExporter, BatchSpanProcessor, BatchLogRecordProcessor, TraceTopicInstrumentation, PeriodicExportingMetricReader } from 'fino:opentelemetry/sdk';
 import { DiskFileSystem } from 'fino:file';
@@ -212,6 +212,24 @@ describe('scorers', () => {
   });
 });
 describe('EvalReporter', () => {
+  it('EvalProgressReporter exposes retained progress', async (t) => {
+    const reporter = new EvalProgressReporter();
+    const seen: string[] = [];
+    reporter.progress.subscribe((progress) => seen.push(`${progress.completed}/${progress.total}:${progress.passed}`));
+    await reporter.onStart({ name: 'suite', cases: 2 });
+    await reporter.onCase({
+      name: 'one',
+      input: null,
+      output: null,
+      scores: {},
+      score: 1,
+      pass: true
+    });
+    await reporter.onFinish({ name: 'suite', mean: 1, passed: 1, total: 2 });
+    t.equal(reporter.progress.get().completed, 2, 'finish marks all cases completed');
+    t.equal(reporter.progress.get().passed, 1, 'progress retains passed count');
+    t.ok(seen.includes('1/2:1'), 'subscriber saw per-case progress');
+  });
   it('base class methods are no-ops that resolve', async (t) => {
     class Concrete extends EvalReporter {}
     const r = new Concrete();
