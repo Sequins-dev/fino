@@ -1013,7 +1013,7 @@ describe('SessionStore', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const sqlite = await SqliteSessionStore.open(path);
+    const sqlite = await SqliteSessionStore.open(`sqlite://${path}`);
     const memory = new InMemorySessionStore();
     try {
       let history = new MessageHistory();

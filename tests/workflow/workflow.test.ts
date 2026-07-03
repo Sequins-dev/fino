@@ -286,7 +286,7 @@ describe('fino:workflow', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteWorkflowStore.open(path);
+    const store = await SqliteWorkflowStore.open(`sqlite://${path}`);
     try {
       const wf = workflow({
         id: 'sqlite',

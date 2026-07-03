@@ -1,5 +1,5 @@
 /**
-* internal/jobs/store — sqlite persistence for fino:jobs.
+* internal/jobs/store — database persistence for fino:jobs.
 *
 * Owns the `jobs`, `schedules`, and `workflow_runs` tables. Claims are
 * atomic (`UPDATE ... RETURNING` over an ordered subquery), leases recover
@@ -23,7 +23,7 @@
 *
 * @internal
 */
-import { Database, type SqlValue } from 'fino:database/sqlite';
+import { Database, type DatabaseConnection, type DbValue } from 'fino:database';
 import { v7 as uuidv7 } from 'fino:uuid';
 import type { WorkflowState, WorkflowStatus, WorkflowStore } from 'fino:workflow';
 
@@ -131,24 +131,24 @@ export interface InsertJob {
   scheduleId?: string | null;
 }
 
-function toNum(v: SqlValue): number {
+function toNum(v: DbValue): number {
   if (typeof v === 'bigint') return Number(v);
   if (typeof v === 'number') return v;
   throw new Error(`expected numeric column, got ${typeof v}`);
 }
-function toNumOrNull(v: SqlValue): number | null {
+function toNumOrNull(v: DbValue): number | null {
   if (v === null || v === undefined) return null;
   return toNum(v);
 }
-function toStrOrNull(v: SqlValue): string | null {
+function toStrOrNull(v: DbValue): string | null {
   return v === null || v === undefined ? null : String(v);
 }
-function parseJsonOrNull(v: SqlValue): unknown {
+function parseJsonOrNull(v: DbValue): unknown {
   const text = toStrOrNull(v);
   return text === null ? null : JSON.parse(text);
 }
 
-function rowToJob(row: Record<string, SqlValue>): JobRecord {
+function rowToJob(row: Record<string, DbValue>): JobRecord {
   return {
     id: String(row.id),
     queue: String(row.queue),
@@ -174,7 +174,7 @@ function rowToJob(row: Record<string, SqlValue>): JobRecord {
     finishedAt: toNumOrNull(row.finished_at)
   };
 }
-function rowToSchedule(row: Record<string, SqlValue>): ScheduleRecord {
+function rowToSchedule(row: Record<string, DbValue>): ScheduleRecord {
   return {
     id: String(row.id),
     task: String(row.task),
@@ -196,12 +196,12 @@ function rowToSchedule(row: Record<string, SqlValue>): ScheduleRecord {
 const ACTIVE_STATUSES = "('pending','claimed','running','waiting')";
 
 /**
-* SQLite-backed job and schedule persistence for `fino:jobs`.
+* Database-backed job and schedule persistence for `fino:jobs`.
 *
 * @internal
 */
 export class JobsStore {
-  #db: Database;
+  #db: DatabaseConnection;
   /**
   * Private property `#last` — tail of the internal operation queue. The
   * sqlite bindings cannot interleave statement execution across await
@@ -211,7 +211,7 @@ export class JobsStore {
   * @internal
   */
   #last: Promise<unknown> = Promise.resolve();
-  private constructor(db: Database) {
+  private constructor(db: DatabaseConnection) {
     this.#db = db;
   }
   /**
@@ -239,11 +239,13 @@ export class JobsStore {
     fs?: object;
   }): Promise<JobsStore> {
     const db = await Database.open(path, { fs: opts?.fs as never });
-    // No WAL: multi-connection WAL needs VFS shared memory (xShm*), which the
-    // JS VFS does not provide.
-    await db.exec('PRAGMA journal_mode=TRUNCATE');
-    await db.exec('PRAGMA busy_timeout=5000');
-    await db.exec('PRAGMA synchronous=NORMAL');
+    if (db.driver === 'sqlite') {
+      // No WAL: multi-connection WAL needs VFS shared memory (xShm*), which the
+      // JS VFS does not provide.
+      await db.exec('PRAGMA journal_mode=TRUNCATE');
+      await db.exec('PRAGMA busy_timeout=5000');
+      await db.exec('PRAGMA synchronous=NORMAL');
+    }
     await db.exec(`CREATE TABLE IF NOT EXISTS jobs (
         id              TEXT PRIMARY KEY,
         queue           TEXT NOT NULL DEFAULT 'default',
@@ -251,22 +253,22 @@ export class JobsStore {
         input           TEXT,
         status          TEXT NOT NULL,
         priority        INTEGER NOT NULL DEFAULT 0,
-        run_at          INTEGER NOT NULL,
+        run_at          BIGINT NOT NULL,
         attempts        INTEGER NOT NULL DEFAULT 0,
         max_attempts    INTEGER NOT NULL DEFAULT 3,
         backoff         TEXT,
-        timeout_ms      INTEGER,
+        timeout_ms      BIGINT,
         dedupe_key      TEXT,
         claimed_by      TEXT,
-        claimed_until   INTEGER,
+        claimed_until   BIGINT,
         workflow_run_id TEXT,
         waiting_on      TEXT,
         schedule_id     TEXT,
         result          TEXT,
         error           TEXT,
-        created_at      INTEGER NOT NULL,
-        updated_at      INTEGER NOT NULL,
-        finished_at     INTEGER
+        created_at      BIGINT NOT NULL,
+        updated_at      BIGINT NOT NULL,
+        finished_at     BIGINT
       );
       CREATE INDEX IF NOT EXISTS idx_jobs_ready ON jobs(status, run_at, priority);
       CREATE INDEX IF NOT EXISTS idx_jobs_lease ON jobs(status, claimed_until);
@@ -285,11 +287,11 @@ export class JobsStore {
         overlap     TEXT NOT NULL DEFAULT 'skip',
         catchup     TEXT NOT NULL DEFAULT 'skip',
         retry       TEXT,
-        next_run_at INTEGER NOT NULL,
-        last_run_at INTEGER,
+        next_run_at BIGINT NOT NULL,
+        last_run_at BIGINT,
         last_job_id TEXT,
-        created_at  INTEGER NOT NULL,
-        updated_at  INTEGER NOT NULL
+        created_at  BIGINT NOT NULL,
+        updated_at  BIGINT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(enabled, next_run_at);
       CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -297,7 +299,7 @@ export class JobsStore {
         workflow_id TEXT NOT NULL,
         status TEXT NOT NULL,
         state TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at BIGINT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);`);
@@ -305,8 +307,8 @@ export class JobsStore {
   }
   /**
   * A `WorkflowStore` view over this store's `workflow_runs` table, sharing
-  * the single database connection (schema-compatible with
-  * `SqliteWorkflowStore`). Durable jobs checkpoint through this.
+  * the single database connection (schema-compatible with the workflow
+  * database store). Durable jobs checkpoint through this.
   *
   * @internal
   */
@@ -362,7 +364,7 @@ export class JobsStore {
         }
         const stmt = db.prepare(`SELECT state FROM workflow_runs ${clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY updated_at DESC`);
         try {
-          const rows = await stmt.all(...params as SqlValue[]);
+          const rows = await stmt.all(...params as DbValue[]);
           return rows.map((row) => JSON.parse(row.state as string) as WorkflowState);
         } finally {
           stmt.finalize();
@@ -488,7 +490,7 @@ export class JobsStore {
         status = 'claimed',
         claimed_by = ?,
         claimed_until = ?,
-        attempts = attempts + (status = 'pending'),
+        attempts = attempts + CASE WHEN status = 'pending' THEN 1 ELSE 0 END,
         updated_at = ?
       WHERE id IN (
         SELECT id FROM jobs
@@ -520,10 +522,9 @@ export class JobsStore {
   * @internal
   */
   async #sweepLeasesRaw(now: number): Promise<JobRecord[]> {
-    await this.#db.exec('BEGIN IMMEDIATE');
-    try {
+    return this.#db.transaction(async () => {
       const expired = this.#db.prepare(`SELECT * FROM jobs WHERE status IN ('claimed','running') AND claimed_until IS NOT NULL AND claimed_until <= :now`);
-      let rows: Record<string, SqlValue>[];
+      let rows: Record<string, DbValue>[];
       try {
         rows = await expired.all({ now });
       } finally {
@@ -550,14 +551,8 @@ export class JobsStore {
         }
         affected.push((await this.#getJobRaw(job.id))!);
       }
-      await this.#db.exec('COMMIT');
       return affected;
-    } catch (err) {
-      try {
-        await this.#db.exec('ROLLBACK');
-      } catch {}
-      throw err;
-    }
+    });
   }
   /**
   * Extend the lease for in-flight jobs owned by `claimedBy`.
@@ -587,7 +582,7 @@ export class JobsStore {
   *
   * @internal
   */
-  async #update(id: string, patch: Record<string, SqlValue>, now = Date.now()): Promise<void> {
+  async #update(id: string, patch: Record<string, DbValue>, now = Date.now()): Promise<void> {
     const keys = Object.keys(patch);
     const sets = keys.map((k) => `${k} = :${k}`).join(', ');
     const stmt = this.#db.prepare(`UPDATE jobs SET ${sets}, updated_at = :__now WHERE id = :__id`);
@@ -789,7 +784,7 @@ export class JobsStore {
       cancelled: 0,
       oldestPendingAt: null
     };
-    const params: Record<string, SqlValue> = {};
+    const params: Record<string, DbValue> = {};
     const where = queue === undefined ? '' : 'WHERE queue = :queue';
     if (queue !== undefined) params.queue = queue;
     const stmt = this.#db.prepare(`SELECT status, COUNT(*) AS count, MIN(CASE WHEN status = 'pending' THEN run_at ELSE NULL END) AS oldest_pending_at FROM jobs ${where} GROUP BY status`);
@@ -823,7 +818,7 @@ export class JobsStore {
     offset?: number;
   }): Promise<JobRecord[]> {
     const where: string[] = [];
-    const params: Record<string, SqlValue> = {};
+    const params: Record<string, DbValue> = {};
     if (filter.queue !== undefined) {
       where.push('queue = :queue');
       params.queue = filter.queue;

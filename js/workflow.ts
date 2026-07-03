@@ -38,7 +38,7 @@
 * await routeTicket.signal({ store, runId: run.runId, name: 'approval', payload: true });
 * ```
 */
-import { Database } from 'fino:database/sqlite';
+import { Database, sql, type DatabaseConnection, type SqlFragment } from 'fino:database';
 import { compile } from 'fino:validate';
 import { topic } from 'fino:context/topic';
 import { lazy } from 'fino:signals';
@@ -218,15 +218,18 @@ export class InMemoryWorkflowStore implements WorkflowStore {
   }
 }
 /**
-* SQLite-backed workflow store.
+* Database-backed workflow store.
+*
+* The class name is retained for compatibility. Pass a `sqlite://` path or a
+* `postgres://` URL to choose the storage engine through `fino:database`.
 */
 export class SqliteWorkflowStore implements WorkflowStore {
-  #db: Database;
-  private constructor(db: Database) {
+  #db: DatabaseConnection;
+  private constructor(db: DatabaseConnection) {
     this.#db = db;
   }
   /**
-  * Open a SQLite workflow store and create the required tables.
+  * Open a workflow store and create the required tables.
   */
   static async open(path: string, opts?: {
     fs?: object;
@@ -251,21 +254,15 @@ export class SqliteWorkflowStore implements WorkflowStore {
       ...state,
       updatedAt: Date.now()
     };
-    const stmt = this.#db.prepare(`INSERT INTO workflow_runs(run_id, workflow_id, status, state, updated_at)
-       VALUES(:run_id, :workflow_id, :status, :state, :updated_at)
+    const stmt = this.#db.prepare(sql`INSERT INTO workflow_runs(run_id, workflow_id, status, state, updated_at)
+       VALUES(${next.runId}, ${next.workflowId}, ${next.status}, ${JSON.stringify(next)}, ${next.updatedAt})
        ON CONFLICT(run_id) DO UPDATE SET
          workflow_id = excluded.workflow_id,
          status = excluded.status,
          state = excluded.state,
          updated_at = excluded.updated_at`);
     try {
-      await stmt.run({
-        run_id: next.runId,
-        workflow_id: next.workflowId,
-        status: next.status,
-        state: JSON.stringify(next),
-        updated_at: next.updatedAt
-      });
+      await stmt.run();
     } finally {
       stmt.finalize();
     }
@@ -274,9 +271,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
   * Load a workflow run by id, or `null` when it is unknown.
   */
   async load(runId: string): Promise<WorkflowState | null> {
-    const stmt = this.#db.prepare(`SELECT state FROM workflow_runs WHERE run_id = ?`);
+    const stmt = this.#db.prepare(sql`SELECT state FROM workflow_runs WHERE run_id = ${runId}`);
     try {
-      const row = await stmt.get(runId);
+      const row = await stmt.get();
       return row ? JSON.parse(row.state as string) as WorkflowState : null;
     } finally {
       stmt.finalize();
@@ -290,22 +287,19 @@ export class SqliteWorkflowStore implements WorkflowStore {
     workflowId?: string;
     status?: WorkflowStatus;
   } = {}): Promise<WorkflowState[]> {
-    let sql = `SELECT state FROM workflow_runs`;
-    const params: unknown[] = [];
-    const clauses: string[] = [];
+    let query: SqlFragment = sql`SELECT state FROM workflow_runs`;
+    const clauses: SqlFragment[] = [];
     if (filter.workflowId !== undefined) {
-      clauses.push(`workflow_id = ?`);
-      params.push(filter.workflowId);
+      clauses.push(sql`workflow_id = ${filter.workflowId}`);
     }
     if (filter.status !== undefined) {
-      clauses.push(`status = ?`);
-      params.push(filter.status);
+      clauses.push(sql`status = ${filter.status}`);
     }
-    if (clauses.length > 0) sql += ` WHERE ${clauses.join(' AND ')}`;
-    sql += ` ORDER BY updated_at DESC`;
-    const stmt = this.#db.prepare(sql);
+    if (clauses.length > 0) query = sql`${query} WHERE ${sql.join(clauses, ' AND ')}`;
+    query = sql`${query} ORDER BY updated_at DESC`;
+    const stmt = this.#db.prepare(query);
     try {
-      const rows = await stmt.all(...params);
+      const rows = await stmt.all();
       return rows.map((row) => JSON.parse(row.state as string) as WorkflowState);
     } finally {
       stmt.finalize();
@@ -315,9 +309,9 @@ export class SqliteWorkflowStore implements WorkflowStore {
   * Delete one workflow run if it exists.
   */
   async delete(runId: string): Promise<void> {
-    const stmt = this.#db.prepare(`DELETE FROM workflow_runs WHERE run_id = ?`);
+    const stmt = this.#db.prepare(sql`DELETE FROM workflow_runs WHERE run_id = ${runId}`);
     try {
-      await stmt.run(runId);
+      await stmt.run();
     } finally {
       stmt.finalize();
     }

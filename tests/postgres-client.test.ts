@@ -67,11 +67,40 @@ async function readClientMessage(reader: any): Promise<{ tag: string; body: Uint
 function queryText(body: Uint8Array): string {
   return dec.decode(body.subarray(0, body.byteLength - 1));
 }
+function readCString(body: Uint8Array, offset: number): [string, number] {
+  const end = body.indexOf(0, offset);
+  return [dec.decode(body.subarray(offset, end)), end + 1];
+}
+function parseQueryBody(body: Uint8Array): string {
+  const [, offset] = readCString(body, 0);
+  const [query] = readCString(body, offset);
+  return query;
+}
+function parseBindValues(body: Uint8Array): string[] {
+  let [, offset] = readCString(body, 0);
+  [, offset] = readCString(body, offset);
+  const view = new DataView(body.buffer, body.byteOffset, body.byteLength);
+  const formatCount = view.getInt16(offset, false);
+  offset += 2 + formatCount * 2;
+  const count = view.getInt16(offset, false);
+  offset += 2;
+  const values: string[] = [];
+  for (let index = 0; index < count; index++) {
+    const length = view.getInt32(offset, false);
+    offset += 4;
+    if (length < 0) values.push('NULL');
+    else {
+      values.push(dec.decode(body.subarray(offset, offset + length)));
+      offset += length;
+    }
+  }
+  return values;
+}
 async function writeBackend(writer: any, ...messages: Uint8Array[]): Promise<void> {
   for (const message of messages) await writer.write(message);
   await writer.flush();
 }
-async function withFakePostgres(t: any, handler: (url: string) => Promise<void>, response: { host?: string; value?: string; command?: string; simpleQueries?: string[]; copyIn?: string[]; copyOut?: string[] } = {}): Promise<void> {
+async function withFakePostgres(t: any, handler: (url: string) => Promise<void>, response: { host?: string; value?: string; command?: string; simpleQueries?: string[]; copyIn?: string[]; copyOut?: string[]; parseQueries?: string[]; bindValues?: string[][] } = {}): Promise<void> {
   const server = Socket.listen({ family: 'ipv4', ip: '127.0.0.1', port: 0 });
   const done = (async () => {
     const sock = await server.accept();
@@ -94,6 +123,8 @@ async function withFakePostgres(t: any, handler: (url: string) => Promise<void>,
         const message = await readClientMessage(reader);
         tags.push(message.tag);
         if (message.tag === 'Q') simpleQuery = queryText(message.body);
+        else if (message.tag === 'P') response.parseQueries?.push(parseQueryBody(message.body));
+        else if (message.tag === 'B') response.bindValues?.push(parseBindValues(message.body));
       }
       if (tags.includes('X')) break;
       if (tags.includes('Q')) {
@@ -167,6 +198,16 @@ describe('fino:database/postgres client', () => {
       const row = await db.prepare('SELECT $1::int AS value').get(42);
       t.equal(row!.value, 9);
     }, { value: '9' });
+  });
+  it('normalizes SQLite-style placeholders through the generic Postgres facade', async (t) => {
+    const parseQueries: string[] = [];
+    const bindValues: string[][] = [];
+    await withFakePostgres(t, async (url) => {
+      await using db = await Database.open(url);
+      await db.prepare('SELECT ?::int AS value, :name AS name').get(12, { name: 'Ada' });
+    }, { value: '12', parseQueries, bindValues });
+    t.equal(parseQueries.at(-1), 'SELECT $1::int AS value, $2 AS name');
+    t.deepEqual(bindValues.at(-1), ['12', 'Ada']);
   });
   it('reuses and closes idle pooled connections', async (t) => {
     await withFakePostgres(t, async (url) => {

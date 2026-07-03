@@ -23,6 +23,7 @@ import * as sqlite from 'fino:database/sqlite';
 import { PostgresDatabase } from 'fino:database/postgres';
 export type DatabaseDriver = 'sqlite' | 'postgres';
 export type DbValue = null | undefined | bigint | number | string | boolean | Uint8Array | Date;
+export type DbParams = DbValue | Record<string, DbValue>;
 export type DbRow = Record<string, DbValue>;
 export interface QueryResult {
   changes: number;
@@ -30,10 +31,10 @@ export interface QueryResult {
   command?: string;
 }
 export interface DatabaseStatement {
-  run(...params: DbValue[]): Promise<QueryResult>;
-  get(...params: DbValue[]): Promise<DbRow | undefined>;
-  all(...params: DbValue[]): Promise<DbRow[]>;
-  iterate(...params: DbValue[]): AsyncGenerator<DbRow>;
+  run(...params: DbParams[]): Promise<QueryResult>;
+  get(...params: DbParams[]): Promise<DbRow | undefined>;
+  all(...params: DbParams[]): Promise<DbRow[]>;
+  iterate(...params: DbParams[]): AsyncGenerator<DbRow>;
   finalize(): void;
 }
 export interface DatabaseConnection {
@@ -142,6 +143,69 @@ function renderInput(input: SqlInput, dialect: SqlDialect): { text: string; valu
   if (typeof input === 'string') return { text: input, values: [] };
   return { text: input.text(dialect), values: input.values };
 }
+type PlaceholderToken = { kind: 'positional' } | { kind: 'named'; name: string };
+function isBindRecord(value: unknown): value is Record<string, DbValue> {
+  return typeof value === 'object' && value !== null && !(value instanceof Uint8Array) && !(value instanceof Date);
+}
+function postgresPlaceholderPlan(query: string): { text: string; bind(params: DbParams[]): DbValue[] } {
+  const tokens: PlaceholderToken[] = [];
+  let text = '';
+  let quote: "'" | '"' | null = null;
+  for (let index = 0; index < query.length; index++) {
+    const ch = query[index]!;
+    if (quote !== null) {
+      text += ch;
+      if (ch === quote) {
+        if (query[index + 1] === quote) {
+          text += query[++index]!;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      text += ch;
+      continue;
+    }
+    if (ch === '?') {
+      tokens.push({ kind: 'positional' });
+      text += `$${tokens.length}`;
+      continue;
+    }
+    if (ch === ':' && query[index + 1] === ':') {
+      text += '::';
+      index++;
+      continue;
+    }
+    if (ch === ':' && /[A-Za-z_]/.test(query[index + 1] ?? '')) {
+      let end = index + 2;
+      while (/[A-Za-z0-9_]/.test(query[end] ?? '')) end++;
+      const name = query.slice(index + 1, end);
+      tokens.push({ kind: 'named', name });
+      text += `$${tokens.length}`;
+      index = end - 1;
+      continue;
+    }
+    text += ch;
+  }
+  return {
+    text,
+    bind(params: DbParams[]): DbValue[] {
+      const named = params.find(isBindRecord);
+      let positional = 0;
+      return tokens.map((token) => {
+        if (token.kind === 'positional') {
+          while (isBindRecord(params[positional])) positional++;
+          return params[positional++] as DbValue;
+        }
+        if (!named || !(token.name in named)) throw new Error(`Missing SQL parameter :${token.name}`);
+        return named[token.name];
+      });
+    }
+  };
+}
 class GenericStatement implements DatabaseStatement {
   readonly #driver: DatabaseDriver;
   readonly #inner: any;
@@ -149,16 +213,16 @@ class GenericStatement implements DatabaseStatement {
     this.#driver = driver;
     this.#inner = inner;
   }
-  run(...params: DbValue[]): Promise<QueryResult> {
+  run(...params: DbParams[]): Promise<QueryResult> {
     return this.#inner.run(...params) as Promise<QueryResult>;
   }
-  get(...params: DbValue[]): Promise<DbRow | undefined> {
+  get(...params: DbParams[]): Promise<DbRow | undefined> {
     return this.#inner.get(...params) as Promise<DbRow | undefined>;
   }
-  all(...params: DbValue[]): Promise<DbRow[]> {
+  all(...params: DbParams[]): Promise<DbRow[]> {
     return this.#inner.all(...params) as Promise<DbRow[]>;
   }
-  iterate(...params: DbValue[]): AsyncGenerator<DbRow> {
+  iterate(...params: DbParams[]): AsyncGenerator<DbRow> {
     return this.#inner.iterate(...params) as AsyncGenerator<DbRow>;
   }
   finalize(): void {
@@ -182,13 +246,23 @@ class GenericDatabase implements DatabaseConnection {
   }
   prepare(query: SqlInput): DatabaseStatement {
     const rendered = renderInput(query, this.driver);
-    const stmt = this.inner.prepare(rendered.text);
+    const plan = this.driver === 'postgres' && typeof query === 'string' ? postgresPlaceholderPlan(rendered.text) : null;
+    const stmt = this.inner.prepare(plan?.text ?? rendered.text);
+    if (plan) {
+      return new GenericStatement(this.driver, {
+        run: (...params: DbParams[]) => stmt.run(...plan.bind(params)),
+        get: (...params: DbParams[]) => stmt.get(...plan.bind(params)),
+        all: (...params: DbParams[]) => stmt.all(...plan.bind(params)),
+        iterate: (...params: DbParams[]) => stmt.iterate(...plan.bind(params)),
+        finalize: () => stmt.finalize()
+      });
+    }
     if (rendered.values.length === 0) return new GenericStatement(this.driver, stmt);
     return new GenericStatement(this.driver, {
-      run: (...params: DbValue[]) => stmt.run(...rendered.values, ...params),
-      get: (...params: DbValue[]) => stmt.get(...rendered.values, ...params),
-      all: (...params: DbValue[]) => stmt.all(...rendered.values, ...params),
-      iterate: (...params: DbValue[]) => stmt.iterate(...rendered.values, ...params),
+      run: (...params: DbParams[]) => stmt.run(...rendered.values, ...params),
+      get: (...params: DbParams[]) => stmt.get(...rendered.values, ...params),
+      all: (...params: DbParams[]) => stmt.all(...rendered.values, ...params),
+      iterate: (...params: DbParams[]) => stmt.iterate(...rendered.values, ...params),
       finalize: () => stmt.finalize()
     });
   }

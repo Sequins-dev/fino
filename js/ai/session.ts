@@ -36,7 +36,7 @@
 * }
 * ```
 */
-import { Database } from 'fino:database/sqlite';
+import { Database, sql, type DatabaseConnection, type SqlFragment } from 'fino:database';
 import { SuspendSignal, runContext } from 'fino:ai/runtime';
 import { createSignal } from 'fino:signals';
 import type { AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
@@ -312,11 +312,14 @@ export class InMemorySessionStore implements SessionStore {
   }
 }
 /**
-* SQLite-backed session store.
+* Database-backed session store.
+*
+* The class name is retained for compatibility. Pass a `sqlite://` path or a
+* `postgres://` URL to choose the storage engine through `fino:database`.
 */
 export class SqliteSessionStore implements SessionStore {
-  #db: Database;
-  private constructor(db: Database) {
+  #db: DatabaseConnection;
+  private constructor(db: DatabaseConnection) {
     this.#db = db;
   }
   static async open(path: string, opts?: {
@@ -353,32 +356,33 @@ export class SqliteSessionStore implements SessionStore {
     return new SqliteSessionStore(db);
   }
   async #saveEntry(entry: MessageHistoryEntry): Promise<void> {
-    const stmt = this.#db.prepare(`INSERT OR IGNORE INTO history_entries(id, entry) VALUES(?, ?)`);
+    const stmt = this.#db.prepare(sql`INSERT INTO history_entries(id, entry) VALUES(${entry.id}, ${JSON.stringify(entry)}) ON CONFLICT(id) DO NOTHING`);
     try {
-      await stmt.run(entry.id, JSON.stringify(entry));
+      await stmt.run();
     } finally {
       stmt.finalize();
     }
   }
   async #saveRevision(revision: MessageHistoryRevision): Promise<void> {
-    const stmt = this.#db.prepare(`INSERT OR IGNORE INTO history_revisions(id, parent, entry_ids, created_at, operation)
-       VALUES(?, ?, ?, ?, ?)`);
+    const stmt = this.#db.prepare(sql`INSERT INTO history_revisions(id, parent, entry_ids, created_at, operation)
+       VALUES(${revision.id}, ${revision.parent ?? null}, ${JSON.stringify(revision.entryIds)}, ${revision.createdAt}, ${revision.operation !== undefined ? JSON.stringify(revision.operation) : null})
+       ON CONFLICT(id) DO NOTHING`);
     try {
-      await stmt.run(revision.id, revision.parent ?? null, JSON.stringify(revision.entryIds), revision.createdAt, revision.operation !== undefined ? JSON.stringify(revision.operation) : null);
+      await stmt.run();
     } finally {
       stmt.finalize();
     }
   }
   async #loadSnapshot(id: string): Promise<MessageHistorySnapshot | null> {
-    const revStmt = this.#db.prepare(`WITH RECURSIVE lineage(id, parent, entry_ids, created_at, operation) AS (
-         SELECT id, parent, entry_ids, created_at, operation FROM history_revisions WHERE id = ?
+    const revStmt = this.#db.prepare(sql`WITH RECURSIVE lineage(id, parent, entry_ids, created_at, operation) AS (
+         SELECT id, parent, entry_ids, created_at, operation FROM history_revisions WHERE id = ${id}
          UNION ALL
          SELECT r.id, r.parent, r.entry_ids, r.created_at, r.operation
          FROM history_revisions r JOIN lineage l ON r.id = l.parent
        )
        SELECT id, parent, entry_ids, created_at, operation FROM lineage`);
     try {
-      const rows = await revStmt.all(id);
+      const rows = await revStmt.all();
       if (rows.length === 0) return null;
       const revisions = rows.map((row) => ({
         id: row.id as string,
@@ -393,9 +397,9 @@ export class SqliteSessionStore implements SessionStore {
       }
       const entries: MessageHistoryEntry[] = [];
       for (const entryId of needed) {
-        const entryStmt = this.#db.prepare(`SELECT entry FROM history_entries WHERE id = ?`);
+        const entryStmt = this.#db.prepare(sql`SELECT entry FROM history_entries WHERE id = ${entryId}`);
         try {
-          const row = await entryStmt.get(entryId);
+          const row = await entryStmt.get();
           if (row) entries.push(JSON.parse(row.entry as string) as MessageHistoryEntry);
         } finally {
           entryStmt.finalize();
@@ -415,9 +419,9 @@ export class SqliteSessionStore implements SessionStore {
     return snapshot ? MessageHistory.fromSnapshot(snapshot) : null;
   }
   async loadThread(threadId: string): Promise<ThreadState | null> {
-    const stmt = this.#db.prepare(`SELECT thread_id, history_revision_id, created_at, updated_at FROM threads WHERE thread_id = ?`);
+    const stmt = this.#db.prepare(sql`SELECT thread_id, history_revision_id, created_at, updated_at FROM threads WHERE thread_id = ${threadId}`);
     try {
-      const row = await stmt.get(threadId);
+      const row = await stmt.get();
       if (!row) return null;
       return {
         threadId: row.thread_id as string,
@@ -440,37 +444,25 @@ export class SqliteSessionStore implements SessionStore {
       const delta = args.history.changesSince(args.baseRevisionId);
       for (const entry of delta.entries) await this.#saveEntry(entry);
       for (const revision of delta.revisions) await this.#saveRevision(revision);
-      const runStmt = this.#db.prepare(`INSERT INTO runs(run_id, thread_id, status, step_index, state, updated_at)
-         VALUES(:run_id, :thread_id, :status, :step_index, :state, :updated_at)
+      const runStmt = this.#db.prepare(sql`INSERT INTO runs(run_id, thread_id, status, step_index, state, updated_at)
+         VALUES(${args.run.runId}, ${args.run.threadId}, ${args.run.status}, ${args.run.stepIndex}, ${JSON.stringify(args.run)}, ${Date.now()})
          ON CONFLICT(run_id) DO UPDATE SET
            status = excluded.status,
            step_index = excluded.step_index,
            state = excluded.state,
            updated_at = excluded.updated_at`);
       try {
-        await runStmt.run({
-          run_id: args.run.runId,
-          thread_id: args.run.threadId,
-          status: args.run.status,
-          step_index: args.run.stepIndex,
-          state: JSON.stringify(args.run),
-          updated_at: Date.now()
-        });
+        await runStmt.run();
       } finally {
         runStmt.finalize();
       }
-      const threadStmt = this.#db.prepare(`INSERT INTO threads(thread_id, history_revision_id, created_at, updated_at)
-         VALUES(:thread_id, :history_revision_id, :created_at, :updated_at)
+      const threadStmt = this.#db.prepare(sql`INSERT INTO threads(thread_id, history_revision_id, created_at, updated_at)
+         VALUES(${args.thread.threadId}, ${args.thread.historyRevisionId ?? null}, ${args.thread.createdAt}, ${args.thread.updatedAt})
          ON CONFLICT(thread_id) DO UPDATE SET
            history_revision_id = excluded.history_revision_id,
            updated_at = excluded.updated_at`);
       try {
-        await threadStmt.run({
-          thread_id: args.thread.threadId,
-          history_revision_id: args.thread.historyRevisionId ?? null,
-          created_at: args.thread.createdAt,
-          updated_at: args.thread.updatedAt
-        });
+        await threadStmt.run();
       } finally {
         threadStmt.finalize();
       }
@@ -478,22 +470,15 @@ export class SqliteSessionStore implements SessionStore {
   }
   async save(s: RunState): Promise<void> {
     await this.#db.transaction(async () => {
-      const stmt = this.#db.prepare(`INSERT INTO runs(run_id, thread_id, status, step_index, state, updated_at)
-         VALUES(:run_id, :thread_id, :status, :step_index, :state, :updated_at)
+      const stmt = this.#db.prepare(sql`INSERT INTO runs(run_id, thread_id, status, step_index, state, updated_at)
+         VALUES(${s.runId}, ${s.threadId}, ${s.status}, ${s.stepIndex}, ${JSON.stringify(s)}, ${Date.now()})
          ON CONFLICT(run_id) DO UPDATE SET
            status = excluded.status,
            step_index = excluded.step_index,
            state = excluded.state,
            updated_at = excluded.updated_at`);
       try {
-        await stmt.run({
-          run_id: s.runId,
-          thread_id: s.threadId,
-          status: s.status,
-          step_index: s.stepIndex,
-          state: JSON.stringify(s),
-          updated_at: Date.now()
-        });
+        await stmt.run();
       } finally {
         stmt.finalize();
       }
@@ -503,9 +488,9 @@ export class SqliteSessionStore implements SessionStore {
     return this.load(runId);
   }
   async load(runId: string): Promise<RunState | null> {
-    const stmt = this.#db.prepare(`SELECT state FROM runs WHERE run_id = ?`);
+    const stmt = this.#db.prepare(sql`SELECT state FROM runs WHERE run_id = ${runId}`);
     try {
-      const row = await stmt.get(runId);
+      const row = await stmt.get();
       if (!row) return null;
       return JSON.parse(row.state as string) as RunState;
     } finally {
@@ -520,16 +505,14 @@ export class SqliteSessionStore implements SessionStore {
   async list(filter: {
     threadId?: string;
   } = {}): Promise<RunState[]> {
-    let sql = `SELECT state FROM runs`;
-    const params: unknown[] = [];
+    let query: SqlFragment = sql`SELECT state FROM runs`;
     if (filter.threadId !== undefined) {
-      sql += ` WHERE thread_id = ?`;
-      params.push(filter.threadId);
+      query = sql`${query} WHERE thread_id = ${filter.threadId}`;
     }
-    sql += ` ORDER BY updated_at DESC`;
-    const stmt = this.#db.prepare(sql);
+    query = sql`${query} ORDER BY updated_at DESC`;
+    const stmt = this.#db.prepare(query);
     try {
-      const rows = await stmt.all(...params);
+      const rows = await stmt.all();
       return rows.map((r) => JSON.parse(r.state as string) as RunState);
     } finally {
       stmt.finalize();
@@ -539,9 +522,9 @@ export class SqliteSessionStore implements SessionStore {
     return this.delete(runId);
   }
   async delete(runId: string): Promise<void> {
-    const stmt = this.#db.prepare(`DELETE FROM runs WHERE run_id = ?`);
+    const stmt = this.#db.prepare(sql`DELETE FROM runs WHERE run_id = ${runId}`);
     try {
-      await stmt.run(runId);
+      await stmt.run();
     } finally {
       stmt.finalize();
     }

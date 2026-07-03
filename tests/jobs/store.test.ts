@@ -21,7 +21,7 @@ function tempPath(): string {
 
 describe('JobsStore', () => {
   it('claims atomically via UPDATE...RETURNING (strategy gate)', async (t) => {
-    await using store = await JobsStore.open(tempPath());
+    await using store = await JobsStore.open(`sqlite://${tempPath()}`);
     await store.insertJob({ queue: 'default', task: 'a', input: 1, runAt: Date.now() - 10 });
     await store.insertJob({ queue: 'default', task: 'b', input: 2, runAt: Date.now() - 5 });
     const claimed = await store.claimReady('me', 30_000, 5);
